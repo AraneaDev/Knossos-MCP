@@ -24,7 +24,23 @@ const EXCLUDED_DIRECTORIES = new Set([
     "coverage",
     ".next",
     ".nuxt",
+    // Kept in sync with the authoritative PHP IgnoreMatcher. Generated build
+    // output and mutation-testing sandboxes (.stryker-tmp holds a full project
+    // copy per sandbox) are not source and would multiply program discovery.
+    ".stryker-tmp",
+    "build",
+    "dist",
 ]);
+
+// Each retained ts.Program holds its own parsed default library and type
+// checker (~100-120MB). A repo with many tsconfigs builds one program per
+// config within a single scan; retaining them all at once exhausts the
+// worker's --max-old-space-size cap. Bound the cache so peak live programs
+// stays small while still allowing incremental reuse across scans in watch
+// mode. A program is only needed until its files are emitted, so evicting the
+// least-recently-used program never affects correctness — an evicted config is
+// simply rebuilt from scratch on its next scan.
+const MAX_CACHED_PROGRAMS = 2;
 
 /**
  * Performs bounded compiler-backed discovery and scanning without executing
@@ -86,7 +102,7 @@ export class TypeScriptScanner {
             const key = `${root}\0${configPath}`;
             const oldProgram = this.programCache.get(key);
             const program = createRestrictedProgram(root, parsed, oldProgram);
-            this.programCache.set(key, program);
+            this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
             this.#emitProgram(root, program, requestedSet, emitted, emit);
             ++programs;
@@ -116,7 +132,7 @@ export class TypeScriptScanner {
             const key = `${root}\0<fallback>`;
             const oldProgram = this.programCache.get(key);
             const program = createRestrictedProgram(root, parsed, oldProgram);
-            this.programCache.set(key, program);
+            this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
             this.#emitProgram(root, program, requestedSet, emitted, emit);
             ++programs;
@@ -127,6 +143,17 @@ export class TypeScriptScanner {
             programs,
             programs_reused: programsReused,
         };
+    }
+
+    // Insert a program as most-recently-used and evict the least-recently-used
+    // entries beyond the cap so peak resident program memory stays bounded.
+    #cacheProgram(key, program) {
+        this.programCache.delete(key);
+        this.programCache.set(key, program);
+        while (this.programCache.size > MAX_CACHED_PROGRAMS) {
+            const oldest = this.programCache.keys().next().value;
+            this.programCache.delete(oldest);
+        }
     }
 
     #emitProgram(root, program, requestedSet, emitted, emit) {
@@ -619,7 +646,19 @@ function parseConfig(root, configPath) {
 }
 
 function createRestrictedProgram(root, parsed, oldProgram = undefined) {
-    const host = ts.createCompilerHost(parsed.options, true);
+    // Architecture scanning only needs diagnostics for the project's own
+    // sources, not for the internals of declaration files. Type-checking the
+    // full .d.ts closure of heavy dependencies (e.g. vitest, @types/node pulled
+    // in by test files) dominates both time and memory and can exhaust the
+    // worker heap on real projects. skipLibCheck/skipDefaultLibCheck skip only
+    // the .d.ts-internal checks; diagnostics reported on the user's .ts files
+    // are unchanged. Measured on a 94-file target: OOM (>512MB) -> ~2.9s/292MB.
+    const options = {
+        ...parsed.options,
+        skipLibCheck: true,
+        skipDefaultLibCheck: true,
+    };
+    const host = ts.createCompilerHost(options, true);
     const getSourceFile = host.getSourceFile.bind(host);
     host.getSourceFile = (
         fileName,
@@ -641,7 +680,7 @@ function createRestrictedProgram(root, parsed, oldProgram = undefined) {
         allowedCompilerPath(root, file) ? ts.sys.readFile(file) : undefined;
     return ts.createProgram({
         rootNames: parsed.fileNames,
-        options: parsed.options,
+        options,
         projectReferences: parsed.projectReferences,
         host,
         oldProgram,
