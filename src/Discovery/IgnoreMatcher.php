@@ -20,6 +20,13 @@ final readonly class IgnoreMatcher
         '.tox',
         '.mypy_cache',
         '.pytest_cache',
+        // Generated build output and mutation-testing sandboxes are not source.
+        // '.stryker-tmp' in particular holds one full project copy per sandbox
+        // (each with its own tsconfig), which would otherwise multiply the
+        // TypeScript program count and make scans slow or time out.
+        '.stryker-tmp',
+        'build',
+        'dist',
     ];
 
     private const EXCLUDED_PREFIXES = [

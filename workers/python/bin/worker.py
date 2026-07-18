@@ -23,6 +23,11 @@ EXCLUDED = {
     ".pytest_cache",
     "node_modules",
     "vendor",
+    # Kept in sync with the authoritative PHP IgnoreMatcher: generated build
+    # output and mutation-testing sandboxes are not source.
+    ".stryker-tmp",
+    "build",
+    "dist",
 }
 
 
