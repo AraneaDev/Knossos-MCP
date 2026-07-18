@@ -1,0 +1,13 @@
+vendor/
+node_modules/
+workers/**/node_modules/
+composer.lock
+workers/**/composer.lock
+package-lock.json
+workers/**/package-lock.json
+tests/Fixtures/
+coverage/
+docs/Architecture-MCP-Project-Plan.docx
+docs/CLI-REFERENCE.md
+docs/MCP-REFERENCE.md
+docs/API-REFERENCE.md

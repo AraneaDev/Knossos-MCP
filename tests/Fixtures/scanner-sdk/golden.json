@@ -1,0 +1,23 @@
+{
+  "initialize": {
+    "protocol_version": "1.0",
+    "output_schema_version": "1.0",
+    "required_manifest_fields": [
+      "id",
+      "version",
+      "protocol_version",
+      "output_schema_version",
+      "languages",
+      "file_extensions",
+      "capabilities"
+    ]
+  },
+  "lifecycle": ["initialize", "discover", "scan", "shutdown"],
+  "contribution_notification": "scan/contribution",
+  "stable_errors": [
+    "WORKER_PROTOCOL_VERSION_MISMATCH",
+    "WORKER_OUTPUT_SCHEMA_MISMATCH",
+    "WORKER_CAPABILITY_MISMATCH",
+    "WORKER_CONTRIBUTION_INVALID"
+  ]
+}

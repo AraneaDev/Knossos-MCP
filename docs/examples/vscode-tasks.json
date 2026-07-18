@@ -1,0 +1,34 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Knossos: quality gates",
+      "type": "shell",
+      "command": "tools/quality-container",
+      "args": ["fast"],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "Knossos: scan workspace",
+      "type": "shell",
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--mount",
+        "type=bind,source=${workspaceFolder},target=/workspace,readonly",
+        "--mount",
+        "type=volume,source=knossos-editor-data,target=/data",
+        "knossos-mcp:dev",
+        "scan",
+        "/workspace",
+        "--json"
+      ],
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,145 @@
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS node_runtime
+
+RUN npm install --global npm@12.0.1 --ignore-scripts --no-audit --no-fund
+
+FROM composer:2@sha256:5946476338742b200bb9ff88f8be56275ddae4b3949c72305cb0dbf10cfcb760 AS composer_runtime
+
+FROM php:8.4-cli-bookworm@sha256:138a210978c7767ef2a26f499c413fe6de1c13233c9a5068139565c81191b1ac AS runtime
+
+LABEL org.opencontainers.image.title="Knossos MCP" \
+      org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
+      org.opencontainers.image.version="0.1.0-dev"
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y git libsqlite3-dev python3 unzip \
+    && docker-php-ext-install pdo_sqlite \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node_runtime /usr/local/ /usr/local/
+COPY --from=composer_runtime /usr/bin/composer /usr/local/bin/composer
+
+WORKDIR /opt/knossos
+
+COPY composer.json composer.lock ./
+RUN composer install \
+    --no-dev \
+    --no-interaction \
+    --no-progress \
+    --no-scripts \
+    --optimize-autoloader
+
+COPY workers/php/composer.json workers/php/composer.lock ./workers/php/
+COPY workers/php/src ./workers/php/src
+COPY workers/php/bin ./workers/php/bin
+RUN composer install \
+    --working-dir=workers/php \
+    --no-dev \
+    --no-interaction \
+    --no-progress \
+    --no-scripts \
+    --optimize-autoloader
+
+COPY workers/typescript/package.json workers/typescript/package-lock.json ./workers/typescript/
+RUN npm ci \
+    --prefix workers/typescript \
+    --omit=dev \
+    --ignore-scripts \
+    --no-audit \
+    --no-fund
+COPY workers/typescript/src ./workers/typescript/src
+COPY workers/typescript/bin ./workers/typescript/bin
+
+COPY workers/python/bin ./workers/python/bin
+
+COPY bin ./bin
+COPY src ./src
+COPY migrations ./migrations
+COPY schemas ./schemas
+RUN chmod 0755 \
+    /opt/knossos/bin/knossos \
+    /opt/knossos/workers/php/bin/worker \
+    /opt/knossos/workers/typescript/bin/worker.js \
+    /opt/knossos/workers/python/bin/worker.py \
+    && mkdir -p /data \
+    && chown -R www-data:www-data /data /opt/knossos \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
+USER www-data
+
+ENV KNOSSOS_DATA_DIR=/data
+ENV NODE_OPTIONS=--max-old-space-size=512
+
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["php", "/opt/knossos/bin/knossos", "version", "--json"]
+
+ENTRYPOINT ["/opt/knossos/bin/knossos"]
+CMD ["help"]
+
+FROM runtime AS quality
+
+USER root
+
+COPY --from=node_runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ca-certificates curl docker.io python3-pip shellcheck $PHPIZE_DEPS \
+    && pecl install pcov-1.0.12 \
+    && docker-php-ext-enable pcov \
+    && python3 -m pip install --break-system-packages --no-cache-dir \
+        coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 ruff==0.15.12 \
+    && curl --fail --location --silent --show-error \
+        --output /usr/local/bin/hadolint \
+        https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64 \
+    && printf '%s  %s\n' 6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47 /usr/local/bin/hadolint > /tmp/hadolint.sha256 \
+    && sha256sum --check --strict /tmp/hadolint.sha256 \
+    && chmod 0755 /usr/local/bin/hadolint \
+    && apt-get purge -y --auto-remove $PHPIZE_DEPS \
+    && rm -rf /var/lib/apt/lists/* /tmp/hadolint.sha256
+
+RUN curl --fail --location --silent --show-error \
+        --output /tmp/trivy.tar.gz \
+        https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz \
+    && printf '%s  %s\n' 1816b632dfe529869c740c0913e36bd1629cb7688bd5634f4a858c1d57c88b75 /tmp/trivy.tar.gz \
+        > /tmp/trivy.sha256 \
+    && sha256sum --check --strict /tmp/trivy.sha256 \
+    && tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy \
+    && curl --fail --location --silent --show-error \
+        --output /usr/local/bin/cosign \
+        https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64 \
+    && printf '%s  %s\n' c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74 /usr/local/bin/cosign \
+        > /tmp/cosign.sha256 \
+    && sha256sum --check --strict /tmp/cosign.sha256 \
+    && chmod 0755 /usr/local/bin/trivy /usr/local/bin/cosign \
+    && rm -f /tmp/trivy.tar.gz /tmp/trivy.sha256 /tmp/cosign.sha256
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts --no-audit --no-fund
+
+RUN composer install \
+    --no-interaction \
+    --no-progress \
+    --no-scripts \
+    --optimize-autoloader
+
+COPY .editorconfig .hadolint.yaml .trivyignore .php-cs-fixer.dist.php .prettierignore .markdownlint-cli2.jsonc ./
+COPY eslint.config.js phpstan.neon pyproject.toml .pre-commit-config.yaml .coveragerc ./
+COPY README.md ./
+COPY coverage-budgets.json ./
+COPY maintainability-budgets.json ./
+COPY Dockerfile ./
+COPY docs ./docs
+COPY benchmarks ./benchmarks
+COPY tests ./tests
+COPY tools ./tools
+COPY .github ./.github
+RUN chmod 0755 tools/quality tools/quality-container tools/install-hooks tools/coverage tools/benchmark tools/mutation-test tools/supply-chain tools/release-lifecycle tools/scanner-conformance
+
+ENV KNOSSOS_QUALITY_CONTAINER=1
+ENV DOCKER_API_VERSION=1.44
+
+ENTRYPOINT ["/opt/knossos/tools/quality"]
+CMD ["fast"]

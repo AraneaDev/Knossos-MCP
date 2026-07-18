@@ -1,0 +1,64 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Knossos\Scanner\Worker\ProcessScannerClient;
+use Knossos\Scanner\Worker\WorkerException;
+
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$separator = array_search('--', $argv, true);
+if ($separator === false || $separator === count($argv) - 1) {
+    fwrite(STDERR, "usage: tools/scanner-conformance [--require=capability] -- command [args...]\n");
+    exit(64);
+}
+$required = [];
+foreach (array_slice($argv, 1, $separator - 1) as $option) {
+    if (!str_starts_with($option, '--require=') || substr($option, 10) === '') {
+        fwrite(STDERR, "unknown conformance option: {$option}\n");
+        exit(64);
+    }
+    $required[] = substr($option, 10);
+}
+$command = array_slice($argv, $separator + 1);
+$temporary = sys_get_temp_dir() . '/knossos-conformance-' . bin2hex(random_bytes(8));
+if (!mkdir($temporary, 0o700)) {
+    fwrite(STDERR, "unable to create conformance fixture root\n");
+    exit(1);
+}
+
+$checks = [];
+$client = new ProcessScannerClient($command);
+try {
+    $manifest = $client->requireCapabilities($required);
+    $checks[] = ['name' => 'initialize', 'status' => 'pass'];
+    $discovery = $client->discover(['root' => $temporary]);
+    $checks[] = ['name' => 'discover', 'status' => is_array($discovery) ? 'pass' : 'fail'];
+    $contributions = iterator_to_array($client->scan(['root' => $temporary, 'files' => []]));
+    $checks[] = ['name' => 'empty_scan', 'status' => $contributions === [] ? 'pass' : 'fail'];
+    $client->shutdown();
+    $checks[] = ['name' => 'shutdown', 'status' => 'pass'];
+    $passed = !in_array('fail', array_column($checks, 'status'), true);
+    echo json_encode([
+        'conformant' => $passed,
+        'protocol_version' => $manifest->protocolVersion,
+        'output_schema_version' => $manifest->outputSchemaVersion,
+        'scanner' => $manifest->id,
+        'version' => $manifest->version,
+        'capabilities' => $manifest->capabilities,
+        'checks' => $checks,
+    ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    exit($passed ? 0 : 1);
+} catch (WorkerException $error) {
+    echo json_encode([
+        'conformant' => false,
+        'diagnostic_code' => $error->diagnosticCode,
+        'message' => $error->getMessage(),
+        'checks' => $checks,
+    ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
+    exit(1);
+} finally {
+    $client->shutdown();
+    @rmdir($temporary);
+}

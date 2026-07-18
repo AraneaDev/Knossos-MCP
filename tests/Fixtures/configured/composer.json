@@ -1,0 +1,8 @@
+{
+  "name": "fixture/configured",
+  "autoload": {
+    "psr-4": {
+      "Configured\\": "src/"
+    }
+  }
+}

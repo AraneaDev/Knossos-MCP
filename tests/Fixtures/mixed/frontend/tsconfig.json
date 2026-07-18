@@ -1,0 +1,14 @@
+{
+  // JSONC comments and trailing commas are valid in TypeScript configuration.
+  "compilerOptions": {
+    "allowJs": true,
+    "baseUrl": ".",
+    "paths": {
+      "@app/*": ["src/*"],
+    },
+  },
+  "references": [
+    { "path": "../shared" },
+  ],
+}
+

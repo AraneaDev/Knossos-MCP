@@ -1,0 +1,9 @@
+{
+  "name": "knossos/fixture",
+  "autoload": {
+    "psr-4": {
+      "Fixture\\": "src/"
+    }
+  }
+}
+

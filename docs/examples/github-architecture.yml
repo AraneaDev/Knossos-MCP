@@ -1,0 +1,87 @@
+name: Architecture quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  knossos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore reviewed architecture history
+        uses: actions/cache/restore@v4
+        with:
+          path: .knossos-ci
+          key: knossos-${{ runner.os }}-${{ github.event.repository.default_branch }}
+          restore-keys: |
+            knossos-${{ runner.os }}-
+
+      - name: Build the pinned runtime image
+        run: docker build --target runtime --tag knossos-mcp:ci .
+
+      - name: Scan and enforce the reviewed baseline
+        env:
+          KNOSSOS_BASELINE_SNAPSHOT: ${{ vars.KNOSSOS_BASELINE_SNAPSHOT }}
+        run: |
+          set -u
+          mkdir -p .knossos-ci artifacts
+          chmod 0777 .knossos-ci
+
+          docker run --rm --network none \
+            --mount type=bind,source="$PWD",target=/workspace,readonly \
+            --mount type=bind,source="$PWD/.knossos-ci",target=/data \
+            knossos-mcp:ci scan /workspace --json > artifacts/scan.json
+
+          project_id="$(jq -r '.project_id' artifacts/scan.json)"
+          if [ -z "${KNOSSOS_BASELINE_SNAPSHOT:-}" ]; then
+            echo "Set the KNOSSOS_BASELINE_SNAPSHOT repository variable to a reviewed snapshot ID." >&2
+            exit 2
+          fi
+
+          set +e
+          docker run --rm --network none \
+            --mount type=bind,source="$PWD",target=/workspace,readonly \
+            --mount type=bind,source="$PWD/.knossos-ci",target=/data \
+            knossos-mcp:ci quality-gate "$project_id" "$KNOSSOS_BASELINE_SNAPSHOT" \
+              --budgets=/workspace/knossos-budgets.json --sarif --json \
+              > artifacts/quality-gate.json
+          gate_status=$?
+          set -e
+
+          jq '.data.sarif' artifacts/quality-gate.json > artifacts/knossos.sarif
+          docker run --rm --network none \
+            --mount type=bind,source="$PWD/.knossos-ci",target=/data \
+            knossos-mcp:ci architecture-trends "$project_id" \
+              --release-from="$KNOSSOS_BASELINE_SNAPSHOT" --json \
+              > artifacts/trends.json
+          jq -r '.data.release_notes.markdown' artifacts/trends.json \
+            > artifacts/architecture-change.md
+          exit "$gate_status"
+
+      - name: Upload SARIF
+        if: always() && hashFiles('artifacts/knossos.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: artifacts/knossos.sarif
+
+      - name: Upload architecture reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: knossos-architecture
+          path: artifacts/
+          if-no-files-found: warn
+
+      - name: Save architecture history
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        uses: actions/cache/save@v4
+        with:
+          path: .knossos-ci
+          key: knossos-${{ runner.os }}-${{ github.event.repository.default_branch }}-${{ github.run_id }}

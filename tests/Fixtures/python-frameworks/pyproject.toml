@@ -1,0 +1,4 @@
+[project]
+name = "knossos-python-frameworks"
+version = "0.0.0"
+dependencies = ["django>=5", "fastapi>=0.115", "celery>=5"]

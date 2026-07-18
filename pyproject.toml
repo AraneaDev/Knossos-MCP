@@ -1,0 +1,18 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["tests/Fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "RUF", "C90", "PLR0912", "PLR0915"]
+ignore = ["S603"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 20
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+show_error_codes = true
+files = ["workers/python/bin/worker.py"]

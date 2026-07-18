@@ -1,0 +1,57 @@
+stages: [architecture]
+
+knossos-architecture:
+  stage: architecture
+  image: docker:27-cli
+  services:
+    - name: docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  cache:
+    key: "knossos-${CI_DEFAULT_BRANCH}"
+    paths:
+      - .knossos-ci/
+    policy: pull-push
+  before_script:
+    - apk add --no-cache jq
+    - mkdir -p .knossos-ci artifacts
+    - chmod 0777 .knossos-ci
+    - docker build --target runtime --tag knossos-mcp:ci .
+  script:
+    - |
+      set -u
+      docker run --rm --network none \
+        --mount type=bind,source="$CI_PROJECT_DIR",target=/workspace,readonly \
+        --mount type=bind,source="$CI_PROJECT_DIR/.knossos-ci",target=/data \
+        knossos-mcp:ci scan /workspace --json > artifacts/scan.json
+
+      project_id="$(jq -r '.project_id' artifacts/scan.json)"
+      if [ -z "${KNOSSOS_BASELINE_SNAPSHOT:-}" ]; then
+        echo "Set KNOSSOS_BASELINE_SNAPSHOT to a reviewed snapshot ID." >&2
+        exit 2
+      fi
+
+      set +e
+      docker run --rm --network none \
+        --mount type=bind,source="$CI_PROJECT_DIR",target=/workspace,readonly \
+        --mount type=bind,source="$CI_PROJECT_DIR/.knossos-ci",target=/data \
+        knossos-mcp:ci quality-gate "$project_id" "$KNOSSOS_BASELINE_SNAPSHOT" \
+          --budgets=/workspace/knossos-budgets.json --sarif --json \
+          > artifacts/quality-gate.json
+      gate_status=$?
+      set -e
+
+      jq '.data.sarif' artifacts/quality-gate.json > artifacts/knossos.sarif
+      docker run --rm --network none \
+        --mount type=bind,source="$CI_PROJECT_DIR/.knossos-ci",target=/data \
+        knossos-mcp:ci architecture-trends "$project_id" \
+          --release-from="$KNOSSOS_BASELINE_SNAPSHOT" --json \
+          > artifacts/trends.json
+      jq -r '.data.release_notes.markdown' artifacts/trends.json \
+        > artifacts/architecture-change.md
+      exit "$gate_status"
+  artifacts:
+    when: always
+    paths:
+      - artifacts/
+    expire_in: 14 days

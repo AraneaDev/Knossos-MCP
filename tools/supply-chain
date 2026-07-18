@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+runtime_image="${1:-knossos-mcp:quality-runtime}"
+quality_image="${2:-knossos-mcp:quality}"
+report_dir="${3:-coverage/supply-chain}"
+mkdir -p "$report_dir"
+
+trivy image --quiet --format cyclonedx --output "$report_dir/runtime.cdx.json" "$runtime_image"
+trivy image --quiet --format cyclonedx --output "$report_dir/quality.cdx.json" "$quality_image"
+trivy image --quiet --ignore-unfixed --severity HIGH,CRITICAL --exit-code 1 \
+    --format json --output "$report_dir/runtime-vulnerabilities.json" "$runtime_image"
+trivy image --quiet --ignore-unfixed --severity HIGH,CRITICAL --exit-code 0 \
+    --format json --output "$report_dir/quality-vulnerabilities.json" "$quality_image"
+trivy config --quiet --ignorefile .trivyignore --severity HIGH,CRITICAL --exit-code 1 \
+    --format json --output "$report_dir/dockerfile-misconfigurations.json" Dockerfile
+
+runtime_id=$(docker image inspect --format '{{.Id}}' "$runtime_image")
+quality_id=$(docker image inspect --format '{{.Id}}' "$quality_image")
+php tools/supply-chain-report.php "$runtime_id" "$quality_id" "$report_dir/provenance.json"
+
+key_dir=$(mktemp -d /tmp/knossos-cosign-XXXXXX)
+trap 'rm -f "$key_dir/cosign.key" "$key_dir/cosign.pub" "$key_dir/signing-config.json"; rmdir "$key_dir"' EXIT
+COSIGN_PASSWORD=knossos-ci-ephemeral cosign generate-key-pair --output-key-prefix "$key_dir/cosign" >/dev/null
+cosign signing-config create --no-default-fulcio --no-default-oidc \
+    --no-default-rekor --no-default-tsa --out "$key_dir/signing-config.json"
+COSIGN_PASSWORD=knossos-ci-ephemeral cosign sign-blob --yes \
+    --signing-config "$key_dir/signing-config.json" \
+    --key "$key_dir/cosign.key" --bundle "$report_dir/provenance.sigstore.json" \
+    "$report_dir/provenance.json" >/dev/null
+cosign verify-blob --insecure-ignore-tlog --key "$key_dir/cosign.pub" \
+    --bundle "$report_dir/provenance.sigstore.json" "$report_dir/provenance.json" >/dev/null
+
+echo "Supply-chain reports, vulnerability gates, provenance, and signature verification passed."

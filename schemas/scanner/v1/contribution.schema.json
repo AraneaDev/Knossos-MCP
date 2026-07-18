@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knossos.local/schemas/scanner/v1/contribution.schema.json",
+  "title": "Knossos scan contribution v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["owner_key", "nodes", "edges", "diagnostics"],
+  "properties": {
+    "owner_key": { "type": "string", "minLength": 1 },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "start_line", "end_line"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "start_line": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "factBase": {
+      "type": "object",
+      "required": ["origin", "confidence", "evidence", "attributes"],
+      "properties": {
+        "origin": {
+          "enum": [
+            "ast",
+            "composer",
+            "config",
+            "framework_convention",
+            "derived"
+          ]
+        },
+        "confidence": { "enum": ["certain", "probable", "possible"] },
+        "evidence": { "$ref": "#/$defs/evidence" },
+        "attributes": { "type": "object" }
+      }
+    },
+    "node": {
+      "allOf": [
+        { "$ref": "#/$defs/factBase" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "local_id",
+            "kind",
+            "canonical_name",
+            "display_name",
+            "origin",
+            "confidence",
+            "evidence",
+            "attributes"
+          ],
+          "properties": {
+            "local_id": { "type": "string", "minLength": 1 },
+            "kind": { "type": "string", "minLength": 1 },
+            "canonical_name": { "type": "string", "minLength": 1 },
+            "display_name": { "type": "string", "minLength": 1 },
+            "origin": true,
+            "confidence": true,
+            "evidence": true,
+            "attributes": true
+          }
+        }
+      ]
+    },
+    "edge": {
+      "allOf": [
+        { "$ref": "#/$defs/factBase" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source",
+            "target",
+            "origin",
+            "confidence",
+            "evidence",
+            "attributes"
+          ],
+          "properties": {
+            "kind": { "type": "string", "minLength": 1 },
+            "source": { "type": "string", "minLength": 1 },
+            "target": { "type": "string", "minLength": 1 },
+            "origin": true,
+            "confidence": true,
+            "evidence": true,
+            "attributes": true
+          }
+        }
+      ]
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message"],
+      "properties": {
+        "severity": { "enum": ["info", "warning", "error"] },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      }
+    }
+  }
+}

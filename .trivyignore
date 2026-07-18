@@ -1,0 +1,2 @@
+# Quality-only final stage requires root for the mounted Docker socket.
+DS-0002

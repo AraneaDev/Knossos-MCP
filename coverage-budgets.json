@@ -1,0 +1,25 @@
+{
+  "php": {
+    "aggregate_lines": 91,
+    "components": {
+      "bundle-git-watch": 87,
+      "discovery-config": 87.5,
+      "maintenance-runtime": 87.7,
+      "php-scanner": 90.6,
+      "query-analysis": 92.6,
+      "reconciliation": 90.6,
+      "scanner-runtime": 90.6,
+      "storage": 92.2,
+      "transport": 92.1
+    }
+  },
+  "typescript": {
+    "lines": 94.6,
+    "branches": 79.2,
+    "functions": 97,
+    "statements": 94.6
+  },
+  "python": {
+    "lines": 96
+  }
+}

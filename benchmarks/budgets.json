@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "sizes": {
+    "small": {
+      "files_per_language": 6,
+      "cold_scan_seconds": 10,
+      "incremental_scan_seconds": 10,
+      "query_seconds": 1,
+      "peak_rss_mb": 512,
+      "sqlite_mb": 12
+    },
+    "medium": {
+      "files_per_language": 30,
+      "cold_scan_seconds": 20,
+      "incremental_scan_seconds": 15,
+      "query_seconds": 1,
+      "peak_rss_mb": 600,
+      "sqlite_mb": 24
+    },
+    "large": {
+      "files_per_language": 100,
+      "cold_scan_seconds": 40,
+      "incremental_scan_seconds": 20,
+      "query_seconds": 1,
+      "peak_rss_mb": 700,
+      "sqlite_mb": 48
+    }
+  }
+}

@@ -1,0 +1,32 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build pinned quality image
+        run: docker build --target quality -t knossos-mcp:quality .
+      - name: Run full quality profile
+        run: |
+          mkdir -p coverage
+          docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 \
+            -e KNOSSOS_HOST_WORKSPACE="$PWD" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/coverage:/opt/knossos/coverage" \
+            knossos-mcp:quality full
+      - name: Upload coverage and benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-reports
+          path: coverage/
+          if-no-files-found: error

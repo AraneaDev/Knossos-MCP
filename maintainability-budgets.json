@@ -1,0 +1,6 @@
+{
+  "cross_file_duplicate_blocks": 18,
+  "max_php_function_complexity": 126,
+  "max_php_function_lines": 462,
+  "max_dependency_fanout": 25
+}

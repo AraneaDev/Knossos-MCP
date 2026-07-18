@@ -1,0 +1,9 @@
+{
+  "name": "knossos-mixed-fixture",
+  "private": true,
+  "workspaces": ["frontend"],
+  "scripts": {
+    "postinstall": "touch SHOULD_NOT_EXIST"
+  }
+}
+

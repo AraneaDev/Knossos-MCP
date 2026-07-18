@@ -1,0 +1,105 @@
+#!/bin/sh
+set -eu
+
+# Knossos MCP installer.
+#
+# Verifies runtimes, ensures worker dependencies, seeds an initial scan so the
+# server can answer queries immediately, and registers the Knossos stdio MCP
+# server with Claude Code. Idempotent: re-running re-registers cleanly.
+#
+# Overridable via environment:
+#   KNOSSOS_MCP_NAME    server name registered with the client   (default: knossos)
+#   KNOSSOS_MCP_SCOPE   claude mcp scope: local|user|project     (default: user)
+#   KNOSSOS_ALLOW_ROOT  absolute project root the server may scan (default: repo root)
+#   KNOSSOS_DATA_DIR    directory holding the derived database    (default: <root>/.knossos)
+#   KNOSSOS_SEED_SCAN   1 to seed an initial scan, 0 to skip      (default: 1)
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+NAME="${KNOSSOS_MCP_NAME:-knossos}"
+SCOPE="${KNOSSOS_MCP_SCOPE:-user}"
+ALLOW_ROOT="${KNOSSOS_ALLOW_ROOT:-$ROOT}"
+DATA_DIR="${KNOSSOS_DATA_DIR:-$ROOT/.knossos}"
+SEED_SCAN="${KNOSSOS_SEED_SCAN:-1}"
+
+log() { printf '  %s\n' "$1"; }
+
+echo "Knossos MCP installer"
+echo "  root:       $ROOT"
+echo "  server:     $NAME (scope: $SCOPE)"
+echo "  allow-root: $ALLOW_ROOT"
+echo "  data dir:   $DATA_DIR"
+
+echo "Checking runtimes..."
+missing=""
+for runtime in php node python3; do
+    command -v "$runtime" >/dev/null 2>&1 || missing="$missing $runtime"
+done
+if [ -n "$missing" ]; then
+    echo "Missing required runtimes:$missing" >&2
+    echo "Install PHP 8.3+, Node 22+, and Python 3.11+, then re-run." >&2
+    exit 1
+fi
+log "$(php -r 'echo "php " . PHP_VERSION;'), node $(node --version), $(python3 --version)"
+
+echo "Ensuring worker dependencies..."
+if [ ! -f "$ROOT/vendor/autoload.php" ]; then
+    log "installing PHP dependencies"
+    (cd "$ROOT" && COMPOSER_ALLOW_SUPERUSER=1 composer install --no-interaction --no-scripts)
+fi
+if [ ! -f "$ROOT/workers/php/vendor/autoload.php" ]; then
+    log "installing PHP worker dependencies"
+    (cd "$ROOT" && COMPOSER_ALLOW_SUPERUSER=1 composer --working-dir=workers/php install --no-interaction --no-scripts)
+fi
+if [ ! -d "$ROOT/workers/typescript/node_modules" ]; then
+    log "installing TypeScript worker dependencies"
+    npm --prefix "$ROOT/workers/typescript" ci --ignore-scripts --no-audit --no-fund
+fi
+log "workers ready"
+
+echo "Running doctor..."
+if KNOSSOS_DATA_DIR="$DATA_DIR" "$ROOT/bin/knossos" doctor >/dev/null 2>&1; then
+    log "runtime, workers, protocol, database, and migrations are healthy"
+else
+    # Doctor is advisory here: an unsupported-but-working runtime (e.g. a newer
+    # Node than the tested matrix) should warn, not block a local install.
+    echo "  doctor reported non-blocking warnings; continuing:" >&2
+    KNOSSOS_DATA_DIR="$DATA_DIR" "$ROOT/bin/knossos" doctor --json 2>/dev/null \
+        | php -r '$d = json_decode(stream_get_contents(STDIN), true) ?: []; foreach ($d["checks"] ?? [] as $c) { if (($c["status"] ?? "") !== "ok") { fwrite(STDERR, "    - " . $c["name"] . ": " . $c["detail"] . "\n"); } }' || true
+fi
+
+if [ "$SEED_SCAN" = "1" ]; then
+    echo "Seeding an initial scan of $ALLOW_ROOT ..."
+    if KNOSSOS_DATA_DIR="$DATA_DIR" "$ROOT/bin/knossos" scan "$ALLOW_ROOT" >/dev/null 2>&1; then
+        log "scan complete"
+    else
+        # A large tree can exhaust a constrained worker; registration still proceeds.
+        echo "  seed scan did not complete (large tree or constrained worker memory)." >&2
+        echo "  the server is registered and usable; scan on demand with:" >&2
+        echo "    KNOSSOS_DATA_DIR=$DATA_DIR $ROOT/bin/knossos scan <path>" >&2
+    fi
+fi
+
+if command -v claude >/dev/null 2>&1; then
+    echo "Registering the MCP server with Claude Code..."
+    claude mcp remove "$NAME" -s "$SCOPE" >/dev/null 2>&1 || true
+    claude mcp add "$NAME" -s "$SCOPE" -e "KNOSSOS_DATA_DIR=$DATA_DIR" -- \
+        "$ROOT/bin/knossos" serve --allow-root="$ALLOW_ROOT"
+    log "registered as '$NAME' (scope: $SCOPE)"
+    echo
+    echo "Done. Restart Claude Code (or reload MCP servers) to use the '$NAME' tools,"
+    echo "for example 'file_metrics', 'architecture_summary', and 'search_architecture'."
+    echo "Remove it later with: claude mcp remove $NAME -s $SCOPE"
+else
+    echo "Claude CLI not found. Add this stdio server to your MCP client manually:"
+    cat <<JSON
+{
+  "mcpServers": {
+    "$NAME": {
+      "command": "$ROOT/bin/knossos",
+      "args": ["serve", "--allow-root=$ALLOW_ROOT"],
+      "env": { "KNOSSOS_DATA_DIR": "$DATA_DIR" }
+    }
+  }
+}
+JSON
+fi

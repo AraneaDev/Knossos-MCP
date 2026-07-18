@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+image="${1:-knossos-mcp:quality-runtime}"
+host_workspace="${KNOSSOS_HOST_WORKSPACE:-$PWD}"
+volume=$(docker volume create)
+trap 'docker volume rm "$volume" >/dev/null' EXIT
+
+docker run --rm --mount "type=volume,source=$volume,target=/data" "$image" doctor --json >/dev/null
+scan=$(docker run --rm --network none \
+    --mount "type=volume,source=$volume,target=/data" \
+    --mount "type=bind,source=$host_workspace/tests/Fixtures/mixed,target=/workspace,readonly" \
+    "$image" scan /workspace --json)
+# The PHP expression is intentionally single-quoted for the shell.
+# shellcheck disable=SC2016
+project_id=$(printf '%s' "$scan" | php -r '$v=json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR); echo $v["project_id"];')
+docker run --rm --mount "type=volume,source=$volume,target=/data" \
+    "$image" maintain-database backup --backup-name=pre-upgrade.sqlite --execute --json >/dev/null
+docker run --rm --network none \
+    --mount "type=volume,source=$volume,target=/data" \
+    --mount "type=bind,source=$host_workspace/tests/Fixtures/mixed,target=/workspace,readonly" \
+    "$image" scan /workspace --mode=full --json >/dev/null
+docker run --rm --entrypoint sh --mount "type=volume,source=$volume,target=/data" \
+    "$image" -c 'cp /data/backups/pre-upgrade.sqlite /data/knossos.sqlite'
+docker run --rm --mount "type=volume,source=$volume,target=/data" \
+    "$image" architecture-summary "$project_id" --json >/dev/null
+
+echo "Clean install, idempotent upgrade scan, and verified backup rollback passed."

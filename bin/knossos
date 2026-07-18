@@ -1,0 +1,18 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+use Knossos\Application;
+
+$autoload = dirname(__DIR__) . '/vendor/autoload.php';
+
+if (!is_file($autoload)) {
+    fwrite(STDERR, "Knossos dependencies are not installed. Run composer install.\n");
+    exit(1);
+}
+
+require $autoload;
+
+exit((new Application())->run(array_slice($argv, 1)));
+

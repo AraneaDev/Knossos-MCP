@@ -1,0 +1,18 @@
+{
+  "name": "@knossos-mcp/typescript-scanner",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "knossos-typescript-scanner": "bin/worker.js"
+  },
+  "scripts": {
+    "check": "node --check bin/worker.js && node --check src/*.js"
+  },
+  "dependencies": {
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=22 <25"
+  }
+}

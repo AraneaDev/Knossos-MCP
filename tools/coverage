@@ -1,0 +1,34 @@
+#!/bin/sh
+set -eu
+
+php tools/reset-coverage.php
+mkdir -p coverage/php coverage/js/tmp coverage/python
+
+export KNOSSOS_PHP_COVERAGE_DIR=/opt/knossos/coverage/php
+export KNOSSOS_JS_COVERAGE_DIR=/opt/knossos/coverage/js/tmp
+export KNOSSOS_PYTHON_COVERAGE_DIR=/opt/knossos/coverage/python
+
+php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php tests/run.php
+php tools/pcov-report.php
+
+node_modules/.bin/c8 report \
+    --temp-directory=coverage/js/tmp \
+    --report-dir=coverage/js \
+    --reporter=text \
+    --reporter=html \
+    --reporter=lcov \
+    --reporter=cobertura \
+    --all \
+    --include='workers/typescript/bin/**/*.js' \
+    --include='workers/typescript/src/**/*.js' \
+    --check-coverage \
+    --lines="$(node -p "require('./coverage-budgets.json').typescript.lines")" \
+    --branches="$(node -p "require('./coverage-budgets.json').typescript.branches")" \
+    --functions="$(node -p "require('./coverage-budgets.json').typescript.functions")" \
+    --statements="$(node -p "require('./coverage-budgets.json').typescript.statements")"
+
+coverage combine --data-file=coverage/python/.coverage
+coverage report --data-file=coverage/python/.coverage \
+    --fail-under="$(node -p "require('./coverage-budgets.json').python.lines")"
+coverage xml --data-file=coverage/python/.coverage
+coverage html --data-file=coverage/python/.coverage --directory=coverage/python/html

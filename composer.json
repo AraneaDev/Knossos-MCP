@@ -1,0 +1,58 @@
+{
+  "name": "knossos-mcp/knossos",
+  "description": "Evidence-backed software architecture graph exposed through MCP",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": ">=8.3 <8.5",
+    "ext-json": "*",
+    "ext-pdo": "*",
+    "ext-pdo_sqlite": "*"
+  },
+  "require-dev": {
+    "friendsofphp/php-cs-fixer": "3.95.12",
+    "phpstan/phpstan": "2.2.5"
+  },
+  "autoload": {
+    "psr-4": {
+      "Knossos\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Knossos\\Tests\\": "tests/"
+    }
+  },
+  "bin": [
+    "bin/knossos"
+  ],
+  "scripts": {
+    "lint": [
+      "find src bin workers/php/src workers/php/bin -type f -name '*.php' -print0 | xargs -0 -n1 php -l",
+      "php -l tests/run.php",
+      "php -l tests/Fixtures/workers/fake-worker.php",
+      "php -l tools/benchmark.php",
+      "php -l tools/generate-benchmark-corpus.php",
+      "php -l tools/mutation-test.php",
+      "php -l tools/generate-reference.php",
+      "php -l tools/documentation-check.php",
+      "php -l tools/maintainability-report.php",
+      "php -l tools/api-documentation-check.php",
+      "php -l tools/supply-chain-report.php",
+      "php -l tools/scanner-conformance"
+    ],
+    "test": "php tests/run.php",
+    "check": [
+      "@composer validate --strict",
+      "composer --working-dir=workers/php validate --strict",
+      "npm --prefix workers/typescript run check",
+      "@lint",
+      "@test"
+    ]
+  },
+  "config": {
+    "sort-packages": true
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

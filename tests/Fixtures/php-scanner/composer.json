@@ -1,0 +1,9 @@
+{
+  "name": "knossos/php-scanner-fixture",
+  "autoload": {
+    "psr-4": {
+      "Fixture\\": "src/"
+    }
+  }
+}
+

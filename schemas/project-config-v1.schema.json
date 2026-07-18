@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knossos.local/schemas/project-config-v1.schema.json",
+  "title": "Knossos project configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "ignores": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_files": { "type": "integer", "minimum": 1, "maximum": 100000 },
+        "max_file_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000000
+        },
+        "worker_timeout_ms": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 120000
+        }
+      }
+    },
+    "boundaries": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "path_prefix": { "type": "string" },
+          "namespace_prefix": { "type": "string" }
+        },
+        "anyOf": [
+          { "required": ["path_prefix"] },
+          { "required": ["namespace_prefix"] }
+        ]
+      }
+    },
+    "frameworks": {
+      "type": "array",
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "laravel",
+          "symfony",
+          "django",
+          "fastapi",
+          "nextjs",
+          "nestjs",
+          "react",
+          "vue"
+        ]
+      }
+    },
+    "snapshot_retention": { "type": "integer", "minimum": 0, "maximum": 20 },
+    "policies": {
+      "type": "array",
+      "maxItems": 50,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "from_boundary"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "from_boundary": { "type": "string", "minLength": 1 },
+          "allow_targets": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "deny_targets": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "edge_kinds": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "anyOf": [
+          { "required": ["allow_targets"] },
+          { "required": ["deny_targets"] }
+        ]
+      }
+    },
+    "quality_budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "new_cycles": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "boundary_violations": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "error_diagnostics": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "warning_diagnostics": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "hub_degree_growth": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "unreferenced_candidates": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "public_surface_changes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        }
+      }
+    }
+  }
+}

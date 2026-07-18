@@ -1,0 +1,5 @@
+{
+  "name": "knossos-nest-fixture",
+  "private": true,
+  "dependencies": {"@nestjs/common": "fixture"}
+}

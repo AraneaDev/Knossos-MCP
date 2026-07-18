@@ -1,0 +1,12 @@
+[run]
+branch = True
+parallel = True
+source = workers/python/bin
+
+[report]
+fail_under = 90
+show_missing = True
+skip_covered = False
+
+[xml]
+output = coverage/python/cobertura.xml

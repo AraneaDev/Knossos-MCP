@@ -1,0 +1,22 @@
+{
+  "name": "knossos-mcp/php-scanner",
+  "description": "Isolated PHP AST scanner worker for Knossos",
+  "type": "project",
+  "license": "proprietary",
+  "require": {
+    "php": ">=8.3 <8.5",
+    "ext-json": "*",
+    "nikic/php-parser": "^5.7"
+  },
+  "autoload": {
+    "psr-4": {
+      "KnossosPhpScanner\\": "src/"
+    }
+  },
+  "bin": [
+    "bin/worker"
+  ],
+  "config": {
+    "sort-packages": true
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "../../schemas/project-config-v1.schema.json",
+  "version": 1,
+  // Project settings are lower precedence than explicit CLI/MCP arguments.
+  "ignores": ["ignored/**"],
+  "limits": {
+    "max_files": 100,
+    "max_file_bytes": 100000,
+    "worker_timeout_ms": 40000
+  },
+  "boundaries": [
+    {
+      "name": "Configured Source",
+      "path_prefix": "src/"
+    }
+  ],
+  "frameworks": ["symfony"],
+  "snapshot_retention": 2,
+  "policies": [
+    {
+      "id": "source-isolation",
+      "from_boundary": "Configured Source",
+      "deny_targets": ["@unassigned"]
+    }
+  ],
+  "quality_budgets": {
+    "new_cycles": 0,
+    "error_diagnostics": 0
+  }
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "feature_description": "add checkout payment service",
+    "expected_boundary": "Backend"
+  },
+  {
+    "feature_description": "build invoice billing workflow",
+    "expected_boundary": "Billing"
+  }
+]

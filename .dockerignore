@@ -1,0 +1,12 @@
+.git
+.agents
+.codex
+.knossos
+coverage
+vendor
+node_modules
+workers/php/vendor
+workers/typescript/node_modules
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

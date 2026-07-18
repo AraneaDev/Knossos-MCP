@@ -1,0 +1,1 @@
+ALTER TABLE files ADD COLUMN line_count INTEGER NOT NULL DEFAULT 0 CHECK (line_count >= 0);

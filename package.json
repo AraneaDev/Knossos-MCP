@@ -1,0 +1,22 @@
+{
+  "name": "knossos-mcp-quality",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint:js": "eslint workers/typescript/bin workers/typescript/src",
+    "format:check": "prettier --check \"**/*.{js,json,jsonc,yaml,yml,md}\"",
+    "format:write": "prettier --write \"**/*.{js,json,jsonc,yaml,yml,md}\"",
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#vendor/**\" \"#node_modules/**\" \"#workers/**/vendor/**\" \"#workers/**/node_modules/**\""
+  },
+  "devDependencies": {
+    "@eslint/js": "latest",
+    "c8": "11.0.0",
+    "eslint": "latest",
+    "markdownlint-cli2": "0.23.0",
+    "prettier": "latest"
+  },
+  "engines": {
+    "node": ">=22 <25"
+  }
+}

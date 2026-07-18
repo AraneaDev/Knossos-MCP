@@ -1,0 +1,15 @@
+vendor/
+/.phpunit.cache/
+/.mypy_cache/
+/.ruff_cache/
+node_modules/
+/coverage/
+/.knossos/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.php-cs-fixer.cache
+__pycache__/
+*.pyc
+.claude/settings.local.json
+.claude/settings.local.json.*

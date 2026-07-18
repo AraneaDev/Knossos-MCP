@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://knossos.local/schemas/graph-bundle-v1.schema.json",
+  "title": "Knossos portable graph bundle v1 (decompressed)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest", "payload"],
+  "properties": {
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "version",
+        "redaction",
+        "checksum",
+        "uncompressed_bytes",
+        "fact_count",
+        "created_at"
+      ],
+      "properties": {
+        "format": { "const": "knossos.graph.bundle" },
+        "version": { "const": 1 },
+        "redaction": { "enum": ["none", "paths", "strict"] },
+        "checksum": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "uncompressed_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 50000000
+        },
+        "fact_count": { "type": "integer", "minimum": 0, "maximum": 200000 },
+        "created_at": { "type": ["string", "null"] }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_name",
+        "scan",
+        "files",
+        "nodes",
+        "edges",
+        "classifications",
+        "boundaries",
+        "memberships",
+        "diagnostics"
+      ],
+      "properties": {
+        "project_name": { "type": "string", "minLength": 1 },
+        "scan": { "type": "object" },
+        "files": { "type": "array", "items": { "type": "object" } },
+        "nodes": { "type": "array", "items": { "type": "object" } },
+        "edges": {
+          "description": "Occurrence-level edges; repeated source/target/kind relations have distinct evidence-backed IDs.",
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "classifications": { "type": "array", "items": { "type": "object" } },
+        "boundaries": { "type": "array", "items": { "type": "object" } },
+        "memberships": { "type": "array", "items": { "type": "object" } },
+        "diagnostics": { "type": "array", "items": { "type": "object" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+# Debian package versions are supplied by the digest-pinned Bookworm base image;
+# exact apt revision pins would make security rebuilds brittle.
+ignored:
+  - DL3008
+  # The development-only quality stage needs root access to the mounted Docker
+  # socket; the runtime stage remains unprivileged.
+  - DL3002
+  # Separate dependency layers intentionally maximize Composer/npm cache reuse.
+  - DL3059
+  # PHPIZE_DEPS is intentionally expanded into an apt package list.
+  - SC2086

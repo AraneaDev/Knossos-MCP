@@ -1,0 +1,69 @@
+#!/bin/sh
+set -eu
+
+profile="${1:-fast}"
+if [ "$profile" != "fast" ] && [ "$profile" != "full" ]; then
+    echo "usage: tools/quality [fast|full]" >&2
+    exit 64
+fi
+
+composer validate --strict
+composer --working-dir=workers/php validate --strict
+composer install --dry-run --no-interaction --no-scripts
+npm ci --dry-run --ignore-scripts --no-audit --no-fund
+npm --prefix workers/typescript ci --dry-run --ignore-scripts --no-audit --no-fund
+
+composer lint
+vendor/bin/php-cs-fixer check --using-cache=no --allow-risky=yes --sequential
+vendor/bin/phpstan analyse --no-progress --debug --memory-limit=512M
+npm run lint:js
+npm run format:check
+npm run lint:md
+ruff check workers/python/bin/worker.py
+ruff format --check workers/python/bin/worker.py
+mypy workers/python/bin/worker.py
+php tools/repository-check.php
+php tools/generate-reference.php --check
+php tools/documentation-check.php
+php tools/maintainability-report.php
+php tools/api-documentation-check.php
+if command -v pre-commit >/dev/null 2>&1; then
+    pre-commit validate-config .pre-commit-config.yaml
+elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
+    echo "pre-commit is required in the quality container" >&2
+    exit 1
+fi
+
+if command -v shellcheck >/dev/null 2>&1; then
+    shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark tools/mutation-test \
+        tools/release-lifecycle tools/supply-chain
+elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
+    echo "shellcheck is required in the quality container" >&2
+    exit 1
+fi
+
+if command -v hadolint >/dev/null 2>&1; then
+    hadolint Dockerfile
+elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
+    echo "hadolint is required in the quality container" >&2
+    exit 1
+fi
+
+composer test
+
+if [ "$profile" = "full" ]; then
+    composer audit --locked --no-interaction
+    npm audit --audit-level=high
+    npm --prefix workers/typescript audit --audit-level=high
+    php tools/documentation-check.php --external
+    npm_config_cache=/tmp/knossos-inspector-cache npx -y @modelcontextprotocol/inspector@0.21.2 --cli \
+        php /opt/knossos/bin/knossos serve --allow-root=/opt/knossos \
+        --db=/tmp/knossos-inspector.sqlite --method tools/list
+    docker build --target runtime -t knossos-mcp:quality-runtime .
+    docker run --rm knossos-mcp:quality-runtime doctor --json
+    tools/release-lifecycle
+    tools/supply-chain
+    tools/benchmark
+    tools/mutation-test
+    tools/coverage
+fi

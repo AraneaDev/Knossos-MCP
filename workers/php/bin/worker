@@ -1,0 +1,14 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+$autoload = dirname(__DIR__) . '/vendor/autoload.php';
+if (!is_file($autoload)) {
+    fwrite(STDERR, "PHP scanner dependencies are not installed.\n");
+    exit(1);
+}
+require $autoload;
+
+exit((new KnossosPhpScanner\WorkerServer())->run());
+
