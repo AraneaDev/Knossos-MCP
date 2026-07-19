@@ -4422,6 +4422,22 @@ $tests['serve refuses to start without an explicit allowed root'] = static funct
 };
 $testGroups['serve refuses to start without an explicit allowed root'] = 'cli';
 
+$tests['committed MCP registration is portable and explicitly scoped'] = static function (): void {
+    $path = dirname(__DIR__) . '/.mcp.json';
+    $config = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+
+    $server = $config['mcpServers']['knossos'];
+    assertSame('php', $server['command']);
+    assertSame(['bin/knossos', 'serve', '--allow-root=.'], $server['args']);
+
+    foreach ($server['args'] as $argument) {
+        assertSame(false, str_contains($argument, '/root/'));
+        assertSame(false, str_starts_with($argument, '/'));
+        assertSame(false, str_contains($argument, ':\\'));
+    }
+};
+$testGroups['committed MCP registration is portable and explicitly scoped'] = 'cli';
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;

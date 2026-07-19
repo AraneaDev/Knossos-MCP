@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "knossos": {
+      "command": "php",
+      "args": ["bin/knossos", "serve", "--allow-root=."]
+    }
+  }
+}
