@@ -16,6 +16,7 @@ use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Discovery\JsonConfig;
 use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Discovery\RootGuard;
 use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
 use Knossos\Git\ProcessGitHistoryProvider;
@@ -4391,6 +4392,35 @@ $tests['tool descriptions are intent-first, not jargon-first'] = static function
     }
 };
 $testGroups['tool descriptions are intent-first, not jargon-first'] = 'bundle';
+
+$tests['RootGuard resolves relative allowed roots against the working directory'] = static function (): void {
+    $guard = new RootGuard(['.']);
+    assertSame(str_replace('\\', '/', (string) realpath(getcwd())), $guard->resolve('.'));
+
+    $parent = new RootGuard(['..']);
+    $resolved = $parent->resolve(dirname(__DIR__));
+    assertSame(str_replace('\\', '/', (string) realpath(dirname(__DIR__))), $resolved);
+
+    $narrow = new RootGuard([dirname(__DIR__) . '/src']);
+    assertThrows(static fn() => $narrow->resolve(dirname(__DIR__) . '/tests'), DiscoveryException::class);
+};
+$testGroups['RootGuard resolves relative allowed roots against the working directory'] = 'cli';
+
+$tests['serve refuses to start without an explicit allowed root'] = static function (): void {
+    $binary = dirname(__DIR__) . '/bin/knossos';
+    $previous = getenv('KNOSSOS_ALLOWED_ROOTS');
+    putenv('KNOSSOS_ALLOWED_ROOTS');
+    try {
+        [$exit, , $stderr] = runFixtureCommandOutput([PHP_BINARY, $binary, 'serve']);
+        assertSame(2, $exit);
+        assertContains('--allow-root', $stderr);
+    } finally {
+        if (is_string($previous)) {
+            putenv('KNOSSOS_ALLOWED_ROOTS=' . $previous);
+        }
+    }
+};
+$testGroups['serve refuses to start without an explicit allowed root'] = 'cli';
 
 $failed = 0;
 $executed = 0;
