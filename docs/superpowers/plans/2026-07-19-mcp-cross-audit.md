@@ -14,6 +14,7 @@
 - Branch: `dogfeed/mcp-cross-audit` in Knossos; create `dogfeed/knossos-audit` in Chaos-MCP before writing anything there.
 - JSON and YAML files are indented **2 spaces** (`.editorconfig` `[*.{json,yaml,yml}]`). PHP and everything else is 4.
 - All of `**/*.{js,json,jsonc,yaml,yml,md}` is prettier-checked by `npm run format:check`. Every file created here must pass it.
+- **Do not copy indentation out of this plan's code fences.** Prettier formats JSON and YAML embedded in a `.md` file using the markdown 4-space rule, so the blocks below display at 4 spaces. The real `.json` and `.yml` files must be written at 2 spaces. Write the file, then run `npx --no-install prettier --write <file>` and let it settle the indentation.
 - `tools/repository-check.php` parses every `.json` file in the repo and rejects CR line endings and secret-shaped strings. Use LF only.
 - The Dockerfile's **final stage is `quality`, not `runtime`**. Every compose service MUST declare `target: runtime` explicitly or it builds the wrong image.
 - Tests are added to `tests/run.php` as `$tests['name'] = static function (): void { ... };` with an optional `$testGroups['name'] = 'group';`. Assertions available: `assertSame`, `assertNotSame`, `assertContains`, `assertArrayContains`, `assertThrows`, `captureThrows`.
