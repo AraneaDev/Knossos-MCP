@@ -4542,6 +4542,28 @@ $tests['compose resolved ports are loopback-only across every profile'] = static
 };
 $testGroups['compose resolved ports are loopback-only across every profile'] = 'cli';
 
+$tests['architecture-summary --json emits exactly one JSON document'] = static function (): void {
+    $root = dirname(__DIR__);
+    [$scanExit, $scanOut] = runFixtureCommandOutput([
+        PHP_BINARY, $root . '/bin/knossos', 'scan', $root . '/tests/Fixtures/php-scanner', '--json',
+    ]);
+    assertSame(0, $scanExit);
+    $scan = json_decode(trim($scanOut), true, 512, JSON_THROW_ON_ERROR);
+
+    [$exit, $stdout] = runFixtureCommandOutput([
+        PHP_BINARY, $root . '/bin/knossos', 'architecture-summary', $scan['project_id'], '--json',
+    ]);
+    assertSame(0, $exit);
+
+    // The payload must decode. Two concatenated documents make json_decode fail.
+    $decoded = json_decode(trim($stdout), true, 512, JSON_THROW_ON_ERROR);
+    assertSame($scan['project_id'], $decoded['project_id']);
+
+    // And it must be one line, like every other --json query command.
+    assertSame(1, count(array_filter(explode("\n", trim($stdout)), static fn(string $l): bool => trim($l) !== '')));
+};
+$testGroups['architecture-summary --json emits exactly one JSON document'] = 'cli';
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
