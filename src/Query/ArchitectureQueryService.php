@@ -19,6 +19,7 @@ final readonly class ArchitectureQueryService
     private ArchitectureContextService $contextQueries;
     private DiagramExportService $diagramQueries;
     private FileMetricsQueryService $fileMetricsQueries;
+    private StalenessProbe $stalenessProbe;
 
     public function __construct(
         PDO $pdo,
@@ -26,6 +27,7 @@ final readonly class ArchitectureQueryService
         ?SemanticRanker $semanticRanker = null,
         ?GitHistoryProvider $gitHistory = null,
         ?GitWorkingTreeProvider $gitWorkingTree = null,
+        ?Closure $wallClock = null,
     ) {
         $this->policyQueries = new ArchitecturePolicyQueryService($pdo, $clock, $semanticRanker);
         $this->topologyQueries = new GraphTopologyQueryService($pdo, $clock);
@@ -48,6 +50,13 @@ final readonly class ArchitectureQueryService
         );
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
+        $this->stalenessProbe = new StalenessProbe($pdo, $wallClock);
+    }
+
+    /** @return array<string, mixed>|null */
+    public function staleness(string $projectId): ?array
+    {
+        return $this->stalenessProbe->probe($projectId);
     }
 
     public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope

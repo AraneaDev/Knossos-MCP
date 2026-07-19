@@ -31,6 +31,10 @@ final class ServeCommand implements CliCommand
         if ($allowedRoots === []) {
             throw new InvalidArgumentException('serve requires at least one --allow-root=PATH or KNOSSOS_ALLOWED_ROOTS.');
         }
+        $enricher = new \Knossos\Mcp\ResultEnricher(
+            new \Knossos\Query\StalenessProbe($context->database()),
+            new \Knossos\Mcp\NextStepPlanner(),
+        );
         $tools = new ToolService(
             new ProjectScanService($context->database(), $context->installationRoot(), $allowedRoots),
             new ArchitectureQueryService(
@@ -39,6 +43,7 @@ final class ServeCommand implements CliCommand
                 gitWorkingTree: new \Knossos\Git\ProcessGitWorkingTreeProvider(),
             ),
             $context->maintenance(),
+            $enricher,
         );
         return (new StdioServer($tools))->run(STDIN, STDOUT, STDERR);
     }

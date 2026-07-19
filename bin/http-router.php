@@ -40,10 +40,15 @@ $token = is_string($tokenValue) && $tokenValue !== '' ? $tokenValue : null;
 
 $runtime = new RuntimeFactory(dirname(__DIR__));
 $pdo = $runtime->database();
+$enricher = new \Knossos\Mcp\ResultEnricher(
+    new \Knossos\Query\StalenessProbe($pdo),
+    new \Knossos\Mcp\NextStepPlanner(),
+);
 $tools = new ToolService(
     new ProjectScanService($pdo, $runtime->installationRoot(), $allowedRoots),
     new ArchitectureQueryService($pdo, gitHistory: new ProcessGitHistoryProvider()),
     new DatabaseMaintenanceService($pdo, $runtime->defaultDatabasePath()),
+    $enricher,
 );
 $endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), $allowedHosts, $allowedOrigins, $token);
 $headers = function_exists('getallheaders') ? getallheaders() : [];

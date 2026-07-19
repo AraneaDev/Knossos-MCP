@@ -18,6 +18,7 @@ $tools = new ToolService(
     new ProjectScanService($pdo, $root, [$root]),
     new ArchitectureQueryService($pdo),
     new DatabaseMaintenanceService($pdo, ':memory:'),
+    new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
 );
 
 $process = proc_open([PHP_BINARY, $root . '/bin/knossos', 'help'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $root);

@@ -1994,6 +1994,7 @@ $tests['snapshot diff reports bounded architectural changes and rename heuristic
         new ProjectScanService($pdo, dirname(__DIR__), [__DIR__ . '/Fixtures/mixed']),
         $queries,
         new DatabaseMaintenanceService($pdo, ':memory:'),
+        new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
     );
     assertSame($next, $tools->call('snapshot_diff', [
         'project_id' => $ids['project'], 'from_snapshot' => $ids['scan'],
@@ -3766,6 +3767,7 @@ $tests['protocol byte caps and stable tool diagnostics contain floods'] = static
         new ProjectScanService($pdo, dirname(__DIR__), [$root]),
         new ArchitectureQueryService($pdo),
         new DatabaseMaintenanceService($pdo, ':memory:'),
+        new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
     );
 
     $input = fopen('php://temp', 'r+');
@@ -3830,6 +3832,7 @@ $tests['tool service dispatches every architecture query and rejects malformed a
         new ProjectScanService($pdo, dirname(__DIR__), [__DIR__ . '/Fixtures/mixed']),
         new ArchitectureQueryService($pdo),
         new DatabaseMaintenanceService($pdo, ':memory:'),
+        new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
     );
     $calls = [
         ['find_component', ['project_id' => $ids['project'], 'name' => 'Checkout']],
@@ -3879,6 +3882,7 @@ $tests['stdio run loop contains malformed frames notifications and response caps
         new ProjectScanService($pdo, dirname(__DIR__), [__DIR__ . '/Fixtures/mixed']),
         new ArchitectureQueryService($pdo),
         new DatabaseMaintenanceService($pdo, ':memory:'),
+        new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
     );
     $input = fopen('php://temp', 'w+');
     $output = fopen('php://temp', 'w+');
@@ -3972,6 +3976,7 @@ $tests['seeded JSON-RPC message shapes return bounded protocol responses'] = sta
         new ProjectScanService($pdo, dirname(__DIR__), [__DIR__ . '/Fixtures/mixed']),
         new ArchitectureQueryService($pdo),
         new DatabaseMaintenanceService($pdo, ':memory:'),
+        new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
     );
     $server = new StdioServer($tools, maxResponseBytes: 4096);
     $templates = [
@@ -4006,6 +4011,7 @@ $tests['Streamable HTTP endpoint enforces sessions origin auth and protocol caps
         new ProjectScanService($pdo, dirname(__DIR__), [$root]),
         new ArchitectureQueryService($pdo),
         new DatabaseMaintenanceService($pdo, ':memory:'),
+        new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
     );
     $store = new HttpSessionStore($pdo, ttlSeconds: 60, maxSessions: 4);
     $endpoint = new HttpEndpoint(
@@ -4324,6 +4330,32 @@ $tests['ResultEnricher keeps all evidence in full verbosity'] = static function 
     assertSame('full', $out['meta']['verbosity']);
     assertSame(false, array_key_exists('next_steps', $out)); // summary has no suggestions
 };
+
+$tests['ToolService rejects an invalid verbosity'] = static function (): void {
+    [$tools, , $root] = buildToolServiceWithScan('php-scanner');
+    try {
+        assertThrows(
+            static fn() => $tools->call('architecture_summary', ['project_id' => 'x', 'verbosity' => 'loud']),
+            InvalidArgumentException::class,
+        );
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['ToolService rejects an invalid verbosity'] = 'bundle';
+
+$tests['ToolService enriches query results with staleness and meta'] = static function (): void {
+    [$tools, $projectId, $root] = buildToolServiceWithScan('php-scanner');
+    try {
+        $envelope = $tools->call('architecture_summary', ['project_id' => $projectId]);
+        $json = $envelope->jsonSerialize();
+        assertSame('compact', $json['meta']['verbosity']);
+        assertArrayContains($json['staleness']['state'], ['fresh', 'stale']); // scanned, so not missing
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['ToolService enriches query results with staleness and meta'] = 'bundle';
 
 $failed = 0;
 $executed = 0;
@@ -4723,6 +4755,22 @@ function scanTempFixture(string $fixture): array
     $pdo = freshTestDatabase();
     $result = (new ProjectScanService($pdo, dirname(__DIR__), [$root]))->scan($root);
     return [$pdo, $result->projectId, $root];
+}
+
+/** @return array{0: ToolService, 1: string, 2: string} [tools, projectId, absoluteRoot] */
+function buildToolServiceWithScan(string $fixture): array
+{
+    [$pdo, $projectId, $root] = scanTempFixture($fixture);
+    $tools = new ToolService(
+        new ProjectScanService($pdo, dirname(__DIR__), [$root]),
+        new ArchitectureQueryService($pdo),
+        new DatabaseMaintenanceService($pdo, ':memory:'),
+        new \Knossos\Mcp\ResultEnricher(
+            new \Knossos\Query\StalenessProbe($pdo),
+            new \Knossos\Mcp\NextStepPlanner(),
+        ),
+    );
+    return [$tools, $projectId, $root];
 }
 
 function copyTree(string $from, string $to): void

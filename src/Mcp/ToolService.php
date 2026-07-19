@@ -17,6 +17,7 @@ final readonly class ToolService
         private ProjectScanService $scanner,
         private ArchitectureQueryService $queries,
         private DatabaseMaintenanceService $maintenance,
+        private ResultEnricher $enricher,
     ) {}
 
     /** @return list<array<string, mixed>> */
@@ -495,6 +496,21 @@ final readonly class ToolService
 
     /** @param array<string, mixed> $arguments */
     public function call(string $name, array $arguments, ?CancellationToken $cancellation = null): ResultEnvelope
+    {
+        $verbosity = 'compact';
+        if (array_key_exists('verbosity', $arguments)) {
+            $verbosity = $arguments['verbosity'];
+            unset($arguments['verbosity']);
+            if ($verbosity !== 'compact' && $verbosity !== 'full') {
+                throw new InvalidArgumentException('verbosity must be "compact" or "full".');
+            }
+        }
+        $envelope = $this->dispatch($name, $arguments, $cancellation);
+        return $this->enricher->enrich($envelope, $name, $verbosity);
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function dispatch(string $name, array $arguments, ?CancellationToken $cancellation): ResultEnvelope
     {
         return match ($name) {
             'list_projects' => $this->projects($arguments),
