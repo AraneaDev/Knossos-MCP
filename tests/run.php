@@ -4268,6 +4268,30 @@ $tests['StalenessProbe reports fresh then stale after a file changes'] = static 
 };
 $testGroups['StalenessProbe reports fresh then stale after a file changes'] = 'bundle';
 
+$tests['NextStepPlanner suggests inspecting the top candidate on ambiguous find'] = static function (): void {
+    $envelope = new ResultEnvelope('p1', 's1', 'Found 2 candidates.', [
+        'candidates' => [
+            ['name' => 'App\\Checkout', 'score' => 0.9],
+            ['name' => 'App\\CheckoutController', 'score' => 0.7],
+        ],
+    ]);
+    $steps = (new \Knossos\Mcp\NextStepPlanner())->plan('find_component', $envelope);
+    assertSame('inspect_component', $steps[0]['tool']);
+    assertSame('App\\Checkout', $steps[0]['args']['component']);
+};
+
+$tests['NextStepPlanner suggests impact analysis after inspect'] = static function (): void {
+    $envelope = new ResultEnvelope('p1', 's1', 'Dossier.', ['component' => 'App\\Checkout']);
+    $steps = (new \Knossos\Mcp\NextStepPlanner())->plan('inspect_component', $envelope);
+    assertSame('impact_analysis', $steps[0]['tool']);
+    assertSame('App\\Checkout', $steps[0]['args']['symbol']);
+};
+
+$tests['NextStepPlanner caps at three and defaults to empty'] = static function (): void {
+    $empty = (new \Knossos\Mcp\NextStepPlanner())->plan('architecture_summary', new ResultEnvelope('p', 's', 'x', []));
+    assertSame([], $empty);
+};
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
