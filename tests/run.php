@@ -4434,6 +4434,55 @@ $tests['committed MCP registration is portable and explicitly scoped'] = static 
 };
 $testGroups['committed MCP registration is portable and explicitly scoped'] = 'cli';
 
+$tests['compose file pins the runtime stage and never exposes a public port'] = static function (): void {
+    $compose = (string) file_get_contents(dirname(__DIR__) . '/docker-compose.yml');
+
+    // The Dockerfile's final stage is `quality`; every service must pin `runtime`.
+    assertSame(1, substr_count($compose, 'target: runtime'));
+    assertSame(false, str_contains($compose, 'target: quality'));
+
+    // Ports may only ever be published to loopback.
+    assertContains('127.0.0.1:8080:8080', $compose);
+    assertSame(false, str_contains($compose, '0.0.0.0:8080:8080'));
+    assertSame(false, str_contains($compose, '- "8080:8080"'));
+
+    // Both server services are opt-in, so `docker compose up` starts nothing that listens.
+    assertContains('profiles:', $compose);
+    assertContains('- mcp', $compose);
+    assertContains('- http', $compose);
+
+    // Source is mounted read-only, and the HTTP token is required rather than defaulted.
+    assertContains('read_only: true', $compose);
+    assertContains('KNOSSOS_HTTP_BEARER_TOKEN:?', $compose);
+
+    // No absolute developer paths leak into a committed file.
+    assertSame(false, str_contains($compose, '/root/'));
+};
+$testGroups['compose file pins the runtime stage and never exposes a public port'] = 'cli';
+
+$tests['compose configuration parses and keeps servers behind profiles'] = static function (): void {
+    [$probeExit] = runFixtureCommandOutput(['docker', 'compose', 'version']);
+    if ($probeExit !== 0) {
+        return; // Docker is not available in this environment; the text test above still applies.
+    }
+
+    $root = dirname(__DIR__);
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN=test-token-not-a-secret');
+    [$exit, $stdout, $stderr] = runFixtureCommandOutput(
+        ['docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml', 'config', '--services'],
+    );
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+
+    if ($exit !== 0) {
+        throw new RuntimeException('docker compose config failed: ' . $stderr);
+    }
+
+    // Only the default-profile service is listed without --profile flags.
+    assertContains('knossos', $stdout);
+    assertSame(false, str_contains($stdout, 'knossos-http'));
+};
+$testGroups['compose configuration parses and keeps servers behind profiles'] = 'cli';
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
