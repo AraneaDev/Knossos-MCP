@@ -4211,6 +4211,30 @@ $tests['MCP stdio lifecycle lists tools and contains validation errors'] = stati
 };
 $testGroups['MCP stdio lifecycle lists tools and contains validation errors'] = 'query';
 
+$tests['ResultEnvelope omits enrichment keys until set'] = static function (): void {
+    $envelope = new ResultEnvelope('p1', 's1', 'sum', ['k' => 'v']);
+    $json = $envelope->jsonSerialize();
+    assertSame('sum', $json['summary']);
+    assertSame(false, array_key_exists('staleness', $json));
+    assertSame(false, array_key_exists('next_steps', $json));
+    assertSame(false, array_key_exists('meta', $json));
+};
+
+$tests['ResultEnvelope with() attaches enrichment'] = static function (): void {
+    $base = new ResultEnvelope('p1', 's1', 'sum', ['k' => 'v'], [['file' => 'a.php']]);
+    $enriched = $base->with(
+        staleness: ['state' => 'fresh', 'scanned_at' => '2026-07-19T00:00:00Z', 'age_seconds' => 10],
+        nextSteps: [['tool' => 'inspect_component', 'args' => ['component' => 'X'], 'why' => 'drill in']],
+        meta: ['result_bytes' => 123, 'verbosity' => 'compact'],
+    );
+    $json = $enriched->jsonSerialize();
+    assertSame('fresh', $json['staleness']['state']);
+    assertSame('inspect_component', $json['next_steps'][0]['tool']);
+    assertSame(123, $json['meta']['result_bytes']);
+    // original is unchanged (readonly clone)
+    assertSame(false, array_key_exists('staleness', $base->jsonSerialize()));
+};
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
