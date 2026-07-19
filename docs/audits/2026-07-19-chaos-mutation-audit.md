@@ -11,20 +11,23 @@ No Knossos source was modified, and no engine was installed or downgraded to mak
 
 All timings are wall-clock, measured inside a single stdio JSON-RPC client process
 (spawn server → `initialize` → `tools/call`). Server start-up is ~0.14 s and is included in
-every number, so 0.14 s is the measurement floor.
+every number, so 0.14 s is the measurement floor. The three audit timings and the control
+were re-measured after an initial single-shot pass; every one of them depends on disk copy
+speed and the npm cache, so they are reported as observed ranges with a sample count, not as
+precise figures. Only their order of magnitude is load-bearing.
 
-| #   | Call                    | Arguments                                                                 | Workspace | Wall-clock | Outcome                                 |
-| --- | ----------------------- | ------------------------------------------------------------------------- | --------- | ---------- | --------------------------------------- |
-| 1   | `estimate_audit`        | `filePath: /root/Chaos-MCP/src/gate.ts`                                   | Knossos   | < 0.1 s    | Rejected: path outside workspace        |
-| 2   | `estimate_audit`        | `filePath: src/gate.ts`                                                   | Chaos-MCP | 0.14 s     | OK — 35 mutants (control)               |
-| 3   | `audit_code_resilience` | `src/gate.ts`, `lineScope 1–40`, `timeoutMs 300000`                       | Chaos-MCP | 139.75 s   | OK — 39/39 killed, 100 % (control)      |
-| 4   | `estimate_audit`        | `src/Discovery/RootGuard.php`                                             | Knossos   | 0.15 s     | OK — 24 mutants                         |
-| 5   | `estimate_audit`        | `src/Discovery/RootGuard.php`, `withTiming: true`                         | Knossos   | 1.01 s     | OK — 24 mutants, `(timing unavailable)` |
-| 6   | `audit_code_resilience` | `src/Discovery/RootGuard.php`, `timeoutMs 240000`                         | Knossos   | 1.03 s     | Halted — no PHPUnit config              |
-| 7   | `estimate_audit`        | `workers/typescript/src/scanner.js`                                       | Knossos   | 0.14 s     | OK — 564 mutants                        |
-| 8   | `audit_code_resilience` | `workers/typescript/src/scanner.js`, `lineScope 1–60`, `timeoutMs 240000` | Knossos   | 2.50 s     | Halted — StrykerJS not installed        |
-| 9   | `estimate_audit`        | `workers/python/bin/worker.py`                                            | Knossos   | 0.14 s     | OK — 425 mutants                        |
-| 10  | `audit_code_resilience` | `workers/python/bin/worker.py`, `timeoutMs 240000`                        | Knossos   | 1.74 s     | Halted — cosmic-ray baseline            |
+| #   | Call                    | Arguments                                                                 | Workspace | Wall-clock       | Outcome                                 |
+| --- | ----------------------- | ------------------------------------------------------------------------- | --------- | ---------------- | --------------------------------------- |
+| 1   | `estimate_audit`        | `filePath: /root/Chaos-MCP/src/gate.ts`                                   | Knossos   | < 0.1 s          | Rejected: path outside workspace        |
+| 2   | `estimate_audit`        | `filePath: src/gate.ts`                                                   | Chaos-MCP | 0.14 s           | OK — 35 mutants (control)               |
+| 3   | `audit_code_resilience` | `src/gate.ts`, `lineScope 1–40`, `timeoutMs 300000`                       | Chaos-MCP | ~133–140 s (n=2) | OK — 39/39 killed, 100 % (control)      |
+| 4   | `estimate_audit`        | `src/Discovery/RootGuard.php`                                             | Knossos   | 0.15 s           | OK — 24 mutants                         |
+| 5   | `estimate_audit`        | `src/Discovery/RootGuard.php`, `withTiming: true`                         | Knossos   | 1.01 s           | OK — 24 mutants, `(timing unavailable)` |
+| 6   | `audit_code_resilience` | `src/Discovery/RootGuard.php`, `timeoutMs 240000`                         | Knossos   | ~1.0–1.6 s (n=5) | Halted — no PHPUnit config              |
+| 7   | `estimate_audit`        | `workers/typescript/src/scanner.js`                                       | Knossos   | 0.14 s           | OK — 564 mutants                        |
+| 8   | `audit_code_resilience` | `workers/typescript/src/scanner.js`, `lineScope 1–60`, `timeoutMs 240000` | Knossos   | ~1.2–2.5 s (n=5) | Halted — StrykerJS not installed        |
+| 9   | `estimate_audit`        | `workers/python/bin/worker.py`                                            | Knossos   | 0.14 s           | OK — 425 mutants                        |
+| 10  | `audit_code_resilience` | `workers/python/bin/worker.py`, `timeoutMs 240000`                        | Knossos   | ~1.7–4.1 s (n=5) | Halted — cosmic-ray baseline            |
 
 Call 1 established that the MCP server's workspace is fixed to its process CWD
 (`rootCwd = resolve(process.cwd())`), so the control had to be run against a second server
@@ -46,16 +49,23 @@ Workspace sizes measured before any sandbox work:
 
 ## 2. Findings about Knossos
 
-**K1 — No engine could reach a single Knossos mutant.** Three languages, three different
-blockers, zero mutation data. Knossos's testability from the perspective of off-the-shelf
-mutation tooling is currently nil.
+**K1 — No off-the-shelf engine could reach a single Knossos mutant, and Knossos's own
+mutation coverage is confined to one file.** Three languages, three different blockers, zero
+mutation data from external tooling. Knossos is not, however, without mutation testing: it
+ships `tools/mutation-test.php`, a 97-line hand-rolled gate that applies eight hard-coded
+mutations and enforces the `minimum_msi` (90) in `benchmarks/mutation-score.json`. Its target
+list is a single hard-coded path, `src/Scanner/Protocol/RelativePath.php`. So the accurate
+statement is not "no mutation coverage exists" but "mutation coverage exists and covers
+exactly one of the repo's source files"; every other file in three languages remains
+un-mutated.
 
 **K2 — The PHP suite is invisible to standard tooling.** Knossos runs `php tests/run.php`, a
 custom closure-registering runner with no `phpunit.xml`, no `infection.json`, and no
 PHPUnit/Pest adapter. Infection 0.34.0 _is_ installed globally on this machine and pcov is
-present, so the only thing standing between Knossos and real PHP mutation data is an
-Infection config targeting the custom runner. That is a genuine, actionable gap — recorded
-here as an observation, not fixed, per this task's scope.
+present, so the only thing standing between Knossos and _repo-wide_ PHP mutation data is an
+Infection config targeting the custom runner. The bespoke `tools/mutation-test.php` gate (K1)
+already covers `RelativePath.php` by hand and would be superseded by such a config. That is a
+genuine, actionable gap — recorded here as an observation, not fixed, per this task's scope.
 
 **K3 — The TypeScript worker has no mutation tooling of its own.**
 `workers/typescript/package.json` declares `vitest ^3.2.0` and `@vitest/coverage-v8` but no
@@ -74,6 +84,29 @@ snapshots the workspace pays for it (see C3).
 
 ## 3. Findings about Chaos-MCP
 
+Identifiers are stable; the order below is the impact order, most impactful first.
+
+### C5 — `estimate_audit` recommends a decision it structurally cannot make
+
+This is the finding most likely to cost a user time repeatedly, because unlike the three
+engine errors it never announces that anything went wrong.
+
+All four estimates returned confident mutant counts (24 / 564 / 425) in ~0.15 s for files that
+no engine can actually mutate in this repo. The estimator is a pure source heuristic: it parses
+the target file, counts mutable constructs, and never touches the toolchain — it does not check
+whether an engine binary exists, whether a test runner is configured, or whether the suite runs.
+Its own tool description nevertheless positions it as the pre-flight step — "Use this before
+`audit_code_resilience` to decide whether to audit now, scope down, or skip" — and a skip
+decision is exactly the one it cannot support, because "should I audit this?" depends entirely
+on facts it never gathers. In this repo the tool's answer was "564 mutants, go ahead" for a
+package where the audit cannot start at all. A user trusting the estimate spends the audit's
+cost to learn that.
+
+The `withTiming: true` variant is the sharper version of the same problem: it _did_ try to
+measure a baseline, the baseline _did_ fail, and the entire report of that fact was the note
+suffix `(timing unavailable)` — no reason, no warning, no error, `isError` unset. At that
+moment Chaos held exactly the information the user needed and discarded it.
+
 ### C1 — PHP: excellent error, but paid for after the copy
 
 Verbatim:
@@ -90,7 +123,7 @@ or ship an Infection config (infection.json/infection.json5) that targets your f
   the dependency chain (Chaos → Infection → PHPUnit), infers the correct diagnosis ("this
   project appears to use a different or custom test runner"), and gives two valid remedies.
   This is the best error of the three and is worth recording as a good result.
-- **How long did the user wait?** 1.03 s.
+- **How long did the user wait?** ~1.0–1.6 s across five runs.
 - **Cheaper check available first?** Yes. The seven filenames were checked _inside the
   sandbox_, after a 123 MB copy. The identical check against the real workspace costs seven
   `existsSync` calls. Chaos already runs `isComposerPhpAudit()` on the real workspace before
@@ -112,8 +145,8 @@ due to missing packages and no YES option: ["stryker@1.0.1"]
   A reader would plausibly conclude Chaos wants a package called `stryker` at version 1.0.1.
   No remedy is suggested — the correct one is `npm i -D @stryker-mutator/core` in the target
   package.
-- **How long did the user wait?** 2.50 s. Fast, and the sandbox was only 1 MB (see C3), so the
-  cost of the wrong message is confusion, not time.
+- **How long did the user wait?** ~1.2–2.5 s across five runs. Fast, and the sandbox was only
+  1 MB (see C3), so the cost of the wrong message is confusion, not time.
 - **Cheaper check available first?** Yes, and trivially: Chaos already resolves the package
   root and already reads `node_modules/vitest/package.json` to detect the vitest major
   version. Reading `node_modules/@stryker-mutator/core/package.json` in the same pass would
@@ -132,7 +165,7 @@ Measured by polling `/tmp/chaos-mcp-*` at 0.4–0.5 s intervals during each run.
 | ---------- | ------------ | -------------- | -------------- | --------- | --------------------------------- |
 | PHP        | 123 MB       | symlinked      | copied (36 MB) | ~1 s      | none — halted before any test ran |
 | TypeScript | 1 MB         | symlinked      | n/a            | < 0.5 s   | none — halted at `npx`            |
-| Python     | 87 MB        | symlinked      | copied         | ~1 s      | none — halted at baseline         |
+| Python     | 87 MB        | symlinked      | symlinked      | ~1 s      | none — halted at baseline         |
 
 What Chaos gets right: `node_modules`, `.git`, `coverage`, `dist`, `build`, `.venv`,
 `__pycache__` are excluded or symlinked, including the _nested_
@@ -167,26 +200,12 @@ testing begins. Fix the failing tests first. Details: Command exited with code 1
   pytest's documented "no tests were collected" code, not a failure code. A user following
   this message would go hunting for a broken test that does not exist. The `Details:` field
   adds nothing (`Command exited with code 1: cosmic-ray`); cosmic-ray's stderr is discarded.
-- **How long did the user wait?** 1.74 s.
+- **How long did the user wait?** ~1.7–4.1 s across five runs.
 - **Cheaper check available first?** Yes, twice over. Chaos calls `findPythonTestSelection`
   and it returned empty — Chaos already _knew_ there were no test files and proceeded anyway.
   Failing at that point with "no Python test files found under tests/ or alongside the target"
   would be both faster and true. Separately, distinguishing pytest exit 5 from a real failure
   is a one-line classification.
-
-### C5 — `estimate_audit` is cheerful about repositories that cannot be audited
-
-All four estimates returned confident mutant counts (24 / 564 / 425) in ~0.15 s for files that
-no engine can actually mutate in this repo. The estimator is a pure source heuristic and never
-touches the toolchain, so it gives no signal about feasibility. The tool's own description
-positions it as the pre-flight step — "Use this before `audit_code_resilience` to decide
-whether to audit now, scope down, or skip" — but it cannot support a skip decision, because it
-never checks whether an engine could run.
-
-The `withTiming: true` variant is the sharper version of the same problem: it _did_ try to
-measure a baseline, the baseline _did_ fail, and the entire report of that fact was the note
-suffix `(timing unavailable)` — no reason, no warning, no error. At that moment Chaos held
-exactly the information the user needed and discarded it.
 
 ### C6 — Workspace scoping is enforced correctly and instantly
 
@@ -201,8 +220,9 @@ the control run required a second instance.
 
 ### C7 — Cleanup and workspace safety are sound
 
-After ten calls: `git status --short` is empty, no `/tmp/chaos-mcp-*` directories remain, and
-none of `.chaos-mcp/`, `.stryker-tmp/`, `chaos-cosmic-ray.toml`, `.chaos-infection-tmp/`, or a
+After ten calls: `git status --short` is empty, no per-run `/tmp/chaos-mcp-<uuid>` sandbox
+directories remain (the persistent `/tmp/chaos-mcp-runs` result cache does remain, by design,
+outside the repo), and none of `.chaos-mcp/`, `.stryker-tmp/`, `chaos-cosmic-ray.toml`, `.chaos-infection-tmp/`, or a
 generated `stryker.config.json` leaked into the real tree. Generated engine configs were
 observed inside the sandbox only. The "your real working tree is never touched" claim held
 under three engines and two failure modes.
@@ -215,8 +235,9 @@ blocker. Chaos detects the installed vitest major version by reading
 Stryker's built-in command runner when it sees vitest 3. The control run (call 3) audited
 Chaos's own vitest-3 codebase end to end and returned 39/39 mutants killed, so the
 incompatibility is mitigated in v1.2.4 and never became relevant to Knossos. The cost of the
-mitigation is visible, though: 139.75 s for 39 mutants on a small file, because the command
-runner re-runs a scoped test command per mutant with no coverage instrumentation.
+mitigation is visible, though: ~133–140 s for 39 mutants on a small file (roughly 3.5 s per
+mutant), because the command runner re-runs a scoped test command per mutant with no coverage
+instrumentation.
 
 **N2 — "Chaos tried to download `stryker@1.0.1` from the network."** Discarded. The npm text is
 alarming, but `src/engines/typescript.ts` passes `npx --no-install`, and the message
@@ -235,10 +256,11 @@ root 47 MB and the nested 63 MB), `.git`, and `coverage` were all confirmed abse
 symlinked into every sandbox. `vendor/` is copied only for Composer PHP targets and only for a
 documented correctness reason. The real waste is `.knossos/` (C3), which is a different claim.
 
-**N5 — "Chaos hung / needed to be timed out."** Discarded. No call approached the guard. The
-three Knossos audits returned in 1.03 s, 2.50 s, and 1.74 s; the slowest call in the whole
-exercise was the deliberate 139.75 s control against Chaos's own repo. Failing fast is a
-strength of this tool, and the `timeoutMs` bound was never exercised.
+**N5 — "Chaos hung / needed to be timed out."** Discarded, and the margin is the point: every
+one of the three engines halted in a small number of seconds — no Knossos audit exceeded ~4 s
+in any of the five runs each — while the deliberate control against Chaos's own repo took over
+two minutes. No call came near the guard. Failing fast is a strength of this tool, and the
+`timeoutMs` bound was never exercised.
 
 **N6 — "Chaos modified the Knossos worktree."** Investigated because the sandbox symlinks
 `node_modules` back into the real tree, which is a plausible write path. Nothing was written:
