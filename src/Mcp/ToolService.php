@@ -27,10 +27,11 @@ final readonly class ToolService
             [
                 'name' => 'list_projects',
                 'title' => 'List projects',
-                'description' => 'List persisted projects, active snapshots, freshness, and bounded graph counts.',
+                'description' => 'Start here to find a project_id. Lists scanned projects with freshness and graph size so you can pick the right project_id before any other call.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
                         'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
                         'include_roots' => ['type' => 'boolean', 'default' => false],
@@ -42,7 +43,7 @@ final readonly class ToolService
             [
                 'name' => 'scan_project',
                 'title' => 'Scan project',
-                'description' => 'Scan an allowed project root into the evidence-backed architecture graph.',
+                'description' => 'Build or refresh a project\'s architecture graph. Run this first for a new project, or when a query reports the graph is missing or stale.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -70,10 +71,11 @@ final readonly class ToolService
             [
                 'name' => 'list_snapshots',
                 'title' => 'List snapshots',
-                'description' => 'List the active scan and bounded immutable retained snapshot metadata.',
+                'description' => 'See a project\'s scan history. Use to find an older snapshot id to diff against or to check when it was last scanned.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
                         'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
@@ -86,10 +88,11 @@ final readonly class ToolService
             [
                 'name' => 'find_component',
                 'title' => 'Find component',
-                'description' => 'Find architecture components by canonical or display name with ranked ambiguity candidates.',
+                'description' => 'Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'name' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
@@ -102,10 +105,11 @@ final readonly class ToolService
             [
                 'name' => 'snapshot_diff',
                 'title' => 'Snapshot diff',
-                'description' => 'Compare retained or active snapshots and report a bounded architectural changelog.',
+                'description' => 'See what changed architecturally between two scans. Use after a rescan to review added/removed components and relationships instead of eyeballing a code diff.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'from_snapshot' => ['type' => 'string', 'minLength' => 1],
                         'to_snapshot' => ['type' => 'string', 'minLength' => 1, 'default' => 'active'],
@@ -119,10 +123,11 @@ final readonly class ToolService
             [
                 'name' => 'quality_gate',
                 'title' => 'Architecture quality gate',
-                'description' => 'Evaluate reviewed architecture budgets against a retained baseline and active graph.',
+                'description' => 'Check architecture budgets against a baseline in CI. Use to fail a build on regressions (new cycles, boundary breaks) rather than reviewing them by hand.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'baseline_snapshot' => ['type' => 'string', 'minLength' => 1],
                         'budgets' => ['type' => 'object', 'properties' => [
@@ -146,10 +151,11 @@ final readonly class ToolService
             [
                 'name' => 'architecture_trends',
                 'title' => 'Architecture trends',
-                'description' => 'Report bounded snapshot metrics and optional Markdown architecture release notes.',
+                'description' => 'See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 2, 'maximum' => 20, 'default' => 10],
                         'release_from' => ['type' => 'string', 'minLength' => 1],
@@ -162,10 +168,11 @@ final readonly class ToolService
             [
                 'name' => 'inspect_component',
                 'title' => 'Inspect component',
-                'description' => 'Return one component dossier with roles, boundaries, containment, relationships, and evidence.',
+                'description' => 'Get the full dossier for one component — its roles, boundary, containment, relationships, and evidence — in a single call. Faster than opening and cross-referencing several files by hand.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'component' => ['type' => 'string', 'minLength' => 1],
                         'max_relationships' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 25],
@@ -180,10 +187,11 @@ final readonly class ToolService
             [
                 'name' => 'architecture_summary',
                 'title' => 'Architecture summary',
-                'description' => 'Summarize the active architecture snapshot by language, node kind, and relationship kind.',
+                'description' => 'Get a one-call overview of the codebase by language, node kind, and relationship kind. Use to orient yourself in an unfamiliar project before drilling in.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
                     ],
@@ -196,10 +204,11 @@ final readonly class ToolService
             [
                 'name' => 'explain_flow',
                 'title' => 'Explain flow',
-                'description' => 'Find and explain bounded, evidence-backed plausible static paths between two components.',
+                'description' => 'Answer \'how does A reach B?\' Traces evidence-backed static paths between two components — more reliable than grepping call sites across layers.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'from' => ['type' => 'string', 'minLength' => 1],
                         'to' => ['type' => 'string', 'minLength' => 1],
@@ -217,10 +226,11 @@ final readonly class ToolService
             [
                 'name' => 'impact_analysis',
                 'title' => 'Impact analysis',
-                'description' => 'Find a bounded conservative static blast radius by traversing dependencies in reverse.',
+                'description' => 'Before editing a symbol, find everything that depends on it. Answers \'what breaks if I change this?\' by following real static references, so it is more complete than grepping for callers.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'symbol' => ['type' => 'string', 'minLength' => 1],
                         'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 8, 'default' => 4],
@@ -237,10 +247,11 @@ final readonly class ToolService
             [
                 'name' => 'dependency_cycles',
                 'title' => 'Dependency cycles',
-                'description' => 'Find bounded, evidence-backed strongly connected components in the static dependency graph.',
+                'description' => 'Find circular dependencies. Use before a refactor to see which modules are tangled, instead of tracing imports by hand.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
@@ -257,10 +268,11 @@ final readonly class ToolService
             [
                 'name' => 'architecture_health',
                 'title' => 'Architecture health',
-                'description' => 'Rank bounded static hubs, structural hotspots, and uncertain unreferenced-code candidates.',
+                'description' => 'Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cleanup or extra test coverage pays off most.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
@@ -277,10 +289,11 @@ final readonly class ToolService
             [
                 'name' => 'check_architecture',
                 'title' => 'Check architecture policies',
-                'description' => 'Evaluate strict declared boundary dependency policies against the bounded static graph.',
+                'description' => 'Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'policies' => [
                             'type' => 'array', 'minItems' => 1, 'maxItems' => 50,
@@ -311,10 +324,11 @@ final readonly class ToolService
             [
                 'name' => 'suggest_location',
                 'title' => 'Suggest location',
-                'description' => 'Deterministically rank existing boundaries for a feature using lexical evidence and dependency cohesion.',
+                'description' => 'Decide where new code for a feature belongs. Ranks existing boundaries by lexical and dependency fit so a new file lands in a cohesive place.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'feature_description' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 2000],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 20, 'default' => 5],
@@ -331,10 +345,11 @@ final readonly class ToolService
             [
                 'name' => 'change_impact',
                 'title' => 'Change-aware impact',
-                'description' => 'Blend bounded reverse static impact with recent read-only Git file change signals.',
+                'description' => 'Blend static blast radius with recent Git churn to prioritize review. Use when you want risk-ranked impact, not just a reachable-set list.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'symbol' => ['type' => 'string', 'minLength' => 1],
                         'since_days' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 3650, 'default' => 90],
@@ -353,10 +368,11 @@ final readonly class ToolService
             [
                 'name' => 'changed_files_impact',
                 'title' => 'Changed files impact',
-                'description' => 'Map explicit files or an opt-in read-only Git diff to direct and statically impacted components.',
+                'description' => 'Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
                         'working_tree' => ['type' => 'boolean', 'default' => false],
@@ -375,10 +391,11 @@ final readonly class ToolService
             [
                 'name' => 'architecture_context',
                 'title' => 'Architecture context',
-                'description' => 'Build a character-budgeted architecture context bundle for a coding task or changed files.',
+                'description' => 'Assemble a bounded, task-shaped evidence bundle (summary + likely location + impact + dossiers) for a coding task in one call. Use at the start of a task to load just-enough context cheaply.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'task_description' => ['type' => 'string', 'maxLength' => 2000],
                         'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
@@ -393,10 +410,11 @@ final readonly class ToolService
             [
                 'name' => 'export_diagram',
                 'title' => 'Export diagram',
-                'description' => 'Render bounded active static graph source as deterministic Mermaid or PlantUML.',
+                'description' => 'Render the current graph as Mermaid or PlantUML source. Use to embed an up-to-date architecture diagram in docs without a renderer.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'format' => ['type' => 'string', 'enum' => ['mermaid', 'plantuml'], 'default' => 'mermaid'],
                         'boundary' => ['type' => 'string', 'minLength' => 1],
@@ -413,8 +431,9 @@ final readonly class ToolService
             ],
             [
                 'name' => 'list_boundaries', 'title' => 'List boundaries',
-                'description' => 'List explicit and inferred architecture boundaries with bounded member samples.',
+                'description' => 'List the architecture boundaries and sample members. Use to learn how the codebase is partitioned before navigating it.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
+                    'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'source' => ['type' => 'string', 'enum' => ['explicit', 'inferred']],
                     'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
@@ -424,8 +443,9 @@ final readonly class ToolService
             ],
             [
                 'name' => 'search_architecture', 'title' => 'Search architecture',
-                'description' => 'Search component names, attributes, and roles with structured boundary and confidence filters.',
+                'description' => 'Search components by name, attribute, or role with structured filters. Use when you know a trait of what you want but not its exact name.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
+                    'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'query' => ['type' => 'string', 'minLength' => 1],
                     'kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
@@ -439,7 +459,7 @@ final readonly class ToolService
             ],
             [
                 'name' => 'remove_project', 'title' => 'Remove project',
-                'description' => 'Preview or explicitly remove a persisted project and all of its stored graph data.',
+                'description' => 'Delete a project and its stored graph. Preview by default; pass the confirm flag to actually remove. Use to clean up projects you no longer query.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'execute' => ['type' => 'boolean', 'default' => false],
@@ -448,7 +468,7 @@ final readonly class ToolService
             ],
             [
                 'name' => 'cleanup_stale_scans', 'title' => 'Clean up stale scans',
-                'description' => 'Preview or remove unreferenced failed, cancelled, or abandoned scan records.',
+                'description' => 'Remove failed, cancelled, or abandoned scan records. Preview by default. Use for housekeeping when the scan history is cluttered.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'older_than_hours' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 8760, 'default' => 24],
@@ -458,7 +478,7 @@ final readonly class ToolService
             ],
             [
                 'name' => 'maintain_database', 'title' => 'Maintain database',
-                'description' => 'Check integrity or preview/run a checkpoint, optimization, or contained atomic backup.',
+                'description' => 'Check integrity or run a checkpoint/optimize/backup of the graph store. Use for routine upkeep or before an upgrade.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'action' => ['type' => 'string', 'enum' => ['integrity', 'checkpoint', 'optimize', 'backup']],
                     'execute' => ['type' => 'boolean', 'default' => false],
@@ -475,10 +495,11 @@ final readonly class ToolService
         return [
             'name' => 'file_metrics',
             'title' => 'File metrics',
-            'description' => 'List per-file byte size and physical line count for the active snapshot, filterable by path or language and sortable by path or line count.',
+            'description' => 'Find the largest or longest files. Use to spot refactor targets without shelling out to wc/find.',
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
+                    'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'path_contains' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 1000],
                     'language' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 100],

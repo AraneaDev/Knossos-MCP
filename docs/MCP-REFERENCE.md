@@ -4,10 +4,11 @@ This file is generated from the live `ToolService` definitions; edit the source 
 
 ## `list_projects`
 
-List persisted projects, active snapshots, freshness, and bounded graph counts.
+Start here to find a project_id. Lists scanned projects with freshness and graph size so you can pick the right project_id before any other call.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 | `include_roots` | boolean | no | default=false |
@@ -16,7 +17,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `scan_project`
 
-Scan an allowed project root into the evidence-backed architecture graph.
+Build or refresh a project's architecture graph. Run this first for a new project, or when a query reports the graph is missing or stale.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -33,10 +34,11 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `list_snapshots`
 
-List the active scan and bounded immutable retained snapshot metadata.
+See a project's scan history. Use to find an older snapshot id to diff against or to check when it was last scanned.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
@@ -45,10 +47,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `find_component`
 
-Find architecture components by canonical or display name with ranked ambiguity candidates.
+Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `name` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
@@ -57,10 +60,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `snapshot_diff`
 
-Compare retained or active snapshots and report a bounded architectural changelog.
+See what changed architecturally between two scans. Use after a rescan to review added/removed components and relationships instead of eyeballing a code diff.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `from_snapshot` | string | yes | minLength=1 |
 | `to_snapshot` | string | no | minLength=1; default="active" |
@@ -70,10 +74,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `quality_gate`
 
-Evaluate reviewed architecture budgets against a retained baseline and active graph.
+Check architecture budgets against a baseline in CI. Use to fail a build on regressions (new cycles, boundary breaks) rather than reviewing them by hand.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `baseline_snapshot` | string | yes | minLength=1 |
 | `budgets` | object | yes | — |
@@ -85,10 +90,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `architecture_trends`
 
-Report bounded snapshot metrics and optional Markdown architecture release notes.
+See how architecture metrics moved over recent scans. Use for release notes or to spot slow structural drift.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=2; maximum=20; default=10 |
 | `release_from` | string | no | minLength=1 |
@@ -97,10 +103,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `inspect_component`
 
-Return one component dossier with roles, boundaries, containment, relationships, and evidence.
+Get the full dossier for one component — its roles, boundary, containment, relationships, and evidence — in a single call. Faster than opening and cross-referencing several files by hand.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | yes | minLength=1 |
 | `max_relationships` | integer | no | minimum=1; maximum=100; default=25 |
@@ -111,10 +118,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `architecture_summary`
 
-Summarize the active architecture snapshot by language, node kind, and relationship kind.
+Get a one-call overview of the codebase by language, node kind, and relationship kind. Use to orient yourself in an unfamiliar project before drilling in.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 
@@ -122,10 +130,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `file_metrics`
 
-List per-file byte size and physical line count for the active snapshot, filterable by path or language and sortable by path or line count.
+Find the largest or longest files. Use to spot refactor targets without shelling out to wc/find.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `path_contains` | string | no | minLength=1; maxLength=1000 |
 | `language` | string | no | minLength=1; maxLength=100 |
@@ -138,10 +147,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `explain_flow`
 
-Find and explain bounded, evidence-backed plausible static paths between two components.
+Answer 'how does A reach B?' Traces evidence-backed static paths between two components — more reliable than grepping call sites across layers.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `from` | string | yes | minLength=1 |
 | `to` | string | yes | minLength=1 |
@@ -155,10 +165,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `impact_analysis`
 
-Find a bounded conservative static blast radius by traversing dependencies in reverse.
+Before editing a symbol, find everything that depends on it. Answers 'what breaks if I change this?' by following real static references, so it is more complete than grepping for callers.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `symbol` | string | yes | minLength=1 |
 | `max_depth` | integer | no | minimum=1; maximum=8; default=4 |
@@ -171,10 +182,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `dependency_cycles`
 
-Find bounded, evidence-backed strongly connected components in the static dependency graph.
+Find circular dependencies. Use before a refactor to see which modules are tangled, instead of tracing imports by hand.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `edge_kinds` | array | no | maxItems=20 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -187,10 +199,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `architecture_health`
 
-Rank bounded static hubs, structural hotspots, and uncertain unreferenced-code candidates.
+Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cleanup or extra test coverage pays off most.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `edge_kinds` | array | no | maxItems=20 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -203,10 +216,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `check_architecture`
 
-Evaluate strict declared boundary dependency policies against the bounded static graph.
+Verify declared boundary rules still hold. Use to confirm a change did not introduce a forbidden cross-boundary dependency.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `policies` | array | yes | maxItems=50 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -218,10 +232,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `suggest_location`
 
-Deterministically rank existing boundaries for a feature using lexical evidence and dependency cohesion.
+Decide where new code for a feature belongs. Ranks existing boundaries by lexical and dependency fit so a new file lands in a cohesive place.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `feature_description` | string | yes | minLength=1; maxLength=2000 |
 | `limit` | integer | no | minimum=1; maximum=20; default=5 |
@@ -234,10 +249,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `change_impact`
 
-Blend bounded reverse static impact with recent read-only Git file change signals.
+Blend static blast radius with recent Git churn to prioritize review. Use when you want risk-ranked impact, not just a reachable-set list.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `symbol` | string | yes | minLength=1 |
 | `since_days` | integer | no | minimum=1; maximum=3650; default=90 |
@@ -252,10 +268,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `changed_files_impact`
 
-Map explicit files or an opt-in read-only Git diff to direct and statically impacted components.
+Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `files` | array | no | maxItems=50 |
 | `working_tree` | boolean | no | default=false |
@@ -270,10 +287,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `architecture_context`
 
-Build a character-budgeted architecture context bundle for a coding task or changed files.
+Assemble a bounded, task-shaped evidence bundle (summary + likely location + impact + dossiers) for a coding task in one call. Use at the start of a task to load just-enough context cheaply.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `task_description` | string | no | maxLength=2000 |
 | `files` | array | no | maxItems=50 |
@@ -284,10 +302,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `export_diagram`
 
-Render bounded active static graph source as deterministic Mermaid or PlantUML.
+Render the current graph as Mermaid or PlantUML source. Use to embed an up-to-date architecture diagram in docs without a renderer.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `format` | string | no | default="mermaid"; enum=mermaid, plantuml |
 | `boundary` | string | no | minLength=1 |
@@ -301,10 +320,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `list_boundaries`
 
-List explicit and inferred architecture boundaries with bounded member samples.
+List the architecture boundaries and sample members. Use to learn how the codebase is partitioned before navigating it.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `source` | string | no | enum=explicit, inferred |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
@@ -314,10 +334,11 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `search_architecture`
 
-Search component names, attributes, and roles with structured boundary and confidence filters.
+Search components by name, attribute, or role with structured filters. Use when you know a trait of what you want but not its exact name.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
 | `project_id` | string | yes | minLength=1 |
 | `query` | string | yes | minLength=1 |
 | `kinds` | array | no | maxItems=20 |
@@ -331,7 +352,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `remove_project`
 
-Preview or explicitly remove a persisted project and all of its stored graph data.
+Delete a project and its stored graph. Preview by default; pass the confirm flag to actually remove. Use to clean up projects you no longer query.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -342,7 +363,7 @@ Annotations: read-only `no`; destructive `yes`; idempotent `no`; open-world `no`
 
 ## `cleanup_stale_scans`
 
-Preview or remove unreferenced failed, cancelled, or abandoned scan records.
+Remove failed, cancelled, or abandoned scan records. Preview by default. Use for housekeeping when the scan history is cluttered.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -354,7 +375,7 @@ Annotations: read-only `no`; destructive `yes`; idempotent `yes`; open-world `no
 
 ## `maintain_database`
 
-Check integrity or preview/run a checkpoint, optimization, or contained atomic backup.
+Check integrity or run a checkpoint/optimize/backup of the graph store. Use for routine upkeep or before an upgrade.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |

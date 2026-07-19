@@ -4357,6 +4357,41 @@ $tests['ToolService enriches query results with staleness and meta'] = static fu
 };
 $testGroups['ToolService enriches query results with staleness and meta'] = 'bundle';
 
+$tests['read tools advertise a verbosity input'] = static function (): void {
+    [$tools, , $root] = buildToolServiceWithScan('php-scanner');
+    try {
+        $defs = $tools->definitions();
+        $byName = [];
+        foreach ($defs as $d) {
+            $byName[$d['name']] = $d;
+        }
+        $verbosity = $byName['impact_analysis']['inputSchema']['properties']['verbosity'] ?? null;
+        assertSame('string', $verbosity['type']);
+        assertSame(['compact', 'full'], $verbosity['enum']);
+        assertSame('compact', $verbosity['default']);
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['read tools advertise a verbosity input'] = 'bundle';
+
+$tests['tool descriptions are intent-first, not jargon-first'] = static function (): void {
+    [$tools, , $root] = buildToolServiceWithScan('php-scanner');
+    try {
+        $defs = $tools->definitions();
+        $byName = [];
+        foreach ($defs as $d) {
+            $byName[$d['name']] = $d;
+        }
+        // impact_analysis should tell an agent WHEN to reach for it.
+        assertContains('before', strtolower($byName['impact_analysis']['description']));
+        assertContains('depend', strtolower($byName['impact_analysis']['description']));
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['tool descriptions are intent-first, not jargon-first'] = 'bundle';
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
