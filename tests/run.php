@@ -4235,6 +4235,39 @@ $tests['ResultEnvelope with() attaches enrichment'] = static function (): void {
     assertSame(false, array_key_exists('staleness', $base->jsonSerialize()));
 };
 
+$tests['StalenessProbe reports missing for unknown or unscanned projects'] = static function (): void {
+    $pdo = freshTestDatabase();
+    $probe = new \Knossos\Query\StalenessProbe($pdo, static fn(): int => 1_000_000);
+    assertSame(null, $probe->probe(''));
+    assertSame(null, $probe->probe('catalog'));
+    $missing = $probe->probe('project_does_not_exist');
+    assertSame('missing', $missing['state']);
+    assertContains('scan_project', $missing['guidance']);
+};
+
+$tests['StalenessProbe reports fresh then stale after a file changes'] = static function (): void {
+    [$pdo, $projectId, $root] = scanTempFixture('php-scanner');
+    try {
+        // finished_at is set at scan time; use a wall clock a few seconds later.
+        $probe = new \Knossos\Query\StalenessProbe($pdo, static fn(): int => time() + 5);
+        $fresh = $probe->probe($projectId);
+        assertSame('fresh', $fresh['state']);
+        assertSame(true, is_int($fresh['age_seconds']));
+        assertSame(0, $fresh['changed_files_since']);
+
+        // Touch a scanned file into the future so its mtime beats the stored mtime.
+        $target = $root . '/src/Architecture.php';
+        touch($target, time() + 3600);
+        clearstatcache();
+        $stale = (new \Knossos\Query\StalenessProbe($pdo, static fn(): int => time() + 5))->probe($projectId);
+        assertSame('stale', $stale['state']);
+        assertContains('rescan', $stale['guidance']);
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['StalenessProbe reports fresh then stale after a file changes'] = 'bundle';
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
@@ -4614,6 +4647,60 @@ function graphSignature(PDO $pdo): string
         $graph[$name] = $pdo->query($sql)->fetchAll();
     }
     return json_encode($graph, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+}
+
+function freshTestDatabase(): PDO
+{
+    $pdo = SqliteConnection::open(':memory:');
+    (new MigrationRunner($pdo, dirname(__DIR__) . '/migrations'))->migrate();
+    return $pdo;
+}
+
+/** @return array{0: PDO, 1: string, 2: string} [pdo, projectId, absoluteRoot] */
+function scanTempFixture(string $fixture): array
+{
+    $src = dirname(__DIR__) . '/tests/Fixtures/' . $fixture;
+    $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+    // Recursively copy the fixture so mtimes can be mutated safely.
+    copyTree($src, $root);
+    $pdo = freshTestDatabase();
+    $result = (new ProjectScanService($pdo, dirname(__DIR__), [$root]))->scan($root);
+    return [$pdo, $result->projectId, $root];
+}
+
+function copyTree(string $from, string $to): void
+{
+    mkdir($to, 0o777, true);
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($from, FilesystemIterator::SKIP_DOTS)) as $item) {
+        $rel = substr($item->getPathname(), strlen($from) + 1);
+        $dest = $to . '/' . $rel;
+        if ($item->isDir()) {
+            @mkdir($dest, 0o777, true);
+            continue;
+        }
+        @mkdir(dirname($dest), 0o777, true);
+        copy($item->getPathname(), $dest);
+    }
+}
+
+function removeTempTree(string $root): void
+{
+    $prefix = rtrim(sys_get_temp_dir(), '/') . '/knossos-stale-';
+    if (!str_starts_with($root, $prefix)) {
+        throw new RuntimeException('Refusing to remove an unexpected fixture path.');
+    }
+    $items = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST,
+    );
+    foreach ($items as $item) {
+        if ($item->isDir()) {
+            @rmdir($item->getPathname());
+        } else {
+            @unlink($item->getPathname());
+        }
+    }
+    @rmdir($root);
 }
 
 function removeFixtureTree(string $root): void
