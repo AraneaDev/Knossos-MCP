@@ -57,7 +57,7 @@ smallest fix is to add only that variable. Use `>>` (append), not `>`, so an
 existing `.env` is not truncated:
 
 ```sh
-printf 'KNOSSOS_HTTP_BEARER_TOKEN=unused-by-non-http-profiles\n' >> .env
+printf '\nKNOSSOS_HTTP_BEARER_TOKEN=unused-by-non-http-profiles\n' >> .env
 ```
 
 Copying `.env.example` also works, but it sets `KNOSSOS_SOURCE` to a placeholder
