@@ -4292,6 +4292,39 @@ $tests['NextStepPlanner caps at three and defaults to empty'] = static function 
     assertSame([], $empty);
 };
 
+$tests['ResultEnricher compacts evidence and reports meta by default'] = static function (): void {
+    $pdo = freshTestDatabase();
+    $enricher = new \Knossos\Mcp\ResultEnricher(
+        new \Knossos\Query\StalenessProbe($pdo, static fn(): int => 1_000_000),
+        new \Knossos\Mcp\NextStepPlanner(),
+    );
+    $evidence = array_map(static fn(int $i): array => ['file' => "f{$i}.php", 'line' => $i], range(1, 10));
+    $raw = new ResultEnvelope('project_missing', 's1', 'Dossier.', ['component' => 'App\\X'], $evidence);
+    $out = $enricher->enrich($raw, 'inspect_component', 'compact')->jsonSerialize();
+
+    assertSame(3, count($out['evidence']));               // compacted to top 3
+    assertSame('compact', $out['meta']['verbosity']);
+    assertSame(10, $out['meta']['evidence_total']);
+    assertSame(3, $out['meta']['evidence_shown']);
+    assertSame(true, is_int($out['meta']['result_bytes']));
+    assertSame('missing', $out['staleness']['state']);     // unknown project -> missing
+    assertSame('impact_analysis', $out['next_steps'][0]['tool']);
+};
+
+$tests['ResultEnricher keeps all evidence in full verbosity'] = static function (): void {
+    $pdo = freshTestDatabase();
+    $enricher = new \Knossos\Mcp\ResultEnricher(
+        new \Knossos\Query\StalenessProbe($pdo, static fn(): int => 1_000_000),
+        new \Knossos\Mcp\NextStepPlanner(),
+    );
+    $evidence = array_map(static fn(int $i): array => ['file' => "f{$i}.php"], range(1, 10));
+    $raw = new ResultEnvelope('project_missing', 's1', 'x', [], $evidence);
+    $out = $enricher->enrich($raw, 'architecture_summary', 'full')->jsonSerialize();
+    assertSame(10, count($out['evidence']));
+    assertSame('full', $out['meta']['verbosity']);
+    assertSame(false, array_key_exists('next_steps', $out)); // summary has no suggestions
+};
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
