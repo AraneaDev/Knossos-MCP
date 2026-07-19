@@ -4544,23 +4544,37 @@ $testGroups['compose resolved ports are loopback-only across every profile'] = '
 
 $tests['architecture-summary --json emits exactly one JSON document'] = static function (): void {
     $root = dirname(__DIR__);
-    [$scanExit, $scanOut] = runFixtureCommandOutput([
-        PHP_BINARY, $root . '/bin/knossos', 'scan', $root . '/tests/Fixtures/php-scanner', '--json',
-    ]);
-    assertSame(0, $scanExit);
-    $scan = json_decode(trim($scanOut), true, 512, JSON_THROW_ON_ERROR);
+    $path = tempnam(sys_get_temp_dir(), 'knossos-architecture-summary-');
+    if ($path === false) {
+        throw new RuntimeException('Unable to allocate architecture-summary database.');
+    }
+    try {
+        [$scanExit, $scanOut, $scanErr] = runFixtureCommandOutput([
+            PHP_BINARY, $root . '/bin/knossos', 'scan', $root . '/tests/Fixtures/php-scanner', '--db=' . $path, '--json',
+        ]);
+        assertSame(0, $scanExit);
+        assertSame('', $scanErr);
+        $scan = json_decode(trim($scanOut), true, 512, JSON_THROW_ON_ERROR);
 
-    [$exit, $stdout] = runFixtureCommandOutput([
-        PHP_BINARY, $root . '/bin/knossos', 'architecture-summary', $scan['project_id'], '--json',
-    ]);
-    assertSame(0, $exit);
+        [$exit, $stdout, $stderr] = runFixtureCommandOutput([
+            PHP_BINARY, $root . '/bin/knossos', 'architecture-summary', $scan['project_id'], '--db=' . $path, '--json',
+        ]);
+        assertSame(0, $exit);
+        assertSame('', $stderr);
 
-    // The payload must decode. Two concatenated documents make json_decode fail.
-    $decoded = json_decode(trim($stdout), true, 512, JSON_THROW_ON_ERROR);
-    assertSame($scan['project_id'], $decoded['project_id']);
+        // The payload must decode. Two concatenated documents make json_decode fail.
+        $decoded = json_decode(trim($stdout), true, 512, JSON_THROW_ON_ERROR);
+        assertSame($scan['project_id'], $decoded['project_id']);
 
-    // And it must be one line, like every other --json query command.
-    assertSame(1, count(array_filter(explode("\n", trim($stdout)), static fn(string $l): bool => trim($l) !== '')));
+        // And it must be one line, like every other --json query command.
+        assertSame(1, count(array_filter(explode("\n", trim($stdout)), static fn(string $l): bool => trim($l) !== '')));
+    } finally {
+        foreach ([$path, $path . '-shm', $path . '-wal'] as $candidate) {
+            if (is_file($candidate)) {
+                unlink($candidate);
+            }
+        }
+    }
 };
 $testGroups['architecture-summary --json emits exactly one JSON document'] = 'cli';
 
