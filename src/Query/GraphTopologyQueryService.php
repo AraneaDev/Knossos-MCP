@@ -728,6 +728,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $entryRoles = [
             'application.controller', 'application.command', 'application.entry_point',
             'laravel.controller', 'laravel.command', 'laravel.job', 'laravel.listener',
+            // A test runner discovers these by glob, so in-degree 0 is structural,
+            // not evidence that the module is unused.
+            'quality.test_module',
         ];
         foreach ($roles as $role) {
             if (in_array($role['role'], $entryRoles, true)) {

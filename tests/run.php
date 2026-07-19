@@ -9,6 +9,7 @@ use Knossos\Classification\ClassificationEngine;
 use Knossos\Classification\ClassificationFact;
 use Knossos\Classification\ExplicitRoleRule;
 use Knossos\Classification\NameSuffixRule;
+use Knossos\Classification\TestModuleRule;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Discovery\DiscoveryConfig;
@@ -4577,6 +4578,72 @@ $tests['architecture-summary --json emits exactly one JSON document'] = static f
     }
 };
 $testGroups['architecture-summary --json emits exactly one JSON document'] = 'cli';
+
+$tests['TestModuleRule tags test paths and leaves product code alone'] = static function (): void {
+    $rule = new TestModuleRule();
+    assertSame('core.test.modules.v1', $rule->id());
+
+    $node = static fn(string $path): NodeFact => new NodeFact(
+        'n:' . $path,
+        'module',
+        $path,
+        basename($path),
+        Origin::Ast,
+        Confidence::Certain,
+        new Evidence($path, 1, 2),
+    );
+
+    $tagged = [
+        'src/__tests__/handler.test.ts',
+        'src/handler.test.ts',
+        'src/handler.spec.js',
+        'tests/test_worker.py',
+        'tests/Unit/ThingTest.php',
+    ];
+    foreach ($tagged as $path) {
+        $facts = $rule->classify($node($path));
+        assertSame(1, count($facts));
+        assertSame('quality.test_module', $facts[0]->role);
+    }
+
+    $untagged = ['src/handler.ts', 'src/latest/news.ts', 'src/contest.ts', 'src/protester.php'];
+    foreach ($untagged as $path) {
+        assertSame([], $rule->classify($node($path)));
+    }
+};
+$testGroups['TestModuleRule tags test paths and leaves product code alone'] = 'bundle';
+
+$tests['dead-code nomination skips test modules'] = static function (): void {
+    [$tools, $projectId, $root] = buildToolServiceWithScan('test-modules');
+    try {
+        $envelope = $tools->call('architecture_health', ['project_id' => $projectId, 'limit' => 100]);
+        $dead = $envelope->jsonSerialize()['data']['dead_code_candidates'] ?? [];
+
+        $names = array_map(
+            static fn(array $c): string => $c['component']['canonical_name'],
+            $dead,
+        );
+
+        // The test module is discovered by a runner's glob, never imported. It must
+        // not be nominated just because its in-degree is 0.
+        foreach ($names as $name) {
+            assertSame(false, str_contains($name, '__tests__'));
+        }
+
+        // Guard against the rule over-matching and silently emptying the result:
+        // the unreferenced product module must still be nominated.
+        $orphanNominated = false;
+        foreach ($names as $name) {
+            if (str_contains($name, 'orphan')) {
+                $orphanNominated = true;
+            }
+        }
+        assertSame(true, $orphanNominated);
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['dead-code nomination skips test modules'] = 'bundle';
 
 $failed = 0;
 $executed = 0;
