@@ -4645,6 +4645,33 @@ $tests['dead-code nomination skips test modules'] = static function (): void {
 };
 $testGroups['dead-code nomination skips test modules'] = 'bundle';
 
+$tests['dead-code reasons report absence of evidence, not proven absence'] = static function (): void {
+    [$tools, $projectId, $root] = buildToolServiceWithScan('test-modules');
+    try {
+        $envelope = $tools->call('architecture_health', ['project_id' => $projectId, 'limit' => 100]);
+        $dead = $envelope->jsonSerialize()['data']['dead_code_candidates'] ?? [];
+
+        // The fixture's orphan module guarantees at least one candidate; without
+        // it the loop below would assert nothing.
+        assertNotSame(0, count($dead));
+
+        foreach ($dead as $candidate) {
+            // The old wording asserted a universal negative the analyser cannot establish.
+            assertSame(
+                false,
+                str_contains($candidate['reason'], 'No selected inbound static dependency references this component.'),
+            );
+            assertContains('No inbound static reference was found', $candidate['reason']);
+            // The uncertainty must name the blind spot behind 21 verified false
+            // positives: identifiers passed as values.
+            assertContains('as a value', $candidate['uncertainty']);
+        }
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['dead-code reasons report absence of evidence, not proven absence'] = 'bundle';
+
 $failed = 0;
 $executed = 0;
 $selectedGroup = null;
