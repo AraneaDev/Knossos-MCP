@@ -7,10 +7,17 @@
     "knossos-typescript-scanner": "bin/worker.js"
   },
   "scripts": {
-    "check": "node --check bin/worker.js && node --check src/*.js"
+    "check": "node --check bin/worker.js && node --check src/*.js && npm test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "typescript": "^6.0.3"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^3.2.0",
+    "vitest": "^3.2.0"
   },
   "engines": {
     "node": ">=22 <25"
