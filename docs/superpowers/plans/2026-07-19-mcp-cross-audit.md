@@ -4,7 +4,7 @@
 
 **Goal:** Make Knossos reachable over MCP from a committed, portable registration and a compose file, then run Knossos and Chaos-MCP against each other and produce a fact-checked triage report of both repositories' findings and both tools' defects.
 
-**Architecture:** No server code is written. Knossos already implements MCP stdio (`src/Mcp/StdioServer.php`) and Streamable HTTP (`bin/http-router.php`); Tasks 1–2 are packaging that makes those reachable without absolute paths. Tasks 3–5 are investigation: each produces a written artifact, and findings are fact-checked against source before being asserted.
+**Architecture:** No server code is written. Knossos already implements MCP stdio (`src/Mcp/StdioServer.php`) and Streamable HTTP (`bin/http-router.php`); Tasks 1–3 are packaging that makes those reachable without absolute paths. Tasks 4–6 are investigation: each produces a written artifact, and findings are fact-checked against source before being asserted.
 
 **Tech Stack:** PHP 8.3+, custom test harness (`tests/run.php`), Docker Compose v5, prettier, markdownlint-cli2, Chaos-MCP over MCP (`estimate_audit`, `audit_code_resilience`, `triage_test_coverage`).
 
@@ -21,23 +21,34 @@
 - Run a group with `php tests/run.php --group=cli`. Run everything with `composer test`.
 - Do not modify Knossos source to suit Chaos's engines. Blockers are evidence.
 - No source change in either repository before the specific finding is approved by the user.
+- **Two review protocols.** Tasks 1–3 produce code and get the standard task review (spec compliance + code quality). Tasks 4–6 produce written reports and get a **fact-check review** instead: the reviewer independently opens every `file:line` the report cites and confirms the claim, verifies that each recorded tool output matches what the command actually returns, and rejects any finding it cannot reproduce. A fact-check reviewer judges evidence, not code style.
 
 ---
 
-### Task 1: Committed, portable MCP registration
+### Task 1: Characterize existing allowed-root behaviour
+
+**These are characterization tests, not TDD tests.** They pin behaviour that
+already exists and will pass on their first run. That is the point: Task 2's
+registration depends on relative-root resolution working, and the spec
+explicitly refused to change the missing-root error into a working-directory
+default. Both need a regression pin before anything is built on them. Do not
+attempt to make them fail first, and do not modify source to create a red
+state.
+
+To confirm each test actually exercises what it claims, verify it by
+temporarily breaking the code path (see Step 2) rather than by expecting an
+initial failure.
 
 **Files:**
 
-- Create: `.mcp.json`
 - Modify: `tests/run.php` (append tests before the `$failed = 0;` runner block, currently near line 4392)
-- Modify: `docs/INSTALLATION.md`
 
 **Interfaces:**
 
 - Consumes: `Knossos\Discovery\RootGuard::resolve()` (existing, `src/Discovery/RootGuard.php:12`), which calls `realpath()` on each configured root and therefore resolves relative roots against the process working directory.
-- Produces: a committed `.mcp.json` whose `mcpServers.knossos.args` contains no absolute path. Task 3 relies on this file's shape when adding a local second-root override.
+- Produces: two passing regression tests in group `cli`. Task 2 depends on the relative-resolution behaviour they pin.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the characterization tests**
 
 Append to `tests/run.php`, immediately before the line `$failed = 0;`:
 
@@ -54,22 +65,6 @@ $tests['RootGuard resolves relative allowed roots against the working directory'
     assertThrows(static fn() => $narrow->resolve(dirname(__DIR__) . '/tests'), DiscoveryException::class);
 };
 $testGroups['RootGuard resolves relative allowed roots against the working directory'] = 'cli';
-
-$tests['committed MCP registration is portable and explicitly scoped'] = static function (): void {
-    $path = dirname(__DIR__) . '/.mcp.json';
-    $config = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
-
-    $server = $config['mcpServers']['knossos'];
-    assertSame('php', $server['command']);
-    assertSame(['bin/knossos', 'serve', '--allow-root=.'], $server['args']);
-
-    foreach ($server['args'] as $argument) {
-        assertSame(false, str_contains($argument, '/root/'));
-        assertSame(false, str_starts_with($argument, '/'));
-        assertSame(false, str_contains($argument, ':\\'));
-    }
-};
-$testGroups['committed MCP registration is portable and explicitly scoped'] = 'cli';
 
 $tests['serve refuses to start without an explicit allowed root'] = static function (): void {
     $binary = dirname(__DIR__) . '/bin/knossos';
@@ -88,17 +83,88 @@ $tests['serve refuses to start without an explicit allowed root'] = static funct
 $testGroups['serve refuses to start without an explicit allowed root'] = 'cli';
 ```
 
-The third test pins the behaviour the spec explicitly refused to change: omitting `--allow-root` must stay a hard error rather than defaulting to the working directory.
+The second test pins the behaviour the spec explicitly refused to change: omitting `--allow-root` must stay a hard error rather than defaulting to the working directory.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Run the tests, then prove each one bites**
 
 Run: `php tests/run.php --group=cli`
 
-Expected: FAIL on `committed MCP registration is portable and explicitly scoped` with a `file_get_contents` / `JsonException` error, because `.mcp.json` does not exist yet. The other two tests may already pass — that is fine and expected; they are regression pins on existing behaviour, and the plan needs them to be red only if the behaviour is absent.
+Expected: PASS for both new tests. They characterize existing behaviour, so passing immediately is correct.
+
+A test that passes on first run has not yet been shown to test anything. Prove each one bites by breaking its subject temporarily and confirming the test goes red:
+
+```bash
+# 1. Break relative resolution: make RootGuard reject non-absolute roots.
+#    In src/Discovery/RootGuard.php, temporarily change line 21 from
+#    `$allowed = realpath($allowedRoot);` to `$allowed = $allowedRoot;`
+php tests/run.php --group=cli   # expect: FAIL RootGuard resolves relative allowed roots
+git checkout -- src/Discovery/RootGuard.php
+
+# 2. Break the required-root guard: in src/Cli/Command/ServeCommand.php,
+#    temporarily change line 32's throw to `$allowedRoots = [getcwd()];`
+php tests/run.php --group=cli   # expect: FAIL serve refuses to start without an explicit allowed root
+git checkout -- src/Cli/Command/ServeCommand.php
+```
+
+Both reverts must leave `git status` clean before continuing. Record in your report that both tests were confirmed to bite, and name the failure message each produced. If a test stays green while its subject is broken, the test is wrong — fix the test, not the source.
+
+- [ ] **Step 3: Verify the suite and commit**
+
+Run: `php tests/run.php --group=cli && git status --short`
+
+Expected: `0 failures`, and `git status --short` shows only `tests/run.php` modified.
+
+```bash
+git add tests/run.php
+git commit -m "test: pin relative allowed-root resolution and required-root guard"
+```
+
+---
+
+### Task 2: Committed, portable MCP registration
+
+**Files:**
+
+- Create: `.mcp.json`
+- Modify: `tests/run.php` (append before the `$failed = 0;` runner block)
+- Modify: `docs/INSTALLATION.md`
+
+**Interfaces:**
+
+- Consumes: the relative-root resolution pinned by Task 1.
+- Produces: a committed `.mcp.json` whose `mcpServers.knossos.args` is exactly `["bin/knossos", "serve", "--allow-root=."]` and contains no absolute path.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `tests/run.php`, immediately before the line `$failed = 0;`:
+
+```php
+$tests['committed MCP registration is portable and explicitly scoped'] = static function (): void {
+    $path = dirname(__DIR__) . '/.mcp.json';
+    $config = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+
+    $server = $config['mcpServers']['knossos'];
+    assertSame('php', $server['command']);
+    assertSame(['bin/knossos', 'serve', '--allow-root=.'], $server['args']);
+
+    foreach ($server['args'] as $argument) {
+        assertSame(false, str_contains($argument, '/root/'));
+        assertSame(false, str_starts_with($argument, '/'));
+        assertSame(false, str_contains($argument, ':\\'));
+    }
+};
+$testGroups['committed MCP registration is portable and explicitly scoped'] = 'cli';
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `php tests/run.php --group=cli`
+
+Expected: FAIL on `committed MCP registration is portable and explicitly scoped` with a `JsonException` (`Syntax error`), because `.mcp.json` does not exist and `file_get_contents` returns an empty string.
 
 - [ ] **Step 3: Create the registration file**
 
-Create `.mcp.json` (2-space indent, LF, trailing newline):
+Create `.mcp.json`. The block below is displayed at markdown indentation; write the file, then run `npx --no-install prettier --write .mcp.json` to settle it at 2 spaces.
 
 ```json
 {
@@ -111,11 +177,11 @@ Create `.mcp.json` (2-space indent, LF, trailing newline):
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the test to verify it passes**
 
 Run: `php tests/run.php --group=cli`
 
-Expected: PASS for all three new tests, and `0 failures` in the group summary.
+Expected: PASS, and `0 failures` in the group summary.
 
 - [ ] **Step 5: Document the registration**
 
@@ -163,7 +229,7 @@ Run: `npx --no-install prettier --check .mcp.json docs/INSTALLATION.md && npx --
 
 Expected: prettier reports no issues, markdownlint reports `0 error(s)`, repository-check prints `Repository JSON, size, line-ending, and secret checks passed.`, documentation-check prints `Documentation links passed`.
 
-If prettier rewrites `.mcp.json`, re-run the Task 1 tests — the assertion on `args` is order- and value-exact.
+If prettier rewrites `.mcp.json`, re-run the Task 2 test — the assertion on `args` is order- and value-exact.
 
 - [ ] **Step 7: Commit**
 
@@ -174,7 +240,7 @@ git commit -m "feat(mcp): commit portable project-scoped stdio registration"
 
 ---
 
-### Task 2: docker-compose.yml with CLI, stdio, and HTTP profiles
+### Task 3: docker-compose.yml with CLI, stdio, and HTTP profiles
 
 **Files:**
 
@@ -428,36 +494,21 @@ git commit -m "feat(docker): add compose profiles for CLI, MCP stdio, and loopba
 
 ---
 
-### Task 3: Phase A — Knossos analyses Chaos-MCP
+### Task 4: Phase A — Knossos analyses Chaos-MCP
 
 This is an investigation task. Its deliverable is a written artifact, not code. Record what the tools actually returned, including anything that looks wrong.
 
 **Files:**
 
 - Create: `/root/Chaos-MCP/docs/audits/2026-07-19-knossos-architecture-scan.md`
-- Create (local, uncommitted): `.mcp.json` override adding the second allowed root
 
-- [ ] **Step 1: Add the local second-root override**
+**Do not touch `.mcp.json`.** This task drives Knossos entirely through the CLI,
+and `ScanCommand` passes the requested path as its own allowed root
+(`src/Cli/Command/ScanCommand.php:23`) — the CLI authorizes the tree you hand
+it. No second allowed root is needed, and editing the committed registration
+would only turn Task 2's test red for no benefit.
 
-The committed `.mcp.json` grants only `.`. This audit needs Chaos too. Create the override **without committing it**:
-
-```bash
-cp .mcp.json /tmp/mcp-committed.json
-cat > .mcp.json <<'JSON'
-{
-  "mcpServers": {
-    "knossos": {
-      "command": "php",
-      "args": ["bin/knossos", "serve", "--allow-root=.", "--allow-root=../Chaos-MCP"]
-    }
-  }
-}
-JSON
-```
-
-Note that Task 1's registration test asserts the exact committed `args` array, so `php tests/run.php --group=cli` will now fail on that one test until the file is restored in Step 6. That is expected and is the reason the restore step exists.
-
-- [ ] **Step 2: Check the ignore behaviour before trusting any query**
+- [ ] **Step 1: Check the ignore behaviour before trusting any query**
 
 Chaos carries `node_modules/`, `build/`, and `coverage/`. Time the scan and check what it took in:
 
@@ -469,9 +520,9 @@ grep -c 'node_modules' /tmp/chaos-scan.json || true
 
 If `node_modules/`, `build/`, or `coverage/` files appear in the graph, that is **Knossos finding #1** — record it with the file count and the wall-clock time as evidence.
 
-- [ ] **Step 3: Run the query suite**
+- [ ] **Step 2: Run the query suite**
 
-Using the `project_id` returned by Step 2:
+Using the `project_id` returned by Step 1:
 
 ```bash
 cd /root/Knossos-MCP
@@ -483,7 +534,7 @@ php bin/knossos architecture-health "$PID" --json   > /tmp/chaos-health.json
 php bin/knossos list-boundaries "$PID" --json       > /tmp/chaos-boundaries.json
 ```
 
-- [ ] **Step 4: Pull context on the hot files**
+- [ ] **Step 3: Pull context on the hot files**
 
 Take the top three files by line count from `/tmp/chaos-metrics.json` and run, for each:
 
@@ -491,7 +542,7 @@ Take the top three files by line count from `/tmp/chaos-metrics.json` and run, f
 php bin/knossos architecture-context "$PID" <relative/path.ts> --json
 ```
 
-- [ ] **Step 5: Write the report**
+- [ ] **Step 4: Write the report**
 
 Create `/root/Chaos-MCP/docs/audits/2026-07-19-knossos-architecture-scan.md` on a new branch `dogfeed/knossos-audit` in that repo. Structure:
 
@@ -500,26 +551,25 @@ Create `/root/Chaos-MCP/docs/audits/2026-07-19-knossos-architecture-scan.md` on 
 - **Findings about Knossos** — anything the tool got wrong, missed, or reported confusingly: ignore-list behaviour, dead-code false positives (expected on MCP entrypoints reached only via the JSON-RPC dispatch table), confidence labels that do not match reality, `ResultEnricher` staleness or `next_steps` output that reads oddly against an unfamiliar repository.
 - **Not findings** — candidates that were checked and discarded, with the reason. This section is mandatory and must not be empty if anything was discarded.
 
-- [ ] **Step 6: Restore the committed registration**
+- [ ] **Step 5: Confirm Knossos was not modified, then commit the report**
+
+The scan is read-only and this task writes no Knossos source:
 
 ```bash
-cd /root/Knossos-MCP && cp /tmp/mcp-committed.json .mcp.json
-git diff --exit-code .mcp.json && echo "registration restored"
-php tests/run.php --group=cli
+cd /root/Knossos-MCP && git status --short && php tests/run.php --group=cli
 ```
 
-Expected: `git diff --exit-code` is silent and prints `registration restored`; the cli group reports `0 failures`.
-
-- [ ] **Step 7: Commit the report in the Chaos repo**
+Expected: `git status --short` prints nothing, and the cli group reports `0 failures`.
 
 ```bash
-cd /root/Chaos-MCP && git add docs/audits/2026-07-19-knossos-architecture-scan.md
+cd /root/Chaos-MCP && git checkout -b dogfeed/knossos-audit
+git add docs/audits/2026-07-19-knossos-architecture-scan.md
 git commit -m "docs: record Knossos architecture scan of Chaos-MCP"
 ```
 
 ---
 
-### Task 4: Phase B — Chaos-MCP audits Knossos
+### Task 5: Phase B — Chaos-MCP audits Knossos
 
 **Files:**
 
@@ -558,7 +608,7 @@ A copy that is slow or unbounded is a Chaos defect, not an inconvenience. Record
 
 - [ ] **Step 5: Write the report**
 
-Create `/root/Knossos-MCP/docs/audits/2026-07-19-chaos-mutation-audit.md` using the same four-section structure as Task 3 Step 5 (What was run / Findings about Knossos / Findings about Chaos / Not findings).
+Create `/root/Knossos-MCP/docs/audits/2026-07-19-chaos-mutation-audit.md` using the same four-section structure as Task 4 Step 4 (What was run / Findings about Knossos / Findings about Chaos / Not findings).
 
 For each blocked engine, the report must answer three questions explicitly: did the error name the true cause; how long did the user wait before learning it; and was there a cheaper check Chaos could have run first.
 
@@ -577,7 +627,7 @@ Expected: prettier clean, markdownlint `0 error(s)`, documentation-check passes.
 
 ---
 
-### Task 5: Phase C — fact-check and triage
+### Task 6: Phase C — fact-check and triage
 
 **Files:**
 
@@ -627,7 +677,7 @@ cd /root/Knossos-MCP && composer test
 cd /root/Chaos-MCP && npm run check
 ```
 
-Expected: both green. Nothing in Tasks 1–5 changes production source in either repository, so a failure here means something unintended was touched — investigate before proceeding.
+Expected: both green. Nothing in Tasks 1–6 changes production source in either repository, so a failure here means something unintended was touched — investigate before proceeding.
 
 - [ ] **Step 6: Stop and hand the triage to the user**
 
@@ -639,14 +689,18 @@ Present the four buckets. Phase D (implementing fixes) is **not** part of this p
 
 **Spec coverage:**
 
-- Part 1.1 registration → Task 1. Relative-root verification, the rejected implicit-default, the local second-root override, and the `INSTALLATION.md` note are all covered (override in Task 3 Step 1, restored in Step 6).
-- Part 1.2 compose → Task 2, including the three services, opt-in profiles, read-only mount, loopback binding, `${PWD}` caveat for PowerShell, and the threat-model comment at point of use.
-- Part 2 Phase A → Task 3; Phase B → Task 4 (control run, PHP, TS worker, sandbox timing); Phase C → Task 5.
-- Calibration section → Task 5 Step 3.
-- Phase D → deliberately excluded; Task 5 Step 6 states why and what happens instead.
+- Part 1.1 registration → Tasks 1 and 2. Task 1 pins relative-root resolution and the rejected implicit-default; Task 2 adds the committed `.mcp.json` and the `INSTALLATION.md` note.
+- Part 1.2 compose → Task 3, including the three services, opt-in profiles, read-only mount, loopback binding, `${PWD}` caveat for PowerShell, and the threat-model comment at point of use.
+- Part 2 Phase A → Task 4; Phase B → Task 5 (control run, PHP, TS worker, sandbox timing); Phase C → Task 6.
+- Calibration section → Task 6 Step 3.
+- Phase D → deliberately excluded; Task 6 Step 6 states why and what happens instead.
 
-**Gap accepted:** the spec's "assumption to verify" about client working directory cannot be verified inside this plan, because a newly registered MCP server is not live in the session that registers it. Task 1 Step 3 mitigates structurally by keeping `bin/knossos` relative, so a wrong working directory fails loudly. Verification happens on the next session start.
+**Dropped from the spec:** the "local second-root override" of `.mcp.json`. `ScanCommand` passes the requested path as its own allowed root (`src/Cli/Command/ScanCommand.php:23`), so the CLI-driven Phase A never needs a second root. The override would have been dead work that also turned Task 2's test red. The spec's intent — that the audit can reach the Chaos tree — is satisfied without it.
 
-**Placeholder scan:** no TBDs. Every code step contains the literal file content or command. Tasks 3–5 are investigation with defined artifacts and explicit stop conditions rather than unwritten code.
+**Gap accepted:** the spec's "assumption to verify" about client working directory cannot be verified inside this plan, because a newly registered MCP server is not live in the session that registers it. Task 2 Step 3 mitigates structurally by keeping `bin/knossos` relative, so a wrong working directory fails loudly. Verification happens on the next session start.
 
-**Type consistency:** `RootGuard::resolve()`, `DiscoveryException`, `runFixtureCommandOutput()` (returns `[exit, stdout, stderr]`, closes stdin), `assertSame`/`assertContains`/`assertThrows`, and the `$tests[...]`/`$testGroups[...]` idiom all match `tests/run.php` as read. Service and volume names in Task 2's tests match the compose file exactly.
+**Placeholder scan:** no TBDs. Every code step contains the literal file content or command. Tasks 4–6 are investigation with defined artifacts and explicit stop conditions rather than unwritten code.
+
+**Test-rubric note:** Task 1's two tests pass on first run by design — they characterize existing behaviour rather than drive new code. Task 1 Step 2 compensates with an explicit mutation check that each test goes red when its subject is broken, so neither is accepted as a test that never demonstrated it can fail.
+
+**Type consistency:** `RootGuard::resolve()`, `DiscoveryException`, `runFixtureCommandOutput()` (returns `[exit, stdout, stderr]`, closes stdin), `assertSame`/`assertContains`/`assertThrows`, and the `$tests[...]`/`$testGroups[...]` idiom all match `tests/run.php` as read. Service and volume names in Task 3's tests match the compose file exactly.
