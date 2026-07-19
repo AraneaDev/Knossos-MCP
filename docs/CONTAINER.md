@@ -50,6 +50,11 @@ scanner protocol and graph format.
 mounted read-only at `/workspace`; graph data lives in the `knossos-data`
 volume.
 
+Compose interpolates the entire file before applying `--profile` filtering, so
+`KNOSSOS_HTTP_BEARER_TOKEN` must resolve for every compose command, even ones
+that never touch the `http` profile. The simplest fix is
+`cp .env.example .env`; compose loads `.env` automatically.
+
 One-shot CLI, with networking disabled:
 
 ```sh

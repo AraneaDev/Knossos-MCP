@@ -9,6 +9,7 @@ node_modules/
 *.sqlite-shm
 *.sqlite-wal
 .php-cs-fixer.cache
+.env
 __pycache__/
 *.pyc
 .claude/settings.local.json

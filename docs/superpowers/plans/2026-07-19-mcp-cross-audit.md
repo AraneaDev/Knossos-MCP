@@ -276,11 +276,6 @@ $tests['compose file pins the runtime stage and never exposes a public port'] = 
     assertSame(1, substr_count($compose, 'target: runtime'));
     assertSame(false, str_contains($compose, 'target: quality'));
 
-    // Ports may only ever be published to loopback.
-    assertContains('127.0.0.1:8080:8080', $compose);
-    assertSame(false, str_contains($compose, '0.0.0.0:8080:8080'));
-    assertSame(false, str_contains($compose, '- "8080:8080"'));
-
     // Both server services are opt-in, so `docker compose up` starts nothing that listens.
     assertContains('profiles:', $compose);
     assertContains('- mcp', $compose);
@@ -313,10 +308,48 @@ $tests['compose configuration parses and keeps servers behind profiles'] = stati
     }
 
     // Only the default-profile service is listed without --profile flags.
-    assertContains('knossos', $stdout);
+    assertSame('knossos', trim($stdout));
     assertSame(false, str_contains($stdout, 'knossos-http'));
+    assertSame(false, str_contains($stdout, 'knossos-mcp'));
 };
 $testGroups['compose configuration parses and keeps servers behind profiles'] = 'cli';
+
+$tests['compose resolved ports are loopback-only across every profile'] = static function (): void {
+    [$probeExit] = runFixtureCommandOutput(['docker', 'compose', 'version']);
+    if ($probeExit !== 0) {
+        return; // Docker is not available in this environment; the text test above still applies.
+    }
+
+    $root = dirname(__DIR__);
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN=test-token-not-a-secret');
+    [$exit, $stdout, $stderr] = runFixtureCommandOutput([
+        'docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml',
+        '--profile', 'http', '--profile', 'mcp', 'config', '--format', 'json',
+    ]);
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+
+    if ($exit !== 0) {
+        throw new RuntimeException('docker compose config failed: ' . $stderr);
+    }
+
+    /** @var array{services?: array<string, array{ports?: list<array{host_ip?: string}>}>} $config */
+    $config = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
+    $services = $config['services'] ?? [];
+    assertSame(false, $services === []);
+
+    // Every published port, on every service resolved from every profile, must be loopback-only.
+    $publishedPortCount = 0;
+    foreach ($services as $service) {
+        foreach ($service['ports'] ?? [] as $port) {
+            ++$publishedPortCount;
+            assertSame('127.0.0.1', $port['host_ip'] ?? null);
+        }
+    }
+
+    // At least one port must actually be published, so this cannot pass vacuously.
+    assertSame(true, $publishedPortCount > 0);
+};
+$testGroups['compose resolved ports are loopback-only across every profile'] = 'cli';
 ```
 
 - [ ] **Step 3: Run the tests to verify they fail**
@@ -443,6 +476,11 @@ Append to `docs/CONTAINER.md`:
 `docker-compose.yml` wraps the three supported invocations. Source is always
 mounted read-only at `/workspace`; graph data lives in the `knossos-data`
 volume.
+
+Compose interpolates the entire file before applying `--profile` filtering, so
+`KNOSSOS_HTTP_BEARER_TOKEN` must resolve for every compose command, even ones
+that never touch the `http` profile. The simplest fix is
+`cp .env.example .env`; compose loads `.env` automatically.
 
 One-shot CLI, with networking disabled:
 
