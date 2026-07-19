@@ -145,13 +145,9 @@ $tests['committed MCP registration is portable and explicitly scoped'] = static 
 
     $server = $config['mcpServers']['knossos'];
     assertSame('php', $server['command']);
+    // RootGuard::resolve() realpath()s each configured root against the process
+    // working directory, so args must stay relative to remain portable across checkouts.
     assertSame(['bin/knossos', 'serve', '--allow-root=.'], $server['args']);
-
-    foreach ($server['args'] as $argument) {
-        assertSame(false, str_contains($argument, '/root/'));
-        assertSame(false, str_starts_with($argument, '/'));
-        assertSame(false, str_contains($argument, ':\\'));
-    }
 };
 $testGroups['committed MCP registration is portable and explicitly scoped'] = 'cli';
 ```
