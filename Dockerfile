@@ -143,6 +143,7 @@ COPY README.md ./
 COPY coverage-budgets.json ./
 COPY maintainability-budgets.json ./
 COPY Dockerfile ./
+COPY docker-compose.yml .env.example .mcp.json ./
 COPY docs ./docs
 COPY benchmarks ./benchmarks
 COPY tests ./tests

@@ -243,7 +243,7 @@ git commit -m "feat(mcp): commit portable project-scoped stdio registration"
 - Create: `docker-compose.yml`
 - Create: `.env.example`
 - Modify: `tools/quality` (add compose validation next to the existing `hadolint` block)
-- Modify: `Dockerfile` (install the pinned Compose CLI plugin in the `quality` stage)
+- Modify: `Dockerfile` (install the pinned Compose CLI plugin in the `quality` stage; also `COPY` `docker-compose.yml` and `.env.example` into that stage so the gate has a file to validate)
 - Modify: `tests/run.php`
 - Modify: `docs/CONTAINER.md`
 
@@ -511,6 +511,16 @@ RUN mkdir -p /usr/libexec/docker/cli-plugins \
 
 `/usr/libexec/docker/cli-plugins` is a default plugin search path, so `docker compose version` resolves without further configuration.
 
+Installing the plugin is necessary but not sufficient: `docker compose config` still needs a `docker-compose.yml` to read. The `quality` stage's `COPY` block (further down the same stage, alongside `.editorconfig`, `README.md`, `Dockerfile`, `docs`, etc.) does not copy the repo root's compose file into the image, so `KNOSSOS_QUALITY_CONTAINER=1` runs fail with `no configuration file provided` even once the plugin is present. Add both files the compose gate needs — `docker-compose.yml` itself and `.env.example` (kept alongside it so the copied tree isn't a confusing half-present setup, even though `tools/quality` passes `KNOSSOS_HTTP_BEARER_TOKEN` inline and doesn't strictly require the `.env.example` file to pass) — to that `COPY` list, next to the existing `COPY Dockerfile ./` line:
+
+```dockerfile
+COPY Dockerfile ./
+COPY docker-compose.yml .env.example ./
+COPY docs ./docs
+```
+
+Do not add these to the `runtime` stage; the distributable image must not carry compose/dev files.
+
 - [ ] **Step 8: Document compose usage**
 
 Append to `docs/CONTAINER.md`:
@@ -525,10 +535,11 @@ volume.
 Compose interpolates the entire file before applying `--profile` filtering, so
 `KNOSSOS_HTTP_BEARER_TOKEN` must resolve for every compose command, even ones
 that never touch the `http` profile. Compose loads `.env` automatically, so the
-smallest fix is to set only that variable:
+smallest fix is to add only that variable. Use `>>` (append), not `>`, so an
+existing `.env` is not truncated:
 
 ```sh
-printf 'KNOSSOS_HTTP_BEARER_TOKEN=unused-by-non-http-profiles\n' > .env
+printf 'KNOSSOS_HTTP_BEARER_TOKEN=unused-by-non-http-profiles\n' >> .env
 ```
 
 Copying `.env.example` also works, but it sets `KNOSSOS_SOURCE` to a placeholder
