@@ -4452,6 +4452,30 @@ $tests['compose file pins the runtime stage and never exposes a public port'] = 
 
     // No absolute developer paths leak into a committed file.
     assertSame(false, str_contains($compose, '/root/'));
+
+    // Docker-free backstop for the resolved-config port check below, which skips
+    // when compose is unavailable: every published port entry must bind loopback.
+    $portEntries = [];
+    $portsIndent = null;
+    foreach (explode("\n", $compose) as $line) {
+        if (preg_match('/^(\s*)ports:\s*$/', $line, $matches) === 1) {
+            $portsIndent = strlen($matches[1]);
+            continue;
+        }
+        if ($portsIndent === null || trim($line) === '') {
+            continue;
+        }
+        if (preg_match('/^(\s*)-\s*(\S.*?)\s*$/', $line, $matches) === 1 && strlen($matches[1]) > $portsIndent) {
+            $portEntries[] = trim($matches[2], "\"'");
+            continue;
+        }
+        $portsIndent = null;
+    }
+
+    assertNotSame([], $portEntries);
+    foreach ($portEntries as $portEntry) {
+        assertSame(true, str_starts_with($portEntry, '127.0.0.1:'));
+    }
 };
 $testGroups['compose file pins the runtime stage and never exposes a public port'] = 'cli';
 
@@ -4500,7 +4524,9 @@ $tests['compose resolved ports are loopback-only across every profile'] = static
     /** @var array{services?: array<string, array{ports?: list<array{host_ip?: string}>}>} $config */
     $config = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
     $services = $config['services'] ?? [];
-    assertSame(false, $services === []);
+    $serviceNames = array_keys($services);
+    sort($serviceNames);
+    assertSame(['knossos', 'knossos-http', 'knossos-mcp'], $serviceNames);
 
     // Every published port, on every service resolved from every profile, must be loopback-only.
     $publishedPortCount = 0;

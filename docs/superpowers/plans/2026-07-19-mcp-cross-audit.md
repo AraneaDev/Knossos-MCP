@@ -243,6 +243,7 @@ git commit -m "feat(mcp): commit portable project-scoped stdio registration"
 - Create: `docker-compose.yml`
 - Create: `.env.example`
 - Modify: `tools/quality` (add compose validation next to the existing `hadolint` block)
+- Modify: `Dockerfile` (install the pinned Compose CLI plugin in the `quality` stage)
 - Modify: `tests/run.php`
 - Modify: `docs/CONTAINER.md`
 
@@ -287,6 +288,30 @@ $tests['compose file pins the runtime stage and never exposes a public port'] = 
 
     // No absolute developer paths leak into a committed file.
     assertSame(false, str_contains($compose, '/root/'));
+
+    // Docker-free backstop for the resolved-config port check below, which skips
+    // when compose is unavailable: every published port entry must bind loopback.
+    $portEntries = [];
+    $portsIndent = null;
+    foreach (explode("\n", $compose) as $line) {
+        if (preg_match('/^(\s*)ports:\s*$/', $line, $matches) === 1) {
+            $portsIndent = strlen($matches[1]);
+            continue;
+        }
+        if ($portsIndent === null || trim($line) === '') {
+            continue;
+        }
+        if (preg_match('/^(\s*)-\s*(\S.*?)\s*$/', $line, $matches) === 1 && strlen($matches[1]) > $portsIndent) {
+            $portEntries[] = trim($matches[2], "\"'");
+            continue;
+        }
+        $portsIndent = null;
+    }
+
+    assertNotSame([], $portEntries);
+    foreach ($portEntries as $portEntry) {
+        assertSame(true, str_starts_with($portEntry, '127.0.0.1:'));
+    }
 };
 $testGroups['compose file pins the runtime stage and never exposes a public port'] = 'cli';
 
@@ -335,7 +360,9 @@ $tests['compose resolved ports are loopback-only across every profile'] = static
     /** @var array{services?: array<string, array{ports?: list<array{host_ip?: string}>}>} $config */
     $config = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
     $services = $config['services'] ?? [];
-    assertSame(false, $services === []);
+    $serviceNames = array_keys($services);
+    sort($serviceNames);
+    assertSame(['knossos', 'knossos-http', 'knossos-mcp'], $serviceNames);
 
     // Every published port, on every service resolved from every profile, must be loopback-only.
     $publishedPortCount = 0;
@@ -466,6 +493,24 @@ fi
 
 This follows the existing `command -v` / container-required pattern used for `shellcheck` and `hadolint`.
 
+The `elif` arm only holds if the quality container actually ships Compose. Debian's `docker.io` package provides the Docker CLI without the Compose plugin, so the `quality` stage of `Dockerfile` installs it explicitly, using the same pinned-download-plus-checksum convention as `hadolint`, `trivy`, and `cosign`:
+
+```dockerfile
+# Debian's `docker.io` ships the CLI without the Compose plugin, so `tools/quality`
+# would skip (or fail) its `docker compose config` gate. Install the plugin explicitly.
+RUN mkdir -p /usr/libexec/docker/cli-plugins \
+    && curl --fail --location --silent --show-error \
+        --output /usr/libexec/docker/cli-plugins/docker-compose \
+        https://github.com/docker/compose/releases/download/v5.3.1/docker-compose-linux-x86_64 \
+    && printf '%s  %s\n' f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959 \
+        /usr/libexec/docker/cli-plugins/docker-compose > /tmp/compose.sha256 \
+    && sha256sum --check --strict /tmp/compose.sha256 \
+    && chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose \
+    && rm -f /tmp/compose.sha256
+```
+
+`/usr/libexec/docker/cli-plugins` is a default plugin search path, so `docker compose version` resolves without further configuration.
+
 - [ ] **Step 8: Document compose usage**
 
 Append to `docs/CONTAINER.md`:
@@ -479,8 +524,16 @@ volume.
 
 Compose interpolates the entire file before applying `--profile` filtering, so
 `KNOSSOS_HTTP_BEARER_TOKEN` must resolve for every compose command, even ones
-that never touch the `http` profile. The simplest fix is
-`cp .env.example .env`; compose loads `.env` automatically.
+that never touch the `http` profile. Compose loads `.env` automatically, so the
+smallest fix is to set only that variable:
+
+```sh
+printf 'KNOSSOS_HTTP_BEARER_TOKEN=unused-by-non-http-profiles\n' > .env
+```
+
+Copying `.env.example` also works, but it sets `KNOSSOS_SOURCE` to a placeholder
+path; delete or fill in that line, or the bind mount stops following the
+directory compose runs from.
 
 One-shot CLI, with networking disabled:
 
@@ -522,7 +575,7 @@ Expected: all clean. `documentation-check.php` verifies that `bin/`- and `tools/
 - [ ] **Step 10: Commit**
 
 ```bash
-git add docker-compose.yml .env.example tools/quality tests/run.php docs/CONTAINER.md
+git add docker-compose.yml .env.example tools/quality Dockerfile tests/run.php docs/CONTAINER.md
 git commit -m "feat(docker): add compose profiles for CLI, MCP stdio, and loopback HTTP"
 ```
 

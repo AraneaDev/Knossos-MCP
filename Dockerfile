@@ -116,6 +116,18 @@ RUN curl --fail --location --silent --show-error \
     && chmod 0755 /usr/local/bin/trivy /usr/local/bin/cosign \
     && rm -f /tmp/trivy.tar.gz /tmp/trivy.sha256 /tmp/cosign.sha256
 
+# Debian's `docker.io` ships the CLI without the Compose plugin, so `tools/quality`
+# would skip (or fail) its `docker compose config` gate. Install the plugin explicitly.
+RUN mkdir -p /usr/libexec/docker/cli-plugins \
+    && curl --fail --location --silent --show-error \
+        --output /usr/libexec/docker/cli-plugins/docker-compose \
+        https://github.com/docker/compose/releases/download/v5.3.1/docker-compose-linux-x86_64 \
+    && printf '%s  %s\n' f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959 \
+        /usr/libexec/docker/cli-plugins/docker-compose > /tmp/compose.sha256 \
+    && sha256sum --check --strict /tmp/compose.sha256 \
+    && chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose \
+    && rm -f /tmp/compose.sha256
+
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 

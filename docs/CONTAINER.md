@@ -52,8 +52,16 @@ volume.
 
 Compose interpolates the entire file before applying `--profile` filtering, so
 `KNOSSOS_HTTP_BEARER_TOKEN` must resolve for every compose command, even ones
-that never touch the `http` profile. The simplest fix is
-`cp .env.example .env`; compose loads `.env` automatically.
+that never touch the `http` profile. Compose loads `.env` automatically, so the
+smallest fix is to set only that variable:
+
+```sh
+printf 'KNOSSOS_HTTP_BEARER_TOKEN=unused-by-non-http-profiles\n' > .env
+```
+
+Copying `.env.example` also works, but it sets `KNOSSOS_SOURCE` to a placeholder
+path; delete or fill in that line, or the bind mount stops following the
+directory compose runs from.
 
 One-shot CLI, with networking disabled:
 
