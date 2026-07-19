@@ -9,6 +9,7 @@ use Knossos\Classification\ClassificationEngine;
 use Knossos\Classification\ClassificationFact;
 use Knossos\Classification\ExplicitRoleRule;
 use Knossos\Classification\NameSuffixRule;
+use Knossos\Classification\TestModuleRule;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Discovery\DiscoveryConfig;
@@ -16,6 +17,7 @@ use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Discovery\JsonConfig;
 use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Discovery\RootGuard;
 use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
 use Knossos\Git\ProcessGitHistoryProvider;
@@ -4391,6 +4393,284 @@ $tests['tool descriptions are intent-first, not jargon-first'] = static function
     }
 };
 $testGroups['tool descriptions are intent-first, not jargon-first'] = 'bundle';
+
+$tests['RootGuard resolves relative allowed roots against the working directory'] = static function (): void {
+    $guard = new RootGuard(['.']);
+    assertSame(str_replace('\\', '/', (string) realpath(getcwd())), $guard->resolve('.'));
+
+    $parent = new RootGuard(['..']);
+    $resolved = $parent->resolve(dirname(__DIR__));
+    assertSame(str_replace('\\', '/', (string) realpath(dirname(__DIR__))), $resolved);
+
+    $narrow = new RootGuard([dirname(__DIR__) . '/src']);
+    assertThrows(static fn() => $narrow->resolve(dirname(__DIR__) . '/tests'), DiscoveryException::class);
+};
+$testGroups['RootGuard resolves relative allowed roots against the working directory'] = 'cli';
+
+$tests['serve refuses to start without an explicit allowed root'] = static function (): void {
+    $binary = dirname(__DIR__) . '/bin/knossos';
+    $previous = getenv('KNOSSOS_ALLOWED_ROOTS');
+    putenv('KNOSSOS_ALLOWED_ROOTS');
+    try {
+        [$exit, , $stderr] = runFixtureCommandOutput([PHP_BINARY, $binary, 'serve']);
+        assertSame(2, $exit);
+        assertContains('--allow-root', $stderr);
+    } finally {
+        if (is_string($previous)) {
+            putenv('KNOSSOS_ALLOWED_ROOTS=' . $previous);
+        }
+    }
+};
+$testGroups['serve refuses to start without an explicit allowed root'] = 'cli';
+
+$tests['committed MCP registration is portable and explicitly scoped'] = static function (): void {
+    $path = dirname(__DIR__) . '/.mcp.json';
+    $config = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
+
+    $server = $config['mcpServers']['knossos'];
+    assertSame('php', $server['command']);
+    // RootGuard::resolve() realpath()s each configured root against the process
+    // working directory, so args must stay relative to remain portable across checkouts.
+    assertSame(['bin/knossos', 'serve', '--allow-root=.'], $server['args']);
+};
+$testGroups['committed MCP registration is portable and explicitly scoped'] = 'cli';
+
+$tests['compose file pins the runtime stage and never exposes a public port'] = static function (): void {
+    $compose = (string) file_get_contents(dirname(__DIR__) . '/docker-compose.yml');
+
+    // The Dockerfile's final stage is `quality`; every service must pin `runtime`.
+    assertSame(1, substr_count($compose, 'target: runtime'));
+    assertSame(false, str_contains($compose, 'target: quality'));
+
+    // Both server services are opt-in, so `docker compose up` starts nothing that listens.
+    assertContains('profiles:', $compose);
+    assertContains('- mcp', $compose);
+    assertContains('- http', $compose);
+
+    // Source is mounted read-only, and the HTTP token is required rather than defaulted.
+    assertContains('read_only: true', $compose);
+    assertContains('KNOSSOS_HTTP_BEARER_TOKEN:?', $compose);
+
+    // No absolute developer paths leak into a committed file.
+    assertSame(false, str_contains($compose, '/root/'));
+
+    // Docker-free backstop for the resolved-config port check below, which skips
+    // when compose is unavailable: every published port entry must bind loopback.
+    $portEntries = [];
+    $portsIndent = null;
+    foreach (explode("\n", $compose) as $line) {
+        if (preg_match('/^(\s*)ports:\s*$/', $line, $matches) === 1) {
+            $portsIndent = strlen($matches[1]);
+            continue;
+        }
+        if ($portsIndent === null || trim($line) === '') {
+            continue;
+        }
+        if (preg_match('/^(\s*)-\s*(\S.*?)\s*$/', $line, $matches) === 1 && strlen($matches[1]) > $portsIndent) {
+            $portEntries[] = trim($matches[2], "\"'");
+            continue;
+        }
+        $portsIndent = null;
+    }
+
+    assertNotSame([], $portEntries);
+    foreach ($portEntries as $portEntry) {
+        assertSame(true, str_starts_with($portEntry, '127.0.0.1:'));
+    }
+};
+$testGroups['compose file pins the runtime stage and never exposes a public port'] = 'cli';
+
+$tests['compose configuration parses and keeps servers behind profiles'] = static function (): void {
+    [$probeExit] = runFixtureCommandOutput(['docker', 'compose', 'version']);
+    if ($probeExit !== 0) {
+        return; // Docker is not available in this environment; the text test above still applies.
+    }
+
+    $root = dirname(__DIR__);
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN=test-token-not-a-secret');
+    [$exit, $stdout, $stderr] = runFixtureCommandOutput(
+        ['docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml', 'config', '--services'],
+    );
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+
+    if ($exit !== 0) {
+        throw new RuntimeException('docker compose config failed: ' . $stderr);
+    }
+
+    // Only the default-profile service is listed without --profile flags.
+    assertSame('knossos', trim($stdout));
+    assertSame(false, str_contains($stdout, 'knossos-http'));
+    assertSame(false, str_contains($stdout, 'knossos-mcp'));
+};
+$testGroups['compose configuration parses and keeps servers behind profiles'] = 'cli';
+
+$tests['compose resolved ports are loopback-only across every profile'] = static function (): void {
+    [$probeExit] = runFixtureCommandOutput(['docker', 'compose', 'version']);
+    if ($probeExit !== 0) {
+        return; // Docker is not available in this environment; the text test above still applies.
+    }
+
+    $root = dirname(__DIR__);
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN=test-token-not-a-secret');
+    [$exit, $stdout, $stderr] = runFixtureCommandOutput([
+        'docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml',
+        '--profile', 'http', '--profile', 'mcp', 'config', '--format', 'json',
+    ]);
+    putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+
+    if ($exit !== 0) {
+        throw new RuntimeException('docker compose config failed: ' . $stderr);
+    }
+
+    /** @var array{services?: array<string, array{ports?: list<array{host_ip?: string}>}>} $config */
+    $config = json_decode($stdout, true, 512, JSON_THROW_ON_ERROR);
+    $services = $config['services'] ?? [];
+    $serviceNames = array_keys($services);
+    sort($serviceNames);
+    assertSame(['knossos', 'knossos-http', 'knossos-mcp'], $serviceNames);
+
+    // Every published port, on every service resolved from every profile, must be loopback-only.
+    $publishedPortCount = 0;
+    foreach ($services as $service) {
+        foreach ($service['ports'] ?? [] as $port) {
+            ++$publishedPortCount;
+            assertSame('127.0.0.1', $port['host_ip'] ?? null);
+        }
+    }
+
+    // At least one port must actually be published, so this cannot pass vacuously.
+    assertSame(true, $publishedPortCount > 0);
+};
+$testGroups['compose resolved ports are loopback-only across every profile'] = 'cli';
+
+$tests['architecture-summary --json emits exactly one JSON document'] = static function (): void {
+    $root = dirname(__DIR__);
+    $path = tempnam(sys_get_temp_dir(), 'knossos-architecture-summary-');
+    if ($path === false) {
+        throw new RuntimeException('Unable to allocate architecture-summary database.');
+    }
+    try {
+        [$scanExit, $scanOut, $scanErr] = runFixtureCommandOutput([
+            PHP_BINARY, $root . '/bin/knossos', 'scan', $root . '/tests/Fixtures/php-scanner', '--db=' . $path, '--json',
+        ]);
+        assertSame(0, $scanExit);
+        assertSame('', $scanErr);
+        $scan = json_decode(trim($scanOut), true, 512, JSON_THROW_ON_ERROR);
+
+        [$exit, $stdout, $stderr] = runFixtureCommandOutput([
+            PHP_BINARY, $root . '/bin/knossos', 'architecture-summary', $scan['project_id'], '--db=' . $path, '--json',
+        ]);
+        assertSame(0, $exit);
+        assertSame('', $stderr);
+
+        // The payload must decode. Two concatenated documents make json_decode fail.
+        $decoded = json_decode(trim($stdout), true, 512, JSON_THROW_ON_ERROR);
+        assertSame($scan['project_id'], $decoded['project_id']);
+
+        // And it must be one line, like every other --json query command.
+        assertSame(1, count(array_filter(explode("\n", trim($stdout)), static fn(string $l): bool => trim($l) !== '')));
+    } finally {
+        foreach ([$path, $path . '-shm', $path . '-wal'] as $candidate) {
+            if (is_file($candidate)) {
+                unlink($candidate);
+            }
+        }
+    }
+};
+$testGroups['architecture-summary --json emits exactly one JSON document'] = 'cli';
+
+$tests['TestModuleRule tags test paths and leaves product code alone'] = static function (): void {
+    $rule = new TestModuleRule();
+    assertSame('core.test.modules.v1', $rule->id());
+
+    $node = static fn(string $path): NodeFact => new NodeFact(
+        'n:' . $path,
+        'module',
+        $path,
+        basename($path),
+        Origin::Ast,
+        Confidence::Certain,
+        new Evidence($path, 1, 2),
+    );
+
+    $tagged = [
+        'src/__tests__/handler.test.ts',
+        'src/handler.test.ts',
+        'src/handler.spec.js',
+        'tests/test_worker.py',
+        'tests/Unit/ThingTest.php',
+    ];
+    foreach ($tagged as $path) {
+        $facts = $rule->classify($node($path));
+        assertSame(1, count($facts));
+        assertSame('quality.test_module', $facts[0]->role);
+    }
+
+    $untagged = ['src/handler.ts', 'src/latest/news.ts', 'src/contest.ts', 'src/protester.php'];
+    foreach ($untagged as $path) {
+        assertSame([], $rule->classify($node($path)));
+    }
+};
+$testGroups['TestModuleRule tags test paths and leaves product code alone'] = 'bundle';
+
+$tests['dead-code nomination skips test modules'] = static function (): void {
+    [$tools, $projectId, $root] = buildToolServiceWithScan('test-modules');
+    try {
+        $envelope = $tools->call('architecture_health', ['project_id' => $projectId, 'limit' => 100]);
+        $dead = $envelope->jsonSerialize()['data']['dead_code_candidates'] ?? [];
+
+        $names = array_map(
+            static fn(array $c): string => $c['component']['canonical_name'],
+            $dead,
+        );
+
+        // The test module is discovered by a runner's glob, never imported. It must
+        // not be nominated just because its in-degree is 0.
+        foreach ($names as $name) {
+            assertSame(false, str_contains($name, '__tests__'));
+        }
+
+        // Guard against the rule over-matching and silently emptying the result:
+        // the unreferenced product module must still be nominated.
+        $orphanNominated = false;
+        foreach ($names as $name) {
+            if (str_contains($name, 'orphan')) {
+                $orphanNominated = true;
+            }
+        }
+        assertSame(true, $orphanNominated);
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['dead-code nomination skips test modules'] = 'bundle';
+
+$tests['dead-code reasons report absence of evidence, not proven absence'] = static function (): void {
+    [$tools, $projectId, $root] = buildToolServiceWithScan('test-modules');
+    try {
+        $envelope = $tools->call('architecture_health', ['project_id' => $projectId, 'limit' => 100]);
+        $dead = $envelope->jsonSerialize()['data']['dead_code_candidates'] ?? [];
+
+        // The fixture's orphan module guarantees at least one candidate; without
+        // it the loop below would assert nothing.
+        assertNotSame(0, count($dead));
+
+        foreach ($dead as $candidate) {
+            // The old wording asserted a universal negative the analyser cannot establish.
+            assertSame(
+                false,
+                str_contains($candidate['reason'], 'No selected inbound static dependency references this component.'),
+            );
+            assertContains('No inbound static reference was found', $candidate['reason']);
+            // The uncertainty must name the blind spot behind 21 verified false
+            // positives: identifiers passed as values.
+            assertContains('as a value', $candidate['uncertainty']);
+        }
+    } finally {
+        removeTempTree($root);
+    }
+};
+$testGroups['dead-code reasons report absence of evidence, not proven absence'] = 'bundle';
 
 $failed = 0;
 $executed = 0;

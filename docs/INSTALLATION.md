@@ -36,6 +36,40 @@ volume, disable networking, and keep stdin open for MCP:
 }
 ```
 
+## Native stdio (repository checkout)
+
+A checked-in `.mcp.json` at the repository root registers the server for
+clients that read project-scoped configuration:
+
+```json
+{
+    "mcpServers": {
+        "knossos": {
+            "command": "php",
+            "args": ["bin/knossos", "serve", "--allow-root=."]
+        }
+    }
+}
+```
+
+Both paths are relative on purpose. `bin/knossos` and `--allow-root=.` resolve
+against the working directory the client launches the server in, so the file is
+valid on any checkout without editing. A client that launches the server
+somewhere unexpected fails immediately on the relative binary path rather than
+silently granting access to the wrong tree.
+
+For a client that configures servers imperatively instead:
+
+```sh
+claude mcp add knossos -- php bin/knossos serve --allow-root=.
+```
+
+`--allow-root` is a security boundary, not a convenience flag. It is the only
+thing standing between the server and the rest of the filesystem, so it is
+required: `serve` exits with `KNOSSOS_INVALID_ARGUMENT` when no root is given
+through the flag or `KNOSSOS_ALLOWED_ROOTS`. Pass the flag once per tree that
+should be readable, and grant the narrowest tree that works.
+
 The configuration shape is accepted by MCP clients that use the common
 `mcpServers` stdio convention. Client-specific placement varies; keep the
 command and argument array unchanged. Do not add `-t`, because terminal framing

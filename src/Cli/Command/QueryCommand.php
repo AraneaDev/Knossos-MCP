@@ -139,7 +139,6 @@ final class QueryCommand implements CliCommand
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-summary <project-id> [--json]');
         $result = $this->queries($c)->architectureSummary($project, $c->options->integer($o, 'limit', 50, 1, 100));
         $c->output($result->jsonSerialize(), isset($o['json']), $result->summary);
-        $c->output($result->jsonSerialize(), isset($o['json']), $result->summary);
         return 0;
     }
 

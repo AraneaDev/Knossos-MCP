@@ -49,6 +49,13 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     exit 1
 fi
 
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    KNOSSOS_HTTP_BEARER_TOKEN=quality-gate-placeholder docker compose config --quiet
+elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
+    echo "docker compose is required in the quality container" >&2
+    exit 1
+fi
+
 composer test
 
 if [ "$profile" = "full" ]; then

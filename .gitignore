@@ -9,7 +9,12 @@ node_modules/
 *.sqlite-shm
 *.sqlite-wal
 .php-cs-fixer.cache
+.env
 __pycache__/
 *.pyc
 .claude/settings.local.json
 .claude/settings.local.json.*
+.superpowers/
+
+# Local-only superpowers specs and plans
+/docs/superpowers/

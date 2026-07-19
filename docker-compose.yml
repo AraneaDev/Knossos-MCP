@@ -1,0 +1,64 @@
+name: knossos
+
+x-knossos-base: &knossos-base
+  build:
+    context: .
+    # The Dockerfile's final stage is `quality`. Pin `runtime` or compose builds
+    # the full toolchain image instead of the distributable one.
+    target: runtime
+  image: knossos-mcp:dev
+  volumes:
+    - type: bind
+      source: ${KNOSSOS_SOURCE:-${PWD}}
+      target: /workspace
+      read_only: true
+    - type: volume
+      source: knossos-data
+      target: /data
+  environment:
+    KNOSSOS_DATA_DIR: /data
+
+services:
+  # One-shot CLI. Networking is disabled: scanning never needs it.
+  #   docker compose run --rm knossos scan /workspace --json
+  knossos:
+    <<: *knossos-base
+    network_mode: none
+
+  # MCP stdio server. Requires -T so compose does not allocate a TTY and
+  # corrupt the JSON-RPC framing:
+  #   docker compose --profile mcp run --rm -T knossos-mcp
+  knossos-mcp:
+    <<: *knossos-base
+    profiles:
+      - mcp
+    network_mode: none
+    stdin_open: true
+    tty: false
+    command: ["serve", "--allow-root=/workspace"]
+
+  # Streamable HTTP MCP profile, opt-in and loopback-only:
+  #   KNOSSOS_HTTP_BEARER_TOKEN=... docker compose --profile http up knossos-http
+  #
+  # docs/HTTP-THREAT-MODEL.md states that PHP's development server is
+  # single-process and unsuitable for hostile traffic, and that stdio remains
+  # the recommended transport. Compose makes "always up" easy, which is exactly
+  # why that caveat belongs here at the point of use. Do not bind this to
+  # 0.0.0.0 or place it on a shared network without a TLS/OAuth gateway.
+  knossos-http:
+    <<: *knossos-base
+    profiles:
+      - http
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      KNOSSOS_DATA_DIR: /data
+      KNOSSOS_ALLOWED_ROOTS: /workspace
+      # Required, not defaulted: an unauthenticated listener is a real exposure,
+      # so compose must fail loudly rather than start one.
+      KNOSSOS_HTTP_BEARER_TOKEN: ${KNOSSOS_HTTP_BEARER_TOKEN:?set KNOSSOS_HTTP_BEARER_TOKEN to a random secret}
+    entrypoint:
+      ["php", "-S", "0.0.0.0:8080", "/opt/knossos/bin/http-router.php"]
+
+volumes:
+  knossos-data:

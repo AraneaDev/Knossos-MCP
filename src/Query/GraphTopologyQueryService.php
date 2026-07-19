@@ -301,10 +301,14 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $deadCandidates[] = [
                     'component' => $component,
                     'confidence' => $dynamicRisk ? 'possible' : 'probable',
-                    'reason' => 'No selected inbound static dependency references this component.',
+                    'reason' => 'No inbound static reference was found among the selected edge kinds.',
                     'uncertainty' => $dynamicRisk
-                        ? 'Framework conventions or dynamic resolution may reference this component.'
-                        : 'Reflection, configuration, templates, or runtime dispatch may not be visible statically.',
+                        ? 'Framework conventions or dynamic resolution may reference this component. '
+                            . 'References that pass the identifier as a value, such as registry arrays, '
+                            . 'callbacks, or dispatch tables, are not resolved.'
+                        : 'Reflection, configuration, templates, or runtime dispatch may not be visible '
+                            . 'statically. References that pass the identifier as a value, such as registry '
+                            . 'arrays, callbacks, or dispatch tables, are not resolved.',
                     'out_degree' => $metrics[$id]['out_degree'],
                 ];
             }
@@ -728,6 +732,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $entryRoles = [
             'application.controller', 'application.command', 'application.entry_point',
             'laravel.controller', 'laravel.command', 'laravel.job', 'laravel.listener',
+            // A test runner discovers these by glob, so in-degree 0 is structural,
+            // not evidence that the module is unused.
+            'quality.test_module',
         ];
         foreach ($roles as $role) {
             if (in_array($role['role'], $entryRoles, true)) {

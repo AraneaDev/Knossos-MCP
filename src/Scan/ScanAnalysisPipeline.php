@@ -13,6 +13,7 @@ use Knossos\Classification\{
     NestJsRoleRule,
     PythonFrameworkRoleRule,
     SymfonyRoleRule,
+    TestModuleRule,
     TypeScriptFrameworkRoleRule
 };
 use Knossos\Scanner\Protocol\Confidence;
@@ -32,6 +33,7 @@ final readonly class ScanAnalysisPipeline
             new NestJsRoleRule(),
             new PythonFrameworkRoleRule(),
             new TypeScriptFrameworkRoleRule(),
+            new TestModuleRule(),
         ];
         if ($plan->preparation->laravel) {
             $rules[] = new LaravelRoleRule();
