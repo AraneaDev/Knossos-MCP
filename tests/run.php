@@ -4306,6 +4306,74 @@ $tests['NextStepPlanner caps at three and defaults to empty'] = static function 
     assertSame([], $empty);
 };
 
+$tests['NextStepPlanner suggests a cycle check for hub components'] = static function (): void {
+    $planner = new \Knossos\Mcp\NextStepPlanner();
+
+    // A hub flagged at the top level and one flagged inside the dossier must both
+    // add the cycle check on top of the usual impact-analysis suggestion.
+    foreach ([
+        ['component' => 'App\\Checkout', 'is_hub' => true],
+        ['component' => ['canonical_name' => 'App\\Checkout', 'is_hub' => true]],
+    ] as $data) {
+        $steps = $planner->plan('inspect_component', new ResultEnvelope('p1', 's1', 'Dossier.', $data));
+        assertSame(2, count($steps));
+        assertSame('impact_analysis', $steps[0]['tool']);
+        assertSame('dependency_cycles', $steps[1]['tool']);
+    }
+
+    // Without the flag the cycle check must not be offered.
+    $plain = $planner->plan('inspect_component', new ResultEnvelope('p1', 's1', 'Dossier.', ['component' => 'App\\Checkout']));
+    assertSame(1, count($plain));
+};
+
+$tests['NextStepPlanner suggests nothing when a result carries no usable name'] = static function (): void {
+    $planner = new \Knossos\Mcp\NextStepPlanner();
+    // Every case below is well-formed enough to reach the suggestion branch but
+    // carries no name the follow-up tool could be called with, so the planner has
+    // to stay silent rather than emit a call it knows will fail.
+    $cases = [
+        // Ambiguous find whose top candidate is an unnameable array.
+        ['find_component', ['candidates' => [['score' => 0.9], ['score' => 0.7]]]],
+        // Dossier with no component at all, and one naming a non-string scalar.
+        ['inspect_component', []],
+        ['inspect_component', ['component' => 42]],
+        // Impact with a target but nothing depending on it.
+        ['impact_analysis', ['target' => 'App\\Checkout']],
+        // Impact whose top dependant cannot be named.
+        ['impact_analysis', ['target' => 'App\\Checkout', 'impacted' => [['score' => 1]]]],
+        // Health with no hotspots, and with a hotspot that cannot be named.
+        ['architecture_health', []],
+        ['architecture_health', ['hotspots' => [['score' => 1]]]],
+        // An empty string is not a usable name either.
+        ['inspect_component', ['component' => '']],
+    ];
+    foreach ($cases as [$tool, $data]) {
+        assertSame([], $planner->plan($tool, new ResultEnvelope('p1', 's1', 'x', $data)));
+    }
+
+    // A single candidate is unambiguous, so there is nothing to disambiguate.
+    assertSame([], $planner->plan('find_component', new ResultEnvelope('p1', 's1', 'x', ['candidates' => [['name' => 'App\\Only']]])));
+};
+
+$tests['HttpSessionStore treats malformed session ids as unknown'] = static function (): void {
+    $pdo = freshTestDatabase();
+    $store = new HttpSessionStore($pdo, ttlSeconds: 60, maxSessions: 4);
+    $real = $store->create();
+
+    // Ids that cannot be a 64-char lowercase hex digest are rejected before any
+    // lookup, so a caller cannot probe the table with arbitrary input.
+    foreach (['', 'not-a-session', str_repeat('z', 64), strtoupper($real)] as $bogus) {
+        assertSame(HttpSessionStore::UNKNOWN_OR_EXPIRED, $store->markInitialized($bogus));
+        assertSame(false, $store->exists($bogus));
+        assertSame(false, $store->initialized($bogus));
+    }
+
+    // The genuine id still works, so the guard rejects only malformed input.
+    assertSame(true, $store->exists($real));
+    assertSame(HttpSessionStore::INITIALIZED, $store->markInitialized($real));
+    assertSame(HttpSessionStore::ALREADY_INITIALIZED, $store->markInitialized($real));
+};
+
 $tests['ResultEnricher compacts evidence and reports meta by default'] = static function (): void {
     $pdo = freshTestDatabase();
     $enricher = new \Knossos\Mcp\ResultEnricher(
