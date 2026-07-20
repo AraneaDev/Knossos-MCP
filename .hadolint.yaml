@@ -9,3 +9,7 @@ ignored:
   - DL3059
   # PHPIZE_DEPS is intentionally expanded into an apt package list.
   - SC2086
+  # Building pcov from its pinned tarball needs phpize/configure to run inside
+  # the extracted source tree. A WORKDIR would leak that directory into later
+  # instructions, so the build cds within its own layer and cds back out.
+  - DL3003
