@@ -94,9 +94,27 @@ COPY --from=node_runtime /usr/local/lib/node_modules/npm /usr/local/lib/node_mod
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
+# pcov is built from a checksum-pinned GitHub tarball rather than installed with
+# `pecl install`. pecl.php.net is repeatedly unreachable from GitHub-hosted
+# runners ("No releases available for package"), which broke the image build for
+# reasons unrelated to the change under test. Every other third-party binary in
+# this stage is already fetched by URL and verified by SHA-256; pcov now matches.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates curl docker.io python3-pip shellcheck $PHPIZE_DEPS \
-    && pecl install pcov-1.0.12 \
+    && curl --fail --location --silent --show-error \
+        --output /tmp/pcov.tar.gz \
+        https://github.com/krakjoe/pcov/archive/refs/tags/v1.0.12.tar.gz \
+    && printf '%s  %s\n' fdd07cad8e2ff42f0c9f095d84aeef11dab0fde7a008805f61883cbcb1b3f12b /tmp/pcov.tar.gz > /tmp/pcov.sha256 \
+    && sha256sum --check --strict /tmp/pcov.sha256 \
+    && mkdir -p /tmp/pcov \
+    && tar -xzf /tmp/pcov.tar.gz -C /tmp/pcov --strip-components=1 \
+    && cd /tmp/pcov \
+    && phpize \
+    && ./configure --enable-pcov \
+    && make -j"$(nproc)" \
+    && make install \
+    && cd / \
+    && rm -rf /tmp/pcov /tmp/pcov.tar.gz /tmp/pcov.sha256 \
     && docker-php-ext-enable pcov \
     && python3 -m pip install --break-system-packages --no-cache-dir \
         coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 ruff==0.15.12 \
