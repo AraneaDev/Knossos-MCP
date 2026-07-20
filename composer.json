@@ -2,7 +2,7 @@
   "name": "knossos-mcp/knossos",
   "description": "Evidence-backed software architecture graph exposed through MCP",
   "type": "project",
-  "license": "proprietary",
+  "license": "MIT",
   "require": {
     "php": ">=8.3 <8.5",
     "ext-json": "*",

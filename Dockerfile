@@ -6,9 +6,11 @@ FROM composer:2@sha256:5946476338742b200bb9ff88f8be56275ddae4b3949c72305cb0dbf10
 
 FROM php:8.4-cli-bookworm@sha256:138a210978c7767ef2a26f499c413fe6de1c13233c9a5068139565c81191b1ac AS runtime
 
+# x-release-please-start-version
 LABEL org.opencontainers.image.title="Knossos MCP" \
       org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
-      org.opencontainers.image.version="0.1.0-dev"
+      org.opencontainers.image.version="0.1.0"
+# x-release-please-end
 
 # The compiler toolchain the base image carries for `docker-php-ext-install` is
 # build-only, and it drags in `libc6-dev` -> `linux-libc-dev`. Kernel headers are
@@ -146,7 +148,8 @@ RUN composer install \
 
 COPY .editorconfig .hadolint.yaml .trivyignore .php-cs-fixer.dist.php .prettierignore .markdownlint-cli2.jsonc ./
 COPY eslint.config.js phpstan.neon pyproject.toml .pre-commit-config.yaml .coveragerc ./
-COPY README.md ./
+COPY README.md CONTRIBUTING.md LICENSE ./
+COPY version.txt release-please-config.json .release-please-manifest.json ./
 COPY coverage-budgets.json ./
 COPY maintainability-budgets.json ./
 COPY Dockerfile ./

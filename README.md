@@ -1,5 +1,21 @@
 # Knossos MCP
 
+> Local-first architecture intelligence over MCP — scans a repository once and
+> answers architecture questions from an evidence-backed graph.
+
+[![Release](https://img.shields.io/github/v/release/AraneaDev/Knossos-MCP)](https://github.com/AraneaDev/Knossos-MCP/releases)
+[![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](./.github/workflows/quality.yml)
+[![coverage](https://img.shields.io/badge/coverage-91%25-brightgreen.svg)](#development)
+[![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#quick-start)
+
+> **Pre-release / in active development.** Knossos is **not yet published to
+> Packagist or any container registry**. The source is public on
+> [GitHub](https://github.com/AraneaDev/Knossos-MCP) — build from source (see
+> [Quick start](#quick-start)). Image names such as `knossos-mcp:dev` in this
+> README are built locally by you; there is no `docker pull` to fetch them yet.
+
 Knossos is a local-first MCP server that scans a repository once and answers
 architecture questions from an evidence-backed graph, so an agent stops
 re-reading the whole source tree to work out what depends on what.
@@ -223,3 +239,11 @@ tools/quality-container full
 suite; `full` adds security audits, coverage floors, performance budgets,
 mutation score, and supply-chain assurance. Details are in
 [quality gates](docs/development/quality.md).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow, the
+Conventional Commit prefixes that drive releases, and how to add a language
+scanner.
+
+## License
+
+[MIT](LICENSE).

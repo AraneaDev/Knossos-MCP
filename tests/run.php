@@ -66,7 +66,13 @@ $tests = [];
 $testGroups = [];
 
 $tests['application exposes a version'] = static function (): void {
-    assertSame('0.1.0-dev', Application::VERSION);
+    // release-please rewrites this constant on every release, so pin the shape
+    // rather than the literal and keep it in step with the manifest.
+    assertSame(1, preg_match('/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/', Application::VERSION));
+    assertSame(
+        trim((string) file_get_contents(dirname(__DIR__) . '/version.txt')),
+        Application::VERSION,
+    );
 };
 
 $tests['CLI failures expose stable automation diagnostics'] = static function (): void {

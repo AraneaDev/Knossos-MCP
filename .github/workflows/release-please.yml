@@ -1,0 +1,58 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release-please:
+    name: Release PR + tag/release on merge
+    runs-on: ubuntu-latest
+    steps:
+      # Opens/updates the Release PR from Conventional Commits. On merge of that
+      # PR, creates the vX.Y.Z tag + GitHub Release and sets release_created=true.
+      - name: Run release-please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Everything below runs ONLY on the merge that cut a release. Because the
+      # tag/release are made with GITHUB_TOKEN, no separate tag-triggered
+      # workflow would fire — so build/verify/publish live here instead.
+      - name: Checkout
+        if: ${{ steps.release.outputs.release_created }}
+        uses: actions/checkout@v5
+
+      - name: Build pinned quality image
+        if: ${{ steps.release.outputs.release_created }}
+        run: docker build --target quality -t knossos-mcp:quality .
+
+      # The same versioned profile that gates every PR, re-run against the
+      # released tree: lint, static analysis, tests, coverage floors, mutation
+      # score, security audits, and supply-chain assurance.
+      - name: Run full quality profile
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            knossos-mcp:quality full
+
+      - name: Verify the released runtime image reports its version
+        if: ${{ steps.release.outputs.release_created }}
+        run: |
+          docker build --target runtime -t knossos-mcp:release .
+          docker run --rm knossos-mcp:release version --json
+          docker run --rm knossos-mcp:release doctor --json
+
+      # Pre-release: no container registry yet. Intentionally dormant. To go
+      # public: remove `if: false` and add registry auth (OIDC or a token).
+      - name: Publish runtime image
+        if: false
+        run: |
+          echo "docker push placeholder for ${{ steps.release.outputs.tag_name }}"
