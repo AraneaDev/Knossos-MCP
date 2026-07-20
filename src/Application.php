@@ -12,7 +12,7 @@ use Throwable;
 
 final class Application
 {
-    public const VERSION = '0.1.0'; // x-release-please-version
+    public const VERSION = '0.2.0'; // x-release-please-version
 
     /** @param list<string> $arguments */
     public function run(array $arguments): int
