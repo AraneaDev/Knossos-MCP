@@ -10,9 +10,16 @@ LABEL org.opencontainers.image.title="Knossos MCP" \
       org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
       org.opencontainers.image.version="0.1.0-dev"
 
+# The compiler toolchain the base image carries for `docker-php-ext-install` is
+# build-only, and it drags in `libc6-dev` -> `linux-libc-dev`. Kernel headers are
+# never executed in a container, but Trivy still reports every kernel CVE against
+# them, so the runtime image fails the HIGH/CRITICAL gate for something it cannot
+# be exploited through. Purge the build deps once the extension is compiled, the
+# way the quality stage already does.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y git libsqlite3-dev python3 unzip \
     && docker-php-ext-install pdo_sqlite \
+    && apt-get purge -y --auto-remove libsqlite3-dev libc6-dev $PHPIZE_DEPS \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node_runtime /usr/local/ /usr/local/
