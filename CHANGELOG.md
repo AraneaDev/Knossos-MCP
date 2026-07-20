@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.2.0...v0.3.0) (2026-07-20)
+
+
+### Features
+
+* **quality:** add a PHPUnit suite and Infection mutation testing ([8edcea9](https://github.com/AraneaDev/Knossos-MCP/commit/8edcea9291e74c29c0067a3d9260650978827bd1))
+* **quality:** add a PHPUnit suite and Infection mutation testing ([c7e939b](https://github.com/AraneaDev/Knossos-MCP/commit/c7e939b3625486e5111ad8a2ffc4fb1a0d104875))
+
 ## [0.2.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.1.0...v0.2.0) (2026-07-20)
 
 
