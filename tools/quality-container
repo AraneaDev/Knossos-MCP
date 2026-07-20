@@ -5,7 +5,6 @@ profile="${1:-fast}"
 mkdir -p coverage
 docker build --target quality -t knossos-mcp:quality .
 docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 \
-    -e KNOSSOS_HOST_WORKSPACE="$PWD" \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$PWD/coverage:/opt/knossos/coverage" \
     knossos-mcp:quality "$profile"

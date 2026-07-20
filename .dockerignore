@@ -2,6 +2,8 @@
 .agents
 .codex
 .knossos
+.superpowers
+docs/superpowers
 coverage
 vendor
 node_modules

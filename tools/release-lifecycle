@@ -2,14 +2,24 @@
 set -eu
 
 image="${1:-knossos-mcp:quality-runtime}"
-host_workspace="${KNOSSOS_HOST_WORKSPACE:-$PWD}"
+fixture="${KNOSSOS_LIFECYCLE_FIXTURE:-$PWD/tests/Fixtures/mixed}"
 volume=$(docker volume create)
-trap 'docker volume rm "$volume" >/dev/null' EXIT
+source_volume=$(docker volume create)
+trap 'docker volume rm "$volume" "$source_volume" >/dev/null' EXIT
+
+# The fixture is copied into a volume rather than bind-mounted from the host.
+# When this script runs inside the quality container, the daemon resolves bind
+# sources against the host filesystem, where this checkout's path does not
+# necessarily exist. `docker cp` writes through the container's mounts, so the
+# same command works from a workstation, a CI job container, and nested Docker.
+seed=$(docker create --mount "type=volume,source=$source_volume,target=/workspace" "$image" true)
+docker cp "$fixture/." "$seed:/workspace"
+docker rm "$seed" >/dev/null
 
 docker run --rm --mount "type=volume,source=$volume,target=/data" "$image" doctor --json >/dev/null
 scan=$(docker run --rm --network none \
     --mount "type=volume,source=$volume,target=/data" \
-    --mount "type=bind,source=$host_workspace/tests/Fixtures/mixed,target=/workspace,readonly" \
+    --mount "type=volume,source=$source_volume,target=/workspace,readonly" \
     "$image" scan /workspace --json)
 # The PHP expression is intentionally single-quoted for the shell.
 # shellcheck disable=SC2016
@@ -18,7 +28,7 @@ docker run --rm --mount "type=volume,source=$volume,target=/data" \
     "$image" maintain-database backup --backup-name=pre-upgrade.sqlite --execute --json >/dev/null
 docker run --rm --network none \
     --mount "type=volume,source=$volume,target=/data" \
-    --mount "type=bind,source=$host_workspace/tests/Fixtures/mixed,target=/workspace,readonly" \
+    --mount "type=volume,source=$source_volume,target=/workspace,readonly" \
     "$image" scan /workspace --mode=full --json >/dev/null
 docker run --rm --entrypoint sh --mount "type=volume,source=$volume,target=/data" \
     "$image" -c 'cp /data/backups/pre-upgrade.sqlite /data/knossos.sqlite'

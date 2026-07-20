@@ -21,6 +21,116 @@ module, or boots an application framework.
 Every capability is available both as an MCP tool and as an equivalent CLI
 command. See the [documentation index](docs/README.md) for the full map.
 
+## Worked example
+
+Scanning this repository takes about four seconds and yields a graph you can
+interrogate. Output below is real, abridged with `…`.
+
+```console
+$ knossos scan . --json
+{"summary":"Scanned 219 files into 1699 nodes and 5943 relationships.",
+ "data":{"files":219,"nodes":1699,"edges":5943,"diagnostics":19,"mode":"full",
+ "scanner_metadata":{"knossos.php":{"files_scanned":174},
+   "knossos.typescript":{"files_scanned":33,"programs":9},
+   "knossos.python":{"files_scanned":12,"parser":"python.ast"}},
+ "metrics":{"elapsed_ms":3981.4, …}}}
+```
+
+Orient yourself in a codebase you have never opened:
+
+```console
+$ knossos architecture-summary project_1b4f41… --json
+{"summary":"Knossos-MCP contains 1699 nodes and 5943 relationships.",
+ "data":{"node_kinds":[{"kind":"method","count":803},{"kind":"class","count":185},
+   {"kind":"function","count":121},{"kind":"interface","count":12},
+   {"kind":"route","count":10}, …]}}
+```
+
+Ask what breaks if you change an interface. Each dependant carries the edge that
+justifies it and the exact source line, so the answer is checkable:
+
+```console
+$ knossos impact-analysis project_1b4f41… 'Knossos\Scanner\ScannerClient' --json
+{"summary":"Found 5 potential static dependants within depth 4.",
+ "data":{"direct_dependants":[{"node":{"display_name":"ProcessScannerClient"},
+   "distance":1,"path_confidence":"certain",
+   "via":{"kind":"implements","origin":"ast",
+     "explanation":"ProcessScannerClient depends through --implements (certain, ast)--> ScannerClient",
+     "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":10}}}, …]}}
+```
+
+Find refactor targets without shelling out to `wc` and `find`:
+
+```console
+$ knossos file-metrics project_1b4f41… --limit=3 --json
+{"summary":"3 of 219 files by line_count desc.",
+ "data":{"files":[{"path":"tests/run.php","language":"php","line_count":5200},
+   {"path":"src/Mcp/ToolService.php","language":"php","line_count":1046},
+   {"path":"workers/typescript/src/scanner.js","language":"javascript","line_count":1007}]}}
+```
+
+Answers that rest on inference say so. `impact-analysis` returns the warning
+"Impact is a conservative static blast radius; it does not guarantee that a
+dependant will break", and dead-code candidates report absence of evidence
+rather than proven absence.
+
+## Tools
+
+Twenty-five MCP tools, each with an equivalent CLI command. Read tools are
+annotated read-only and idempotent; the two deletion tools are annotated
+destructive and preview unless you pass `execute`.
+
+**Projects and history**
+
+| MCP tool              | CLI                   | Answers                                                     |
+| --------------------- | --------------------- | ----------------------------------------------------------- |
+| `list_projects`       | `list-projects`       | Which projects are scanned, how fresh, how large.           |
+| `scan_project`        | `scan`                | Build or refresh the graph (auto, full, or incremental).    |
+| `list_snapshots`      | `list-snapshots`      | The retained scan history for a project.                    |
+| `snapshot_diff`       | `snapshot-diff`       | What changed architecturally between two scans.             |
+| `quality_gate`        | `quality-gate`        | Whether a change breaches architecture budgets, with SARIF. |
+| `architecture_trends` | `architecture-trends` | How metrics moved over recent scans, plus release notes.    |
+
+**Finding and reading components**
+
+| MCP tool               | CLI                    | Answers                                                   |
+| ---------------------- | ---------------------- | --------------------------------------------------------- |
+| `find_component`       | `find-component`       | Ranked candidates when you only know part of a name.      |
+| `inspect_component`    | `inspect-component`    | One component's roles, boundary, relations, and evidence. |
+| `architecture_summary` | `architecture-summary` | A one-call overview by language and node/edge kind.       |
+| `search_architecture`  | `search-architecture`  | Components filtered by kind, role, boundary, confidence.  |
+| `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.           |
+| `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.  |
+
+**Structure and change analysis**
+
+| MCP tool               | CLI                    | Answers                                                        |
+| ---------------------- | ---------------------- | -------------------------------------------------------------- |
+| `impact_analysis`      | `impact-analysis`      | What depends on a symbol, with the edge that proves it.        |
+| `explain_flow`         | `explain-flow`         | How A reaches B, as ranked evidence-backed paths.              |
+| `dependency_cycles`    | `dependency-cycles`    | Circular dependencies as bounded strongly connected groups.    |
+| `architecture_health`  | `architecture-health`  | Hubs, hotspots, and uncertainty-labelled dead-code candidates. |
+| `check_architecture`   | `check-architecture`   | Which relationships violate declared boundary policies.        |
+| `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.    |
+| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.              |
+| `changed_files_impact` | `changed-files-impact` | What a set of changed files — or your working tree — touches.  |
+| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.       |
+| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.              |
+
+**Maintenance**
+
+| MCP tool              | CLI                   | Answers                                                    |
+| --------------------- | --------------------- | ---------------------------------------------------------- |
+| `remove_project`      | `remove-project`      | Delete a project and its graph. Previews unless confirmed. |
+| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.         |
+| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.   |
+
+CLI-only helpers round this out: `doctor` verifies the runtime, workers,
+protocol, and database; `watch` rescans on change; `export-bundle` and
+`import-bundle` move a graph between databases; `serve` starts the MCP server.
+Full input schemas are in the [MCP tool reference](docs/reference/mcp-tools.md)
+and [CLI reference](docs/reference/cli.md).
+
 ## Quick start
 
 The recommended distribution is Docker: it pins PHP 8.4, Node 24, Python,

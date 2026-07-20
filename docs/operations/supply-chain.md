@@ -37,8 +37,13 @@ log verification.
 doctor checks, scans a read-only mixed-language fixture, creates an atomic
 backup, repeats the scan as an idempotent upgrade/migration check, restores the
 backup, and verifies that architecture queries still succeed. It always removes
-its temporary container and volume. When invoked from the quality container,
-`KNOSSOS_HOST_WORKSPACE` maps nested Docker mounts back to the host checkout.
+its temporary containers and volumes.
+
+The fixture is copied into a scratch volume rather than bind-mounted, because a
+bind source is resolved by the Docker daemon against the host filesystem. When
+the profile runs inside the quality container — or on a CI runner whose
+workspace is itself a container mount — that path need not exist on the host.
+Set `KNOSSOS_LIFECYCLE_FIXTURE` to exercise a different project tree.
 
 These tests demonstrate the supported data lifecycle; they do not replace
 retaining external backups before production upgrades. See
