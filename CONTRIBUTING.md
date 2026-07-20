@@ -35,10 +35,10 @@ tools/quality-container fast    # what you run while iterating
 tools/quality-container full    # what CI runs
 ```
 
-| Profile | Covers                                                                                                                                                                                                                                                                        |
-| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `fast`  | Dependency validation, PHP/JS/Markdown/Python linting, PHP-CS-Fixer, PHPStan, formatting, repository hygiene, generated-reference and documentation checks, maintainability budgets, and the full test suite                                                                  |
-| `full`  | Everything in `fast`, plus security audits, external documentation-link checks, MCP Inspector tool listing, runtime image build and `doctor`, release lifecycle, supply-chain assurance (SBOM, CVE gates, signed provenance), benchmarks, mutation score, and coverage floors |
+| Profile | Covers                                                                                                                                                                                                                                                        |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fast`  | Dependency validation, PHP/JS/Markdown/Python linting, PHP-CS-Fixer, PHPStan, formatting, repository hygiene, generated-reference and documentation checks, maintainability budgets, and the full PHPUnit test suite                                          |
+| `full`  | Everything in `fast`, plus security audits, external documentation-link checks, MCP Inspector tool listing, runtime image build and `doctor`, release lifecycle, supply-chain assurance (SBOM, CVE gates, signed provenance), benchmarks, and coverage floors |
 
 `full` is the gate — see [quality gates](docs/development/quality.md) for what
 each stage asserts and how to read its report.

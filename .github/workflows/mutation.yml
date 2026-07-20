@@ -1,0 +1,23 @@
+name: Mutation
+
+# Scheduled, never on a push. A full-src Infection run takes over an hour, so it
+# is not wired into the Quality workflow or any tools/quality profile.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  infection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build pinned quality image
+        run: docker build --target quality -t knossos-mcp:quality .
+      - name: Run Infection over src
+        run: |
+          docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos-mcp:quality \
+            -c 'php -d pcov.enabled=1 vendor/bin/infection --no-interaction --no-progress --threads=4'

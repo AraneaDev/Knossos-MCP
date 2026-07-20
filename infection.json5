@@ -1,14 +1,13 @@
 {
-  // Mutation testing over the classes that carry a PHPUnit suite. `source.directories`
-  // is deliberately narrow: Infection can only judge code the PHPUnit suite reaches,
-  // and tests/run.php (the authoritative behavioural suite) is invisible to it. Widen
-  // this only alongside new tests/phpunit coverage, or the score becomes meaningless.
+  // Mutation testing over all of src. The PHPUnit suite (composer test) now
+  // drives every language through one runner, so Infection can reach the full
+  // source tree. A full run takes ~80 minutes, so it is not part of any
+  // tools/quality profile; .github/workflows/mutation.yml runs it nightly.
   $schema: "vendor/infection/infection/resources/schema.json",
   timeout: 25,
   threads: 4,
   source: {
-    directories: ["src/Mcp"],
-    excludes: ["HttpEndpoint.php", "HttpSessionStore.php", "StdioServer.php", "ToolService.php", "ResultEnricher.php"],
+    directories: ["src"],
   },
   logs: {
     text: "coverage/infection/infection.log",
@@ -24,14 +23,17 @@
     customPath: "vendor/bin/phpunit",
   },
   testFramework: "phpunit",
-  testFrameworkOptions: "--testsuite=unit",
-  // Measured 96.47% (82/85). The three survivors are all the `array_slice($steps, 0, 3)`
-  // cap in NextStepPlanner::plan: no branch can emit more than two steps, so shrinking,
-  // growing, or removing the cap is unobservable. They are equivalent mutants rather
-  // than test gaps, and are left unignored so the score stays honest — hence a 95 floor
-  // rather than 100.
-  minMsi: 95,
-  minCoveredMsi: 95,
+  // No testFrameworkOptions: Infection runs bare phpunit (all testsuites) so
+  // mutations across all of src are reachable by the full 153-test suite.
+  // Floor set from a full-src measurement on 2026-07-20: 8782 mutants, 4640
+  // killed, 4098 escaped, 44 timeouts -> MSI 53.34% in 1h20m. Rounded down to
+  // 53 per the migration plan (never set above what was measured). Mutation
+  // Code Coverage is 100%, so MSI and Covered MSI are the same number here:
+  // the escaped mutants are executed by the suite but not asserted against.
+  // 53% is a ratchet to raise as tests improve, not an acceptable resting
+  // state; src/Mcp alone measured 96.47%, so the gap is in the rest of src.
+  minMsi: 53,
+  minCoveredMsi: 53,
   ignoreMsiWithNoMutations: true,
   tmpDir: "coverage/infection/tmp",
 }

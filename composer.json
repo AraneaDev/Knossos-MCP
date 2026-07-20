@@ -22,7 +22,8 @@
   },
   "autoload-dev": {
     "psr-4": {
-      "Knossos\\Tests\\": "tests/"
+      "Knossos\\Tests\\": "tests/",
+      "Knossos\\Tests\\Phpunit\\": "tests/phpunit/"
     }
   },
   "bin": [
@@ -31,11 +32,9 @@
   "scripts": {
     "lint": [
       "find src bin workers/php/src workers/php/bin -type f -name '*.php' -print0 | xargs -0 -n1 php -l",
-      "php -l tests/run.php",
       "php -l tests/Fixtures/workers/fake-worker.php",
       "php -l tools/benchmark.php",
       "php -l tools/generate-benchmark-corpus.php",
-      "php -l tools/mutation-test.php",
       "php -l tools/generate-reference.php",
       "php -l tools/documentation-check.php",
       "php -l tools/maintainability-report.php",
@@ -43,7 +42,7 @@
       "php -l tools/supply-chain-report.php",
       "php -l tools/scanner-conformance"
     ],
-    "test": "php tests/run.php",
+    "test": "phpunit",
     "check": [
       "@composer validate --strict",
       "composer --working-dir=workers/php validate --strict",
