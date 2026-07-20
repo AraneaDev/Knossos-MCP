@@ -11,7 +11,9 @@
   },
   "require-dev": {
     "friendsofphp/php-cs-fixer": "3.95.12",
-    "phpstan/phpstan": "2.2.5"
+    "infection/infection": "^0.31",
+    "phpstan/phpstan": "2.2.5",
+    "phpunit/phpunit": "^12.0"
   },
   "autoload": {
     "psr-4": {
@@ -51,7 +53,10 @@
     ]
   },
   "config": {
-    "sort-packages": true
+    "sort-packages": true,
+    "allow-plugins": {
+      "infection/extension-installer": true
+    }
   },
   "minimum-stability": "stable",
   "prefer-stable": true

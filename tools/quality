@@ -57,6 +57,10 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
 fi
 
 composer test
+# tests/run.php remains the authoritative behavioural suite. The PHPUnit suite is
+# narrower on purpose: it exists so Infection has per-test-case granularity to
+# mutate against, which the custom runner cannot provide.
+vendor/bin/phpunit --testsuite=unit
 
 if [ "$profile" = "full" ]; then
     composer audit --locked --no-interaction
@@ -72,5 +76,9 @@ if [ "$profile" = "full" ]; then
     tools/supply-chain
     tools/benchmark
     tools/mutation-test
+    # Real mutation testing over the PHPUnit-covered classes, enforcing the minMsi
+    # floor in infection.json5. This is the same engine Chaos-MCP's
+    # audit_code_resilience drives, so a green gate here means that tool works too.
+    php -d pcov.enabled=1 vendor/bin/infection --no-interaction --no-progress --threads=4
     tools/coverage
 fi

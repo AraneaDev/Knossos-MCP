@@ -1,0 +1,37 @@
+{
+  // Mutation testing over the classes that carry a PHPUnit suite. `source.directories`
+  // is deliberately narrow: Infection can only judge code the PHPUnit suite reaches,
+  // and tests/run.php (the authoritative behavioural suite) is invisible to it. Widen
+  // this only alongside new tests/phpunit coverage, or the score becomes meaningless.
+  $schema: "vendor/infection/infection/resources/schema.json",
+  timeout: 25,
+  threads: 4,
+  source: {
+    directories: ["src/Mcp"],
+    excludes: ["HttpEndpoint.php", "HttpSessionStore.php", "StdioServer.php", "ToolService.php", "ResultEnricher.php"],
+  },
+  logs: {
+    text: "coverage/infection/infection.log",
+    summary: "coverage/infection/summary.log",
+    // Chaos-MCP (which drives Infection for its `audit_code_resilience` tool) reads
+    // detailed results from this exact project-root filename, because Infection 0.34+
+    // dropped the --logger-json flag it used to pass. Keep the name as-is or that
+    // integration breaks; the file itself is generated output and is gitignored.
+    json: "chaos-infection-log.json",
+  },
+  phpUnit: {
+    configDir: ".",
+    customPath: "vendor/bin/phpunit",
+  },
+  testFramework: "phpunit",
+  testFrameworkOptions: "--testsuite=unit",
+  // Measured 96.47% (82/85). The three survivors are all the `array_slice($steps, 0, 3)`
+  // cap in NextStepPlanner::plan: no branch can emit more than two steps, so shrinking,
+  // growing, or removing the cap is unobservable. They are equivalent mutants rather
+  // than test gaps, and are left unignored so the score stays honest — hence a 95 floor
+  // rather than 100.
+  minMsi: 95,
+  minCoveredMsi: 95,
+  ignoreMsiWithNoMutations: true,
+  tmpDir: "coverage/infection/tmp",
+}

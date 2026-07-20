@@ -31,10 +31,30 @@ score, and the coverage floors in [coverage policy](coverage.md).
 | Repository hygiene           | private-key/access-key patterns, 2 MB file cap, conflict markers, line endings |
 | MCP contract                 | test suite plus Inspector 0.21.2 `tools/list` smoke                            |
 | Adversarial testing          | fixed-seed properties/fuzz, differential scans, semantic mutation score        |
+| Mutation testing             | PHPUnit 12 unit suite driven by Infection 0.31 against the `minMsi` floor      |
 | Performance                  | mixed-language cold/incremental/query/RSS/SQLite budgets                       |
 | Documentation                | generated CLI/MCP contracts plus internal and scheduled external link checks   |
 | Supply chain                 | CycloneDX SBOMs, Trivy runtime/config gates, provenance, Cosign verification   |
 | Maintainability              | per-file size/decision metrics and normalized cross-file duplication report    |
+
+## The two PHP test suites
+
+`tests/run.php` is the authoritative behavioural suite and the one `composer test`
+runs. It drives every language through one PHP runner that spawns the TypeScript
+and Python workers as subprocesses, which is why the repository needs no vitest,
+pytest, or PHPUnit suite to prove the workers behave.
+
+That design has one cost: mutation-testing tools need per-test-case granularity
+to decide which tests cover a mutated line, and a single monolithic runner cannot
+give them that. `tests/phpunit/` therefore exists purely so
+[Infection](https://infection.github.io/) has something to drive. It is
+deliberately narrow — `infection.json5` limits `source.directories` to the
+classes the PHPUnit suite actually reaches, because Infection can only judge code
+it can cover, and a wider scope would report a meaningless score.
+
+Widen `source.directories` only when adding matching `tests/phpunit/` coverage.
+The same engine backs Chaos-MCP's `audit_code_resilience` tool, so a green
+Infection gate means that tool works against this repository too.
 
 There are currently no standalone YAML configuration files beyond the quality
 workflow and hook configuration, and no release packaging manifest. Those
