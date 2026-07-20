@@ -40,7 +40,7 @@ services:
   # Streamable HTTP MCP profile, opt-in and loopback-only:
   #   KNOSSOS_HTTP_BEARER_TOKEN=... docker compose --profile http up knossos-http
   #
-  # docs/HTTP-THREAT-MODEL.md states that PHP's development server is
+  # docs/operations/http-threat-model.md states that PHP's development server is
   # single-process and unsuitable for hostile traffic, and that stdio remains
   # the recommended transport. Compose makes "always up" easy, which is exactly
   # why that caveat belongs here at the point of use. Do not bind this to

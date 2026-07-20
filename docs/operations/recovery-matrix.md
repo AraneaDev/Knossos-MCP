@@ -41,5 +41,5 @@ processes. The bundled PHP, TypeScript, and Python scanners do not spawn
 analysis children.
 
 For database damage, use `maintain-database integrity` and restore a backup as
-described in [maintenance](MAINTENANCE.md). Cache corruption never requires a
+described in [maintenance](maintenance.md). Cache corruption never requires a
 backup because contribution payloads are derived and validated before replay.

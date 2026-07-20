@@ -86,7 +86,7 @@ KNOSSOS_HTTP_BEARER_TOKEN="$(openssl rand -hex 32)" \
 
 Both server services sit behind profiles, so a bare `docker compose up` starts
 nothing that listens. The HTTP profile is subject to the limits in the
-[HTTP threat model](HTTP-THREAT-MODEL.md): PHP's development server is
+[HTTP threat model](http-threat-model.md): PHP's development server is
 single-process and is not intended for hostile traffic. stdio remains the
 recommended transport.
 

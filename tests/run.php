@@ -105,8 +105,8 @@ $tests['generated CLI MCP references and documentation links stay current'] = st
         throw new RuntimeException($referenceErrors);
     }
     assertContains('Generated reference is current.', $referenceOutput);
-    assertContains('knossos architecture-summary', (string) file_get_contents($root . '/docs/CLI-REFERENCE.md'));
-    assertContains('## `architecture_summary`', (string) file_get_contents($root . '/docs/MCP-REFERENCE.md'));
+    assertContains('knossos architecture-summary', (string) file_get_contents($root . '/docs/reference/cli.md'));
+    assertContains('## `architecture_summary`', (string) file_get_contents($root . '/docs/reference/mcp-tools.md'));
 
     [$linksExit, $linksOutput, $linksErrors] = runFixtureCommandOutput([PHP_BINARY, $root . '/tools/documentation-check.php']);
     if ($linksExit !== 0) {

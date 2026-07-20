@@ -41,7 +41,7 @@ tools/mutation-test
 ```
 
 The gate writes `coverage/mutation/report.json`. Its versioned floor is defined
-in [`benchmarks/mutation-score.json`](../benchmarks/mutation-score.json) and is
+in [`benchmarks/mutation-score.json`](../../benchmarks/mutation-score.json) and is
 currently 90% mutation score. The initial suite kills all eight reviewed
 mutants for a 100% score. The pinned full quality profile enforces the floor and
 CI retains the report.

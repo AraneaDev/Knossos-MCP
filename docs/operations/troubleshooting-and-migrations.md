@@ -10,7 +10,7 @@ docker run --rm knossos-mcp:dev doctor --json
 
 If scanning fails, keep the source mount read-only, enable JSON output, and
 capture the stable diagnostic prefix from stderr. Consult the [fault recovery
-matrix](RECOVERY-MATRIX.md) before deleting or rebuilding data. A worker error
+matrix](recovery-matrix.md) before deleting or rebuilding data. A worker error
 normally preserves the last active snapshot; a corrupt derived contribution
 cache is rebuilt by the next full scan.
 
@@ -62,11 +62,11 @@ and reject unsupported versions before mutating active data.
 
 ## Protocol and configuration migration
 
-- Regenerate and review [CLI](CLI-REFERENCE.md) and [MCP](MCP-REFERENCE.md)
+- Regenerate and review [CLI](../reference/cli.md) and [MCP](../reference/mcp-tools.md)
   references whenever command options or tool schemas change.
 - Keep `knossos.json` on its declared schema version. Unknown keys and future
-  versions fail closed; see [project configuration](PROJECT-CONFIGURATION.md).
-- Third-party workers must pass the [scanner SDK](SCANNER-SDK.md) conformance
+  versions fail closed; see [project configuration](../guides/project-configuration.md).
+- Third-party workers must pass the [scanner SDK](../reference/scanner-sdk.md) conformance
   runner before their protocol or output schema version is adopted.
 - Exported graph bundles are immutable transfer artifacts, not database
   backups. Import validates their format, checksums, limits, and identities

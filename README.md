@@ -1,93 +1,38 @@
 # Knossos MCP
 
-Knossos builds a local, evidence-backed architecture graph for PHP, Laravel,
-Symfony, TypeScript, JavaScript, Python, and mixed repositories. It exposes scanning, component
-lookup, summaries, flow explanation, impact analysis, boundaries, and
-architecture search through MCP stdio and equivalent CLI commands. Advanced
-analysis also reports bounded dependency cycles/strongly connected components,
-structural hubs/hotspots, and uncertainty-labelled dead-code candidates.
-It can also check declared boundary policies and rank existing boundaries for a
-described feature with inspectable deterministic factors. Read-only Git history
-can be blended into static impact as explicitly heuristic change-risk signals.
-The active bounded graph can be exported as deterministic Mermaid or PlantUML
-source without bundling or invoking a renderer.
+Knossos is a local-first MCP server that scans a repository once and answers
+architecture questions from an evidence-backed graph, so an agent stops
+re-reading the whole source tree to work out what depends on what.
 
-MCP stdio remains the default transport. A constrained local-first Streamable
-HTTP JSON profile and its deployment limits are documented in the [HTTP threat
-model](docs/HTTP-THREAT-MODEL.md).
-The Python worker uses the standard-library AST in an isolated interpreter and
-never imports target modules. See [Python support](docs/PYTHON-SUPPORT.md) for
-the supported facts and static-analysis limits.
-Symfony attribute and service analysis is documented in
-[Symfony support](docs/SYMFONY-SUPPORT.md).
-Compiler-backed Next.js, React, Vue, state, and client endpoint signals are
-documented in [TypeScript application support](docs/TYPESCRIPT-APPLICATION-SUPPORT.md).
+Every fact points back to a file and a source location. Facts that static
+analysis cannot prove are labelled with their confidence and origin instead of
+being guessed. Nothing in the scan pipeline installs dependencies, imports a
+module, or boots an application framework.
 
-The recommended distribution is Docker: it pins PHP 8.4, Node 24, Python, Composer,
-SQLite, the PHP parser, and TypeScript compiler so the host project does not
-need those runtimes. See [installation](docs/INSTALLATION.md), [container
-operation](docs/CONTAINER.md), and the [project specification](docs/PROJECT-SPEC.md).
-Boundary dependency rules are documented in [architecture
-policies](docs/ARCHITECTURE-POLICIES.md).
-Development quality gates and hook installation are documented in
-[quality gates](docs/QUALITY.md).
-Persisted project discovery and freshness states are documented in the
-[project catalogue](docs/PROJECT-CATALOG.md).
-Single-call component dossiers are documented in
-[component inspection](docs/COMPONENT-INSPECTION.md).
-Explicit and Git-discovered change-set analysis is documented in
-[changed-file impact](docs/CHANGED-FILES-IMPACT.md).
-Bounded, task-oriented evidence bundles for coding agents are documented in
-[architecture context](docs/ARCHITECTURE-CONTEXT.md).
-Dry-run project cleanup, integrity checks, and atomic SQLite backups are
-documented in [maintenance](docs/MAINTENANCE.md).
-Bounded immutable history across successful scans is documented in
-[retained snapshots](docs/SNAPSHOTS.md).
-Evidence-backed architectural changelogs are documented in
-[snapshot diff](docs/SNAPSHOT-DIFF.md).
-Reviewable regression gates are documented in
-[architecture quality budgets](docs/QUALITY-BUDGETS.md).
-Historical metrics and generated change summaries are documented in
-[architecture trends](docs/ARCHITECTURE-TRENDS.md).
-Third-party worker contracts, schemas, fixtures, and conformance testing are
-documented in the [scanner SDK](docs/SCANNER-SDK.md).
-Versioned checked-in ignores, boundaries, limits, framework hints, policies,
-and budgets are documented in [project configuration](docs/PROJECT-CONFIGURATION.md).
-Bounded incremental polling and graceful daemon operation are documented in
-[watch mode](docs/WATCH-MODE.md).
-Deterministic, checksummed, redacted architecture interchange is documented in
-[portable graph bundles](docs/GRAPH-BUNDLES.md).
-Stable automation exit codes, SARIF/Markdown reports, and ready-to-adapt
-GitHub, GitLab, and editor recipes are documented in [CI and editor
-integration](docs/CI-EDITOR-INTEGRATION.md).
-Reproducible mixed-language corpus benchmarks and enforced runtime, memory,
-query, and storage limits are documented in [performance
-budgets](docs/PERFORMANCE-BUDGETS.md).
-Deterministic property/fuzz corpora, differential scans, and the enforced
-critical-path mutation score are documented in [adversarial
-testing](docs/ADVERSARIAL-TESTING.md).
-Documented behavior for worker, cancellation, lock, disk, cache, transaction,
-and database-integrity failures is in the [fault recovery
-matrix](docs/RECOVERY-MATRIX.md).
-Runtime/development SBOMs, fixed-vulnerability gates, verified provenance
-signing, and clean install/upgrade/rollback checks are documented in
-[supply-chain and release assurance](docs/SUPPLY-CHAIN.md).
-The generated command and protocol contracts are available in the [CLI
-reference](docs/CLI-REFERENCE.md), [MCP tool reference](docs/MCP-REFERENCE.md),
-and [language API reference](docs/API-REFERENCE.md).
-Operational diagnosis and safe database, protocol, and configuration upgrades
-are covered by the [troubleshooting and migration guide](docs/TROUBLESHOOTING-AND-MIGRATIONS.md).
-Monotonic complexity, function-size, dependency, and duplication gates are
-documented in [maintainability ratchets](docs/MAINTAINABILITY.md).
+## What you can ask after one scan
 
-Quick check:
+- What are the major modules, entry points, and boundaries?
+- What depends, directly or transitively, on `UserRepository`?
+- How can a checkout request reach invoice generation?
+- Which relationships cross a declared boundary policy?
+- Where would a refunds feature fit the existing structure?
+- What did this branch's changed files just put at risk?
+
+Every capability is available both as an MCP tool and as an equivalent CLI
+command. See the [documentation index](docs/README.md) for the full map.
+
+## Quick start
+
+The recommended distribution is Docker: it pins PHP 8.4, Node 24, Python,
+Composer, SQLite, the PHP parser, and the TypeScript compiler, so the scanned
+project needs none of them.
 
 ```sh
 docker build -t knossos-mcp:dev .
 docker run --rm knossos-mcp:dev doctor --json
 ```
 
-Scan source with networking disabled and a read-only mount:
+Scan a project with networking disabled and the source mounted read-only:
 
 ```sh
 docker run --rm --network none \
@@ -96,11 +41,75 @@ docker run --rm --network none \
   knossos-mcp:dev scan /workspace --json
 ```
 
-List persisted project IDs for later architecture queries without exposing
-absolute roots:
+Recover persisted project IDs later without exposing absolute roots:
 
 ```sh
 docker run --rm \
   --mount type=volume,source=knossos-data,target=/data \
   knossos-mcp:dev list-projects --json
 ```
+
+Register the server with an MCP client, and grant the narrowest readable tree:
+
+```json
+{
+    "mcpServers": {
+        "knossos": {
+            "command": "php",
+            "args": ["bin/knossos", "serve", "--allow-root=."]
+        }
+    }
+}
+```
+
+Docker, native, and client-specific variants are in
+[installation](docs/guides/installation.md).
+
+## Supported languages
+
+| Language              | Extraction                                                             | Framework enrichment                                                               |
+| --------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| PHP 8.3–8.4           | Declarations, inheritance, calls, construction, types, injection       | [Laravel](docs/languages/php-laravel.md), [Symfony](docs/languages/php-symfony.md) |
+| TypeScript/JavaScript | Compiler symbol resolution, imports, calls, types, project references  | [Next.js, React, Vue, stores, endpoints](docs/languages/typescript.md)             |
+| Python 3.11–3.13      | Standard-library AST in an isolated interpreter; never imports modules | [FastAPI, Django, Celery](docs/languages/python.md)                                |
+
+Mixed repositories reconcile into one graph. Third-party scanners plug in as
+isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.md).
+
+## Safety model
+
+- Scanning never installs dependencies, executes project code, or boots a
+  framework; workers are supervised, resource-capped, and their output is
+  untrusted until it passes schema and limit validation.
+- `--allow-root` is a security boundary, not a convenience flag. `serve` refuses
+  to start without one.
+- The SQLite database is derived and rebuildable; source mounts stay read-only.
+- MCP stdio is the default and recommended transport. The constrained
+  loopback-only Streamable HTTP profile and its deployment limits are documented
+  in the [HTTP threat model](docs/operations/http-threat-model.md).
+- Failed work is never activated: the last complete scan remains the queryable
+  graph. See the [fault recovery matrix](docs/operations/recovery-matrix.md).
+
+## Documentation
+
+[docs/README.md](docs/README.md) is the index. The most-used entries:
+
+- [Installation and MCP configuration](docs/guides/installation.md)
+- [Checked-in project configuration](docs/guides/project-configuration.md)
+- [Running in Docker](docs/operations/container.md)
+- [CLI reference](docs/reference/cli.md) and [MCP tool reference](docs/reference/mcp-tools.md)
+- [Troubleshooting and migrations](docs/operations/troubleshooting-and-migrations.md)
+
+## Development
+
+One versioned quality profile runs locally, in Git hooks, and in CI:
+
+```sh
+tools/quality-container fast
+tools/quality-container full
+```
+
+`fast` covers linting, static analysis, formatting, hygiene, and the whole test
+suite; `full` adds security audits, coverage floors, performance budgets,
+mutation score, and supply-chain assurance. Details are in
+[quality gates](docs/development/quality.md).

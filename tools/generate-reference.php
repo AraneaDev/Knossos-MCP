@@ -102,7 +102,7 @@ foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'discover' => 'd
 }
 $api = rtrim($api) . "\n";
 
-$outputs = [$root . '/docs/CLI-REFERENCE.md' => $cli, $root . '/docs/MCP-REFERENCE.md' => $mcp, $root . '/docs/API-REFERENCE.md' => $api];
+$outputs = [$root . '/docs/reference/cli.md' => $cli, $root . '/docs/reference/mcp-tools.md' => $mcp, $root . '/docs/reference/api.md' => $api];
 $stale = [];
 foreach ($outputs as $path => $contents) {
     if ($check) {

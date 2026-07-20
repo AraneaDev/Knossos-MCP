@@ -20,7 +20,7 @@ source root.
 ## Format and determinism
 
 Version 1 is canonical JSON compressed as gzip. The decompressed contract is
-published as [`graph-bundle-v1.schema.json`](../schemas/graph-bundle-v1.schema.json).
+published as [`graph-bundle-v1.schema.json`](../../schemas/graph-bundle-v1.schema.json).
 The manifest records format/schema version, redaction mode, canonical payload
 SHA-256, byte and fact counts, and the source scan completion timestamp. Sorted
 tables, recursively sorted object keys, a fixed compression level, and no

@@ -42,8 +42,8 @@ its temporary container and volume. When invoked from the quality container,
 
 These tests demonstrate the supported data lifecycle; they do not replace
 retaining external backups before production upgrades. See
-[maintenance](MAINTENANCE.md) for backup and integrity operations and
-[installation](INSTALLATION.md) for runtime deployment.
+[maintenance](maintenance.md) for backup and integrity operations and
+[installation](../guides/installation.md) for runtime deployment.
 
 ## Reviewed release checklist
 

@@ -14,7 +14,7 @@ ESLint, Prettier, markdownlint, Ruff, mypy, JSON/large-file/line-ending/secret
 checks, pre-commit configuration validation, ShellCheck, Hadolint, and all
 tests. `full` additionally runs Composer/npm security audits, the pinned MCP
 Inspector smoke, a clean runtime build, `doctor`, performance budgets, mutation
-score, and the coverage floors in [COVERAGE.md](COVERAGE.md).
+score, and the coverage floors in [coverage policy](coverage.md).
 
 ## Tool inventory
 

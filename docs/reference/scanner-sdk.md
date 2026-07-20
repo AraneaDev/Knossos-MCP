@@ -9,12 +9,12 @@ dependency graph remain independent from Knossos core.
 
 - [`scanner-protocol-v1.md`](scanner-protocol-v1.md) defines lifecycle,
   framing, cancellation, replacement ownership, and the trust boundary.
-- [`manifest.schema.json`](../schemas/scanner/v1/manifest.schema.json) and
-  [`contribution.schema.json`](../schemas/scanner/v1/contribution.schema.json)
+- [`manifest.schema.json`](../../schemas/scanner/v1/manifest.schema.json) and
+  [`contribution.schema.json`](../../schemas/scanner/v1/contribution.schema.json)
   are JSON Schema 2020-12 contracts.
 - `Knossos\Scanner\Sdk\FixtureBuilder` creates protocol-shaped nodes, edges,
   and contributions for PHP extension tests.
-- [`golden.json`](../tests/Fixtures/scanner-sdk/golden.json) records lifecycle,
+- [`golden.json`](../../tests/Fixtures/scanner-sdk/golden.json) records lifecycle,
   required fields, notification name, and stable incompatibility errors.
 - `tools/scanner-conformance` exercises initialization, capability negotiation,
   discovery, an empty scan, contribution validation, and shutdown.

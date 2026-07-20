@@ -14,7 +14,7 @@ Add schema completion to editors with:
 ```
 
 The published schema is
-[`project-config-v1.schema.json`](../schemas/project-config-v1.schema.json).
+[`project-config-v1.schema.json`](../../schemas/project-config-v1.schema.json).
 
 ## Settings
 

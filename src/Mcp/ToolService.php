@@ -24,6 +24,21 @@ final readonly class ToolService
     public function definitions(): array
     {
         return [
+            ...self::projectDefinitions(),
+            ...self::componentDefinitions(),
+            ...self::analysisDefinitions(),
+            ...self::maintenanceDefinitions(),
+        ];
+    }
+
+    /**
+     * Project catalogue, scanning, retained history, and CI gate tools.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function projectDefinitions(): array
+    {
+        return [
             [
                 'name' => 'list_projects',
                 'title' => 'List projects',
@@ -81,23 +96,6 @@ final readonly class ToolService
                         'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
                     ],
                     'required' => ['project_id'],
-                    'additionalProperties' => false,
-                ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
-            ],
-            [
-                'name' => 'find_component',
-                'title' => 'Find component',
-                'description' => 'Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.',
-                'inputSchema' => [
-                    'type' => 'object',
-                    'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
-                        'project_id' => ['type' => 'string', 'minLength' => 1],
-                        'name' => ['type' => 'string', 'minLength' => 1],
-                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
-                    ],
-                    'required' => ['project_id', 'name'],
                     'additionalProperties' => false,
                 ],
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
@@ -165,6 +163,34 @@ final readonly class ToolService
                 ],
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
+        ];
+    }
+
+    /**
+     * Component lookup, dossier, summary, and file metric tools.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function componentDefinitions(): array
+    {
+        return [
+            [
+                'name' => 'find_component',
+                'title' => 'Find component',
+                'description' => 'Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'name' => ['type' => 'string', 'minLength' => 1],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
+                    ],
+                    'required' => ['project_id', 'name'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
             [
                 'name' => 'inspect_component',
                 'title' => 'Inspect component',
@@ -201,6 +227,17 @@ final readonly class ToolService
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             self::fileMetricsDefinition(),
+        ];
+    }
+
+    /**
+     * Graph traversal, impact, policy, diagram, and search tools.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function analysisDefinitions(): array
+    {
+        return [
             [
                 'name' => 'explain_flow',
                 'title' => 'Explain flow',
@@ -457,6 +494,17 @@ final readonly class ToolService
                 ], 'required' => ['project_id', 'query'], 'additionalProperties' => false],
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
+        ];
+    }
+
+    /**
+     * Destructive or state-changing upkeep tools.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function maintenanceDefinitions(): array
+    {
+        return [
             [
                 'name' => 'remove_project', 'title' => 'Remove project',
                 'description' => 'Delete a project and its stored graph. Preview by default; pass the confirm flag to actually remove. Use to clean up projects you no longer query.',

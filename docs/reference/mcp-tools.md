@@ -45,19 +45,6 @@ See a project's scan history. Use to find an older snapshot id to diff against o
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
-## `find_component`
-
-Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.
-
-| Input | Type | Required | Constraints/default |
-| --- | --- | --- | --- |
-| `verbosity` | string | no | default="compact"; enum=compact, full |
-| `project_id` | string | yes | minLength=1 |
-| `name` | string | yes | minLength=1 |
-| `limit` | integer | no | minimum=1; maximum=100; default=20 |
-
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
-
 ## `snapshot_diff`
 
 See what changed architecturally between two scans. Use after a rescan to review added/removed components and relationships instead of eyeballing a code diff.
@@ -98,6 +85,19 @@ See how architecture metrics moved over recent scans. Use for release notes or t
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=2; maximum=20; default=10 |
 | `release_from` | string | no | minLength=1 |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
+## `find_component`
+
+Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `project_id` | string | yes | minLength=1 |
+| `name` | string | yes | minLength=1 |
+| `limit` | integer | no | minimum=1; maximum=100; default=20 |
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 

@@ -25,4 +25,4 @@ oversized graph retains an explicit incomplete metadata record instead of
 silently presenting partial facts as complete. Incomplete snapshots are useful
 for audit timing and fingerprints but are not eligible for full snapshot diffs.
 
-Comparing retained scans is documented in [snapshot diff](SNAPSHOT-DIFF.md).
+Comparing retained scans is documented in [snapshot diff](snapshot-diff.md).

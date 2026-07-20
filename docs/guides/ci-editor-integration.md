@@ -49,16 +49,16 @@ configuration change.
 The examples expect a checked-in `knossos-budgets.json`. Add
 `--policies=/workspace/architecture-policies.json` when the repository also has
 a checked-in policy file. See [architecture quality
-budgets](QUALITY-BUDGETS.md) for both formats.
+budgets](../features/quality-budgets.md) for both formats.
 
 ## Ready-to-adapt recipes
 
-- [GitHub Actions](examples/github-architecture.yml) restores retained graph
+- [GitHub Actions](../examples/github-architecture.yml) restores retained graph
   state, scans, preserves the gate exit code, uploads SARIF and Markdown, and
   saves history only on the default branch.
-- [GitLab CI](examples/gitlab-architecture.yml) applies the same container,
+- [GitLab CI](../examples/gitlab-architecture.yml) applies the same container,
   mounts, baseline, reports, and quality gate.
-- [VS Code tasks](examples/vscode-tasks.json) runs the repository's pinned
+- [VS Code tasks](../examples/vscode-tasks.json) runs the repository's pinned
   quality container and a read-only local scan. Copy it to
   `.vscode/tasks.json` if desired.
 

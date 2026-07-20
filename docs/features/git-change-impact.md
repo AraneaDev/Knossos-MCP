@@ -19,4 +19,4 @@ scanned root is not a repository, the tool returns the static impact with zero
 change scores and a reason instead of failing the whole query.
 
 For current working-tree or explicit file changes rather than historical risk,
-use [`changed_files_impact`](CHANGED-FILES-IMPACT.md).
+use [`changed_files_impact`](changed-files-impact.md).

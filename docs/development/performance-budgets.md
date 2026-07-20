@@ -53,7 +53,7 @@ and 2.87/2.83/3.18 seconds incremental; because host load and caches differ,
 these are recorded observations rather than attribution of the entire change
 to statement reuse.
 
-Budgets live in [`benchmarks/budgets.json`](../benchmarks/budgets.json). The
+Budgets live in [`benchmarks/budgets.json`](../../benchmarks/budgets.json). The
 small, medium, and large profiles currently generate 18, 90, and 300 source
 files respectively. Limits are intentionally high enough for shared CI runners
 but low enough to catch hangs, lost incremental behavior, runaway workers, and

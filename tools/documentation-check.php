@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 $root = dirname(__DIR__);
 $checkExternal = in_array('--external', $argv, true);
-$paths = array_merge([$root . '/README.md'], glob($root . '/docs/*.md') ?: [], glob($root . '/docs/adr/*.md') ?: []);
+$paths = array_merge([$root . '/README.md'], documentationFiles($root . '/docs'));
 $failures = [];
 $external = [];
 foreach ($paths as $path) {
@@ -59,6 +59,30 @@ if ($failures !== []) {
     exit(1);
 }
 printf("Documentation links passed: %d files, %d external%s.\n", count($paths), count($external), $checkExternal ? ' checked' : ' syntax-checked');
+
+/**
+ * Every committed Markdown file under docs/, excluding local-only working notes.
+ *
+ * @return list<string>
+ */
+function documentationFiles(string $directory): array
+{
+    $files = [];
+    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($directory, FilesystemIterator::SKIP_DOTS));
+    foreach ($iterator as $file) {
+        if (!$file instanceof SplFileInfo || !$file->isFile() || strtolower($file->getExtension()) !== 'md') {
+            continue;
+        }
+        $path = str_replace('\\', '/', $file->getPathname());
+        if (str_contains($path, '/docs/superpowers/')) {
+            continue;
+        }
+        $files[] = $path;
+    }
+    sort($files, SORT_STRING);
+
+    return $files;
+}
 
 function relative(string $root, string $path): string
 {

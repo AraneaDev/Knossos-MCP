@@ -8,6 +8,6 @@ workers/**/package-lock.json
 tests/Fixtures/
 coverage/
 docs/Architecture-MCP-Project-Plan.docx
-docs/CLI-REFERENCE.md
-docs/MCP-REFERENCE.md
-docs/API-REFERENCE.md
+docs/reference/cli.md
+docs/reference/mcp-tools.md
+docs/reference/api.md
