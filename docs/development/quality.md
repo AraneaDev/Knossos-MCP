@@ -13,8 +13,10 @@ tools/quality-container full
 ESLint, Prettier, markdownlint, Ruff, mypy, JSON/large-file/line-ending/secret
 checks, pre-commit configuration validation, ShellCheck, Hadolint, and all
 tests. `full` additionally runs Composer/npm security audits, the pinned MCP
-Inspector smoke, a clean runtime build, `doctor`, performance budgets, mutation
-score, and the coverage floors in [coverage policy](coverage.md).
+Inspector smoke, a clean runtime build, `doctor`, performance budgets, and the
+coverage floors in [coverage policy](coverage.md). Mutation score is measured
+on demand rather than in a profile -- see
+[adversarial testing](adversarial-testing.md).
 
 ## Tool inventory
 
@@ -31,30 +33,26 @@ score, and the coverage floors in [coverage policy](coverage.md).
 | Repository hygiene           | private-key/access-key patterns, 2 MB file cap, conflict markers, line endings |
 | MCP contract                 | test suite plus Inspector 0.21.2 `tools/list` smoke                            |
 | Adversarial testing          | fixed-seed properties/fuzz, differential scans, semantic mutation score        |
-| Mutation testing             | PHPUnit 12 unit suite driven by Infection 0.31 against the `minMsi` floor      |
+| Mutation testing             | Infection 0.31 over `src`, manual workflow (not a profile gate)                |
 | Performance                  | mixed-language cold/incremental/query/RSS/SQLite budgets                       |
 | Documentation                | generated CLI/MCP contracts plus internal and scheduled external link checks   |
 | Supply chain                 | CycloneDX SBOMs, Trivy runtime/config gates, provenance, Cosign verification   |
 | Maintainability              | per-file size/decision metrics and normalized cross-file duplication report    |
 
-## The two PHP test suites
+## The PHP test suite
 
-`tests/run.php` is the authoritative behavioural suite and the one `composer test`
-runs. It drives every language through one PHP runner that spawns the TypeScript
-and Python workers as subprocesses, which is why the repository needs no vitest,
-pytest, or PHPUnit suite to prove the workers behave.
+`tests/phpunit/` is the single PHP suite, run by `composer test`. It drives every
+language through one runner that spawns the TypeScript and Python workers as
+subprocesses, which is why the repository needs no vitest or pytest suite to
+prove the workers behave. Groups mirror the architecture areas and are selectable
+with `vendor/bin/phpunit --group=store`.
 
-That design has one cost: mutation-testing tools need per-test-case granularity
-to decide which tests cover a mutated line, and a single monolithic runner cannot
-give them that. `tests/phpunit/` therefore exists purely so
-[Infection](https://infection.github.io/) has something to drive. It is
-deliberately narrow — `infection.json5` limits `source.directories` to the
-classes the PHPUnit suite actually reaches, because Infection can only judge code
-it can cover, and a wider scope would report a meaningless score.
-
-Widen `source.directories` only when adding matching `tests/phpunit/` coverage.
-The same engine backs Chaos-MCP's `audit_code_resilience` tool, so a green
-Infection gate means that tool works against this repository too.
+Because the suite is a real PHPUnit suite, [Infection](https://infection.github.io/)
+can mutate all of `src`, and Chaos-MCP's `audit_code_resilience` works against
+this repository unmodified. Mutation testing is not part of any `tools/quality`
+profile -- a full-src run takes over an hour -- so it runs on demand via
+`.github/workflows/mutation.yml`. See
+[adversarial testing](adversarial-testing.md).
 
 There are currently no standalone YAML configuration files beyond the quality
 workflow and hook configuration, and no release packaging manifest. Those

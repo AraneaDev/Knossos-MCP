@@ -57,7 +57,9 @@ reviewed configuration change.
   `coverage/python/html/index.html`.
 
 Add regression tests at the lowest useful layer, then run `composer test` for
-fast feedback and the container coverage profile before pushing. Tests should
-assert behavior at protocol and safety boundaries; touching a line without an
-observable assertion is not sufficient. Threshold reductions or exclusions
-must include the before/after report and an explicit risk rationale.
+fast feedback and the container coverage profile before pushing. `composer test`
+runs the single PHPUnit suite (`vendor/bin/phpunit`); the coverage profile runs
+it under the pcov prepend. Tests should assert behavior at protocol and safety
+boundaries; touching a line without an observable assertion is not sufficient.
+Threshold reductions or exclusions must include the before/after report and an
+explicit risk rationale.

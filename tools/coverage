@@ -8,7 +8,7 @@ export KNOSSOS_PHP_COVERAGE_DIR=/opt/knossos/coverage/php
 export KNOSSOS_JS_COVERAGE_DIR=/opt/knossos/coverage/js/tmp
 export KNOSSOS_PYTHON_COVERAGE_DIR=/opt/knossos/coverage/python
 
-php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php tests/run.php
+php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php vendor/bin/phpunit
 php tools/pcov-report.php
 
 node_modules/.bin/c8 report \

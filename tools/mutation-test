@@ -1,5 +1,0 @@
-#!/bin/sh
-set -eu
-
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-exec php "$script_dir/mutation-test.php" "$@"

@@ -6,7 +6,6 @@ namespace Knossos\Tests\Phpunit\Mcp;
 
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Query\ResultEnvelope;
-use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
@@ -15,7 +14,6 @@ use PHPUnit\Framework\TestCase;
  * contract is "suggest the obvious next call, or say nothing" — so the cases below
  * pin both halves: what it must suggest, and when it must stay silent.
  */
-#[CoversClass(NextStepPlanner::class)]
 final class NextStepPlannerTest extends TestCase
 {
     private NextStepPlanner $planner;

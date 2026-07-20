@@ -178,7 +178,7 @@ COPY benchmarks ./benchmarks
 COPY tests ./tests
 COPY tools ./tools
 COPY .github ./.github
-RUN chmod 0755 tools/quality tools/quality-container tools/install-hooks tools/coverage tools/benchmark tools/mutation-test tools/supply-chain tools/release-lifecycle tools/scanner-conformance
+RUN chmod 0755 tools/quality tools/quality-container tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
 
 ENV KNOSSOS_QUALITY_CONTAINER=1
 ENV DOCKER_API_VERSION=1.44

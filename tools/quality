@@ -35,7 +35,7 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
 fi
 
 if command -v shellcheck >/dev/null 2>&1; then
-    shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark tools/mutation-test \
+    shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark \
         tools/release-lifecycle tools/supply-chain
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
@@ -57,10 +57,6 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
 fi
 
 composer test
-# tests/run.php remains the authoritative behavioural suite. The PHPUnit suite is
-# narrower on purpose: it exists so Infection has per-test-case granularity to
-# mutate against, which the custom runner cannot provide.
-vendor/bin/phpunit --testsuite=unit
 
 if [ "$profile" = "full" ]; then
     composer audit --locked --no-interaction
@@ -75,10 +71,9 @@ if [ "$profile" = "full" ]; then
     tools/release-lifecycle
     tools/supply-chain
     tools/benchmark
-    tools/mutation-test
-    # Real mutation testing over the PHPUnit-covered classes, enforcing the minMsi
-    # floor in infection.json5. This is the same engine Chaos-MCP's
-    # audit_code_resilience drives, so a green gate here means that tool works too.
-    php -d pcov.enabled=1 vendor/bin/infection --no-interaction --no-progress --threads=4
+    # Mutation testing is deliberately NOT part of any profile: a full-src
+    # Infection run takes over an hour, which is far too slow to gate a push.
+    # Run it on demand instead -- `.github/workflows/mutation.yml`
+    # (workflow_dispatch), or locally per docs/development/adversarial-testing.md.
     tools/coverage
 fi

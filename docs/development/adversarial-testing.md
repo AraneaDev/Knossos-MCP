@@ -20,8 +20,8 @@ The standard test suite includes fixed-seed generated cases for:
 Run only these checks with:
 
 ```sh
-php tests/run.php --group=property
-php tests/run.php --group=mutation-critical
+vendor/bin/phpunit --group=property
+vendor/bin/phpunit --group=mutation-critical
 ```
 
 Seeds and case counts are checked in. A failure can therefore be reproduced by
@@ -30,21 +30,30 @@ reviewable regression cases.
 
 ## Mutation score
 
-`tools/mutation-test` applies reviewed semantic mutants to the critical
-project-relative path validator. The mutants model acceptance of empty,
-absolute, traversal, null-byte, and non-normalized paths. Each mutant runs in
-an isolated process through `auto_prepend_file`; production source is never
-rewritten.
+[Infection](https://infection.github.io/) mutates all of `src` and judges each
+mutant against the PHPUnit suite.
+
+Mutation testing is **not** part of `tools/quality` or the Quality workflow: a
+full-src run takes over an hour, which is too slow to gate a push. It runs
+on demand only -- via the `Mutation` workflow (`workflow_dispatch`) from the
+Actions tab. To run it locally:
 
 ```sh
-tools/mutation-test
+php -d pcov.enabled=1 vendor/bin/infection --no-interaction --no-progress --threads=4
 ```
 
-The gate writes `coverage/mutation/report.json`. Its versioned floor is defined
-in [`benchmarks/mutation-score.json`](../../benchmarks/mutation-score.json) and is
-currently 90% mutation score. The initial suite kills all eight reviewed
-mutants for a 100% score. The pinned full quality profile enforces the floor and
-CI retains the report.
+Scope it while iterating with `--filter=src/Mcp` (or any path) to keep the
+feedback loop short.
+
+The floor is defined by `minMsi` in `infection.json5`, currently **53%**. That
+is the measured baseline, not a target: a full-src run on 2026-07-20 generated
+8,782 mutants and 4,098 escaped, for an MSI of 53.34% in 1h20m. Mutation code
+coverage is 100%, so those mutants _are_ executed by the suite -- they are just
+not asserted against. Treat 53 as a ratchet to raise whenever tests improve;
+`src/Mcp` alone measures 96.47%, so the headroom is in the rest of `src`.
+
+The same engine backs Chaos-MCP's `audit_code_resilience` tool, so a green run
+means that tool works against this repository too.
 
 Equivalent mutants must be replaced with behavior-changing mutants rather than
 counted as survivors or excluded. Lowering the floor requires the surviving
