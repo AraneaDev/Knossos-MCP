@@ -2,17 +2,6 @@
 
 declare(strict_types=1);
 
-/**
- * External URLs the gate deliberately does not fetch, each with the reason it
- * cannot resolve yet. Delete an entry as soon as its URL works so the link is
- * covered again — this list is a waiver, not a permanent exemption.
- */
-const EXTERNAL_LINK_WAIVERS = [
-    // MCP Observatory only serves a badge once it has indexed a public
-    // repository, and Knossos is still pre-release.
-    'https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg' => 'repository not indexed yet',
-];
-
 $root = dirname(__DIR__);
 $checkExternal = in_array('--external', $argv, true);
 $paths = array_merge([$root . '/README.md'], documentationFiles($root . '/docs'));
@@ -51,7 +40,6 @@ foreach ($paths as $path) {
         }
     }
 }
-$waived = 0;
 if ($checkExternal) {
     foreach (array_keys($external) as $url) {
         $process = proc_open(['curl', '--silent', '--show-error', '--location', '--fail', '--head', '--max-time', '20', $url], [1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']], $pipes);
@@ -61,19 +49,7 @@ if ($checkExternal) {
         }
         $error = stream_get_contents($pipes[2]);
         fclose($pipes[2]);
-        $reachable = proc_close($process) === 0;
-        $waiver = EXTERNAL_LINK_WAIVERS[$url] ?? null;
-        if ($waiver !== null) {
-            // A waiver that has started resolving is stale: fail so the entry
-            // gets deleted rather than quietly outliving its reason.
-            if ($reachable) {
-                $failures[] = 'external link waiver is stale, remove it from EXTERNAL_LINK_WAIVERS: ' . $url;
-            } else {
-                ++$waived;
-            }
-            continue;
-        }
-        if (!$reachable) {
+        if (proc_close($process) !== 0) {
             $failures[] = 'external link failed: ' . $url . ' (' . trim((string) $error) . ')';
         }
     }
@@ -82,13 +58,7 @@ if ($failures !== []) {
     fwrite(STDERR, implode(PHP_EOL, $failures) . PHP_EOL);
     exit(1);
 }
-printf(
-    "Documentation links passed: %d files, %d external%s%s.\n",
-    count($paths),
-    count($external),
-    $checkExternal ? ' checked' : ' syntax-checked',
-    $waived > 0 ? sprintf(' (%d waived)', $waived) : '',
-);
+printf("Documentation links passed: %d files, %d external%s.\n", count($paths), count($external), $checkExternal ? ' checked' : ' syntax-checked');
 
 /**
  * Every committed Markdown file under docs/, excluding local-only working notes.
