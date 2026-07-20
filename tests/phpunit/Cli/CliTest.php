@@ -188,11 +188,17 @@ final class CliTest extends KnossosTestCase
         }
 
         $root = self::repositoryRoot();
+        $previousToken = getenv('KNOSSOS_HTTP_BEARER_TOKEN');
         putenv('KNOSSOS_HTTP_BEARER_TOKEN=test-token-not-a-secret');
-        [$exit, $stdout, $stderr] = $this->runFixtureCommandOutput(
-            ['docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml', 'config', '--services'],
-        );
-        putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+        try {
+            [$exit, $stdout, $stderr] = $this->runFixtureCommandOutput(
+                ['docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml', 'config', '--services'],
+            );
+        } finally {
+            is_string($previousToken)
+                ? putenv('KNOSSOS_HTTP_BEARER_TOKEN=' . $previousToken)
+                : putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+        }
 
         if ($exit !== 0) {
             throw new RuntimeException('docker compose config failed: ' . $stderr);
@@ -213,12 +219,18 @@ final class CliTest extends KnossosTestCase
         }
 
         $root = self::repositoryRoot();
+        $previousToken = getenv('KNOSSOS_HTTP_BEARER_TOKEN');
         putenv('KNOSSOS_HTTP_BEARER_TOKEN=test-token-not-a-secret');
-        [$exit, $stdout, $stderr] = $this->runFixtureCommandOutput([
-            'docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml',
-            '--profile', 'http', '--profile', 'mcp', 'config', '--format', 'json',
-        ]);
-        putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+        try {
+            [$exit, $stdout, $stderr] = $this->runFixtureCommandOutput([
+                'docker', 'compose', '--project-directory', $root, '-f', $root . '/docker-compose.yml',
+                '--profile', 'http', '--profile', 'mcp', 'config', '--format', 'json',
+            ]);
+        } finally {
+            is_string($previousToken)
+                ? putenv('KNOSSOS_HTTP_BEARER_TOKEN=' . $previousToken)
+                : putenv('KNOSSOS_HTTP_BEARER_TOKEN');
+        }
 
         if ($exit !== 0) {
             throw new RuntimeException('docker compose config failed: ' . $stderr);

@@ -15,7 +15,7 @@ checks, pre-commit configuration validation, ShellCheck, Hadolint, and all
 tests. `full` additionally runs Composer/npm security audits, the pinned MCP
 Inspector smoke, a clean runtime build, `doctor`, performance budgets, and the
 coverage floors in [coverage policy](coverage.md). Mutation score is measured
-nightly rather than in a profile -- see
+on demand rather than in a profile -- see
 [adversarial testing](adversarial-testing.md).
 
 ## Tool inventory
@@ -33,7 +33,7 @@ nightly rather than in a profile -- see
 | Repository hygiene           | private-key/access-key patterns, 2 MB file cap, conflict markers, line endings |
 | MCP contract                 | test suite plus Inspector 0.21.2 `tools/list` smoke                            |
 | Adversarial testing          | fixed-seed properties/fuzz, differential scans, semantic mutation score        |
-| Mutation testing             | Infection 0.31 over `src`, nightly workflow (not a profile gate)               |
+| Mutation testing             | Infection 0.31 over `src`, manual workflow (not a profile gate)                |
 | Performance                  | mixed-language cold/incremental/query/RSS/SQLite budgets                       |
 | Documentation                | generated CLI/MCP contracts plus internal and scheduled external link checks   |
 | Supply chain                 | CycloneDX SBOMs, Trivy runtime/config gates, provenance, Cosign verification   |
@@ -50,7 +50,7 @@ with `vendor/bin/phpunit --group=store`.
 Because the suite is a real PHPUnit suite, [Infection](https://infection.github.io/)
 can mutate all of `src`, and Chaos-MCP's `audit_code_resilience` works against
 this repository unmodified. Mutation testing is not part of any `tools/quality`
-profile -- a full-src run takes over an hour -- so it runs nightly via
+profile -- a full-src run takes over an hour -- so it runs on demand via
 `.github/workflows/mutation.yml`. See
 [adversarial testing](adversarial-testing.md).
 

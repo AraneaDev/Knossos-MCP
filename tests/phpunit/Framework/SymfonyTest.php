@@ -62,7 +62,10 @@ final class SymfonyTest extends KnossosTestCase
             assertSame(1, (int) $pdo->query("SELECT COUNT(*) FROM classifications WHERE role = 'symfony.message_handler'")->fetchColumn());
             assertSame(1, (int) $pdo->query("SELECT COUNT(*) FROM classifications WHERE role = 'symfony.event_subscriber'")->fetchColumn());
         } finally {
-            @unlink($path);
+            unset($pdo);
+            foreach ([$path, $path . '-shm', $path . '-wal'] as $candidate) {
+                @unlink($candidate);
+            }
         }
     }
 }

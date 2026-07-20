@@ -2,7 +2,7 @@
   // Mutation testing over all of src. The PHPUnit suite (composer test) now
   // drives every language through one runner, so Infection can reach the full
   // source tree. A full run takes ~80 minutes, so it is not part of any
-  // tools/quality profile; .github/workflows/mutation.yml runs it nightly.
+  // tools/quality profile; .github/workflows/mutation.yml runs it on demand.
   $schema: "vendor/infection/infection/resources/schema.json",
   timeout: 25,
   threads: 4,

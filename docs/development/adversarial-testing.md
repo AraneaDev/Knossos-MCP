@@ -35,8 +35,8 @@ mutant against the PHPUnit suite.
 
 Mutation testing is **not** part of `tools/quality` or the Quality workflow: a
 full-src run takes over an hour, which is too slow to gate a push. It runs
-nightly at 03:00 UTC via `.github/workflows/mutation.yml`, which also accepts
-`workflow_dispatch`. To run it locally:
+on demand only -- via the `Mutation` workflow (`workflow_dispatch`) from the
+Actions tab. To run it locally:
 
 ```sh
 php -d pcov.enabled=1 vendor/bin/infection --no-interaction --no-progress --threads=4

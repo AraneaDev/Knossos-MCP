@@ -1,10 +1,9 @@
 name: Mutation
 
-# Scheduled, never on a push. A full-src Infection run takes over an hour, so it
-# is not wired into the Quality workflow or any tools/quality profile.
+# Manual only. A full-src Infection run takes ~80 minutes, so it is not wired
+# into the Quality workflow, any tools/quality profile, or a schedule. Run it
+# from the Actions tab when you want a current mutation score.
 on:
-  schedule:
-    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
