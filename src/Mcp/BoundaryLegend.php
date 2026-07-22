@@ -49,6 +49,9 @@ final class BoundaryLegend
         return $value;
     }
 
+    /**
+     * @phpstan-assert-if-true list<array{id: string, name: string, source: string}> $item
+     */
     private static function isBoundaryList(mixed $item): bool
     {
         if (!is_array($item) || !array_is_list($item) || $item === []) {
