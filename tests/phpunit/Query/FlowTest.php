@@ -17,7 +17,7 @@ final class FlowTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $route = StableId::symbol($ids['project'], 'php', 'route', 'GET /checkout');
-        $typescriptCheckout = StableId::symbol($ids['project'], 'typescript', 'class', 'frontend/checkout#Checkout');
+        $typescriptCheckout = StableId::symbol($ids['project'], 'ts', 'class', 'frontend/checkout#Checkout');
         $repository->saveNode($route, $ids['project'], 'php', 'route', 'GET /checkout', 'GET /checkout', null, $ids['file'], 1, 1, 'framework_convention', 'certain', [], 'laravel:routes', $ids['scan']);
         $repository->saveNode($typescriptCheckout, $ids['project'], 'ts', 'class', 'frontend/checkout#Checkout', 'Checkout', null, $ids['file'], 40, 45, 'ast', 'certain', [], 'ts:file:checkout.ts', $ids['scan']);
         $repository->saveEdge(

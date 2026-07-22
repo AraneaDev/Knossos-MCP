@@ -81,6 +81,19 @@ final readonly class MigrationRunner
                 if ($this->pdo->inTransaction()) {
                     $this->pdo->rollBack();
                 }
+                if (!$ownTransaction) {
+                    // The migration's own SQL-level transaction may still be
+                    // open (PDO::inTransaction() only tracks API-level ones),
+                    // and PRAGMA foreign_keys is a no-op inside it.
+                    try {
+                        $this->pdo->exec('ROLLBACK');
+                    } catch (Throwable) {
+                        // No SQL-level transaction was active.
+                    }
+                    // A failed rebuild may abort between PRAGMA foreign_keys
+                    // OFF and ON; the connection contract is enforcement on.
+                    $this->pdo->exec('PRAGMA foreign_keys = ON');
+                }
                 throw $error;
             }
 

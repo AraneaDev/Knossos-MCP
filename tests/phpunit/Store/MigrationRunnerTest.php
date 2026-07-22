@@ -224,6 +224,41 @@ final class MigrationRunnerTest extends TestCase
         assertSame(false, $pdo->inTransaction(), 'the migration-owned transaction must be rolled back');
     }
 
+    public function testNoTransactionMarkerFailureRestoresForeignKeyEnforcement(): void
+    {
+        $this->tempDir = sys_get_temp_dir() . '/knossos-migrations-' . uniqid('', true);
+        mkdir($this->tempDir, 0777, true);
+
+        // Fails after disabling foreign keys and before re-enabling them; the
+        // runner must not leave the connection with enforcement off.
+        file_put_contents($this->tempDir . '/001_bad_rebuild.sql', <<<'SQL'
+            -- migrate:no-transaction
+            PRAGMA foreign_keys = OFF;
+            BEGIN;
+            THIS IS NOT VALID SQL;
+            COMMIT;
+            PRAGMA foreign_keys = ON;
+            SQL);
+
+        $this->tempSqlite = sys_get_temp_dir() . '/knossos-mig-' . uniqid('', true) . '.sqlite';
+        $pdo = SqliteConnection::open($this->tempSqlite);
+
+        $caught = null;
+        try {
+            (new MigrationRunner($pdo, $this->tempDir))->migrate();
+        } catch (\Throwable $error) {
+            $caught = $error;
+        }
+
+        $this->assertNotNull($caught, 'invalid SQL must propagate from migrate()');
+        assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
+        // The migration's SQL-level BEGIN must not linger either; a fresh
+        // transaction would fail with "cannot start a transaction within a
+        // transaction" if it did.
+        $pdo->exec('BEGIN');
+        $pdo->exec('COMMIT');
+    }
+
     public function testConstructorIsFinalAndReadonly(): void
     {
         $reflection = new \ReflectionClass(MigrationRunner::class);

@@ -16,7 +16,7 @@ final class ImpactTest extends KnossosTestCase
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
         $route = StableId::symbol($ids['project'], 'php', 'route', 'GET /checkout');
-        $typescriptInvoice = StableId::symbol($ids['project'], 'typescript', 'class', 'frontend#InvoiceService');
+        $typescriptInvoice = StableId::symbol($ids['project'], 'ts', 'class', 'frontend#InvoiceService');
         $repository->saveNode($route, $ids['project'], 'php', 'route', 'GET /checkout', 'GET /checkout', null, $ids['file'], 1, 1, 'framework_convention', 'certain', [], 'laravel:routes', $ids['scan']);
         $repository->saveNode($typescriptInvoice, $ids['project'], 'ts', 'class', 'frontend#InvoiceService', 'InvoiceService', null, $ids['file'], 40, 45, 'ast', 'certain', [], 'ts:file:invoice.ts', $ids['scan']);
         $repository->saveEdge(
