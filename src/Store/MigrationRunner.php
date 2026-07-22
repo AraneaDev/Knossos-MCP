@@ -54,7 +54,16 @@ final readonly class MigrationRunner
                 continue;
             }
 
-            $this->pdo->beginTransaction();
+            // Migrations marked no-transaction manage their own transaction
+            // boundaries. This exists for table rebuilds: PRAGMA foreign_keys
+            // is a silent no-op inside a transaction, so a rebuild that must
+            // disable enforcement (dropping a parent table would otherwise
+            // cascade into its children) cannot run under the runner's own
+            // transaction.
+            $ownTransaction = !str_starts_with($sql, '-- migrate:no-transaction');
+            if ($ownTransaction) {
+                $this->pdo->beginTransaction();
+            }
             try {
                 $this->pdo->exec($sql);
                 $insert = $this->pdo->prepare(
@@ -65,7 +74,9 @@ final readonly class MigrationRunner
                     'checksum' => $checksum,
                     'applied_at' => gmdate('Y-m-d\TH:i:s\Z'),
                 ]);
-                $this->pdo->commit();
+                if ($ownTransaction) {
+                    $this->pdo->commit();
+                }
             } catch (Throwable $error) {
                 if ($this->pdo->inTransaction()) {
                     $this->pdo->rollBack();

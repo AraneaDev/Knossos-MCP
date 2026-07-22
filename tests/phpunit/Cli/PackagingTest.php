@@ -30,7 +30,7 @@ final class PackagingTest extends KnossosTestCase
         assertSame('ok', $byName['worker.typescript']['status']);
         assertSame('ok', $byName['worker.python']['status']);
         assertContains('knossos.python@0.2.0 protocol 1.0', $byName['worker.python']['detail']);
-        assertSame('9 applied', $byName['sqlite.migrations']['detail']);
+        assertSame('10 applied', $byName['sqlite.migrations']['detail']);
         preg_match('/v(\d+)\./', $byName['node.version']['detail'], $nodeVersion);
         $nodeMajor = (int) ($nodeVersion[1] ?? 0);
         assertSame($nodeMajor >= 22 && $nodeMajor <= 24 ? 'ok' : 'error', $byName['node.version']['status']);

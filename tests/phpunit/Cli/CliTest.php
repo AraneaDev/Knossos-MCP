@@ -416,10 +416,12 @@ final class CliTest extends KnossosTestCase
         $config = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
 
         $server = $config['mcpServers']['knossos'];
-        assertSame('php', $server['command']);
+        // The launcher wraps `php bin/knossos serve` and logs process
+        // lifecycle so silent MCP disconnects are diagnosable.
+        assertSame('tools/mcp-serve', $server['command']);
         // RootGuard::resolve() realpath()s each configured root against the process
         // working directory, so args must stay relative to remain portable across checkouts.
-        assertSame(['bin/knossos', 'serve', '--allow-root=.'], $server['args']);
+        assertSame(['--allow-root=.'], $server['args']);
     }
 
     #[Group('cli')]

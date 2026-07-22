@@ -65,6 +65,7 @@ interface GraphRepository
     public function saveNode(
         string $id,
         string $projectId,
+        string $language,
         string $kind,
         string $canonicalName,
         string $displayName,

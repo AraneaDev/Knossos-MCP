@@ -29,7 +29,7 @@ final readonly class GraphBundleService
         }
         $tables = [
             'files' => $this->all('SELECT id, relative_path, content_hash, size, line_count, language, scanner_version FROM files WHERE project_id = :project ORDER BY id', $projectId),
-            'nodes' => $this->all('SELECT id, kind, canonical_name, display_name, parent_id, file_id, start_line, end_line, origin, confidence, attributes_json, owner_key FROM nodes WHERE project_id = :project ORDER BY id', $projectId),
+            'nodes' => $this->all('SELECT id, language, kind, canonical_name, display_name, parent_id, file_id, start_line, end_line, origin, confidence, attributes_json, owner_key FROM nodes WHERE project_id = :project ORDER BY id', $projectId),
             'edges' => $this->all('SELECT id, kind, source_id, target_id, file_id, start_line, end_line, origin, confidence, attributes_json, owner_key FROM edges WHERE project_id = :project ORDER BY id', $projectId),
             'classifications' => $this->all('SELECT id, node_id, role, origin, confidence, rule_id, file_id, start_line, end_line, attributes_json FROM classifications WHERE project_id = :project ORDER BY id', $projectId),
             'boundaries' => $this->all('SELECT id, name, matcher_json, source FROM boundaries WHERE project_id = :project ORDER BY id', $projectId),

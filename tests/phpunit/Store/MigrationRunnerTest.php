@@ -154,6 +154,76 @@ final class MigrationRunnerTest extends TestCase
         assertSame(false, $pdo->inTransaction(), 'transaction must be released after rollback');
     }
 
+    public function testNoTransactionMarkerRunsMigrationOutsideRunnerTransaction(): void
+    {
+        $this->tempDir = sys_get_temp_dir() . '/knossos-migrations-' . uniqid('', true);
+        mkdir($this->tempDir, 0777, true);
+
+        // PRAGMA foreign_keys is a silent no-op inside a transaction, so a
+        // table rebuild that must disable enforcement declares the marker.
+        // The migration manages its own transaction boundaries.
+        file_put_contents($this->tempDir . '/001_parent_child.sql', <<<'SQL'
+            CREATE TABLE parent (id INTEGER PRIMARY KEY);
+            CREATE TABLE child (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER NOT NULL,
+                FOREIGN KEY (parent_id) REFERENCES parent(id) ON DELETE CASCADE
+            );
+            INSERT INTO parent(id) VALUES (1);
+            INSERT INTO child(id, parent_id) VALUES (10, 1);
+            SQL);
+        file_put_contents($this->tempDir . '/002_rebuild_parent.sql', <<<'SQL'
+            -- migrate:no-transaction
+            PRAGMA foreign_keys = OFF;
+            BEGIN;
+            CREATE TABLE parent_new (id INTEGER PRIMARY KEY, note TEXT NOT NULL DEFAULT '');
+            INSERT INTO parent_new(id) SELECT id FROM parent;
+            DROP TABLE parent;
+            ALTER TABLE parent_new RENAME TO parent;
+            COMMIT;
+            PRAGMA foreign_keys = ON;
+            SQL);
+
+        $this->tempSqlite = sys_get_temp_dir() . '/knossos-mig-' . uniqid('', true) . '.sqlite';
+        $pdo = SqliteConnection::open($this->tempSqlite);
+
+        (new MigrationRunner($pdo, $this->tempDir))->migrate();
+
+        assertSame(['001_parent_child', '002_rebuild_parent'], $this->appliedVersions($pdo));
+        // With foreign keys genuinely off during the rebuild, the child rows
+        // survive the parent DROP instead of being cascade-deleted.
+        assertSame(1, (int) $pdo->query('SELECT COUNT(*) FROM child')->fetchColumn());
+        assertSame(false, $pdo->inTransaction());
+    }
+
+    public function testNoTransactionMarkerFailureDoesNotRecordVersion(): void
+    {
+        $this->tempDir = sys_get_temp_dir() . '/knossos-migrations-' . uniqid('', true);
+        mkdir($this->tempDir, 0777, true);
+
+        file_put_contents($this->tempDir . '/001_bad.sql', <<<'SQL'
+            -- migrate:no-transaction
+            BEGIN;
+            CREATE TABLE ok (id INTEGER PRIMARY KEY);
+            THIS IS NOT VALID SQL;
+            COMMIT;
+            SQL);
+
+        $this->tempSqlite = sys_get_temp_dir() . '/knossos-mig-' . uniqid('', true) . '.sqlite';
+        $pdo = SqliteConnection::open($this->tempSqlite);
+
+        $caught = null;
+        try {
+            (new MigrationRunner($pdo, $this->tempDir))->migrate();
+        } catch (\Throwable $error) {
+            $caught = $error;
+        }
+
+        $this->assertNotNull($caught, 'invalid SQL must propagate from migrate()');
+        assertSame([], $this->appliedVersions($pdo));
+        assertSame(false, $pdo->inTransaction(), 'the migration-owned transaction must be rolled back');
+    }
+
     public function testConstructorIsFinalAndReadonly(): void
     {
         $reflection = new \ReflectionClass(MigrationRunner::class);

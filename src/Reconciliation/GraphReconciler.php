@@ -79,6 +79,7 @@ final readonly class GraphReconciler
                 $this->repository->saveNode(
                     $node['id'],
                     $projectId,
+                    $node['language'],
                     $node['kind'],
                     $node['canonical_name'],
                     $node['display_name'],
@@ -242,7 +243,7 @@ final readonly class GraphReconciler
                     continue;
                 }
 
-                $nodes[$id] = $this->nodeRecord($id, $node, $contribution->ownerKey, $scanner);
+                $nodes[$id] = $this->nodeRecord($id, $language, $node, $contribution->ownerKey, $scanner);
             }
         }
 
@@ -304,10 +305,11 @@ final readonly class GraphReconciler
     }
 
     /** @return array<string, mixed> */
-    private function nodeRecord(string $id, NodeFact $node, string $owner, string $scanner): array
+    private function nodeRecord(string $id, string $language, NodeFact $node, string $owner, string $scanner): array
     {
         return [
             'id' => $id,
+            'language' => $language,
             'kind' => $node->kind,
             'canonical_name' => $node->canonicalName,
             'display_name' => $node->displayName,
@@ -346,6 +348,7 @@ final readonly class GraphReconciler
 
         return [$id, [
             'id' => $id,
+            'language' => $language,
             'kind' => $externalKind,
             'canonical_name' => $canonical,
             'display_name' => $this->displayName($canonical),

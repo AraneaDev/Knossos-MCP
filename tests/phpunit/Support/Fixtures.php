@@ -155,6 +155,7 @@ trait Fixtures
         $repository->saveNode(
             $checkout,
             $project,
+            'php',
             'class',
             'App\\Checkout',
             'Checkout',
@@ -171,6 +172,7 @@ trait Fixtures
         $repository->saveNode(
             $invoice,
             $project,
+            'php',
             'class',
             'App\\InvoiceService',
             'InvoiceService',

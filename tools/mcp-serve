@@ -1,0 +1,44 @@
+#!/bin/sh
+# Launch `bin/knossos serve` for MCP stdio clients with lifecycle logging.
+#
+# MCP hosts report only "server disconnected" when the stdio process dies,
+# and the server's stderr is usually discarded, so a silent death leaves no
+# evidence. This wrapper records start, signals, stderr, and the final exit
+# status to .knossos/mcp-serve.log so the cause is diagnosable afterwards.
+# Protocol traffic on stdin/stdout passes through untouched.
+set -u
+
+ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)"
+LOG_DIR="${KNOSSOS_DATA_DIR:-${ROOT_DIR}/.knossos}"
+mkdir -p "${LOG_DIR}"
+LOG="${LOG_DIR}/mcp-serve.log"
+
+note() {
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" >> "${LOG}"
+}
+
+note "start pid=$$ args=$*"
+# POSIX sh points a background child's stdin at /dev/null; keep the MCP
+# request stream attached explicitly.
+exec 3<&0
+php "${ROOT_DIR}/bin/knossos" serve "$@" 0<&3 2>> "${LOG}" &
+CHILD=$!
+
+# shellcheck disable=SC2317  # invoked indirectly via trap
+forward() {
+    note "signal $1 pid=$$"
+    kill -s "$1" "${CHILD}" 2>/dev/null
+}
+trap 'forward TERM' TERM
+trap 'forward INT' INT
+trap 'forward HUP' HUP
+
+wait "${CHILD}"
+status=$?
+# A trapped signal interrupts wait; collect the child before reporting.
+while kill -0 "${CHILD}" 2>/dev/null; do
+    wait "${CHILD}"
+    status=$?
+done
+note "exit pid=$$ status=${status}"
+exit "${status}"

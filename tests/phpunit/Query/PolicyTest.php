@@ -20,6 +20,7 @@ final class PolicyTest extends KnossosTestCase
         $repository->saveNode(
             $worker,
             $ids['project'],
+            'php',
             'class',
             'App\\Worker',
             'Worker',

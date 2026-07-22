@@ -388,6 +388,7 @@ final class SqliteGraphRepositoryTest extends TestCase
         $this->repository->saveNode(
             id: 'node-1',
             projectId: 'proj-node',
+            language: 'php',
             kind: 'class',
             canonicalName: 'App\\Foo',
             displayName: 'Foo',
@@ -417,13 +418,13 @@ final class SqliteGraphRepositoryTest extends TestCase
         $this->seedScan('proj-upsert-node', 'scan-upsert-node');
 
         $this->repository->saveNode(
-            'n', 'proj-upsert-node', 'class', 'Foo', 'Foo',
+            'n', 'proj-upsert-node', 'php', 'class', 'Foo', 'Foo',
             null, null, null, null,
             Origin::Ast->value, 'probable', ['v' => 1],
             'owner-1', 'scan-upsert-node',
         );
         $this->repository->saveNode(
-            'n', 'proj-upsert-node', 'interface', 'Foo', 'IFoo',
+            'n', 'proj-upsert-node', 'php', 'interface', 'Foo', 'IFoo',
             null, null, 1, 5,
             Origin::FrameworkConvention->value, 'certain', ['v' => 2],
             'owner-2', 'scan-upsert-node',
@@ -442,8 +443,8 @@ final class SqliteGraphRepositoryTest extends TestCase
     {
         $this->seedProject('proj-edge');
         $this->seedScan('proj-edge', 'scan-edge');
-        $this->repository->saveNode('n1', 'proj-edge', 'class', 'A', 'A', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-edge');
-        $this->repository->saveNode('n2', 'proj-edge', 'class', 'B', 'B', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-edge');
+        $this->repository->saveNode('n1', 'proj-edge', 'php', 'class', 'A', 'A', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-edge');
+        $this->repository->saveNode('n2', 'proj-edge', 'php', 'class', 'B', 'B', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-edge');
 
         $this->repository->saveEdge(
             'e1', 'proj-edge', 'calls', 'n1', 'n2',
@@ -491,14 +492,14 @@ final class SqliteGraphRepositoryTest extends TestCase
 
         for ($i = 0; $i < 3; ++$i) {
             $this->repository->saveNode(
-                "n-displ-$i", 'proj-find', 'class', "Other$i", 'Target',
+                "n-displ-$i", 'proj-find', 'php', 'class', "Other$i", 'Target',
                 null, null, null, null,
                 Origin::Ast->value, 'certain', [],
                 'owner', 'scan-find',
             );
         }
         $this->repository->saveNode(
-            'n-canonical', 'proj-find', 'class', 'Target', 'Target',
+            'n-canonical', 'proj-find', 'php', 'class', 'Target', 'Target',
             null, null, null, null,
             Origin::Ast->value, 'certain', [],
             'owner', 'scan-find',
@@ -528,7 +529,7 @@ final class SqliteGraphRepositoryTest extends TestCase
     {
         $this->seedProject('proj-class');
         $this->seedScan('proj-class', 'scan-class');
-        $this->repository->saveNode('n', 'proj-class', 'class', 'Foo', 'Foo', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-class');
+        $this->repository->saveNode('n', 'proj-class', 'php', 'class', 'Foo', 'Foo', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-class');
 
         $this->repository->saveClassification(
             'c1', 'proj-class', 'n', 'http.controller',
@@ -551,7 +552,7 @@ final class SqliteGraphRepositoryTest extends TestCase
     {
         $this->seedProject('proj-bound');
         $this->seedScan('proj-bound', 'scan-bound');
-        $this->repository->saveNode('n', 'proj-bound', 'class', 'Foo', 'Foo', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-bound');
+        $this->repository->saveNode('n', 'proj-bound', 'php', 'class', 'Foo', 'Foo', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-bound');
 
         $this->repository->saveBoundary('b1', 'proj-bound', 'CoreDomain', ['prefix' => 'src/Domain'], 'inferred', 'scan-bound');
         $this->repository->saveBoundaryMembership('b1', 'proj-bound', 'n', 'scan-bound');
@@ -603,9 +604,9 @@ final class SqliteGraphRepositoryTest extends TestCase
     {
         $this->seedProject('proj-out');
         $this->seedScan('proj-out', 'scan-out');
-        $this->repository->saveNode('a', 'proj-out', 'class', 'A', 'A', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
-        $this->repository->saveNode('b', 'proj-out', 'class', 'B', 'B', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
-        $this->repository->saveNode('c', 'proj-out', 'class', 'C', 'C', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
+        $this->repository->saveNode('a', 'proj-out', 'php', 'class', 'A', 'A', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
+        $this->repository->saveNode('b', 'proj-out', 'php', 'class', 'B', 'B', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
+        $this->repository->saveNode('c', 'proj-out', 'php', 'class', 'C', 'C', null, null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
 
         $this->repository->saveEdge('e-calls', 'proj-out', 'calls',  'a', 'b', null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
         $this->repository->saveEdge('e-imports','proj-out', 'imports', 'a', 'c', null, null, null, Origin::Ast->value, 'certain', [], 'owner', 'scan-out');
@@ -640,9 +641,9 @@ final class SqliteGraphRepositoryTest extends TestCase
         $this->seedScan('proj-owner', 'scan-owner');
 
         foreach (['a', 'b'] as $name) {
-            $this->repository->saveNode($name, 'proj-owner', 'class', $name, $name, null, null, null, null, Origin::Ast->value, 'certain', [], 'shared', 'scan-owner');
+            $this->repository->saveNode($name, 'proj-owner', 'php', 'class', $name, $name, null, null, null, null, Origin::Ast->value, 'certain', [], 'shared', 'scan-owner');
         }
-        $this->repository->saveNode('c', 'proj-owner', 'class', 'C', 'C', null, null, null, null, Origin::Ast->value, 'certain', [], 'scanner-a', 'scan-owner');
+        $this->repository->saveNode('c', 'proj-owner', 'php', 'class', 'C', 'C', null, null, null, null, Origin::Ast->value, 'certain', [], 'scanner-a', 'scan-owner');
         $this->repository->saveEdge('e-shared', 'proj-owner', 'calls', 'a', 'b', null, null, null, Origin::Ast->value, 'certain', [], 'scanner-a', 'scan-owner');
         $this->repository->saveDiagnostic('d-a', 'proj-owner', 'scan-owner', null, 'info', 'note', 'm', null, null, 'scanner-a');
 

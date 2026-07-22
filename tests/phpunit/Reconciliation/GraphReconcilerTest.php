@@ -271,17 +271,17 @@ final class GraphReconcilerTest extends TestCase
         $nodeArgs = $this->repo->nodes[0];
         $expectedId = StableId::symbol($this->repo->scans[0][1], 'php', 'class', 'App\\Foo');
         assertSame($expectedId, $nodeArgs[0]);
-        assertSame('class', $nodeArgs[2]);
-        assertSame('App\\Foo', $nodeArgs[3]);
-        assertSame('App\\Foo', $nodeArgs[4]); // displayName
-        assertSame($this->repo->files[0][0], $nodeArgs[6]); // file_id matches saved file
-        assertSame(1, $nodeArgs[7]); // startLine
-        assertSame(5, $nodeArgs[8]); // endLine
-        assertSame('ast', $nodeArgs[9]); // origin
-        assertSame('certain', $nodeArgs[10]); // confidence
-        $this->assertArrayHasKey('scanner', $nodeArgs[11]);
-        assertSame('test.knossos', $nodeArgs[11]['scanner']);
-        assertSame($node->localId, $nodeArgs[11]['scanner_local_id']);
+        assertSame('class', $nodeArgs[3]);
+        assertSame('App\\Foo', $nodeArgs[4]);
+        assertSame('App\\Foo', $nodeArgs[5]); // displayName
+        assertSame($this->repo->files[0][0], $nodeArgs[7]); // file_id matches saved file
+        assertSame(1, $nodeArgs[8]); // startLine
+        assertSame(5, $nodeArgs[9]); // endLine
+        assertSame('ast', $nodeArgs[10]); // origin
+        assertSame('certain', $nodeArgs[11]); // confidence
+        $this->assertArrayHasKey('scanner', $nodeArgs[12]);
+        assertSame('test.knossos', $nodeArgs[12]['scanner']);
+        assertSame($node->localId, $nodeArgs[12]['scanner_local_id']);
     }
 
     public function testCollectNodesDeduplicatesIdenticalNodes(): void
@@ -568,13 +568,13 @@ final class GraphReconcilerTest extends TestCase
         $this->assertCount(2, $this->repo->nodes);
 
         // The external node carries the external_ prefix on its kind.
-        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[2], 'external_'));
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
         $this->assertCount(1, $external);
-        assertSame('external_class', $external[0][2]);
-        assertSame('derived', $external[0][9]);
-        assertSame('possible', $external[0][10]);
-        assertSame(true, $external[0][11]['unresolved']);
-        assertSame('php:class:External\\Bar', $external[0][11]['reference']);
+        assertSame('external_class', $external[0][3]);
+        assertSame('derived', $external[0][10]);
+        assertSame('possible', $external[0][11]);
+        assertSame(true, $external[0][12]['unresolved']);
+        assertSame('php:class:External\\Bar', $external[0][12]['reference']);
     }
 
     public function testExternalNodeDoesNotDoublePrefixWhenAlreadyPrefixed(): void
@@ -596,9 +596,9 @@ final class GraphReconcilerTest extends TestCase
 
         $reconciler->reconcile($request);
 
-        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[2], 'external_'));
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
         $this->assertCount(1, $external);
-        assertSame('external_function', $external[0][2]);
+        assertSame('external_function', $external[0][3]);
     }
 
     public function testExternalNodeDisplayNameExtractsLastSegmentOfCanonical(): void
@@ -620,8 +620,8 @@ final class GraphReconcilerTest extends TestCase
 
         $reconciler->reconcile($request);
 
-        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[2], 'external_'));
-        assertSame('Baz', $external[0][4]);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        assertSame('Baz', $external[0][5]);
     }
 
     public function testExternalNodeDisplayNameExtractsAfterDoubleColon(): void
@@ -643,8 +643,8 @@ final class GraphReconcilerTest extends TestCase
 
         $reconciler->reconcile($request);
 
-        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[2], 'external_'));
-        assertSame('bar', $external[0][4]);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        assertSame('bar', $external[0][5]);
     }
 
     public function testExternalNodeDisplayNameSplitsOnBackslash(): void
@@ -671,8 +671,8 @@ final class GraphReconcilerTest extends TestCase
 
         $reconciler->reconcile($request);
 
-        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[2], 'external_'));
-        assertSame('', $external[0][4]);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        assertSame('', $external[0][5]);
     }
 
     public function testScannerFromOwnerExtractsScannerIdBeforeFirstColon(): void
@@ -688,7 +688,7 @@ final class GraphReconcilerTest extends TestCase
 
         $reconciler->reconcile($request);
 
-        assertSame('php.knossos', $this->repo->nodes[0][11]['scanner']);
+        assertSame('php.knossos', $this->repo->nodes[0][12]['scanner']);
     }
 
     public function testScannerFromOwnerReturnsEntireStringWhenNoColon(): void
@@ -704,7 +704,7 @@ final class GraphReconcilerTest extends TestCase
 
         $reconciler->reconcile($request);
 
-        assertSame('lonely', $this->repo->nodes[0][11]['scanner']);
+        assertSame('lonely', $this->repo->nodes[0][12]['scanner']);
     }
 
     public function testScannerVersionsMapsLanguagesAcrossManifests(): void
@@ -1266,6 +1266,7 @@ final class FakeGraphRepository implements GraphRepository
     public function saveNode(
         string $id,
         string $projectId,
+        string $language,
         string $kind,
         string $canonicalName,
         string $displayName,
@@ -1279,7 +1280,7 @@ final class FakeGraphRepository implements GraphRepository
         string $ownerKey,
         string $scanId,
     ): void {
-        $this->nodes[] = [$id, $projectId, $kind, $canonicalName, $displayName, $parentId, $fileId, $startLine, $endLine, $origin, $confidence, $attributes, $ownerKey, $scanId];
+        $this->nodes[] = [$id, $projectId, $language, $kind, $canonicalName, $displayName, $parentId, $fileId, $startLine, $endLine, $origin, $confidence, $attributes, $ownerKey, $scanId];
     }
 
     public function saveEdge(
