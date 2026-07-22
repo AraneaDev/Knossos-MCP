@@ -843,7 +843,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         foreach (array_chunk($internalAncestors, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
             $statement = $this->pdo->prepare(
-                "SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id " .
+                'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
                 "WHERE e.project_id = ? AND e.kind = 'contains' " .
                 sprintf('AND e.source_id IN (%s)', $placeholders),
             );
