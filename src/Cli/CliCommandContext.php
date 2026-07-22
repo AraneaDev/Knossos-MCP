@@ -60,6 +60,6 @@ final class CliCommandContext
     /** @param array<string, mixed> $structured */
     public function output(array $structured, bool $json, string $text): void
     {
-        fwrite(STDOUT, ($json ? json_encode($structured, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) : $text) . PHP_EOL);
+        echo ($json ? json_encode($structured, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) : $text) . PHP_EOL;
     }
 }

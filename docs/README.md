@@ -74,11 +74,9 @@ source help text and schemas rather than the Markdown.
 - [Property, fuzz, differential, and mutation testing](development/adversarial-testing.md)
 - [Performance budgets](development/performance-budgets.md)
 
-## Decisions and audits
+## Decisions and examples
 
 - [Architecture decision records](adr/) — the recorded reasons behind the
   runtime, transport, and enrichment boundaries.
-- [Audits](audits/) — dated findings from completed review passes; historical
-  records, not current contracts.
 - [CI and editor examples](examples/) — GitHub Actions, GitLab CI, and VS Code
   task recipes referenced by the integration guide.

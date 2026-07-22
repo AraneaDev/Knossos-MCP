@@ -1,0 +1,3 @@
+{
+  "ignorePatterns": ["coverage/", "chaos-infection-log.json"]
+}

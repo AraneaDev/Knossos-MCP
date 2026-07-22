@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# tools/chaos-loop — driver for the chaos-mcp MCP server.
+# Wraps tools/chaos-loop.mjs so conventions in tools/ stay POSIX/.php-shell.
+# CHAOS_MCP_ROOT defaults to ../Chaos-MCP relative to this script.
+set -euo pipefail
+
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+CHAOS_MCP_ROOT="${CHAOS_MCP_ROOT:-/root/Chaos-MCP}"
+CHAOS_MCP_BIN="${CHAOS_MCP_BIN:-${CHAOS_MCP_ROOT}/build/index.js}"
+CHAOS_MCP_CWD="${CHAOS_MCP_CWD:-${ROOT_DIR}}"
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "error: node not found on PATH; install Node 22+" >&2
+  exit 127
+fi
+
+if [[ ! -f "${CHAOS_MCP_BIN}" ]]; then
+  echo "error: chaos-mcp binary not found at ${CHAOS_MCP_BIN}." >&2
+  echo "  Build it with:  (cd ${CHAOS_MCP_ROOT} && npm run build)" >&2
+  exit 127
+fi
+
+export CHAOS_MCP_BIN CHAOS_MCP_CWD
+exec node "${ROOT_DIR}/tools/chaos-loop.mjs" "$@"

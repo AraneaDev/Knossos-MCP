@@ -10,11 +10,11 @@ use Throwable;
 
 final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProvider
 {
-    private GitProcessRunner $runner;
+    private GitProcessRunnerInterface $runner;
 
-    public function __construct(int $maxOutputBytes = 2_000_000, int $maxErrorBytes = 65_536)
+    public function __construct(int $maxOutputBytes = 2_000_000, int $maxErrorBytes = 65_536, ?GitProcessRunnerInterface $runner = null)
     {
-        $this->runner = new GitProcessRunner($maxOutputBytes, $maxErrorBytes);
+        $this->runner = $runner ?? new GitProcessRunner($maxOutputBytes, $maxErrorBytes);
     }
 
     public function changes(string $projectRoot, ?string $baseRef, int $maxFiles, int $timeoutMs): array

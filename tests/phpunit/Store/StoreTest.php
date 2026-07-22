@@ -11,6 +11,7 @@ use Knossos\Store\SqliteGraphRepository;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
+use InvalidArgumentException;
 use ReflectionProperty;
 use RuntimeException;
 
@@ -246,5 +247,104 @@ final class StoreTest extends KnossosTestCase
         }
         // An unreadable path returns null rather than throwing mid-discovery.
         assertSame(null, FileFingerprint::compute(sys_get_temp_dir() . '/knossos-missing-' . bin2hex(random_bytes(6))));
+    }
+
+    /**
+     * Kills ArrayItemRemoval mutants on src/Store/StableId.php lines
+     * 20/48/58/63/68. Each surviving factory method drops $projectId from
+     * the parts array, so two distinct projects collide. Pairs of
+     * `assertNotSame($alpha, $beta)` per factory pin the project-id
+     * sensitivity; an extra triplet for `route()` pins uri / action /
+     * projectId sensitivity beyond what the pre-existing
+     * `testStableIdsAreDeterministicAndRouteMethodsAreOrderIndependent`
+     * covers (order-independence only, not distinct-input divergence).
+     */
+    #[Group('store')]
+    public function testStableIdPartsAreAllConsumedByEveryFactory(): void
+    {
+        $alpha = 'project-alpha';
+        $beta = 'project-beta';
+
+        assertNotSame(
+            StableId::file($alpha, 'src/CheckoutService.php'),
+            StableId::file($beta, 'src/CheckoutService.php'),
+        );
+        assertNotSame(
+            StableId::scan($alpha, 'nonce-1'),
+            StableId::scan($beta, 'nonce-1'),
+        );
+        assertNotSame(
+            StableId::edge($alpha, 'calls', 'src-a', 'src-b', 'src/X.php:13'),
+            StableId::edge($beta, 'calls', 'src-a', 'src-b', 'src/X.php:13'),
+        );
+        assertNotSame(
+            StableId::classification($alpha, 'App\\Foo', 'domain', 'rule-x'),
+            StableId::classification($beta, 'App\\Foo', 'domain', 'rule-x'),
+        );
+        assertNotSame(
+            StableId::boundary($alpha, 'typescript:tsconfig.json', '{"compilerOptions":{}}'),
+            StableId::boundary($beta, 'typescript:tsconfig.json', '{"compilerOptions":{}}'),
+        );
+
+        // route(): projectId-sensitive, uri-sensitive, action-sensitive.
+        assertNotSame(
+            StableId::route($alpha, ['GET'], '/checkout', 'CheckoutController'),
+            StableId::route($alpha, ['GET'], '/invoice', 'CheckoutController'),
+        );
+        assertNotSame(
+            StableId::route($alpha, ['GET'], '/checkout', 'CheckoutController'),
+            StableId::route($alpha, ['GET'], '/checkout', 'InvoiceController'),
+        );
+        assertNotSame(
+            StableId::route($alpha, ['GET'], '/checkout', 'CheckoutController'),
+            StableId::route($beta, ['GET'], '/checkout', 'CheckoutController'),
+        );
+    }
+
+    /**
+     * Kills the Foreach_ mutant on src/Store/StableId.php line 74. The
+     * mutant iterates over `[]` instead of `$parts`, so the empty-part
+     * check inside `make()` never fires; an empty-string call into any
+     * factory must throw.
+     */
+    #[Group('store')]
+    public function testStableIdRejectsEmptyParts(): void
+    {
+        assertThrows(fn() => StableId::project(''), InvalidArgumentException::class);
+        assertThrows(fn() => StableId::file('p', ''), InvalidArgumentException::class);
+        assertThrows(
+            fn() => StableId::route('p', [], '/x', 'A'),
+            InvalidArgumentException::class,
+        );
+    }
+
+    /**
+     * Kills the BitwiseOr mutant on src/Store/StableId.php line 80. The
+     * mutant collapses
+     * `(JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)`
+     * into `(A | B) & C`, which on the actual flag values evaluates to 0;
+     * the resulting default encoding escapes slashes and unicode, so the
+     * sha256 diverges for any input containing `/` or a non-ASCII character.
+     */
+    #[Group('store')]
+    public function testStableIdHashEncodesJsonWithAllThreeFlags(): void
+    {
+        $slashCase = json_encode(
+            ['p', 'src/CheckoutService.php'],
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        );
+        assertSame(
+            'file_' . hash('sha256', $slashCase),
+            StableId::file('p', 'src/CheckoutService.php'),
+        );
+
+        $unicodePayload = json_encode(
+            ['p', 'name-' . "\u{1F600}"],
+            JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+        );
+        assertSame(
+            'file_' . hash('sha256', $unicodePayload),
+            StableId::file('p', 'name-' . "\u{1F600}"),
+        );
     }
 }

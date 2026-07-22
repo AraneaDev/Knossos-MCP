@@ -6,15 +6,21 @@ namespace Knossos\Tests\Phpunit\Cli;
 
 use InvalidArgumentException;
 use Knossos\Application;
+use Knossos\Cli\CliErrorRenderer;
+use Knossos\Cli\CliHelpRenderer;
+use Knossos\Cli\CliInputLoader;
 use Knossos\Cli\CliOptionParser;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\RootGuard;
+use Knossos\Scan\ScanBusyException;
+use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
 use Knossos\Store\SqliteGraphRepository;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
+use PDOException;
 use RuntimeException;
 
 final class CliTest extends KnossosTestCase
@@ -37,6 +43,289 @@ final class CliTest extends KnossosTestCase
         assertSame(['true'], $options['json']);
         assertSame(12, $parser->integer(['limit' => ['12']], 'limit', 20, 1, 100));
         assertThrows(fn() => $parser->single(['limit' => ['1', '2']], 'limit'), InvalidArgumentException::class);
+    }
+
+    // ── CliOptionParser: parse() ────────────────────────────────────────
+
+    #[Group('cli')]
+    public function testParseAcceptsPlainPositionalArguments(): void
+    {
+        $parser = new CliOptionParser();
+        [$positionals, $options] = $parser->parse(['foo', 'bar', 'baz']);
+
+        assertSame(['foo', 'bar', 'baz'], $positionals);
+        assertSame([], $options);
+    }
+
+    #[Group('cli')]
+    public function testParseAcceptsEmptyArgumentList(): void
+    {
+        $parser = new CliOptionParser();
+        [$positionals, $options] = $parser->parse([]);
+
+        assertSame([], $positionals);
+        assertSame([], $options);
+    }
+
+    #[Group('cli')]
+    public function testParseTreatsFlagWithoutValueAsTrue(): void
+    {
+        $parser = new CliOptionParser();
+        [$positionals, $options] = $parser->parse(['--verbose', '--debug']);
+
+        assertSame([], $positionals);
+        assertSame(['verbose' => ['true'], 'debug' => ['true']], $options);
+    }
+
+    #[Group('cli')]
+    public function testParseRejectsEmptyOptionName(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->parse(['--=value']),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testParseAcceptsOptionWithEmptyValueToken(): void
+    {
+        $parser = new CliOptionParser();
+        [$positionals, $options] = $parser->parse(['--limit=']);
+
+        assertSame(['limit' => ['']], $options);
+    }
+
+    #[Group('cli')]
+    public function testParseHandlesMixedPositionalsAndOptionsPreservingOrder(): void
+    {
+        $parser = new CliOptionParser();
+        [$positionals, $options] = $parser->parse([
+            'first',
+            '--name=alice',
+            'second',
+            '--name=bob',
+            '--flag',
+            'third',
+        ]);
+
+        assertSame(['first', 'second', 'third'], $positionals);
+        assertSame(['name' => ['alice', 'bob'], 'flag' => ['true']], $options);
+    }
+
+    // ── CliOptionParser: single() ───────────────────────────────────────
+
+    #[Group('cli')]
+    public function testSingleReturnsNullForMissingOption(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(null, $parser->single([], 'missing'));
+    }
+
+    #[Group('cli')]
+    public function testSingleReturnsValueWhenExactlyOneValuePresent(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame('hello', $parser->single(['name' => ['hello']], 'name'));
+    }
+
+    #[Group('cli')]
+    public function testSingleRejectsMultipleValues(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->single(['name' => ['a', 'b']], 'name'),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testSingleRejectsEmptyStringValue(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->single(['name' => ['']], 'name'),
+            InvalidArgumentException::class,
+        );
+    }
+
+    // ── CliOptionParser: integer() ──────────────────────────────────────
+
+    #[Group('cli')]
+    public function testIntegerReturnsDefaultWhenOptionMissing(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(42, $parser->integer([], 'limit', 42, 1, 100));
+    }
+
+    #[Group('cli')]
+    public function testIntegerReturnsParsedValueWithinRange(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(7, $parser->integer(['limit' => ['7']], 'limit', 1, 1, 10));
+    }
+
+    #[Group('cli')]
+    public function testIntegerReturnsBoundaryMinimum(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(1, $parser->integer(['limit' => ['1']], 'limit', 5, 1, 100));
+    }
+
+    #[Group('cli')]
+    public function testIntegerReturnsBoundaryMaximum(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(100, $parser->integer(['limit' => ['100']], 'limit', 5, 1, 100));
+    }
+
+    #[Group('cli')]
+    public function testIntegerRejectsValueBelowMinimum(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->integer(['limit' => ['0']], 'limit', 5, 1, 100),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testIntegerRejectsValueAboveMaximum(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->integer(['limit' => ['101']], 'limit', 5, 1, 100),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testIntegerRejectsNonIntegerString(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->integer(['limit' => ['not-a-number']], 'limit', 5, 1, 100),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testIntegerRejectsFloatString(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->integer(['limit' => ['3.14']], 'limit', 5, 1, 100),
+            InvalidArgumentException::class,
+        );
+    }
+
+    // ── CliOptionParser: boundaries() ───────────────────────────────────
+
+    #[Group('cli')]
+    public function testBoundariesReturnsEmptyForEmptyList(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame([], $parser->boundaries([]));
+    }
+
+    #[Group('cli')]
+    public function testBoundariesParsesPathTypeBoundary(): void
+    {
+        $parser = new CliOptionParser();
+
+        $result = $parser->boundaries(['api:path:src/Api/']);
+
+        assertSame([['name' => 'api', 'path_prefix' => 'src/Api/']], $result);
+    }
+
+    #[Group('cli')]
+    public function testBoundariesParsesNamespaceTypeBoundary(): void
+    {
+        $parser = new CliOptionParser();
+
+        $result = $parser->boundaries(['domain:namespace:App\\Domain\\']);
+
+        assertSame([['name' => 'domain', 'namespace_prefix' => 'App\\Domain\\']], $result);
+    }
+
+    #[Group('cli')]
+    public function testBoundariesParsesMultipleBoundarySpecs(): void
+    {
+        $parser = new CliOptionParser();
+
+        $result = $parser->boundaries(['api:path:src/Api/', 'domain:namespace:App\\Domain\\']);
+
+        assertSame(2, count($result));
+        assertSame([['name' => 'api', 'path_prefix' => 'src/Api/'], ['name' => 'domain', 'namespace_prefix' => 'App\\Domain\\']], $result);
+    }
+
+    #[Group('cli')]
+    public function testBoundariesRejectsTooFewParts(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->boundaries(['name:path']),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testBoundariesRejectsEmptyName(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->boundaries([':path:src/']),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testBoundariesRejectsEmptyPrefix(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->boundaries(['name:path:']),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testBoundariesRejectsUnknownType(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->boundaries(['name:unknown:prefix']),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testBoundariesRejectsTypeWithInvalidCase(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertThrows(
+            static fn () => $parser->boundaries(['name:Path:src/']),
+            InvalidArgumentException::class,
+        );
     }
 
     #[Group('cli')]
@@ -254,6 +543,127 @@ final class CliTest extends KnossosTestCase
 
         // At least one port must actually be published, so this cannot pass vacuously.
         assertSame(true, $publishedPortCount > 0);
+    }
+
+    // ── CliErrorRenderer ──────────────────────────────────────────────────
+
+    #[Group('cli')]
+    public function testErrorRendererReturnsExitCode2ForAnyException(): void
+    {
+        // All exception types must return exit code 2.
+        // Note: fwrite(STDERR, ...) cannot be captured with ob_start(),
+        // so we only test the return code here. The diagnostic codes are
+        // verified through subprocess tests (testCliFailuresExposeStableAutomationDiagnostics).
+        foreach ([
+            new RuntimeException('msg'),
+            new InvalidArgumentException('msg'),
+            new PDOException('msg'),
+            new WorkerException('WORKER_TIMEOUT', 'msg'),
+            new ScanBusyException('msg'),
+            new DiscoveryException('msg'),
+        ] as $error) {
+            $exit = (new CliErrorRenderer())->render($error);
+            assertSame(2, $exit);
+        }
+    }
+
+    #[Group('cli')]
+    public function testErrorRendererDefaultCaseCoversUnknownExceptionTypes(): void
+    {
+        // Any exception that doesn't match a specific type gets KNOSSOS_RUNTIME_ERROR.
+        // Note: The default case in the match() also catches RuntimeException
+        // (which is NOT a subclass of any of the other matched types).
+        // This test verifies that an unrecognized exception type still returns
+        // exit code 2 without crashing.
+        $exit = (new CliErrorRenderer())->render(new \BadMethodCallException('unexpected'));
+        assertSame(2, $exit);
+    }
+
+    // ── CliInputLoader ────────────────────────────────────────────────────
+
+    #[Group('cli')]
+    public function testInputLoaderPoliciesAcceptsValidJsonArray(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-policies-');
+        file_put_contents($path, json_encode([['policy' => 'allow']]));
+
+        $result = (new CliInputLoader())->policies($path);
+
+        assertSame([['policy' => 'allow']], $result);
+        unlink($path);
+    }
+
+    #[Group('cli')]
+    public function testInputLoaderPoliciesRejectsMissingFile(): void
+    {
+        assertThrows(
+            static fn () => (new CliInputLoader())->policies('/nonexistent/policies.json'),
+            InvalidArgumentException::class,
+        );
+    }
+
+    #[Group('cli')]
+    public function testInputLoaderPoliciesRejectsOversizedFile(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-big-policies-');
+        file_put_contents($path, str_repeat('x', 1_000_001));
+
+        assertThrows(
+            static fn () => (new CliInputLoader())->policies($path),
+            InvalidArgumentException::class,
+        );
+        unlink($path);
+    }
+
+    #[Group('cli')]
+    public function testInputLoaderJsonObjectAcceptsValidObject(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-json-');
+        file_put_contents($path, json_encode(['key' => 'value']));
+
+        $result = (new CliInputLoader())->jsonObject($path);
+
+        assertSame(['key' => 'value'], $result);
+        unlink($path);
+    }
+
+    #[Group('cli')]
+    public function testInputLoaderJsonObjectRejectsList(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-json-list-');
+        file_put_contents($path, json_encode([1, 2, 3]));
+
+        assertThrows(
+            static fn () => (new CliInputLoader())->jsonObject($path),
+            InvalidArgumentException::class,
+        );
+        unlink($path);
+    }
+
+    #[Group('cli')]
+    public function testInputLoaderBundleAcceptsValidFile(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-bundle-');
+        $content = gzencode('{"test": true}');
+        file_put_contents($path, $content);
+
+        $result = (new CliInputLoader())->bundle($path);
+
+        assertSame($content, $result);
+        unlink($path);
+    }
+
+    #[Group('cli')]
+    public function testInputLoaderBundleRejectsOversizedFile(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-big-bundle-');
+        file_put_contents($path, str_repeat('x', 10_000_001));
+
+        assertThrows(
+            static fn () => (new CliInputLoader())->bundle($path),
+            InvalidArgumentException::class,
+        );
+        unlink($path);
     }
 
     #[Group('cli')]

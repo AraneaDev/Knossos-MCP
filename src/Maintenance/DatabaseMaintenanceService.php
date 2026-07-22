@@ -226,7 +226,7 @@ final readonly class DatabaseMaintenanceService
     {
         $target = $this->backupTarget($backupName);
         $directory = dirname($target);
-        if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+        if (!is_dir($directory) && !@mkdir($directory, 0700, true) && !is_dir($directory)) {
             throw new RuntimeException('Unable to create the database backup directory.');
         }
         if (file_exists($target)) {
