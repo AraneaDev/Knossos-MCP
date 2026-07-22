@@ -29,10 +29,12 @@ module, or boots an application framework.
 
 - What are the major modules, entry points, and boundaries?
 - What depends, directly or transitively, on `UserRepository`?
+- What are the exact call sites of `ScannerClient::scan`?
 - How can a checkout request reach invoice generation?
 - Which relationships cross a declared boundary policy?
+- Which test files exercise the blast radius of this diff?
+- What does this working tree risk, reviewed architecturally in one call?
 - Where would a refunds feature fit the existing structure?
-- What did this branch's changed files just put at risk?
 
 Every capability is available both as an MCP tool and as an equivalent CLI
 command. See the [documentation index](docs/README.md) for the full map.
@@ -93,8 +95,11 @@ rather than proven absence.
 ## Tools
 
 Thirty-one MCP tools, each with an equivalent CLI command. Read tools are
-annotated read-only and idempotent; the two deletion tools are annotated
-destructive and preview unless you pass `execute`. The server also exposes
+annotated read-only and idempotent. The four write tools —
+`annotate_component`, `remove_project`, `cleanup_stale_scans`, and
+`maintain_database` — preview by default and only apply once called with
+`execute` set; `remove_project` and `cleanup_stale_scans` are additionally
+annotated destructive. The server also exposes
 per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
 (`orient`, `review_diff`) alongside the tools. Agent annotations
 (`intended_boundary`, `confirmed_dead`, `false_positive`, `note`) record a
@@ -147,8 +152,8 @@ annotation removes that component from future dead-code candidates.
 
 | MCP tool              | CLI                   | Answers                                                               |
 | --------------------- | --------------------- | --------------------------------------------------------------------- |
-| `annotate_component`  | `annotate-component`  | Record a durable annotation on a component. Preview unless confirmed. |
-| `remove_project`      | `remove-project`      | Delete a project and its graph. Previews unless confirmed.            |
+| `annotate_component`  | `annotate-component`  | Record a durable annotation on a component. Preview unless `execute`. |
+| `remove_project`      | `remove-project`      | Delete a project and its graph. Previews unless `execute`.            |
 | `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.                    |
 | `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.              |
 
@@ -221,6 +226,10 @@ isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.m
 - `--allow-root` is a security boundary, not a convenience flag. `serve` refuses
   to start without one.
 - The SQLite database is derived and rebuildable; source mounts stay read-only.
+  The one exception is `architecture_context`'s opt-in `include_source`, which
+  reads a bounded query-time excerpt (≤40 lines, files ≤2MB) through the same
+  root-guard as scanning and degrades to `unavailable` rather than failing, so
+  it does not require write access.
 - MCP stdio is the default and recommended transport. The constrained
   loopback-only Streamable HTTP profile and its deployment limits are documented
   in the [HTTP threat model](docs/operations/http-threat-model.md).

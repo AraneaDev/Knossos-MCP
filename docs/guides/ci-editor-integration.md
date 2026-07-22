@@ -51,6 +51,15 @@ The examples expect a checked-in `knossos-budgets.json`. Add
 a checked-in policy file. See [architecture quality
 budgets](../features/quality-budgets.md) for both formats.
 
+## One-call alternative
+
+The recipes above call `quality_gate` and `changed_files_impact` separately to
+get budget deltas and blast radius for a pull request. `review_diff` composes
+`changed_files_impact`, `check_architecture`, `quality_gate`, and
+`dependency_cycles` into a single result scoped to the changed components, so
+a CI review step or PR comment job can make one call instead of chaining four.
+It takes the same baseline and policy inputs. See [review diff](../features/review-diff.md).
+
 ## Ready-to-adapt recipes
 
 - [GitHub Actions](../examples/github-architecture.yml) restores retained graph
