@@ -56,6 +56,7 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     exit 1
 fi
 
+npm --prefix workers/typescript run check
 composer test
 
 if [ "$profile" = "full" ]; then

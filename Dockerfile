@@ -158,6 +158,11 @@ RUN mkdir -p /usr/libexec/docker/cli-plugins \
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 
+# The runtime stage installs the TypeScript worker with --omit=dev; reinstall
+# with dev dependencies so the vitest suite can run in this stage.
+RUN npm --prefix workers/typescript ci --ignore-scripts --no-audit --no-fund
+COPY workers/typescript/vitest.config.js ./workers/typescript/
+
 RUN composer install \
     --no-interaction \
     --no-progress \
