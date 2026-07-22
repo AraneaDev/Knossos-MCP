@@ -281,6 +281,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
 
         $hubs = $hotspots = $deadCandidates = [];
+        $provisional = [];
         $excludedExternal = $excludedTests = 0;
         foreach ($nodes as $id => $row) {
             $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
@@ -307,21 +308,46 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 }
             }
             if ($metrics[$id]['in_degree'] === 0 && $this->isDeadCodeCandidate($row, $roles[$id] ?? [])) {
-                $dynamicRisk = $row['origin'] !== 'ast' || $this->hasFrameworkRole($roles[$id] ?? []);
-                $deadCandidates[] = [
-                    'component' => $component,
-                    'confidence' => $dynamicRisk ? 'possible' : 'probable',
-                    'reason' => 'No inbound static reference was found among the selected edge kinds.',
-                    'uncertainty' => $dynamicRisk
-                        ? 'Framework conventions or dynamic resolution may reference this component. '
-                            . 'References that pass the identifier as a value, such as registry arrays, '
-                            . 'callbacks, or dispatch tables, are not resolved.'
-                        : 'Reflection, configuration, templates, or runtime dispatch may not be visible '
-                            . 'statically. References that pass the identifier as a value, such as registry '
-                            . 'arrays, callbacks, or dispatch tables, are not resolved.',
-                    'out_degree' => $metrics[$id]['out_degree'],
-                ];
+                $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
             }
+        }
+        $methodNames = [];
+        foreach ($provisional as $id => $candidate) {
+            if ($candidate['row']['kind'] === 'method') {
+                $methodNames[$id] = (string) $candidate['row']['display_name'];
+            }
+        }
+        $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
+        $excludedInherited = 0;
+        foreach ($provisional as $id => $candidate) {
+            $context = $inheritance[$id] ?? ['inherited' => false, 'external_ancestor' => null];
+            if ($context['inherited']) {
+                ++$excludedInherited;
+                continue;
+            }
+            $dynamicRisk = $candidate['row']['origin'] !== 'ast' || $this->hasFrameworkRole($candidate['roles']);
+            $confidence = $dynamicRisk ? 'possible' : 'probable';
+            $reason = 'No inbound static reference was found among the selected edge kinds.';
+            if ($context['external_ancestor'] !== null) {
+                $confidence = 'possible';
+                $reason = sprintf(
+                    'No inbound static reference was found, but the declaring type extends or implements %s, whose members are not statically visible; dispatch may reach this method.',
+                    $context['external_ancestor'],
+                );
+            }
+            $deadCandidates[] = [
+                'component' => $candidate['component'],
+                'confidence' => $confidence,
+                'reason' => $reason,
+                'uncertainty' => $dynamicRisk
+                    ? 'Framework conventions or dynamic resolution may reference this component. '
+                        . 'References that pass the identifier as a value, such as registry arrays, '
+                        . 'callbacks, or dispatch tables, are not resolved.'
+                    : 'Reflection, configuration, templates, or runtime dispatch may not be visible '
+                        . 'statically. References that pass the identifier as a value, such as registry '
+                        . 'arrays, callbacks, or dispatch tables, are not resolved.',
+                'out_degree' => $candidate['out_degree'],
+            ];
         }
         $rank = static function (array &$items): void {
             usort($items, static fn(array $a, array $b): int => ($b['score'] <=> $a['score'])
@@ -366,6 +392,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
+                    'excluded_inherited_methods' => $excludedInherited,
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
                 ],
             ],
@@ -753,6 +780,103 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
         }
         return true;
+    }
+    /**
+     * Resolve, for candidate methods, whether an ancestor of the containing
+     * class declares a same-named member (making in-degree 0 structural, not
+     * evidence of death) or whether the hierarchy leaves an external type
+     * whose members static analysis cannot see.
+     *
+     * @param list<string> $methodIds
+     * @param array<string, string> $methodNames method node id => display_name
+     * @return array<string, array{inherited: bool, external_ancestor: ?string}>
+     */
+    private function inheritedMethodContext(string $projectId, array $methodIds, array $methodNames): array
+    {
+        if ($methodIds === []) {
+            return [];
+        }
+        $classOfMethod = [];
+        foreach (array_chunk($methodIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'contains' " .
+                sprintf('AND target_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $classOfMethod[$row['target_id']] = $row['source_id'];
+            }
+        }
+        $classIds = array_values(array_unique($classOfMethod));
+        $ancestorsOfClass = [];
+        foreach (array_chunk($classIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
+                sprintf('AND source_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $ancestorsOfClass[$row['source_id']][] = $row['target_id'];
+            }
+        }
+        $ancestorIds = array_values(array_unique(array_merge(...array_values($ancestorsOfClass) ?: [[]])));
+        $ancestorMeta = [];
+        foreach (array_chunk($ancestorIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                sprintf('SELECT id, kind, display_name, origin FROM nodes WHERE id IN (%s)', $placeholders),
+            );
+            $statement->execute($chunk);
+            foreach ($statement->fetchAll() as $row) {
+                $ancestorMeta[$row['id']] = $row;
+            }
+        }
+        $internalAncestors = array_values(array_filter(
+            $ancestorIds,
+            static fn(string $id): bool => isset($ancestorMeta[$id])
+                && !str_starts_with((string) $ancestorMeta[$id]['kind'], 'external_')
+                && !in_array($ancestorMeta[$id]['origin'], ['external', 'unresolved'], true),
+        ));
+        $memberNames = [];
+        foreach (array_chunk($internalAncestors, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                "SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id " .
+                "WHERE e.project_id = ? AND e.kind = 'contains' " .
+                sprintf('AND e.source_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $memberNames[$row['source_id']][(string) $row['display_name']] = true;
+            }
+        }
+
+        $result = [];
+        foreach ($methodIds as $methodId) {
+            $classId = $classOfMethod[$methodId] ?? null;
+            $ancestors = $classId === null ? [] : ($ancestorsOfClass[$classId] ?? []);
+            $inherited = false;
+            $externalAncestor = null;
+            sort($ancestors, SORT_STRING);
+            foreach ($ancestors as $ancestorId) {
+                $meta = $ancestorMeta[$ancestorId] ?? null;
+                $isExternal = $meta === null
+                    || str_starts_with((string) $meta['kind'], 'external_')
+                    || in_array($meta['origin'], ['external', 'unresolved'], true);
+                if ($isExternal) {
+                    $externalAncestor ??= $meta === null ? 'an unresolved type' : (string) $meta['display_name'];
+                    continue;
+                }
+                if (isset($memberNames[$ancestorId][$methodNames[$methodId]])) {
+                    $inherited = true;
+                    break;
+                }
+            }
+            $result[$methodId] = ['inherited' => $inherited, 'external_ancestor' => $externalAncestor];
+        }
+        return $result;
     }
     /** @param list<array<string, mixed>> $roles */
     private function hasFrameworkRole(array $roles): bool
