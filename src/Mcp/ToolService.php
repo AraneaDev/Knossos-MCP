@@ -486,6 +486,30 @@ final readonly class ToolService
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
+                'name' => 'review_diff',
+                'title' => 'Review diff',
+                'description' => 'One-call architectural review of a change set: blast radius, boundary-policy violations touching the change, quality-gate delta vs the last snapshot, and cycles the change participates in. Defaults to the working tree; policies/budgets default to knossos.json.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'base_ref' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200],
+                        'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
+                        'policies' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'object']],
+                        'budgets' => ['type' => 'object', 'additionalProperties' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000]],
+                        'baseline_snapshot' => ['type' => 'string', 'minLength' => 1],
+                        'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 8, 'default' => 4],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
+                        'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
+                        'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
+                    ],
+                    'required' => ['project_id'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
                 'name' => 'architecture_context',
                 'title' => 'Architecture context',
                 'description' => 'Assemble a bounded, task-shaped evidence bundle (summary + likely location + impact + dossiers) for a coding task in one call. Use at the start of a task to load just-enough context cheaply.',
@@ -732,6 +756,7 @@ final readonly class ToolService
             'change_impact' => $this->changeImpact($arguments),
             'changed_files_impact' => $this->changedFilesImpact($arguments),
             'test_impact' => $this->testImpact($arguments),
+            'review_diff' => $this->reviewDiff($arguments),
             'architecture_context' => $this->architectureContext($arguments),
             'export_diagram' => $this->diagram($arguments),
             'list_boundaries' => $this->boundaries($arguments),
@@ -1075,6 +1100,32 @@ final readonly class ToolService
             self::integer($arguments, 'max_depth', 4, 1, 8),
             self::integer($arguments, 'limit', 100, 1, 100),
             self::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
+            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+        );
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function reviewDiff(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, ['project_id'], ['base_ref', 'files', 'policies', 'budgets', 'baseline_snapshot', 'max_depth', 'limit', 'min_confidence', 'timeout_ms']);
+        $policies = $arguments['policies'] ?? null;
+        if ($policies !== null && (!is_array($policies) || !array_is_list($policies))) {
+            throw new InvalidArgumentException('policies must be a list.');
+        }
+        $budgets = $arguments['budgets'] ?? null;
+        if ($budgets !== null && (!is_array($budgets) || array_is_list($budgets))) {
+            throw new InvalidArgumentException('budgets must be an object.');
+        }
+        return $this->queries->reviewDiff(
+            self::string($arguments, 'project_id'),
+            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            self::strings($arguments, 'files', 50),
+            $policies,
+            $budgets,
+            array_key_exists('baseline_snapshot', $arguments) ? self::string($arguments, 'baseline_snapshot') : null,
+            self::integer($arguments, 'max_depth', 4, 1, 8),
+            self::integer($arguments, 'limit', 100, 1, 100),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         );
