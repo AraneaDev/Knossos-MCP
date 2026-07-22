@@ -40,14 +40,15 @@ final readonly class ResultEnricher
 
     private function compact(ResultEnvelope $envelope): ResultEnvelope
     {
-        if (count($envelope->evidence) <= self::COMPACT_EVIDENCE) {
-            return $envelope;
+        [$data, $legend] = BoundaryLegend::compress($envelope->data);
+        if ($legend !== []) {
+            $data['boundary_legend'] = $legend;
         }
         return new ResultEnvelope(
             $envelope->projectId,
             $envelope->snapshotId,
             $envelope->summary,
-            $envelope->data,
+            $data,
             array_slice($envelope->evidence, 0, self::COMPACT_EVIDENCE),
             $envelope->warnings,
             $envelope->truncated,
