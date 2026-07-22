@@ -262,6 +262,25 @@ final readonly class ToolService
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             self::fileMetricsDefinition(),
+            [
+                'name' => 'list_annotations',
+                'title' => 'List annotations',
+                'description' => 'List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'component' => ['type' => 'string', 'minLength' => 1],
+                        'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'note']],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
+                        'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
+                    ],
+                    'required' => ['project_id'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
         ];
     }
 
@@ -590,6 +609,19 @@ final readonly class ToolService
     {
         return [
             [
+                'name' => 'annotate_component', 'title' => 'Annotate component',
+                'description' => 'Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, note) that survives rescans. false_positive annotations remove the component from dead-code candidates. Preview by default; pass execute to apply.',
+                'inputSchema' => ['type' => 'object', 'properties' => [
+                    'project_id' => ['type' => 'string', 'minLength' => 1],
+                    'component' => ['type' => 'string', 'minLength' => 1],
+                    'kind' => ['type' => 'string', 'enum' => ['intended_boundary', 'confirmed_dead', 'false_positive', 'note']],
+                    'value' => ['type' => 'string', 'maxLength' => 2000, 'default' => ''],
+                    'remove' => ['type' => 'boolean', 'default' => false],
+                    'execute' => ['type' => 'boolean', 'default' => false],
+                ], 'required' => ['project_id', 'component', 'kind'], 'additionalProperties' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
                 'name' => 'remove_project', 'title' => 'Remove project',
                 'description' => 'Delete a project and its stored graph. Preview by default; pass the confirm flag to actually remove. Use to clean up projects you no longer query.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
@@ -761,11 +793,27 @@ final readonly class ToolService
             'export_diagram' => $this->diagram($arguments),
             'list_boundaries' => $this->boundaries($arguments),
             'search_architecture' => $this->search($arguments),
+            'list_annotations' => $this->listAnnotations($arguments),
+            'annotate_component' => $this->annotateComponent($arguments),
             'remove_project' => $this->removeProject($arguments),
             'cleanup_stale_scans' => $this->cleanupStaleScans($arguments),
             'maintain_database' => $this->maintainDatabase($arguments),
             default => throw new InvalidArgumentException(sprintf('Unknown tool: %s', $name)),
         };
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function annotateComponent(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, ['project_id', 'component', 'kind'], ['value', 'remove', 'execute']);
+        return $this->queries->annotateComponent(
+            self::string($arguments, 'project_id'),
+            self::string($arguments, 'component'),
+            self::string($arguments, 'kind'),
+            array_key_exists('value', $arguments) && is_string($arguments['value']) ? $arguments['value'] : '',
+            self::boolean($arguments, 'remove', false),
+            self::boolean($arguments, 'execute', false),
+        );
     }
 
     /** @param array<string, mixed> $arguments */
@@ -1184,6 +1232,19 @@ final readonly class ToolService
             self::strings($arguments, 'boundary_ids'),
             self::strings($arguments, 'confidences'),
             self::integer($arguments, 'limit', 20, 1, 100),
+            self::integer($arguments, 'offset', 0, 0, 100_000),
+        );
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function listAnnotations(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, ['project_id'], ['component', 'kind', 'limit', 'offset']);
+        return $this->queries->listAnnotations(
+            self::string($arguments, 'project_id'),
+            array_key_exists('component', $arguments) ? self::string($arguments, 'component') : null,
+            array_key_exists('kind', $arguments) ? self::string($arguments, 'kind') : null,
+            self::integer($arguments, 'limit', 100, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
         );
     }

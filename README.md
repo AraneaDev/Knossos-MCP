@@ -92,7 +92,7 @@ rather than proven absence.
 
 ## Tools
 
-Twenty-nine MCP tools, each with an equivalent CLI command. Read tools are
+Thirty-one MCP tools, each with an equivalent CLI command. Read tools are
 annotated read-only and idempotent; the two deletion tools are annotated
 destructive and preview unless you pass `execute`. The server also exposes
 per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
@@ -121,6 +121,7 @@ per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
 | `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.                     |
 | `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.            |
 | `export_agent_brief`   | `export-agent-brief`   | A ready-to-paste markdown orientation brief for agent memory files. |
+| `list_annotations`     | `list-annotations`     | Durable agent annotations recorded on components.                   |
 
 **Structure and change analysis**
 
@@ -141,11 +142,12 @@ per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
 
 **Maintenance**
 
-| MCP tool              | CLI                   | Answers                                                    |
-| --------------------- | --------------------- | ---------------------------------------------------------- |
-| `remove_project`      | `remove-project`      | Delete a project and its graph. Previews unless confirmed. |
-| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.         |
-| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.   |
+| MCP tool              | CLI                   | Answers                                                                |
+| --------------------- | --------------------- | ----------------------------------------------------------------------- |
+| `annotate_component`  | `annotate-component`  | Record a durable annotation on a component. Preview unless confirmed. |
+| `remove_project`      | `remove-project`      | Delete a project and its graph. Previews unless confirmed.            |
+| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.                     |
+| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.               |
 
 CLI-only helpers round this out: `doctor` verifies the runtime, workers,
 protocol, and database; `watch` rescans on change; `export-bundle` and

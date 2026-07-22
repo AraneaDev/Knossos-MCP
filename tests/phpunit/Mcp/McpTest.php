@@ -78,6 +78,40 @@ final class McpTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testAnnotateComponentAndListAnnotationsDispatch(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+
+        $preview = $tools->call('annotate_component', [
+            'project_id' => $ids['project'], 'component' => 'App\\Checkout', 'kind' => 'note', 'value' => 'core flow',
+        ]);
+        assertSame(false, $preview->data['executed']);
+        assertSame([], $tools->call('list_annotations', ['project_id' => $ids['project']])->data['annotations']);
+
+        $written = $tools->call('annotate_component', [
+            'project_id' => $ids['project'], 'component' => 'App\\Checkout', 'kind' => 'note', 'value' => 'core flow', 'execute' => true,
+        ]);
+        assertSame(true, $written->data['executed']);
+        assertSame('upsert', $written->data['action']);
+
+        $list = $tools->call('list_annotations', ['project_id' => $ids['project']]);
+        assertSame(1, count($list->data['annotations']));
+        assertSame('App\\Checkout', $list->data['annotations'][0]['canonical_name']);
+        assertSame('note', $list->data['annotations'][0]['kind']);
+        assertSame('core flow', $list->data['annotations'][0]['value']);
+
+        assertThrows(fn() => $tools->call('annotate_component', ['project_id' => $ids['project'], 'component' => 'App\\Checkout', 'kind' => 'bogus_kind']), InvalidArgumentException::class);
+        assertThrows(fn() => $tools->call('list_annotations', ['project_id' => $ids['project'], 'extra' => true]), InvalidArgumentException::class);
+    }
+
+    #[Group('mcp')]
     public function testStdioRunLoopContainsMalformedFramesNotificationsAndResponseCaps(): void
     {
         [$pdo] = $this->storeFixture();

@@ -79,6 +79,10 @@ Usage:
   knossos list-boundaries <project-id> [--source=explicit|inferred] [--limit=N]
   knossos search-architecture <project-id> <query> [--kind=KIND] [--role=ROLE]
                               [--boundary=ID] [--confidence=LEVEL] [--limit=N]
+  knossos annotate-component <project-id> <component> <kind> [value]
+                             [--remove] [--execute] [--db=PATH] [--json]
+  knossos list-annotations <project-id> [--component=NAME] [--kind=KIND]
+                           [--limit=N] [--offset=N] [--db=PATH] [--json]
   knossos serve --allow-root=PATH [--allow-root=PATH] [--db=PATH]
 
 Docker supplies PHP, Node, Composer, and SQLite; mount source read-only at an

@@ -19,7 +19,7 @@ final class QueryCommand implements CliCommand
         'find-component', 'inspect-component', 'list-usages', 'architecture-summary', 'file-metrics', 'explain-flow', 'impact-analysis',
         'dependency-cycles', 'architecture-health', 'check-architecture', 'suggest-location', 'change-impact',
         'changed-files-impact', 'test-impact', 'review-diff', 'architecture-context', 'export-diagram', 'export-agent-brief', 'list-boundaries',
-        'search-architecture',
+        'search-architecture', 'annotate-component', 'list-annotations',
     ];
 
     public function supports(string $command): bool
@@ -54,6 +54,8 @@ final class QueryCommand implements CliCommand
             'export-diagram' => $this->exportDiagram($positionals, $options, $context),
             'export-agent-brief' => $this->exportAgentBrief($positionals, $options, $context),
             'list-boundaries' => $this->listBoundaries($positionals, $options, $context),
+            'annotate-component' => $this->annotateComponent($positionals, $options, $context),
+            'list-annotations' => $this->listAnnotations($positionals, $options, $context),
             default => $this->searchArchitecture($positionals, $options, $context),
         };
     }
@@ -318,6 +320,24 @@ final class QueryCommand implements CliCommand
             $c->options->integer($o, 'limit', 50, 1, 100),
             $c->options->integer($o, 'offset', 0, 0, 100_000),
         );
+        return $this->result($result, $o, $c);
+    }
+
+    /** @param list<string> $p @param array<string, list<string>> $o */
+    private function annotateComponent(array $p, array $o, CliCommandContext $c): int
+    {
+        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos annotate-component <project-id> <component> <kind> [value] [--remove] [--execute] [--json]');
+        $component = $p[1] ?? throw new InvalidArgumentException('A component is required.');
+        $kind = $p[2] ?? throw new InvalidArgumentException('A kind is required.');
+        $result = $this->queries($c)->annotateComponent($project, $component, $kind, $p[3] ?? '', isset($o['remove']), isset($o['execute']));
+        return $this->result($result, $o, $c);
+    }
+
+    /** @param list<string> $p @param array<string, list<string>> $o */
+    private function listAnnotations(array $p, array $o, CliCommandContext $c): int
+    {
+        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-annotations <project-id> [--component=NAME] [--kind=KIND] [--limit=N] [--offset=N] [--json]');
+        $result = $this->queries($c)->listAnnotations($project, $c->options->single($o, 'component'), $c->options->single($o, 'kind'), $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
     }
 

@@ -193,6 +193,23 @@ Find the largest or longest files. Use to spot refactor targets without shelling
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `list_annotations`
+
+List durable agent annotations recorded on components, optionally filtered by component or kind. Use to review or audit prior annotate_component calls.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
+| `refresh_if_stale` | boolean | no | default=false |
+| `project_id` | string | yes | minLength=1 |
+| `component` | string | no | minLength=1 |
+| `kind` | string | no | enum=intended_boundary, confirmed_dead, false_positive, note |
+| `limit` | integer | no | minimum=1; maximum=100; default=100 |
+| `offset` | integer | no | minimum=0; maximum=100000; default=0 |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `explain_flow`
 
 Answer 'how does A reach B?' Traces evidence-backed static paths between two components — more reliable than grepping call sites across layers.
@@ -464,6 +481,21 @@ Search components by name, attribute, or role with structured filters. Use when 
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
+## `annotate_component`
+
+Record a durable annotation on a component (intended_boundary, confirmed_dead, false_positive, note) that survives rescans. false_positive annotations remove the component from dead-code candidates. Preview by default; pass execute to apply.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `project_id` | string | yes | minLength=1 |
+| `component` | string | yes | minLength=1 |
+| `kind` | string | yes | enum=intended_boundary, confirmed_dead, false_positive, note |
+| `value` | string | no | maxLength=2000; default="" |
+| `remove` | boolean | no | default=false |
+| `execute` | boolean | no | default=false |
+
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `remove_project`
 
