@@ -826,9 +826,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         foreach (array_chunk($ancestorIds, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
             $statement = $this->pdo->prepare(
-                sprintf('SELECT id, kind, display_name, origin FROM nodes WHERE id IN (%s)', $placeholders),
+                sprintf('SELECT id, kind, display_name, origin FROM nodes WHERE project_id = ? AND id IN (%s)', $placeholders),
             );
-            $statement->execute($chunk);
+            $statement->execute([$projectId, ...$chunk]);
             foreach ($statement->fetchAll() as $row) {
                 $ancestorMeta[$row['id']] = $row;
             }
@@ -878,6 +878,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return $result;
     }
+
     /** @param list<array<string, mixed>> $roles */
     private function hasFrameworkRole(array $roles): bool
     {
