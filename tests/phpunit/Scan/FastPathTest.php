@@ -70,4 +70,25 @@ final class FastPathTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    #[Group('scan')]
+    public function testConfigOrScannerSetChangeSkipsFastPath(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $service = new ProjectScanService($pdo, self::repositoryRoot(), [$root]);
+
+            $configChanged = $service->scan($root, snapshotRetention: 3);
+            assertSame(false, array_key_exists('fast_path', $configChanged->data));
+
+            $pdo->exec("UPDATE scans SET scanner_set_hash = 'not-the-real-hash' WHERE id = (SELECT active_scan_id FROM projects LIMIT 1)");
+            $hashChanged = $service->scan($root, snapshotRetention: 3);
+            assertSame(false, array_key_exists('fast_path', $hashChanged->data));
+
+            $result = $service->scan($root, snapshotRetention: 3);
+            assertSame('no_change', $result->data['fast_path']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }
