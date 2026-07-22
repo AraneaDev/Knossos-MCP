@@ -9,6 +9,7 @@ Start here to find a project_id. Lists scanned projects with freshness and graph
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 | `include_roots` | boolean | no | default=false |
@@ -39,6 +40,7 @@ See a project's scan history. Use to find an older snapshot id to diff against o
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
@@ -52,6 +54,7 @@ See what changed architecturally between two scans. Use after a rescan to review
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `from_snapshot` | string | yes | minLength=1 |
 | `to_snapshot` | string | no | minLength=1; default="active" |
@@ -66,6 +69,7 @@ Check architecture budgets against a baseline in CI. Use to fail a build on regr
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `baseline_snapshot` | string | yes | minLength=1 |
 | `budgets` | object | yes | — |
@@ -82,6 +86,7 @@ See how architecture metrics moved over recent scans. Use for release notes or t
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=2; maximum=20; default=10 |
 | `release_from` | string | no | minLength=1 |
@@ -95,6 +100,7 @@ Locate a component by name when you are unsure of its exact canonical path. Retu
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `name` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
@@ -108,6 +114,7 @@ Get the full dossier for one component — its roles, boundary, containment, rel
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | yes | minLength=1 |
 | `max_relationships` | integer | no | minimum=1; maximum=100; default=25 |
@@ -123,6 +130,7 @@ Get a one-call overview of the codebase by language, node kind, and relationship
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 
@@ -135,6 +143,7 @@ Find the largest or longest files. Use to spot refactor targets without shelling
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `path_contains` | string | no | minLength=1; maxLength=1000 |
 | `language` | string | no | minLength=1; maxLength=100 |
@@ -152,6 +161,7 @@ Answer 'how does A reach B?' Traces evidence-backed static paths between two com
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `from` | string | yes | minLength=1 |
 | `to` | string | yes | minLength=1 |
@@ -170,6 +180,7 @@ Before editing a symbol, find everything that depends on it. Answers 'what break
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `symbol` | string | yes | minLength=1 |
 | `max_depth` | integer | no | minimum=1; maximum=8; default=4 |
@@ -187,6 +198,7 @@ Find circular dependencies. Use before a refactor to see which modules are tangl
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `edge_kinds` | array | no | maxItems=20 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -204,6 +216,7 @@ Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cl
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `edge_kinds` | array | no | maxItems=20 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -223,6 +236,7 @@ Verify declared boundary rules still hold. Use to confirm a change did not intro
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `policies` | array | yes | maxItems=50 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -239,6 +253,7 @@ Decide where new code for a feature belongs. Ranks existing boundaries by lexica
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `feature_description` | string | yes | minLength=1; maxLength=2000 |
 | `limit` | integer | no | minimum=1; maximum=20; default=5 |
@@ -256,6 +271,7 @@ Blend static blast radius with recent Git churn to prioritize review. Use when y
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `symbol` | string | yes | minLength=1 |
 | `since_days` | integer | no | minimum=1; maximum=3650; default=90 |
@@ -275,6 +291,7 @@ Map a set of changed files (explicit or from a Git diff) to the components they 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `files` | array | no | maxItems=50 |
 | `working_tree` | boolean | no | default=false |
@@ -309,6 +326,7 @@ Render the current graph as Mermaid or PlantUML source. Use to embed an up-to-da
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `format` | string | no | default="mermaid"; enum=mermaid, plantuml |
 | `boundary` | string | no | minLength=1 |
@@ -327,6 +345,7 @@ List the architecture boundaries and sample members. Use to learn how the codeba
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `source` | string | no | enum=explicit, inferred |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
@@ -341,6 +360,7 @@ Search components by name, attribute, or role with structured filters. Use when 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
 | `project_id` | string | yes | minLength=1 |
 | `query` | string | yes | minLength=1 |
 | `kinds` | array | no | maxItems=20 |

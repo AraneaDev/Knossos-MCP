@@ -46,7 +46,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
                         'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
                         'include_roots' => ['type' => 'boolean', 'default' => false],
@@ -90,7 +90,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
                         'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
@@ -107,7 +107,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'from_snapshot' => ['type' => 'string', 'minLength' => 1],
                         'to_snapshot' => ['type' => 'string', 'minLength' => 1, 'default' => 'active'],
@@ -125,7 +125,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'baseline_snapshot' => ['type' => 'string', 'minLength' => 1],
                         'budgets' => ['type' => 'object', 'properties' => [
@@ -153,7 +153,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 2, 'maximum' => 20, 'default' => 10],
                         'release_from' => ['type' => 'string', 'minLength' => 1],
@@ -181,7 +181,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'name' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
@@ -198,7 +198,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'component' => ['type' => 'string', 'minLength' => 1],
                         'max_relationships' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 25],
@@ -217,7 +217,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
                     ],
@@ -245,7 +245,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'from' => ['type' => 'string', 'minLength' => 1],
                         'to' => ['type' => 'string', 'minLength' => 1],
@@ -267,7 +267,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'symbol' => ['type' => 'string', 'minLength' => 1],
                         'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 8, 'default' => 4],
@@ -288,7 +288,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
@@ -309,7 +309,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
@@ -332,7 +332,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'policies' => [
                             'type' => 'array', 'minItems' => 1, 'maxItems' => 50,
@@ -367,7 +367,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'feature_description' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 2000],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 20, 'default' => 5],
@@ -388,7 +388,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'symbol' => ['type' => 'string', 'minLength' => 1],
                         'since_days' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 3650, 'default' => 90],
@@ -411,7 +411,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
                         'working_tree' => ['type' => 'boolean', 'default' => false],
@@ -453,7 +453,7 @@ final readonly class ToolService
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
-                        'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                        ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'format' => ['type' => 'string', 'enum' => ['mermaid', 'plantuml'], 'default' => 'mermaid'],
                         'boundary' => ['type' => 'string', 'minLength' => 1],
@@ -472,7 +472,7 @@ final readonly class ToolService
                 'name' => 'list_boundaries', 'title' => 'List boundaries',
                 'description' => 'List the architecture boundaries and sample members. Use to learn how the codebase is partitioned before navigating it.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
-                    'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                    ...self::commonReadProperties(),
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'source' => ['type' => 'string', 'enum' => ['explicit', 'inferred']],
                     'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
@@ -484,7 +484,7 @@ final readonly class ToolService
                 'name' => 'search_architecture', 'title' => 'Search architecture',
                 'description' => 'Search components by name, attribute, or role with structured filters. Use when you know a trait of what you want but not its exact name.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
-                    'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                    ...self::commonReadProperties(),
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'query' => ['type' => 'string', 'minLength' => 1],
                     'kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
@@ -539,6 +539,20 @@ final readonly class ToolService
         ];
     }
 
+    /**
+     * Properties shared by every read tool; handled centrally in call(), so
+     * handlers' keys() allow-lists never see them.
+     *
+     * @return array<string, mixed>
+     */
+    private static function commonReadProperties(): array
+    {
+        return [
+            'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+            'max_chars' => ['type' => 'integer', 'minimum' => 4000, 'maximum' => 100000, 'description' => 'Byte budget for the serialized result; oversized list fields are trimmed tail-first and reported in meta.dropped_items.'],
+        ];
+    }
+
     /** @return array<string, mixed> */
     private static function fileMetricsDefinition(): array
     {
@@ -549,7 +563,7 @@ final readonly class ToolService
             'inputSchema' => [
                 'type' => 'object',
                 'properties' => [
-                    'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
+                    ...self::commonReadProperties(),
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'path_contains' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 1000],
                     'language' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 100],
@@ -576,8 +590,16 @@ final readonly class ToolService
                 throw new InvalidArgumentException('verbosity must be "compact" or "full".');
             }
         }
+        $maxChars = null;
+        if (array_key_exists('max_chars', $arguments) && $name !== 'architecture_context') {
+            $maxChars = $arguments['max_chars'];
+            unset($arguments['max_chars']);
+            if (!is_int($maxChars) || $maxChars < 4000 || $maxChars > 100_000) {
+                throw new InvalidArgumentException('max_chars must be an integer between 4000 and 100000.');
+            }
+        }
         $envelope = $this->dispatch($name, $arguments, $cancellation);
-        return $this->enricher->enrich($envelope, $name, $verbosity);
+        return $this->enricher->enrich($envelope, $name, $verbosity, $maxChars);
     }
 
     /** @param array<string, mixed> $arguments */
