@@ -92,9 +92,11 @@ rather than proven absence.
 
 ## Tools
 
-Twenty-five MCP tools, each with an equivalent CLI command. Read tools are
+Twenty-six MCP tools, each with an equivalent CLI command. Read tools are
 annotated read-only and idempotent; the two deletion tools are annotated
-destructive and preview unless you pass `execute`.
+destructive and preview unless you pass `execute`. The server also exposes
+per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
+(`orient`, `review_diff`) alongside the tools.
 
 **Projects and history**
 
@@ -109,14 +111,15 @@ destructive and preview unless you pass `execute`.
 
 **Finding and reading components**
 
-| MCP tool               | CLI                    | Answers                                                   |
-| ---------------------- | ---------------------- | --------------------------------------------------------- |
-| `find_component`       | `find-component`       | Ranked candidates when you only know part of a name.      |
-| `inspect_component`    | `inspect-component`    | One component's roles, boundary, relations, and evidence. |
-| `architecture_summary` | `architecture-summary` | A one-call overview by language and node/edge kind.       |
-| `search_architecture`  | `search-architecture`  | Components filtered by kind, role, boundary, confidence.  |
-| `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.           |
-| `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.  |
+| MCP tool               | CLI                    | Answers                                                             |
+| ---------------------- | ---------------------- | ------------------------------------------------------------------- |
+| `find_component`       | `find-component`       | Ranked candidates when you only know part of a name.                |
+| `inspect_component`    | `inspect-component`    | One component's roles, boundary, relations, and evidence.           |
+| `architecture_summary` | `architecture-summary` | A one-call overview by language and node/edge kind.                 |
+| `search_architecture`  | `search-architecture`  | Components filtered by kind, role, boundary, confidence.            |
+| `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.                     |
+| `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.            |
+| `export_agent_brief`   | `export-agent-brief`   | A ready-to-paste markdown orientation brief for agent memory files. |
 
 **Structure and change analysis**
 
