@@ -6,6 +6,7 @@ use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\HttpEndpoint;
 use Knossos\Mcp\HttpSessionStore;
+use Knossos\Mcp\PromptService;
 use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
@@ -52,7 +53,7 @@ $tools = new ToolService(
     new DatabaseMaintenanceService($pdo, $runtime->defaultDatabasePath()),
     $enricher,
 );
-$endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), $allowedHosts, $allowedOrigins, $token, resources: new ResourceService($queries));
+$endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), $allowedHosts, $allowedOrigins, $token, resources: new ResourceService($queries), prompts: new PromptService());
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $body = file_get_contents('php://input', false, null, 0, 1_048_577);
 $response = $endpoint->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $headers, is_string($body) ? $body : '');

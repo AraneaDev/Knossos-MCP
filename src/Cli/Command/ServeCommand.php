@@ -7,6 +7,7 @@ namespace Knossos\Cli\Command;
 use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
+use Knossos\Mcp\PromptService;
 use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\StdioServer;
 use Knossos\Mcp\ToolService;
@@ -47,6 +48,6 @@ final class ServeCommand implements CliCommand
             $context->maintenance(),
             $enricher,
         );
-        return (new StdioServer($tools, resources: new ResourceService($queries)))->run(STDIN, STDOUT, STDERR);
+        return (new StdioServer($tools, resources: new ResourceService($queries), prompts: new PromptService()))->run(STDIN, STDOUT, STDERR);
     }
 }
