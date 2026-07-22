@@ -211,6 +211,8 @@ Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cl
 | `max_nodes` | integer | no | minimum=1; maximum=50000; default=10000 |
 | `max_edges` | integer | no | minimum=1; maximum=100000; default=20000 |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
+| `include_external` | boolean | no | default=false |
+| `include_tests` | boolean | no | default=false |
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 

@@ -317,6 +317,8 @@ final readonly class ToolService
                         'max_nodes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 50000, 'default' => 10000],
                         'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 20000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
+                        'include_external' => ['type' => 'boolean', 'default' => false, 'description' => 'Include external/unresolved symbols (builtins, vendor targets) in hubs and hotspots.'],
+                        'include_tests' => ['type' => 'boolean', 'default' => false, 'description' => 'Include test-role components in hubs and hotspots.'],
                     ],
                     'required' => ['project_id'],
                     'additionalProperties' => false,
@@ -827,7 +829,7 @@ final readonly class ToolService
     /** @param array<string, mixed> $arguments */
     private function health(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['edge_kinds', 'min_confidence', 'limit', 'max_nodes', 'max_edges', 'timeout_ms']);
+        self::keys($arguments, ['project_id'], ['edge_kinds', 'min_confidence', 'limit', 'max_nodes', 'max_edges', 'timeout_ms', 'include_external', 'include_tests']);
         return $this->queries->architectureHealth(
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'edge_kinds'),
@@ -836,6 +838,8 @@ final readonly class ToolService
             self::integer($arguments, 'max_nodes', 10_000, 1, 50_000),
             self::integer($arguments, 'max_edges', 20_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+            self::boolean($arguments, 'include_external', false),
+            self::boolean($arguments, 'include_tests', false),
         );
     }
 
