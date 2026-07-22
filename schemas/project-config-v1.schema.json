@@ -132,6 +132,12 @@
           "maximum": 100000
         }
       }
+    },
+    "dead_code_suppressions": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Canonical names (exact, or prefix with a trailing *) never to report as dead-code candidates."
     }
   }
 }

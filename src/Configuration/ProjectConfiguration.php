@@ -12,6 +12,7 @@ final readonly class ProjectConfiguration
      * @param list<string> $frameworks
      * @param list<array<string, mixed>> $policies
      * @param array<string, int> $qualityBudgets
+     * @param list<string> $deadCodeSuppressions
      */
     public function __construct(
         public ?string $path = null,
@@ -24,5 +25,6 @@ final readonly class ProjectConfiguration
         public ?int $snapshotRetention = null,
         public array $policies = [],
         public array $qualityBudgets = [],
+        public array $deadCodeSuppressions = [],
     ) {}
 }

@@ -319,7 +319,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
         $excludedInherited = 0;
+        $suppressions = $this->deadCodeSuppressions($projectId);
+        $suppressedCount = 0;
         foreach ($provisional as $id => $candidate) {
+            if (self::isSuppressed((string) $candidate['row']['canonical_name'], $suppressions)) {
+                ++$suppressedCount;
+                continue;
+            }
             $context = $inheritance[$id] ?? ['inherited' => false, 'external_ancestor' => null];
             if ($context['inherited']) {
                 ++$excludedInherited;
@@ -393,6 +399,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excludedInherited,
+                    'suppressed_candidates' => $suppressedCount,
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
                 ],
             ],
@@ -877,6 +884,38 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $result[$methodId] = ['inherited' => $inherited, 'external_ancestor' => $externalAncestor];
         }
         return $result;
+    }
+
+    /** @return list<string> */
+    private function deadCodeSuppressions(string $projectId): array
+    {
+        $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+        $raw = $statement->fetchColumn();
+        if (!is_string($raw)) {
+            return [];
+        }
+        $config = json_decode($raw, true);
+        $list = is_array($config) ? ($config['dead_code_suppressions'] ?? []) : [];
+        if (!is_array($list) || !array_is_list($list)) {
+            return [];
+        }
+        return array_values(array_filter($list, 'is_string'));
+    }
+
+    /** @param list<string> $suppressions */
+    private static function isSuppressed(string $canonicalName, array $suppressions): bool
+    {
+        foreach ($suppressions as $pattern) {
+            if (str_ends_with($pattern, '*')) {
+                if (str_starts_with($canonicalName, substr($pattern, 0, -1))) {
+                    return true;
+                }
+            } elseif ($pattern === $canonicalName) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @param list<array<string, mixed>> $roles */

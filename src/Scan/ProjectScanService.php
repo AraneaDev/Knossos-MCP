@@ -93,6 +93,7 @@ final class ProjectScanService implements ProjectScanner
                 'input_hash' => $preparation->discovery->inputHash,
                 'configuration_hash' => $preparation->discovery->configurationHash,
                 'snapshot_retention' => $preparation->snapshotRetention,
+                'dead_code_suppressions' => $preparation->configuration->deadCodeSuppressions,
             ],
             $analysis->classifications,
             $analysis->boundaries,

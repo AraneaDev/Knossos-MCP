@@ -348,4 +348,39 @@ JSON;
 
         assertSame(true, $config instanceof ProjectConfiguration);
     }
+
+    // ----- dead code suppressions -----
+
+    public function testLoaderAcceptsDeadCodeSuppressions(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-config-' . bin2hex(random_bytes(6));
+        mkdir($root, 0755, true);
+        try {
+            file_put_contents(
+                $root . '/knossos.json',
+                json_encode(['version' => 1, 'dead_code_suppressions' => ['App\\Legacy\\Exporter', 'KnossosPhpScanner\\FactCollector::*']]),
+            );
+            $config = \Knossos\Configuration\ProjectConfigurationLoader::load($root, [$root]);
+            assertSame(['App\\Legacy\\Exporter', 'KnossosPhpScanner\\FactCollector::*'], $config->deadCodeSuppressions);
+        } finally {
+            @unlink($root . '/knossos.json');
+            @rmdir($root);
+        }
+    }
+
+    public function testLoaderRejectsNonStringSuppressions(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-config-' . bin2hex(random_bytes(6));
+        mkdir($root, 0755, true);
+        try {
+            file_put_contents($root . '/knossos.json', json_encode(['version' => 1, 'dead_code_suppressions' => [42]]));
+            assertThrows(
+                static fn() => \Knossos\Configuration\ProjectConfigurationLoader::load($root, [$root]),
+                \Knossos\Discovery\DiscoveryException::class,
+            );
+        } finally {
+            @unlink($root . '/knossos.json');
+            @rmdir($root);
+        }
+    }
 }

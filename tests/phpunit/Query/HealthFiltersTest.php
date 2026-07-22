@@ -112,4 +112,19 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame('possible', $byName['App\\FactCollector::enterNode']['confidence']);
         assertSame(true, str_contains($byName['App\\FactCollector::enterNode']['reason'], 'NodeVisitor'));
     }
+
+    #[Group('query')]
+    public function testDeadCodeSuppressionsFromProjectConfigAreHonored(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $orphan = StableId::symbol($ids['project'], 'php', 'class', 'App\\Legacy\\Exporter');
+        $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\Legacy\\Exporter', 'Exporter', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveProject($ids['project'], 'Fixture Shop', '/workspace/fixture-shop', ['dead_code_suppressions' => ['App\\Legacy\\*']]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+        assertSame(false, in_array('App\\Legacy\\Exporter', $names, true));
+        assertSame(1, $data['bounds']['suppressed_candidates']);
+    }
 }
