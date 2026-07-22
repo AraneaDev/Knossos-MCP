@@ -481,6 +481,18 @@ final readonly class ToolService
                 ],
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
+            ...self::changeAnalysisDefinitions(),
+        ];
+    }
+
+    /**
+     * Test-impact, review, context, diagram, boundary, and search tools.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function changeAnalysisDefinitions(): array
+    {
+        return [
             [
                 'name' => 'test_impact',
                 'title' => 'Test impact',
