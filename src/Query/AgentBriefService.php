@@ -144,9 +144,9 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
     private function entryPointsSection(string $projectId): ?string
     {
         $statement = $this->pdo->prepare(
-            "SELECT n.display_name, n.kind, f.relative_path FROM nodes n LEFT JOIN files f ON f.id = n.file_id " .
+            'SELECT n.display_name, n.kind, f.relative_path FROM nodes n LEFT JOIN files f ON f.id = n.file_id ' .
             "WHERE n.project_id = :project AND (n.kind IN ('route', 'command', 'endpoint') OR n.id IN (" .
-            "SELECT node_id FROM classifications WHERE project_id = :project AND role IN (" .
+            'SELECT node_id FROM classifications WHERE project_id = :project AND role IN (' .
             "'application.controller', 'application.command', 'application.entry_point', 'laravel.controller', 'laravel.command')" .
             ')) ORDER BY n.kind, n.canonical_name LIMIT 12',
         );

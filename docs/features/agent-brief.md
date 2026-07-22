@@ -17,7 +17,7 @@ Sections are appended in a fixed priority order:
 3. **Entry points** — routes, commands, and controller/command-classified
    components: where execution starts.
 4. **Key hubs (most depended-on)** — the highest-degree components from
-   `architecture_health`'s *filtered* hub ranking (test-role and, unless
+   `architecture_health`'s _filtered_ hub ranking (test-role and, unless
    requested, external/unresolved components are excluded — an unfiltered
    ranking would be misleading in a brief meant to be trusted at a glance).
 5. **Framework signals** — detected framework roles (Laravel, Symfony,
