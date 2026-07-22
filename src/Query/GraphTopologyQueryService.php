@@ -345,13 +345,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'component' => $candidate['component'],
                 'confidence' => $confidence,
                 'reason' => $reason,
-                'uncertainty' => $dynamicRisk
-                    ? 'Framework conventions or dynamic resolution may reference this component. '
-                        . 'References that pass the identifier as a value, such as registry arrays, '
-                        . 'callbacks, or dispatch tables, are not resolved.'
-                    : 'Reflection, configuration, templates, or runtime dispatch may not be visible '
-                        . 'statically. References that pass the identifier as a value, such as registry '
-                        . 'arrays, callbacks, or dispatch tables, are not resolved.',
                 'out_degree' => $candidate['out_degree'],
             ];
         }
@@ -406,7 +399,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $evidence,
             [
                 'Hotspots are static structural signals, not change-frequency or defect predictions.',
-                'Dead-code results are candidates only; dynamic language and framework references may be invisible.',
+                'Dead-code results are candidates only; reflection, configuration, templates, registry arrays, callbacks, dispatch tables, and framework conventions may reference a component without a visible static edge.',
             ],
             $truncated,
         );

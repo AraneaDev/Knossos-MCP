@@ -346,9 +346,9 @@ final class BundleTest extends KnossosTestCase
                     str_contains($candidate['reason'], 'No selected inbound static dependency references this component.'),
                 );
                 assertContains('No inbound static reference was found', $candidate['reason']);
-                // The uncertainty must name the blind spot behind 21 verified false
-                // positives: identifiers passed as values.
-                assertContains('as a value', $candidate['uncertainty']);
+                // Per-candidate uncertainty text was folded into a single method-level
+                // warning; candidates no longer carry their own uncertainty key.
+                assertSame(false, array_key_exists('uncertainty', $candidate));
             }
         } finally {
             $this->removeTempTree($root);
