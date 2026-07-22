@@ -1,0 +1,64 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Knossos\Tests\Phpunit\Mcp;
+
+use Knossos\Mcp\ResourceService;
+use Knossos\Mcp\StdioServer;
+use Knossos\Query\ArchitectureQueryService;
+use Knossos\Tests\Phpunit\KnossosTestCase;
+use PHPUnit\Framework\Attributes\Group;
+
+final class ResourcesPromptsTest extends KnossosTestCase
+{
+    // Uses the Task 1 Fixtures-trait shape:
+    // buildToolServiceWithScan returns [$tools, $projectId, $root, $pdo].
+
+    #[Group('mcp')]
+    public function testInitializeAdvertisesResourcesAndListReturnsPerProjectUris(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $server = new StdioServer($tools, resources: new ResourceService(new ArchitectureQueryService($pdo)));
+            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+            assertSame(['subscribe' => false, 'listChanged' => false], $init['result']['capabilities']['resources']);
+            $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+
+            $list = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => []]);
+            $uris = array_column($list['result']['resources'], 'uri');
+            assertSame(true, in_array("knossos://{$projectId}/summary", $uris, true));
+            assertSame(true, in_array("knossos://{$projectId}/brief", $uris, true));
+
+            $read = $server->handle(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'resources/read', 'params' => ['uri' => "knossos://{$projectId}/summary"]]);
+            $content = $read['result']['contents'][0];
+            assertSame('application/json', $content['mimeType']);
+            $decoded = json_decode($content['text'], true);
+            assertSame($projectId, $decoded['project_id']);
+
+            $brief = $server->handle(['jsonrpc' => '2.0', 'id' => 4, 'method' => 'resources/read', 'params' => ['uri' => "knossos://{$projectId}/brief"]]);
+            assertSame('text/markdown', $brief['result']['contents'][0]['mimeType']);
+
+            $missing = $server->handle(['jsonrpc' => '2.0', 'id' => 5, 'method' => 'resources/read', 'params' => ['uri' => 'knossos://project_' . str_repeat('0', 64) . '/summary']]);
+            assertSame(-32002, $missing['error']['code']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('mcp')]
+    public function testServerWithoutResourceServiceKeepsMethodNotFound(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $server = new StdioServer($tools);
+            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+            assertSame(false, array_key_exists('resources', $init['result']['capabilities']));
+            $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+            $response = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'resources/list', 'params' => []]);
+            assertSame(-32601, $response['error']['code']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+}
