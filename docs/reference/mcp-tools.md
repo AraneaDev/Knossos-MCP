@@ -351,6 +351,27 @@ Map a set of changed files (explicit or from a Git diff) to the components they 
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `test_impact`
+
+Map a change set to the test files that statically exercise it, ranked by distance. Use to run the relevant tests first in an edit-test loop; the list is a lower bound, not a substitute for the full suite.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
+| `refresh_if_stale` | boolean | no | default=false |
+| `project_id` | string | yes | minLength=1 |
+| `files` | array | no | maxItems=50 |
+| `working_tree` | boolean | no | default=false |
+| `base_ref` | string | no | minLength=1; maxLength=200 |
+| `max_depth` | integer | no | minimum=1; maximum=8; default=4 |
+| `limit` | integer | no | minimum=1; maximum=100; default=100 |
+| `edge_kinds` | array | no | maxItems=20 |
+| `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
+| `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `architecture_context`
 
 Assemble a bounded, task-shaped evidence bundle (summary + likely location + impact + dossiers) for a coding task in one call. Use at the start of a task to load just-enough context cheaply.

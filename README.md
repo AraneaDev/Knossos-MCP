@@ -92,7 +92,7 @@ rather than proven absence.
 
 ## Tools
 
-Twenty-seven MCP tools, each with an equivalent CLI command. Read tools are
+Twenty-eight MCP tools, each with an equivalent CLI command. Read tools are
 annotated read-only and idempotent; the two deletion tools are annotated
 destructive and preview unless you pass `execute`. The server also exposes
 per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
@@ -134,6 +134,7 @@ per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
 | `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.    |
 | `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.              |
 | `changed_files_impact` | `changed-files-impact` | What a set of changed files — or your working tree — touches.  |
+| `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance. |
 | `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.       |
 | `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.              |
 

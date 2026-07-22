@@ -350,7 +350,7 @@ final class QueryTest extends KnossosTestCase
             assertSame(8, count($lines));
             $responses = array_map(fn(string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR), $lines);
             assertSame('2025-11-25', $responses[0]['result']['protocolVersion']);
-            assertSame(27, count($responses[1]['result']['tools']));
+            assertSame(28, count($responses[1]['result']['tools']));
             assertSame(true, $responses[2]['result']['isError']);
             assertContains('allowed root', $responses[2]['result']['content'][0]['text']);
             assertSame('KNOSSOS_UNSAFE_PATH', $responses[2]['result']['structuredContent']['error']['code']);
