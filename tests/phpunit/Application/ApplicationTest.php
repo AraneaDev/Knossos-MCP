@@ -26,9 +26,12 @@ final class ApplicationTest extends TestCase
         $constant = $reflection->getConstant('VERSION');
 
         $this->assertIsString($constant);
-        // Mirror the x-release-please-version sentinel in src/Application.php
-        // so a release-please bump fails this test until the source is updated.
-        assertSame('0.3.0', $constant);
+        // version.txt and the x-release-please-version sentinel in
+        // src/Application.php are bumped together by release-please; pinning a
+        // literal here failed every release build, so assert consistency with
+        // the managed file instead.
+        $this->assertSame(trim((string) file_get_contents(dirname(__DIR__, 3) . '/version.txt')), $constant);
+        $this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+$/', $constant);
     }
 
     public function testRunIsAPublicInstanceMethodReturningInteger(): void
