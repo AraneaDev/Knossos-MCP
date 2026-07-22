@@ -83,7 +83,7 @@ if command -v claude >/dev/null 2>&1; then
     echo "Registering the MCP server with Claude Code..."
     claude mcp remove "$NAME" -s "$SCOPE" >/dev/null 2>&1 || true
     claude mcp add "$NAME" -s "$SCOPE" -e "KNOSSOS_DATA_DIR=$DATA_DIR" -- \
-        "$ROOT/bin/knossos" serve --allow-root="$ALLOW_ROOT"
+        "$ROOT/tools/mcp-serve" --allow-root="$ALLOW_ROOT"
     log "registered as '$NAME' (scope: $SCOPE)"
     echo
     echo "Done. Restart Claude Code (or reload MCP servers) to use the '$NAME' tools,"
@@ -95,8 +95,8 @@ else
 {
   "mcpServers": {
     "$NAME": {
-      "command": "$ROOT/bin/knossos",
-      "args": ["serve", "--allow-root=$ALLOW_ROOT"],
+      "command": "$ROOT/tools/mcp-serve",
+      "args": ["--allow-root=$ALLOW_ROOT"],
       "env": { "KNOSSOS_DATA_DIR": "$DATA_DIR" }
     }
   }
