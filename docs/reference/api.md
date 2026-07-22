@@ -18,6 +18,10 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 
 - `history(string $projectRoot, int $sinceDays, int $maxCommits, int $timeoutMs): array` — Return bounded, read-only change history for project-relative files
 
+### `Knossos\Git\GitProcessRunnerInterface`
+
+- `run(array $command, int $timeoutMs, string $operation): string` — Run a bounded, timeout-controlled Git command
+
 ### `Knossos\Git\GitWorkingTreeProvider`
 
 - `changes(string $projectRoot, ?string $baseRef, int $maxFiles, int $timeoutMs): array` — Return bounded changed paths and explicit renames without modifying Git

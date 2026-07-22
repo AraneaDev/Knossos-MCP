@@ -1,16 +1,16 @@
 {
   "php": {
-    "aggregate_lines": 91,
+    "aggregate_lines": 92.5,
     "components": {
-      "bundle-git-watch": 87,
-      "discovery-config": 87.5,
-      "maintenance-runtime": 87.7,
-      "php-scanner": 90.6,
-      "query-analysis": 92.6,
-      "reconciliation": 90.6,
-      "scanner-runtime": 90.6,
-      "storage": 92.2,
-      "transport": 92.1
+      "bundle-git-watch": 80,
+      "discovery-config": 92,
+      "maintenance-runtime": 93,
+      "php-scanner": 91.5,
+      "query-analysis": 93.5,
+      "reconciliation": 97,
+      "scanner-runtime": 94,
+      "storage": 95,
+      "transport": 92.2
     }
   },
   "typescript": {

@@ -37,8 +37,14 @@ final class LaravelTest extends KnossosTestCase
         $edges = array_merge(...array_map(fn(ScanContribution $item): array => $item->edges, $contributions));
         $diagnostics = array_merge(...array_map(fn(ScanContribution $item): array => $item->diagnostics, $contributions));
         $routes = array_values(array_filter($nodes, fn(NodeFact $node): bool => $node->kind === 'route'));
-        $route = $routes[0];
-        assertSame('GET /shop/checkout => App\\Http\\Controllers\\CheckoutController::show', $route->canonicalName);
+        // Find the grouped route by canonical name (avoids depending on sort order,
+        // which changes when new route fixtures are added).
+        $getShopRoute = array_values(array_filter(
+            $routes,
+            fn(NodeFact $node): bool => $node->canonicalName === 'GET /shop/checkout => App\\Http\\Controllers\\CheckoutController::show',
+        ));
+        assertSame(1, count($getShopRoute));
+        $route = $getShopRoute[0];
         assertSame(['web', 'auth', 'verified'], $route->attributes['middleware']);
         assertSame('shop.checkout', $route->attributes['name']);
         $matchRoute = array_values(array_filter(
@@ -96,7 +102,7 @@ final class LaravelTest extends KnossosTestCase
             (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
             $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, 'Laravel Fixture');
             assertSame(3, $result->data['diagnostics']);
-            assertSame(2, (int) $pdo->query("SELECT COUNT(*) FROM nodes WHERE kind = 'route'")->fetchColumn());
+            assertSame(4, (int) $pdo->query("SELECT COUNT(*) FROM nodes WHERE kind = 'route'")->fetchColumn());
             assertSame(3, (int) $pdo->query("SELECT COUNT(*) FROM edges WHERE kind = 'uses_middleware'")->fetchColumn());
             assertSame(1, (int) $pdo->query(
                 "SELECT COUNT(*) FROM classifications WHERE role = 'laravel.controller' AND origin = 'framework_convention' AND confidence = 'certain'",

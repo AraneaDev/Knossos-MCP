@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scanner\Worker;
 
-final class WorkerProcessSupervisor
+final class WorkerProcessSupervisor implements ProcessSupervisorInterface
 {
     /** @var resource|null */
     private $process = null;

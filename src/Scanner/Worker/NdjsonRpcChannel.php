@@ -6,7 +6,7 @@ namespace Knossos\Scanner\Worker;
 
 use JsonException;
 
-final class NdjsonRpcChannel
+final class NdjsonRpcChannel implements RpcChannelInterface
 {
     private string $stdoutBuffer = '';
     private string $stderrBuffer = '';
@@ -14,7 +14,7 @@ final class NdjsonRpcChannel
     private int $stderrBytes = 0;
 
     public function __construct(
-        private readonly WorkerProcessSupervisor $process,
+        private readonly ProcessSupervisorInterface $process,
         private readonly WorkerLimits $limits,
     ) {}
 

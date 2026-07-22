@@ -17,8 +17,8 @@ final class ScannerProtocolSession
     private array $lastScanResult = [];
 
     public function __construct(
-        private readonly WorkerProcessSupervisor $process,
-        private readonly NdjsonRpcChannel $channel,
+        private readonly ProcessSupervisorInterface $process,
+        private readonly RpcChannelInterface $channel,
     ) {}
 
     public function initialize(): ScannerManifest

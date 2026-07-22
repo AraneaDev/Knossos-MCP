@@ -8,7 +8,7 @@ use RuntimeException;
 use Throwable;
 
 /** Runs bounded, timeout-controlled read-only Git subprocesses. */
-final readonly class GitProcessRunner
+final readonly class GitProcessRunner implements GitProcessRunnerInterface
 {
     public function __construct(private int $maxOutputBytes = 2_000_000, private int $maxErrorBytes = 65_536) {}
 

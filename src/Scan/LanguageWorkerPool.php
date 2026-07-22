@@ -7,7 +7,13 @@ namespace Knossos\Scan;
 use Knossos\Scanner\Worker\{ProcessScannerClient, WorkerExecutionPolicy};
 use Throwable;
 
-final class LanguageWorkerPool
+/**
+ * NOT marked `final`: PHPUnit 12.5's createMock does not honour the PHPDoc
+ * @final annotation (only the language-level final keyword), so this class
+ * must be non-final for direct mocking in PHPUnit. Callers should treat it as
+ * semantically final — there is no use case for subclassing it.
+ */
+class LanguageWorkerPool
 {
     /** @var array<string, ProcessScannerClient> */
     private array $clients = [];
