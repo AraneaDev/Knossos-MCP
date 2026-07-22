@@ -18,7 +18,7 @@ final class QueryCommand implements CliCommand
         'list-projects', 'list-snapshots', 'snapshot-diff', 'quality-gate', 'architecture-trends',
         'find-component', 'inspect-component', 'list-usages', 'architecture-summary', 'file-metrics', 'explain-flow', 'impact-analysis',
         'dependency-cycles', 'architecture-health', 'check-architecture', 'suggest-location', 'change-impact',
-        'changed-files-impact', 'test-impact', 'architecture-context', 'export-diagram', 'export-agent-brief', 'list-boundaries',
+        'changed-files-impact', 'test-impact', 'review-diff', 'architecture-context', 'export-diagram', 'export-agent-brief', 'list-boundaries',
         'search-architecture',
     ];
 
@@ -49,6 +49,7 @@ final class QueryCommand implements CliCommand
             'change-impact' => $this->changeImpact($positionals, $options, $context),
             'changed-files-impact' => $this->changedFilesImpact($positionals, $options, $context),
             'test-impact' => $this->testImpact($positionals, $options, $context),
+            'review-diff' => $this->reviewDiff($positionals, $options, $context),
             'architecture-context' => $this->architectureContext($positionals, $options, $context),
             'export-diagram' => $this->exportDiagram($positionals, $options, $context),
             'export-agent-brief' => $this->exportAgentBrief($positionals, $options, $context),
@@ -233,6 +234,27 @@ final class QueryCommand implements CliCommand
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos test-impact <project-id> [files...] [options]');
         $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
         $result = $queries->testImpact($project, array_slice($p, 1), isset($o['working-tree']), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
+        return $this->result($result, $o, $c);
+    }
+
+    /** @param list<string> $p @param array<string, list<string>> $o */
+    private function reviewDiff(array $p, array $o, CliCommandContext $c): int
+    {
+        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos review-diff <project-id> [FILE...] [options]');
+        $policies = $c->options->single($o, 'policies');
+        $budgets = $c->options->single($o, 'budgets');
+        $result = $this->queries($c)->reviewDiff(
+            $project,
+            $c->options->single($o, 'base-ref'),
+            array_slice($p, 1),
+            $policies === null ? null : $c->input->policies($policies),
+            $budgets === null ? null : $c->input->jsonObject($budgets),
+            $c->options->single($o, 'baseline-snapshot'),
+            $c->options->integer($o, 'max-depth', 4, 1, 8),
+            $c->options->integer($o, 'limit', 100, 1, 100),
+            $c->options->single($o, 'min-confidence') ?? 'possible',
+            $c->options->integer($o, 'timeout-ms', 1000, 1, 5000),
+        );
         return $this->result($result, $o, $c);
     }
 

@@ -372,6 +372,28 @@ Map a change set to the test files that statically exercise it, ranked by distan
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `review_diff`
+
+One-call architectural review of a change set: blast radius, boundary-policy violations touching the change, quality-gate delta vs the last snapshot, and cycles the change participates in. Defaults to the working tree; policies/budgets default to knossos.json.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
+| `refresh_if_stale` | boolean | no | default=false |
+| `project_id` | string | yes | minLength=1 |
+| `base_ref` | string | no | minLength=1; maxLength=200 |
+| `files` | array | no | maxItems=50 |
+| `policies` | array | no | maxItems=50 |
+| `budgets` | object | no | — |
+| `baseline_snapshot` | string | no | minLength=1 |
+| `max_depth` | integer | no | minimum=1; maximum=8; default=4 |
+| `limit` | integer | no | minimum=1; maximum=100; default=100 |
+| `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
+| `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `architecture_context`
 
 Assemble a bounded, task-shaped evidence bundle (summary + likely location + impact + dossiers) for a coding task in one call. Use at the start of a task to load just-enough context cheaply.

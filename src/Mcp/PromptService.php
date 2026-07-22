@@ -78,17 +78,15 @@ final readonly class PromptService
     private static function reviewDiffText(?string $baseRef): string
     {
         $target = $baseRef === null
-            ? 'the uncommitted working tree (pass working_tree: true)'
+            ? 'the uncommitted working tree (omit base_ref)'
             : sprintf('the changes since "%s" (pass base_ref: "%s")', $baseRef, $baseRef);
         return <<<TEXT
             Review the architectural blast radius of {$target} using the Knossos graph.
 
-            1. Resolve the project_id via list_projects (scan_project first if the graph is stale).
-            2. Call changed_files_impact for the change set to map the affected components and dependants.
-            3. If the project declares boundary policies (knossos.json), call check_architecture with them to find violations the change introduces.
-            4. If a baseline snapshot exists, call quality_gate to compare budgets (new cycles, boundary violations, hub growth).
+            1. Resolve the project_id via list_projects (scan_project first if the graph is stale, or pass refresh_if_stale: true).
+            2. Call review_diff — one call returns the impacted components, boundary-policy violations touching the change, the quality-gate delta, and any dependency cycles the change participates in. Policies and budgets default to the project's knossos.json.
 
-            Then report: what the change can break (with the evidence edges), any boundary-policy violations, and any budget regressions. Impact is a conservative static blast radius — say so when reporting.
+            Then report: what the change can break (with the evidence edges), any policy violations, and any budget regressions. Impact is a conservative static blast radius — say so when reporting.
             TEXT;
     }
 }

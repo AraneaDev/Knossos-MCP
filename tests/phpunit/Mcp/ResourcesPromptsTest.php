@@ -77,7 +77,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
 
             $get = $server->handle(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'prompts/get', 'params' => ['name' => 'review_diff', 'arguments' => ['base_ref' => 'origin/main']]]);
             $text = $get['result']['messages'][0]['content']['text'];
-            assertSame(true, str_contains($text, 'changed_files_impact'));
+            assertSame(true, str_contains($text, 'review_diff'));
             assertSame(true, str_contains($text, 'origin/main'));
 
             $unknown = $server->handle(['jsonrpc' => '2.0', 'id' => 4, 'method' => 'prompts/get', 'params' => ['name' => 'nope']]);
@@ -88,7 +88,7 @@ final class ResourcesPromptsTest extends KnossosTestCase
             $nonString = $server->handle(['jsonrpc' => '2.0', 'id' => 5, 'method' => 'prompts/get', 'params' => ['name' => 'review_diff', 'arguments' => ['base_ref' => 123]]]);
             $nonStringText = $nonString['result']['messages'][0]['content']['text'];
             assertSame(false, str_contains($nonStringText, '123'));
-            assertSame(true, str_contains($nonStringText, 'working_tree'));
+            assertSame(true, str_contains($nonStringText, 'omit base_ref'));
         } finally {
             $this->removeTempTree($root);
         }

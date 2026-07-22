@@ -18,6 +18,7 @@ final readonly class ArchitectureQueryService
     private ArchitecturePolicyQueryService $policyQueries;
     private ChangeImpactQueryService $changeQueries;
     private ArchitectureContextService $contextQueries;
+    private ReviewDiffService $reviewQueries;
     private DiagramExportService $diagramQueries;
     private FileMetricsQueryService $fileMetricsQueries;
     private StalenessProbe $stalenessProbe;
@@ -51,6 +52,7 @@ final readonly class ArchitectureQueryService
             $this->componentQueries,
             $this->policyQueries,
         );
+        $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->catalogQueries, $this->topologyQueries);
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
         $this->stalenessProbe = new StalenessProbe($pdo, $wallClock);
@@ -237,6 +239,26 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
     ): ResultEnvelope {
         return $this->changeQueries->testImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+    }
+
+    /**
+     * @param list<string> $files
+     * @param list<array<string, mixed>>|null $policies
+     * @param array<string, int>|null $budgets
+     */
+    public function reviewDiff(
+        string $projectId,
+        ?string $baseRef = null,
+        array $files = [],
+        ?array $policies = null,
+        ?array $budgets = null,
+        ?string $baselineSnapshot = null,
+        int $maxDepth = 4,
+        int $limit = 100,
+        string $minConfidence = 'possible',
+        int $timeoutMs = 1000,
+    ): ResultEnvelope {
+        return $this->reviewQueries->reviewDiff($projectId, $baseRef, $files, $policies, $budgets, $baselineSnapshot, $maxDepth, $limit, $minConfidence, $timeoutMs);
     }
 
     /** @param list<string> $files */
