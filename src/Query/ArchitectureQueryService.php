@@ -270,8 +270,9 @@ final readonly class ArchitectureQueryService
         array $files = [],
         int $maxChars = 30_000,
         int $timeoutMs = 1500,
+        bool $includeSource = false,
     ): ResultEnvelope {
-        return $this->contextQueries->architectureContext($projectId, $taskDescription, $files, $maxChars, $timeoutMs);
+        return $this->contextQueries->architectureContext($projectId, $taskDescription, $files, $maxChars, $timeoutMs, $includeSource);
     }
 
     /** @param list<string> $edgeKinds */

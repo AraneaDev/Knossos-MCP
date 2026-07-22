@@ -264,7 +264,7 @@ final class QueryCommand implements CliCommand
     private function architectureContext(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-context <project-id> [files...] --task=TEXT [options]');
-        $result = $this->queries($c)->architectureContext($project, $c->options->single($o, 'task') ?? '', array_slice($p, 1), $c->options->integer($o, 'max-chars', 30_000, 4000, 100_000), $c->options->integer($o, 'timeout-ms', 1500, 1, 5000));
+        $result = $this->queries($c)->architectureContext($project, $c->options->single($o, 'task') ?? '', array_slice($p, 1), $c->options->integer($o, 'max-chars', 30_000, 4000, 100_000), $c->options->integer($o, 'timeout-ms', 1500, 1, 5000), isset($o['include-source']));
         return $this->result($result, $o, $c);
     }
 

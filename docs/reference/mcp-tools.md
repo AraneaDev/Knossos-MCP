@@ -423,6 +423,7 @@ Assemble a bounded, task-shaped evidence bundle (summary + likely location + imp
 | `files` | array | no | maxItems=50 |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1500 |
+| `include_source` | boolean | no | default=false |
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
