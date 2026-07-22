@@ -15,7 +15,9 @@ use Throwable;
  * policy violations touching the change, quality-gate delta, and cycles the
  * change participates in. Sections degrade to not_evaluated (with a reason)
  * instead of failing the whole call — a review with partial signal beats an
- * error.
+ * error. The `change` section is the one exception: it stays unguarded by
+ * design, because it is the spine of the review and nothing downstream can
+ * run without it.
  */
 final readonly class ReviewDiffService extends AbstractArchitectureQueryService
 {
@@ -64,6 +66,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
 
         [$policies, $budgets, $configReason] = $this->withProjectConfig($project, $policies, $budgets);
 
+        $checkEvidence = [];
         $policyCheck = ['status' => 'not_evaluated', 'reason' => $configReason ?? 'No boundary policies declared in knossos.json or supplied.'];
         if ($policies !== []) {
             try {
@@ -78,6 +81,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
                     'total_violations' => count($check->data['violations']),
                     'violations_touching_change' => $touchingViolations,
                 ];
+                $checkEvidence = $check->evidence;
                 $warnings = [...$warnings, ...$check->warnings];
                 $truncated = $truncated || $check->truncated;
             } catch (InvalidArgumentException $error) {
@@ -85,6 +89,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
             }
         }
 
+        $gateEvidence = [];
         $qualityGate = ['status' => 'not_evaluated', 'reason' => $configReason ?? 'No quality budgets declared in knossos.json or supplied.'];
         if ($budgets !== []) {
             $baselineSnapshot ??= $this->latestNonActiveSnapshot($projectId, (string) $project['active_scan_id']);
@@ -99,6 +104,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
                         'checks' => $gate->data['checks'],
                         'baseline_snapshot' => $gate->data['baseline_snapshot'],
                     ];
+                    $gateEvidence = $gate->evidence;
                     $warnings = [...$warnings, ...$gate->warnings];
                 } catch (InvalidArgumentException $error) {
                     $qualityGate = ['status' => 'not_evaluated', 'reason' => 'Quality gate failed: ' . $error->getMessage()];
@@ -106,19 +112,30 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
             }
         }
 
-        $cycleResult = $this->topologyQueries->dependencyCycles($projectId, [], $minConfidence, 100, 10_000, 20_000, $timeoutMs);
-        $touchingCycles = array_values(array_filter(
-            $cycleResult->data['cycles'],
-            static function (array $cycle) use ($touched): bool {
-                foreach ($cycle['members'] as $member) {
-                    if (isset($touched[$member['id']])) {
-                        return true;
+        $cycleEvidence = [];
+        $touchingCycles = [];
+        try {
+            $cycleResult = $this->topologyQueries->dependencyCycles($projectId, [], $minConfidence, 100, 10_000, 20_000, $timeoutMs);
+            $touchingCycles = array_values(array_filter(
+                $cycleResult->data['cycles'],
+                static function (array $cycle) use ($touched): bool {
+                    foreach ($cycle['members'] as $member) {
+                        if (isset($touched[$member['id']])) {
+                            return true;
+                        }
                     }
-                }
-                return false;
-            },
-        ));
-        $truncated = $truncated || $cycleResult->truncated;
+                    return false;
+                },
+            ));
+            $cyclesSection = ['status' => 'evaluated', 'cycles' => $touchingCycles];
+            $cycleEvidence = $cycleResult->evidence;
+            $warnings = [...$warnings, ...$cycleResult->warnings];
+            $truncated = $truncated || $cycleResult->truncated;
+        } catch (InvalidArgumentException $error) {
+            $cyclesSection = ['status' => 'not_evaluated', 'reason' => 'Cycle scan failed: ' . $error->getMessage()];
+        }
+
+        $evidence = array_slice([...$change->evidence, ...$checkEvidence, ...$gateEvidence, ...$cycleEvidence], 0, 100);
 
         $summary = sprintf(
             '%d changed file%s, %d impacted component%s, %s, gate %s.',
@@ -140,10 +157,10 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
                 'change' => ['status' => 'evaluated'] + array_intersect_key($change->data, array_flip(['changed_files', 'unresolved_files', 'direct_components', 'impacted_components', 'git'])),
                 'policy_check' => $policyCheck,
                 'quality_gate' => $qualityGate,
-                'cycles_touching_change' => ['status' => 'evaluated', 'cycles' => $touchingCycles],
+                'cycles_touching_change' => $cyclesSection,
                 'bounds' => $change->data['bounds'] + ['cycle_scan_limit' => 100],
             ],
-            $change->evidence,
+            $evidence,
             array_values(array_unique($warnings)),
             $truncated,
         );
