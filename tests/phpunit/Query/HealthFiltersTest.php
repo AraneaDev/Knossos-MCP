@@ -58,4 +58,58 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(0, $result->data['bounds']['excluded_external_components']);
         assertThrows(fn() => $tools->call('architecture_health', ['project_id' => $ids['project'], 'include_tests' => 'yes']), \InvalidArgumentException::class);
     }
+
+    #[Group('query')]
+    public function testDeadCodeExcludesMethodsDeclaredByAnInternalAncestor(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $gateway = StableId::symbol($ids['project'], 'php', 'interface', 'App\\PaymentGateway');
+        $gatewayCharge = StableId::symbol($ids['project'], 'php', 'method', 'App\\PaymentGateway::charge');
+        $stripe = StableId::symbol($ids['project'], 'php', 'class', 'App\\StripeGateway');
+        $stripeCharge = StableId::symbol($ids['project'], 'php', 'method', 'App\\StripeGateway::charge');
+        foreach ([
+            [$gateway, 'interface', 'App\\PaymentGateway', 'PaymentGateway'],
+            [$gatewayCharge, 'method', 'App\\PaymentGateway::charge', 'charge'],
+            [$stripe, 'class', 'App\\StripeGateway', 'StripeGateway'],
+            [$stripeCharge, 'method', 'App\\StripeGateway::charge', 'charge'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 1, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $gateway, $gatewayCharge, 'c1'), $ids['project'], 'contains', $gateway, $gatewayCharge, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $stripe, $stripeCharge, 'c2'), $ids['project'], 'contains', $stripe, $stripeCharge, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'implements', $stripe, $gateway, 'i1'), $ids['project'], 'implements', $stripe, $gateway, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $candidateNames = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+        assertSame(false, in_array('App\\StripeGateway::charge', $candidateNames, true));
+        assertSame(1, $data['bounds']['excluded_inherited_methods']);
+    }
+
+    #[Group('query')]
+    public function testDeadCodeDemotesMethodsOfClassesWithExternalAncestors(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $visitor = StableId::symbol($ids['project'], 'php', 'external_interface', 'Vendor\\NodeVisitor');
+        $collector = StableId::symbol($ids['project'], 'php', 'class', 'App\\FactCollector');
+        $enterNode = StableId::symbol($ids['project'], 'php', 'method', 'App\\FactCollector::enterNode');
+        $repository->saveNode($visitor, $ids['project'], 'php', 'external_interface', 'Vendor\\NodeVisitor', 'NodeVisitor', null, $file, 1, 1, 'derived', 'possible', ['unresolved' => true], $owner, $ids['scan']);
+        $repository->saveNode($collector, $ids['project'], 'php', 'class', 'App\\FactCollector', 'FactCollector', null, $file, 1, 9, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveNode($enterNode, $ids['project'], 'php', 'method', 'App\\FactCollector::enterNode', 'enterNode', null, $file, 3, 5, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $collector, $enterNode, 'c3'), $ids['project'], 'contains', $collector, $enterNode, $file, 3, 3, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'implements', $collector, $visitor, 'i2'), $ids['project'], 'implements', $collector, $visitor, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $byName = [];
+        foreach ($data['dead_code_candidates'] as $candidate) {
+            $byName[$candidate['component']['canonical_name']] = $candidate;
+        }
+        assertSame('possible', $byName['App\\FactCollector::enterNode']['confidence']);
+        assertSame(true, str_contains($byName['App\\FactCollector::enterNode']['reason'], 'NodeVisitor'));
+    }
 }
