@@ -11,7 +11,7 @@ use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 
 final class ProjectConfigurationLoader
 {
-    private const ROOT_KEYS = ['$schema', 'version', 'ignores', 'limits', 'boundaries', 'frameworks', 'snapshot_retention', 'policies', 'quality_budgets'];
+    private const ROOT_KEYS = ['$schema', 'version', 'ignores', 'limits', 'boundaries', 'frameworks', 'snapshot_retention', 'policies', 'quality_budgets', 'dead_code_suppressions'];
     private const BUDGET_KEYS = ['new_cycles', 'boundary_violations', 'error_diagnostics', 'warning_diagnostics', 'hub_degree_growth', 'unreferenced_candidates', 'public_surface_changes'];
 
     private function __construct() {}
@@ -107,7 +107,8 @@ final class ProjectConfigurationLoader
             }
             $typedBudgets[$key] = $value;
         }
-        return new ProjectConfiguration(basename($path), $ignores, $maxFiles, $maxBytes, $workerTimeoutMs, $boundaries, array_values(array_unique($frameworks)), $retention, $policies, $typedBudgets);
+        $suppressions = self::stringList($data['dead_code_suppressions'] ?? [], 'dead_code_suppressions', 200);
+        return new ProjectConfiguration(basename($path), $ignores, $maxFiles, $maxBytes, $workerTimeoutMs, $boundaries, array_values(array_unique($frameworks)), $retention, $policies, $typedBudgets, $suppressions);
     }
 
     /** @param array<string, mixed> $data @param list<string> $allowed */
