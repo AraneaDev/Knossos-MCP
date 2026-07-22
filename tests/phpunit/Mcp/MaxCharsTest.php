@@ -27,13 +27,25 @@ final class MaxCharsTest extends KnossosTestCase
         $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['components' => $rows, 'bounds' => ['limit' => 100]]);
         $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4000);
         assertSame(true, $result->truncated);
-        assertSame(true, $result->meta['result_bytes'] <= 4000);
+        assertSame(true, strlen((string) json_encode($result->jsonSerialize(), JSON_UNESCAPED_SLASHES)) <= 4000);
         assertSame(true, $result->meta['dropped_items']['components'] > 0);
         assertSame(4000, $result->meta['max_chars']);
         // Determinism: same input, same output.
         assertSame($result->jsonSerialize(), $enricher->enrich($envelope, 'search_architecture', 'compact', 4000)->jsonSerialize());
         // No budget: untouched.
         assertSame(100, count($enricher->enrich($envelope, 'search_architecture', 'compact')->data['components']));
+    }
+
+    #[Group('mcp')]
+    public function testEnricherSurfacesUnmetBudgetWhenNoListIsTrimmable(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['bounds' => ['limit' => 100, 'blob' => str_repeat('y', 6000)]]);
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4000);
+        assertSame(true, in_array('The max_chars budget could not be fully met by trimming result lists.', $result->warnings, true));
+        assertSame(4000, $result->meta['max_chars']);
+        assertSame(false, array_key_exists('dropped_items', $result->meta));
     }
 
     #[Group('mcp')]

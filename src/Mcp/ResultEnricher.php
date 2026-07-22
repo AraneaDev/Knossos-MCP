@@ -27,83 +27,102 @@ final readonly class ResultEnricher
         $enriched = $base->with(staleness: $staleness, nextSteps: $steps);
 
         $dropped = [];
+        $met = true;
+        $data = $enriched->data;
         if ($maxChars !== null) {
-            $skeleton = new ResultEnvelope(
-                $enriched->projectId,
-                $enriched->snapshotId,
-                $enriched->summary,
-                [],
-                $enriched->evidence,
-                $enriched->warnings,
-                $enriched->truncated,
-                $enriched->staleness,
-                $enriched->nextSteps,
-            );
-            $overhead = strlen((string) json_encode($skeleton->jsonSerialize(), JSON_UNESCAPED_SLASHES)) + 120;
-            [$data, $dropped, $met] = self::shrinkData($enriched->data, $maxChars, $overhead);
-            if ($dropped !== []) {
-                $enriched = new ResultEnvelope(
+            while (true) {
+                $candidateMeta = [
+                    'result_bytes' => 99_999_999,
+                    'verbosity' => $verbosity,
+                    'evidence_total' => $total,
+                    'evidence_shown' => $shown,
+                ];
+                if ($dropped !== []) {
+                    $candidateMeta['max_chars'] = $maxChars;
+                    $candidateMeta['dropped_items'] = $dropped;
+                }
+                $candidate = new ResultEnvelope(
                     $enriched->projectId,
                     $enriched->snapshotId,
                     $enriched->summary,
                     $data,
                     $enriched->evidence,
-                    $met ? $enriched->warnings : [...$enriched->warnings, 'The max_chars budget could not be fully met by trimming result lists.'],
-                    true,
+                    $enriched->warnings,
+                    $enriched->truncated || $dropped !== [],
                     $enriched->staleness,
                     $enriched->nextSteps,
+                    $candidateMeta,
                 );
+                $size = strlen((string) json_encode($candidate->jsonSerialize(), JSON_UNESCAPED_SLASHES));
+                if ($size <= $maxChars) {
+                    $met = true;
+                    break;
+                }
+                $victim = self::findVictim($data);
+                if ($victim === null) {
+                    $met = false;
+                    break;
+                }
+                array_pop($data[$victim]);
+                $dropped[$victim] = ($dropped[$victim] ?? 0) + 1;
             }
         }
 
-        $resultBytes = strlen((string) json_encode($enriched->jsonSerialize(), JSON_UNESCAPED_SLASHES));
+        $budgetUnmet = $maxChars !== null && !$met;
+        $truncated = $enriched->truncated || $dropped !== [];
+        $warnings = $enriched->warnings;
+        if ($budgetUnmet) {
+            $warnings = [...$warnings, 'The max_chars budget could not be fully met by trimming result lists.'];
+        }
+        $final = new ResultEnvelope(
+            $enriched->projectId,
+            $enriched->snapshotId,
+            $enriched->summary,
+            $data,
+            $enriched->evidence,
+            $warnings,
+            $truncated,
+            $enriched->staleness,
+            $enriched->nextSteps,
+        );
+
+        $resultBytes = strlen((string) json_encode($final->jsonSerialize(), JSON_UNESCAPED_SLASHES));
         $meta = [
             'result_bytes' => $resultBytes,
             'verbosity' => $verbosity,
             'evidence_total' => $total,
             'evidence_shown' => $shown,
         ];
-        if ($dropped !== []) {
+        if ($dropped !== [] || $budgetUnmet) {
             $meta['max_chars'] = $maxChars;
+        }
+        if ($dropped !== []) {
             $meta['dropped_items'] = $dropped;
         }
-        return $enriched->with(meta: $meta);
+        return $final->with(meta: $meta);
     }
 
     /**
-     * Trim top-level list fields tail-first (largest list first, alphabetical
-     * key on ties) until the serialized envelope fits the byte budget. The 120
-     * bytes of headroom in the caller's overhead cover the meta block itself.
+     * Select the largest top-level list field to trim one tail item from
+     * (alphabetical key on ties), or null if no trimmable list remains.
      *
      * @param array<string, mixed> $data
-     * @return array{0: array<string, mixed>, 1: array<string, int>, 2: bool}
      */
-    private static function shrinkData(array $data, int $budget, int $overhead): array
+    private static function findVictim(array $data): ?string
     {
-        $dropped = [];
-        while (true) {
-            $size = strlen((string) json_encode($data, JSON_UNESCAPED_SLASHES)) + $overhead;
-            if ($size <= $budget) {
-                return [$data, $dropped, true];
+        $victim = null;
+        $victimCount = 1;
+        foreach ($data as $key => $value) {
+            if (!is_array($value) || !array_is_list($value)) {
+                continue;
             }
-            $victim = null;
-            $victimCount = 1;
-            foreach ($data as $key => $value) {
-                if (!is_array($value) || !array_is_list($value)) {
-                    continue;
-                }
-                $count = count($value);
-                if ($count > $victimCount || ($count === $victimCount && $victim !== null && strcmp((string) $key, $victim) < 0)) {
-                    $victim = (string) $key;
-                    $victimCount = $count;
-                }
+            $count = count($value);
+            if ($count > $victimCount || ($count === $victimCount && $victim !== null && strcmp((string) $key, $victim) < 0)) {
+                $victim = (string) $key;
+                $victimCount = $count;
             }
-            if ($victim === null) {
-                return [$data, $dropped, false];
-            }
-            array_pop($data[$victim]);
-            $dropped[$victim] = ($dropped[$victim] ?? 0) + 1;
         }
+        return $victim;
     }
 
     private function compact(ResultEnvelope $envelope): ResultEnvelope
