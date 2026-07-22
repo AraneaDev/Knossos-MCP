@@ -35,6 +35,7 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(1, $default['bounds']['excluded_test_components']);
         $hotspotNames = array_map(static fn(array $spot): string => $spot['component']['canonical_name'], $default['static_hotspots']);
         assertSame(false, in_array('count', $hotspotNames, true));
+        assertSame(false, in_array('assertWidgets', $hotspotNames, true));
 
         $included = $queries->architectureHealth($ids['project'], includeExternal: true, includeTests: true)->data;
         $allNames = array_map(static fn(array $hub): string => $hub['component']['canonical_name'], $included['hubs']);

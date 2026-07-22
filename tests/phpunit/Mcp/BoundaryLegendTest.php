@@ -38,6 +38,27 @@ final class BoundaryLegendTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testCompressPassesThroughListBoundariesShapeButCompressesComponentBoundaries(): void
+    {
+        $listBoundariesData = ['boundaries' => [[
+            'id' => 'boundary_a',
+            'name' => 'module:src',
+            'source' => 'inferred',
+            'matcher' => 'src/**',
+            'member_count' => 3,
+            'sample_members' => ['src/Foo.php'],
+        ]]];
+        [$compressed, $legend] = BoundaryLegend::compress($listBoundariesData);
+        assertSame($listBoundariesData, $compressed);
+        assertSame([], $legend);
+
+        $componentBoundariesData = ['component' => ['boundaries' => [self::BOUNDARY]]];
+        [$compressedComponent, $componentLegend] = BoundaryLegend::compress($componentBoundariesData);
+        assertSame(['boundary_a'], $compressedComponent['component']['boundaries']);
+        assertSame(['boundary_a' => ['name' => 'module:src', 'source' => 'inferred']], $componentLegend);
+    }
+
+    #[Group('mcp')]
     public function testEnricherAppliesLegendOnlyInCompactMode(): void
     {
         $pdo = $this->freshTestDatabase();
