@@ -28,16 +28,21 @@ Each page documents one query surface, its CLI and MCP forms, and its limits.
 
 - [Project catalogue](features/project-catalog.md) — stable project IDs and freshness states.
 - [Component inspection](features/component-inspection.md) — single-call component dossiers.
+- [List usages](features/list-usages.md) — every call/reference site of a symbol with file:line evidence.
+- [Agent brief](features/agent-brief.md) — a paste-ready markdown orientation brief for agent memory files.
 - [Architecture context](features/architecture-context.md) — bounded task-oriented evidence bundles.
 - [Declared architecture policies](features/architecture-policies.md) — boundary dependency rules.
 - [Architecture quality budgets](features/quality-budgets.md) — reviewable regression gates.
+- [Review diff](features/review-diff.md) — one-call architectural review of a change set.
 - [Architecture trends](features/architecture-trends.md) — historical metrics and release notes.
 - [Retained snapshots](features/snapshots.md) — immutable history across successful scans.
 - [Snapshot diff](features/snapshot-diff.md) — evidence-backed architectural changelogs.
 - [Changed-file impact](features/changed-files-impact.md) — explicit and Git-discovered change sets.
+- [Test impact](features/test-impact.md) — test files that statically reach a change, ranked by distance.
 - [Git change signals](features/git-change-impact.md) — time-aware, explicitly heuristic risk.
 - [Diagram source export](features/diagram-export.md) — deterministic Mermaid and PlantUML.
 - [Semantic location ranking](features/semantic-ranking.md) — optional, opt-in, with exact fallback.
+- [Component annotations](features/annotations.md) — durable agent-written judgments that survive rescans.
 
 ## Language and framework support
 
