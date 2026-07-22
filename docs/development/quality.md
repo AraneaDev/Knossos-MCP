@@ -12,7 +12,7 @@ tools/quality-container full
 `fast` runs dependency/lock integrity, PHP syntax, PHP-CS-Fixer, PHPStan,
 ESLint, Prettier, markdownlint, Ruff, mypy, JSON/large-file/line-ending/secret
 checks, pre-commit configuration validation, ShellCheck, Hadolint, and all
-tests. `full` additionally runs Composer/npm security audits, the pinned MCP
+tests (the PHPUnit suite plus the TypeScript worker's vitest suite). `full` additionally runs Composer/npm security audits, the pinned MCP
 Inspector smoke, a clean runtime build, `doctor`, performance budgets, and the
 coverage floors in [coverage policy](coverage.md). Mutation score is measured
 on demand rather than in a profile -- see
@@ -23,7 +23,7 @@ on demand rather than in a profile -- see
 | Surface                      | Enforced tools                                                                 |
 | ---------------------------- | ------------------------------------------------------------------------------ |
 | PHP                          | PHP syntax, PHP-CS-Fixer 3.95.12, PHPStan 2.2.5                                |
-| JavaScript/TypeScript worker | ESLint 10.7.0, Prettier 3.9.5, TypeScript compiler checks                      |
+| JavaScript/TypeScript worker | ESLint 10.7.0, Prettier 3.9.5, TypeScript compiler checks, vitest suite        |
 | Python worker                | Ruff 0.15.12, mypy 2.3.0, isolated compile/runtime tests                       |
 | Markdown                     | Prettier, markdownlint-cli2 0.23.0                                             |
 | JSON/JSONC/YAML              | Prettier, strict JSON decode, pre-commit JSON/YAML checks                      |
@@ -43,9 +43,11 @@ on demand rather than in a profile -- see
 
 `tests/phpunit/` is the single PHP suite, run by `composer test`. It drives every
 language through one runner that spawns the TypeScript and Python workers as
-subprocesses, which is why the repository needs no vitest or pytest suite to
-prove the workers behave. Groups mirror the architecture areas and are selectable
-with `vendor/bin/phpunit --group=store`.
+subprocesses, so worker behaviour is proven end-to-end from PHP. The TypeScript
+worker additionally has a focused vitest suite (`workers/typescript/src/__tests__/`,
+run via `npm --prefix workers/typescript run check`) for scanner internals that
+are awkward to reach through the protocol. Groups mirror the architecture areas
+and are selectable with `vendor/bin/phpunit --group=store`.
 
 Because the suite is a real PHPUnit suite, [Infection](https://infection.github.io/)
 can mutate all of `src`, and Chaos-MCP's `audit_code_resilience` works against
