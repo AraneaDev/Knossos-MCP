@@ -159,6 +159,7 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
                 'display_name' => $node['display_name'], 'confidence' => $node['confidence'], 'origin' => $node['origin'],
                 'attributes' => self::decode($node['attributes_json']), 'roles' => $this->roles([$nodeId])[$nodeId] ?? [],
                 'boundaries' => $this->boundaryNames([$nodeId])[$nodeId] ?? [],
+                'annotations' => $this->annotationsFor($projectId, (string) $node['canonical_name']),
                 'parent' => $node['parent_component_id'] === null ? null : ['id' => $node['parent_component_id'], 'kind' => $node['parent_kind'], 'canonical_name' => $node['parent_canonical_name']],
                 'children' => $children, 'outgoing' => $outgoing, 'incoming' => $incoming,
             ], 'limits' => ['max_relationships_per_direction' => $maxRelationships, 'max_children' => $maxChildren, 'min_confidence' => $minConfidence, 'truncation_reasons' => $truncationReasons]],
@@ -322,6 +323,17 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
             [],
             $truncated,
         );
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function annotationsFor(string $projectId, string $canonicalName): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT kind, value, author, created_at, updated_at FROM annotations ' .
+            'WHERE project_id = :project AND canonical_name = :name ORDER BY kind',
+        );
+        $statement->execute(['project' => $projectId, 'name' => $canonicalName]);
+        return $statement->fetchAll();
     }
 
     /** @param list<string> $values @param array<string, string> $params */

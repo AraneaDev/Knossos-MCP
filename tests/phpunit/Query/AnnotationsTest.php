@@ -64,4 +64,48 @@ final class AnnotationsTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    #[Group('query')]
+    public function testFalsePositiveAnnotationRemovesDeadCodeCandidate(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $orphan = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', 'App\\Orphan');
+        $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\Orphan', 'Orphan', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        $before = $queries->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $before['dead_code_candidates']);
+        assertSame(true, in_array('App\\Orphan', $names, true));
+
+        $queries->annotateComponent($ids['project'], 'App\\Orphan', 'false_positive', 'constructed via DI config', execute: true);
+        $after = $queries->architectureHealth($ids['project'])->data;
+        $namesAfter = array_map(static fn(array $c): string => $c['component']['canonical_name'], $after['dead_code_candidates']);
+        assertSame(false, in_array('App\\Orphan', $namesAfter, true));
+        assertSame(1, $after['bounds']['annotated_false_positives']);
+    }
+
+    #[Group('query')]
+    public function testConfirmedDeadAttachesInlineAndInspectShowsAnnotations(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $orphan = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', 'App\\Orphan');
+        $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\Orphan', 'Orphan', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+        $queries->annotateComponent($ids['project'], 'App\\Orphan', 'confirmed_dead', 'delete next sprint', execute: true);
+
+        $health = $queries->architectureHealth($ids['project'])->data;
+        $candidate = null;
+        foreach ($health['dead_code_candidates'] as $entry) {
+            if ($entry['component']['canonical_name'] === 'App\\Orphan') {
+                $candidate = $entry;
+            }
+        }
+        assertSame('confirmed_dead', $candidate['annotation']['kind']);
+        assertSame('delete next sprint', $candidate['annotation']['value']);
+
+        $inspect = $queries->inspectComponent($ids['project'], 'App\\Orphan')->data;
+        assertSame('confirmed_dead', $inspect['component']['annotations'][0]['kind']);
+    }
 }

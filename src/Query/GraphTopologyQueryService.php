@@ -321,9 +321,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $excludedInherited = 0;
         $suppressions = $this->deadCodeSuppressions($projectId);
         $suppressedCount = 0;
+        $annotationsByName = $this->componentAnnotations($projectId);
+        $annotatedFalsePositives = 0;
         foreach ($provisional as $id => $candidate) {
             if (self::isSuppressed((string) $candidate['row']['canonical_name'], $suppressions)) {
                 ++$suppressedCount;
+                continue;
+            }
+            $annotation = $annotationsByName[(string) $candidate['row']['canonical_name']] ?? null;
+            if ($annotation !== null && $annotation['kind'] === 'false_positive') {
+                ++$annotatedFalsePositives;
                 continue;
             }
             $context = $inheritance[$id] ?? ['inherited' => false, 'external_ancestor' => null];
@@ -341,12 +348,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     $context['external_ancestor'],
                 );
             }
-            $deadCandidates[] = [
+            $entry = [
                 'component' => $candidate['component'],
                 'confidence' => $confidence,
                 'reason' => $reason,
                 'out_degree' => $candidate['out_degree'],
             ];
+            if ($annotation !== null) {
+                $entry['annotation'] = $annotation;
+            }
+            $deadCandidates[] = $entry;
         }
         $rank = static function (array &$items): void {
             usort($items, static fn(array $a, array $b): int => ($b['score'] <=> $a['score'])
@@ -393,6 +404,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excludedInherited,
                     'suppressed_candidates' => $suppressedCount,
+                    'annotated_false_positives' => $annotatedFalsePositives,
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
                 ],
             ],
@@ -894,6 +906,21 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             return [];
         }
         return array_values(array_filter($list, 'is_string'));
+    }
+
+    /** @return array<string, array{kind: string, value: string}> keyed by canonical name; false_positive wins over confirmed_dead */
+    private function componentAnnotations(string $projectId): array
+    {
+        $statement = $this->pdo->prepare(
+            "SELECT canonical_name, kind, value FROM annotations WHERE project_id = :project AND kind IN ('false_positive', 'confirmed_dead') " .
+            'ORDER BY canonical_name, kind DESC', // 'false_positive' > 'confirmed_dead' alphabetically DESC
+        );
+        $statement->execute(['project' => $projectId]);
+        $byName = [];
+        foreach ($statement->fetchAll() as $row) {
+            $byName[$row['canonical_name']] ??= ['kind' => $row['kind'], 'value' => $row['value']];
+        }
+        return $byName;
     }
 
     /** @param list<string> $suppressions */
