@@ -21,6 +21,7 @@ final readonly class ArchitectureQueryService
     private DiagramExportService $diagramQueries;
     private FileMetricsQueryService $fileMetricsQueries;
     private StalenessProbe $stalenessProbe;
+    private AgentBriefService $briefQueries;
 
     public function __construct(
         PDO $pdo,
@@ -53,6 +54,7 @@ final readonly class ArchitectureQueryService
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
         $this->stalenessProbe = new StalenessProbe($pdo, $wallClock);
+        $this->briefQueries = new AgentBriefService($pdo, $clock, $this->topologyQueries);
     }
 
     /** @return array<string, mixed>|null */
@@ -271,6 +273,11 @@ final readonly class ArchitectureQueryService
     public function listBoundaries(string $projectId, ?string $source = null, int $limit = 50, int $offset = 0): ResultEnvelope
     {
         return $this->topologyQueries->listBoundaries($projectId, $source, $limit, $offset);
+    }
+
+    public function exportAgentBrief(string $projectId, int $maxChars = 4000): ResultEnvelope
+    {
+        return $this->briefQueries->exportAgentBrief($projectId, $maxChars);
     }
 
     /** @param list<string> $kinds @param list<string> $roles @param list<string> $boundaryIds @param list<string> $confidences */

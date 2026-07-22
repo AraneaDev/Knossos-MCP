@@ -18,7 +18,8 @@ final class QueryCommand implements CliCommand
         'list-projects', 'list-snapshots', 'snapshot-diff', 'quality-gate', 'architecture-trends',
         'find-component', 'inspect-component', 'architecture-summary', 'file-metrics', 'explain-flow', 'impact-analysis',
         'dependency-cycles', 'architecture-health', 'check-architecture', 'suggest-location', 'change-impact',
-        'changed-files-impact', 'architecture-context', 'export-diagram', 'list-boundaries', 'search-architecture',
+        'changed-files-impact', 'architecture-context', 'export-diagram', 'export-agent-brief', 'list-boundaries',
+        'search-architecture',
     ];
 
     public function supports(string $command): bool
@@ -48,6 +49,7 @@ final class QueryCommand implements CliCommand
             'changed-files-impact' => $this->changedFilesImpact($positionals, $options, $context),
             'architecture-context' => $this->architectureContext($positionals, $options, $context),
             'export-diagram' => $this->exportDiagram($positionals, $options, $context),
+            'export-agent-brief' => $this->exportAgentBrief($positionals, $options, $context),
             'list-boundaries' => $this->listBoundaries($positionals, $options, $context),
             default => $this->searchArchitecture($positionals, $options, $context),
         };
@@ -228,6 +230,19 @@ final class QueryCommand implements CliCommand
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-diagram <project-id> [options]');
         $result = $this->queries($c)->exportDiagram($project, $c->options->single($o, 'format') ?? 'mermaid', $c->options->single($o, 'boundary'), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->single($o, 'direction') ?? 'LR', $c->options->integer($o, 'max-nodes', 200, 1, 400), $c->options->integer($o, 'max-edges', 500, 1, 1000));
         $c->output($result->jsonSerialize(), isset($o['json']), $result->data['diagram']);
+        return 0;
+    }
+
+    /** @param list<string> $p @param array<string, list<string>> $o */
+    private function exportAgentBrief(array $p, array $o, CliCommandContext $c): int
+    {
+        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-agent-brief <project-id> [--max-chars=N] [--out=FILE] [--json]');
+        $result = $this->queries($c)->exportAgentBrief($project, $c->options->integer($o, 'max-chars', 4000, 1000, 20_000));
+        $out = $c->options->single($o, 'out');
+        if ($out !== null) {
+            file_put_contents($out, $result->data['markdown']);
+        }
+        $c->output($result->jsonSerialize(), isset($o['json']), $result->data['markdown']);
         return 0;
     }
 
