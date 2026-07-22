@@ -226,6 +226,22 @@ final readonly class ToolService
                 ],
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
+            [
+                'name' => 'export_agent_brief',
+                'title' => 'Export agent brief',
+                'description' => 'Render a compact markdown orientation brief (boundaries, entry points, key hubs) sized for a CLAUDE.md/AGENTS.md section, so future agent sessions start pre-oriented without tool calls.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'max_chars' => ['type' => 'integer', 'minimum' => 1000, 'maximum' => 20000, 'default' => 4000, 'description' => 'Brief size budget; whole sections are omitted (and reported) to fit.'],
+                    ],
+                    'required' => ['project_id'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
             self::fileMetricsDefinition(),
         ];
     }
@@ -592,7 +608,7 @@ final readonly class ToolService
             }
         }
         $maxChars = null;
-        if (array_key_exists('max_chars', $arguments) && $name !== 'architecture_context') {
+        if (array_key_exists('max_chars', $arguments) && !in_array($name, ['architecture_context', 'export_agent_brief'], true)) {
             $maxChars = $arguments['max_chars'];
             unset($arguments['max_chars']);
             if (!is_int($maxChars) || $maxChars < 4000 || $maxChars > 100_000) {
@@ -662,6 +678,7 @@ final readonly class ToolService
             'find_component' => $this->find($arguments),
             'inspect_component' => $this->inspect($arguments),
             'architecture_summary' => $this->summary($arguments),
+            'export_agent_brief' => $this->exportAgentBrief($arguments),
             'file_metrics' => $this->fileMetrics($arguments),
             'explain_flow' => $this->flow($arguments),
             'impact_analysis' => $this->impact($arguments),
@@ -831,6 +848,16 @@ final readonly class ToolService
         return $this->queries->architectureSummary(
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'limit', 50, 1, 100),
+        );
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function exportAgentBrief(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, ['project_id'], ['max_chars']);
+        return $this->queries->exportAgentBrief(
+            self::string($arguments, 'project_id'),
+            self::integer($arguments, 'max_chars', 4000, 1000, 20_000),
         );
     }
 

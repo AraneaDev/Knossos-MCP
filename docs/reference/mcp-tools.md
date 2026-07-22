@@ -144,6 +144,19 @@ Get a one-call overview of the codebase by language, node kind, and relationship
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `export_agent_brief`
+
+Render a compact markdown orientation brief (boundaries, entry points, key hubs) sized for a CLAUDE.md/AGENTS.md section, so future agent sessions start pre-oriented without tool calls.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=1000; maximum=20000; default=4000 |
+| `refresh_if_stale` | boolean | no | default=false |
+| `project_id` | string | yes | minLength=1 |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `file_metrics`
 
 Find the largest or longest files. Use to spot refactor targets without shelling out to wc/find.
