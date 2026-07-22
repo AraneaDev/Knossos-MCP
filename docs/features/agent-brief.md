@@ -30,11 +30,17 @@ Any section with no data is skipped silently (not reported as omitted).
 
 ## Budget and omission behavior
 
-`max_chars` (1000–20000, default 4000) bounds the rendered markdown. Sections
-are appended in the priority order above only while they still fit; a section
-that would push the brief over budget is dropped **whole** — never truncated
-mid-list — and its name is reported in `omitted_sections`. The head and the
-closing pointer are always kept.
+`max_chars` (1000–20000, default 4000) is a hard bound on the rendered
+markdown: the result is never longer than `max_chars`. Sections are appended
+in the priority order above only while they still fit; a section that would
+push the brief over budget is dropped **whole** — never truncated mid-list —
+and its name is reported in `omitted_sections`. The head (which caps its
+language list at 5 entries, folding the rest into a `+N more` suffix) and the
+closing pointer are always kept if there is any way to fit them. In the rare
+case where even the head plus the closing pointer would exceed `max_chars`,
+every section is omitted and, as a last resort, the head itself is truncated
+so the closing pointer — the pointer back to the live query tools — is never
+lost.
 
 The response `data` shape is:
 

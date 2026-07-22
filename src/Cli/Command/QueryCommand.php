@@ -239,8 +239,8 @@ final class QueryCommand implements CliCommand
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-agent-brief <project-id> [--max-chars=N] [--out=FILE] [--json]');
         $result = $this->queries($c)->exportAgentBrief($project, $c->options->integer($o, 'max-chars', 4000, 1000, 20_000));
         $out = $c->options->single($o, 'out');
-        if ($out !== null) {
-            file_put_contents($out, $result->data['markdown']);
+        if ($out !== null && file_put_contents($out, $result->data['markdown']) === false) {
+            throw new InvalidArgumentException(sprintf('Unable to write brief to %s.', $out));
         }
         $c->output($result->jsonSerialize(), isset($o['json']), $result->data['markdown']);
         return 0;
