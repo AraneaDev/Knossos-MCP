@@ -11,6 +11,7 @@ use PDO;
 
 final readonly class ArchitectureQueryService
 {
+    private PDO $pdo;
     private ProjectCatalogQueryService $catalogQueries;
     private ComponentQueryService $componentQueries;
     private GraphTopologyQueryService $topologyQueries;
@@ -29,6 +30,7 @@ final readonly class ArchitectureQueryService
         ?GitWorkingTreeProvider $gitWorkingTree = null,
         ?Closure $wallClock = null,
     ) {
+        $this->pdo = $pdo;
         $this->policyQueries = new ArchitecturePolicyQueryService($pdo, $clock, $semanticRanker);
         $this->topologyQueries = new GraphTopologyQueryService($pdo, $clock);
         $this->componentQueries = new ComponentQueryService($pdo, $clock);
@@ -57,6 +59,15 @@ final readonly class ArchitectureQueryService
     public function staleness(string $projectId): ?array
     {
         return $this->stalenessProbe->probe($projectId);
+    }
+
+    /** Root path recorded at scan time; used by the MCP layer to self-heal stale graphs. */
+    public function projectRoot(string $projectId): ?string
+    {
+        $statement = $this->pdo->prepare('SELECT root_realpath FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+        $root = $statement->fetchColumn();
+        return is_string($root) && $root !== '' ? $root : null;
     }
 
     public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
