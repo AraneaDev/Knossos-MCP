@@ -19,6 +19,7 @@ final class DiagramTest extends KnossosTestCase
         $repository->saveNode(
             $ids['checkout'],
             $ids['project'],
+            'php',
             'class',
             'App\\Checkout',
             'Checkout "API" <unsafe>',

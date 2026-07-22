@@ -23,7 +23,7 @@ final class StoreTest extends KnossosTestCase
         $pdo = SqliteConnection::open(':memory:');
         $runner = new MigrationRunner($pdo, self::repositoryRoot() . '/migrations');
 
-        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count'], $runner->migrate());
+        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness'], $runner->migrate());
         assertSame([], $runner->migrate());
         assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
         $edgeSchema = (string) $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edges'")->fetchColumn();
@@ -36,8 +36,10 @@ final class StoreTest extends KnossosTestCase
         $directory = sys_get_temp_dir() . '/knossos-edge-migration-' . bin2hex(random_bytes(6));
         mkdir($directory, 0700);
         copy(self::repositoryRoot() . '/migrations/001_initial_graph.sql', $directory . '/001_initial_graph.sql');
-        // The fixture writer persists line_count, so the baseline includes migration 009.
+        // The fixture writer persists line_count and language, so the baseline
+        // includes migrations 009 and 010.
         copy(self::repositoryRoot() . '/migrations/009_file_line_count.sql', $directory . '/009_file_line_count.sql');
+        copy(self::repositoryRoot() . '/migrations/010_language_scoped_node_uniqueness.sql', $directory . '/010_language_scoped_node_uniqueness.sql');
 
         try {
             [$pdo, $repository, $ids] = $this->storeFixture($directory);
@@ -152,6 +154,7 @@ final class StoreTest extends KnossosTestCase
                     $store->saveNode(
                         $id,
                         $ids['project'],
+                        'php',
                         'class',
                         'App\\RolledBack',
                         'RolledBack',

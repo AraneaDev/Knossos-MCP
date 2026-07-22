@@ -22,6 +22,7 @@ final class HealthTest extends KnossosTestCase
             $repository->saveNode(
                 $id,
                 $ids['project'],
+                'php',
                 'class',
                 $canonical,
                 $display,

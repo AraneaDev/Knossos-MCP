@@ -36,7 +36,7 @@ fi
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark \
-        tools/release-lifecycle tools/supply-chain
+        tools/mcp-serve tools/release-lifecycle tools/supply-chain
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1

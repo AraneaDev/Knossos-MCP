@@ -36,6 +36,7 @@ final class GitTest extends KnossosTestCase
         $repository->saveNode(
             $ids['invoice'],
             $ids['project'],
+            'php',
             'class',
             'App\\InvoiceService',
             'InvoiceService',

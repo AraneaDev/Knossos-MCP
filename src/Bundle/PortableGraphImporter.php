@@ -57,7 +57,7 @@ final readonly class PortableGraphImporter
             $item = $this->object($row, 'node');
             $nodeId = $this->mappedRequired($maps['nodes'], $item['id'] ?? null);
             $parents[$nodeId] = $this->mappedNullable($maps['nodes'], $item['parent_id'] ?? null);
-            $this->insert('nodes', ['id' => $nodeId, 'project_id' => $projectId, 'kind' => $this->text($item['kind'] ?? null), 'canonical_name' => $this->text($item['canonical_name'] ?? null), 'display_name' => $this->text($item['display_name'] ?? null), 'parent_id' => null, 'file_id' => $this->mappedNullable($maps['files'], $item['file_id'] ?? null), 'start_line' => $item['start_line'] ?? null, 'end_line' => $item['end_line'] ?? null, 'origin' => $this->text($item['origin'] ?? null), 'confidence' => $this->confidence($item['confidence'] ?? null), 'attributes_json' => $this->jsonObject($item['attributes_json'] ?? '{}'), 'owner_key' => $this->text($item['owner_key'] ?? null), 'last_scan_id' => $scanId]);
+            $this->insert('nodes', ['id' => $nodeId, 'project_id' => $projectId, 'language' => $this->language($item), 'kind' => $this->text($item['kind'] ?? null), 'canonical_name' => $this->text($item['canonical_name'] ?? null), 'display_name' => $this->text($item['display_name'] ?? null), 'parent_id' => null, 'file_id' => $this->mappedNullable($maps['files'], $item['file_id'] ?? null), 'start_line' => $item['start_line'] ?? null, 'end_line' => $item['end_line'] ?? null, 'origin' => $this->text($item['origin'] ?? null), 'confidence' => $this->confidence($item['confidence'] ?? null), 'attributes_json' => $this->jsonObject($item['attributes_json'] ?? '{}'), 'owner_key' => $this->text($item['owner_key'] ?? null), 'last_scan_id' => $scanId]);
         }
         $statement = $this->pdo->prepare('UPDATE nodes SET parent_id = :parent WHERE id = :id');
         foreach ($parents as $nodeId => $parentId) {
@@ -152,6 +152,33 @@ final readonly class PortableGraphImporter
             throw new InvalidArgumentException('Bundle contains invalid text.');
         }
         return $value;
+    }
+
+    /**
+     * Node language, falling back to the derivation used by migration 010 for
+     * bundles exported before the nodes table carried a language column.
+     *
+     * @param array<string, mixed> $item
+     */
+    private function language(array $item): string
+    {
+        $language = $item['language'] ?? null;
+        if (is_string($language) && $language !== '' && strlen($language) <= 100) {
+            return $language;
+        }
+        $kind = $item['kind'] ?? '';
+        $attributes = json_decode((string) ($item['attributes_json'] ?? '{}'), true);
+        $reference = is_array($attributes) ? ($attributes['reference'] ?? null) : null;
+        if (is_string($kind) && str_starts_with($kind, 'external_') && is_string($reference) && str_contains($reference, ':')) {
+            return explode(':', $reference, 2)[0];
+        }
+        $scanner = explode(':', (string) ($item['owner_key'] ?? ''), 2)[0];
+        return match ($scanner) {
+            'knossos.php' => 'php',
+            'knossos.typescript' => 'ts',
+            'knossos.python' => 'py',
+            default => $scanner !== '' ? $scanner : 'unknown',
+        };
     }
 
     private function relativePath(mixed $value): string

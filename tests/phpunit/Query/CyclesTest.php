@@ -20,6 +20,7 @@ final class CyclesTest extends KnossosTestCase
         $repository->saveNode(
             $worker,
             $ids['project'],
+            'php',
             'class',
             'App\\Worker',
             'Worker',

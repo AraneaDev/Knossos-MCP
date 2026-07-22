@@ -232,6 +232,7 @@ final class SqliteGraphRepository implements GraphRepository
     public function saveNode(
         string $id,
         string $projectId,
+        string $language,
         string $kind,
         string $canonicalName,
         string $displayName,
@@ -246,11 +247,11 @@ final class SqliteGraphRepository implements GraphRepository
         string $scanId,
     ): void {
         $statement = $this->prepare(
-            'INSERT INTO nodes(id, project_id, kind, canonical_name, display_name, parent_id, file_id, start_line, ' .
+            'INSERT INTO nodes(id, project_id, language, kind, canonical_name, display_name, parent_id, file_id, start_line, ' .
             'end_line, origin, confidence, attributes_json, owner_key, last_scan_id) ' .
-            'VALUES (:id, :project, :kind, :canonical, :display, :parent, :file, :start, :end, :origin, ' .
+            'VALUES (:id, :project, :language, :kind, :canonical, :display, :parent, :file, :start, :end, :origin, ' .
             ':confidence, :attributes, :owner, :scan) ' .
-            'ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, canonical_name = excluded.canonical_name, ' .
+            'ON CONFLICT(id) DO UPDATE SET language = excluded.language, kind = excluded.kind, canonical_name = excluded.canonical_name, ' .
             'display_name = excluded.display_name, parent_id = excluded.parent_id, file_id = excluded.file_id, ' .
             'start_line = excluded.start_line, end_line = excluded.end_line, origin = excluded.origin, ' .
             'confidence = excluded.confidence, attributes_json = excluded.attributes_json, ' .
@@ -259,6 +260,7 @@ final class SqliteGraphRepository implements GraphRepository
         $statement->execute([
             'id' => $id,
             'project' => $projectId,
+            'language' => $language,
             'kind' => $kind,
             'canonical' => $canonicalName,
             'display' => $displayName,

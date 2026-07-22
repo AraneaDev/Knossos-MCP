@@ -735,6 +735,7 @@ CREATE TABLE files (
 CREATE TABLE nodes (
     id TEXT PRIMARY KEY,
     project_id TEXT,
+    language TEXT,
     kind TEXT,
     canonical_name TEXT,
     display_name TEXT,

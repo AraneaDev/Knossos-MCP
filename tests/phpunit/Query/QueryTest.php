@@ -34,6 +34,7 @@ final class QueryTest extends KnossosTestCase
         $repository->saveNode(
             $billing,
             $ids['project'],
+            'php',
             'class',
             'App\\BillingService',
             'InvoiceService',
@@ -213,6 +214,7 @@ final class QueryTest extends KnossosTestCase
         $repository->saveNode(
             $other,
             $ids['project'],
+            'php',
             'class',
             'App\\OtherService',
             'OtherService',

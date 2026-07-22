@@ -39,7 +39,7 @@ final class ConcurrencyTest extends KnossosTestCase
             $repository->saveProject($project, 'Concurrency Fixture', '/workspace/concurrency');
             $repository->createScan($scan, $project, 'full', hash('sha256', 'scanner'));
             $repository->saveFile($file, $project, 'src/A.php', hash('sha256', 'A'), 1, 1, 'php', '0.2.0', $scan);
-            $repository->saveNode($node, $project, 'class', 'Fixture\\A', 'A', null, $file, 1, 1, 'ast', 'certain', [], 'php:file:src/A.php', $scan);
+            $repository->saveNode($node, $project, 'php', 'class', 'Fixture\\A', 'A', null, $file, 1, 1, 'ast', 'certain', [], 'php:file:src/A.php', $scan);
             $repository->completeScan($project, $scan);
 
             $readerPdo = SqliteConnection::open($path);
