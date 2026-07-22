@@ -1024,7 +1024,10 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     public function testQueryCommandChangedFilesImpactWithPopulatedDatabase(): void
     {
         // M40 / QueryCommand::run() -- changedFilesImpact() happy path.
-        // Uses ProcessGitWorkingTreeProvider — requires --working-tree flag.
+        // Uses the explicit-files variant: --working-tree shells out to git
+        // against the fixture root, which is not a git repository in CI. The
+        // working-tree branch is covered at the service level (GitTest, with
+        // a stubbed provider) and provider level (ProcessGitProviderTest).
         [$dbPath, $projectId, $cleanup] = $this->populatedTestDatabase();
         try {
             $context = new CliCommandContext(
@@ -1034,7 +1037,7 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
                 $dbPath,
             );
             $cmd = new QueryCommand();
-            assertSame(0, $cmd->run('changed-files-impact', [$projectId], ['working-tree' => [true]], $context));
+            assertSame(0, $cmd->run('changed-files-impact', [$projectId, 'src/CheckoutService.php'], [], $context));
         } finally {
             $cleanup();
         }
