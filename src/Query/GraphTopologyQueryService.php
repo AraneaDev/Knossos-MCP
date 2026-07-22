@@ -190,7 +190,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /** @param list<string> $edgeKinds */
-    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000): ResultEnvelope
+    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -281,6 +281,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
 
         $hubs = $hotspots = $deadCandidates = [];
+        $excludedExternal = $excludedTests = 0;
         foreach ($nodes as $id => $row) {
             $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
             $component = [
@@ -289,12 +290,21 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
             ];
             if ($degree > 0) {
-                $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
-                $hotspots[] = [
-                    'component' => $component,
-                    'factors' => $metrics[$id] + ['cycle_participant' => isset($cycleMembers[$id])],
-                    'score' => $degree + (2 * $metrics[$id]['cross_boundary_degree']) + (isset($cycleMembers[$id]) ? 3 : 0),
-                ];
+                $externalNode = str_starts_with((string) $row['kind'], 'external_')
+                    || in_array($row['origin'], ['external', 'unresolved'], true);
+                $testNode = self::hasRole($roles[$id] ?? [], 'quality.test_module');
+                if (!$includeExternal && $externalNode) {
+                    ++$excludedExternal;
+                } elseif (!$includeTests && $testNode) {
+                    ++$excludedTests;
+                } else {
+                    $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
+                    $hotspots[] = [
+                        'component' => $component,
+                        'factors' => $metrics[$id] + ['cycle_participant' => isset($cycleMembers[$id])],
+                        'score' => $degree + (2 * $metrics[$id]['cross_boundary_degree']) + (isset($cycleMembers[$id]) ? 3 : 0),
+                    ];
+                }
             }
             if ($metrics[$id]['in_degree'] === 0 && $this->isDeadCodeCandidate($row, $roles[$id] ?? [])) {
                 $dynamicRisk = $row['origin'] !== 'ast' || $this->hasFrameworkRole($roles[$id] ?? []);
@@ -355,6 +365,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'bounds' => [
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
+                    'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
                 ],
             ],
@@ -748,6 +759,17 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     {
         foreach ($roles as $role) {
             if (str_starts_with($role['role'], 'laravel.') || str_starts_with($role['origin'], 'framework_')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @param list<array<string, mixed>> $roles */
+    private static function hasRole(array $roles, string $role): bool
+    {
+        foreach ($roles as $entry) {
+            if (($entry['role'] ?? null) === $role) {
                 return true;
             }
         }

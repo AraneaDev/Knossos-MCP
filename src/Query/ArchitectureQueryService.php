@@ -145,8 +145,10 @@ final readonly class ArchitectureQueryService
         int $maxNodes = 10_000,
         int $maxEdges = 20_000,
         int $timeoutMs = 1000,
+        bool $includeExternal = false,
+        bool $includeTests = false,
     ): ResultEnvelope {
-        return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs);
+        return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests);
     }
 
     /** @param list<array<string, mixed>> $policies */
