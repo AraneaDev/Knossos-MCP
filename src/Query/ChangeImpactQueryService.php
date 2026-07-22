@@ -199,6 +199,80 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         );
     }
 
+    /**
+     * Project the changed-files blast radius onto test files: which tests
+     * (statically) reach the changed code. A lower bound, never a guarantee —
+     * data-driven tests and glob-only discovery are invisible to the graph.
+     *
+     * @param list<string> $files @param list<string> $edgeKinds
+     */
+    public function testImpact(string $projectId, array $files = [], bool $workingTree = false, ?string $baseRef = null, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
+    {
+        $impact = $this->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        $distances = [];
+        foreach ($impact->data['direct_components'] as $component) {
+            $distances[$component['id']] = 0;
+        }
+        foreach ($impact->data['impacted_components'] as $record) {
+            $id = $record['node']['id'];
+            $distances[$id] = min($distances[$id] ?? PHP_INT_MAX, $record['distance']);
+        }
+        $displayNames = [];
+        foreach ($impact->data['direct_components'] as $component) {
+            $displayNames[$component['id']] = $component['display_name'];
+        }
+        foreach ($impact->data['impacted_components'] as $record) {
+            $displayNames[$record['node']['id']] ??= $record['node']['display_name'];
+        }
+        $roles = $this->roles(array_keys($distances));
+        $testNodeIds = [];
+        foreach ($distances as $id => $distance) {
+            foreach ($roles[$id] ?? [] as $role) {
+                if ($role['role'] === 'quality.test_module') {
+                    $testNodeIds[] = $id;
+                    break;
+                }
+            }
+        }
+        $paths = $this->nodePaths($testNodeIds);
+        $byPath = [];
+        foreach ($testNodeIds as $id) {
+            $path = $paths[$id] ?? null;
+            if ($path === null) {
+                continue;
+            }
+            $byPath[$path] ??= ['path' => $path, 'distance' => PHP_INT_MAX, 'via' => []];
+            $byPath[$path]['distance'] = min($byPath[$path]['distance'], $distances[$id]);
+            $byPath[$path]['via'][] = (string) $displayNames[$id];
+        }
+        $testFiles = [];
+        foreach ($byPath as $entry) {
+            sort($entry['via'], SORT_STRING);
+            $entry['via'] = array_slice(array_values(array_unique($entry['via'])), 0, 3);
+            $testFiles[] = $entry;
+        }
+        usort($testFiles, static fn(array $a, array $b): int => ($a['distance'] <=> $b['distance']) ?: ($a['path'] <=> $b['path']));
+        $warnings = [
+            ...$impact->warnings,
+            'Test impact is a static lower bound: run these first, not only these. Data-driven tests, fixtures, and glob-only discovery are not visible to the graph, and the per-component dependant scan is bounded.',
+        ];
+
+        return new ResultEnvelope(
+            $projectId,
+            $impact->snapshotId,
+            sprintf('%d test file%s statically exercise the change.', count($testFiles), count($testFiles) === 1 ? '' : 's'),
+            [
+                'changed_files' => $impact->data['changed_files'],
+                'unresolved_files' => $impact->data['unresolved_files'],
+                'test_files' => $testFiles,
+                'bounds' => $impact->data['bounds'] + ['impacted_scan_limit' => $limit],
+            ],
+            array_slice(array_map(static fn(array $entry): array => ['path' => $entry['path'], 'start_line' => null, 'end_line' => null], $testFiles), 0, 100),
+            array_values(array_unique($warnings)),
+            $impact->truncated,
+        );
+    }
+
     /** @param list<string> $nodeIds @return array<string, string> */
     private function nodePaths(array $nodeIds): array
     {

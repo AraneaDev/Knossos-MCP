@@ -224,6 +224,21 @@ final readonly class ArchitectureQueryService
         return $this->changeQueries->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
+    /** @param list<string> $files @param list<string> $edgeKinds */
+    public function testImpact(
+        string $projectId,
+        array $files = [],
+        bool $workingTree = false,
+        ?string $baseRef = null,
+        int $maxDepth = 4,
+        int $limit = 100,
+        array $edgeKinds = [],
+        string $minConfidence = 'possible',
+        int $timeoutMs = 1000,
+    ): ResultEnvelope {
+        return $this->changeQueries->testImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+    }
+
     /** @param list<string> $files */
     public function architectureContext(
         string $projectId,

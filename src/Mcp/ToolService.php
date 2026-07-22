@@ -463,6 +463,29 @@ final readonly class ToolService
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
+                'name' => 'test_impact',
+                'title' => 'Test impact',
+                'description' => 'Map a change set to the test files that statically exercise it, ranked by distance. Use to run the relevant tests first in an edit-test loop; the list is a lower bound, not a substitute for the full suite.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
+                        'working_tree' => ['type' => 'boolean', 'default' => false],
+                        'base_ref' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200],
+                        'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 8, 'default' => 4],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
+                        'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
+                        'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
+                        'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
+                    ],
+                    'required' => ['project_id'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
                 'name' => 'architecture_context',
                 'title' => 'Architecture context',
                 'description' => 'Assemble a bounded, task-shaped evidence bundle (summary + likely location + impact + dossiers) for a coding task in one call. Use at the start of a task to load just-enough context cheaply.',
@@ -708,6 +731,7 @@ final readonly class ToolService
             'suggest_location' => $this->suggest($arguments),
             'change_impact' => $this->changeImpact($arguments),
             'changed_files_impact' => $this->changedFilesImpact($arguments),
+            'test_impact' => $this->testImpact($arguments),
             'architecture_context' => $this->architectureContext($arguments),
             'export_diagram' => $this->diagram($arguments),
             'list_boundaries' => $this->boundaries($arguments),
@@ -1027,6 +1051,23 @@ final readonly class ToolService
     {
         self::keys($arguments, ['project_id'], ['files', 'working_tree', 'base_ref', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
         return $this->queries->changedFilesImpact(
+            self::string($arguments, 'project_id'),
+            self::strings($arguments, 'files', 50),
+            self::boolean($arguments, 'working_tree', false),
+            array_key_exists('base_ref', $arguments) ? self::string($arguments, 'base_ref') : null,
+            self::integer($arguments, 'max_depth', 4, 1, 8),
+            self::integer($arguments, 'limit', 100, 1, 100),
+            self::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
+            self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
+        );
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function testImpact(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, ['project_id'], ['files', 'working_tree', 'base_ref', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
+        return $this->queries->testImpact(
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'files', 50),
             self::boolean($arguments, 'working_tree', false),
