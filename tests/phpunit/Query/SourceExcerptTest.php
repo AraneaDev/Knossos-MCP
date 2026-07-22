@@ -43,6 +43,7 @@ final class SourceExcerptTest extends KnossosTestCase
         mkdir($base . '/project/src', 0755, true);
         try {
             file_put_contents($base . '/project/src/Ok.php', "<?php\n// line 2\n// line 3\n");
+            file_put_contents($base . '/project/src/Empty.php', '');
             file_put_contents($base . '/secret.txt', 'top secret');
             $reader = new \Knossos\Query\SourceExcerptReader();
 
@@ -60,8 +61,17 @@ final class SourceExcerptTest extends KnossosTestCase
             $stale = $reader->read($base . '/project', 'src/Ok.php', 99, 120);
             assertSame('unavailable', $stale['status']);
             assertSame('stale_line_evidence', $stale['reason']);
+
+            // A 0-byte file passes the size gate (filesize() === 0, not false),
+            // then file() yields an empty array, so the requested window can
+            // never be satisfied and the reader reports stale line evidence
+            // rather than misreporting it as missing/oversized.
+            $empty = $reader->read($base . '/project', 'src/Empty.php', 1, 1);
+            assertSame('unavailable', $empty['status']);
+            assertSame('stale_line_evidence', $empty['reason']);
         } finally {
             @unlink($base . '/project/src/Ok.php');
+            @unlink($base . '/project/src/Empty.php');
             @unlink($base . '/secret.txt');
             @rmdir($base . '/project/src');
             @rmdir($base . '/project');

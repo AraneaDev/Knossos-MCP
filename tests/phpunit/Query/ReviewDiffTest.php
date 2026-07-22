@@ -76,6 +76,28 @@ final class ReviewDiffTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testQualityGateIsEvaluatedAgainstARetainedSnapshot(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        // Archive scan-1's snapshot before it's superseded, so it becomes the
+        // latest non-active snapshot once scan-2 takes over as active.
+        $repository->archiveActiveSnapshot($ids['project'], hash('sha256', '{}'), 5);
+
+        $scan2 = StableId::scan($ids['project'], 'scan-2');
+        $repository->createScan($scan2, $ids['project'], 'full', hash('sha256', 'scanner-set'));
+        $repository->completeScan($ids['project'], $scan2);
+
+        $result = (new ArchitectureQueryService($pdo))->reviewDiff(
+            $ids['project'],
+            files: ['src/Checkout.php'],
+            budgets: ['new_cycles' => 0],
+        );
+        assertSame('evaluated', $result->data['quality_gate']['status']);
+        assertSame(true, is_bool($result->data['quality_gate']['passed']));
+    }
+
+    #[Group('query')]
     public function testDispatchThroughToolService(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

@@ -303,18 +303,21 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
 
     // ===== QueryCommand ===================================================
 
-    public function testQueryCommandSupports21Commands(): void
+    public function testQueryCommandSupportsAllDeclaredCommands(): void
     {
-        // M12 / QueryCommand::supports() match-arm: COMMANDS const
-        // contains 21 entries.
+        // M12 / QueryCommand::supports() match-arm: every name declared in
+        // the COMMANDS const must be supported, and the const's size is
+        // pinned so future additions/removals fail this test loudly instead
+        // of silently drifting from QueryCommand::run()'s match arms.
         $cmd = new QueryCommand();
         $supported = [
             'list-projects', 'list-snapshots', 'snapshot-diff', 'quality-gate', 'architecture-trends',
-            'find-component', 'inspect-component', 'architecture-summary', 'file-metrics', 'explain-flow', 'impact-analysis',
+            'find-component', 'inspect-component', 'list-usages', 'architecture-summary', 'file-metrics', 'explain-flow', 'impact-analysis',
             'dependency-cycles', 'architecture-health', 'check-architecture', 'suggest-location', 'change-impact',
-            'changed-files-impact', 'architecture-context', 'export-diagram', 'list-boundaries', 'search-architecture',
+            'changed-files-impact', 'test-impact', 'review-diff', 'architecture-context', 'export-diagram', 'export-agent-brief', 'list-boundaries',
+            'search-architecture', 'annotate-component', 'list-annotations',
         ];
-        assertSame(21, count($supported), 'Invariant: 21 names in QueryCommand COMMANDS');
+        assertSame(27, count($supported), 'Invariant: 27 names in QueryCommand COMMANDS');
         foreach ($supported as $name) {
             assertSame(true, $cmd->supports($name), $name . ' should be supported');
         }

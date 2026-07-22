@@ -86,6 +86,26 @@ final class AnnotationsTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testFalsePositiveTakesPrecedenceOverConfirmedDeadOnSameComponent(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $orphan = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', 'App\\Orphan');
+        $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\Orphan', 'Orphan', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        // Both annotations land on the same canonical name; false_positive
+        // must win regardless of write order.
+        $queries->annotateComponent($ids['project'], 'App\\Orphan', 'confirmed_dead', 'delete next sprint', execute: true);
+        $queries->annotateComponent($ids['project'], 'App\\Orphan', 'false_positive', 'constructed via DI config', execute: true);
+
+        $health = $queries->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $health['dead_code_candidates']);
+        assertSame(false, in_array('App\\Orphan', $names, true));
+        assertSame(1, $health['bounds']['annotated_false_positives']);
+    }
+
+    #[Group('query')]
     public function testConfirmedDeadAttachesInlineAndInspectShowsAnnotations(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

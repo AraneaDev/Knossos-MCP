@@ -28,7 +28,8 @@ final readonly class SourceExcerptReader
         if ($realRoot === false || $resolved === false || !RootGuard::contains($realRoot, $resolved)) {
             return ['status' => 'unavailable', 'reason' => 'outside_project_root_or_missing'];
         }
-        if (!is_file($resolved) || (filesize($resolved) ?: PHP_INT_MAX) > self::MAX_FILE_BYTES) {
+        $size = filesize($resolved);
+        if (!is_file($resolved) || $size === false || $size > self::MAX_FILE_BYTES) {
             return ['status' => 'unavailable', 'reason' => 'missing_or_oversized'];
         }
         $lines = @file($resolved);
