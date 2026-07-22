@@ -245,7 +245,8 @@ final class QueryCommand implements CliCommand
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos review-diff <project-id> [FILE...] [options]');
         $policies = $c->options->single($o, 'policies');
         $budgets = $c->options->single($o, 'budgets');
-        $result = $this->queries($c)->reviewDiff(
+        $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
+        $result = $queries->reviewDiff(
             $project,
             $c->options->single($o, 'base-ref'),
             array_slice($p, 1),

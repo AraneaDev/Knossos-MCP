@@ -1043,6 +1043,73 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         }
     }
 
+    #[Group('git')]
+    public function testQueryCommandReviewDiffUsesWorkingTreeProviderWithPopulatedDatabase(): void
+    {
+        // Regression for the review-diff CLI wiring bug: QueryCommand::reviewDiff()
+        // used to build its service via the shared queries() helper, which
+        // constructs ArchitectureQueryService without any git providers. Default
+        // (working-tree) mode then always failed with "Working-tree change
+        // discovery is unavailable.", even though the sibling handlers
+        // changedFilesImpact() and testImpact() wire ProcessGitWorkingTreeProvider.
+        // Unlike testQueryCommandChangedFilesImpactWithPopulatedDatabase() (which
+        // sticks to the explicit-files variant because its fixture root isn't a
+        // real git repo), this exercises the actual working-tree code path end to
+        // end, so it needs a real git fixture -- mirrors GitTest's convention
+        // (#[Group('git')], knossos-git- temp root via runFixtureCommand /
+        // removeGitFixture) rather than populatedTestDatabase()'s fixed,
+        // non-existent project root.
+        $root = sys_get_temp_dir() . '/knossos-git-' . bin2hex(random_bytes(6));
+        if (!mkdir($root . '/src', 0700, true)) {
+            throw new \RuntimeException('Unable to create git fixture.');
+        }
+        $dbPath = sys_get_temp_dir() . '/knossos-commands-' . bin2hex(random_bytes(6)) . '.sqlite';
+        try {
+            $this->runFixtureCommand(['git', 'init', '--quiet', $root]);
+            $this->runFixtureCommand(['git', '-C', $root, 'config', 'user.name', 'Knossos Test']);
+            $this->runFixtureCommand(['git', '-C', $root, 'config', 'user.email', 'test@example.test']);
+            file_put_contents($root . '/src/Checkout.php', "<?php\nclass Checkout {}\n");
+            $this->runFixtureCommand(['git', '-C', $root, 'add', 'src/Checkout.php']);
+            $this->runFixtureCommand(['git', '-C', $root, 'commit', '--quiet', '-m', 'first']);
+            file_put_contents($root . '/src/Checkout.php', "<?php\nclass Checkout {\n    // changed\n}\n");
+
+            $pdo = SqliteConnection::open($dbPath);
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+            $repository = new SqliteGraphRepository($pdo);
+            $project = StableId::project('review-diff-git-fixture');
+            $scan = StableId::scan($project, 'scan-1');
+            $file = StableId::file($project, 'src/Checkout.php');
+            $checkout = StableId::symbol($project, 'php', 'class', 'App\\Checkout');
+            $repository->saveProject($project, 'Review Diff Git Fixture', $root);
+            $repository->createScan($scan, $project, 'full', hash('sha256', 'scanner-set'));
+            $repository->saveFile($file, $project, 'src/Checkout.php', hash('sha256', 'fixture source'), 100, 1, 'php', '0.1.0', $scan);
+            $repository->saveNode($checkout, $project, 'php', 'class', 'App\\Checkout', 'Checkout', null, $file, 1, 2, 'ast', 'certain', [], 'php:file:src/Checkout.php', $scan);
+            $repository->completeScan($project, $scan);
+            unset($pdo);
+
+            $context = new CliCommandContext(
+                new CliOptionParser(),
+                new CliInputLoader(),
+                new RuntimeFactory(self::repositoryRoot()),
+                $dbPath,
+            );
+            $cmd = new QueryCommand();
+            ob_start();
+            try {
+                $exit = $cmd->run('review-diff', [$project], ['json' => [true]], $context);
+            } finally {
+                $output = (string) ob_get_clean();
+            }
+            assertSame(0, $exit);
+            $result = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+            assertSame('evaluated', $result['data']['change']['status']);
+            assertArrayContains('src/Checkout.php', $result['data']['change']['changed_files']);
+        } finally {
+            @unlink($dbPath);
+            $this->removeGitFixture($root);
+        }
+    }
+
     // ===== Multi-snapshot fixture with boundaries =========================
 
     /**
