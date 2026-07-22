@@ -96,7 +96,10 @@ Thirty-one MCP tools, each with an equivalent CLI command. Read tools are
 annotated read-only and idempotent; the two deletion tools are annotated
 destructive and preview unless you pass `execute`. The server also exposes
 per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
-(`orient`, `review_diff`) alongside the tools.
+(`orient`, `review_diff`) alongside the tools. Agent annotations
+(`intended_boundary`, `confirmed_dead`, `false_positive`, `note`) record a
+durable judgment on a component that survives rescans; a `false_positive`
+annotation removes that component from future dead-code candidates.
 
 **Projects and history**
 
