@@ -104,6 +104,21 @@ interface GraphRepository
         string $scanId,
     ): void;
 
+    /**
+     * Persist a batch of evidence-backed graph nodes as one multi-row upsert.
+     *
+     * @param list<array<string, mixed>> $nodes rows shaped as GraphReconciler node records
+     */
+    public function saveNodes(array $nodes, string $projectId, string $scanId): void;
+
+    /**
+     * Persist a batch of occurrence-level, evidence-backed directed graph edges
+     * as one multi-row upsert.
+     *
+     * @param list<array<string, mixed>> $edges rows shaped as GraphReconciler edge records
+     */
+    public function saveEdges(array $edges, string $projectId, string $scanId): void;
+
     /** Persist one bounded scanner or reconciliation diagnostic. */
     public function saveDiagnostic(
         string $id,
