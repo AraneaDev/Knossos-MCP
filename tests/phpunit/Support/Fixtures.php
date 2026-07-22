@@ -241,7 +241,7 @@ trait Fixtures
         return [$pdo, $result->projectId, $root];
     }
 
-    /** @return array{0: ToolService, 1: string, 2: string} [tools, projectId, absoluteRoot] */
+    /** @return array{0: ToolService, 1: string, 2: string, 3: PDO} [tools, projectId, absoluteRoot, pdo] */
     public function buildToolServiceWithScan(string $fixture): array
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture($fixture);
@@ -254,6 +254,6 @@ trait Fixtures
                 new \Knossos\Mcp\NextStepPlanner(),
             ),
         );
-        return [$tools, $projectId, $root];
+        return [$tools, $projectId, $root, $pdo];
     }
 }

@@ -550,6 +550,7 @@ final readonly class ToolService
         return [
             'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
             'max_chars' => ['type' => 'integer', 'minimum' => 4000, 'maximum' => 100000, 'description' => 'Byte budget for the serialized result; oversized list fields are trimmed tail-first and reported in meta.dropped_items.'],
+            'refresh_if_stale' => ['type' => 'boolean', 'default' => false, 'description' => 'If the graph is stale, run an incremental rescan (of Knossos\'s own derived database only) before answering; a failed rescan serves the last complete graph with a warning. A missing graph still requires scan_project.'],
         ];
     }
 
@@ -598,8 +599,54 @@ final readonly class ToolService
                 throw new InvalidArgumentException('max_chars must be an integer between 4000 and 100000.');
             }
         }
+        $refreshWarnings = [];
+        if (array_key_exists('refresh_if_stale', $arguments)) {
+            $refresh = $arguments['refresh_if_stale'];
+            unset($arguments['refresh_if_stale']);
+            if (!is_bool($refresh)) {
+                throw new InvalidArgumentException('refresh_if_stale must be a boolean.');
+            }
+            if ($refresh && $name !== 'scan_project') {
+                $refreshWarnings = $this->refreshIfStale($arguments, $cancellation);
+            }
+        }
         $envelope = $this->dispatch($name, $arguments, $cancellation);
+        if ($refreshWarnings !== []) {
+            $envelope = $envelope->withWarnings($refreshWarnings);
+        }
         return $this->enricher->enrich($envelope, $name, $verbosity, $maxChars);
+    }
+
+    /**
+     * Opt-in self-healing: when the target project is stale, run an
+     * incremental rescan before dispatching the query. A failed rescan never
+     * blocks the answer — the last complete graph is served with a warning,
+     * matching the recovery model. A missing graph is not auto-healed: the
+     * first full scan is an expensive, user-visible choice.
+     *
+     * @param array<string, mixed> $arguments
+     * @return list<string>
+     */
+    private function refreshIfStale(array $arguments, ?CancellationToken $cancellation): array
+    {
+        $projectId = $arguments['project_id'] ?? null;
+        if (!is_string($projectId) || $projectId === '') {
+            return [];
+        }
+        $staleness = $this->queries->staleness($projectId);
+        if (($staleness['state'] ?? null) !== 'stale') {
+            return [];
+        }
+        $root = $this->queries->projectRoot($projectId);
+        if ($root === null) {
+            return ['refresh_if_stale: the project root is unknown; serving the last complete graph.'];
+        }
+        try {
+            $this->scanner->scan($root, cancellation: $cancellation);
+            return [];
+        } catch (\Throwable $error) {
+            return [sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', $error->getMessage())];
+        }
     }
 
     /** @param array<string, mixed> $arguments */

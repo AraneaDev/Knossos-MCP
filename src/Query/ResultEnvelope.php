@@ -50,6 +50,23 @@ final readonly class ResultEnvelope implements JsonSerializable
         );
     }
 
+    /** @param list<string> $warnings */
+    public function withWarnings(array $warnings): self
+    {
+        return new self(
+            $this->projectId,
+            $this->snapshotId,
+            $this->summary,
+            $this->data,
+            $this->evidence,
+            [...$this->warnings, ...$warnings],
+            $this->truncated,
+            $this->staleness,
+            $this->nextSteps,
+            $this->meta,
+        );
+    }
+
     /** @return array<string, mixed> */
     public function jsonSerialize(): array
     {
