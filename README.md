@@ -128,29 +128,29 @@ annotation removes that component from future dead-code candidates.
 
 **Structure and change analysis**
 
-| MCP tool               | CLI                    | Answers                                                        |
-| ---------------------- | ---------------------- | -------------------------------------------------------------- |
-| `impact_analysis`      | `impact-analysis`      | What depends on a symbol, with the edge that proves it.        |
-| `explain_flow`         | `explain-flow`         | How A reaches B, as ranked evidence-backed paths.              |
-| `dependency_cycles`    | `dependency-cycles`    | Circular dependencies as bounded strongly connected groups.    |
-| `architecture_health`  | `architecture-health`  | Hubs, hotspots, and uncertainty-labelled dead-code candidates. |
-| `check_architecture`   | `check-architecture`   | Which relationships violate declared boundary policies.        |
-| `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.    |
-| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.              |
-| `changed_files_impact` | `changed-files-impact` | What a set of changed files — or your working tree — touches.  |
+| MCP tool               | CLI                    | Answers                                                            |
+| ---------------------- | ---------------------- | ------------------------------------------------------------------ |
+| `impact_analysis`      | `impact-analysis`      | What depends on a symbol, with the edge that proves it.            |
+| `explain_flow`         | `explain-flow`         | How A reaches B, as ranked evidence-backed paths.                  |
+| `dependency_cycles`    | `dependency-cycles`    | Circular dependencies as bounded strongly connected groups.        |
+| `architecture_health`  | `architecture-health`  | Hubs, hotspots, and uncertainty-labelled dead-code candidates.     |
+| `check_architecture`   | `check-architecture`   | Which relationships violate declared boundary policies.            |
+| `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.        |
+| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                  |
+| `changed_files_impact` | `changed-files-impact` | What a set of changed files — or your working tree — touches.      |
 | `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance. |
-| `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles. |
-| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.       |
-| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.              |
+| `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles.  |
+| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.           |
+| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.                  |
 
 **Maintenance**
 
-| MCP tool              | CLI                   | Answers                                                                |
-| --------------------- | --------------------- | ----------------------------------------------------------------------- |
+| MCP tool              | CLI                   | Answers                                                               |
+| --------------------- | --------------------- | --------------------------------------------------------------------- |
 | `annotate_component`  | `annotate-component`  | Record a durable annotation on a component. Preview unless confirmed. |
 | `remove_project`      | `remove-project`      | Delete a project and its graph. Previews unless confirmed.            |
-| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.                     |
-| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.               |
+| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.                    |
+| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.              |
 
 CLI-only helpers round this out: `doctor` verifies the runtime, workers,
 protocol, and database; `watch` rescans on change; `export-bundle` and

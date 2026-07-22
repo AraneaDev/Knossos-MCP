@@ -8,7 +8,7 @@ you want a single answer to "what does this change put at risk?" instead of
 chaining four separate calls.
 
 Unlike `changed_files_impact`, `review_diff` has no `working_tree` flag: an
-empty `files` list *is* the working-tree default, so there is no flag/argument
+empty `files` list _is_ the working-tree default, so there is no flag/argument
 combination that can silently do the wrong thing. Passing `files` together
 with `base_ref` is rejected.
 
