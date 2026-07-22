@@ -75,43 +75,8 @@ final readonly class GraphReconciler
                 $this->saveFile($file, $fileIds[$file->relativePath], $projectId, $scanId, $versions);
             }
 
-            foreach ($nodes as $node) {
-                $this->repository->saveNode(
-                    $node['id'],
-                    $projectId,
-                    $node['language'],
-                    $node['kind'],
-                    $node['canonical_name'],
-                    $node['display_name'],
-                    null,
-                    $node['file_id'],
-                    $node['start_line'],
-                    $node['end_line'],
-                    $node['origin'],
-                    $node['confidence'],
-                    $node['attributes'],
-                    $node['owner_key'],
-                    $scanId,
-                );
-            }
-
-            foreach ($edges as $edge) {
-                $this->repository->saveEdge(
-                    $edge['id'],
-                    $projectId,
-                    $edge['kind'],
-                    $edge['source_id'],
-                    $edge['target_id'],
-                    $edge['file_id'],
-                    $edge['start_line'],
-                    $edge['end_line'],
-                    $edge['origin'],
-                    $edge['confidence'],
-                    $edge['attributes'],
-                    $edge['owner_key'],
-                    $scanId,
-                );
-            }
+            $this->repository->saveNodes(array_values($nodes), $projectId, $scanId);
+            $this->repository->saveEdges(array_values($edges), $projectId, $scanId);
 
             foreach ($classifications as $classification) {
                 $this->repository->saveClassification(

@@ -318,6 +318,38 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /** @param list<array<string, mixed>> $nodes rows shaped as GraphReconciler node records */
+    public function saveNodes(array $nodes, string $projectId, string $scanId): void
+    {
+        foreach (array_chunk($nodes, 60) as $chunk) { // 15 params/row keeps chunks under SQLite's 999-variable floor
+            $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'));
+            $sql = 'INSERT INTO nodes(id, project_id, language, kind, canonical_name, display_name, parent_id, file_id, start_line, end_line, origin, confidence, attributes_json, owner_key, last_scan_id) VALUES '
+                . $placeholders
+                . ' ON CONFLICT(id) DO UPDATE SET language = excluded.language, kind = excluded.kind, canonical_name = excluded.canonical_name, display_name = excluded.display_name, parent_id = excluded.parent_id, file_id = excluded.file_id, start_line = excluded.start_line, end_line = excluded.end_line, origin = excluded.origin, confidence = excluded.confidence, attributes_json = excluded.attributes_json, owner_key = excluded.owner_key, last_scan_id = excluded.last_scan_id';
+            $values = [];
+            foreach ($chunk as $node) {
+                array_push($values, $node['id'], $projectId, $node['language'], $node['kind'], $node['canonical_name'], $node['display_name'], null, $node['file_id'], $node['start_line'], $node['end_line'], $node['origin'], $node['confidence'], self::json($node['attributes']), $node['owner_key'], $scanId);
+            }
+            $this->prepare($sql)->execute($values);
+        }
+    }
+
+    /** @param list<array<string, mixed>> $edges rows shaped as GraphReconciler edge records */
+    public function saveEdges(array $edges, string $projectId, string $scanId): void
+    {
+        foreach (array_chunk($edges, 70) as $chunk) { // 13 params/row
+            $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?,?,?,?)'));
+            $sql = 'INSERT INTO edges(id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, confidence, attributes_json, owner_key, last_scan_id) VALUES '
+                . $placeholders
+                . ' ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, source_id = excluded.source_id, target_id = excluded.target_id, file_id = excluded.file_id, start_line = excluded.start_line, end_line = excluded.end_line, origin = excluded.origin, confidence = excluded.confidence, attributes_json = excluded.attributes_json, owner_key = excluded.owner_key, last_scan_id = excluded.last_scan_id';
+            $values = [];
+            foreach ($chunk as $edge) {
+                array_push($values, $edge['id'], $projectId, $edge['kind'], $edge['source_id'], $edge['target_id'], $edge['file_id'], $edge['start_line'], $edge['end_line'], $edge['origin'], $edge['confidence'], self::json($edge['attributes']), $edge['owner_key'], $scanId);
+            }
+            $this->prepare($sql)->execute($values);
+        }
+    }
+
     public function saveDiagnostic(
         string $id,
         string $projectId,
