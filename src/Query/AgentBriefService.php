@@ -62,6 +62,19 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         }
         $markdown .= $closing;
 
+        if (strlen($markdown) > $maxChars) {
+            // Even the always-kept head + closing overran the budget (e.g. a very
+            // long project name). Drop every section — none of them could have
+            // fit anyway — and, as a last resort, truncate the head itself so the
+            // closing pointer is never lost.
+            $omitted = array_values(array_unique(array_merge($omitted, array_keys($sections))));
+            $markdown = $head . $closing;
+            if (strlen($markdown) > $maxChars) {
+                $head = substr($head, 0, max(0, $maxChars - strlen($closing)));
+                $markdown = $head . $closing;
+            }
+        }
+
         return new ResultEnvelope(
             $projectId,
             (string) $project['active_scan_id'],
@@ -88,6 +101,11 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
             static fn(array $row): string => sprintf('%s: %d', $row['language'], $row['files']),
             $languages->fetchAll(),
         );
+        if (count($parts) > 5) {
+            $remaining = count($parts) - 5;
+            $parts = array_slice($parts, 0, 5);
+            $parts[] = sprintf('+%d more', $remaining);
+        }
         return [
             'files' => $count('SELECT COUNT(*) FROM files WHERE project_id = :project'),
             'nodes' => $count('SELECT COUNT(*) FROM nodes WHERE project_id = :project'),

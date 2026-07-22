@@ -37,11 +37,18 @@ final class AgentBriefTest extends KnossosTestCase
     public function testBriefRespectsMaxCharsByOmittingWholeSections(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
+        for ($i = 0; $i < 10; $i++) {
+            $name = sprintf('Boundary%02d-%s', $i, str_repeat('x', 40));
+            $boundary = StableId::boundary($ids['project'], $name, 'explicit');
+            $repository->saveBoundary($boundary, $ids['project'], $name, ['path_prefix' => 'src'], 'explicit', $ids['scan']);
+            $repository->saveBoundaryMembership($boundary, $ids['project'], $ids['checkout'], $ids['scan']);
+        }
         $repository->completeScan($ids['project'], $ids['scan']);
         $result = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'], 1000);
         assertSame(true, strlen($result->data['markdown']) <= 1000);
         assertSame(true, str_contains($result->data['markdown'], 'scan_project')); // closing line always kept
         assertSame(true, array_key_exists('omitted_sections', $result->data));
+        assertSame(false, $result->data['omitted_sections'] === []);
     }
 
     #[Group('query')]
