@@ -211,6 +211,25 @@ final readonly class ToolService
                 'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
+                'name' => 'list_usages',
+                'title' => 'List usages',
+                'description' => 'List every usage site of a symbol with file:line evidence — one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.',
+                'inputSchema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        ...self::commonReadProperties(),
+                        'project_id' => ['type' => 'string', 'minLength' => 1],
+                        'symbol' => ['type' => 'string', 'minLength' => 1],
+                        'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
+                        'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
+                        'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 500, 'default' => 100],
+                    ],
+                    'required' => ['project_id', 'symbol'],
+                    'additionalProperties' => false,
+                ],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
                 'name' => 'architecture_summary',
                 'title' => 'Architecture summary',
                 'description' => 'Get a one-call overview of the codebase by language, node kind, and relationship kind. Use to orient yourself in an unfamiliar project before drilling in.',
@@ -677,6 +696,7 @@ final readonly class ToolService
             'architecture_trends' => $this->architectureTrends($arguments),
             'find_component' => $this->find($arguments),
             'inspect_component' => $this->inspect($arguments),
+            'list_usages' => $this->listUsages($arguments),
             'architecture_summary' => $this->summary($arguments),
             'export_agent_brief' => $this->exportAgentBrief($arguments),
             'file_metrics' => $this->fileMetrics($arguments),
@@ -838,6 +858,19 @@ final readonly class ToolService
             self::integer($arguments, 'max_relationships', 25, 1, 100),
             self::integer($arguments, 'max_children', 25, 1, 100),
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
+        );
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function listUsages(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, ['project_id', 'symbol'], ['edge_kinds', 'min_confidence', 'limit']);
+        return $this->queries->listUsages(
+            self::string($arguments, 'project_id'),
+            self::string($arguments, 'symbol'),
+            self::strings($arguments, 'edge_kinds'),
+            array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
+            self::integer($arguments, 'limit', 100, 1, 500),
         );
     }
 

@@ -119,6 +119,12 @@ final readonly class ArchitectureQueryService
         return $this->componentQueries->inspectComponent($projectId, $component, $maxRelationships, $maxChildren, $minConfidence);
     }
 
+    /** @param list<string> $edgeKinds */
+    public function listUsages(string $projectId, string $symbol, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 100): ResultEnvelope
+    {
+        return $this->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
+    }
+
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
         return $this->topologyQueries->architectureSummary($projectId, $limit);

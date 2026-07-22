@@ -16,7 +16,7 @@ final class QueryCommand implements CliCommand
 {
     private const COMMANDS = [
         'list-projects', 'list-snapshots', 'snapshot-diff', 'quality-gate', 'architecture-trends',
-        'find-component', 'inspect-component', 'architecture-summary', 'file-metrics', 'explain-flow', 'impact-analysis',
+        'find-component', 'inspect-component', 'list-usages', 'architecture-summary', 'file-metrics', 'explain-flow', 'impact-analysis',
         'dependency-cycles', 'architecture-health', 'check-architecture', 'suggest-location', 'change-impact',
         'changed-files-impact', 'architecture-context', 'export-diagram', 'export-agent-brief', 'list-boundaries',
         'search-architecture',
@@ -37,6 +37,7 @@ final class QueryCommand implements CliCommand
             'architecture-trends' => $this->architectureTrends($positionals, $options, $context),
             'find-component' => $this->findComponent($positionals, $options, $context),
             'inspect-component' => $this->inspectComponent($positionals, $options, $context),
+            'list-usages' => $this->listUsages($positionals, $options, $context),
             'architecture-summary' => $this->architectureSummary($positionals, $options, $context),
             'file-metrics' => $this->fileMetrics($positionals, $options, $context),
             'explain-flow' => $this->explainFlow($positionals, $options, $context),
@@ -132,6 +133,15 @@ final class QueryCommand implements CliCommand
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos inspect-component <project-id> <component> [options]');
         $component = $p[1] ?? throw new InvalidArgumentException('A component ID or name is required.');
         $result = $this->queries($c)->inspectComponent($project, $component, $c->options->integer($o, 'max-relationships', 25, 1, 100), $c->options->integer($o, 'max-children', 25, 1, 100), $c->options->single($o, 'min-confidence') ?? 'possible');
+        return $this->result($result, $o, $c);
+    }
+
+    /** @param list<string> $p @param array<string, list<string>> $o */
+    private function listUsages(array $p, array $o, CliCommandContext $c): int
+    {
+        $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-usages <project-id> <symbol> [--edge-kind=K]... [--min-confidence=L] [--limit=N] [--json]');
+        $symbol = $p[1] ?? throw new InvalidArgumentException('A symbol is required.');
+        $result = $this->queries($c)->listUsages($project, $symbol, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 100, 1, 500));
         return $this->result($result, $o, $c);
     }
 

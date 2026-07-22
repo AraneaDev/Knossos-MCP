@@ -168,6 +168,83 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         );
     }
 
+    /**
+     * Every inbound usage occurrence of one symbol, one row per call/reference
+     * site. Edges are occurrence-level facts (their stable id includes the
+     * evidence location), so this is a direct listing, not an aggregation.
+     *
+     * @param list<string> $edgeKinds
+     */
+    public function listUsages(string $projectId, string $symbol, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 100): ResultEnvelope
+    {
+        if ($limit < 1 || $limit > 500) {
+            throw new InvalidArgumentException('limit must be between 1 and 500.');
+        }
+        $confidenceRank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        if (!isset($confidenceRank[$minConfidence])) {
+            throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
+        }
+        $edgeKinds = $edgeKinds === [] ? self::IMPACT_EDGE_KINDS : array_values(array_unique($edgeKinds));
+        if (count($edgeKinds) > 20 || array_diff($edgeKinds, self::IMPACT_EDGE_KINDS) !== []) {
+            throw new InvalidArgumentException('edge_kinds contains an unsupported dependency relationship.');
+        }
+        $project = $this->project($projectId);
+        $matches = $this->resolve($projectId, $symbol);
+        if (count($matches) !== 1) {
+            return new ResultEnvelope(
+                $projectId,
+                $project['active_scan_id'],
+                $matches === [] ? sprintf('No component matched "%s".', $symbol) : sprintf('Component "%s" is ambiguous.', $symbol),
+                ['query' => $symbol, 'ambiguous' => count($matches) > 1, 'candidates' => $matches],
+            );
+        }
+        $target = $matches[0];
+        $allowedConfidence = array_keys(array_filter(
+            $confidenceRank,
+            static fn(int $rank): bool => $rank >= $confidenceRank[$minConfidence],
+        ));
+        $kindPlaceholders = implode(',', array_fill(0, count($edgeKinds), '?'));
+        $confidencePlaceholders = implode(',', array_fill(0, count($allowedConfidence), '?'));
+        $statement = $this->pdo->prepare(
+            'SELECT e.id AS edge_id, e.kind, e.confidence, e.origin, e.start_line, e.end_line, f.relative_path, ' .
+            's.id AS source_id, s.kind AS source_kind, s.canonical_name AS source_canonical, s.display_name AS source_display ' .
+            'FROM edges e JOIN nodes s ON s.id = e.source_id LEFT JOIN files f ON f.id = e.file_id ' .
+            'WHERE e.project_id = ? AND e.target_id = ? AND e.kind IN (' . $kindPlaceholders . ') ' .
+            'AND e.confidence IN (' . $confidencePlaceholders . ') ' .
+            'ORDER BY f.relative_path, e.start_line, e.id LIMIT ?',
+        );
+        $statement->execute([$projectId, $target['id'], ...$edgeKinds, ...$allowedConfidence, $limit + 1]);
+        $rows = $statement->fetchAll();
+        $truncated = count($rows) > $limit;
+        $rows = array_slice($rows, 0, $limit);
+        $usages = [];
+        $evidence = [];
+        foreach ($rows as $row) {
+            $usages[] = [
+                'edge_id' => $row['edge_id'], 'kind' => $row['kind'], 'confidence' => $row['confidence'], 'origin' => $row['origin'],
+                'source' => ['id' => $row['source_id'], 'kind' => $row['source_kind'], 'canonical_name' => $row['source_canonical'], 'display_name' => $row['source_display']],
+                'path' => $row['relative_path'], 'start_line' => $row['start_line'], 'end_line' => $row['end_line'],
+            ];
+            if ($row['relative_path'] !== null && count($evidence) < 100) {
+                $evidence[] = ['edge_id' => $row['edge_id'], 'path' => $row['relative_path'], 'start_line' => $row['start_line'], 'end_line' => $row['end_line']];
+            }
+        }
+
+        return new ResultEnvelope(
+            $projectId,
+            $project['active_scan_id'],
+            sprintf('Found %d usage site%s of %s.', count($usages), count($usages) === 1 ? '' : 's', $target['canonical_name']),
+            [
+                'target' => ['id' => $target['id'], 'kind' => $target['kind'], 'canonical_name' => $target['canonical_name'], 'display_name' => $target['display_name']],
+                'usages' => $usages,
+                'bounds' => ['limit' => $limit, 'total_shown' => count($usages), 'edge_kinds' => $edgeKinds, 'truncation_reasons' => $truncated ? ['result_limit'] : []],
+            ],
+            $evidence,
+            ['Usage sites are static occurrences; dynamic dispatch, reflection, and string-based references are not resolved.'],
+            $truncated,
+        );
+    }
+
     /** @param list<string> $kinds @param list<string> $roles @param list<string> $boundaryIds @param list<string> $confidences */
     public function searchArchitecture(string $projectId, string $query, array $kinds = [], array $roles = [], array $boundaryIds = [], array $confidences = [], int $limit = 20, int $offset = 0): ResultEnvelope
     {

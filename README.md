@@ -92,7 +92,7 @@ rather than proven absence.
 
 ## Tools
 
-Twenty-six MCP tools, each with an equivalent CLI command. Read tools are
+Twenty-seven MCP tools, each with an equivalent CLI command. Read tools are
 annotated read-only and idempotent; the two deletion tools are annotated
 destructive and preview unless you pass `execute`. The server also exposes
 per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
@@ -115,6 +115,7 @@ per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
 | ---------------------- | ---------------------- | ------------------------------------------------------------------- |
 | `find_component`       | `find-component`       | Ranked candidates when you only know part of a name.                |
 | `inspect_component`    | `inspect-component`    | One component's roles, boundary, relations, and evidence.           |
+| `list_usages`          | `list-usages`          | Every usage site of a symbol with file:line evidence.               |
 | `architecture_summary` | `architecture-summary` | A one-call overview by language and node/edge kind.                 |
 | `search_architecture`  | `search-architecture`  | Components filtered by kind, role, boundary, confidence.            |
 | `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.                     |

@@ -130,6 +130,23 @@ Get the full dossier for one component — its roles, boundary, containment, rel
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
+## `list_usages`
+
+List every usage site of a symbol with file:line evidence — one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+| `verbosity` | string | no | default="compact"; enum=compact, full |
+| `max_chars` | integer | no | minimum=4000; maximum=100000 |
+| `refresh_if_stale` | boolean | no | default=false |
+| `project_id` | string | yes | minLength=1 |
+| `symbol` | string | yes | minLength=1 |
+| `edge_kinds` | array | no | maxItems=20 |
+| `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
+| `limit` | integer | no | minimum=1; maximum=500; default=100 |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `architecture_summary`
 
 Get a one-call overview of the codebase by language, node kind, and relationship kind. Use to orient yourself in an unfamiliar project before drilling in.
