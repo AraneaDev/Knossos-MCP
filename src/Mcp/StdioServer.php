@@ -26,6 +26,7 @@ final class StdioServer
         private readonly int $maxLineBytes = 1_048_576,
         private readonly int $maxResponseBytes = 1_048_576,
         private readonly ?ResourceService $resources = null,
+        private readonly ?PromptService $prompts = null,
     ) {}
 
     /** @param resource $input @param resource $output @param resource $errors */
@@ -94,6 +95,7 @@ final class StdioServer
                 'capabilities' => [
                     'tools' => ['listChanged' => false],
                     ...($this->resources === null ? [] : ['resources' => ['subscribe' => false, 'listChanged' => false]]),
+                    ...($this->prompts === null ? [] : ['prompts' => ['listChanged' => false]]),
                 ],
                 'serverInfo' => [
                     'name' => 'knossos', 'title' => 'Knossos Architecture Intelligence',
@@ -155,6 +157,21 @@ final class StdioServer
             $result = $this->resources->read($uri);
             return $result === null
                 ? $this->error($id, -32002, 'Resource not found: ' . $uri)
+                : $this->success($id, $result);
+        }
+
+        if ($this->prompts !== null && $method === 'prompts/list') {
+            return $this->success($id, ['prompts' => $this->prompts->list()]);
+        }
+        if ($this->prompts !== null && $method === 'prompts/get') {
+            $name = $params['name'] ?? null;
+            $arguments = $params['arguments'] ?? [];
+            if (!is_string($name) || !is_array($arguments)) {
+                return $this->error($id, -32602, 'Prompt name and object arguments are required.');
+            }
+            $result = $this->prompts->get($name, array_filter($arguments, 'is_string'));
+            return $result === null
+                ? $this->error($id, -32602, 'Unknown prompt: ' . $name)
                 : $this->success($id, $result);
         }
 

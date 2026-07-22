@@ -20,6 +20,7 @@ final readonly class HttpEndpoint
         private int $maxRequestBytes = 1_048_576,
         private int $maxResponseBytes = 1_048_576,
         private ?ResourceService $resources = null,
+        private ?PromptService $prompts = null,
     ) {}
 
     /**
@@ -90,7 +91,7 @@ final readonly class HttpEndpoint
             if ($session !== null) {
                 return $this->problem(400, 'Initialization must not supply a session ID.', $baseHeaders);
             }
-            $server = new StdioServer($this->tools, resources: $this->resources);
+            $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
             $response = $server->handle($message);
             if ($response === null || isset($response['error'])) {
                 return $this->json(200, $response ?? [], $baseHeaders);
@@ -137,7 +138,7 @@ final readonly class HttpEndpoint
             // cancellation notifications are accepted for protocol compatibility.
             return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
         }
-        $server = new StdioServer($this->tools, resources: $this->resources);
+        $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
         $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
         $response = $server->handle($message);
         return $this->json(200, $response ?? [], $baseHeaders);

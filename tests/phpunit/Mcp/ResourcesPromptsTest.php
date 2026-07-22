@@ -61,4 +61,29 @@ final class ResourcesPromptsTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    #[Group('mcp')]
+    public function testPromptsListAndGet(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $server = new StdioServer($tools, prompts: new \Knossos\Mcp\PromptService());
+            $init = $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+            assertSame(['listChanged' => false], $init['result']['capabilities']['prompts']);
+            $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+
+            $list = $server->handle(['jsonrpc' => '2.0', 'id' => 2, 'method' => 'prompts/list', 'params' => []]);
+            assertSame(['orient', 'review_diff'], array_column($list['result']['prompts'], 'name'));
+
+            $get = $server->handle(['jsonrpc' => '2.0', 'id' => 3, 'method' => 'prompts/get', 'params' => ['name' => 'review_diff', 'arguments' => ['base_ref' => 'origin/main']]]);
+            $text = $get['result']['messages'][0]['content']['text'];
+            assertSame(true, str_contains($text, 'changed_files_impact'));
+            assertSame(true, str_contains($text, 'origin/main'));
+
+            $unknown = $server->handle(['jsonrpc' => '2.0', 'id' => 4, 'method' => 'prompts/get', 'params' => ['name' => 'nope']]);
+            assertSame(-32602, $unknown['error']['code']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }
