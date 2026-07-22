@@ -84,7 +84,7 @@ final class HttpTest extends KnossosTestCase
         $listed = $endpoint->handle('POST', $sessionHeaders, $list);
         assertSame(200, $listed['status']);
         $listPayload = json_decode($listed['body'], true, 512, JSON_THROW_ON_ERROR);
-        assertSame(26, count($listPayload['result']['tools']));
+        assertSame(27, count($listPayload['result']['tools']));
         $cancel = json_encode(['jsonrpc' => '2.0', 'method' => 'notifications/cancelled', 'params' => ['requestId' => 99]], JSON_THROW_ON_ERROR);
         assertSame(202, $endpoint->handle('POST', $sessionHeaders, $cancel)['status']);
 

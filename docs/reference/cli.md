@@ -35,6 +35,8 @@ Usage:
   knossos find-component <project-id> <name> [--limit=N] [--db=PATH] [--json]
   knossos inspect-component <project-id> <component> [--max-relationships=N]
                             [--max-children=N] [--min-confidence=LEVEL] [--json]
+  knossos list-usages <project-id> <symbol> [--edge-kind=KIND]
+                      [--min-confidence=LEVEL] [--limit=N] [--json]
   knossos architecture-summary <project-id> [--limit=N] [--db=PATH] [--json]
   knossos file-metrics <project-id> [--path=SUBSTR] [--language=LANG] [--sort-by=path|line_count] [--order=asc|desc] [--limit=N] [--offset=N] [--json]
   knossos explain-flow <project-id> <from> <to> [--max-depth=N] [--max-paths=N]
