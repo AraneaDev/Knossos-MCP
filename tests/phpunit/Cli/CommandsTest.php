@@ -545,11 +545,19 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     {
         // M19 / MaintenanceCommand::run() -- doctor() arm. DoctorService::run()
         // wraps each check in try/catch, so the method completes even with
-        // :memory: (where schema_migrations does not exist). We verify the
-        // method returns without throwing and produces exit code 1 (because
-        // some checks will fail on a fresh :memory: db).
+        // :memory:. The overall verdict depends on the host toolchain (Node/
+        // Python versions, workers), so instead of a fixed exit code we assert
+        // the contract: exit code 0 iff the emitted report says ok.
         $cmd = new MaintenanceCommand();
-        assertSame(1, $cmd->run('doctor', [], [], $this->newContext()));
+        ob_start();
+        try {
+            $exit = $cmd->run('doctor', [], ['json' => [true]], $this->newContext());
+        } finally {
+            $output = (string) ob_get_clean();
+        }
+        $report = json_decode($output, true, 512, JSON_THROW_ON_ERROR);
+        assertSame($report['ok'] ? 0 : 1, $exit);
+        assertSame(true, count($report['checks']) >= 10);
     }
 
     public function testMaintenanceCommandRemoveProjectAgainstMemoryDb(): void
