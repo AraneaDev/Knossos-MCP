@@ -82,6 +82,13 @@ final class ResourcesPromptsTest extends KnossosTestCase
 
             $unknown = $server->handle(['jsonrpc' => '2.0', 'id' => 4, 'method' => 'prompts/get', 'params' => ['name' => 'nope']]);
             assertSame(-32602, $unknown['error']['code']);
+
+            // Non-string argument values are filtered out before reaching PromptService,
+            // so an int base_ref falls back to the default working-tree wording.
+            $nonString = $server->handle(['jsonrpc' => '2.0', 'id' => 5, 'method' => 'prompts/get', 'params' => ['name' => 'review_diff', 'arguments' => ['base_ref' => 123]]]);
+            $nonStringText = $nonString['result']['messages'][0]['content']['text'];
+            assertSame(false, str_contains($nonStringText, '123'));
+            assertSame(true, str_contains($nonStringText, 'working_tree'));
         } finally {
             $this->removeTempTree($root);
         }

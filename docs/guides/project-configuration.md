@@ -32,7 +32,9 @@ The published schema is
 - `dead_code_suppressions`: at most 200 canonical names, each either an exact
   match or prefixed with a trailing `*` wildcard. Matching components are
   omitted from `architecture_health` dead-code candidates; the count of
-  suppressed candidates is reported as `bounds.suppressed_candidates`.
+  suppressed candidates is reported as `bounds.suppressed_candidates`. A bare
+  `"*"` entry suppresses every dead-code candidate project-wide; do not
+  commit it.
 
 The configuration file itself cannot be ignored, because it participates in
 the scanner configuration fingerprint and invalidates cached contributions when
