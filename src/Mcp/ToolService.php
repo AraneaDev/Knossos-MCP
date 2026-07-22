@@ -541,6 +541,7 @@ final readonly class ToolService
                         'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
                         'max_chars' => ['type' => 'integer', 'minimum' => 4000, 'maximum' => 100000, 'default' => 30000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1500],
+                        'include_source' => ['type' => 'boolean', 'default' => false, 'description' => 'Inline bounded source snippets (≤40 lines each) for the included dossiers, read from the working tree.'],
                     ],
                     'required' => ['project_id'],
                     'additionalProperties' => false,
@@ -1182,13 +1183,14 @@ final readonly class ToolService
     /** @param array<string, mixed> $arguments */
     private function architectureContext(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['task_description', 'files', 'max_chars', 'timeout_ms']);
+        self::keys($arguments, ['project_id'], ['task_description', 'files', 'max_chars', 'timeout_ms', 'include_source']);
         return $this->queries->architectureContext(
             self::string($arguments, 'project_id'),
             array_key_exists('task_description', $arguments) ? self::string($arguments, 'task_description') : '',
             self::strings($arguments, 'files', 50),
             self::integer($arguments, 'max_chars', 30_000, 4000, 100_000),
             self::integer($arguments, 'timeout_ms', 1500, 1, 5000),
+            self::boolean($arguments, 'include_source', false),
         );
     }
 

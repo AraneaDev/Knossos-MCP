@@ -16,7 +16,7 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
     }
 
     /** @param list<string> $files */
-    public function architectureContext(string $projectId, string $taskDescription = '', array $files = [], int $maxChars = 30_000, int $timeoutMs = 1500): ResultEnvelope
+    public function architectureContext(string $projectId, string $taskDescription = '', array $files = [], int $maxChars = 30_000, int $timeoutMs = 1500, bool $includeSource = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         $taskDescription = trim($taskDescription);
@@ -64,8 +64,19 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
             }
         }
         $dossiers = [];
+        $reader = $includeSource ? new SourceExcerptReader() : null;
         foreach (array_slice(array_keys($dossierIds), 0, 3) as $componentId) {
-            $dossiers[] = $this->componentQueries->inspectComponent($projectId, $componentId, 5, 5)->jsonSerialize();
+            $dossier = $this->componentQueries->inspectComponent($projectId, $componentId, 5, 5)->jsonSerialize();
+            if ($reader !== null) {
+                $evidence = $dossier['evidence'][0] ?? null;
+                $dossier['snippet'] = $reader->read(
+                    (string) $project['root_realpath'],
+                    is_array($evidence) ? ($evidence['path'] ?? null) : null,
+                    is_array($evidence) ? ($evidence['start_line'] ?? null) : null,
+                    is_array($evidence) ? ($evidence['end_line'] ?? null) : null,
+                );
+            }
+            $dossiers[] = $dossier;
         }
         $sections = [
             'summary' => $this->fitContextSection($summary->jsonSerialize(), $allocations['summary']),
@@ -98,7 +109,9 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
                 'dossier_candidates' => count($dossierIds), 'dossiers_included' => count($dossiers),
             ]],
             [],
-            ['Context sections are bounded static evidence and may omit dynamic runtime behavior.'],
+            $includeSource
+                ? ['Context sections are bounded static evidence and may omit dynamic runtime behavior.', 'Source snippets are read from the working tree now and may differ from the scanned graph.']
+                : ['Context sections are bounded static evidence and may omit dynamic runtime behavior.'],
             $truncated,
         );
     }
