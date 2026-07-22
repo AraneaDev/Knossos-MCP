@@ -76,10 +76,14 @@ instead of failing the whole call:
   or when no retained baseline snapshot exists yet.
 - `cycles_touching_change` — the subset of `dependency_cycles`'s cycles with
   at least one member among the change's direct or impacted components.
+  `not_evaluated` (with a reason) if the cycle scan itself fails.
 
 `bounds` mirrors `changed_files_impact`'s bounds with `cycle_scan_limit`
 added. The envelope's evidence, warnings, and truncation flag are the union of
-the underlying calls'.
+the underlying calls' — evidence from `change`, the policy check (when
+evaluated), the quality gate (when evaluated), and the cycle scan (when
+evaluated), capped at the first 100 rows; a section that degrades to
+`not_evaluated` contributes no evidence.
 
 Results are static and conservative, subject to the same caveats as the
 underlying tools: impact is a blast-radius estimate, not a guarantee; change

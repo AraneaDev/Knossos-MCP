@@ -38,6 +38,17 @@ final class ReviewDiffTest extends KnossosTestCase
         assertSame([], $result->data['cycles_touching_change']['cycles']);
         // No retained non-active snapshot and no budgets in this fixture:
         assertSame('not_evaluated', $result->data['quality_gate']['status']);
+        // dependencyCycles' caveat warning propagates into the envelope:
+        assertContains('Cycles are derived', implode(' ', $result->warnings));
+        // Policy-check evidence (from the touching violation) is unioned into the envelope evidence:
+        $hasPolicyEvidence = false;
+        foreach ($result->evidence as $row) {
+            if (array_key_exists('policy_id', $row)) {
+                $hasPolicyEvidence = true;
+                break;
+            }
+        }
+        assertSame(true, $hasPolicyEvidence);
     }
 
     #[Group('query')]
