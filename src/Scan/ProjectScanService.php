@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Query\ResultEnvelope;
-use Knossos\Reconciliation\{FullScanRequest, GraphReconciler};
+use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResult};
 use Knossos\Store\SqliteGraphRepository;
 use PDO;
 
@@ -83,18 +83,21 @@ final class ProjectScanService implements ProjectScanner
         $cancellation->throwIfCancelled();
 
         $reconciliationStarted = hrtime(true);
+        $projectConfig = $this->projectConfig($preparation);
+        $fastPath = $this->noChangeFastPath($plan, $language, $preparation, $projectConfig);
+        if ($fastPath !== null) {
+            $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
+            $envelope = $this->resultFactory->create($plan, $language, $fastPath, $startedAt, $stageMilliseconds, 'no_change');
+            $lease->release();
+            return $envelope;
+        }
         $result = (new GraphReconciler(new SqliteGraphRepository($this->pdo)))->reconcile(new FullScanRequest(
             'root:' . $preparation->discovery->rootRealpath,
             $name ?? basename($preparation->discovery->rootRealpath),
             $preparation->discovery,
             $language->manifests,
             $language->contributions,
-            [
-                'input_hash' => $preparation->discovery->inputHash,
-                'configuration_hash' => $preparation->discovery->configurationHash,
-                'snapshot_retention' => $preparation->snapshotRetention,
-                'dead_code_suppressions' => $preparation->configuration->deadCodeSuppressions,
-            ],
+            $projectConfig,
             $analysis->classifications,
             $analysis->boundaries,
             $plan->effectiveMode,
@@ -109,5 +112,86 @@ final class ProjectScanService implements ProjectScanner
     private static function elapsedMilliseconds(int $startedAt): float
     {
         return round((hrtime(true) - $startedAt) / 1_000_000, 3);
+    }
+
+    /** @return array<string, mixed> */
+    private function projectConfig(ScanPreparation $preparation): array
+    {
+        return [
+            'input_hash' => $preparation->discovery->inputHash,
+            'configuration_hash' => $preparation->discovery->configurationHash,
+            'snapshot_retention' => $preparation->snapshotRetention,
+            'dead_code_suppressions' => $preparation->configuration->deadCodeSuppressions,
+        ];
+    }
+
+    /**
+     * When an incremental scan discovered zero added/changed/deleted files and
+     * neither the scanner set nor the persisted configuration moved, the
+     * stored graph is already the correct result: skip teardown/rebuild and
+     * snapshot archiving entirely. Only stored file mtimes are refreshed so
+     * the staleness probe agrees with reality.
+     *
+     * @param array<string, mixed> $projectConfig
+     */
+    private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig): ?ReconciliationResult
+    {
+        if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0) {
+            return null;
+        }
+        $statement = $this->pdo->prepare(
+            'SELECT p.config_json, p.active_scan_id, s.scanner_set_hash FROM projects p JOIN scans s ON s.id = p.active_scan_id WHERE p.id = :id',
+        );
+        $statement->execute(['id' => $plan->projectId]);
+        $row = $statement->fetch();
+        if ($row === false) {
+            return null;
+        }
+        $stored = json_decode((string) $row['config_json'], true);
+        if (!is_array($stored)) {
+            return null;
+        }
+        ksort($stored, SORT_STRING);
+        ksort($projectConfig, SORT_STRING);
+        if ($stored !== $projectConfig) {
+            return null;
+        }
+        if ($row['scanner_set_hash'] !== GraphReconciler::scannerSetHash($language->manifests)) {
+            return null;
+        }
+        $this->refreshFileMtimes($plan->projectId, $preparation->discovery->files);
+        return $this->currentGraphCounts($plan->projectId, (string) $row['active_scan_id']);
+    }
+
+    /** @param list<\Knossos\Discovery\DiscoveredFile> $files */
+    private function refreshFileMtimes(string $projectId, array $files): void
+    {
+        (new SqliteGraphRepository($this->pdo))->transaction(function () use ($projectId, $files): void {
+            // Positional params: the mtime value is used twice (SET and guard).
+            $update = $this->pdo->prepare(
+                'UPDATE files SET mtime = ? WHERE project_id = ? AND relative_path = ? AND mtime <> ?',
+            );
+            foreach ($files as $file) {
+                $update->execute([$file->mtime, $projectId, $file->relativePath, $file->mtime]);
+            }
+        });
+    }
+
+    private function currentGraphCounts(string $projectId, string $activeScanId): ReconciliationResult
+    {
+        $count = function (string $sql) use ($projectId): int {
+            $statement = $this->pdo->prepare($sql);
+            $statement->execute(['project' => $projectId]);
+            return (int) $statement->fetchColumn();
+        };
+        return new ReconciliationResult(
+            $projectId,
+            $activeScanId,
+            $count('SELECT COUNT(*) FROM files WHERE project_id = :project'),
+            $count('SELECT COUNT(*) FROM nodes WHERE project_id = :project'),
+            $count('SELECT COUNT(*) FROM edges WHERE project_id = :project'),
+            $count('SELECT COUNT(*) FROM diagnostics WHERE project_id = :project'),
+            $count("SELECT COUNT(*) FROM nodes WHERE project_id = :project AND kind LIKE 'external!_%' ESCAPE '!'"),
+        );
     }
 }

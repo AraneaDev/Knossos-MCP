@@ -21,7 +21,7 @@ final readonly class GraphReconciler
     public function reconcile(FullScanRequest $request): ReconciliationResult
     {
         $projectId = StableId::project($request->projectIdentity);
-        $scannerSetHash = $this->scannerSetHash($request->scanners);
+        $scannerSetHash = self::scannerSetHash($request->scanners);
         $scanId = StableId::scan($projectId, bin2hex(random_bytes(16)));
         $fileIds = [];
         foreach ($request->discovery->files as $file) {
@@ -515,7 +515,7 @@ final readonly class GraphReconciler
     }
 
     /** @param list<ScannerManifest> $scanners */
-    private function scannerSetHash(array $scanners): string
+    public static function scannerSetHash(array $scanners): string
     {
         $serialized = [];
         foreach ($scanners as $scanner) {
