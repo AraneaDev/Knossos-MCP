@@ -23,7 +23,7 @@ final class StoreTest extends KnossosTestCase
         $pdo = SqliteConnection::open(':memory:');
         $runner = new MigrationRunner($pdo, self::repositoryRoot() . '/migrations');
 
-        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness'], $runner->migrate());
+        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness', '011_annotations'], $runner->migrate());
         assertSame([], $runner->migrate());
         assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
         $edgeSchema = (string) $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edges'")->fetchColumn();

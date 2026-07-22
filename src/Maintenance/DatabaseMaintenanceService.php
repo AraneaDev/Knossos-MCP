@@ -168,7 +168,7 @@ final readonly class DatabaseMaintenanceService
     private function projectCounts(string $projectId): array
     {
         $counts = [];
-        foreach (['scans', 'files', 'nodes', 'edges', 'diagnostics'] as $table) {
+        foreach (['scans', 'files', 'nodes', 'edges', 'diagnostics', 'annotations'] as $table) {
             $statement = $this->pdo->prepare(sprintf('SELECT COUNT(*) FROM %s WHERE project_id = :project', $table));
             $statement->execute(['project' => $projectId]);
             $counts[$table] = (int) $statement->fetchColumn();

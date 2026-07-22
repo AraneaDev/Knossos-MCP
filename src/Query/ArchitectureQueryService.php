@@ -23,6 +23,7 @@ final readonly class ArchitectureQueryService
     private FileMetricsQueryService $fileMetricsQueries;
     private StalenessProbe $stalenessProbe;
     private AgentBriefService $briefQueries;
+    private AnnotationService $annotationQueries;
 
     public function __construct(
         PDO $pdo,
@@ -57,6 +58,7 @@ final readonly class ArchitectureQueryService
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
         $this->stalenessProbe = new StalenessProbe($pdo, $wallClock);
         $this->briefQueries = new AgentBriefService($pdo, $clock, $this->topologyQueries);
+        $this->annotationQueries = new AnnotationService($pdo, $clock);
     }
 
     /** @return array<string, mixed>|null */
@@ -335,5 +337,15 @@ final readonly class ArchitectureQueryService
         int $offset = 0,
     ): ResultEnvelope {
         return $this->componentQueries->searchArchitecture($projectId, $query, $kinds, $roles, $boundaryIds, $confidences, $limit, $offset);
+    }
+
+    public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope
+    {
+        return $this->annotationQueries->annotateComponent($projectId, $component, $kind, $value, $remove, $execute);
+    }
+
+    public function listAnnotations(string $projectId, ?string $component = null, ?string $kind = null, int $limit = 100, int $offset = 0): ResultEnvelope
+    {
+        return $this->annotationQueries->listAnnotations($projectId, $component, $kind, $limit, $offset);
     }
 }

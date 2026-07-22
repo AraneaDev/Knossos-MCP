@@ -107,7 +107,7 @@ final class DatabaseMaintenanceServiceTest extends TestCase
         assertSame('proj-1', $result->data['project']['id']);
         assertSame('Test', $result->data['project']['name']);
         assertSame(['Set execute=true to permanently remove this project and its stored graph.'], $result->warnings);
-        assertSame(['scans' => 0, 'files' => 0, 'nodes' => 0, 'edges' => 0, 'diagnostics' => 0], $result->data['counts']);
+        assertSame(['scans' => 0, 'files' => 0, 'nodes' => 0, 'edges' => 0, 'diagnostics' => 0, 'annotations' => 0], $result->data['counts']);
     }
 
     public function testRemoveProjectDryRunWithActiveScan(): void
