@@ -7,6 +7,7 @@ namespace Knossos\Cli\Command;
 use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
+use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\StdioServer;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
@@ -35,16 +36,17 @@ final class ServeCommand implements CliCommand
             new \Knossos\Query\StalenessProbe($context->database()),
             new \Knossos\Mcp\NextStepPlanner(),
         );
+        $queries = new ArchitectureQueryService(
+            $context->database(),
+            gitHistory: new \Knossos\Git\ProcessGitHistoryProvider(),
+            gitWorkingTree: new \Knossos\Git\ProcessGitWorkingTreeProvider(),
+        );
         $tools = new ToolService(
             new ProjectScanService($context->database(), $context->installationRoot(), $allowedRoots),
-            new ArchitectureQueryService(
-                $context->database(),
-                gitHistory: new \Knossos\Git\ProcessGitHistoryProvider(),
-                gitWorkingTree: new \Knossos\Git\ProcessGitWorkingTreeProvider(),
-            ),
+            $queries,
             $context->maintenance(),
             $enricher,
         );
-        return (new StdioServer($tools))->run(STDIN, STDOUT, STDERR);
+        return (new StdioServer($tools, resources: new ResourceService($queries)))->run(STDIN, STDOUT, STDERR);
     }
 }

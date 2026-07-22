@@ -6,6 +6,7 @@ use Knossos\Git\ProcessGitHistoryProvider;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\HttpEndpoint;
 use Knossos\Mcp\HttpSessionStore;
+use Knossos\Mcp\ResourceService;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Runtime\RuntimeFactory;
@@ -44,13 +45,14 @@ $enricher = new \Knossos\Mcp\ResultEnricher(
     new \Knossos\Query\StalenessProbe($pdo),
     new \Knossos\Mcp\NextStepPlanner(),
 );
+$queries = new ArchitectureQueryService($pdo, gitHistory: new ProcessGitHistoryProvider());
 $tools = new ToolService(
     new ProjectScanService($pdo, $runtime->installationRoot(), $allowedRoots),
-    new ArchitectureQueryService($pdo, gitHistory: new ProcessGitHistoryProvider()),
+    $queries,
     new DatabaseMaintenanceService($pdo, $runtime->defaultDatabasePath()),
     $enricher,
 );
-$endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), $allowedHosts, $allowedOrigins, $token);
+$endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), $allowedHosts, $allowedOrigins, $token, resources: new ResourceService($queries));
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $body = file_get_contents('php://input', false, null, 0, 1_048_577);
 $response = $endpoint->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $headers, is_string($body) ? $body : '');

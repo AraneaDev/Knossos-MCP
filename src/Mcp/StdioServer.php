@@ -25,6 +25,7 @@ final class StdioServer
         private readonly ToolService $tools,
         private readonly int $maxLineBytes = 1_048_576,
         private readonly int $maxResponseBytes = 1_048_576,
+        private readonly ?ResourceService $resources = null,
     ) {}
 
     /** @param resource $input @param resource $output @param resource $errors */
@@ -90,7 +91,10 @@ final class StdioServer
             }
             return $this->success($id, [
                 'protocolVersion' => self::PROTOCOL_VERSION,
-                'capabilities' => ['tools' => ['listChanged' => false]],
+                'capabilities' => [
+                    'tools' => ['listChanged' => false],
+                    ...($this->resources === null ? [] : ['resources' => ['subscribe' => false, 'listChanged' => false]]),
+                ],
                 'serverInfo' => [
                     'name' => 'knossos', 'title' => 'Knossos Architecture Intelligence',
                     'version' => Application::VERSION,
@@ -138,6 +142,20 @@ final class StdioServer
                     'isError' => true,
                 ]);
             }
+        }
+
+        if ($this->resources !== null && $method === 'resources/list') {
+            return $this->success($id, ['resources' => $this->resources->list()]);
+        }
+        if ($this->resources !== null && $method === 'resources/read') {
+            $uri = $params['uri'] ?? null;
+            if (!is_string($uri)) {
+                return $this->error($id, -32602, 'uri must be a string.');
+            }
+            $result = $this->resources->read($uri);
+            return $result === null
+                ? $this->error($id, -32002, 'Resource not found: ' . $uri)
+                : $this->success($id, $result);
         }
 
         return $this->error($id, -32601, 'Method not found');
