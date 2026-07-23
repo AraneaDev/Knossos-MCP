@@ -7,6 +7,22 @@ if [ "$profile" != "fast" ] && [ "$profile" != "full" ]; then
     exit 64
 fi
 
+# Run the PHPUnit suite. In the quality container the tooling is installed as
+# root, but the permission-error tests (Doctor unwritable-data-dir, MigrationRunner
+# unreadable-migration, ProjectDiscoverer permission-denied) skip themselves when
+# the process is root, so those branches would silently never run. Drop to the
+# dedicated non-root `knossos` user for the suite; root is still used for the
+# Trivy/docker-socket/coverage steps. Outside the container (local dev) run in
+# place. HOME is set because the caller's environment is preserved and root's
+# HOME is not writable by the non-root user.
+run_test_suite() {
+    if [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
+        runuser -u knossos -- env HOME=/home/knossos composer test
+    else
+        composer test
+    fi
+}
+
 composer validate --strict
 composer --working-dir=workers/php validate --strict
 composer install --dry-run --no-interaction --no-scripts
@@ -22,6 +38,7 @@ npm run lint:md
 ruff check workers/python/bin/worker.py
 ruff format --check workers/python/bin/worker.py
 mypy workers/python/bin/worker.py
+python3 -m pytest workers/python
 php tools/repository-check.php
 php tools/generate-reference.php --check
 php tools/documentation-check.php
@@ -57,7 +74,7 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
 fi
 
 npm --prefix workers/typescript run check
-composer test
+run_test_suite
 
 if [ "$profile" = "full" ]; then
     composer audit --locked --no-interaction

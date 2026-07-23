@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  The single PHP suite, run by `composer test`. The `default` testsuite covers
-  all of tests/phpunit (the ported run.php behaviour plus the original planner
-  tests); `unit` remains as the narrower Infection scope until Task 12 widens
-  Infection to all of src.
+  One PHP suite, run by `composer test` and by Infection. It covers all of
+  tests/phpunit, including the MCP transport/concurrency/HTTP tests. There is
+  deliberately no default/unit split: the previous two-suite layout let a
+  narrowed testsuite selection silently skip every test under tests/phpunit/Mcp
+  (the most integration-heavy tests in the tree), which hid real gaps.
 -->
 <phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
@@ -13,12 +14,8 @@
          failOnWarning="false"
          cacheDirectory=".phpunit.cache">
     <testsuites>
-        <testsuite name="default">
+        <testsuite name="knossos">
             <directory>tests/phpunit</directory>
-            <exclude>tests/phpunit/Mcp</exclude>
-        </testsuite>
-        <testsuite name="unit">
-            <directory>tests/phpunit/Mcp</directory>
         </testsuite>
     </testsuites>
     <source>

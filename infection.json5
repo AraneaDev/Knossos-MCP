@@ -33,22 +33,22 @@
   // `phpUnit.extraOptions` keys accepted by 0.33+/0.34+ are rejected
   // by the 0.31.9 schema validator pinned in composer.lock).
   testFrameworkOptions: "--do-not-cache-result",
-  // Floor set from a full-src measurement on 2026-07-20: 8782 mutants, 4640
-  // killed, 4098 escaped, 44 timeouts -> MSI 53.34% in 1h20m. Rounded down to
-  // 53 per the migration plan (never set above what was measured). Mutation
-  // Code Coverage is 100%, so MSI and Covered MSI are the same number here:
-  // the escaped mutants are executed by the suite but not asserted against.
-  // Ratcheted upward per the per-file Infection sampling strategy:
-  //   53 -> 60 (batch 3+: per-file 100% on Evidence, ScannerManifest,
-  //             WatchScanAttempt, WorkerExecutionPolicy; line coverage
-  //             92.1% -> 92.46%; 1446 tests, 0 failures)
-  //   60 -> 65 (batch 4+: Worker refactoring w/ interfaces + 14 mock-based
-  //             tests; NdjsonRpcChannel 88.5% -> 91.95%; full suite green)
-  //   65 -> 76 (batch 10+: CliInputLoader 69%->76%, BundleCommand 58%->86%,
-  //             GraphReconciler 90%, all other sampled files > 80%)
-  // A full-src Infection run (~80 min) in CI will validate this floor.
-  minMsi: 76,
-  minCoveredMsi: 76,
+  // Floor set from the last FULL-src measurement on 2026-07-20: 8782 mutants,
+  // 4640 killed, 4098 escaped, 44 timeouts -> MSI 53.34% in 1h20m. Rounded down
+  // to 53 per the migration plan (never set above what was actually measured on
+  // the full source tree). Mutation Code Coverage is 100%, so MSI and Covered
+  // MSI are the same number here: the escaped mutants are executed by the suite
+  // but not asserted against.
+  //
+  // The floor was previously ratcheted 53 -> 60 -> 65 -> 76 off per-file
+  // Infection samples of ~10 files, but no full-src run ever validated those
+  // higher numbers, so a full run would have failed the gate. Reverted to the
+  // last honestly-measured full-src value (53) until a full-src Infection run
+  // lands and justifies raising it. .github/workflows/mutation.yml now runs
+  // weekly (plus workflow_dispatch), so this floor is actually exercised and
+  // can be ratcheted upward against measured full-src results over time.
+  minMsi: 53,
+  minCoveredMsi: 53,
   ignoreMsiWithNoMutations: true,
   tmpDir: "coverage/infection/tmp",
 }

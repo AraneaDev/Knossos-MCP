@@ -90,7 +90,13 @@ final class FaultInjectionTest extends KnossosTestCase
             assertSame('WORKER_CANCELLED', $error->diagnosticCode);
             $childPid = (int) trim((string) file_get_contents($pidFile));
             assertSame(true, $childPid > 0);
-            for ($attempt = 0; $attempt < 50 && is_dir('/proc/' . $childPid); ++$attempt) {
+            // Poll every 10ms, but bound the wait by a multi-second wall-clock
+            // deadline rather than a fixed iteration count: a loaded CI runner can
+            // take far longer than 50 * 10ms = 500ms to reap the process tree, and
+            // a fixed-count bound would flake there. The deadline is a generous
+            // ceiling; the reap normally completes in a handful of polls.
+            $deadline = microtime(true) + 10.0;
+            while (is_dir('/proc/' . $childPid) && microtime(true) < $deadline) {
                 usleep(10_000);
             }
             assertSame(false, is_dir('/proc/' . $childPid));

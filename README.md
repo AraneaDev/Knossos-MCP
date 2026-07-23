@@ -6,8 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/AraneaDev/Knossos-MCP)](https://github.com/AraneaDev/Knossos-MCP/releases)
 [![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)](./.github/workflows/quality.yml)
-[![coverage](https://img.shields.io/badge/coverage-91%25-brightgreen.svg)](#development)
+[![Quality](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml/badge.svg)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
 [![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#quick-start)
 
 > **Pre-release / in active development.** Knossos is **not yet published to

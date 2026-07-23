@@ -1,10 +1,15 @@
 name: Mutation
 
-# Manual only. A full-src Infection run takes ~80 minutes, so it is not wired
-# into the Quality workflow, any tools/quality profile, or a schedule. Run it
-# from the Actions tab when you want a current mutation score.
+# A full-src Infection run takes ~80 minutes, so it is not wired into the
+# Quality workflow or any tools/quality profile. It runs on a weekly schedule so
+# the mutation floor in infection.json5 is actually exercised against the full
+# source tree (and can be ratcheted upward honestly against measured results),
+# and can also be triggered from the Actions tab on demand.
 on:
   workflow_dispatch:
+  schedule:
+    # 07:00 UTC every Monday.
+    - cron: "0 7 * * 1"
 
 permissions:
   contents: read
