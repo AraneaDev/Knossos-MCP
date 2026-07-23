@@ -347,7 +347,9 @@ final class QueryTest extends KnossosTestCase
             assertSame('', $stderr);
 
             $lines = array_values(array_filter(explode("\n", trim($stdout))));
-            assertSame(8, count($lines));
+            // The final request (id 8) was pre-cancelled via notifications/cancelled,
+            // so the server sends no response for it — only 7 lines are emitted.
+            assertSame(7, count($lines));
             $responses = array_map(fn(string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR), $lines);
             assertSame('2025-11-25', $responses[0]['result']['protocolVersion']);
             assertSame(31, count($responses[1]['result']['tools']));
@@ -362,8 +364,8 @@ final class QueryTest extends KnossosTestCase
             assertContains('between 1 and 100', $responses[5]['result']['content'][0]['text']);
             assertSame(true, $responses[6]['result']['isError']);
             assertContains('exactly one matcher', $responses[6]['result']['content'][0]['text']);
-            assertSame(true, $responses[7]['result']['isError']);
-            assertContains('cancelled', strtolower($responses[7]['result']['content'][0]['text']));
+            // No responses[7]: the cancelled request produced no reply.
+            assertSame(false, array_key_exists(7, $responses));
         } finally {
             if (is_resource($process)) {
                 proc_terminate($process);

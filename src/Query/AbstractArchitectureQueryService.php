@@ -171,6 +171,14 @@ abstract readonly class AbstractArchitectureQueryService
             }
         }
 
+        // Kosaraju's correctness depends on a complete decreasing finish order.
+        // A pass-one timeout leaves a partial order over which reverse DFS can
+        // sweep several distinct SCCs into one false component, so discard it
+        // entirely rather than run pass two over a truncated finish order.
+        if ($timedOut) {
+            return ['components' => [], 'timed_out' => true];
+        }
+
         $components = [];
         $assigned = [];
         while ($finish !== []) {

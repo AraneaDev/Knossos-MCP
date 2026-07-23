@@ -141,11 +141,15 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         if ($maxChanges < 1 || $maxChanges > 1000) {
             throw new InvalidArgumentException('max_changes must be between 1 and 1000.');
         }
-        $from = $this->snapshotFacts($projectId, $fromSnapshot, $project['active_scan_id'] ?? '');
-        $to = $this->snapshotFacts($projectId, $toSnapshot, $project['active_scan_id'] ?? '');
+        $from = $this->snapshotSource($projectId, $fromSnapshot, $project['active_scan_id'] ?? '');
+        $to = $this->snapshotSource($projectId, $toSnapshot, $project['active_scan_id'] ?? '');
         if ($from['metadata']['scan_id'] === $to['metadata']['scan_id']) {
             throw new InvalidArgumentException('from_snapshot and to_snapshot must identify different scans.');
         }
+        // Files are the only cross-section fact (path resolution), so load them
+        // once; every other table is loaded, diffed, and freed inside the loop.
+        $fromFiles = ($from['load'])('files');
+        $toFiles = ($to['load'])('files');
 
         $remaining = $maxChanges;
         $total = 0;
@@ -162,7 +166,10 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $rawDiffs = [];
         $allComponentChanges = [];
         foreach ($tableMap as $section => [$table, $key]) {
-            $diff = $this->diffSnapshotRows($from['facts'][$table] ?? [], $to['facts'][$table] ?? [], $key);
+            $fromRows = ($from['load'])($table);
+            $toRows = ($to['load'])($table);
+            $diff = $this->diffSnapshotRows($fromRows, $toRows, $key);
+            unset($fromRows, $toRows); // free the raw rows before the next table
             if ($section === 'components') {
                 $allComponentChanges = $diff['changed'];
                 $diff['changed'] = array_values(array_filter($diff['changed'], static function (array $change): bool {
@@ -179,7 +186,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
                 $total += $count;
                 $take = min($remaining, $count);
                 $sectionOutput[$kind] = array_map(
-                    fn(array $change): array => $this->snapshotChangeRecord($table, $kind, $change, $from['facts']['files'] ?? [], $to['facts']['files'] ?? []),
+                    fn(array $change): array => $this->snapshotChangeRecord($table, $kind, $change, $fromFiles, $toFiles),
                     array_slice($diff[$kind], 0, $take),
                 );
                 $remaining -= $take;
@@ -194,7 +201,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             if (($change['before']['file_id'] ?? null) !== ($change['after']['file_id'] ?? null)) {
                 ++$total;
                 if ($remaining > 0) {
-                    $moved[] = $this->snapshotChangeRecord('nodes', 'moved', $change, $from['facts']['files'] ?? [], $to['facts']['files'] ?? []);
+                    $moved[] = $this->snapshotChangeRecord('nodes', 'moved', $change, $fromFiles, $toFiles);
                     --$remaining;
                 } else {
                     $truncated = true;
@@ -269,16 +276,30 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             'public_surface_changes' => $this->publicSurfaceChanges($baseline['facts'], $current['facts']),
         ];
         $policyResult = null;
+        $boundaryIndeterminate = false;
         if ($policies !== []) {
             $policyResult = $this->policyQueries->checkArchitecture($projectId, $policies, limit: 100);
-            $actual['boundary_violations'] = count($policyResult->data['violations']);
+            $policyBounds = $policyResult->data['bounds'] ?? [];
+            // Exact count past the collection limit; a budget of >=100 was
+            // previously dead because the collected subset capped at 100.
+            $actual['boundary_violations'] = $policyBounds['violation_count'] ?? count($policyResult->data['violations']);
+            // Edge/time truncation means not every relationship was inspected,
+            // so the count is only a lower bound: the gate cannot pass on it.
+            $policyReasons = $policyBounds['truncation_reasons'] ?? [];
+            $boundaryIndeterminate = in_array('edge_limit', $policyReasons, true) || in_array('time_limit', $policyReasons, true);
         }
         $checks = [];
         $passed = true;
         foreach ($budgets as $name => $limit) {
             $value = $actual[$name];
-            $checkPassed = $value <= $limit;
-            $checks[] = ['metric' => $name, 'actual' => $value, 'limit' => $limit, 'passed' => $checkPassed];
+            $indeterminate = $name === 'boundary_violations' && $boundaryIndeterminate;
+            $checkPassed = !$indeterminate && $value <= $limit;
+            $check = ['metric' => $name, 'actual' => $value, 'limit' => $limit, 'passed' => $checkPassed];
+            if ($indeterminate) {
+                $check['indeterminate'] = true;
+                $check['indeterminate_reason'] = 'boundary_violation_scan_truncated';
+            }
+            $checks[] = $check;
             $passed = $passed && $checkPassed;
         }
         $data = ['passed' => $passed, 'baseline_snapshot' => $baseline['metadata']['scan_id'], 'active_snapshot' => $current['metadata']['scan_id'],
@@ -366,8 +387,14 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         ], warnings: ['Trend metrics are bounded static signals and scanner/config fingerprint changes can affect comparability.'], truncated: $listed->truncated || ($releaseNotes['truncated'] ?? false));
     }
 
-    /** @return array{metadata: array<string, mixed>, facts: array<string, list<array<string, mixed>>>} */
-    private function snapshotFacts(string $projectId, string $identifier, string $activeScanId): array
+    /**
+     * Resolve a snapshot identifier to its scan metadata and (when retained)
+     * archive row, validating existence and archive completeness. Fact rows are
+     * NOT loaded here so callers can stream table-by-table.
+     *
+     * @return array{scan_id: string, is_active: bool, archived: array<string, mixed>|null, metadata: array<string, mixed>}
+     */
+    private function resolveSnapshot(string $projectId, string $identifier, string $activeScanId): array
     {
         $scanId = $identifier === 'active' ? $activeScanId : trim($identifier);
         if ($scanId === '') {
@@ -382,14 +409,34 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $archive = $this->pdo->prepare('SELECT * FROM scan_snapshots WHERE scan_id = :scan AND project_id = :project');
         $archive->execute(['scan' => $scanId, 'project' => $projectId]);
         $archived = $archive->fetch();
-        if ($scanId !== $activeScanId) {
+        $isActive = $scanId === $activeScanId;
+        if (!$isActive) {
             if (!is_array($archived)) {
                 throw new InvalidArgumentException(sprintf('Snapshot facts are not retained: %s', $scanId));
             }
             if ((int) $archived['complete'] !== 1) {
                 throw new InvalidArgumentException(sprintf('Snapshot archive is incomplete: %s', $scanId));
             }
-            $payload = json_decode($archived['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+        }
+        return [
+            'scan_id' => $scanId,
+            'is_active' => $isActive,
+            'archived' => is_array($archived) ? $archived : null,
+            'metadata' => [
+                'scan_id' => $scanId, 'active' => $isActive, 'mode' => $metadata['mode'],
+                'scanner_set_hash' => $metadata['scanner_set_hash'], 'config_hash' => is_array($archived) ? $archived['config_hash'] : null,
+                'started_at' => $metadata['started_at'], 'finished_at' => $metadata['finished_at'],
+            ],
+        ];
+    }
+
+    /** @return array{metadata: array<string, mixed>, facts: array<string, list<array<string, mixed>>>} */
+    private function snapshotFacts(string $projectId, string $identifier, string $activeScanId): array
+    {
+        $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
+        $scanId = $resolved['scan_id'];
+        if (!$resolved['is_active']) {
+            $payload = json_decode((string) $resolved['archived']['payload_json'], true, 512, JSON_THROW_ON_ERROR);
             $facts = $payload['facts'] ?? null;
             if (!is_array($facts)) {
                 throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
@@ -397,21 +444,55 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         } else {
             $facts = [];
             foreach (['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics'] as $table) {
-                $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
-                $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s LIMIT 200001', $table, $order));
-                $statement->execute(['project' => $projectId]);
-                $rows = $statement->fetchAll();
-                if (count($rows) > 200_000) {
-                    throw new InvalidArgumentException(sprintf('Active snapshot %s exceeds the 200000-row %s diff limit.', $scanId, $table));
-                }
-                $facts[$table] = $rows;
+                $facts[$table] = $this->activeSnapshotRows($projectId, $scanId, $table);
             }
         }
-        return ['metadata' => [
-            'scan_id' => $scanId, 'active' => $scanId === $activeScanId, 'mode' => $metadata['mode'],
-            'scanner_set_hash' => $metadata['scanner_set_hash'], 'config_hash' => is_array($archived) ? $archived['config_hash'] : null,
-            'started_at' => $metadata['started_at'], 'finished_at' => $metadata['finished_at'],
-        ], 'facts' => $facts];
+        return ['metadata' => $resolved['metadata'], 'facts' => $facts];
+    }
+
+    /**
+     * A snapshot exposed as a per-table loader so a diff can load, compare, and
+     * free one table at a time instead of materializing two whole graphs at once.
+     *
+     * @return array{metadata: array<string, mixed>, load: \Closure(string): list<array<string, mixed>>}
+     */
+    private function snapshotSource(string $projectId, string $identifier, string $activeScanId): array
+    {
+        $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
+        $scanId = $resolved['scan_id'];
+        if (!$resolved['is_active']) {
+            // A single JSON blob can only be decoded once; cache it and hand out
+            // per-table slices, reusing the one decoded payload.
+            $archived = $resolved['archived'];
+            $decoded = null;
+            $load = static function (string $table) use (&$decoded, $archived, $scanId): array {
+                if ($decoded === null) {
+                    $payload = json_decode((string) $archived['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+                    $facts = $payload['facts'] ?? null;
+                    if (!is_array($facts)) {
+                        throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
+                    }
+                    $decoded = $facts;
+                }
+                return $decoded[$table] ?? [];
+            };
+        } else {
+            $load = fn(string $table): array => $this->activeSnapshotRows($projectId, $scanId, $table);
+        }
+        return ['metadata' => $resolved['metadata'], 'load' => $load];
+    }
+
+    /** @return list<array<string, mixed>> */
+    private function activeSnapshotRows(string $projectId, string $scanId, string $table): array
+    {
+        $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
+        $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s LIMIT 200001', $table, $order));
+        $statement->execute(['project' => $projectId]);
+        $rows = $statement->fetchAll();
+        if (count($rows) > 200_000) {
+            throw new InvalidArgumentException(sprintf('Active snapshot %s exceeds the 200000-row %s diff limit.', $scanId, $table));
+        }
+        return $rows;
     }
     /**
      * @param list<array<string, mixed>> $beforeRows
@@ -532,9 +613,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             ++$degree[$edge['source_id']];
             ++$degree[$edge['target_id']];
         }
+        // Self-loops are ordinary recursion, not architectural cycles;
+        // dependency_cycles excludes them by default, so mirror that here.
         $cycles = 0;
         foreach ($this->stronglyConnectedComponents($adjacency, $reverse)['components'] as $component) {
-            if (count($component) > 1 || in_array($component[0], $adjacency[$component[0]], true)) {
+            if (count($component) > 1) {
                 ++$cycles;
             }
         }
@@ -543,12 +626,23 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             $errors += $diagnostic['severity'] === 'error' ? 1 : 0;
             $warnings += $diagnostic['severity'] === 'warning' ? 1 : 0;
         }
-        $entryKinds = ['route', 'command', 'event', 'listener', 'handler'];
+        // Restrict unreferenced counting to the same declaration kinds and
+        // origins architecture_health treats as dead-code candidates, so the
+        // two tools agree instead of this budget over-counting by orders of
+        // magnitude (routes, members, externals, unresolved refs, etc.).
+        $candidateKinds = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
         $unreferenced = 0;
         foreach ($facts['nodes'] ?? [] as $node) {
-            if (($reverse[$node['id']] ?? []) === [] && !str_starts_with($node['kind'], 'external_') && !in_array($node['kind'], $entryKinds, true)) {
-                ++$unreferenced;
+            if (($reverse[$node['id']] ?? []) !== []) {
+                continue;
             }
+            if (!in_array($node['kind'], $candidateKinds, true)) {
+                continue;
+            }
+            if (in_array($node['origin'] ?? null, ['external', 'unresolved'], true)) {
+                continue;
+            }
+            ++$unreferenced;
         }
         return ['cycles' => $cycles, 'max_degree' => $degree === [] ? 0 : max($degree), 'error_diagnostics' => $errors,
             'warning_diagnostics' => $warnings, 'unreferenced_candidates' => $unreferenced];

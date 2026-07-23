@@ -36,17 +36,26 @@ final readonly class StalenessProbe
         $newerAttempt = $this->hasNewerAttempt($projectId, $activeScanId);
         $changed = $this->changedFilesSince($projectId, $activeScanId, (string) $project['root_realpath']);
 
-        $isStale = $newerAttempt || ($changed !== null && $changed > 0);
+        // 'unverified' when no newer scan attempt exists but content-change
+        // detection was skipped (root missing, or too many files to fingerprint):
+        // the graph cannot be confirmed fresh, and must not be reported as such.
+        $state = match (true) {
+            $newerAttempt || ($changed !== null && $changed > 0) => 'stale',
+            $changed === null => 'unverified',
+            default => 'fresh',
+        };
         $result = [
-            'state' => $isStale ? 'stale' : 'fresh',
+            'state' => $state,
             'scanned_at' => $finishedAt,
             'age_seconds' => $ageSeconds,
         ];
         if ($changed !== null) {
             $result['changed_files_since'] = $changed;
         }
-        if ($isStale) {
+        if ($state === 'stale') {
             $result['guidance'] = 'Graph may be stale; rescan with scan_project for current results.';
+        } elseif ($state === 'unverified') {
+            $result['guidance'] = 'Change detection was skipped (project root unavailable or too many files); freshness is unconfirmed. Rescan with scan_project to be certain.';
         }
         return $result;
     }
