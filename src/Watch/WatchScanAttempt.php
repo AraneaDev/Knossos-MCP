@@ -9,6 +9,7 @@ use Knossos\Query\ResultEnvelope;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Scan\ScanCancelledException;
+use Knossos\Scanner\Worker\WorkerException;
 use Throwable;
 
 /**
@@ -22,6 +23,23 @@ final readonly class WatchScanAttempt
     public const CANCELLED = 'cancelled';
     public const RETRYABLE = 'retryable';
     public const TERMINAL = 'terminal';
+
+    /**
+     * Worker diagnostic codes that reflect a transient fault (a crash, timeout,
+     * or broken pipe) which may clear on the next attempt. Every other worker
+     * failure — version/capability/schema mismatches, an oversized request, a
+     * failed spawn — is a permanent misconfiguration that would recur
+     * identically, so retrying it only floods diagnostics for the life of the
+     * watch.
+     *
+     * @var list<string>
+     */
+    private const TRANSIENT_WORKER_CODES = [
+        'WORKER_TIMEOUT',
+        'WORKER_PIPE_BROKEN',
+        'WORKER_IO_FAILED',
+        'WORKER_EXITED',
+    ];
 
     private function __construct(
         public string $outcome,
@@ -43,6 +61,14 @@ final readonly class WatchScanAttempt
             return new self(self::SUCCESS, $result, null);
         } catch (ScanCancelledException) {
             return new self(self::CANCELLED, null, null);
+        } catch (WorkerException $error) {
+            // Classify worker faults by diagnostic code: a small allowlist of
+            // transient codes stays retryable, permanent misconfigurations
+            // become terminal so the watch does not retry them forever.
+            $outcome = in_array($error->diagnosticCode, self::TRANSIENT_WORKER_CODES, true)
+                ? self::RETRYABLE
+                : self::TERMINAL;
+            return new self($outcome, null, $error->getMessage());
         } catch (Error $error) {
             // Engine-level faults (type errors, undefined symbols) are programming
             // defects that will recur identically; retrying only floods diagnostics.

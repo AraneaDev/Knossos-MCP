@@ -15,23 +15,70 @@ final class SqliteGraphRepository implements GraphRepository
     /** @var array<string, PDOStatement> */
     private array $statements = [];
 
+    /** Depth of write transactions this repository has opened via BEGIN IMMEDIATE. */
+    private int $transactionDepth = 0;
+
+    /** Monotonic sequence used to name nested savepoints uniquely. */
+    private int $savepointSequence = 0;
+
     public function __construct(private PDO $pdo) {}
 
     public function transaction(callable $operation): mixed
     {
-        if ($this->pdo->inTransaction()) {
-            return $operation($this);
+        if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
+            return $this->savepointTransaction($operation);
         }
 
-        $this->pdo->beginTransaction();
+        // BEGIN IMMEDIATE acquires the write lock up front so a read-then-write
+        // upgrade under WAL cannot hit a non-retryable SQLITE_BUSY. PDO's
+        // beginTransaction() issues a deferred BEGIN, and PDO::inTransaction()
+        // only tracks API-level transactions, so the boundary and the nesting
+        // depth are managed manually here.
+        $this->pdo->exec('BEGIN IMMEDIATE');
+        $this->transactionDepth = 1;
         try {
             $result = $operation($this);
-            $this->pdo->commit();
+            $this->pdo->exec('COMMIT');
+            $this->transactionDepth = 0;
+            $this->savepointSequence = 0;
 
             return $result;
         } catch (Throwable $error) {
+            $this->transactionDepth = 0;
+            $this->savepointSequence = 0;
             try {
-                $this->pdo->rollBack();
+                $this->pdo->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+            throw $error;
+        }
+    }
+
+    /**
+     * Run a nested transaction as a SAVEPOINT so a caught inner failure rolls
+     * back only the inner work. The previous no-op nesting silently committed
+     * partial inner writes with the enclosing transaction.
+     *
+     * @template T
+     * @param callable(GraphRepository): T $operation
+     * @return T
+     */
+    private function savepointTransaction(callable $operation): mixed
+    {
+        $name = 'knossos_sp_' . $this->savepointSequence++;
+        $this->transactionDepth++;
+        $this->pdo->exec('SAVEPOINT ' . $name);
+        try {
+            $result = $operation($this);
+            $this->pdo->exec('RELEASE SAVEPOINT ' . $name);
+            $this->transactionDepth--;
+
+            return $result;
+        } catch (Throwable $error) {
+            $this->transactionDepth--;
+            try {
+                $this->pdo->exec('ROLLBACK TO SAVEPOINT ' . $name);
+                $this->pdo->exec('RELEASE SAVEPOINT ' . $name);
             } catch (Throwable) {
             }
             throw $error;
@@ -123,12 +170,21 @@ final class SqliteGraphRepository implements GraphRepository
         if ($retention < 0 || $retention > 20) {
             throw new InvalidArgumentException('Snapshot retention must be between 0 and 20.');
         }
+        if ($retention === 0) {
+            return;
+        }
         $project = $this->findProject($projectId);
         $scanId = is_array($project) ? $project['active_scan_id'] : null;
         if (!is_string($scanId) || $scanId === '') {
             return;
         }
-        if ($retention === 0) {
+        // Skip when the active graph is unchanged: a snapshot for this scan was
+        // already captured, so there is nothing new to archive. This also
+        // avoids materialising and JSON-encoding a payload only for the
+        // INSERT OR IGNORE below to discard it.
+        $existing = $this->pdo->prepare('SELECT 1 FROM scan_snapshots WHERE scan_id = :scan');
+        $existing->execute(['scan' => $scanId]);
+        if ($existing->fetchColumn() !== false) {
             return;
         }
         $scan = $this->pdo->prepare('SELECT scanner_set_hash FROM scans WHERE id = :scan AND project_id = :project AND status = :status');
@@ -139,25 +195,42 @@ final class SqliteGraphRepository implements GraphRepository
         }
 
         $tables = ['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics'];
-        $payload = [];
-        $factCount = 0;
+
+        // Count first so an over-limit table is never fetched into memory only
+        // to be discarded (the previous SELECT * ... LIMIT 200001 + fetchAll
+        // materialised up to 1.4M rows before checking the bound).
         $complete = true;
         foreach ($tables as $table) {
-            $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
-            $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s LIMIT 200001', $table, $order));
-            $statement->execute(['project' => $projectId]);
-            $rows = $statement->fetchAll();
-            if (count($rows) > 200_000) {
+            $count = $this->pdo->prepare(sprintf('SELECT COUNT(*) FROM %s WHERE project_id = :project', $table));
+            $count->execute(['project' => $projectId]);
+            if ((int) $count->fetchColumn() > 200_000) {
                 $complete = false;
-                $rows = [];
+                break;
             }
-            $payload[$table] = $rows;
-            $factCount += count($rows);
         }
-        $encoded = self::json($complete ? ['schema' => 1, 'facts' => $payload] : ['schema' => 1, 'reason' => 'fact_limit']);
-        if (strlen($encoded) > 50_000_000) {
-            $complete = false;
-            $encoded = self::json(['schema' => 1, 'reason' => 'byte_limit']);
+
+        // Build and JSON-encode the payload exactly once. The over-limit and
+        // over-byte cases encode only a small marker object, never the full
+        // (discarded) payload a second time.
+        $factCount = 0;
+        if ($complete) {
+            $payload = [];
+            foreach ($tables as $table) {
+                $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
+                $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s', $table, $order));
+                $statement->execute(['project' => $projectId]);
+                $rows = $statement->fetchAll();
+                $payload[$table] = $rows;
+                $factCount += count($rows);
+            }
+            $encoded = self::json(['schema' => 1, 'facts' => $payload]);
+            if (strlen($encoded) > 50_000_000) {
+                $complete = false;
+                $factCount = 0;
+                $encoded = self::json(['schema' => 1, 'reason' => 'byte_limit']);
+            }
+        } else {
+            $encoded = self::json(['schema' => 1, 'reason' => 'fact_limit']);
         }
         $insert = $this->pdo->prepare(
             'INSERT OR IGNORE INTO scan_snapshots(scan_id, project_id, scanner_set_hash, config_hash, complete, fact_count, byte_size, payload_json, captured_at) ' .

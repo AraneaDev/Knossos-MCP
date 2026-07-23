@@ -66,16 +66,32 @@ final readonly class MigrationRunner
             }
             try {
                 $this->pdo->exec($sql);
-                $insert = $this->pdo->prepare(
-                    'INSERT INTO schema_migrations(version, checksum, applied_at) VALUES (:version, :checksum, :applied_at)',
-                );
-                $insert->execute([
-                    'version' => $version,
-                    'checksum' => $checksum,
-                    'applied_at' => gmdate('Y-m-d\TH:i:s\Z'),
-                ]);
+                // Record the applied version inside the same transaction as the
+                // migration body so the schema change and its bookkeeping commit
+                // atomically. For an own-transaction migration that is the
+                // runner's transaction; for a no-transaction migration it is the
+                // transaction the migration itself opened, which it should leave
+                // open for the runner to commit (see below).
+                $this->recordVersion($version, $checksum);
                 if ($ownTransaction) {
                     $this->pdo->commit();
+                } else {
+                    try {
+                        $this->pdo->exec('COMMIT');
+                    } catch (Throwable) {
+                        // A legacy no-transaction migration committed its own
+                        // transaction, so the version insert above auto-committed
+                        // instead and there is nothing left to commit. Such a
+                        // migration keeps a small re-run window (a crash between
+                        // its COMMIT and the version insert); migrations should
+                        // instead leave their final transaction open for the
+                        // runner so the two commit atomically.
+                    }
+                    // Restore the connection's foreign-key contract: a migration
+                    // that left its transaction open for the runner cannot
+                    // re-enable enforcement itself, since PRAGMA foreign_keys is
+                    // a no-op inside a transaction.
+                    $this->pdo->exec('PRAGMA foreign_keys = ON');
                 }
             } catch (Throwable $error) {
                 if ($this->pdo->inTransaction()) {
@@ -101,5 +117,17 @@ final readonly class MigrationRunner
         }
 
         return $applied;
+    }
+
+    private function recordVersion(string $version, string $checksum): void
+    {
+        $insert = $this->pdo->prepare(
+            'INSERT INTO schema_migrations(version, checksum, applied_at) VALUES (:version, :checksum, :applied_at)',
+        );
+        $insert->execute([
+            'version' => $version,
+            'checksum' => $checksum,
+            'applied_at' => gmdate('Y-m-d\TH:i:s\Z'),
+        ]);
     }
 }

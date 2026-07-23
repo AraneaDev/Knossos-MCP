@@ -41,7 +41,7 @@ final class ScannerProtocolSessionTest extends TestCase
             public int $responseIndex = 0;
 
             public function beginRequest(): int { ++$this->beginCount; return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sent[] = $message; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 if ($this->responseIndex < count($this->responses)) {
@@ -72,7 +72,7 @@ final class ScannerProtocolSessionTest extends TestCase
         $channel = new class implements RpcChannelInterface {
             public bool $sendCalled = false;
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sendCalled = true; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sendCalled = true; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array { return []; }
             public function stderr(): string { return ''; }
         };
@@ -112,7 +112,7 @@ final class ScannerProtocolSessionTest extends TestCase
 
         $channel = new class implements RpcChannelInterface {
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array { return []; }
             public function stderr(): string { return ''; }
         };
@@ -157,7 +157,7 @@ final class ScannerProtocolSessionTest extends TestCase
 
         $channel = new class implements RpcChannelInterface {
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array { return []; }
             public function stderr(): string { return ''; }
         };
@@ -191,7 +191,7 @@ final class ScannerProtocolSessionTest extends TestCase
             private bool $responseReturned = false;
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sent[] = $message; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 if (!$this->responseReturned) {
@@ -238,7 +238,7 @@ final class ScannerProtocolSessionTest extends TestCase
             public int $beginCount = 0;
 
             public function beginRequest(): int { ++$this->beginCount; return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => 1, 'result' => [
@@ -278,7 +278,7 @@ final class ScannerProtocolSessionTest extends TestCase
     {
         $channel = new class implements RpcChannelInterface {
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => 1, 'result' => ['id' => 42]];
@@ -310,7 +310,7 @@ final class ScannerProtocolSessionTest extends TestCase
     {
         $channel = new class implements RpcChannelInterface {
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => 1, 'result' => [
@@ -352,7 +352,7 @@ final class ScannerProtocolSessionTest extends TestCase
     {
         $channel = new class implements RpcChannelInterface {
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => 1, 'result' => [
@@ -396,7 +396,7 @@ final class ScannerProtocolSessionTest extends TestCase
     {
         $channel = new class implements RpcChannelInterface {
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => 1, 'result' => [
@@ -432,7 +432,7 @@ final class ScannerProtocolSessionTest extends TestCase
     {
         $channel = new class implements RpcChannelInterface {
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => 1, 'result' => [
@@ -479,7 +479,7 @@ final class ScannerProtocolSessionTest extends TestCase
             private int $readCount = 0;
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sent[] = $message; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 ++$this->readCount;
@@ -529,7 +529,7 @@ final class ScannerProtocolSessionTest extends TestCase
             private int $index = 0;
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 if ($this->index === 0) {
@@ -596,7 +596,7 @@ final class ScannerProtocolSessionTest extends TestCase
             private bool $initReturned = false;
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sent[] = $message; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 if (!$this->initReturned) {
@@ -639,6 +639,91 @@ final class ScannerProtocolSessionTest extends TestCase
             WorkerException::class,
         );
         assertSame(true, $process->lastTerminate);
+
+        // The cancel notification must carry the int scan id verbatim — not a
+        // stringified copy — so a type-strict worker can match the request.
+        $cancel = $channel->sent[count($channel->sent) - 1];
+        assertSame('cancel', $cancel['method']);
+        assertSame(['request_id' => 2], $cancel['params']);
+    }
+
+    public function testAbandonedScanGeneratorDrainsPendingResponseInsteadOfPoisoning(): void
+    {
+        // A consumer that stops iterating early must not leave the worker with
+        // an unread response frame; the generator's finally drains to the final
+        // response so the pooled session stays usable.
+        $channel = new class implements RpcChannelInterface {
+            /** @var list<array<string, mixed>> */
+            public array $queue = [];
+            public int $index = 0;
+
+            public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
+            public function send(array $message, ?callable $cancelled = null): void {}
+            public function readMessage(int $deadline, ?callable $cancelled = null): array
+            {
+                if ($this->index === 0) {
+                    $this->queue = [
+                        ['id' => 1, 'result' => [
+                            'id' => 'php-scanner',
+                            'version' => '1.0.0',
+                            'protocol_version' => Protocol::VERSION,
+                            'output_schema_version' => Protocol::OUTPUT_SCHEMA_VERSION,
+                            'languages' => ['php'],
+                            'file_extensions' => ['.php'],
+                            'capabilities' => [],
+                        ]],
+                        ['method' => 'scan/contribution', 'params' => [
+                            'owner_key' => 'test.knossos:file:src/Foo.php',
+                            'nodes' => [[
+                                'local_id' => 'n1',
+                                'kind' => 'class',
+                                'canonical_name' => 'Foo',
+                                'display_name' => 'Foo',
+                                'origin' => 'derived',
+                                'confidence' => 'possible',
+                                'evidence' => ['path' => 'src/Foo.php', 'start_line' => 1, 'end_line' => 100],
+                            ]],
+                            'edges' => [],
+                            'diagnostics' => [],
+                        ]],
+                        ['method' => 'scan/contribution', 'params' => [
+                            'owner_key' => 'test.knossos:file:src/Bar.php',
+                            'nodes' => [],
+                            'edges' => [],
+                            'diagnostics' => [],
+                        ]],
+                        ['id' => 2, 'result' => ['drained' => true]],
+                    ];
+                }
+                if ($this->index < count($this->queue)) {
+                    return $this->queue[$this->index++];
+                }
+                throw new WorkerException('WORKER_TIMEOUT', 'No more responses.');
+            }
+            public function stderr(): string { return ''; }
+        };
+
+        $process = new class implements ProcessSupervisorInterface {
+            public bool $closed = false;
+            public function start(): void {}
+            public function isRunning(): bool { return !$this->closed; }
+            public function stdin() { return fopen('php://temp', 'r+'); }
+            public function stdout() { return fopen('php://temp', 'r+'); }
+            public function stderr() { return fopen('php://temp', 'r+'); }
+            public function status(): array { return ['command' => '', 'pid' => 0, 'running' => !$this->closed, 'signaled' => false, 'stopped' => false, 'exitcode' => -1, 'termsig' => 0, 'stopsig' => 0]; }
+            public function close(bool $terminate): void { $this->closed = true; }
+        };
+
+        $session = new ScannerProtocolSession($process, $channel);
+
+        $generator = $session->scan(['path' => '/test']);
+        foreach ($generator as $_contribution) {
+            break; // abandon after the first contribution
+        }
+        unset($generator); // trigger the generator's finally
+
+        // The pending final frame was drained, so the worker is not poisoned.
+        assertSame(['drained' => true], $session->lastScanResult());
     }
 
     public function testScanThrowsWhenResultIsList(): void
@@ -647,7 +732,7 @@ final class ScannerProtocolSessionTest extends TestCase
             private int $readCount = 0;
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 ++$this->readCount;
@@ -698,7 +783,7 @@ final class ScannerProtocolSessionTest extends TestCase
             public array $sent = [];
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sent[] = $message; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array { return []; }
             public function stderr(): string { return ''; }
         };
@@ -729,7 +814,7 @@ final class ScannerProtocolSessionTest extends TestCase
             public array $sent = [];
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sent[] = $message; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => 1, 'result' => ['ok' => true]];
@@ -764,7 +849,7 @@ final class ScannerProtocolSessionTest extends TestCase
             public array $sent = [];
 
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void { $this->sent[] = $message; }
+            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 throw new WorkerException('WORKER_TIMEOUT', 'shutdown timeout');
@@ -800,7 +885,7 @@ final class ScannerProtocolSessionTest extends TestCase
         $channel = new class implements RpcChannelInterface {
             public int $requestCount = 0;
             public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message): void {}
+            public function send(array $message, ?callable $cancelled = null): void {}
             public function readMessage(int $deadline, ?callable $cancelled = null): array
             {
                 return ['id' => ++$this->requestCount, 'result' => [

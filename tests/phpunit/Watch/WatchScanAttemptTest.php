@@ -9,7 +9,9 @@ use Knossos\Query\ResultEnvelope;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Scan\ScanCancelledException;
+use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Watch\WatchScanAttempt;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -209,6 +211,57 @@ final class WatchScanAttemptTest extends TestCase
 
         assertSame(WatchScanAttempt::RETRYABLE, $attempt->outcome);
         assertSame(true, $attempt->isRetryable());
+    }
+
+    // ----- WorkerException classification by diagnostic code -----
+
+    /** @return list<array{string}> */
+    public static function transientWorkerCodes(): array
+    {
+        return [['WORKER_TIMEOUT'], ['WORKER_PIPE_BROKEN'], ['WORKER_IO_FAILED'], ['WORKER_EXITED']];
+    }
+
+    #[DataProvider('transientWorkerCodes')]
+    public function testTransientWorkerExceptionIsRetryable(string $code): void
+    {
+        $attempt = WatchScanAttempt::run(
+            self::throwingScanner(new WorkerException($code, 'transient worker fault')),
+            '/tmp/root',
+            'incremental',
+            new CancellationToken(),
+        );
+
+        assertSame(WatchScanAttempt::RETRYABLE, $attempt->outcome);
+        assertSame(true, $attempt->isRetryable());
+        assertSame('transient worker fault', $attempt->errorMessage);
+    }
+
+    /** @return list<array{string}> */
+    public static function permanentWorkerCodes(): array
+    {
+        return [
+            ['WORKER_START_FAILED'],
+            ['WORKER_PROTOCOL_VERSION_MISMATCH'],
+            ['WORKER_OUTPUT_SCHEMA_MISMATCH'],
+            ['WORKER_CAPABILITY_MISMATCH'],
+            ['WORKER_REQUEST_TOO_LARGE'],
+        ];
+    }
+
+    #[DataProvider('permanentWorkerCodes')]
+    public function testPermanentWorkerExceptionIsTerminal(string $code): void
+    {
+        $attempt = WatchScanAttempt::run(
+            self::throwingScanner(new WorkerException($code, 'permanent worker fault')),
+            '/tmp/root',
+            'incremental',
+            new CancellationToken(),
+        );
+
+        assertSame(WatchScanAttempt::TERMINAL, $attempt->outcome);
+        assertSame(true, $attempt->isTerminal());
+        assertSame(false, $attempt->isRetryable());
+        assertSame('permanent worker fault', $attempt->errorMessage);
     }
 
     // ----- outcome constants + shape -----

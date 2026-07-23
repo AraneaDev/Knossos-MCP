@@ -259,6 +259,40 @@ final class MigrationRunnerTest extends TestCase
         $pdo->exec('COMMIT');
     }
 
+    public function testNoTransactionMigrationRecordsVersionInsideItsOwnOpenTransaction(): void
+    {
+        $this->tempDir = sys_get_temp_dir() . '/knossos-migrations-' . uniqid('', true);
+        mkdir($this->tempDir, 0777, true);
+
+        // A no-transaction migration may leave its final transaction open for
+        // the runner to commit, so the schema change and its bookkeeping row
+        // commit atomically — a crash cannot leave a completed rebuild
+        // unrecorded and re-run it.
+        file_put_contents($this->tempDir . '/001_open_txn.sql', <<<'SQL'
+            -- migrate:no-transaction
+            PRAGMA foreign_keys = OFF;
+            BEGIN;
+            CREATE TABLE thing (id INTEGER PRIMARY KEY);
+            SQL);
+
+        $this->tempSqlite = sys_get_temp_dir() . '/knossos-mig-' . uniqid('', true) . '.sqlite';
+        $pdo = SqliteConnection::open($this->tempSqlite);
+
+        (new MigrationRunner($pdo, $this->tempDir))->migrate();
+
+        // The version was recorded and the runner committed the migration's own
+        // open transaction, so the created table is durable.
+        assertSame(['001_open_txn'], $this->appliedVersions($pdo));
+        assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM thing')->fetchColumn());
+        // The connection's foreign-key contract is restored even though the
+        // migration left its transaction open (PRAGMA is a no-op inside a txn).
+        assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
+        assertSame(false, $pdo->inTransaction());
+        // No lingering SQL-level transaction: a fresh one must start cleanly.
+        $pdo->exec('BEGIN');
+        $pdo->exec('COMMIT');
+    }
+
     public function testConstructorIsFinalAndReadonly(): void
     {
         $reflection = new \ReflectionClass(MigrationRunner::class);

@@ -94,12 +94,13 @@ final class ScannerProtocolSession
             'id' => $id,
             'method' => Protocol::METHOD_SCAN,
             'params' => $request,
-        ]);
+        ], $cancelled);
 
+        $completed = false;
         try {
             while (true) {
                 if ($cancelled !== null && $cancelled()) {
-                    $this->cancel((string) $id);
+                    $this->cancel($id);
                     $this->close(true);
                     throw new WorkerException('WORKER_CANCELLED', 'Scanner worker request was cancelled.');
                 }
@@ -119,15 +120,31 @@ final class ScannerProtocolSession
                     throw new WorkerException('WORKER_RESPONSE_INVALID', 'Worker scan result must be an object.');
                 }
                 $this->lastScanResult = $result;
+                $completed = true;
                 return;
             }
         } catch (WorkerException $error) {
             $this->close(true);
             throw $error;
+        } finally {
+            // If the caller abandons the generator before the final response
+            // (early break, unset, or an exception unwinding past it), the
+            // worker still holds an unread response frame that would fail the
+            // NEXT request on this pooled session with a protocol error. Drain
+            // it to the final response; if that cannot complete promptly,
+            // discard the worker so it is never reused in a poisoned state.
+            if (!$completed) {
+                $this->drainAbandonedScan($id);
+            }
         }
     }
 
-    public function cancel(string $requestId): void
+    /**
+     * @param int|string $requestId Sent verbatim so the id type stays
+     * consistent end-to-end: an int scan id must not be stringified, or a
+     * type-strict worker will never match the in-flight request.
+     */
+    public function cancel(int|string $requestId): void
     {
         if (!$this->process->isRunning()) {
             return;
@@ -138,6 +155,35 @@ final class ScannerProtocolSession
             'method' => Protocol::METHOD_CANCEL,
             'params' => ['request_id' => $requestId],
         ]);
+    }
+
+    private function drainAbandonedScan(int $id): void
+    {
+        if (!$this->process->isRunning()) {
+            return;
+        }
+
+        // Bounded budget: already-buffered frames drain in microseconds; a
+        // worker still computing must not stall generator destruction, so we
+        // fall back to closing it.
+        $deadline = hrtime(true) + 250_000_000;
+        try {
+            while (true) {
+                $message = $this->channel->readMessage($deadline);
+                if (!array_key_exists('id', $message)) {
+                    continue;
+                }
+                if (($message['id'] ?? null) === $id) {
+                    $result = $message['result'] ?? null;
+                    if (is_array($result) && !($result !== [] && array_is_list($result))) {
+                        $this->lastScanResult = $result;
+                    }
+                }
+                return;
+            }
+        } catch (Throwable) {
+            $this->close(true);
+        }
     }
 
     public function shutdown(): void

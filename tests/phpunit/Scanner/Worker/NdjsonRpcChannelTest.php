@@ -168,14 +168,85 @@ final class NdjsonRpcChannelTest extends TestCase
     public function testSendRejectsOversizedLine(): void
     {
         $process = $this->mockProcess();
-        // maxLineBytes must be >= 128; the JSON line must exceed it.
-        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128));
+        // The explicit request-frame limit (3rd ctor arg) caps outbound frames
+        // independently of the response line/output limits.
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128), 128);
         $channel->beginRequest();
 
-        assertThrows(
+        $error = captureThrows(
             static fn() => $channel->send(['data' => str_repeat('x', 200)]),
             WorkerException::class,
         );
+
+        assertSame('WORKER_REQUEST_TOO_LARGE', $error->diagnosticCode);
+    }
+
+    public function testSendAllowsRequestLargerThanResponseLineLimit(): void
+    {
+        // Request framing is independent of response framing: a request far
+        // above the (response) maxLineBytes cap is still written when the
+        // request-frame limit permits it, so big/first scans do not hard-fail.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel(
+            $process,
+            new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 1_000_000),
+            maxRequestLineBytes: 1_000_000,
+        );
+        $channel->beginRequest();
+
+        $payload = str_repeat('x', 4096); // ~4 KB, far above the 128-byte response cap
+        $channel->send(['data' => $payload]);
+
+        rewind($process->pipes[0]);
+        $written = stream_get_contents($process->pipes[0]);
+        assertSame(true, str_contains($written, $payload));
+        assertSame(true, str_ends_with($written, "\n"));
+    }
+
+    public function testSendThrowsCancelledWhenCallbackReturnsTrue(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+        $channel->beginRequest();
+
+        $error = captureThrows(
+            static fn() => $channel->send(['jsonrpc' => '2.0', 'method' => 'ping'], static fn(): bool => true),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_CANCELLED', $error->diagnosticCode);
+    }
+
+    public function testSendTimesOutWhenDeadlineElapsedAndPipeNeverDrains(): void
+    {
+        // A stdin that is never writable plus a short deadline must surface a
+        // bounded WORKER_TIMEOUT rather than blocking forever.
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if (!is_array($pair)) {
+            $this->markTestSkipped('stream_socket_pair is not available on this platform.');
+        }
+        stream_set_blocking($pair[0], false);
+        // Fill the socket buffer so it is not writable.
+        @fwrite($pair[0], str_repeat('x', 4_000_000));
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $pair[0];
+        $process->stdoutPipe = fopen('php://temp', 'r+'); // never readable data, but memory-ready
+        $process->stderrPipe = fopen('php://temp', 'r+');
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 1));
+        $channel->beginRequest();
+
+        $error = captureThrows(
+            static fn() => $channel->send(['data' => str_repeat('y', 8_000_000)]),
+            WorkerException::class,
+        );
+
+        // Either the buffer is genuinely full (TIMEOUT) or the peer state
+        // reports a broken pipe; both are bounded, non-deadlocking outcomes.
+        assertSame(true, in_array($error->diagnosticCode, ['WORKER_TIMEOUT', 'WORKER_PIPE_BROKEN'], true));
+
+        fclose($pair[1]);
     }
 
     public function testSendThrowsOnPipeBroken(): void
@@ -415,5 +486,36 @@ final class NdjsonRpcChannelTest extends TestCase
         );
 
         assertSame('WORKER_EXITED', $error->diagnosticCode);
+    }
+
+    public function testReadMessageThrowsExitedOnPartialLineWithoutBusySpin(): void
+    {
+        // A worker that crashes mid-line leaves a newline-less partial frame in
+        // the buffer. The old code required stdoutBuffer==='' to declare
+        // WORKER_EXITED, so this case busy-spun until the (long) timeout and
+        // then mislabelled the crash as WORKER_TIMEOUT. It must now surface
+        // WORKER_EXITED promptly, well inside a generous deadline.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 60_000));
+        $deadline = $channel->beginRequest();
+
+        // Partial frame already delivered on stdout (no trailing newline).
+        fwrite($process->pipes[1], '{"jsonrpc":"2.0","id":1,"resul');
+        fflush($process->pipes[1]);
+        rewind($process->pipes[1]);
+
+        // Worker has since exited (crashed).
+        $process->running = false;
+
+        $started = hrtime(true);
+        $error = captureThrows(
+            static fn() => $channel->readMessage($deadline),
+            WorkerException::class,
+        );
+        $elapsedMs = (hrtime(true) - $started) / 1_000_000;
+
+        assertSame('WORKER_EXITED', $error->diagnosticCode);
+        // Must not have spun for anywhere near the 60s deadline.
+        assertSame(true, $elapsedMs < 1_000);
     }
 }

@@ -48,6 +48,10 @@ final readonly class WatchService
             }
         };
 
+        // Snapshot the fingerprint BEFORE the initial scan (matching the poll
+        // loop's pre-snapshot ordering). Capturing it afterwards would silently
+        // miss every file changed while the initial scan was running.
+        $fingerprint = $this->fingerprint($root);
         $last = $this->scanner->scan($root, mode: 'auto', cancellation: $cancellation);
         $scans = 1;
         $incrementalScans = 0;
@@ -62,7 +66,6 @@ final readonly class WatchService
         $consecutiveFailures = 0;
         $retryNotBefore = null;
         $terminalReason = null;
-        $fingerprint = $this->fingerprint($root);
         $emit(['event' => 'ready', 'project_id' => $last->projectId, 'snapshot_id' => $last->snapshotId, 'files' => count($fingerprint)]);
 
         while (!$cancellation->isCancelled() && ($maxPolls === null || $polls < $maxPolls)) {

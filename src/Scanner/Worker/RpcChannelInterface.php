@@ -22,9 +22,16 @@ interface RpcChannelInterface
     /**
      * Serialise $message as NDJSON and write it to the channel.
      *
+     * The write is driven by the request deadline captured in
+     * {@see beginRequest()}: a large frame is streamed with a select loop
+     * that drains the worker's stdout/stderr between partial writes (so a
+     * worker blocked on its own output cannot deadlock the parent) and polls
+     * the optional cancellation callback.
+     *
      * @param array<string, mixed> $message
+     * @param callable(): bool|null $cancelled
      */
-    public function send(array $message): void;
+    public function send(array $message, ?callable $cancelled = null): void;
 
     /**
      * Read and parse one JSON-RPC message from the channel within the
