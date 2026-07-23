@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.4.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.3.0...v0.4.0) (2026-07-23)
+
+
+### Features
+
+* **config:** checked-in dead_code_suppressions honored by architecture_health ([45f9206](https://github.com/AraneaDev/Knossos-MCP/commit/45f920652c9d328e91bccc66e21d75d9d06ab008))
+* **mcp:** advertise and serve per-project resources (summary, boundaries, agent brief) ([f2c203e](https://github.com/AraneaDev/Knossos-MCP/commit/f2c203e1a5a3f9773edf93bbe53c64b5bd0183df))
+* **mcp:** boundary legend in compact responses and single dead-code uncertainty warning ([554deba](https://github.com/AraneaDev/Knossos-MCP/commit/554deba5b63f61789127a6dfc609cbdbe71e6f96))
+* **mcp:** honor a max_chars result budget on every read tool ([69d72a3](https://github.com/AraneaDev/Knossos-MCP/commit/69d72a325baf379073685ab348ee4b88f62e72a9))
+* **mcp:** opt-in refresh_if_stale rescans stale graphs before answering read tools ([2e6541c](https://github.com/AraneaDev/Knossos-MCP/commit/2e6541cee838a30626d5c0cb7b0163435e06a6ce))
+* **mcp:** orient and review_diff prompts ([3f8e053](https://github.com/AraneaDev/Knossos-MCP/commit/3f8e0534ff32a392c2e9f175b8f9b858eec7c6e5))
+* **query:** annotations shape dead-code candidates and component dossiers ([86544c6](https://github.com/AraneaDev/Knossos-MCP/commit/86544c6db797ad5f351dc7314082f5dba9a80bf0))
+* **query:** architecture_context optionally inlines RootGuard-contained source snippets ([858f69c](https://github.com/AraneaDev/Knossos-MCP/commit/858f69c94ee5fd118603528bfbda196d7fb32ba5))
+* **query:** exclude external and test-role nodes from hubs and hotspots by default ([bf72640](https://github.com/AraneaDev/Knossos-MCP/commit/bf726401f3d7caf5e6979a1dd662ceb8752e4a0a))
+* **query:** exclude interface-implementing methods from dead-code candidates and demote external-hierarchy methods ([9b5e577](https://github.com/AraneaDev/Knossos-MCP/commit/9b5e577c158a70d520dea5c848696752733cb706))
+* **query:** export_agent_brief renders a markdown orientation brief for agent memory files ([81b95f4](https://github.com/AraneaDev/Knossos-MCP/commit/81b95f431e635321b37b81ae06d4a042e4585596))
+* **query:** list_usages returns every usage occurrence with file:line evidence ([73524f5](https://github.com/AraneaDev/Knossos-MCP/commit/73524f5773ed246c5add27591b9fc5c85347c8a4))
+* **query:** review_diff composes change impact, policy, gate, and cycle review in one call ([491c63e](https://github.com/AraneaDev/Knossos-MCP/commit/491c63e2cfd036056a550c4974705c11c68ff6c2))
+* **query:** test_impact ranks test files that statically exercise a change ([ce47325](https://github.com/AraneaDev/Knossos-MCP/commit/ce47325f9f5a083d71162234d867972df68b1259))
+* **store:** durable component annotations with annotate_component and list_annotations tools ([34675b6](https://github.com/AraneaDev/Knossos-MCP/commit/34675b6780511c08fb231d01bbc5fe1f909b22db))
+
+
+### Bug Fixes
+
+* address CodeRabbit review on PR [#11](https://github.com/AraneaDev/Knossos-MCP/issues/11) ([1a7ab3c](https://github.com/AraneaDev/Knossos-MCP/commit/1a7ab3cdaca521b4eabb9f8c3dcb7533251319c1))
+* **cli:** wire the git working-tree provider into review-diff ([884b89d](https://github.com/AraneaDev/Knossos-MCP/commit/884b89de2e3700d86231ae93f25e66e320426d41))
+* **mcp:** enforce max_chars against the full serialized envelope and always surface unmet budgets ([5b32e33](https://github.com/AraneaDev/Knossos-MCP/commit/5b32e33db9c7368ae347415d1b05277ff6d896d7))
+* **mcp:** express BoundaryLegend list narrowing to phpstan ([c517132](https://github.com/AraneaDev/Knossos-MCP/commit/c5171328cd500f537c8f221122d6c2e345e1cd50))
+* **query:** make export_agent_brief max_chars a hard bound and prove section omission in tests ([fcc1e89](https://github.com/AraneaDev/Knossos-MCP/commit/fcc1e89bc7a4cee3f8ef575247de11f4e6714f0b))
+* **query:** refuse non-positive start lines in source excerpts; scope README parity claim to tools ([c0ba8eb](https://github.com/AraneaDev/Knossos-MCP/commit/c0ba8eb1438e2401c66afec42f0c89e489d204e2))
+* **query:** review_diff degrades cycle-scan failures and unions sub-check warnings and evidence ([f33e957](https://github.com/AraneaDev/Knossos-MCP/commit/f33e9578c877c6f3d6041d82df24187428894876))
+* **query:** scope ancestor metadata lookup by project in inheritedMethodContext ([1ad3363](https://github.com/AraneaDev/Knossos-MCP/commit/1ad336352a8ab8ae58002c97acfebc226eb29fbc))
+* scope node uniqueness by language and log MCP server lifecycle ([4d16cfc](https://github.com/AraneaDev/Knossos-MCP/commit/4d16cfc8189a94794e0acfb8c224155f94ae3ed9))
+* **test:** assert VERSION against version.txt instead of a release-breaking literal ([317e762](https://github.com/AraneaDev/Knossos-MCP/commit/317e76256b16d93fd63348f909231643d6e62b8b))
+
+
+### Performance Improvements
+
+* **scan:** skip graph rebuild and snapshot archiving when an incremental scan changed nothing ([1b75700](https://github.com/AraneaDev/Knossos-MCP/commit/1b757000971e53a003dba828c7cf5789b4e0e68e))
+* **store:** batch node and edge upserts during reconciliation ([f98f562](https://github.com/AraneaDev/Knossos-MCP/commit/f98f56224ac25c3552d1d4fa7a92bfd272411cd5))
+
 ## [0.3.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.2.0...v0.3.0) (2026-07-20)
 
 
