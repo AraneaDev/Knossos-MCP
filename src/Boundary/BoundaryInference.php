@@ -122,11 +122,20 @@ final class BoundaryInference
                 }
             }
             sort($members, SORT_STRING);
-            $displayName = $rule['display'] ?? $name;
+            $baseName = $rule['display'] ?? $name;
+            $displayName = $baseName;
+            $identityName = null;
             if (isset($rule['merged_names'])) {
+                // The merged-from list is display-only: appending it to $displayName must
+                // not perturb the boundary's stable id, or every scan whose merge
+                // composition shifts (e.g. a package.json added next to composer.json)
+                // would rename AND re-id the boundary, breaking persisted policy
+                // references. $identityName pins the id to the surviving primary rule's
+                // pre-suffix name.
                 $displayName .= ' (+' . implode(', ', $rule['merged_names']) . ')';
+                $identityName = $baseName;
             }
-            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], array_values(array_unique($members)));
+            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], array_values(array_unique($members)), $identityName);
         }
         return $facts;
     }

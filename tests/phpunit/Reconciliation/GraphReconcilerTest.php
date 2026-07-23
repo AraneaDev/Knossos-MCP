@@ -547,6 +547,35 @@ final class GraphReconcilerTest extends TestCase
         assertSame($this->repo->nodes[0][0], $this->repo->boundaryMemberships[0][2]);
     }
 
+    public function testReconcileDerivesBoundaryIdFromIdentityNameNotSuffixedDisplayName(): void
+    {
+        // The name carries a merged-from suffix, as BoundaryInference produces for a
+        // merged inferred boundary, but identityName holds the pre-suffix primary rule
+        // name. The persisted id must key off identityName so a merge-composition change
+        // (name changes) never re-ids the boundary.
+        $node = $this->minimalNode('php:class:App\\Foo');
+        $boundary = new BoundaryFact(
+            name: 'composer:vendor/app (+node:web-app)',
+            matcher: ['type' => 'path_prefix', 'value' => ''],
+            source: 'inferred',
+            nodeReferences: [$node->localId],
+            identityName: 'composer:vendor/app',
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$node])],
+            'boundaries' => [$boundary],
+        ]);
+        $reconciler = new GraphReconciler($this->repo);
+
+        $reconciler->reconcile($request);
+
+        $this->assertCount(1, $this->repo->boundaries);
+        $bArgs = $this->repo->boundaries[0];
+        assertSame(StableId::boundary(StableId::project('proj-id'), 'composer:vendor/app', 'inferred'), $bArgs[0]);
+        assertSame('composer:vendor/app (+node:web-app)', $bArgs[2]);
+    }
+
     public function testReconcileDeduplicatesBoundaryMembersWithinSameFact(): void
     {
         $node = $this->minimalNode('php:class:App\\Foo');
