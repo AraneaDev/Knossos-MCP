@@ -25,3 +25,4 @@ __pycache__/
 # Written to the project root by Chaos-MCP's per-file Infection runs.
 /infection.args.log
 /infection.out.log
+.audit-patches/
