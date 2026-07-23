@@ -103,4 +103,25 @@ final class FlowTest extends KnossosTestCase
         assertSame(0, $timed->data['bounds']['visited_states']);
         assertSame('time_limit', $timed->data['bounds']['truncation_reason']);
     }
+
+    #[Group('flow')]
+    public function testClassEndpointsExpandToContainedMethods(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $api = StableId::symbol($ids['project'], 'php', 'class', 'App\\Api');
+        $send = StableId::symbol($ids['project'], 'php', 'method', 'App\\Api::send');
+        $repository->saveNode($api, $ids['project'], 'php', 'class', 'App\\Api', 'Api', null, $ids['file'], 1, 20, 'ast', 'certain', [], 'php:file:src/Api.php', $ids['scan']);
+        $repository->saveNode($send, $ids['project'], 'php', 'method', 'App\\Api::send', 'send', null, $ids['file'], 5, 10, 'ast', 'certain', [], 'php:file:src/Api.php', $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $api, $send, 'contain'), $ids['project'], 'contains', $api, $send, $ids['file'], 1, 20, 'ast', 'certain', [], 'php:file:src/Api.php', $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $send, $ids['invoice'], 'construct'), $ids['project'], 'constructs', $send, $ids['invoice'], $ids['file'], 7, 7, 'ast', 'certain', [], 'php:file:src/Api.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $query = new ArchitectureQueryService($pdo);
+        // Class -> class, reachable only by descending Api into Api::send first.
+        $flow = $query->explainFlow($ids['project'], 'App\\Api', 'App\\InvoiceService');
+
+        assertSame(1, count($flow->data['paths']));
+        assertSame(1, count($flow->data['paths'][0]['hops']));
+        assertSame('constructs', $flow->data['paths'][0]['hops'][0]['kind']);
+    }
 }
