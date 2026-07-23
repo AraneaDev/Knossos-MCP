@@ -249,6 +249,33 @@ final class SqliteGraphRepositoryTest extends TestCase
         assertSame(['parent_id'], array_map('strval', $columns));
     }
 
+    public function testEdgesForeignKeyChildIndexesExistAfterMigration(): void
+    {
+        // Migration 012 adds the single-column FK indexes for edges.source_id
+        // and edges.target_id. Deleting a node runs an FK check against both
+        // columns; the (project_id, source_id, kind) composites cannot serve a
+        // bare source_id/target_id probe because project_id is their leftmost
+        // column, so each node delete was a full scan of the edges index —
+        // the measured cause of the ~24 s clear_graph reconciliation phase.
+        $indexes = $this->pdo
+            ->query("SELECT name FROM sqlite_master WHERE type = 'index'")
+            ->fetchAll(\PDO::FETCH_COLUMN);
+        $indexes = array_map('strval', $indexes);
+
+        $this->assertContains('edges_source_idx', $indexes);
+        $this->assertContains('edges_target_idx', $indexes);
+
+        $sourceColumns = $this->pdo
+            ->query("SELECT name FROM pragma_index_info('edges_source_idx')")
+            ->fetchAll(\PDO::FETCH_COLUMN);
+        $targetColumns = $this->pdo
+            ->query("SELECT name FROM pragma_index_info('edges_target_idx')")
+            ->fetchAll(\PDO::FETCH_COLUMN);
+
+        assertSame(['source_id'], array_map('strval', $sourceColumns));
+        assertSame(['target_id'], array_map('strval', $targetColumns));
+    }
+
     // ----- saveProject() + findProject() -----
 
     public function testSaveProjectInsertsAndUpsertsInPlace(): void
@@ -433,6 +460,77 @@ final class SqliteGraphRepositoryTest extends TestCase
         assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM files WHERE project_id = 'proj-clear'")->fetchColumn());
         assertSame(1, (int) $this->pdo->query("SELECT COUNT(*) FROM projects WHERE id = 'proj-clear'")->fetchColumn());
         assertSame(1, (int) $this->pdo->query("SELECT COUNT(*) FROM scans WHERE project_id = 'proj-clear'")->fetchColumn());
+    }
+
+    public function testClearProjectGraphLeavesOtherProjectsGraphIntact(): void
+    {
+        // clearProjectGraph must delete exactly the target project's rows — the
+        // FK-index optimization must not widen or narrow the delete's scope.
+        foreach ([['proj-keep', 'scan-keep'], ['proj-drop', 'scan-drop']] as [$projectId, $scanId]) {
+            $this->repository->saveProject(
+                id: $projectId,
+                name: 'Project ' . $projectId,
+                rootRealpath: '/projects/' . $projectId,
+                config: [],
+            );
+            $this->seedScan($projectId, $scanId);
+            $this->repository->saveNode(
+                id: 'node-a-' . $projectId,
+                projectId: $projectId,
+                language: 'php',
+                kind: 'class',
+                canonicalName: 'App\\A',
+                displayName: 'A',
+                parentId: null,
+                fileId: null,
+                startLine: 1,
+                endLine: 2,
+                origin: 'ast',
+                confidence: 'certain',
+                attributes: [],
+                ownerKey: 'php:core',
+                scanId: $scanId,
+            );
+            $this->repository->saveNode(
+                id: 'node-b-' . $projectId,
+                projectId: $projectId,
+                language: 'php',
+                kind: 'class',
+                canonicalName: 'App\\B',
+                displayName: 'B',
+                parentId: null,
+                fileId: null,
+                startLine: 1,
+                endLine: 2,
+                origin: 'ast',
+                confidence: 'certain',
+                attributes: [],
+                ownerKey: 'php:core',
+                scanId: $scanId,
+            );
+            $this->repository->saveEdge(
+                id: 'edge-' . $projectId,
+                projectId: $projectId,
+                kind: 'calls',
+                sourceId: 'node-a-' . $projectId,
+                targetId: 'node-b-' . $projectId,
+                fileId: null,
+                startLine: 1,
+                endLine: 1,
+                origin: 'ast',
+                confidence: 'certain',
+                attributes: [],
+                ownerKey: 'php:core',
+                scanId: $scanId,
+            );
+        }
+
+        $this->repository->clearProjectGraph('proj-drop');
+
+        assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM nodes WHERE project_id = 'proj-drop'")->fetchColumn());
+        assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM edges WHERE project_id = 'proj-drop'")->fetchColumn());
+        assertSame(2, (int) $this->pdo->query("SELECT COUNT(*) FROM nodes WHERE project_id = 'proj-keep'")->fetchColumn());
+        assertSame(1, (int) $this->pdo->query("SELECT COUNT(*) FROM edges WHERE project_id = 'proj-keep'")->fetchColumn());
     }
 
     // ----- saveFile() -----
