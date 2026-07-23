@@ -43,13 +43,16 @@
       "php -l tools/scanner-conformance"
     ],
     "test": "phpunit",
-    "check": [
+    "check:quick": [
       "@composer validate --strict",
       "composer --working-dir=workers/php validate --strict",
       "npm --prefix workers/typescript run check",
       "@lint",
       "@test"
     ]
+  },
+  "scripts-descriptions": {
+    "check:quick": "Fast local sanity check (validate + workers check + php -l + tests) ONLY. This is NOT the authoritative quality gate: it skips php-cs-fixer, phpstan, eslint/prettier/markdownlint, ruff/mypy, doc-drift checks, coverage floors, and mutation. Run `tools/quality fast` (or `tools/quality full`) for the real gate that CI enforces."
   },
   "config": {
     "sort-packages": true,

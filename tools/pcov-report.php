@@ -18,6 +18,52 @@ foreach (glob($coverageDirectory . '/pcov-*.json') ?: [] as $path) {
 }
 
 $prefixes = [$root . '/src/', $root . '/workers/php/src/', $root . '/bin/http-router.php'];
+
+// pcov only reports files that were actually loaded during the run. A source
+// file that no test ever executes never appears in the merged data and would
+// silently drop out of the aggregate -- inflating coverage by pretending the
+// gap does not exist. Enumerate every file that SHOULD be measured and inject
+// any that are missing as fully uncovered (every executable line at 0 hits), so
+// an unexecuted file shows as 0% and drags the aggregate/component floors down
+// where it belongs.
+$approxExecutableLines = static function (string $path): int {
+    $lines = file($path, FILE_IGNORE_NEW_LINES) ?: [];
+    $count = 0;
+    foreach ($lines as $line) {
+        $trimmed = trim($line);
+        if (
+            $trimmed === '' || $trimmed === '{' || $trimmed === '}' || $trimmed === '<?php'
+            || str_starts_with($trimmed, '//') || str_starts_with($trimmed, '*')
+            || str_starts_with($trimmed, '/*') || str_starts_with($trimmed, '#')
+            || str_starts_with($trimmed, 'declare(') || str_starts_with($trimmed, 'namespace ')
+            || str_starts_with($trimmed, 'use ')
+        ) {
+            continue;
+        }
+        ++$count;
+    }
+
+    return max(1, $count);
+};
+$expectedFiles = [$root . '/bin/http-router.php' => true];
+foreach ([$root . '/src', $root . '/workers/php/src'] as $sourceDirectory) {
+    if (!is_dir($sourceDirectory)) {
+        continue;
+    }
+    /** @var iterable<\SplFileInfo> $iterator */
+    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($sourceDirectory, FilesystemIterator::SKIP_DOTS));
+    foreach ($iterator as $fileInfo) {
+        if ($fileInfo->isFile() && $fileInfo->getExtension() === 'php') {
+            $expectedFiles[$fileInfo->getPathname()] = true;
+        }
+    }
+}
+foreach (array_keys($expectedFiles) as $expectedFile) {
+    if (isset($merged[$expectedFile]) || $expectedFile === $root . '/src/Application.php') {
+        continue;
+    }
+    $merged[$expectedFile] = array_fill(1, $approxExecutableLines($expectedFile), 0);
+}
 $covered = 0;
 $executable = 0;
 $files = [];

@@ -117,7 +117,7 @@ RUN apt-get update \
     && rm -rf /tmp/pcov /tmp/pcov.tar.gz /tmp/pcov.sha256 \
     && docker-php-ext-enable pcov \
     && python3 -m pip install --break-system-packages --no-cache-dir \
-        coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 ruff==0.15.12 \
+        coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 pytest==8.4.2 ruff==0.15.12 \
     && curl --fail --location --silent --show-error \
         --output /usr/local/bin/hadolint \
         https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64 \
@@ -184,6 +184,16 @@ COPY tests ./tests
 COPY tools ./tools
 COPY .github ./.github
 RUN chmod 0755 tools/quality tools/quality-container tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
+
+# The quality stage installs its tooling as root (Trivy, the docker socket, and
+# pcov all need it), but the permission-error tests -- DoctorService's
+# unwritable-data-dir path, MigrationRunner's unreadable-migration path, and
+# ProjectDiscoverer's permission-denied path -- skip themselves entirely when the
+# suite runs as root, so those branches would never execute. tools/quality drops
+# to this dedicated non-root user for `composer test` (see run_test_suite there),
+# which owns the tree so PHPUnit's cache and coverage output stay writable.
+RUN useradd --system --create-home --home-dir /home/knossos --shell /usr/sbin/nologin knossos \
+    && chown -R knossos:knossos /opt/knossos /home/knossos
 
 ENV KNOSSOS_QUALITY_CONTAINER=1
 ENV DOCKER_API_VERSION=1.44
