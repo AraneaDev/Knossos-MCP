@@ -325,4 +325,20 @@ final class ContributionDecoderTest extends TestCase
             WorkerException::class,
         );
     }
+
+    // ----- inner Throwable (e.g. invalid backed-enum case) wrapped as WORKER_CONTRIBUTION_INVALID -----
+
+    public function testDecodeWrapsInvalidOriginEnumValueAsContributionInvalid(): void
+    {
+        $data = self::minimalContributionData();
+        $data['nodes'][0]['origin'] = 'not-a-real-origin';
+
+        $error = captureThrows(
+            static fn() => ContributionDecoder::decode($data),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
+        $this->assertInstanceOf(\ValueError::class, $error->getPrevious());
+    }
 }

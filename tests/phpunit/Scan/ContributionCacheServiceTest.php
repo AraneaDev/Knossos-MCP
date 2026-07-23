@@ -123,4 +123,45 @@ final class ContributionCacheServiceTest extends TestCase
         assertSame(true, $partition instanceof ContributionPartition);
         assertSame(1, $partition->added);
     }
+
+    public function testPartitionRebuildsFromSourceWhenCachedPayloadIsNotAnArray(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $file = new \stdClass();
+        $file->relativePath = 'src/Bad.php';
+        $file->contentHash = 'hash1';
+        $cache = [
+            $manifest->id . "\0src/Bad.php" => [
+                'content_hash' => 'hash1',
+                'scanner_version' => $manifest->version,
+                'configuration_hash' => 'cfg',
+                // Valid JSON but decodes to a scalar, not an array -> treated as corrupt cache.
+                'payload_json' => '5',
+            ],
+        ];
+
+        $partition = $service->partition([$file], $manifest, 'cfg', $cache, false);
+
+        assertSame(0, count($partition->cached));
+        assertSame([$file], $partition->filesToScan);
+        assertSame(1, $partition->changed);
+    }
+
+    public function testEntriesForScannedKeepsCacheEntryWhenFileLacksAbsolutePath(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        // Non-DiscoveredFile input (no absolutePath/contentHash pair available for
+        // re-fingerprinting) — verification is skipped and the entry is kept.
+        $file = new \stdClass();
+        $file->relativePath = 'src/NoAbsolutePath.php';
+        $file->contentHash = 'abc123';
+        $contribution = new ScanContribution($manifest->id . ':file:src/NoAbsolutePath.php');
+
+        $result = $service->entriesForScanned([$contribution], [$file], $manifest, 'cfg');
+
+        assertSame(1, count($result['contributions']));
+        assertSame(1, count($result['cache_entries']));
+    }
 }
