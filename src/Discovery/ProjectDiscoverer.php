@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Discovery;
 
 use DirectoryIterator;
+use Knossos\Scan\CancellationToken;
 use Throwable;
 
 final readonly class ProjectDiscoverer
@@ -18,7 +19,7 @@ final readonly class ProjectDiscoverer
         $this->ignoreMatcher = new IgnoreMatcher($config->ignorePatterns);
     }
 
-    public function discover(string $requestedRoot): DiscoveryResult
+    public function discover(string $requestedRoot, ?CancellationToken $cancellation = null): DiscoveryResult
     {
         $root = $this->rootGuard->resolve($requestedRoot);
         $files = [];
@@ -26,6 +27,7 @@ final readonly class ProjectDiscoverer
         $diagnostics = [];
         $stack = [$root];
         $inputCount = 0;
+        $seen = 0;
 
         while ($stack !== []) {
             $directory = array_pop($stack);
@@ -46,6 +48,13 @@ final readonly class ProjectDiscoverer
                     continue;
                 }
 
+                // Discovery walks and hashes up to maxFiles entries — the longest
+                // non-worker stage. Poll cancellation periodically so a client's
+                // notifications/cancelled is observable here, not just around RPCs.
+                if ($cancellation !== null && (++$seen % 512) === 0) {
+                    $cancellation->throwIfCancelled();
+                }
+
                 $absolute = str_replace('\\', '/', $entry->getPathname());
                 $relative = $this->relative($root, $absolute);
                 $configurationFile = in_array(strtolower(basename($relative)), ['knossos.json', 'knossos.jsonc'], true);
@@ -53,45 +62,63 @@ final readonly class ProjectDiscoverer
                     continue;
                 }
 
-                if ($entry->isLink()) {
-                    $target = realpath($absolute);
-                    $escapes = $target === false || !RootGuard::contains($root, str_replace('\\', '/', $target));
+                // Every stat-dependent probe below (isLink/isDir/isFile/getSize/getMTime)
+                // throws RuntimeException when the entry vanishes mid-walk (a concurrent
+                // build deleting a temp file). Treat that as an unreadable file — emit a
+                // diagnostic and keep going rather than failing the whole scan.
+                try {
+                    if ($entry->isLink()) {
+                        $target = realpath($absolute);
+                        $escapes = $target === false || !RootGuard::contains($root, str_replace('\\', '/', $target));
+                        $diagnostics[] = new DiscoveryDiagnostic(
+                            'warning',
+                            $escapes ? 'DISCOVERY_SYMLINK_ESCAPE' : 'DISCOVERY_SYMLINK_SKIPPED',
+                            $escapes
+                                ? 'Symlink target escapes the project root and was rejected.'
+                                : 'Symlink was skipped because discovery does not follow symlinks.',
+                            $relative,
+                        );
+                        continue;
+                    }
+
+                    if ($entry->isDir()) {
+                        $stack[] = $absolute;
+                        continue;
+                    }
+                    if (!$entry->isFile()) {
+                        continue;
+                    }
+
+                    $language = self::languageFor($relative);
+                    $unitKind = self::unitKindFor($relative);
+                    if ($language === null && $unitKind === null) {
+                        continue;
+                    }
+
+                    ++$inputCount;
+                    if ($inputCount > $this->config->maxFiles) {
+                        throw new DiscoveryException(sprintf('Discovery file limit exceeded (%d).', $this->config->maxFiles));
+                    }
+
+                    $size = $entry->getSize();
+                    if ($size > $this->config->maxFileBytes) {
+                        $diagnostics[] = new DiscoveryDiagnostic(
+                            'warning',
+                            'DISCOVERY_FILE_TOO_LARGE',
+                            sprintf('File exceeds the %d-byte discovery limit.', $this->config->maxFileBytes),
+                            $relative,
+                        );
+                        continue;
+                    }
+
+                    $mtime = max(0, $entry->getMTime());
+                } catch (DiscoveryException $error) {
+                    throw $error;
+                } catch (Throwable $error) {
                     $diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
-                        $escapes ? 'DISCOVERY_SYMLINK_ESCAPE' : 'DISCOVERY_SYMLINK_SKIPPED',
-                        $escapes
-                            ? 'Symlink target escapes the project root and was rejected.'
-                            : 'Symlink was skipped because discovery does not follow symlinks.',
-                        $relative,
-                    );
-                    continue;
-                }
-
-                if ($entry->isDir()) {
-                    $stack[] = $absolute;
-                    continue;
-                }
-                if (!$entry->isFile()) {
-                    continue;
-                }
-
-                $language = self::languageFor($relative);
-                $unitKind = self::unitKindFor($relative);
-                if ($language === null && $unitKind === null) {
-                    continue;
-                }
-
-                ++$inputCount;
-                if ($inputCount > $this->config->maxFiles) {
-                    throw new DiscoveryException(sprintf('Discovery file limit exceeded (%d).', $this->config->maxFiles));
-                }
-
-                $size = $entry->getSize();
-                if ($size > $this->config->maxFileBytes) {
-                    $diagnostics[] = new DiscoveryDiagnostic(
-                        'warning',
-                        'DISCOVERY_FILE_TOO_LARGE',
-                        sprintf('File exceeds the %d-byte discovery limit.', $this->config->maxFileBytes),
+                        'DISCOVERY_FILE_UNREADABLE',
+                        sprintf('File could not be inspected: %s', $error->getMessage()),
                         $relative,
                     );
                     continue;
@@ -115,7 +142,7 @@ final readonly class ProjectDiscoverer
                         $absolute,
                         $language,
                         $size,
-                        max(0, $entry->getMTime()),
+                        $mtime,
                         $contentHash,
                         $fingerprint->lineCount,
                     );
