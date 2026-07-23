@@ -14,6 +14,8 @@ final class LaravelTraversalContext
     /** @var list<string> */
     private array $callables = [];
 
+    public function __construct(private readonly string $relativePath = '') {}
+
     public function enterNode(Node $node): void
     {
         if ($node instanceof Stmt\ClassLike) {
@@ -47,6 +49,15 @@ final class LaravelTraversalContext
 
     private function declarationName(Stmt\ClassLike $node): string
     {
-        return isset($node->namespacedName) ? $node->namespacedName->toString() : ($node->name?->toString() ?? '{anonymous}');
+        if (isset($node->namespacedName)) {
+            return $node->namespacedName->toString();
+        }
+        // Match the core FactCollector's path:line scheme so a Laravel-context
+        // anonymous class id resolves to the same node instead of dangling.
+        if ($node instanceof Stmt\Class_ && $node->name === null) {
+            return sprintf('{anonymous}@%s:%d', $this->relativePath, max(1, $node->getStartLine()));
+        }
+
+        return $node->name?->toString() ?? '{anonymous}';
     }
 }

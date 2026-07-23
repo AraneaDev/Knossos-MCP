@@ -93,6 +93,7 @@ export class TypeScriptScanner {
         );
         const requestedSet = new Set(requested.map((file) => normalize(file)));
         const configPaths = configFilesForScan(root, params.config_files);
+        const maxFileBytes = maxFileBytesFrom(params.limits);
         const emitted = new Set();
         let programs = 0;
         let programsReused = 0;
@@ -101,7 +102,12 @@ export class TypeScriptScanner {
             const parsed = parseConfig(root, configPath);
             const key = `${root}\0${configPath}`;
             const oldProgram = this.programCache.get(key);
-            const program = createRestrictedProgram(root, parsed, oldProgram);
+            const program = createRestrictedProgram(
+                root,
+                parsed,
+                oldProgram,
+                maxFileBytes,
+            );
             this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
             this.#emitProgram(root, program, requestedSet, emitted, emit);
@@ -131,7 +137,12 @@ export class TypeScriptScanner {
             };
             const key = `${root}\0<fallback>`;
             const oldProgram = this.programCache.get(key);
-            const program = createRestrictedProgram(root, parsed, oldProgram);
+            const program = createRestrictedProgram(
+                root,
+                parsed,
+                oldProgram,
+                maxFileBytes,
+            );
             this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
             this.#emitProgram(root, program, requestedSet, emitted, emit);
@@ -171,14 +182,43 @@ export class TypeScriptScanner {
                 continue;
             }
 
-            const collector = new FactCollector(root, sourceFile, checker);
-            collector.collect();
-            emit({
-                owner_key: `knossos.typescript:file:${relative}`,
-                nodes: collector.nodes,
-                edges: collector.edges,
-                diagnostics: diagnosticsByFile.get(relative) ?? [],
-            });
+            // Isolate per-file collection: a single adversarial/minified file can
+            // overflow the visitor recursion (RangeError). One bad file must
+            // degrade to a diagnostic, not discard facts for every other file in
+            // the request.
+            let contribution;
+            try {
+                const collector = new FactCollector(root, sourceFile, checker);
+                collector.collect();
+                contribution = {
+                    owner_key: `knossos.typescript:file:${relative}`,
+                    nodes: collector.nodes,
+                    edges: collector.edges,
+                    diagnostics: diagnosticsByFile.get(relative) ?? [],
+                };
+            } catch (error) {
+                contribution = {
+                    owner_key: `knossos.typescript:file:${relative}`,
+                    nodes: [],
+                    edges: [],
+                    diagnostics: [
+                        {
+                            severity: "error",
+                            code: "TS_INTERNAL_ERROR",
+                            message:
+                                error instanceof Error
+                                    ? error.message
+                                    : String(error),
+                            evidence: {
+                                path: relative,
+                                start_line: 1,
+                                end_line: 1,
+                            },
+                        },
+                    ],
+                };
+            }
+            emit(contribution);
             emitted.add(relative);
         }
     }
@@ -645,7 +685,12 @@ function parseConfig(root, configPath) {
     return parsed;
 }
 
-function createRestrictedProgram(root, parsed, oldProgram = undefined) {
+function createRestrictedProgram(
+    root,
+    parsed,
+    oldProgram = undefined,
+    maxFileBytes = 2_000_000,
+) {
     // Architecture scanning only needs diagnostics for the project's own
     // sources, not for the internals of declaration files. Type-checking the
     // full .d.ts closure of heavy dependencies (e.g. vitest, @types/node pulled
@@ -667,6 +712,11 @@ function createRestrictedProgram(root, parsed, oldProgram = undefined) {
         shouldCreateNewSourceFile,
     ) => {
         if (!allowedCompilerPath(root, fileName)) return undefined;
+        // The per-file byte cap is enforced on requested files, but the program
+        // also pulls in import-reachable and included sources. Guard those too so
+        // one giant generated file (e.g. a multi-MB bundled `.d.ts`) is never
+        // fully parsed, bounding peak memory.
+        if (exceedsByteCap(fileName, maxFileBytes)) return undefined;
         return getSourceFile(
             fileName,
             languageVersion,
@@ -677,7 +727,9 @@ function createRestrictedProgram(root, parsed, oldProgram = undefined) {
     host.fileExists = (file) =>
         allowedCompilerPath(root, file) && ts.sys.fileExists(file);
     host.readFile = (file) =>
-        allowedCompilerPath(root, file) ? ts.sys.readFile(file) : undefined;
+        allowedCompilerPath(root, file) && !exceedsByteCap(file, maxFileBytes)
+            ? ts.sys.readFile(file)
+            : undefined;
     return ts.createProgram({
         rootNames: parsed.fileNames,
         options,
@@ -789,10 +841,12 @@ function declarationName(node, sourceFile) {
             ts.isFunctionDeclaration(node)) &&
         !node.name
     ) {
-        const line =
-            sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile))
-                .line + 1;
-        return `{anonymous}@${line}`;
+        // Include the column so minified single-line bundles don't collapse
+        // every anonymous entity onto the same `@line` key.
+        const position = sourceFile.getLineAndCharacterOfPosition(
+            node.getStart(sourceFile),
+        );
+        return `{anonymous}@${position.line + 1}:${position.character + 1}`;
     }
     return null;
 }
@@ -837,18 +891,34 @@ function memberDeclaration(node) {
 }
 
 function canonicalForDeclaration(declaration, relative) {
-    const names = [];
-    let current = declaration;
+    // Mirror the container stack used when the node is DECLARED (see
+    // `declaration()`): only class/interface/module/function/method ancestors
+    // contribute to the canonical path. Climbing every named ancestor (variable
+    // declarations, property assignments, class expressions bound to a const)
+    // built reference targets that no declared node ever emitted, so calls /
+    // constructs / extends edges to members reached through named variables or
+    // object literals dangled. Restricting to containers makes the reference
+    // canonical identical to the declaration canonical.
+    const sourceFile = declaration.getSourceFile();
+    const ownName = declarationName(declaration, sourceFile);
+    const containers = [];
+    let current = declaration.parent;
     while (current && !ts.isSourceFile(current)) {
-        const name = declarationName(current, declaration.getSourceFile());
-        if (name !== null) names.unshift(name);
+        if (containerDeclaration(current)) {
+            const name = declarationName(current, sourceFile);
+            if (name !== null) containers.unshift(name);
+        }
         current = current.parent;
     }
-    if (memberDeclaration(declaration) && names.length >= 2) {
-        const member = names.pop();
-        return `${relative}#${names.join(".")}::${member}`;
+    const containerPath =
+        containers.length > 0
+            ? `${relative}#${containers.join(".")}`
+            : relative;
+    if (memberDeclaration(declaration)) {
+        return `${containerPath}::${ownName ?? "{anonymous}"}`;
     }
-    return `${relative}#${names.join(".")}`;
+    const prefix = containers.length > 0 ? `${containers.join(".")}.` : "";
+    return `${relative}#${prefix}${ownName ?? ""}`;
 }
 
 function callableKind(declaration) {
@@ -907,6 +977,25 @@ function configFilesForScan(root, requested) {
     return new TypeScriptScanner().discover({ root }).config_files;
 }
 
+function maxFileBytesFrom(limits) {
+    return Number.isInteger(limits?.max_file_bytes)
+        ? limits.max_file_bytes
+        : 2_000_000;
+}
+
+// Default-library declaration files are exempt: skipping one would break type
+// resolution for every file. Only project sources under the root are capped.
+function exceedsByteCap(fileName, maxFileBytes) {
+    const normalized = normalize(path.resolve(fileName));
+    const defaultLib = normalize(path.dirname(ts.getDefaultLibFilePath({})));
+    if (contains(defaultLib, normalized)) return false;
+    try {
+        return fs.statSync(normalized).size > maxFileBytes;
+    } catch {
+        return false;
+    }
+}
+
 function validateRequestedFiles(root, files, limits = {}) {
     if (
         !Array.isArray(files) ||
@@ -919,9 +1008,7 @@ function validateRequestedFiles(root, files, limits = {}) {
     const maxFiles = Number.isInteger(limits?.max_files)
         ? limits.max_files
         : 100_000;
-    const maxFileBytes = Number.isInteger(limits?.max_file_bytes)
-        ? limits.max_file_bytes
-        : 2_000_000;
+    const maxFileBytes = maxFileBytesFrom(limits);
     if (maxFiles < 1 || maxFileBytes < 1 || files.length > maxFiles)
         throw new Error("TypeScript scan limits are invalid or exceeded.");
 
@@ -996,7 +1083,15 @@ function normalize(value) {
 }
 
 function walk(root, directory, onFile) {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    let entries;
+    try {
+        entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+        // An unreadable directory (EACCES/EPERM) must not fail the whole
+        // discover/scan walk; skip it and continue, matching Python's os.walk.
+        return;
+    }
+    for (const entry of entries) {
         if (EXCLUDED_DIRECTORIES.has(entry.name)) continue;
         const absolute = path.join(directory, entry.name);
         const relative = normalize(path.relative(root, absolute));

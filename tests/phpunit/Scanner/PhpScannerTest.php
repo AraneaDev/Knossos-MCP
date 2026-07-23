@@ -479,6 +479,161 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     #[Group('php-scanner')]
+    public function testPhpWorkerSkipsPathologicallyDeepFilesWithADiagnosticInsteadOfAFatal(): void
+    {
+        // A deeply nested literal would exhaust the native stack during the
+        // recursive NameResolver/collector traversal (an uncatchable fatal that
+        // corrupts the NDJSON channel). The depth pre-check skips it cleanly.
+        $root = sys_get_temp_dir() . '/knossos-php-deep-' . bin2hex(random_bytes(6));
+        if (!mkdir($root, 0o700, true)) {
+            throw new \RuntimeException('Unable to create deep PHP fixture.');
+        }
+        $nesting = 700;
+        file_put_contents(
+            $root . '/Deep.php',
+            "<?php\n\$x = " . str_repeat('[', $nesting) . '1' . str_repeat(']', $nesting) . ";\n",
+        );
+        try {
+            $client = $this->phpWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['Deep.php']]));
+            $contribution = $contributions[0];
+            assertSame([], $contribution->nodes);
+            assertSame([], $contribution->edges);
+            assertSame('PHP_AST_TOO_DEEP', $contribution->diagnostics[0]->code);
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/Deep.php');
+            @rmdir($root);
+        }
+    }
+
+    #[Group('php-scanner')]
+    public function testPhpWorkerDegradesNonUtf8IdentifiersInsteadOfAbortingTheBatch(): void
+    {
+        // A class name carrying a raw ISO-8859-1 byte (0xE9) is valid on ext4 and
+        // a legal PHP identifier, but invalid UTF-8. Without the substitute flag,
+        // json_encode throws and aborts the whole request mid-stream.
+        $root = sys_get_temp_dir() . '/knossos-php-utf8-' . bin2hex(random_bytes(6));
+        if (!mkdir($root, 0o700, true)) {
+            throw new \RuntimeException('Unable to create non-UTF-8 PHP fixture.');
+        }
+        file_put_contents($root . '/Latin.php', "<?php\nnamespace Fx;\nclass Caf\xE9 {}\n");
+        try {
+            $client = $this->phpWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['Latin.php']]));
+            assertSame(1, count($contributions));
+            $classNodes = array_values(array_filter(
+                $contributions[0]->nodes,
+                fn(NodeFact $n): bool => $n->kind === 'class',
+            ));
+            assertSame(1, count($classNodes));
+            // The bad byte degraded to U+FFFD rather than throwing a JsonException.
+            assertContains("\u{FFFD}", $classNodes[0]->canonicalName);
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/Latin.php');
+            @rmdir($root);
+        }
+    }
+
+    #[Group('php-scanner')]
+    public function testPhpWorkerLabelsFlowInferredCallsProbableAndInvalidatesReassignedVariables(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-php-flow-' . bin2hex(random_bytes(6));
+        if (!mkdir($root, 0o700, true)) {
+            throw new \RuntimeException('Unable to create flow PHP fixture.');
+        }
+        file_put_contents($root . '/Flow.php', <<<'PHP'
+        <?php
+
+        namespace Fx;
+
+        class A
+        {
+            public function m(): void {}
+        }
+
+        class B
+        {
+            public function run(): void
+            {
+                $x = new A();
+                $x->m();
+                $y = new A();
+                $y = self::make();
+                $y->m();
+            }
+
+            public static function make(): A
+            {
+                return new A();
+            }
+        }
+        PHP);
+        try {
+            $client = $this->phpWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['Flow.php']]));
+            $contribution = $contributions[0];
+
+            $callsToAm = array_values(array_filter(
+                $contribution->edges,
+                fn(EdgeFact $e): bool => $e->kind === 'calls'
+                    && $e->sourceReference === 'php:method:Fx\\B::run'
+                    && $e->targetReference === 'php:method:Fx\\A::m',
+            ));
+            // Only the live `$x` produces the edge; the reassigned `$y` does not.
+            assertSame(1, count($callsToAm));
+            // The `$x = new A()` flow inference is probable, not certain.
+            assertSame('probable', $callsToAm[0]->confidence->value);
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/Flow.php');
+            @rmdir($root);
+        }
+    }
+
+    #[Group('php-scanner')]
+    public function testPhpWorkerResetsRequestIdSoMalformedJsonIsNotAttributedToThePriorRequest(): void
+    {
+        // A valid request followed by a malformed line: the error frame must carry
+        // a null id, not the previous request's id (verified via raw protocol).
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $responses = $this->runPhpWorkerProtocol([
+            json_encode(['jsonrpc' => '2.0', 'id' => 7, 'method' => 'initialize', 'params' => (object) []], JSON_THROW_ON_ERROR),
+            'not-json',
+            json_encode(['jsonrpc' => '2.0', 'id' => 9, 'method' => 'shutdown', 'params' => (object) []], JSON_THROW_ON_ERROR),
+        ], $root);
+        $errors = array_values(array_filter($responses, fn(array $frame): bool => isset($frame['error'])));
+        assertSame(1, count($errors));
+        assertSame(null, $errors[0]['id']);
+    }
+
+    /** @param list<string> $messages @return list<array<string, mixed>> */
+    private function runPhpWorkerProtocol(array $messages, string $root): array
+    {
+        $command = [PHP_BINARY, self::repositoryRoot() . '/workers/php/bin/worker'];
+        $pipes = [];
+        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        if (!is_resource($process)) {
+            throw new \RuntimeException('Unable to start PHP worker protocol fixture.');
+        }
+        foreach ($messages as $message) {
+            fwrite($pipes[0], $message . "\n");
+        }
+        fclose($pipes[0]);
+        $stdout = (string) stream_get_contents($pipes[1]);
+        stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        proc_close($process);
+
+        return array_map(
+            static fn(string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
+            array_values(array_filter(explode("\n", trim($stdout)))),
+        );
+    }
+
+    #[Group('php-scanner')]
     public function testPhpWorkerExtractsSymfonyAttributeFacts(): void
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/symfony';

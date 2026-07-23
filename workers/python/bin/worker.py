@@ -63,12 +63,103 @@ def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
     return absolute, relative.as_posix()
 
 
-def module_name(relative: str) -> str:
+def module_name(relative: str, strip: int = 0) -> str:
     path = PurePosixPath(relative)
-    parts = list(path.with_suffix("").parts)
-    if parts[-1] == "__init__":
+    parts = list(path.with_suffix("").parts)[strip:]
+    if parts and parts[-1] == "__init__":
         parts.pop()
     return ".".join(parts) or "__root__"
+
+
+class ProjectModuleIndex:
+    """Filesystem-backed, batch-independent module resolution.
+
+    Import and reference targets must be identical no matter how a scan request
+    was chunked, so resolution is grounded in the project's on-disk layout — not
+    in whichever files happen to share the current batch. Source roots (bare root
+    plus non-package top-level directories such as ``src/``) are detected once,
+    and each referenced module's top-level declarations are parsed lazily and
+    memoized. Only files that live under the validated root and stay within the
+    byte cap are read.
+    """
+
+    def __init__(self, root: Path, max_bytes: int) -> None:
+        self.root = root
+        self.max_bytes = max_bytes
+        self.prefixes = self._source_root_prefixes()
+        self._cache: dict[str, dict[str, str]] = {}
+
+    def _source_root_prefixes(self) -> list[tuple[str, ...]]:
+        prefixes: list[tuple[str, ...]] = [()]
+        try:
+            for child in sorted(self.root.iterdir()):
+                if child.name in EXCLUDED or not child.is_dir():
+                    continue
+                if not (child / "__init__.py").is_file():
+                    prefixes.append((child.name,))
+        except OSError:
+            pass
+        return prefixes
+
+    def module_for(self, relative: str) -> str:
+        parts = PurePosixPath(relative).parts
+        best: tuple[str, ...] = ()
+        for prefix in self.prefixes:
+            if len(prefix) < len(parts) and parts[: len(prefix)] == prefix and len(prefix) > len(best):
+                best = prefix
+        return module_name(relative, len(best))
+
+    def module_file(self, module: str) -> Path | None:
+        parts = module.split(".")
+        if not parts or "" in parts:
+            return None
+        for prefix in self.prefixes:
+            base = self.root.joinpath(*prefix).joinpath(*parts)
+            # Prefer the package (``mod/__init__.py``) over a same-named module
+            # (``mod.py``) so a colliding pair resolves to a single stable id.
+            for candidate in (base / "__init__.py", base.with_suffix(".py")):
+                if self._is_project_file(candidate):
+                    return candidate
+        return None
+
+    def _is_project_file(self, path: Path) -> bool:
+        try:
+            if not path.is_file():
+                return False
+            resolved = path.resolve()
+            return resolved.is_relative_to(self.root) and resolved.stat().st_size <= self.max_bytes
+        except OSError:
+            return False
+
+    def module_declarations(self, module: str) -> dict[str, str]:
+        cached = self._cache.get(module)
+        if cached is not None:
+            return cached
+        declarations: dict[str, str] = {}
+        path = self.module_file(module)
+        if path is not None:
+            try:
+                tree = ast.parse(path.read_bytes())
+                for child in tree.body:
+                    if isinstance(child, ast.ClassDef):
+                        declarations[child.name] = ref("class", f"{module}.{child.name}")
+                    elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        declarations[child.name] = ref("function", f"{module}.{child.name}")
+            except (SyntaxError, ValueError, OSError, RecursionError):
+                declarations = {}
+        self._cache[module] = declarations
+        return declarations
+
+    def collides(self, absolute: Path, is_package: bool) -> bool:
+        """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id."""
+        try:
+            if is_package:
+                competitor = absolute.parent.with_suffix(".py")
+            else:
+                competitor = absolute.with_suffix("") / "__init__.py"
+            return competitor.is_file()
+        except OSError:
+            return False
 
 
 def ref(kind: str, canonical: str) -> str:
@@ -409,12 +500,19 @@ class DjangoFactEnricher:
 class PythonAstFactCollector(ast.NodeVisitor):
     """Coordinate one AST traversal and delegate fact enrichment."""
 
-    def __init__(self, relative: str, tree: ast.Module, declarations: dict[str, dict[str, str]]) -> None:
+    def __init__(
+        self,
+        relative: str,
+        tree: ast.Module,
+        index: ProjectModuleIndex,
+        module_collision: bool = False,
+    ) -> None:
         self.relative = relative
-        self.module = module_name(relative)
+        self.index = index
+        self.module = index.module_for(relative)
         self.is_package = PurePosixPath(relative).stem == "__init__"
+        self.module_collision = module_collision
         self.tree = tree
-        self.declarations = declarations
         self.aliases: dict[str, str] = {}
         self.containers: list[tuple[str, str, str]] = []
         self.local_function_scopes: list[dict[str, str]] = []
@@ -432,6 +530,13 @@ class PythonAstFactCollector(ast.NodeVisitor):
             package = self.module
             self.facts.add_node(ref("package", package), "package", package, package.split(".")[-1], self.tree)
             self.facts.add_edge("contains", ref("package", package), self.module_id, self.tree)
+        if self.module_collision:
+            self.facts.add_diagnostic(
+                "PY_MODULE_ID_COLLISION",
+                f"Module id '{self.module}' is shared by a module file and a package; "
+                "the package (__init__.py) owns it.",
+                self.tree,
+            )
         self.visit(self.tree)
         return self.facts.result()
 
@@ -445,7 +550,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
                     return scope[name]
         if name in self.aliases:
             return self.aliases[name]
-        local = self.declarations.get(self.module, {}).get(name)
+        local = self.index.module_declarations(self.module).get(name)
         if local:
             return local
         if "." in name:
@@ -453,7 +558,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
             base = self.aliases.get(first)
             if base and base.startswith("py:module:"):
                 module = base.removeprefix("py:module:")
-                return self.declarations.get(module, {}).get(rest, ref(hint, f"{module}.{rest}"))
+                return self.index.module_declarations(module).get(rest, ref(hint, f"{module}.{rest}"))
         return None
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -468,7 +573,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         for alias in node.names:
             if alias.name == "*":
                 continue
-            target = self.declarations.get(module, {}).get(alias.name, ref("external_symbol", f"{module}.{alias.name}"))
+            target = self.index.module_declarations(module).get(
+                alias.name, ref("external_symbol", f"{module}.{alias.name}")
+            )
             self.aliases[alias.asname or alias.name] = target
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -586,44 +693,62 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     max_bytes = int(limits.get("max_file_bytes", 2_000_000))
     if not isinstance(files, list) or len(files) > max_files:
         raise ValueError("Python scan files must be a bounded list.")
-    parsed: list[tuple[str, ast.Module | None, SyntaxError | None]] = []
-    declarations: dict[str, dict[str, str]] = {}
-    for value in files:
-        absolute, relative = safe_file(root, value, max_bytes)
+
+    # Validate every path and byte cap up front so an unsafe or oversized input
+    # aborts the request before any partial contribution is streamed.
+    resolved = [safe_file(root, value, max_bytes) for value in files]
+    resolved.sort(key=lambda item: item[1])
+
+    index = ProjectModuleIndex(root, max_bytes)
+    for absolute, relative in resolved:
+        # Parse and collect one file at a time and release its tree before the
+        # next, so peak memory stays bounded by the largest single file rather
+        # than the whole batch. Each file is isolated: a syntax error, an
+        # oversized recursion, or an unexpected fault degrades to a per-file
+        # diagnostic and never discards facts for the other inputs.
         try:
-            tree = ast.parse(absolute.read_text(encoding="utf-8"), filename=relative, type_comments=True)
-            parsed.append((relative, tree, None))
-            module = module_name(relative)
-            module_declarations: dict[str, str] = {}
-            for child in tree.body:
-                if isinstance(child, ast.ClassDef):
-                    module_declarations[child.name] = ref("class", f"{module}.{child.name}")
-                elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    module_declarations[child.name] = ref("function", f"{module}.{child.name}")
-            declarations[module] = module_declarations
-        except (SyntaxError, UnicodeDecodeError) as error:
-            parsed.append((relative, None, error if isinstance(error, SyntaxError) else SyntaxError(str(error))))
-    for relative, parsed_tree, syntax_error in sorted(parsed, key=lambda item: item[0]):
-        if parsed_tree is not None:
-            emit(PythonAstFactCollector(relative, parsed_tree, declarations).collect())
-        else:
-            line = max(1, int(getattr(syntax_error, "lineno", 1) or 1))
-            emit(
-                {
-                    "owner_key": f"knossos.python:file:{relative}",
-                    "nodes": [],
-                    "edges": [],
-                    "diagnostics": [
-                        {
-                            "severity": "error",
-                            "code": "PY_SYNTAX_ERROR",
-                            "message": str(syntax_error),
-                            "evidence": {"path": relative, "start_line": line, "end_line": line},
-                        }
-                    ],
-                }
-            )
-    return {"files_scanned": len(parsed), "parser": "python.ast"}
+            tree = ast.parse(absolute.read_bytes(), filename=relative, type_comments=True)
+        except (SyntaxError, UnicodeDecodeError, ValueError) as error:
+            emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error)))
+            continue
+        except RecursionError as error:
+            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
+            continue
+        try:
+            collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
+            contribution = PythonAstFactCollector(relative, tree, index, collision).collect()
+        except RecursionError as error:
+            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
+            continue
+        except Exception as error:
+            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
+            continue
+        finally:
+            del tree  # drop the parsed tree before the next file to bound memory
+        emit(contribution)
+    return {"files_scanned": len(resolved), "parser": "python.ast"}
+
+
+def line_of(error: BaseException) -> int:
+    return max(1, int(getattr(error, "lineno", 1) or 1))
+
+
+def _diagnostic_contribution(
+    relative: str, code: str, severity: str, error: BaseException, line: int
+) -> dict[str, Any]:
+    return {
+        "owner_key": f"knossos.python:file:{relative}",
+        "nodes": [],
+        "edges": [],
+        "diagnostics": [
+            {
+                "severity": severity,
+                "code": code,
+                "message": str(error),
+                "evidence": {"path": relative, "start_line": line, "end_line": line},
+            }
+        ],
+    }
 
 
 def discover(params: dict[str, Any]) -> dict[str, Any]:
@@ -678,20 +803,27 @@ def handle(request: dict[str, Any]) -> None:
         raise SystemExit(0)
 
 
-for input_line in sys.stdin:
-    request: dict[str, Any] | None = None
-    try:
-        request = json.loads(input_line)
-        if not isinstance(request, dict):
-            raise ValueError("Request must be a JSON object.")
-        handle(request)
-    except SystemExit:
-        raise
-    except Exception as error:  # Protocol boundary contains worker errors.
-        write(
-            {
-                "jsonrpc": "2.0",
-                "id": request.get("id") if isinstance(request, dict) else None,
-                "error": {"code": -32602, "message": str(error)},
-            }
-        )
+def main() -> None:
+    """Drive the NDJSON JSON-RPC loop over standard input."""
+
+    for input_line in sys.stdin:
+        request: dict[str, Any] | None = None
+        try:
+            request = json.loads(input_line)
+            if not isinstance(request, dict):
+                raise ValueError("Request must be a JSON object.")
+            handle(request)
+        except SystemExit:
+            raise
+        except Exception as error:
+            write(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request.get("id") if isinstance(request, dict) else None,
+                    "error": {"code": -32602, "message": str(error)},
+                }
+            )
+
+
+if __name__ == "__main__":
+    main()

@@ -19,7 +19,7 @@ final class LaravelFactCollector extends NodeVisitorAbstract
     public function __construct(string $relativePath)
     {
         $this->facts = new LaravelFactStore($relativePath);
-        $this->context = new LaravelTraversalContext();
+        $this->context = new LaravelTraversalContext($relativePath);
         $this->routes = new LaravelRouteFactCollector($this->facts);
         $this->container = new LaravelContainerFactCollector($this->facts, $this->context);
         $this->dispatch = new LaravelDispatchFactCollector($this->facts, $this->context);

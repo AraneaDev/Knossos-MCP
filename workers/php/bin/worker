@@ -3,6 +3,13 @@
 
 declare(strict_types=1);
 
+// A scanned repository is untrusted input. Send any PHP notice/warning/error to
+// stderr so it can never corrupt the NDJSON result channel on stdout, and cap
+// memory so a pathological file fails cleanly instead of taking down the host.
+ini_set('display_errors', 'stderr');
+ini_set('log_errors', '0');
+ini_set('memory_limit', '512M');
+
 $autoload = dirname(__DIR__) . '/vendor/autoload.php';
 if (!is_file($autoload)) {
     fwrite(STDERR, "PHP scanner dependencies are not installed.\n");

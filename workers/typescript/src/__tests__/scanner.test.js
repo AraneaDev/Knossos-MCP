@@ -97,6 +97,42 @@ describe("TypeScriptScanner.scan", () => {
         ).toBe(true);
     });
 
+    it("joins a call through an object literal to the emitted method node", () => {
+        // Regression guard for the declaration/reference canonicalization split:
+        // a method reached through a named `const` + nested object literal was
+        // declared as `src/x.ts::run` but call edges targeted
+        // `src/x.ts#api.handlers::run`, so the edge dangled. Both paths must now
+        // build the same id.
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false},"include":["src"]}',
+            "src/x.ts": [
+                "const api = { handlers: { run() { return 1; } } };",
+                "export function go(): number {",
+                "  return api.handlers.run();",
+                "}",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/x.ts"] }, (c) =>
+            contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const edges = contributions.flatMap((c) => c.edges);
+
+        const run = nodes.find(
+            (n) => n.kind === "method" && n.display_name === "run",
+        );
+        expect(run).toBeDefined();
+        // The calls edge from go() resolves to the declared run method node.
+        expect(
+            edges.some((e) => e.kind === "calls" && e.target === run.local_id),
+        ).toBe(true);
+    });
+
     it("bounds the retained program cache when a project has many tsconfigs", () => {
         // Regression guard for the OOM fix: one full ts.Program per tsconfig,
         // all retained at once, exhausted the worker heap. The cache is LRU-capped.

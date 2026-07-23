@@ -7,6 +7,10 @@ extend-exclude = ["tests/Fixtures"]
 select = ["E", "F", "I", "B", "UP", "S", "RUF", "C90", "PLR0912", "PLR0915"]
 ignore = ["S603"]
 
+[tool.ruff.lint.per-file-ignores]
+# Test modules legitimately use bare asserts.
+"workers/python/tests/**" = ["S101"]
+
 [tool.ruff.lint.mccabe]
 max-complexity = 20
 
