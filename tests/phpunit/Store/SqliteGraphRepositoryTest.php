@@ -68,6 +68,23 @@ final class SqliteGraphRepositoryTest extends TestCase
 
     // ----- helpers -----
 
+    /**
+     * BEGIN IMMEDIATE transactions are opened via exec, so PDO::inTransaction()
+     * does not track them. Probe the real SQL-level state by attempting a fresh
+     * BEGIN: it fails when a transaction is already open.
+     */
+    private function isInSqlTransaction(): bool
+    {
+        try {
+            $this->pdo->exec('BEGIN');
+            $this->pdo->exec('ROLLBACK');
+
+            return false;
+        } catch (\Throwable) {
+            return true;
+        }
+    }
+
     private function seedProject(string $projectId = 'project-1'): void
     {
         $this->repository->saveProject(
@@ -160,8 +177,11 @@ final class SqliteGraphRepositoryTest extends TestCase
         assertSame(false, $this->pdo->inTransaction(), 'transaction must be released after rollback');
     }
 
-    public function testTransactionRunsInlineWhenAlreadyInsideTransaction(): void
+    public function testTransactionRunsNestedCallsWithinTheOuterTransaction(): void
     {
+        // The outer transaction uses BEGIN IMMEDIATE (managed by exec, so
+        // PDO::inTransaction() does not track it); nested calls run within it
+        // via a savepoint and their committed writes persist with the outer.
         $this->repository->transaction(function (): void {
             $result = $this->repository->transaction(function (SqliteGraphRepository $repo): string {
                 $this->seedProject('trans-nested');
@@ -170,11 +190,63 @@ final class SqliteGraphRepositoryTest extends TestCase
             });
 
             assertSame('nested-ok', $result);
-            assertSame(true, $this->pdo->inTransaction());
+            assertSame(true, $this->isInSqlTransaction(), 'the outer transaction must still be open');
         });
 
         assertSame('Project One', $this->repository->findProject('trans-nested')['name']);
-        assertSame(false, $this->pdo->inTransaction(), 'outer transaction must still be committed');
+        assertSame(false, $this->isInSqlTransaction(), 'outer transaction must still be committed');
+    }
+
+    public function testNestedTransactionFailureRollsBackOnlyTheInnerWork(): void
+    {
+        // A caught nested failure must roll back only the inner savepoint, not
+        // poison the enclosing transaction (the previous no-op nesting silently
+        // committed the inner write with the outer).
+        $this->repository->transaction(function (): void {
+            $this->repository->saveProject('outer-keep', 'Project One', '/projects/outer', []);
+
+            try {
+                $this->repository->transaction(function (): void {
+                    $this->repository->saveProject('inner-discard', 'Project One', '/projects/inner', []);
+
+                    throw new \LogicException('inner boom');
+                });
+            } catch (\LogicException) {
+                // Swallowed on purpose: the outer transaction must survive.
+            }
+        });
+
+        assertSame('Project One', $this->repository->findProject('outer-keep')['name']);
+        assertSame(null, $this->repository->findProject('inner-discard'), 'inner savepoint work must be rolled back');
+        assertSame(false, $this->isInSqlTransaction());
+    }
+
+    public function testMissingForeignKeyIndexesExistAfterMigration(): void
+    {
+        // Migration 011 restores the single-column FK indexes graph teardown
+        // depends on (nodes_file_idx was dropped by 010; parent_id/node_id
+        // indexes never existed) — the O(N^2) clearProjectGraph fix.
+        $indexes = $this->pdo
+            ->query("SELECT name FROM sqlite_master WHERE type = 'index'")
+            ->fetchAll(\PDO::FETCH_COLUMN);
+        $indexes = array_map('strval', $indexes);
+
+        $this->assertContains('nodes_parent_idx', $indexes);
+        $this->assertContains('nodes_file_idx', $indexes);
+        $this->assertContains('classifications_node_idx', $indexes);
+        $this->assertContains('boundary_memberships_node_idx', $indexes);
+    }
+
+    public function testForeignKeyIndexLeadsWithTheReferencedColumn(): void
+    {
+        // A bare node_id FK probe (ON DELETE CASCADE) must be servable by the
+        // new single-column index; the existing (project_id, node_id) composite
+        // cannot serve it because project_id is its leftmost column.
+        $columns = $this->pdo
+            ->query("SELECT name FROM pragma_index_info('nodes_parent_idx')")
+            ->fetchAll(\PDO::FETCH_COLUMN);
+
+        assertSame(['parent_id'], array_map('strval', $columns));
     }
 
     // ----- saveProject() + findProject() -----
@@ -311,6 +383,31 @@ final class SqliteGraphRepositoryTest extends TestCase
         assertSame(1, (int) $row['complete']);
         $this->assertGreaterThanOrEqual(0, (int) $row['fact_count']);
         $this->assertStringContainsString('"schema":1', $row['payload_json']);
+    }
+
+    public function testArchiveActiveSnapshotSkipsWhenActiveScanAlreadyArchived(): void
+    {
+        $this->seedProject('proj-snap-unchanged');
+        $this->seedScan('proj-snap-unchanged', 'scan-unchanged');
+        $this->repository->completeScan('proj-snap-unchanged', 'scan-unchanged');
+
+        $this->repository->archiveActiveSnapshot('proj-snap-unchanged', 'cfg-h', 5);
+        $firstCapturedAt = $this->pdo
+            ->query("SELECT captured_at FROM scan_snapshots WHERE scan_id = 'scan-unchanged'")
+            ->fetchColumn();
+
+        // The active scan is unchanged, so a second call must be a no-op: no
+        // duplicate row and no rewrite of the existing snapshot.
+        $this->repository->archiveActiveSnapshot('proj-snap-unchanged', 'cfg-h', 5);
+
+        assertSame(
+            1,
+            (int) $this->pdo->query("SELECT COUNT(*) FROM scan_snapshots WHERE project_id = 'proj-snap-unchanged'")->fetchColumn(),
+        );
+        assertSame(
+            (string) $firstCapturedAt,
+            (string) $this->pdo->query("SELECT captured_at FROM scan_snapshots WHERE scan_id = 'scan-unchanged'")->fetchColumn(),
+        );
     }
 
     // ----- clearProjectGraph() -----

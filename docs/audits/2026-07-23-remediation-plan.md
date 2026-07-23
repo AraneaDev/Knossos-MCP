@@ -24,7 +24,7 @@ Each agent touches only its own files; the shared contract is stated in every pr
 ## Batches
 
 ### Batch 1 — Persistence performance & transactions  *(foundational)*
-Files: `migrations/011_add_missing_indexes.sql` (new), `src/Store/SqliteGraphRepository.php`, `SqliteConnection.php`, `MigrationRunner.php`
+Files: `migrations/012_add_missing_indexes.sql` (new), `src/Store/SqliteGraphRepository.php`, `SqliteConnection.php`, `MigrationRunner.php`
 - **H** Add `nodes(parent_id)`, `nodes(file_id)`, `classifications(node_id)`, `boundary_memberships(node_id)` indexes (the 30 s→0.23 s fix).
 - **M** `archiveActiveSnapshot`: `COUNT(*)` guard before fetch; move JSON encode outside the write txn; skip on unchanged graph.
 - **M** `transaction()` → `BEGIN IMMEDIATE` for write paths.
