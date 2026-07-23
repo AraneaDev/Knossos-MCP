@@ -80,6 +80,21 @@ final readonly class HttpSessionStore
         return $statement->fetchColumn() === false ? self::UNKNOWN_OR_EXPIRED : self::ALREADY_INITIALIZED;
     }
 
+    /**
+     * Slide the expiry of a live session forward by the full TTL. Called on
+     * each authenticated request so an actively-used session does not expire
+     * mid-conversation; expired or unknown sessions are left untouched.
+     */
+    public function touch(string $id): void
+    {
+        if (!preg_match('/^[a-f0-9]{64}$/', $id)) {
+            return;
+        }
+        $now = time();
+        $this->pdo->prepare('UPDATE http_sessions SET expires_at = :expires WHERE id = :id AND expires_at > :now')
+            ->execute(['id' => hash('sha256', $id), 'now' => $now, 'expires' => $now + $this->ttlSeconds]);
+    }
+
     public function delete(string $id): void
     {
         $this->pdo->prepare('DELETE FROM http_sessions WHERE id = :id')->execute(['id' => hash('sha256', $id)]);

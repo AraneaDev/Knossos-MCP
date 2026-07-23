@@ -12,6 +12,8 @@ use Throwable;
 final class StdioServer
 {
     public const PROTOCOL_VERSION = '2025-11-25';
+    /** Ceiling on lines parked during cancellation polling, so a flood cannot grow memory without bound. */
+    private const MAX_PENDING_LINES = 1024;
     private bool $initialized = false;
     /** @var resource|null */
     private $input = null;
@@ -75,6 +77,12 @@ final class StdioServer
             } elseif ($method === 'notifications/cancelled') {
                 $requestId = $message['params']['requestId'] ?? null;
                 if (is_int($requestId) || is_string($requestId)) {
+                    // A cancel whose request never arrives would otherwise linger
+                    // forever; evict the oldest entry once the map is full so the
+                    // set of pending cancellations stays bounded.
+                    if (count($this->cancelledRequests) >= self::MAX_PENDING_LINES) {
+                        array_shift($this->cancelledRequests);
+                    }
                     $this->cancelledRequests[(string) $requestId] = true;
                 }
             }
@@ -109,7 +117,9 @@ final class StdioServer
             return $this->success($id, (object) []);
         }
         if (!$this->initialized) {
-            return $this->error($id, -32002, 'Server has not received notifications/initialized.');
+            // Distinct from -32002 (used below for a missing resource) so a
+            // client can tell "not initialized yet" from "no such resource".
+            return $this->error($id, -32003, 'Server has not received notifications/initialized.');
         }
         if ($method === 'tools/list') {
             return $this->success($id, ['tools' => $this->tools->definitions()]);
@@ -124,26 +134,42 @@ final class StdioServer
                 $cancellation = new CancellationToken(fn(): bool => $this->pollCancellation($id));
                 $envelope = $this->tools->call($name, $arguments, $cancellation);
                 $structured = $envelope->jsonSerialize();
-                return $this->success($id, [
-                    'content' => [['type' => 'text', 'text' => json_encode($structured, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES)]],
+                $response = $this->success($id, [
+                    'content' => [['type' => 'text', 'text' => json_encode($structured, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE)]],
                     'structuredContent' => $structured,
                     'isError' => false,
                 ]);
+            } catch (ToolInputException $invalid) {
+                // Unknown tool or malformed arguments: a protocol-level invalid
+                // params error, not a tool that ran and failed.
+                $response = $this->error($id, -32602, $invalid->getMessage());
+            } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
+                if (isset($this->cancelledRequests[(string) $id])) {
+                    // The client asked to cancel this request and is no longer
+                    // waiting; drop the entry and send nothing back.
+                    unset($this->cancelledRequests[(string) $id]);
+                    return null;
+                }
+                $response = $this->toolError($id, 'KNOSSOS_SCAN_CANCELLED', $cancelled->getMessage());
             } catch (Throwable $error) {
                 $code = match (true) {
-                    $error instanceof \Knossos\Scan\ScanCancelledException => 'KNOSSOS_SCAN_CANCELLED',
                     $error instanceof \Knossos\Scan\ScanBusyException => 'KNOSSOS_SCAN_BUSY',
                     $error instanceof \Knossos\Scanner\Worker\WorkerException => $error->diagnosticCode,
                     $error instanceof \Knossos\Discovery\DiscoveryException => 'KNOSSOS_UNSAFE_PATH',
                     $error instanceof \InvalidArgumentException => 'KNOSSOS_INVALID_ARGUMENT',
                     default => 'KNOSSOS_TOOL_ERROR',
                 };
-                return $this->success($id, [
-                    'content' => [['type' => 'text', 'text' => $code . ': ' . $error->getMessage()]],
-                    'structuredContent' => ['error' => ['code' => $code, 'message' => $error->getMessage()]],
-                    'isError' => true,
-                ]);
+                if ($code === 'KNOSSOS_TOOL_ERROR') {
+                    // Unexpected failure: log the raw detail, return a generic
+                    // message so internals never leak to the client.
+                    error_log('knossos tool error: ' . $error->getMessage());
+                    $response = $this->toolError($id, $code, 'An unexpected error occurred while running the tool.');
+                } else {
+                    $response = $this->toolError($id, $code, $error->getMessage());
+                }
             }
+            unset($this->cancelledRequests[(string) $id]);
+            return $response;
         }
 
         if ($this->resources !== null && $method === 'resources/list') {
@@ -190,14 +216,24 @@ final class StdioServer
         return ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => $code, 'message' => $message]];
     }
 
+    /** A tools/call failure that ran the tool: reported as an isError result, not a JSON-RPC error. @return array<string, mixed> */
+    private function toolError(mixed $id, string $code, string $message): array
+    {
+        return $this->success($id, [
+            'content' => [['type' => 'text', 'text' => $code . ': ' . $message]],
+            'structuredContent' => ['error' => ['code' => $code, 'message' => $message]],
+            'isError' => true,
+        ]);
+    }
+
     /** @param resource $output @param array<string, mixed> $message */
     private function write($output, array $message): void
     {
-        $encoded = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $encoded = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (strlen($encoded) > $this->maxResponseBytes) {
             $encoded = json_encode(
                 $this->error($message['id'] ?? null, -32001, 'Response exceeds the configured byte limit.'),
-                JSON_THROW_ON_ERROR,
+                JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE,
             );
         }
         fwrite($output, $encoded . "\n");
@@ -233,12 +269,18 @@ final class StdioServer
                 $this->inputBuffer .= $chunk;
             }
             if (strlen($this->inputBuffer) > $this->maxLineBytes) {
+                // Oversized frame: skip forward to the newline that ends it
+                // without accumulating the discarded bytes, so the buffer stays
+                // bounded no matter how long the bad line is.
                 while (!str_contains($this->inputBuffer, "\n") && !feof($input)) {
                     $discard = fread($input, 8192);
                     if ($discard === false || $discard === '') {
                         break;
                     }
-                    $this->inputBuffer .= $discard;
+                    // Keep only the freshly read chunk (plus a 1-byte carry that
+                    // is irrelevant for a single-byte newline); everything before
+                    // the eventual newline is discarded anyway.
+                    $this->inputBuffer = $discard;
                 }
                 $newline = strpos($this->inputBuffer, "\n");
                 $this->inputBuffer = $newline === false ? '' : substr($this->inputBuffer, $newline + 1);
@@ -258,8 +300,19 @@ final class StdioServer
         $cancelled = false;
         stream_set_blocking($this->input, false);
         try {
-            while (($chunk = fread($this->input, 8192)) !== false && $chunk !== '') {
+            // Drain available input, but stop once a single frame's worth is
+            // buffered so a client that never sends a newline cannot grow memory.
+            while (
+                strlen($this->inputBuffer) <= $this->maxLineBytes
+                && ($chunk = fread($this->input, 8192)) !== false
+                && $chunk !== ''
+            ) {
                 $this->inputBuffer .= $chunk;
+            }
+            if (strlen($this->inputBuffer) > $this->maxLineBytes && !str_contains($this->inputBuffer, "\n")) {
+                // An oversized frame with no terminator cannot be a valid
+                // message; drop it rather than hold it.
+                $this->inputBuffer = '';
             }
             while (($newline = strpos($this->inputBuffer, "\n")) !== false) {
                 $line = substr($this->inputBuffer, 0, $newline + 1);
@@ -267,7 +320,7 @@ final class StdioServer
                 try {
                     $message = json_decode(trim($line), true, 512, JSON_THROW_ON_ERROR);
                 } catch (JsonException) {
-                    $this->pendingLines[] = $line;
+                    $this->rememberPendingLine($line);
                     continue;
                 }
                 if (
@@ -279,11 +332,20 @@ final class StdioServer
                     $this->cancelledRequests[(string) $requestId] = true;
                     continue;
                 }
-                $this->pendingLines[] = $line;
+                $this->rememberPendingLine($line);
             }
         } finally {
             stream_set_blocking($this->input, true);
         }
         return $cancelled || isset($this->cancelledRequests[(string) $requestId]);
+    }
+
+    /** Park a non-cancellation line for the main loop, capped so a flood cannot grow memory without bound. */
+    private function rememberPendingLine(string $line): void
+    {
+        if (count($this->pendingLines) >= self::MAX_PENDING_LINES) {
+            return;
+        }
+        $this->pendingLines[] = $line;
     }
 }
