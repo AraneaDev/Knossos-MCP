@@ -20,7 +20,7 @@ final readonly class SourceExcerptReader
     /** @return array<string, mixed> */
     public function read(string $root, ?string $relativePath, ?int $startLine, ?int $endLine): array
     {
-        if ($relativePath === null || $startLine === null) {
+        if ($relativePath === null || $startLine === null || $startLine < 1) {
             return ['status' => 'unavailable', 'reason' => 'no_line_evidence'];
         }
         $realRoot = realpath($root);

@@ -101,7 +101,8 @@ annotated read-only and idempotent. The four write tools —
 `execute` set; `remove_project` and `cleanup_stale_scans` are additionally
 annotated destructive. The server also exposes
 per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
-(`orient`, `review_diff`) alongside the tools. Agent annotations
+(`orient`, `review_diff`); these are MCP-protocol surfaces with no CLI
+equivalent. Agent annotations
 (`intended_boundary`, `confirmed_dead`, `false_positive`, `note`) record a
 durable judgment on a component that survives rescans; a `false_positive`
 annotation removes that component from future dead-code candidates.

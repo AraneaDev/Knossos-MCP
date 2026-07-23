@@ -51,6 +51,10 @@ final class SourceExcerptTest extends KnossosTestCase
             assertSame('included', $ok['status']);
             assertSame(true, str_contains($ok['code'], 'line 2'));
 
+            $nonPositive = $reader->read($base . '/project', 'src/Ok.php', 0, 3);
+            assertSame('unavailable', $nonPositive['status']);
+            assertSame('no_line_evidence', $nonPositive['reason']);
+
             $escape = $reader->read($base . '/project', '../secret.txt', 1, 1);
             assertSame('unavailable', $escape['status']);
             assertSame('outside_project_root_or_missing', $escape['reason']);
