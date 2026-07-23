@@ -10,6 +10,14 @@ interface CliCommand
     public function supports(string $command): bool;
 
     /**
+     * Returns the option names this handler accepts for the given command, so
+     * the router can reject typos and unknown flags before dispatching.
+     *
+     * @return list<string>
+     */
+    public function allowedOptions(string $command): array;
+
+    /**
      * Executes a supported CLI command using parsed positional arguments and options.
      *
      * @param list<string> $positionals

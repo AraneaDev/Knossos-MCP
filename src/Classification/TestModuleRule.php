@@ -18,7 +18,17 @@ final readonly class TestModuleRule implements ClassificationRule
 {
     public const ROLE = 'quality.test_module';
 
-    private const DIRECTORY_SEGMENTS = ['__tests__', '__test__', 'tests', 'test', 'spec'];
+    /** Unambiguous test directories: always tag regardless of nesting. */
+    private const UNAMBIGUOUS_SEGMENTS = ['__tests__', '__test__'];
+
+    /**
+     * Ambiguous directory names that are only a test convention at the root of
+     * a package. Nested under a recognized source root (e.g. `src/openapi/spec`)
+     * they are ordinary source directories, not test modules.
+     */
+    private const AMBIGUOUS_SEGMENTS = ['tests', 'test', 'spec'];
+
+    private const SOURCE_ROOTS = ['src', 'lib', 'app', 'source'];
 
     public function id(): string
     {
@@ -51,9 +61,17 @@ final readonly class TestModuleRule implements ClassificationRule
     {
         $segments = explode('/', $path);
         $file = array_pop($segments) ?? '';
+        $underSourceRoot = false;
         foreach ($segments as $segment) {
-            if (in_array(strtolower($segment), self::DIRECTORY_SEGMENTS, true)) {
+            $lower = strtolower($segment);
+            if (in_array($lower, self::UNAMBIGUOUS_SEGMENTS, true)) {
                 return true;
+            }
+            if (in_array($lower, self::AMBIGUOUS_SEGMENTS, true) && !$underSourceRoot) {
+                return true;
+            }
+            if (in_array($lower, self::SOURCE_ROOTS, true)) {
+                $underSourceRoot = true;
             }
         }
 

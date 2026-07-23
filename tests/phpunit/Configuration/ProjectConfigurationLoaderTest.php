@@ -305,6 +305,30 @@ JSON;
         $this->assertStringContainsString('PROJECT_CONFIG_UNSAFE', $error->getMessage());
     }
 
+    public function testLoadRejectsDuplicateBoundaryNames(): void
+    {
+        $root = $this->writeConfig('knossos.json', '{"version": 1, "boundaries": [{"name": "Core", "path_prefix": "src/A"}, {"name": "Core", "path_prefix": "src/B"}]}');
+
+        $error = captureThrows(
+            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            DiscoveryException::class,
+        );
+
+        $this->assertStringContainsString('duplicate boundary name', $error->getMessage());
+    }
+
+    public function testLoadRejectsBoundaryDeclaringBothPathAndNamespacePrefix(): void
+    {
+        $root = $this->writeConfig('knossos.json', '{"version": 1, "boundaries": [{"name": "Core", "path_prefix": "src/A", "namespace_prefix": "App\\\\Core"}]}');
+
+        $error = captureThrows(
+            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            DiscoveryException::class,
+        );
+
+        $this->assertStringContainsString('not both', $error->getMessage());
+    }
+
     // ----- quality budgets -----
 
     public function testLoadAcceptsValidQualityBudgets(): void

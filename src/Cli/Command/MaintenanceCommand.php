@@ -16,6 +16,16 @@ final class MaintenanceCommand implements CliCommand
         return in_array($command, ['doctor', 'remove-project', 'cleanup-stale-scans', 'maintain-database'], true);
     }
 
+    public function allowedOptions(string $command): array
+    {
+        return match ($command) {
+            'doctor' => ['db', 'json'],
+            'remove-project' => ['db', 'json', 'execute'],
+            'cleanup-stale-scans' => ['db', 'json', 'older-than-hours', 'execute'],
+            default => ['db', 'json', 'execute', 'backup-name'],
+        };
+    }
+
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return match ($command) {
@@ -34,7 +44,7 @@ final class MaintenanceCommand implements CliCommand
         foreach ($report['checks'] as $check) {
             $text .= sprintf("[%s] %s: %s\n", strtoupper($check['status']), $check['name'], $check['detail']);
         }
-        $context->output($report, isset($options['json']), rtrim($text));
+        $context->output($report, $context->options->flag($options, 'json'), rtrim($text));
         return $report['ok'] ? 0 : 1;
     }
 
@@ -42,8 +52,8 @@ final class MaintenanceCommand implements CliCommand
     private function removeProject(array $positionals, array $options, CliCommandContext $context): int
     {
         $projectId = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos remove-project <project-id> [--execute] [--json]');
-        $result = $context->maintenance()->removeProject($projectId, isset($options['execute']));
-        $context->output($result->jsonSerialize(), isset($options['json']), $result->summary);
+        $result = $context->maintenance()->removeProject($projectId, $context->options->flag($options, 'execute'));
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
         return 0;
     }
 
@@ -54,9 +64,9 @@ final class MaintenanceCommand implements CliCommand
         $result = $context->maintenance()->cleanupStaleScans(
             $projectId,
             $context->options->integer($options, 'older-than-hours', 24, 1, 8760),
-            isset($options['execute']),
+            $context->options->flag($options, 'execute'),
         );
-        $context->output($result->jsonSerialize(), isset($options['json']), $result->summary);
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
         return 0;
     }
 
@@ -66,10 +76,10 @@ final class MaintenanceCommand implements CliCommand
         $action = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos maintain-database <integrity|checkpoint|optimize|backup> [options]');
         $result = $context->maintenance()->maintain(
             $action,
-            isset($options['execute']),
+            $context->options->flag($options, 'execute'),
             $context->options->single($options, 'backup-name'),
         );
-        $context->output($result->jsonSerialize(), isset($options['json']), $result->summary);
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
         return ($result->data['ok'] ?? true) ? 0 : 1;
     }
 }

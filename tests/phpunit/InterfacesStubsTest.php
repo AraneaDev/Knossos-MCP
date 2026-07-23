@@ -82,6 +82,11 @@ final class FakeCliCommand implements CliCommand
         return $command === 'fake';
     }
 
+    public function allowedOptions(string $command): array
+    {
+        return [];
+    }
+
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return 0;

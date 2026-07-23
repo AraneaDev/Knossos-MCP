@@ -21,6 +21,11 @@ final class ServeCommand implements CliCommand
         return $command === 'serve';
     }
 
+    public function allowedOptions(string $command): array
+    {
+        return ['db', 'allow-root'];
+    }
+
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $allowedRoots = $options['allow-root'] ?? [];

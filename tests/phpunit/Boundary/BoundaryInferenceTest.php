@@ -354,6 +354,47 @@ final class BoundaryInferenceTest extends TestCase
         assertSame(['php:class:App\\Checkout\\Service'], $exact[0]->nodeReferences);
     }
 
+    public function testInferExplicitNamespacePrefixIsSeparatorAnchoredAndDoesNotMatchSiblingPrefix(): void
+    {
+        // "App" must match "App\Service" but NOT "Apple\Service" — an explicit
+        // namespace prefix is anchored with a trailing separator like the
+        // inferred rules, so policy membership is not inflated.
+        $explicit = [['name' => 'app', 'namespace_prefix' => 'App']];
+        $inside = $this->makeNode('php:class:App\\Service', 'App\\Service', 'src/Service.php');
+        $sibling = $this->makeNode('php:class:Apple\\Service', 'Apple\\Service', 'src/Apple/Service.php');
+        $contributions = [$this->makeContribution([$inside, $sibling])];
+
+        $facts = (new BoundaryInference())->infer([], $contributions, $explicit);
+
+        $exact = array_values(array_filter($facts, static fn (BoundaryFact $f): bool => $f->name === 'app'));
+        assertSame(1, count($exact));
+        assertSame(['type' => 'namespace_prefix', 'value' => "App\\"], $exact[0]->matcher);
+        assertSame(['php:class:App\\Service'], $exact[0]->nodeReferences);
+    }
+
+    public function testInferRejectsDuplicateExplicitBoundaryNames(): void
+    {
+        $explicit = [
+            ['name' => 'core', 'path_prefix' => 'src/core/'],
+            ['name' => 'core', 'namespace_prefix' => 'App\\Core'],
+        ];
+
+        assertThrows(
+            static fn(): array => (new BoundaryInference())->infer([], [], $explicit),
+            InvalidArgumentException::class,
+        );
+    }
+
+    public function testInferRejectsExplicitBoundaryDeclaringBothMatchers(): void
+    {
+        $explicit = [['name' => 'core', 'path_prefix' => 'src/core/', 'namespace_prefix' => 'App\\Core']];
+
+        assertThrows(
+            static fn(): array => (new BoundaryInference())->infer([], [], $explicit),
+            InvalidArgumentException::class,
+        );
+    }
+
     // ----- helpers -----
 
     private function makeNode(string $localId, string $canonicalName, string $relativePath): NodeFact

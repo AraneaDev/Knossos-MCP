@@ -16,6 +16,11 @@ final class ScanCommand implements CliCommand
         return $command === 'scan';
     }
 
+    public function allowedOptions(string $command): array
+    {
+        return ['db', 'json', 'name', 'max-files', 'max-file-bytes', 'boundary', 'mode', 'snapshot-retention', 'worker-timeout-ms'];
+    }
+
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $root = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos scan <path> [--name=NAME] [--db=PATH] [--json]');
@@ -30,7 +35,7 @@ final class ScanCommand implements CliCommand
             isset($options['snapshot-retention']) ? $context->options->integer($options, 'snapshot-retention', 5, 0, 20) : null,
             isset($options['worker-timeout-ms']) ? $context->options->integer($options, 'worker-timeout-ms', 30_000, 1_000, 120_000) : null,
         );
-        $context->output($result->jsonSerialize(), isset($options['json']), $result->summary . "\nProject: " . $result->projectId . "\nSnapshot: " . $result->snapshotId);
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary . "\nProject: " . $result->projectId . "\nSnapshot: " . $result->snapshotId);
         return 0;
     }
 }
