@@ -9,6 +9,8 @@ use PhpParser\Node\Stmt;
 
 final class LaravelTraversalContext
 {
+    use ResolvesDeclarationName;
+
     /** @var list<string> */
     private array $classes = [];
     /** @var list<string> */
@@ -19,7 +21,7 @@ final class LaravelTraversalContext
     public function enterNode(Node $node): void
     {
         if ($node instanceof Stmt\ClassLike) {
-            $this->classes[] = LaravelFactStore::classReference($this->declarationName($node));
+            $this->classes[] = LaravelFactStore::classReference($this->declarationName($node, $this->relativePath));
         } elseif ($node instanceof Stmt\ClassMethod) {
             $class = $this->currentClass();
             if ($class !== null) {
@@ -45,19 +47,5 @@ final class LaravelTraversalContext
     public function currentSource(): ?string
     {
         return $this->callables === [] ? $this->currentClass() : $this->callables[array_key_last($this->callables)];
-    }
-
-    private function declarationName(Stmt\ClassLike $node): string
-    {
-        if (isset($node->namespacedName)) {
-            return $node->namespacedName->toString();
-        }
-        // Match the core FactCollector's path:line scheme so a Laravel-context
-        // anonymous class id resolves to the same node instead of dangling.
-        if ($node instanceof Stmt\Class_ && $node->name === null) {
-            return sprintf('{anonymous}@%s:%d', $this->relativePath, max(1, $node->getStartLine()));
-        }
-
-        return $node->name?->toString() ?? '{anonymous}';
     }
 }
