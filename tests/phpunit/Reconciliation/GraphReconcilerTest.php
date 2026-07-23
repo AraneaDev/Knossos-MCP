@@ -1414,6 +1414,54 @@ final class FakeGraphRepository implements GraphRepository
         }
     }
 
+    /** @param list<array<string, mixed>> $files */
+    public function saveFiles(array $files, string $projectId, string $scanId): void
+    {
+        foreach ($files as $file) {
+            $this->saveFile(
+                $file['id'],
+                $projectId,
+                $file['relative_path'],
+                $file['content_hash'],
+                $file['size'],
+                $file['mtime'],
+                $file['language'],
+                $file['scanner_version'],
+                $scanId,
+                $file['line_count'],
+            );
+        }
+    }
+
+    /** @param list<array<string, mixed>> $classifications */
+    public function saveClassifications(array $classifications, string $projectId, string $scanId): void
+    {
+        foreach ($classifications as $classification) {
+            $this->saveClassification(
+                $classification['id'],
+                $projectId,
+                $classification['node_id'],
+                $classification['role'],
+                $classification['origin'],
+                $classification['confidence'],
+                $classification['rule_id'],
+                $classification['file_id'],
+                $classification['start_line'],
+                $classification['end_line'],
+                $classification['attributes'],
+                $scanId,
+            );
+        }
+    }
+
+    /** @param list<array<string, mixed>> $memberships */
+    public function saveBoundaryMemberships(array $memberships, string $projectId, string $scanId): void
+    {
+        foreach ($memberships as $membership) {
+            $this->saveBoundaryMembership($membership['boundary_id'], $projectId, $membership['node_id'], $scanId);
+        }
+    }
+
     public function saveDiagnostic(
         string $id,
         string $projectId,
@@ -1476,7 +1524,4 @@ final class FakeGraphRepository implements GraphRepository
         return [];
     }
 
-    public function deleteFactsByOwner(string $projectId, string $ownerKey): void
-    {
-    }
 }

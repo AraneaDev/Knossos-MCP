@@ -730,27 +730,6 @@ final class SqliteGraphRepositoryTest extends TestCase
         assertSame('Query limit must be between 1 and 1000.', $error->getMessage());
     }
 
-    // ----- deleteFactsByOwner() -----
-
-    public function testDeleteFactsByOwnerRemovesNodesEdgesAndDiagnosticsOnlyForOwner(): void
-    {
-        $this->seedProject('proj-owner');
-        $this->seedScan('proj-owner', 'scan-owner');
-
-        foreach (['a', 'b'] as $name) {
-            $this->repository->saveNode($name, 'proj-owner', 'php', 'class', $name, $name, null, null, null, null, Origin::Ast->value, 'certain', [], 'shared', 'scan-owner');
-        }
-        $this->repository->saveNode('c', 'proj-owner', 'php', 'class', 'C', 'C', null, null, null, null, Origin::Ast->value, 'certain', [], 'scanner-a', 'scan-owner');
-        $this->repository->saveEdge('e-shared', 'proj-owner', 'calls', 'a', 'b', null, null, null, Origin::Ast->value, 'certain', [], 'scanner-a', 'scan-owner');
-        $this->repository->saveDiagnostic('d-a', 'proj-owner', 'scan-owner', null, 'info', 'note', 'm', null, null, 'scanner-a');
-
-        $this->repository->deleteFactsByOwner('proj-owner', 'scanner-a');
-
-        assertSame(2, (int) $this->pdo->query("SELECT COUNT(*) FROM nodes WHERE project_id = 'proj-owner'")->fetchColumn(), 'shared owner rows must remain');
-        assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM edges WHERE project_id = 'proj-owner'")->fetchColumn());
-        assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM diagnostics WHERE project_id = 'proj-owner'")->fetchColumn());
-    }
-
     // ----- prepare() / json() reuse -----
 
     public function testRepeatedSaveReusesCachedPreparedStatements(): void
