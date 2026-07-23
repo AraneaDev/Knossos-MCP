@@ -124,4 +124,46 @@ final class FlowTest extends KnossosTestCase
         assertSame(1, count($flow->data['paths'][0]['hops']));
         assertSame('constructs', $flow->data['paths'][0]['hops'][0]['kind']);
     }
+
+    #[Group('flow')]
+    public function testInterfaceEndpointsExpandToContainedMethods(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $api = StableId::symbol($ids['project'], 'php', 'interface', 'App\\ApiInterface');
+        $send = StableId::symbol($ids['project'], 'php', 'method', 'App\\ApiInterface::send');
+        $repository->saveNode($api, $ids['project'], 'php', 'interface', 'App\\ApiInterface', 'ApiInterface', null, $ids['file'], 1, 20, 'ast', 'certain', [], 'php:file:src/ApiInterface.php', $ids['scan']);
+        $repository->saveNode($send, $ids['project'], 'php', 'method', 'App\\ApiInterface::send', 'send', null, $ids['file'], 5, 10, 'ast', 'certain', [], 'php:file:src/ApiInterface.php', $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $api, $send, 'contain'), $ids['project'], 'contains', $api, $send, $ids['file'], 1, 20, 'ast', 'certain', [], 'php:file:src/ApiInterface.php', $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $send, $ids['invoice'], 'construct'), $ids['project'], 'constructs', $send, $ids['invoice'], $ids['file'], 7, 7, 'ast', 'certain', [], 'php:file:src/ApiInterface.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $query = new ArchitectureQueryService($pdo);
+        // Interface -> class, reachable only by descending ApiInterface into
+        // ApiInterface::send first (mirrors the class-endpoint expansion test).
+        $flow = $query->explainFlow($ids['project'], 'App\\ApiInterface', 'App\\InvoiceService');
+
+        assertSame(1, count($flow->data['paths']));
+        assertSame(1, count($flow->data['paths'][0]['hops']));
+        assertSame('constructs', $flow->data['paths'][0]['hops'][0]['kind']);
+    }
+
+    #[Group('flow')]
+    public function testClassEndpointExpansionBeyond200MembersIsTruncated(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $api = StableId::symbol($ids['project'], 'php', 'class', 'App\\BigApi');
+        $repository->saveNode($api, $ids['project'], 'php', 'class', 'App\\BigApi', 'BigApi', null, $ids['file'], 1, 999, 'ast', 'certain', [], 'php:file:src/BigApi.php', $ids['scan']);
+        for ($i = 0; $i < 201; ++$i) {
+            $method = StableId::symbol($ids['project'], 'php', 'method', sprintf('App\\BigApi::m%03d', $i));
+            $repository->saveNode($method, $ids['project'], 'php', 'method', sprintf('App\\BigApi::m%03d', $i), sprintf('m%03d', $i), null, $ids['file'], 2, 2, 'ast', 'certain', [], 'php:file:src/BigApi.php', $ids['scan']);
+            $repository->saveEdge(StableId::edge($ids['project'], 'contains', $api, $method, sprintf('contain%03d', $i)), $ids['project'], 'contains', $api, $method, $ids['file'], 1, 999, 'ast', 'certain', [], 'php:file:src/BigApi.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $query = new ArchitectureQueryService($pdo);
+        $flow = $query->explainFlow($ids['project'], 'App\\BigApi', 'App\\InvoiceService');
+
+        assertSame(true, $flow->truncated);
+        assertContains('endpoint_expansion_limit', implode(',', $flow->data['bounds']['truncation_reasons']));
+    }
 }

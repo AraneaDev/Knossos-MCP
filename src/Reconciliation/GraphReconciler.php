@@ -23,19 +23,21 @@ final readonly class GraphReconciler
         $projectId = StableId::project($request->projectIdentity);
         $scannerSetHash = self::scannerSetHash($request->scanners);
         $scanId = StableId::scan($projectId, bin2hex(random_bytes(16)));
-        $fileIds = [];
-        foreach ($request->discovery->files as $file) {
-            $fileIds[$file->relativePath] = StableId::file($projectId, $file->relativePath);
-        }
 
-        // Initialize phase timing window. Must occur before collectNodes to capture
-        // the full duration of all pre-transaction preparation work.
+        // Initialize phase timing window before any other pre-transaction work (including
+        // the $fileIds StableId hashing loop below) so 'prepare' captures the full
+        // duration of all pre-transaction preparation, matching its docblock elsewhere.
         $phaseMs = [];
         $phaseStarted = hrtime(true);
         $mark = static function (string $phase) use (&$phaseMs, &$phaseStarted): void {
             $phaseMs[$phase] = round((hrtime(true) - $phaseStarted) / 1_000_000, 3);
             $phaseStarted = hrtime(true);
         };
+
+        $fileIds = [];
+        foreach ($request->discovery->files as $file) {
+            $fileIds[$file->relativePath] = StableId::file($projectId, $file->relativePath);
+        }
 
         [$nodeMap, $nodes, $nodeWarnings] = $this->collectNodes($projectId, $request->contributions);
         $this->attachNodeFiles($nodes, $fileIds);
@@ -123,6 +125,9 @@ final readonly class GraphReconciler
             $mark('contribution_cache');
 
             $diagnosticCount = $this->saveDiagnostics($request, $projectId, $scanId, $fileIds, $nodeWarnings);
+            // completeScan falls inside the save_diagnostics window (same rationale as
+            // clear_graph folding in saveProject/createScan above): it's a cheap trailing
+            // bookkeeping write, not worth its own phase.
             $this->repository->completeScan($projectId, $scanId);
             $mark('save_diagnostics');
         });
