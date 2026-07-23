@@ -395,6 +395,62 @@ final class BoundaryInferenceTest extends TestCase
         );
     }
 
+    public function testPhpRouteNodeDoesNotSeedNamespaceBoundary(): void
+    {
+        $route = new NodeFact(
+            'php:route:GET /shop/checkout',
+            'route',
+            'GET /shop/checkout => App\\Http\\Controllers\\CheckoutController::show',
+            'GET /shop/checkout',
+            Origin::FrameworkConvention,
+            Confidence::Certain,
+            new Evidence('routes/web.php', 1, 1),
+        );
+        $contribution = new ScanContribution('knossos.php:file:routes/web.php', [$route], [], []);
+
+        $facts = (new BoundaryInference())->infer([], [$contribution], []);
+
+        assertSame([], $facts);
+    }
+
+    public function testTypescriptRouteNodeDoesNotSeedModuleBoundary(): void
+    {
+        $route = new NodeFact(
+            'ts:route:GET /cats',
+            'route',
+            'GET /cats => src/cats.controller.ts#CatsController::findAll',
+            'GET /cats',
+            Origin::FrameworkConvention,
+            Confidence::Certain,
+            new Evidence('src/cats.controller.ts', 1, 1),
+        );
+        $contribution = new ScanContribution('knossos.typescript:file:src/cats.controller.ts', [$route], [], []);
+
+        $facts = (new BoundaryInference())->infer([], [$contribution], []);
+
+        assertSame([], $facts);
+    }
+
+    public function testNonIdentifierNamespaceSegmentDoesNotSeedBoundary(): void
+    {
+        // Backstop: even a symbol-kind node whose leading namespace segment is not
+        // a valid PHP identifier (here: contains spaces and '=>') seeds nothing.
+        $node = new NodeFact(
+            'php:class:Weird',
+            'class',
+            'GET /odd => App\\Thing',
+            'Thing',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('src/Thing.php', 1, 1),
+        );
+        $contribution = new ScanContribution('knossos.php:file:src/Thing.php', [$node], [], []);
+
+        $facts = (new BoundaryInference())->infer([], [$contribution], []);
+
+        assertSame([], $facts);
+    }
+
     // ----- helpers -----
 
     private function makeNode(string $localId, string $canonicalName, string $relativePath): NodeFact
