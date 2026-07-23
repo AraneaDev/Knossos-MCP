@@ -481,13 +481,27 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         if (!is_array($parts)) {
             return [];
         }
-        $stopWords = ['a', 'an', 'and', 'for', 'in', 'of', 'on', 'the', 'to', 'with', 'add', 'build', 'create', 'new', 'feature'];
+        $stopWords = [
+            'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'can', 'for', 'from', 'has',
+            'have', 'in', 'into', 'is', 'it', 'its', 'of', 'on', 'or', 'our', 'so', 'that',
+            'the', 'their', 'this', 'to', 'via', 'we', 'will', 'with',
+            'add', 'build', 'create', 'implement', 'make', 'new', 'feature', 'support',
+        ];
         $tokens = [];
         foreach ($parts as $part) {
-            if (strlen($part) < 2 || in_array($part, $stopWords, true)) {
+            if (strlen($part) < 3 || in_array($part, $stopWords, true)) {
                 continue;
             }
             $tokens[$part] = true;
+        }
+        if ($tokens === []) {
+            // A description made entirely of stop words or short tokens still
+            // deserves ranking; fall back to the permissive pre-filter set.
+            foreach ($parts as $part) {
+                if (strlen($part) >= 2) {
+                    $tokens[$part] = true;
+                }
+            }
         }
         return array_keys($tokens);
     }
