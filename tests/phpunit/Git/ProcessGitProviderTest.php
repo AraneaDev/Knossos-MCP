@@ -264,6 +264,32 @@ final class ProcessGitProviderTest extends KnossosTestCase
         $this->assertArrayNotHasKey('src/skipped_path.php', $result['files']);
     }
 
+    public function testHistoryDisablesGitPathQuotingSoNonAsciiPathsSurvive(): void
+    {
+        // With git's default core.quotePath=true, paths with bytes >0x7F are
+        // octal-escaped and backslash-quoted, which RelativePath rejects and the
+        // parser silently drops. The provider must pass -c core.quotePath=false.
+        $captured = [];
+        $runner = new class($captured) implements GitProcessRunnerInterface {
+            /** @param list<string> $captured */
+            public function __construct(private array &$captured) {}
+
+            public function run(array $command, int $timeoutMs, string $operation): string
+            {
+                $this->captured = $command;
+                return '';
+            }
+        };
+        $provider = new ProcessGitHistoryProvider(runner: $runner);
+        $provider->history($this->existingDir, 30, 10, 100);
+
+        // The '-c core.quotePath=false' config pair must appear before 'log'.
+        $configIndex = array_search('core.quotePath=false', $captured, true);
+        $logIndex = array_search('log', $captured, true);
+        assertSame(true, is_int($configIndex) && is_int($logIndex) && $configIndex < $logIndex);
+        assertSame('-c', $captured[(int) $configIndex - 1]);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private function mockRunner(string $returnValue): GitProcessRunnerInterface

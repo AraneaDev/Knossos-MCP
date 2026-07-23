@@ -166,6 +166,26 @@ final class CommandRouterTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         });
     }
 
+    // ===== Option allowlist validation ===================================
+
+    public function testRouterRejectsUnknownOptionForKnownCommand(): void
+    {
+        // A typo'd option must be rejected before dispatch rather than silently
+        // ignored (which would apply defaults).
+        $router = $this->newRouter();
+        assertThrows(
+            fn() => $router->route('list-projects', [], ['bogus-option' => ['true']]),
+            InvalidArgumentException::class,
+        );
+    }
+
+    public function testRouterAcceptsKnownOptionForKnownCommand(): void
+    {
+        // A valid option passes validation and the command runs normally.
+        $router = $this->newRouter();
+        assertSame(0, $router->route('list-projects', [], ['limit' => ['5']]));
+    }
+
     // ===== Foreach dispatch + throw ======================================
 
     public function testRouterThrowsOnUnknownCommand(): void

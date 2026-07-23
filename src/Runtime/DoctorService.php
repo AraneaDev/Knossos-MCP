@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Runtime;
 
+use Knossos\Git\GitProcessRunner;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use PDO;
 use Throwable;
@@ -16,7 +17,12 @@ final readonly class DoctorService
     public function run(): array
     {
         $checks = [];
-        $this->check($checks, 'php.version', static fn(): string => PHP_VERSION_ID < 80500 ? PHP_VERSION : throw new \RuntimeException('PHP 8.3 or 8.4 is required.'));
+        $this->check($checks, 'php.version', static function (): string {
+            if (preg_match('/^(\d+)\.(\d+)\./', PHP_VERSION, $matches) !== 1 || (int) $matches[1] !== 8 || (int) $matches[2] < 3 || (int) $matches[2] > 4) {
+                throw new \RuntimeException('PHP 8.3 or 8.4 is required.');
+            }
+            return PHP_VERSION;
+        });
         foreach (['json', 'pdo', 'pdo_sqlite'] as $extension) {
             $this->check($checks, 'php.extension.' . $extension, static fn(): string => extension_loaded($extension) ? 'loaded' : throw new \RuntimeException('missing'));
         }
@@ -87,23 +93,16 @@ final readonly class DoctorService
         });
     }
 
-    /** @param non-empty-list<string> $command */
+    /**
+     * Run a short-lived version probe under a deadline with non-blocking,
+     * bounded reads. Reuses {@see GitProcessRunner}'s select/deadline loop so a
+     * chatty or hung probe (e.g. one that floods stderr while stdout stays open)
+     * cannot deadlock `doctor` the way sequential blocking pipe reads would.
+     *
+     * @param non-empty-list<string> $command
+     */
     private function command(array $command): string
     {
-        $pipes = [];
-        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-        if (!is_resource($process)) {
-            throw new \RuntimeException('Unable to start command.');
-        }
-        fclose($pipes[0]);
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-        $exit = proc_close($process);
-        if ($exit !== 0) {
-            throw new \RuntimeException(trim((string) $stderr));
-        }
-        return trim((string) $stdout);
+        return trim((new GitProcessRunner())->run($command, 5000, 'command probe'));
     }
 }

@@ -67,13 +67,21 @@ final class ProjectConfigurationLoader
             }
         }
         $boundaries = self::objectList($data['boundaries'] ?? [], 'boundaries', 50);
+        $seenBoundaryNames = [];
         foreach ($boundaries as $boundary) {
             self::knownKeys($boundary, ['name', 'path_prefix', 'namespace_prefix'], 'boundary');
             if (!is_string($boundary['name'] ?? null) || $boundary['name'] === '') {
                 throw new DiscoveryException('PROJECT_CONFIG_INVALID: boundary name must be non-empty.');
             }
+            if (isset($seenBoundaryNames[$boundary['name']])) {
+                throw new DiscoveryException('PROJECT_CONFIG_INVALID: duplicate boundary name ' . $boundary['name'] . '.');
+            }
+            $seenBoundaryNames[$boundary['name']] = true;
             if (!isset($boundary['path_prefix']) && !isset($boundary['namespace_prefix'])) {
                 throw new DiscoveryException('PROJECT_CONFIG_INVALID: boundary must declare path_prefix or namespace_prefix.');
+            }
+            if (isset($boundary['path_prefix']) && isset($boundary['namespace_prefix'])) {
+                throw new DiscoveryException('PROJECT_CONFIG_INVALID: boundary must declare either path_prefix or namespace_prefix, not both.');
             }
             $pathPrefix = $boundary['path_prefix'] ?? null;
             if ($pathPrefix !== null && (!is_string($pathPrefix) || str_starts_with($pathPrefix, '/') || in_array('..', explode('/', str_replace('\\', '/', $pathPrefix)), true))) {

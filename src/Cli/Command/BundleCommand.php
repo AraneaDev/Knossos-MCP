@@ -16,6 +16,13 @@ final class BundleCommand implements CliCommand
         return in_array($command, ['export-bundle', 'import-bundle'], true);
     }
 
+    public function allowedOptions(string $command): array
+    {
+        return $command === 'export-bundle'
+            ? ['db', 'json', 'output', 'redaction']
+            : ['db', 'json', 'name'];
+    }
+
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return $command === 'export-bundle'
@@ -51,7 +58,7 @@ final class BundleCommand implements CliCommand
                 @unlink($output);
             }
         }
-        $context->output(['project_id' => $projectId, 'output' => $output, 'bytes' => strlen($bundle)], isset($options['json']), sprintf('Exported %d-byte graph bundle.', strlen($bundle)));
+        $context->output(['project_id' => $projectId, 'output' => $output, 'bytes' => strlen($bundle)], $context->options->flag($options, 'json'), sprintf('Exported %d-byte graph bundle.', strlen($bundle)));
         return 0;
     }
 
@@ -63,7 +70,7 @@ final class BundleCommand implements CliCommand
             $context->input->bundle($input),
             $context->options->single($options, 'name'),
         );
-        $context->output($result->jsonSerialize(), isset($options['json']), $result->summary . "\nProject: " . $result->projectId);
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary . "\nProject: " . $result->projectId);
         return 0;
     }
 }

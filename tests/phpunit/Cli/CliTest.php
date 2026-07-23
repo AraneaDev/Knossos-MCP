@@ -114,6 +114,52 @@ final class CliTest extends KnossosTestCase
         assertSame(['name' => ['alice', 'bob'], 'flag' => ['true']], $options);
     }
 
+    // ── CliOptionParser: flag() ─────────────────────────────────────────
+
+    #[Group('cli')]
+    public function testFlagIsFalseWhenAbsentAndTrueForBarePresence(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(false, $parser->flag([], 'execute'));
+        assertSame(true, $parser->flag(['execute' => ['true']], 'execute'));
+    }
+
+    #[Group('cli')]
+    public function testFlagTreatsExplicitFalsyTokensAsDisabled(): void
+    {
+        // --execute=false / 0 / no / off must NOT enable a destructive flag.
+        $parser = new CliOptionParser();
+
+        assertSame(false, $parser->flag(['execute' => ['false']], 'execute'));
+        assertSame(false, $parser->flag(['execute' => ['0']], 'execute'));
+        assertSame(false, $parser->flag(['execute' => ['no']], 'execute'));
+        assertSame(false, $parser->flag(['execute' => ['OFF']], 'execute'));
+    }
+
+    #[Group('cli')]
+    public function testFlagUsesLastOccurrenceSoOverrideWins(): void
+    {
+        $parser = new CliOptionParser();
+
+        assertSame(false, $parser->flag(['execute' => ['true', 'false']], 'execute'));
+        assertSame(true, $parser->flag(['execute' => ['false', 'true']], 'execute'));
+    }
+
+    // ── CliOptionParser: validate() ─────────────────────────────────────
+
+    #[Group('cli')]
+    public function testValidateAcceptsKnownOptionsAndRejectsUnknownOnes(): void
+    {
+        $parser = new CliOptionParser();
+
+        $parser->validate(['json' => ['true'], 'limit' => ['10']], ['json', 'limit']);
+        assertThrows(
+            static fn () => $parser->validate(['jsonn' => ['true']], ['json', 'limit']),
+            InvalidArgumentException::class,
+        );
+    }
+
     // ── CliOptionParser: single() ───────────────────────────────────────
 
     #[Group('cli')]

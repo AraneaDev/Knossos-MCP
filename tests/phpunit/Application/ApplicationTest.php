@@ -114,9 +114,10 @@ final class ApplicationTest extends TestCase
 
     public function testRunCatchesInvalidEmptyOptionFromParserAndReturnsTwo(): void
     {
-        // A lone '--' makes CliOptionParser::parse() raise
-        // InvalidArgumentException('Invalid empty option.') — caught by
-        // Application, rendered by CliErrorRenderer, returns 2.
-        assertSame(2, (new Application())->run(['help', '--']));
+        // '--=value' has an empty option name, so CliOptionParser::parse()
+        // raises InvalidArgumentException('Invalid empty option.') — caught by
+        // Application, rendered by CliErrorRenderer, returns 2. (A lone '--' is
+        // now the end-of-options marker and no longer throws.)
+        assertSame(2, (new Application())->run(['help', '--=value']));
     }
 }

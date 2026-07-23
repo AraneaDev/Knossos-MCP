@@ -13,9 +13,16 @@ final class CliOptionParser
     {
         $positionals = [];
         $options = [];
+        $endOfOptions = false;
         foreach ($arguments as $argument) {
-            if (!str_starts_with($argument, '--')) {
+            if ($endOfOptions || !str_starts_with($argument, '--')) {
                 $positionals[] = $argument;
+                continue;
+            }
+            if ($argument === '--') {
+                // Standard end-of-options marker: everything after it is a
+                // positional argument, even if it starts with `--`.
+                $endOfOptions = true;
                 continue;
             }
             $parts = explode('=', substr($argument, 2), 2);
@@ -26,6 +33,38 @@ final class CliOptionParser
             $options[$name][] = $parts[1] ?? 'true';
         }
         return [$positionals, $options];
+    }
+
+    /**
+     * Rejects any option name not present in the command's allowlist so typos
+     * apply an explicit error rather than silently falling back to defaults.
+     *
+     * @param array<string, list<string>> $options
+     * @param list<string> $allowed
+     */
+    public function validate(array $options, array $allowed): void
+    {
+        foreach (array_keys($options) as $name) {
+            if (!in_array($name, $allowed, true)) {
+                throw new InvalidArgumentException(sprintf('Unknown option: --%s', $name));
+            }
+        }
+    }
+
+    /**
+     * Resolves a boolean flag, treating an explicit `--flag=false|0|no|off` as
+     * disabled (last occurrence wins) rather than the mere presence of the key.
+     *
+     * @param array<string, list<string>> $options
+     */
+    public function flag(array $options, string $name): bool
+    {
+        if (!isset($options[$name]) || $options[$name] === []) {
+            return false;
+        }
+        $value = strtolower((string) $options[$name][array_key_last($options[$name])]);
+
+        return !in_array($value, ['false', '0', 'no', 'off'], true);
     }
 
     /** @param array<string, list<string>> $options */

@@ -39,6 +39,20 @@ final class CliCommandRouter
     /** @param list<string> $positionals @param array<string, list<string>> $options */
     public function route(string $command, array $positionals, array $options): int
     {
+        // Validate and resolve the command BEFORE any database work, so a
+        // typo'd command never creates `.knossos`, opens a connection, or runs
+        // migrations. The handler opens the database lazily only when needed.
+        $handler = null;
+        foreach ($this->commands as $candidate) {
+            if ($candidate->supports($command)) {
+                $handler = $candidate;
+                break;
+            }
+        }
+        if ($handler === null) {
+            throw new InvalidArgumentException(sprintf('Unknown command: %s', $command));
+        }
+        $this->options->validate($options, $handler->allowedOptions($command));
         $meta = in_array($command, ['version', '--version', 'help', '--help', '-h'], true);
         $context = new CliCommandContext(
             $this->options,
@@ -46,14 +60,6 @@ final class CliCommandRouter
             new RuntimeFactory($this->installationRoot),
             $meta ? null : $this->options->single($options, 'db'),
         );
-        if (!$meta) {
-            $context->database();
-        }
-        foreach ($this->commands as $handler) {
-            if ($handler->supports($command)) {
-                return $handler->run($command, $positionals, $options, $context);
-            }
-        }
-        throw new InvalidArgumentException(sprintf('Unknown command: %s', $command));
+        return $handler->run($command, $positionals, $options, $context);
     }
 }

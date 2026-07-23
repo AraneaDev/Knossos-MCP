@@ -30,7 +30,11 @@ final class RuntimeFactory
     {
         $directory = getenv('KNOSSOS_DATA_DIR');
         if (!is_string($directory) || $directory === '') {
-            $directory = getcwd() . '/.knossos';
+            $cwd = getcwd();
+            if ($cwd === false) {
+                throw new RuntimeException('Unable to determine the current working directory; set KNOSSOS_DATA_DIR or pass --db=PATH.');
+            }
+            $directory = $cwd . '/.knossos';
         }
 
         return rtrim($directory, '/') . '/knossos.sqlite';

@@ -12,6 +12,7 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 ### `Knossos\Cli\CliCommand`
 
 - `supports(string $command): bool` — Reports whether this handler owns the requested CLI command name
+- `allowedOptions(string $command): array` — Returns the option names this handler accepts for the given command, so
 - `run(string $command, array $positionals, array $options, Knossos\Cli\CliCommandContext $context): int` — Executes a supported CLI command using parsed positional arguments and options
 
 ### `Knossos\Git\GitHistoryProvider`

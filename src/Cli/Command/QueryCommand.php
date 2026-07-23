@@ -27,6 +27,34 @@ final class QueryCommand implements CliCommand
         return in_array($command, self::COMMANDS, true);
     }
 
+    public function allowedOptions(string $command): array
+    {
+        return match ($command) {
+            'list-projects' => ['db', 'json', 'limit', 'offset', 'include-roots'],
+            'list-snapshots' => ['db', 'json', 'limit', 'offset'],
+            'snapshot-diff' => ['db', 'json', 'max-changes'],
+            'quality-gate' => ['db', 'json', 'budgets', 'policies', 'sarif', 'propose-baseline'],
+            'architecture-trends' => ['db', 'json', 'limit', 'release-from'],
+            'find-component' => ['db', 'json', 'limit'],
+            'inspect-component' => ['db', 'json', 'max-relationships', 'max-children', 'min-confidence'],
+            'architecture-summary' => ['db', 'json', 'limit'],
+            'file-metrics' => ['db', 'json', 'path', 'language', 'sort-by', 'order', 'limit', 'offset'],
+            'explain-flow' => ['db', 'json', 'max-depth', 'max-paths', 'edge-kind', 'min-confidence', 'timeout-ms'],
+            'impact-analysis' => ['db', 'json', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
+            'dependency-cycles' => ['db', 'json', 'edge-kind', 'min-confidence', 'limit', 'max-nodes', 'max-edges', 'timeout-ms', 'include-self-loops'],
+            'architecture-health' => ['db', 'json', 'edge-kind', 'min-confidence', 'limit', 'max-nodes', 'max-edges', 'timeout-ms', 'include-external', 'include-tests'],
+            'check-architecture' => ['db', 'json', 'policies', 'min-confidence', 'limit', 'max-edges', 'timeout-ms'],
+            'suggest-location' => ['db', 'json', 'limit', 'max-members', 'max-edges', 'timeout-ms'],
+            'change-impact' => ['db', 'json', 'since-days', 'max-commits', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
+            'changed-files-impact' => ['db', 'json', 'working-tree', 'base-ref', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
+            'architecture-context' => ['db', 'json', 'task', 'max-chars', 'timeout-ms'],
+            'export-diagram' => ['db', 'json', 'format', 'boundary', 'edge-kind', 'min-confidence', 'direction', 'max-nodes', 'max-edges'],
+            'export-agent-brief' => ['db', 'json', 'max-chars', 'out'],
+            'list-boundaries' => ['db', 'json', 'source', 'limit', 'offset'],
+            default => ['db', 'json', 'kind', 'role', 'boundary', 'confidence', 'limit', 'offset'],
+        };
+    }
+
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return match ($command) {
@@ -66,7 +94,7 @@ final class QueryCommand implements CliCommand
         $result = $this->queries($context)->listProjects(
             $context->options->integer($options, 'limit', 50, 1, 100),
             $context->options->integer($options, 'offset', 0, 0, 100_000),
-            isset($options['include-roots']),
+            $context->options->flag($options, 'include-roots'),
         );
         $text = $result->summary;
         foreach ($result->data['projects'] as $project) {
@@ -81,7 +109,7 @@ final class QueryCommand implements CliCommand
                 isset($project['root']) ? '  root=' . $project['root'] : '',
             );
         }
-        $context->output($result->jsonSerialize(), isset($options['json']), $text);
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $text);
         return 0;
     }
 
@@ -109,8 +137,8 @@ final class QueryCommand implements CliCommand
         $baseline = $p[1] ?? throw new InvalidArgumentException('A baseline snapshot is required.');
         $budget = $c->options->single($o, 'budgets') ?? throw new InvalidArgumentException('--budgets=FILE is required.');
         $policies = $c->options->single($o, 'policies');
-        $result = $this->queries($c)->qualityGate($project, $baseline, $c->input->jsonObject($budget), $policies === null ? [] : $c->input->policies($policies), isset($o['sarif']), isset($o['propose-baseline']));
-        $c->output($result->jsonSerialize(), isset($o['json']), $result->summary);
+        $result = $this->queries($c)->qualityGate($project, $baseline, $c->input->jsonObject($budget), $policies === null ? [] : $c->input->policies($policies), $c->options->flag($o, 'sarif'), $c->options->flag($o, 'propose-baseline'));
+        $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
         return $result->data['passed'] ? 0 : 1;
     }
 
@@ -119,7 +147,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-trends <project-id> [options]');
         $result = $this->queries($c)->architectureTrends($project, $c->options->integer($o, 'limit', 10, 2, 20), $c->options->single($o, 'release-from'));
-        $c->output($result->jsonSerialize(), isset($o['json']), $result->data['release_notes']['markdown'] ?? $result->summary);
+        $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['release_notes']['markdown'] ?? $result->summary);
         return 0;
     }
 
@@ -154,7 +182,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-summary <project-id> [--json]');
         $result = $this->queries($c)->architectureSummary($project, $c->options->integer($o, 'limit', 50, 1, 100));
-        $c->output($result->jsonSerialize(), isset($o['json']), $result->summary);
+        $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
         return 0;
     }
 
@@ -181,7 +209,7 @@ final class QueryCommand implements CliCommand
     private function dependencyCycles(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos dependency-cycles <project-id> [options]');
-        $result = $this->queries($c)->dependencyCycles($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 20_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), isset($o['include-self-loops']));
+        $result = $this->queries($c)->dependencyCycles($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 20_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-self-loops'));
         return $this->result($result, $o, $c);
     }
 
@@ -189,7 +217,7 @@ final class QueryCommand implements CliCommand
     private function architectureHealth(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-health <project-id> [options]');
-        $result = $this->queries($c)->architectureHealth($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 20_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), isset($o['include-external']), isset($o['include-tests']));
+        $result = $this->queries($c)->architectureHealth($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 20_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-external'), $c->options->flag($o, 'include-tests'));
         return $this->result($result, $o, $c);
     }
 
@@ -199,7 +227,11 @@ final class QueryCommand implements CliCommand
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos check-architecture <project-id> --policies=FILE [options]');
         $path = $c->options->single($o, 'policies') ?? throw new InvalidArgumentException('--policies=FILE is required.');
         $result = $this->queries($c)->checkArchitecture($project, $c->input->policies($path), $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'max-edges', 20_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
-        return $this->result($result, $o, $c);
+        $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->summary);
+        // Exit non-zero when declared-policy violations exist so the "check"
+        // command can gate CI on its own result, mirroring quality-gate. The
+        // authoritative count is the (possibly larger) bounds.violation_count.
+        return ($result->data['bounds']['violation_count'] ?? count($result->data['violations'])) > 0 ? 1 : 0;
     }
 
     /** @param list<string> $p @param array<string, list<string>> $o */
@@ -226,7 +258,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos changed-files-impact <project-id> [files...] [options]');
         $queries = new ArchitectureQueryService($c->database(), gitWorkingTree: new ProcessGitWorkingTreeProvider());
-        $result = $queries->changedFilesImpact($project, array_slice($p, 1), isset($o['working-tree']), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
+        $result = $queries->changedFilesImpact($project, array_slice($p, 1), $c->options->flag($o, 'working-tree'), $c->options->single($o, 'base-ref'), $c->options->integer($o, 'max-depth', 4, 1, 8), $c->options->integer($o, 'limit', 100, 1, 100), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
         return $this->result($result, $o, $c);
     }
 
@@ -274,7 +306,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-diagram <project-id> [options]');
         $result = $this->queries($c)->exportDiagram($project, $c->options->single($o, 'format') ?? 'mermaid', $c->options->single($o, 'boundary'), $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->single($o, 'direction') ?? 'LR', $c->options->integer($o, 'max-nodes', 200, 1, 400), $c->options->integer($o, 'max-edges', 500, 1, 1000));
-        $c->output($result->jsonSerialize(), isset($o['json']), $result->data['diagram']);
+        $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['diagram']);
         return 0;
     }
 
@@ -287,7 +319,7 @@ final class QueryCommand implements CliCommand
         if ($out !== null && file_put_contents($out, $result->data['markdown']) === false) {
             throw new InvalidArgumentException(sprintf('Unable to write brief to %s.', $out));
         }
-        $c->output($result->jsonSerialize(), isset($o['json']), $result->data['markdown']);
+        $c->output($result->jsonSerialize(), $c->options->flag($o, 'json'), $result->data['markdown']);
         return 0;
     }
 
@@ -350,7 +382,7 @@ final class QueryCommand implements CliCommand
     /** @param array<string, list<string>> $options */
     private function result(ResultEnvelope $result, array $options, CliCommandContext $context): int
     {
-        $context->output($result->jsonSerialize(), isset($options['json']), $result->summary);
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
         return 0;
     }
 }

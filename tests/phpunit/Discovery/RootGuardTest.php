@@ -95,8 +95,11 @@ final class RootGuardTest extends TestCase
         assertSame('Project root is outside the configured allowed roots.', $error->getMessage());
     }
 
-    public function testResolveThrowsWhenConfiguredAllowedRootDoesNotExist(): void
+    public function testResolveSkipsNonExistentAllowedRootAndFallsThroughToOutsideError(): void
     {
+        // A single stale/removed allow-root is skipped, so resolution finds no
+        // matching root and reports the ordinary "outside allowed roots" error
+        // rather than vetoing the request outright.
         $this->tempDir = $this->makeTempDir();
         $invalidAllowed = sys_get_temp_dir() . '/knossos-missing-' . uniqid('', true);
 
@@ -107,7 +110,21 @@ final class RootGuardTest extends TestCase
             DiscoveryException::class,
         );
 
-        $this->assertStringStartsWith('Configured allowed root does not exist:', $error->getMessage());
+        $this->assertStringStartsWith('Project root is outside the configured allowed roots.', $error->getMessage());
+    }
+
+    public function testResolveSkipsNonExistentAllowedRootAndMatchesLaterValidRoot(): void
+    {
+        // --allow-root=/deleted --allow-root=/valid must still resolve against
+        // the valid root instead of failing on the first stale entry.
+        $this->tempDir = $this->makeTempDir();
+        $invalidAllowed = sys_get_temp_dir() . '/knossos-missing-' . uniqid('', true);
+
+        $guard = new RootGuard(allowedRoots: [$invalidAllowed, $this->tempDir]);
+
+        $resolved = $guard->resolve($this->tempDir);
+
+        assertSame(realpath($this->tempDir), $resolved);
     }
 
     public function testContainsReturnsTrueForExactMatch(): void

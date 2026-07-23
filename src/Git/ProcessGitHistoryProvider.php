@@ -33,7 +33,7 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
             throw new RuntimeException('Git project root is not a readable directory.');
         }
         $output = $this->runner->run([
-            'git', '--no-optional-locks', '--no-pager', '-C', $root, 'log',
+            'git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', $root, 'log',
             '--since=' . $sinceDays . ' days ago', '--max-count=' . ($maxCommits + 1),
             '--format=KNOSSOS_COMMIT%x1f%H%x1f%aI%x1f%ae', '--name-only', '--no-renames', '--',
         ], $timeoutMs, 'history');

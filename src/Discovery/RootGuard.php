@@ -20,7 +20,9 @@ final readonly class RootGuard
         foreach ($this->allowedRoots as $allowedRoot) {
             $allowed = realpath($allowedRoot);
             if ($allowed === false || !is_dir($allowed)) {
-                throw new DiscoveryException(sprintf('Configured allowed root does not exist: %s', $allowedRoot));
+                // A single stale/removed allow-root must not veto every later
+                // root; skip it and keep matching against the remaining entries.
+                continue;
             }
 
             if (self::contains(self::normalize($allowed), $root)) {

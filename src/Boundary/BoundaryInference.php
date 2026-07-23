@@ -63,18 +63,25 @@ final class BoundaryInference
                 }
             }
         }
+        $seenExplicit = [];
         foreach ($explicit as $rule) {
             if (!is_array($rule) || !is_string($rule['name'] ?? null)) {
                 throw new InvalidArgumentException('Explicit boundary requires a name.');
             }
-            $matcher = null;
-            if (is_string($rule['path_prefix'] ?? null)) {
+            if (isset($seenExplicit[$rule['name']])) {
+                throw new InvalidArgumentException(sprintf('Duplicate explicit boundary name: %s.', $rule['name']));
+            }
+            $seenExplicit[$rule['name']] = true;
+            $hasPath = is_string($rule['path_prefix'] ?? null);
+            $hasNamespace = is_string($rule['namespace_prefix'] ?? null);
+            if ($hasPath && $hasNamespace) {
+                throw new InvalidArgumentException(sprintf('Explicit boundary %s must declare either path_prefix or namespace_prefix, not both.', $rule['name']));
+            }
+            if ($hasPath) {
                 $matcher = ['type' => 'path_prefix', 'value' => $this->pathPrefix($rule['path_prefix'])];
-            }
-            if (is_string($rule['namespace_prefix'] ?? null)) {
-                $matcher = ['type' => 'namespace_prefix', 'value' => ltrim($rule['namespace_prefix'], '\\')];
-            }
-            if ($matcher === null) {
+            } elseif ($hasNamespace) {
+                $matcher = ['type' => 'namespace_prefix', 'value' => $this->namespacePrefix($rule['namespace_prefix'])];
+            } else {
                 throw new InvalidArgumentException('Explicit boundary requires path_prefix or namespace_prefix.');
             }
             $rules['explicit:' . $rule['name']] = ['source' => 'explicit', 'matcher' => $matcher, 'display' => $rule['name']];
@@ -100,6 +107,18 @@ final class BoundaryInference
         return $matcher['type'] === 'path_prefix'
             ? str_starts_with($node->evidence->relativePath, $matcher['value'])
             : str_starts_with(ltrim($node->canonicalName, '\\'), ltrim($matcher['value'], '\\'));
+    }
+
+    /**
+     * Anchor an explicit namespace prefix with a trailing separator so that
+     * "App" matches "App\Service" but not "Apple\Service" or "AppKernel",
+     * mirroring the inferred namespace rules.
+     */
+    private function namespacePrefix(string $prefix): string
+    {
+        $namespace = trim($prefix, '\\');
+
+        return $namespace === '' ? '' : $namespace . '\\';
     }
 
     private function pathPrefix(string $prefix): string

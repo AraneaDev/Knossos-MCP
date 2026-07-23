@@ -17,6 +17,11 @@ final class WatchCommand implements CliCommand
         return $command === 'watch';
     }
 
+    public function allowedOptions(string $command): array
+    {
+        return ['db', 'json', 'poll-ms', 'debounce-ms', 'max-queue'];
+    }
+
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $root = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos watch <path> [options]');
@@ -32,7 +37,7 @@ final class WatchCommand implements CliCommand
             $context->cancellationToken(true),
             $observer,
         );
-        $context->output($result->jsonSerialize(), isset($options['json']), $result->summary);
+        $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);
         return 0;
     }
 }

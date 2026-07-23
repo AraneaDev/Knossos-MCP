@@ -57,18 +57,24 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         assertSame(['limit' => ['10'], 'mode' => ['auto', 'incremental'], 'json' => ['true']], $options);
     }
 
+    public function testOptionParserTreatsBareDoubleDashAsEndOfOptions(): void
+    {
+        // M2a / parse(): a bare `--` is the standard end-of-options marker;
+        // it is consumed (not stored) and everything after it is a positional
+        // argument even when it looks like an option.
+        $parser = new CliOptionParser();
+        [$positionals, $options] = $parser->parse(['scan', '--json', '--', '--not-an-option', 'src/']);
+
+        assertSame(['scan', '--not-an-option', 'src/'], $positionals);
+        assertSame(['json' => ['true']], $options);
+    }
+
     public function testOptionParserRejectsEmptyOptionName(): void
     {
         // M2 / parse() throw: an option starting with `--` but with an
-        // empty name after the `--` strip throws. The empty-string
-        // input without `--` prefix would just be bucketed as a positional
-        // arg — it does NOT throw. The intent is to exercise the throw
-        // guard, so the input must be `--` (or `--=value`).
+        // empty name after the `--` strip throws. `--=value` is not the bare
+        // end-of-options marker, so it still reaches the empty-name guard.
         $parser = new CliOptionParser();
-        assertThrows(
-            fn() => $parser->parse(['--']),
-            InvalidArgumentException::class,
-        );
         assertThrows(
             fn() => $parser->parse(['--=value']),
             InvalidArgumentException::class,
@@ -369,6 +375,27 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     }
 
     // ===== CliCommandContext ===============================================
+
+    public function testCommandContextOutputSubstitutesInvalidUtf8InsteadOfFailing(): void
+    {
+        // A latin-1-named file (valid on ext4) carries raw bytes >0x7F. Without
+        // JSON_INVALID_UTF8_SUBSTITUTE, json_encode would throw and discard the
+        // entire command result. The bad byte must degrade to U+FFFD instead.
+        $context = new CliCommandContext(
+            new CliOptionParser(),
+            new CliInputLoader(),
+            new RuntimeFactory(self::repositoryRoot()),
+            ':memory:',
+        );
+
+        ob_start();
+        $context->output(['path' => "caf\xe9.php"], true, 'text');
+        $rendered = (string) ob_get_clean();
+
+        $decoded = json_decode(trim($rendered), true);
+        assertSame(true, is_array($decoded));
+        assertSame(true, str_contains((string) $decoded['path'], "\u{FFFD}"));
+    }
 
     public function testCommandContextConstructorStoresPromotedFields(): void
     {

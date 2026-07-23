@@ -76,6 +76,38 @@ final class TestModuleRuleTest extends TestCase
         assertSame(1, count($facts));
     }
 
+    public function testClassifyDoesNotTagAmbiguousSpecDirectoryNestedUnderSourceRoot(): void
+    {
+        // src/openapi/spec/PetStore.php is an OpenAPI spec directory, not a test
+        // module: an ambiguous 'spec' segment nested under a source root must
+        // not be tagged, otherwise it is wrongly excluded from dead-code checks.
+        $node = $this->makeNode('src/openapi/spec/PetStore.php');
+
+        $facts = (new TestModuleRule())->classify($node);
+
+        assertSame([], $facts);
+    }
+
+    public function testClassifyDoesNotTagAmbiguousTestsDirectoryNestedUnderSourceRoot(): void
+    {
+        // Likewise 'tests'/'test' under src are treated as source, not test.
+        $node = $this->makeNode('lib/fixtures/tests/data/Sample.php');
+
+        $facts = (new TestModuleRule())->classify($node);
+
+        assertSame([], $facts);
+    }
+
+    public function testClassifyStillTagsUnambiguousUnderscoreTestsUnderSourceRoot(): void
+    {
+        // The unambiguous __tests__ convention still tags even under src/.
+        $node = $this->makeNode('src/components/__tests__/Widget.tsx');
+
+        $facts = (new TestModuleRule())->classify($node);
+
+        assertSame(1, count($facts));
+    }
+
     public function testClassifyDirectoryMatchIsCaseInsensitive(): void
     {
         // 'TESTS' lowercased at compare time matches 'tests' in DIRECTORY_SEGMENTS.

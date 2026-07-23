@@ -1266,6 +1266,37 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         }
     }
 
+    public function testCheckArchitectureExitCodeReflectsViolationPresence(): void
+    {
+        // The "check" command must gate CI on its own result: exit 1 when
+        // declared-policy violations exist, exit 0 otherwise (mirrors
+        // quality-gate). Asserting the exit code equals the sign of the
+        // authoritative violation_count keeps the test robust to the fixture.
+        [$dbPath, $projectId, $boundaryId, , $cleanup] = $this->richPopulatedTestDatabase();
+        $policiesFile = sys_get_temp_dir() . '/knossos-policies-' . bin2hex(random_bytes(6)) . '.json';
+        file_put_contents($policiesFile, json_encode([
+            ['id' => 'deny-unassigned', 'from_boundary' => $boundaryId, 'deny_targets' => ['@unassigned']],
+        ]));
+        try {
+            $context = new CliCommandContext(
+                new CliOptionParser(),
+                new CliInputLoader(),
+                new RuntimeFactory(self::repositoryRoot()),
+                $dbPath,
+            );
+            $cmd = new QueryCommand();
+            ob_start();
+            $exit = $cmd->run('check-architecture', [$projectId], ['policies' => [$policiesFile], 'json' => [true]], $context);
+            $rendered = (string) ob_get_clean();
+            $decoded = json_decode(trim($rendered), true);
+            $count = $decoded['data']['bounds']['violation_count'] ?? count($decoded['data']['violations']);
+            assertSame($count > 0 ? 1 : 0, $exit);
+        } finally {
+            @unlink($policiesFile);
+            $cleanup();
+        }
+    }
+
     // ===== ToolService / ArchitecturePolicyQueryService validation guards ===
 
     public function testCheckArchitectureRejectsEmptyPolicies(): void
