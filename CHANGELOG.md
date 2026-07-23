@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.5.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.4.0...v0.5.0) (2026-07-23)
+
+
+### Features
+
+* **reconcile:** report per-phase timings through scan stage metrics ([7a03322](https://github.com/AraneaDev/Knossos-MCP/commit/7a0332254c46d3a6827f5314ab57558962513e1d))
+* **scan:** persist failed and cancelled scans (audit batch 10) ([703e4a6](https://github.com/AraneaDev/Knossos-MCP/commit/703e4a69ef9a934f19bcd5d8be6ac12e55863898))
+
+
+### Bug Fixes
+
+* **boundary:** keep merged suffix display-only; stable id from primary rule name ([76e97f9](https://github.com/AraneaDev/Knossos-MCP/commit/76e97f9a1529b728045efb832f1ee4b7ca3b7494))
+* **boundary:** merge inferred rules sharing an identical matcher ([18c5e1c](https://github.com/AraneaDev/Knossos-MCP/commit/18c5e1ca9e467c565b7f00f46ab422dd28c4db54))
+* **boundary:** only symbol-shaped nodes seed inferred prefix rules ([a3bbc23](https://github.com/AraneaDev/Knossos-MCP/commit/a3bbc23f0a21864e045c87a7dbc55bce8914a102))
+* **bundle:** validate untrusted imports and torn exports (audit batch 8) ([cd0287a](https://github.com/AraneaDev/Knossos-MCP/commit/cd0287adb343e0ecd5b221cdd9c43a49d1722077))
+* **ci:** copy workers/python/tests into quality image so pytest collects them ([6b88580](https://github.com/AraneaDev/Knossos-MCP/commit/6b885805ba620d37b2a7ca09c0b6ce246af8ed5a))
+* **cli:** option validation, git/doctor robustness, boundary anchoring (audit batch 7) ([b46aef3](https://github.com/AraneaDev/Knossos-MCP/commit/b46aef3f802102c878d58c630aca5aa98f62fa1e))
+* **flow:** expand class endpoints to contained members in explain_flow ([0d329a8](https://github.com/AraneaDev/Knossos-MCP/commit/0d329a8cfdfc248676e916ecbf95d9eacd3e87a6))
+* **mcp:** transport resilience, session safety, protocol conformance (audit batch 3) ([76f2d5d](https://github.com/AraneaDev/Knossos-MCP/commit/76f2d5dc6752ac6cfe6316983fad4bd95addad94))
+* **query:** correctness, truncation honesty, and bounded fan-out (audit batch 2) ([6b3ab0f](https://github.com/AraneaDev/Knossos-MCP/commit/6b3ab0ff10ad85018c832b25903b970d2568b2ea))
+* reconcile branch with upstream 0.4.0 (post-rebase) ([2ef14a1](https://github.com/AraneaDev/Knossos-MCP/commit/2ef14a18a933485e0d80b1373fc9bfaf95679569))
+* **reconcile:** scope duplicate-symbol warning to non-shared kinds, once per id ([5e5d2be](https://github.com/AraneaDev/Knossos-MCP/commit/5e5d2beee83eb1c8375643907aaf48af5891f1bc))
+* **reconcile:** start prepare phase timer before pre-transaction work ([768d29f](https://github.com/AraneaDev/Knossos-MCP/commit/768d29f411623c2b13838de6c10a22a796258f69))
+* resolve four findings from testing the MCP against itself ([1843aed](https://github.com/AraneaDev/Knossos-MCP/commit/1843aed2d77d1e1b192d42814f6cb575bec95874))
+* **scan:** fast-path staleness, discovery resilience, lock safety (audit batch 4) ([2283e6e](https://github.com/AraneaDev/Knossos-MCP/commit/2283e6ee431e5aaa72749685072e3bb849baa7c5))
+* **suggest:** filter stop words and short tokens with permissive fallback ([ed85ec3](https://github.com/AraneaDev/Knossos-MCP/commit/ed85ec3b89e085948f293cd02f197a6d4936cd58))
+* **test:** inject KNOSSOS_PHP_COVERAGE_DIR into php worker via env wrapper ([d7b2e80](https://github.com/AraneaDev/Knossos-MCP/commit/d7b2e809dc45ee391a370496556cbd89fcfae38b))
+* **test:** repair audit-batch permission/DB tests exposed by non-root run ([6ca24d9](https://github.com/AraneaDev/Knossos-MCP/commit/6ca24d9d1435f6ad917498f6aa9711a3204dd792))
+* **worker:** resolve send/crash/orphan/watch defects (audit batch 5) ([925b525](https://github.com/AraneaDev/Knossos-MCP/commit/925b525d3417d76c7354453577a343227ca4570a))
+* **workers:** harden PHP/TS/Python scanners against hostile source (audit batch 6) ([9fd352e](https://github.com/AraneaDev/Knossos-MCP/commit/9fd352ed1c920a563e5abfb713591fbb09f0bd60))
+
+
+### Performance Improvements
+
+* **reconcile:** batch fact inserts; remove dead deleteFactsByOwner ([df9d516](https://github.com/AraneaDev/Knossos-MCP/commit/df9d516bb5b5d1945c707fdd03e4f9d78e76afc9))
+* **reconcile:** clear_graph — 24179ms -&gt; 541ms on self-scan ([3c23d02](https://github.com/AraneaDev/Knossos-MCP/commit/3c23d02530d16d33b3f24504354c049e0febecd8))
+* **store:** fix O(N^2) reconciliation and harden transactions (audit batch 1) ([9541d98](https://github.com/AraneaDev/Knossos-MCP/commit/9541d983bee5d11c5aa9e78441b38384713b0b74))
+
 ## [0.4.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.3.0...v0.4.0) (2026-07-23)
 
 
