@@ -28,6 +28,15 @@ final readonly class GraphReconciler
             $fileIds[$file->relativePath] = StableId::file($projectId, $file->relativePath);
         }
 
+        // Initialize phase timing window. Must occur before collectNodes to capture
+        // the full duration of all pre-transaction preparation work.
+        $phaseMs = [];
+        $phaseStarted = hrtime(true);
+        $mark = static function (string $phase) use (&$phaseMs, &$phaseStarted): void {
+            $phaseMs[$phase] = round((hrtime(true) - $phaseStarted) / 1_000_000, 3);
+            $phaseStarted = hrtime(true);
+        };
+
         [$nodeMap, $nodes, $nodeWarnings] = $this->collectNodes($projectId, $request->contributions);
         $this->attachNodeFiles($nodes, $fileIds);
         [$externalNodes, $edges] = $this->resolveEdges($projectId, $request->contributions, $nodeMap, $fileIds);
@@ -42,12 +51,6 @@ final readonly class GraphReconciler
         );
         $boundaries = $this->resolveBoundaries($projectId, $request->boundaries, $nodeMap);
 
-        $phaseMs = [];
-        $phaseStarted = hrtime(true);
-        $mark = static function (string $phase) use (&$phaseMs, &$phaseStarted): void {
-            $phaseMs[$phase] = round((hrtime(true) - $phaseStarted) / 1_000_000, 3);
-            $phaseStarted = hrtime(true);
-        };
         $mark('prepare');
 
         $diagnosticCount = 0;
