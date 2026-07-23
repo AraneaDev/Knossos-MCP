@@ -1,5 +1,14 @@
 # Remediation Plan — 2026-07-23 Comprehensive Audit
 
+> **Status: COMPLETE (2026-07-23).** All 10 batches landed on `fix/self-test-findings`.
+> Final gates green: PHPUnit 1736 tests (7 root-permission skips), PHPStan clean,
+> php-cs-fixer clean, TS vitest 19 + eslint clean, Python ruff/mypy clean + pytest 19,
+> generated reference docs fresh, `composer.json` valid. Commits `b506a75`, `e49ccea`,
+> `55bda09`, `1311e40`, `eab74a3`, `fa573bc`, `5873309`, `b8c5a4e`, `d660967`, `c3cc244`.
+> Deferred by decision: true incremental reconciliation (its own tracked effort).
+
+
+
 Addresses the ~95 findings in `2026-07-23-comprehensive-logic-audit.md`. Work is split into **9 file-disjoint batches** so up to 5 agents can run concurrently without editing the same file. Each batch agent works test-first (project TDD norm), runs a targeted `phpunit --filter` (or vitest/pytest) for its area, and returns a summary + patch. The main loop applies patches sequentially, runs the full `composer check` + workers checks, and commits **one commit per batch** on `fix/self-test-findings` (or a fresh `fix/audit-remediation`).
 
 ## Execution model
