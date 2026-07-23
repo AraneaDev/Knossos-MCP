@@ -101,6 +101,7 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
 
         $violations = [];
         $evidence = [];
+        $violationCount = 0;
         $edgesExamined = 0;
         foreach ($edges as $edge) {
             ++$edgesExamined;
@@ -128,29 +129,32 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
                 if ($reasons === []) {
                     continue;
                 }
-                $violation = [
-                    'policy_id' => $policy['id'],
-                    'relationship' => [
-                        'id' => $edge['id'], 'kind' => $edge['kind'], 'confidence' => $edge['confidence'],
-                        'origin' => $edge['origin'], 'source_id' => $edge['source_id'], 'target_id' => $edge['target_id'],
-                    ],
-                    'source' => ['id' => $edge['source_id'], 'kind' => $edge['source_kind'], 'canonical_name' => $edge['source_name']],
-                    'target' => ['id' => $edge['target_id'], 'kind' => $edge['target_kind'], 'canonical_name' => $edge['target_name']],
-                    'source_boundaries' => $boundaries[$edge['source_id']] ?? [],
-                    'target_boundaries' => $boundaries[$edge['target_id']] ?? [],
-                    'reasons' => $reasons,
-                ];
-                $violations[] = $violation;
-                if ($edge['relative_path'] !== null && count($evidence) < $limit) {
-                    $evidence[] = [
-                        'policy_id' => $policy['id'], 'edge_id' => $edge['id'], 'path' => $edge['relative_path'],
-                        'start_line' => $edge['start_line'], 'end_line' => $edge['end_line'],
+                // Keep an exact count past the collection limit so callers (e.g.
+                // quality_gate) can compare a budget against the true violation
+                // total rather than the capped, collected subset.
+                ++$violationCount;
+                if (count($violations) < $limit) {
+                    $violations[] = [
+                        'policy_id' => $policy['id'],
+                        'relationship' => [
+                            'id' => $edge['id'], 'kind' => $edge['kind'], 'confidence' => $edge['confidence'],
+                            'origin' => $edge['origin'], 'source_id' => $edge['source_id'], 'target_id' => $edge['target_id'],
+                        ],
+                        'source' => ['id' => $edge['source_id'], 'kind' => $edge['source_kind'], 'canonical_name' => $edge['source_name']],
+                        'target' => ['id' => $edge['target_id'], 'kind' => $edge['target_kind'], 'canonical_name' => $edge['target_name']],
+                        'source_boundaries' => $boundaries[$edge['source_id']] ?? [],
+                        'target_boundaries' => $boundaries[$edge['target_id']] ?? [],
+                        'reasons' => $reasons,
                     ];
-                }
-                if (count($violations) >= $limit) {
+                    if ($edge['relative_path'] !== null && count($evidence) < $limit) {
+                        $evidence[] = [
+                            'policy_id' => $policy['id'], 'edge_id' => $edge['id'], 'path' => $edge['relative_path'],
+                            'start_line' => $edge['start_line'], 'end_line' => $edge['end_line'],
+                        ];
+                    }
+                } elseif (!in_array('result_limit', $truncationReasons, true)) {
                     $truncated = true;
                     $truncationReasons[] = 'result_limit';
-                    break 2;
                 }
             }
         }
@@ -167,7 +171,8 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
                 ], $compiled),
                 'bounds' => [
                     'limit' => $limit, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
-                    'edges_examined' => $edgesExamined, 'truncation_reasons' => $truncationReasons,
+                    'edges_examined' => $edgesExamined, 'violation_count' => $violationCount,
+                    'truncation_reasons' => $truncationReasons,
                 ],
             ],
             $evidence,

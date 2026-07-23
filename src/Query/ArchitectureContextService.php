@@ -97,8 +97,16 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
             $context['sections'][$sectionName] = ['status' => 'omitted', 'reason' => 'total_budget'];
             $encoded = json_encode($context, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         }
-        $truncated = str_contains(json_encode($context, JSON_THROW_ON_ERROR), '"status":"truncated"')
-            || str_contains(json_encode($context, JSON_THROW_ON_ERROR), '"status":"omitted"');
+        // Track truncation structurally from each section's own status rather
+        // than substring-matching serialized JSON, which a scanned attribute
+        // containing "status":"truncated" would otherwise trip.
+        $truncated = false;
+        foreach ($context['sections'] as $section) {
+            if (in_array($section['status'] ?? null, ['truncated', 'omitted'], true)) {
+                $truncated = true;
+                break;
+            }
+        }
 
         return new ResultEnvelope(
             $projectId,

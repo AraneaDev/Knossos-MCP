@@ -295,7 +295,7 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
             $clause = $this->filterClause('bm.boundary_id', 'boundary', $boundaryIds, $params);
             $sql .= ' AND EXISTS (SELECT 1 FROM boundary_memberships bm WHERE bm.node_id = n.id' . $clause . ')';
         }
-        $sql .= ' ORDER BY rank, n.canonical_name LIMIT :limit OFFSET :offset';
+        $sql .= ' ORDER BY rank, n.canonical_name, n.id LIMIT :limit OFFSET :offset';
         $statement = $this->pdo->prepare($sql);
         foreach ($params as $key => $value) {
             $statement->bindValue(':' . $key, $value);

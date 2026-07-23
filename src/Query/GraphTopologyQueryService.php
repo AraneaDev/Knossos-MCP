@@ -145,6 +145,17 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $internal = array_values(array_filter($edges, static fn(array $edge): bool => isset($memberSet[$edge['source_id']], $memberSet[$edge['target_id']])));
             $edgeTruncated = count($internal) > 200;
             $memberTruncated = count($component) > 100;
+            // Per-cycle member/edge trimming is real result truncation; surface
+            // it on the envelope so dependency_cycles never reports truncated:false
+            // over demonstrably truncated cycle detail.
+            if ($memberTruncated) {
+                $truncated = true;
+                $truncationReasons[] = 'member_limit';
+            }
+            if ($edgeTruncated) {
+                $truncated = true;
+                $truncationReasons[] = 'internal_edge_limit';
+            }
             $sampledEdges = array_slice($internal, 0, 200);
             $cycleEdges = [];
             $minimum = 3;
@@ -166,6 +177,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $cycles[] = [
                 'size' => count($component),
                 'minimum_confidence' => array_search($minimum, $confidenceRank, true),
+                // Full membership (pre-slice) so callers such as architecture_health
+                // can flag every participant, not just the first 100.
+                'member_ids' => $component,
                 'members' => array_map(static fn(string $id): array => $nodes[$id] + ['boundaries' => $boundaryMap[$id] ?? []], $memberIds),
                 'relationships' => $cycleEdges,
                 'truncated' => $edgeTruncated || $memberTruncated,
@@ -273,8 +287,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $cycleResult = $this->dependencyCycles($projectId, $edgeKinds, $minConfidence, 100, $maxNodes, $maxEdges, $remainingMs);
             $cycleScanTruncated = $cycleResult->truncated;
             foreach ($cycleResult->data['cycles'] as $cycle) {
-                foreach ($cycle['members'] as $member) {
-                    $cycleMembers[$member['id']] = true;
+                // Collect from the full pre-slice membership so participants
+                // beyond the 100-member detail cap still earn the cycle signal.
+                foreach ($cycle['member_ids'] as $memberId) {
+                    $cycleMembers[$memberId] = true;
                 }
             }
         } else {
@@ -459,12 +475,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $paths = [];
         $visited = 0;
         $truncated = false;
-        $truncationReason = null;
+        $truncationReasons = [];
+        $flowEdgesTruncated = false;
         $candidateCap = $maxPaths * 20;
         while ($queue !== [] && count($paths) < $candidateCap) {
             if ($this->now() > $deadline || $visited >= 10_000) {
                 $truncated = true;
-                $truncationReason = $visited >= 10_000 ? 'visit_limit' : 'time_limit';
+                $truncationReasons[] = $visited >= 10_000 ? 'visit_limit' : 'time_limit';
                 break;
             }
             [$nodes, $hops, $seen] = array_shift($queue);
@@ -473,8 +490,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 continue;
             }
             $last = $nodes[array_key_last($nodes)];
-            foreach ($this->flowEdges($projectId, $last['id'], $edgeKinds, $confidenceRank[$minConfidence]) as $edge) {
-                if (isset($seen[$edge['target_id']])) {
+            foreach ($this->flowEdges($projectId, $last['id'], $edgeKinds, $confidenceRank[$minConfidence], $flowEdgesTruncated) as $edge) {
+                // The goal may be reached even when it is already in $seen: the
+                // source is pre-seeded, so a self-flow (from == to) depends on
+                // matching the target before the visited-guard skips it.
+                $isTarget = $edge['target_id'] === $target['id'];
+                if (isset($seen[$edge['target_id']]) && !$isTarget) {
                     continue;
                 }
                 $next = $this->node($edge['target_id']);
@@ -483,11 +504,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 }
                 $newNodes = [...$nodes, $next];
                 $newHops = [...$hops, $edge];
-                if ($next['id'] === $target['id']) {
+                if ($isTarget) {
                     $paths[] = $this->path($newNodes, $newHops);
                     if (count($paths) >= $candidateCap) {
                         $truncated = true;
-                        $truncationReason = 'candidate_limit';
+                        $truncationReasons[] = 'candidate_limit';
                         break 2;
                     }
                     continue;
@@ -496,6 +517,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $newSeen[$next['id']] = true;
                 $queue[] = [$newNodes, $newHops, $newSeen];
             }
+        }
+        if ($flowEdgesTruncated) {
+            // A node with more than 500 outbound edges of the selected kinds had
+            // some silently dropped; record it rather than claim completeness.
+            $truncated = true;
+            $truncationReasons[] = 'per_node_edge_limit';
         }
         usort($paths, static function (array $left, array $right): int {
             return ($right['score']['minimum_confidence'] <=> $left['score']['minimum_confidence'])
@@ -506,8 +533,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         if (count($paths) > $maxPaths) {
             $paths = array_slice($paths, 0, $maxPaths);
             $truncated = true;
-            $truncationReason = 'path_limit';
+            // Appended, never overwriting an earlier time/visit reason: a
+            // timed-out search must not report only path trimming.
+            $truncationReasons[] = 'path_limit';
         }
+        $truncationReasons = array_values(array_unique($truncationReasons));
         $evidence = [];
         foreach ($paths as $pathIndex => $path) {
             foreach ($path['hops'] as $hopIndex => $hop) {
@@ -523,7 +553,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $count === 0 ? 'No supported static flow was found within the configured bounds.' : sprintf('Found %d plausible static flow%s.', $count, $count === 1 ? '' : 's'),
             [
                 'from' => $source, 'to' => $target, 'paths' => $paths,
-                'bounds' => ['max_depth' => $maxDepth, 'max_paths' => $maxPaths, 'timeout_ms' => $timeoutMs, 'visited_states' => $visited, 'truncation_reason' => $truncationReason],
+                'bounds' => ['max_depth' => $maxDepth, 'max_paths' => $maxPaths, 'timeout_ms' => $timeoutMs, 'visited_states' => $visited, 'truncation_reason' => $truncationReasons[0] ?? null, 'truncation_reasons' => $truncationReasons],
             ],
             $evidence,
             ['Flows are plausible statically supported paths, not proof of runtime execution.'],
@@ -532,7 +562,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /** @param list<string> $edgeKinds */
-    public function impactAnalysis(string $projectId, string $symbol, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
+    public function impactAnalysis(string $projectId, string $symbol, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000, ?int $deadline = null): ResultEnvelope
     {
         $project = $this->project($projectId);
         if ($maxDepth < 1 || $maxDepth > 8) {
@@ -562,12 +592,17 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             );
         }
         $target = $candidates[0];
-        $deadline = $this->now() + ($timeoutMs * 1_000_000);
+        // A caller (e.g. changed_files_impact fanning out over many components)
+        // can pass one shared deadline so the whole request is bounded, instead
+        // of each analysis resetting its own timeout.
+        $deadline ??= $this->now() + ($timeoutMs * 1_000_000);
         $queue = [[$target, 0, 3]];
         $seen = [$target['id'] => true];
         $dependants = [];
+        $recordIndex = [];
         $truncated = false;
         $truncationReason = null;
+        $edgesTruncated = false;
         $visited = 0;
         while ($queue !== []) {
             if ($this->now() > $deadline || $visited >= 10_000) {
@@ -580,8 +615,19 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             if ($distance >= $maxDepth) {
                 continue;
             }
-            foreach ($this->impactEdges($projectId, $current['id'], $edgeKinds, $confidenceRank[$minConfidence]) as $edge) {
+            foreach ($this->impactEdges($projectId, $current['id'], $edgeKinds, $confidenceRank[$minConfidence], $edgesTruncated) as $edge) {
+                $edgeConfidence = $confidenceRank[$edge['confidence']];
                 if (isset($seen[$edge['source_id']])) {
+                    // Already discovered: if this equal-distance alternate path
+                    // carries higher confidence, prefer it (max per distance)
+                    // rather than keeping the first-discovered, weaker value.
+                    $existingIndex = $recordIndex[$edge['source_id']] ?? null;
+                    if ($existingIndex !== null && $dependants[$existingIndex]['distance'] === $distance + 1) {
+                        $candidateRank = min($pathConfidence, $edgeConfidence);
+                        if ($candidateRank > $confidenceRank[$dependants[$existingIndex]['path_confidence']]) {
+                            $dependants[$existingIndex]['path_confidence'] = array_search($candidateRank, $confidenceRank, true);
+                        }
+                    }
                     continue;
                 }
                 $node = $this->node($edge['source_id']);
@@ -589,23 +635,37 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     continue;
                 }
                 $seen[$node['id']] = true;
-                $edgeConfidence = $confidenceRank[$edge['confidence']];
-                $record = [
+                $dependants[] = [
                     'node' => $node,
                     'distance' => $distance + 1,
                     'path_confidence' => array_search(min($pathConfidence, $edgeConfidence), $confidenceRank, true),
                     'via' => $this->impactHop($edge),
-                    'roles' => $this->roles([$node['id']])[$node['id']] ?? [],
                 ];
-                $dependants[] = $record;
-                if (count($dependants) >= $limit) {
+                // limit+1 semantics: keep exactly $limit, flag truncation only
+                // when a further dependant actually exists.
+                if (count($dependants) > $limit) {
+                    array_pop($dependants);
                     $truncated = true;
                     $truncationReason = 'result_limit';
                     break 2;
                 }
+                $recordIndex[$node['id']] = array_key_last($dependants);
                 $queue[] = [$node, $distance + 1, min($pathConfidence, $edgeConfidence)];
             }
         }
+        if ($edgesTruncated) {
+            // A hub with more than 500 inbound edges of the selected kinds had
+            // some silently dropped; surface it instead of claiming completeness.
+            $truncated = true;
+            $truncationReason ??= 'per_node_edge_limit';
+        }
+        // Resolve roles for all dependants in one batched pass rather than one
+        // query per accepted dependant during the BFS.
+        $roleMap = $this->roles(array_map(static fn(array $record): string => $record['node']['id'], $dependants));
+        foreach ($dependants as &$dependant) {
+            $dependant['roles'] = $roleMap[$dependant['node']['id']] ?? [];
+        }
+        unset($dependant);
         $boundaryMap = $this->boundaryNames(array_map(static fn(array $record): string => $record['node']['id'], $dependants));
         $boundaryGroups = [];
         foreach ($dependants as &$record) {
@@ -715,7 +775,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /** @param list<string> $edgeKinds @return list<array<string, mixed>> */
-    private function flowEdges(string $projectId, string $sourceId, array $edgeKinds, int $minimumConfidence): array
+    private function flowEdges(string $projectId, string $sourceId, array $edgeKinds, int $minimumConfidence, bool &$truncated = false): array
     {
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
         $statement = $this->pdo->prepare(
@@ -724,13 +784,18 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? AND e.source_id = ? ' .
             sprintf('AND e.kind IN (%s) ', $placeholders) .
             "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-            'ORDER BY CASE e.confidence WHEN \'certain\' THEN 3 WHEN \'probable\' THEN 2 ELSE 1 END DESC, e.kind, e.id LIMIT 500',
+            'ORDER BY CASE e.confidence WHEN \'certain\' THEN 3 WHEN \'probable\' THEN 2 ELSE 1 END DESC, e.kind, e.id LIMIT 501',
         );
         $statement->execute([$projectId, $sourceId, ...$edgeKinds, $minimumConfidence]);
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+        if (count($rows) > 500) {
+            $truncated = true;
+            $rows = array_slice($rows, 0, 500);
+        }
+        return $rows;
     }
     /** @param list<string> $edgeKinds @return list<array<string, mixed>> */
-    private function impactEdges(string $projectId, string $targetId, array $edgeKinds, int $minimumConfidence): array
+    private function impactEdges(string $projectId, string $targetId, array $edgeKinds, int $minimumConfidence, bool &$truncated = false): array
     {
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
         $statement = $this->pdo->prepare(
@@ -739,10 +804,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? AND e.target_id = ? ' .
             sprintf('AND e.kind IN (%s) ', $placeholders) .
             "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-            'ORDER BY CASE e.confidence WHEN \'certain\' THEN 3 WHEN \'probable\' THEN 2 ELSE 1 END DESC, e.kind, e.id LIMIT 500',
+            'ORDER BY CASE e.confidence WHEN \'certain\' THEN 3 WHEN \'probable\' THEN 2 ELSE 1 END DESC, e.kind, e.id LIMIT 501',
         );
         $statement->execute([$projectId, $targetId, ...$edgeKinds, $minimumConfidence]);
-        return $statement->fetchAll();
+        $rows = $statement->fetchAll();
+        if (count($rows) > 500) {
+            $truncated = true;
+            $rows = array_slice($rows, 0, 500);
+        }
+        return $rows;
     }
     /** @param array<string, mixed> $edge @return array<string, mixed> */
     private function impactHop(array $edge): array
@@ -824,20 +894,37 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $classOfMethod[$row['target_id']] = $row['source_id'];
             }
         }
-        $classIds = array_values(array_unique($classOfMethod));
-        $ancestorsOfClass = [];
-        foreach (array_chunk($classIds, 500) as $chunk) {
-            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-            $statement = $this->pdo->prepare(
-                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
-                sprintf('AND source_id IN (%s)', $placeholders),
-            );
-            $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $ancestorsOfClass[$row['source_id']][] = $row['target_id'];
+        // Walk the extends/implements closure transitively (bounded depth) so a
+        // method overriding a grandparent's member is recognized as inherited,
+        // not just one overriding a direct parent's.
+        $parents = [];
+        $edgesResolved = [];
+        $frontier = array_values(array_unique(array_values($classOfMethod)));
+        $maxAncestorDepth = 20;
+        for ($depth = 0; $depth < $maxAncestorDepth && $frontier !== []; $depth++) {
+            $pending = array_values(array_filter($frontier, static fn(string $id): bool => !isset($edgesResolved[$id])));
+            if ($pending === []) {
+                break;
             }
+            $discovered = [];
+            foreach (array_chunk($pending, 500) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $statement = $this->pdo->prepare(
+                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
+                    sprintf('AND source_id IN (%s)', $placeholders),
+                );
+                $statement->execute([$projectId, ...$chunk]);
+                foreach ($statement->fetchAll() as $row) {
+                    $parents[$row['source_id']][] = $row['target_id'];
+                    $discovered[] = $row['target_id'];
+                }
+            }
+            foreach ($pending as $id) {
+                $edgesResolved[$id] = true;
+            }
+            $frontier = array_values(array_unique($discovered));
         }
-        $ancestorIds = array_values(array_unique(array_merge(...array_values($ancestorsOfClass) ?: [[]])));
+        $ancestorIds = array_values(array_unique(array_merge(...array_values($parents) ?: [[]])));
         $ancestorMeta = [];
         foreach (array_chunk($ancestorIds, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
@@ -869,10 +956,34 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
         }
 
+        // Iterative transitive-closure of ancestors for a class, memoized.
+        $closureCache = [];
+        $closureOf = static function (string $classId) use ($parents, &$closureCache): array {
+            if (isset($closureCache[$classId])) {
+                return $closureCache[$classId];
+            }
+            $seen = [];
+            $stack = $parents[$classId] ?? [];
+            while ($stack !== []) {
+                $id = array_pop($stack);
+                if (isset($seen[$id])) {
+                    continue;
+                }
+                $seen[$id] = true;
+                foreach ($parents[$id] ?? [] as $parentId) {
+                    if (!isset($seen[$parentId])) {
+                        $stack[] = $parentId;
+                    }
+                }
+            }
+            $closureCache[$classId] = array_keys($seen);
+            return $closureCache[$classId];
+        };
+
         $result = [];
         foreach ($methodIds as $methodId) {
             $classId = $classOfMethod[$methodId] ?? null;
-            $ancestors = $classId === null ? [] : ($ancestorsOfClass[$classId] ?? []);
+            $ancestors = $classId === null ? [] : $closureOf($classId);
             $inherited = false;
             $externalAncestor = null;
             sort($ancestors, SORT_STRING);

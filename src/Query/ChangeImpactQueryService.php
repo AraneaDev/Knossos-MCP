@@ -111,6 +111,11 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
     public function changedFilesImpact(string $projectId, array $files = [], bool $workingTree = false, ?string $baseRef = null, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
     {
         $project = $this->project($projectId);
+        // A lone base_ref (no working_tree, no files) gets the specific coupling
+        // message rather than the generic mutual-exclusion error.
+        if (!$workingTree && $baseRef !== null && $files === []) {
+            throw new InvalidArgumentException('base_ref requires working_tree.');
+        }
         if ($workingTree === ($files !== [])) {
             throw new InvalidArgumentException('Provide either files or working_tree, but not both.');
         }
@@ -159,8 +164,12 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         $entryPoints = [];
         $warnings = [];
         $truncated = $git['truncated'] || count($direct) > 1000;
+        // One deadline shared across the whole fan-out bounds the entire request,
+        // instead of each per-component analysis resetting its own timeout (which
+        // could otherwise multiply into minutes of wall time for a single call).
+        $deadline = $this->now() + ($timeoutMs * 1_000_000);
         foreach (array_slice($direct, 0, 1000) as $node) {
-            $impact = $this->topologyQueries->impactAnalysis($projectId, $node['id'], $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+            $impact = $this->topologyQueries->impactAnalysis($projectId, $node['id'], $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs, $deadline);
             foreach ($impact->data['by_distance'] ?? [] as $group) {
                 foreach ($group['dependants'] as $record) {
                     $id = $record['node']['id'];
