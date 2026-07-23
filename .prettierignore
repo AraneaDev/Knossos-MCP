@@ -7,6 +7,7 @@ package-lock.json
 workers/**/package-lock.json
 tests/Fixtures/
 coverage/
+.pytest_cache/
 docs/Architecture-MCP-Project-Plan.docx
 docs/reference/cli.md
 docs/reference/mcp-tools.md
