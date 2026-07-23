@@ -181,6 +181,7 @@ COPY docker-compose.yml .env.example .mcp.json ./
 COPY docs ./docs
 COPY benchmarks ./benchmarks
 COPY tests ./tests
+COPY workers/python/tests ./workers/python/tests
 COPY tools ./tools
 COPY .github ./.github
 RUN chmod 0755 tools/quality tools/quality-container tools/install-hooks tools/coverage tools/benchmark tools/supply-chain tools/release-lifecycle tools/scanner-conformance
