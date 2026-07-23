@@ -28,7 +28,7 @@ final readonly class GraphReconciler
             $fileIds[$file->relativePath] = StableId::file($projectId, $file->relativePath);
         }
 
-        [$nodeMap, $nodes] = $this->collectNodes($projectId, $request->contributions);
+        [$nodeMap, $nodes, $nodeWarnings] = $this->collectNodes($projectId, $request->contributions);
         $this->attachNodeFiles($nodes, $fileIds);
         [$externalNodes, $edges] = $this->resolveEdges($projectId, $request->contributions, $nodeMap, $fileIds);
         foreach ($externalNodes as $id => $node) {
@@ -53,6 +53,7 @@ final readonly class GraphReconciler
             $edges,
             $classifications,
             $boundaries,
+            $nodeWarnings,
             &$diagnosticCount,
         ): void {
             $previousProject = $this->repository->findProject($projectId);
@@ -111,7 +112,7 @@ final readonly class GraphReconciler
 
             $this->repository->replaceContributionCache($projectId, $request->contributionCache);
 
-            $diagnosticCount = $this->saveDiagnostics($request, $projectId, $scanId, $fileIds);
+            $diagnosticCount = $this->saveDiagnostics($request, $projectId, $scanId, $fileIds, $nodeWarnings);
             $this->repository->completeScan($projectId, $scanId);
         });
 
@@ -185,12 +186,13 @@ final readonly class GraphReconciler
 
     /**
      * @param list<ScanContribution> $contributions
-     * @return array{0: array<string, string>, 1: array<string, array<string, mixed>>}
+     * @return array{0: array<string, string>, 1: array<string, array<string, mixed>>, 2: list<array<string, string>>}
      */
     private function collectNodes(string $projectId, array $contributions): array
     {
         $references = [];
         $nodes = [];
+        $warnings = [];
         foreach ($contributions as $contribution) {
             $scanner = $this->scannerFromOwner($contribution->ownerKey);
             foreach ($contribution->nodes as $node) {
@@ -202,8 +204,26 @@ final readonly class GraphReconciler
                 $references[$node->localId] = $id;
 
                 if (isset($nodes[$id])) {
-                    if ($nodes[$id]['kind'] !== $node->kind || $nodes[$id]['canonical_name'] !== $node->canonicalName) {
-                        throw new ReconciliationException(sprintf('Conflicting stable node identity: %s', $id));
+                    // Two declarations share a stable id iff they share
+                    // (language, kind, canonical_name) — the very inputs the id
+                    // hashes — so a kind/name mismatch here is unreachable. A
+                    // genuine collision is a re-declaration from a different
+                    // evidence file; keep the first and surface a warning rather
+                    // than silently discarding the divergent provenance.
+                    $existingPath = $nodes[$id]['evidence_path'];
+                    if ($existingPath !== $node->evidence->relativePath) {
+                        $warnings[] = [
+                            'owner' => $contribution->ownerKey,
+                            'code' => 'reconciler.duplicate_symbol_evidence',
+                            'message' => sprintf(
+                                'Stable id %s re-declared by %s with a different evidence file (%s vs %s); keeping the first declaration.',
+                                $id,
+                                $contribution->ownerKey,
+                                $existingPath,
+                                $node->evidence->relativePath,
+                            ),
+                            'path' => $node->evidence->relativePath,
+                        ];
                     }
                     continue;
                 }
@@ -212,7 +232,7 @@ final readonly class GraphReconciler
             }
         }
 
-        return [$references, $nodes];
+        return [$references, $nodes, $warnings];
     }
 
     /**
@@ -376,12 +396,14 @@ final readonly class GraphReconciler
 
     /**
      * @param array<string, string> $fileIds
+     * @param list<array<string, string>> $nodeWarnings
      */
     private function saveDiagnostics(
         FullScanRequest $request,
         string $projectId,
         string $scanId,
         array $fileIds,
+        array $nodeWarnings = [],
     ): int {
         $count = 0;
         foreach ($request->contributions as $contribution) {
@@ -413,6 +435,21 @@ final readonly class GraphReconciler
                 null,
                 null,
                 'discovery',
+            );
+            ++$count;
+        }
+        foreach ($nodeWarnings as $warning) {
+            $this->repository->saveDiagnostic(
+                StableId::edge($projectId, 'diagnostic', $scanId, $warning['code'], 'reconciler:' . $count),
+                $projectId,
+                $scanId,
+                $fileIds[$warning['path']] ?? null,
+                'warning',
+                $warning['code'],
+                $warning['message'],
+                null,
+                null,
+                $warning['owner'],
             );
             ++$count;
         }

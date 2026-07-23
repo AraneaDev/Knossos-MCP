@@ -11,8 +11,17 @@ final class GraphBundleDecoder
     public const FORMAT = 'knossos.graph.bundle';
     public const VERSION = 2;
     public const MAX_COMPRESSED_BYTES = 10_000_000;
-    public const MAX_UNCOMPRESSED_BYTES = 50_000_000;
+    public const MAX_UNCOMPRESSED_BYTES = 8_000_000;
     public const MAX_FACTS = 200_000;
+    /**
+     * Structural-token ceiling enforced before `json_decode`. Each JSON token
+     * (`{`, `[`, `,`, `:`) maps to roughly one PHP zval, so counting them caps
+     * the decoded array count — and therefore memory — even when a highly
+     * compressible payload (e.g. `[1,1,1,…]`) stays under the uncompressed byte
+     * cap. Legitimate bundles are dominated by long string literals (paths,
+     * names, sha256 hashes) and stay far below this bound.
+     */
+    public const MAX_STRUCTURAL_TOKENS = 2_000_000;
 
     /** @return array{manifest: array<string, mixed>, payload: array<string, mixed>, fact_count: int, checksum: string} */
     public function decodeAndValidate(string $compressed): array
@@ -23,6 +32,9 @@ final class GraphBundleDecoder
         $json = @gzdecode($compressed, self::MAX_UNCOMPRESSED_BYTES);
         if (!is_string($json)) {
             throw new InvalidArgumentException('Bundle is not valid bounded gzip data.');
+        }
+        if (self::structuralTokenCount($json) > self::MAX_STRUCTURAL_TOKENS) {
+            throw new InvalidArgumentException('Bundle structural token density exceeds the safe decode limit.');
         }
         $bundle = json_decode($json, true, 128, JSON_THROW_ON_ERROR);
         if (!is_array($bundle) || array_is_list($bundle) || array_keys($bundle) !== ['manifest', 'payload']) {
@@ -52,6 +64,19 @@ final class GraphBundleDecoder
         }
 
         return ['manifest' => $manifest, 'payload' => $payload, 'fact_count' => $factCount, 'checksum' => substr($expectedChecksum, 7)];
+    }
+
+    /**
+     * Upper bound on the number of PHP zvals `json_decode` would allocate,
+     * computed without decoding. Every container and separator token begins a
+     * new value, so their combined count dominates the eventual array size.
+     */
+    private static function structuralTokenCount(string $json): int
+    {
+        return substr_count($json, '{')
+            + substr_count($json, '[')
+            + substr_count($json, ',')
+            + substr_count($json, ':');
     }
 
     /** @param array<string, mixed> $payload */

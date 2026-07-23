@@ -406,6 +406,38 @@ final class GraphBundleServiceTest extends TestCase
         );
 
         $this->assertStringContainsString('Bundle is already imported', $error->getMessage());
+        // The duplicate check runs inside BEGIN IMMEDIATE; the aborted second
+        // import must not leave SQLite's writer slot held open.
+        assertSame(false, $this->pdo->inTransaction());
+        $this->assertNotFalse($this->pdo->query('SELECT 1')->fetchColumn());
+    }
+
+    public function testExportLeavesNoOpenTransaction(): void
+    {
+        // export wraps its seven-table read in a transaction; it must be
+        // committed (not left dangling) once the bundle is produced.
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('f1', 'proj-1', 'src/A.php', 'php');
+
+        $this->service->export('proj-1', 'none');
+
+        assertSame(false, $this->pdo->inTransaction());
+    }
+
+    public function testExportRollsBackReadTransactionOnFailure(): void
+    {
+        // No active snapshot: export throws from inside the read transaction and
+        // must roll it back rather than leave it open.
+        $this->pdo->prepare('INSERT INTO projects (id, name, active_scan_id) VALUES (:id, :name, NULL)')
+            ->execute(['id' => 'proj-1', 'name' => 'P']);
+
+        $error = captureThrows(
+            fn () => $this->service->export('proj-1', 'none'),
+            InvalidArgumentException::class,
+        );
+
+        $this->assertStringContainsString('no active snapshot', $error->getMessage());
+        assertSame(false, $this->pdo->inTransaction());
     }
 
     public function testImportAcceptsExplicitProjectNameOverride(): void
@@ -715,7 +747,7 @@ SQL
         return [
             'id' => $id,
             'relative_path' => $relativePath,
-            'content_hash' => 'h',
+            'content_hash' => 'abcdef0123456789',
             'size' => 0,
             'line_count' => 0,
             'language' => 'php',
@@ -769,7 +801,7 @@ SQL
     {
         $payload = [
             'project_name' => $project_name,
-            'scan' => ['scanner_set_hash' => 'h', 'finished_at' => '2025-01-01T00:00:00+00:00'],
+            'scan' => ['scanner_set_hash' => 'abcdef0123456789', 'finished_at' => '2025-01-01T00:00:00+00:00'],
             'files' => [],
             'nodes' => [],
             'edges' => [],
