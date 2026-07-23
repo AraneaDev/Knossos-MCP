@@ -96,14 +96,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 $this->absorb($stream, $stderr);
             }
 
-            if ($write === []) {
-                continue;
+            foreach ($write as $writable) {
+                $bytes = @fwrite($writable, substr($line, $written));
+                if ($bytes === false) {
+                    throw new WorkerException('WORKER_PIPE_BROKEN', 'Unable to write to scanner worker.');
+                }
+                $written += $bytes;
             }
-            $bytes = @fwrite($stdin, substr($line, $written));
-            if ($bytes === false) {
-                throw new WorkerException('WORKER_PIPE_BROKEN', 'Unable to write to scanner worker.');
-            }
-            $written += $bytes;
         }
         @fflush($stdin);
     }
