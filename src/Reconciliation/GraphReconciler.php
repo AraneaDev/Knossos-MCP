@@ -178,6 +178,7 @@ final readonly class GraphReconciler
         $references = [];
         $nodes = [];
         $warnings = [];
+        $warnedIds = [];
         foreach ($contributions as $contribution) {
             $scanner = $this->scannerFromOwner($contribution->ownerKey);
             foreach ($contribution->nodes as $node) {
@@ -195,8 +196,14 @@ final readonly class GraphReconciler
                     // genuine collision is a re-declaration from a different
                     // evidence file; keep the first and surface a warning rather
                     // than silently discarding the divergent provenance.
+                    // `package`/`external_*` kinds are exempt: they are shared
+                    // across every importing file by design, so a re-declaration
+                    // there is not suspicious. For kinds that are suspicious, warn
+                    // once per stable id rather than once per re-declaring file.
                     $existingPath = $nodes[$id]['evidence_path'];
-                    if ($existingPath !== $node->evidence->relativePath) {
+                    $sharedByDesign = $node->kind === 'package' || str_starts_with($node->kind, 'external_');
+                    if ($existingPath !== $node->evidence->relativePath && !$sharedByDesign && !isset($warnedIds[$id])) {
+                        $warnedIds[$id] = true;
                         $warnings[] = [
                             'owner' => $contribution->ownerKey,
                             'code' => 'reconciler.duplicate_symbol_evidence',

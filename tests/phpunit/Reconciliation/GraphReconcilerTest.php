@@ -365,6 +365,96 @@ final class GraphReconcilerTest extends TestCase
         $this->assertStringContainsString('src/Duplicate.php', $diagnostic[6]);
     }
 
+    public function testCollectNodesPackageReDeclaredAcrossFilesEmitsNoDuplicateWarning(): void
+    {
+        // Two files both importing the same package produce two NodeFacts with
+        // identical (language, kind, canonical_name) — hence one stable id — but
+        // different evidence files. Packages are shared by design: no warning.
+        $first = new NodeFact(
+            localId: 'ts:package:node:fs',
+            kind: 'package',
+            canonicalName: 'node:fs',
+            displayName: 'fs',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/a.ts', 1, 1),
+        );
+        $second = new NodeFact(
+            localId: 'ts:package:node:fs',
+            kind: 'package',
+            canonicalName: 'node:fs',
+            displayName: 'fs',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/b.ts', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([
+                $this->minimalDiscoveredFile('src/a.ts', 'typescript'),
+                $this->minimalDiscoveredFile('src/b.ts', 'typescript'),
+            ]),
+            'contributions' => [
+                $this->minimalContribution([$first]),
+                $this->minimalContribution([$second]),
+            ],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(1, $result->nodes);
+        assertSame(0, $result->diagnostics);
+        $this->assertCount(0, $this->repo->diagnostics);
+    }
+
+    public function testCollectNodesClassReDeclaredFromThreeFilesEmitsOneWarningPerStableId(): void
+    {
+        // A class re-declared from two additional evidence files previously
+        // produced two warnings (one per re-declaring file); a single stable id
+        // warrants a single warning, not one per re-declaration.
+        $first = new NodeFact(
+            localId: 'php:class:App\\Foo',
+            kind: 'class',
+            canonicalName: 'App\\Foo',
+            displayName: 'App\\Foo',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 5),
+        );
+        $second = new NodeFact(
+            localId: 'php:class:App\\Foo',
+            kind: 'class',
+            canonicalName: 'App\\Foo',
+            displayName: 'App\\Foo',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Duplicate.php', 9, 12),
+        );
+        $third = new NodeFact(
+            localId: 'php:class:App\\Foo',
+            kind: 'class',
+            canonicalName: 'App\\Foo',
+            displayName: 'App\\Foo',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/AnotherDuplicate.php', 3, 6),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [
+                $this->minimalContribution([$first]),
+                $this->minimalContribution([$second]),
+                $this->minimalContribution([$third]),
+            ],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(1, $result->nodes);
+        assertSame(1, $result->diagnostics);
+        $this->assertCount(1, $this->repo->diagnostics);
+        assertSame('reconciler.duplicate_symbol_evidence', $this->repo->diagnostics[0][5]);
+    }
+
     public function testReconcilePersistsEdgesWithCorrectStableIds(): void
     {
         // Distinct canonicalNames keep each node's stable id unique; otherwise
