@@ -11,6 +11,10 @@ use Knossos\Scanner\Protocol\ScanContribution;
 
 final class BoundaryInference
 {
+    private const SYNTHETIC_NODE_KINDS = ['route', 'endpoint'];
+    private const PHP_NAMESPACE_SEGMENT = '/^[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*$/';
+    private const PATH_SEGMENT = '/^[A-Za-z0-9_.@-]+$/';
+
     /**
      * @param list<ProjectUnit> $units
      * @param list<ScanContribution> $contributions
@@ -43,22 +47,28 @@ final class BoundaryInference
             }
         }
         foreach ($nodes as $node) {
+            // Synthetic nodes (routes, endpoints) have canonical names like
+            // "GET /x => App\C::m" — structured labels, not namespaces or paths.
+            // They may belong to boundaries but must never seed prefix rules.
+            if (in_array($node->kind, self::SYNTHETIC_NODE_KINDS, true)) {
+                continue;
+            }
             if (str_starts_with($node->localId, 'php:') && str_contains($node->canonicalName, '\\')) {
                 $namespace = explode('\\', ltrim($node->canonicalName, '\\'))[0];
-                if ($namespace !== '') {
+                if ($namespace !== '' && preg_match(self::PHP_NAMESPACE_SEGMENT, $namespace) === 1) {
                     $rules['namespace:' . $namespace] = ['source' => 'inferred', 'matcher' => ['type' => 'namespace_prefix', 'value' => $namespace . '\\']];
                 }
             }
             if (str_starts_with($node->localId, 'ts:')) {
                 $path = explode('#', $node->canonicalName, 2)[0];
                 $top = explode('/', ltrim($path, '/'))[0] ?? '';
-                if ($top !== '' && str_contains($path, '/')) {
+                if ($top !== '' && str_contains($path, '/') && preg_match(self::PATH_SEGMENT, $top) === 1) {
                     $rules['module:' . $top] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $top . '/']];
                 }
             }
             if (str_starts_with($node->localId, 'py:')) {
                 $top = explode('/', ltrim($node->evidence->relativePath, '/'))[0] ?? '';
-                if ($top !== '' && str_contains($node->evidence->relativePath, '/')) {
+                if ($top !== '' && str_contains($node->evidence->relativePath, '/') && preg_match(self::PATH_SEGMENT, $top) === 1) {
                     $rules['python-package:' . $top] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $top . '/']];
                 }
             }
