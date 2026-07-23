@@ -470,8 +470,14 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         $source = $fromCandidates[0];
         $target = $toCandidates[0];
+        $endpointTruncated = false;
+        $sourceSet = $this->flowEndpointSet($projectId, $source, $endpointTruncated);
+        $targetSet = $this->flowEndpointSet($projectId, $target, $endpointTruncated);
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
-        $queue = [[[$source], [], [$source['id'] => true]]];
+        $queue = [];
+        foreach ($sourceSet as $start) {
+            $queue[] = [[$start], [], [$start['id'] => true]];
+        }
         $paths = [];
         $visited = 0;
         $truncated = false;
@@ -494,7 +500,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 // The goal may be reached even when it is already in $seen: the
                 // source is pre-seeded, so a self-flow (from == to) depends on
                 // matching the target before the visited-guard skips it.
-                $isTarget = $edge['target_id'] === $target['id'];
+                $isTarget = isset($targetSet[$edge['target_id']]);
                 if (isset($seen[$edge['target_id']]) && !$isTarget) {
                     continue;
                 }
@@ -523,6 +529,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             // some silently dropped; record it rather than claim completeness.
             $truncated = true;
             $truncationReasons[] = 'per_node_edge_limit';
+        }
+        if ($endpointTruncated) {
+            $truncated = true;
+            $truncationReasons[] = 'endpoint_expansion_limit';
         }
         usort($paths, static function (array $left, array $right): int {
             return ($right['score']['minimum_confidence'] <=> $left['score']['minimum_confidence'])
@@ -774,6 +784,36 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         );
     }
 
+    /**
+     * A `class`- or `interface`-kind endpoint stands for itself and its contained members:
+     * `contains` is not a flow edge, so without expansion a class query can never
+     * descend into the methods that actually carry calls/constructs edges.
+     *
+     * @param array<string, mixed> $node
+     * @return array<string, array<string, mixed>> id => node row
+     */
+    private function flowEndpointSet(string $projectId, array $node, bool &$truncated): array
+    {
+        $set = [$node['id'] => $node];
+        if (!in_array($node['kind'], ['class', 'interface'], true)) {
+            return $set;
+        }
+        $statement = $this->pdo->prepare(
+            'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.confidence FROM edges e ' .
+            "JOIN nodes n ON n.id = e.target_id WHERE e.project_id = :project AND e.source_id = :source " .
+            "AND e.kind = 'contains' ORDER BY n.canonical_name, n.id LIMIT 201",
+        );
+        $statement->execute(['project' => $projectId, 'source' => $node['id']]);
+        $rows = $statement->fetchAll();
+        if (count($rows) > 200) {
+            $truncated = true;
+            $rows = array_slice($rows, 0, 200);
+        }
+        foreach ($rows as $row) {
+            $set[$row['id']] = $row;
+        }
+        return $set;
+    }
     /** @param list<string> $edgeKinds @return list<array<string, mixed>> */
     private function flowEdges(string $projectId, string $sourceId, array $edgeKinds, int $minimumConfidence, bool &$truncated = false): array
     {
