@@ -72,30 +72,14 @@ final readonly class GraphReconciler
             $this->repository->clearProjectGraph($projectId);
 
             $versions = $this->scannerVersions($request->scanners);
-            foreach ($request->discovery->files as $file) {
-                $this->saveFile($file, $fileIds[$file->relativePath], $projectId, $scanId, $versions);
-            }
+            $this->repository->saveFiles($this->fileRows($request->discovery->files, $fileIds, $versions), $projectId, $scanId);
 
             $this->repository->saveNodes(array_values($nodes), $projectId, $scanId);
             $this->repository->saveEdges(array_values($edges), $projectId, $scanId);
 
-            foreach ($classifications as $classification) {
-                $this->repository->saveClassification(
-                    $classification['id'],
-                    $projectId,
-                    $classification['node_id'],
-                    $classification['role'],
-                    $classification['origin'],
-                    $classification['confidence'],
-                    $classification['rule_id'],
-                    $classification['file_id'],
-                    $classification['start_line'],
-                    $classification['end_line'],
-                    $classification['attributes'],
-                    $scanId,
-                );
-            }
+            $this->repository->saveClassifications($classifications, $projectId, $scanId);
 
+            $memberships = [];
             foreach ($boundaries as $boundary) {
                 $this->repository->saveBoundary(
                     $boundary['id'],
@@ -106,9 +90,10 @@ final readonly class GraphReconciler
                     $scanId,
                 );
                 foreach ($boundary['node_ids'] as $nodeId) {
-                    $this->repository->saveBoundaryMembership($boundary['id'], $projectId, $nodeId, $scanId);
+                    $memberships[] = ['boundary_id' => $boundary['id'], 'node_id' => $nodeId];
                 }
             }
+            $this->repository->saveBoundaryMemberships($memberships, $projectId, $scanId);
 
             $this->repository->replaceContributionCache($projectId, $request->contributionCache);
 
@@ -483,25 +468,28 @@ final readonly class GraphReconciler
     }
 
     /** @param array<string, string> $versions */
-    private function saveFile(
-        DiscoveredFile $file,
-        string $fileId,
-        string $projectId,
-        string $scanId,
-        array $versions,
-    ): void {
-        $this->repository->saveFile(
-            $fileId,
-            $projectId,
-            $file->relativePath,
-            $file->contentHash,
-            $file->size,
-            $file->mtime,
-            $file->language,
-            $versions[$file->language] ?? 'unknown',
-            $scanId,
-            $file->lineCount,
-        );
+    /**
+     * @param list<DiscoveredFile> $files
+     * @param array<string, string> $fileIds relative path => stable file id
+     * @param array<string, string> $versions language => scanner version
+     * @return list<array<string, mixed>>
+     */
+    private function fileRows(array $files, array $fileIds, array $versions): array
+    {
+        $rows = [];
+        foreach ($files as $file) {
+            $rows[] = [
+                'id' => $fileIds[$file->relativePath],
+                'relative_path' => $file->relativePath,
+                'content_hash' => $file->contentHash,
+                'size' => $file->size,
+                'mtime' => $file->mtime,
+                'language' => $file->language,
+                'scanner_version' => $versions[$file->language] ?? 'unknown',
+                'line_count' => $file->lineCount,
+            ];
+        }
+        return $rows;
     }
 
     /** @param list<ScannerManifest> $scanners @return array<string, string> */

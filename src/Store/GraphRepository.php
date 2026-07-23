@@ -126,6 +126,27 @@ interface GraphRepository
      */
     public function saveEdges(array $edges, string $projectId, string $scanId): void;
 
+    /**
+     * Persist a batch of discovered files as one multi-row upsert.
+     *
+     * @param list<array<string, mixed>> $files rows shaped as GraphReconciler file records
+     */
+    public function saveFiles(array $files, string $projectId, string $scanId): void;
+
+    /**
+     * Persist a batch of role classifications as one multi-row insert.
+     *
+     * @param list<array<string, mixed>> $classifications rows shaped as GraphReconciler classification records
+     */
+    public function saveClassifications(array $classifications, string $projectId, string $scanId): void;
+
+    /**
+     * Persist a batch of boundary memberships as one multi-row insert.
+     *
+     * @param list<array<string, mixed>> $memberships rows shaped as {boundary_id, node_id}
+     */
+    public function saveBoundaryMemberships(array $memberships, string $projectId, string $scanId): void;
+
     /** Persist one bounded scanner or reconciliation diagnostic. */
     public function saveDiagnostic(
         string $id,
@@ -197,7 +218,4 @@ interface GraphRepository
      * @return list<array<string, mixed>>
      */
     public function incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array;
-
-    /** Delete every replaceable fact owned by one scanner contribution key. */
-    public function deleteFactsByOwner(string $projectId, string $ownerKey): void;
 }

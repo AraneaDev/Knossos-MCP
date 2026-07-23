@@ -113,11 +113,6 @@ final class StoreTest extends KnossosTestCase
 
         $repository->completeScan($ids['project'], $ids['scan']);
         assertSame($ids['scan'], $repository->findProject($ids['project'])['active_scan_id']);
-
-        $repository->deleteFactsByOwner($ids['project'], 'php:file:src/Checkout.php');
-        assertSame([], $repository->findNodesByName($ids['project'], 'App\\Checkout'));
-        assertSame([], $repository->incoming($ids['project'], $ids['invoice']));
-        assertSame('1', (string) $pdo->query('SELECT COUNT(*) FROM nodes')->fetchColumn());
     }
 
     #[Group('store')]

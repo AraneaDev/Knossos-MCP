@@ -457,6 +457,50 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
+    /** @param list<array<string, mixed>> $files each: id, relative_path, content_hash, size, mtime, language, scanner_version, line_count */
+    public function saveFiles(array $files, string $projectId, string $scanId): void
+    {
+        foreach (array_chunk($files, 90) as $chunk) { // 10 params/row
+            $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?)'));
+            $sql = 'INSERT INTO files(id, project_id, relative_path, content_hash, size, mtime, language, scanner_version, last_scan_id, line_count) VALUES '
+                . $placeholders
+                . ' ON CONFLICT(project_id, relative_path) DO UPDATE SET content_hash = excluded.content_hash, size = excluded.size, mtime = excluded.mtime, language = excluded.language, scanner_version = excluded.scanner_version, last_scan_id = excluded.last_scan_id, line_count = excluded.line_count';
+            $values = [];
+            foreach ($chunk as $file) {
+                array_push($values, $file['id'], $projectId, $file['relative_path'], $file['content_hash'], $file['size'], $file['mtime'], $file['language'], $file['scanner_version'], $scanId, $file['line_count']);
+            }
+            $this->prepare($sql)->execute($values);
+        }
+    }
+
+    /** @param list<array<string, mixed>> $classifications each shaped as a GraphReconciler classification record */
+    public function saveClassifications(array $classifications, string $projectId, string $scanId): void
+    {
+        foreach (array_chunk($classifications, 80) as $chunk) { // 12 params/row
+            $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?,?,?)'));
+            $sql = 'INSERT INTO classifications(id, project_id, node_id, role, origin, confidence, rule_id, file_id, start_line, end_line, attributes_json, last_scan_id) VALUES ' . $placeholders;
+            $values = [];
+            foreach ($chunk as $classification) {
+                array_push($values, $classification['id'], $projectId, $classification['node_id'], $classification['role'], $classification['origin'], $classification['confidence'], $classification['rule_id'], $classification['file_id'], $classification['start_line'], $classification['end_line'], self::json($classification['attributes']), $scanId);
+            }
+            $this->prepare($sql)->execute($values);
+        }
+    }
+
+    /** @param list<array<string, mixed>> $memberships each: boundary_id, node_id */
+    public function saveBoundaryMemberships(array $memberships, string $projectId, string $scanId): void
+    {
+        foreach (array_chunk($memberships, 240) as $chunk) { // 4 params/row
+            $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?)'));
+            $sql = 'INSERT INTO boundary_memberships(boundary_id, project_id, node_id, last_scan_id) VALUES ' . $placeholders;
+            $values = [];
+            foreach ($chunk as $membership) {
+                array_push($values, $membership['boundary_id'], $projectId, $membership['node_id'], $scanId);
+            }
+            $this->prepare($sql)->execute($values);
+        }
+    }
+
     public function saveDiagnostic(
         string $id,
         string $projectId,
@@ -583,18 +627,6 @@ final class SqliteGraphRepository implements GraphRepository
     public function incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
     {
         return $this->adjacent('target_id', $projectId, $nodeId, $kind, $limit);
-    }
-
-    public function deleteFactsByOwner(string $projectId, string $ownerKey): void
-    {
-        $this->transaction(function () use ($projectId, $ownerKey): void {
-            foreach (['edges', 'nodes', 'diagnostics'] as $table) {
-                $statement = $this->pdo->prepare(
-                    sprintf('DELETE FROM %s WHERE project_id = :project AND owner_key = :owner', $table),
-                );
-                $statement->execute(['project' => $projectId, 'owner' => $ownerKey]);
-            }
-        });
     }
 
     /** @return list<array<string, mixed>> */
