@@ -28,6 +28,12 @@ final readonly class MigrationRunner
             ')',
         );
 
+        // An unreadable migration directory must not silently apply zero
+        // migrations: glob() returns an empty array (not false) for it, so the
+        // false check below never fires. Fail loudly instead.
+        if (!is_readable($this->migrationDirectory)) {
+            throw new RuntimeException('Unable to enumerate migration files.');
+        }
         $files = glob(rtrim($this->migrationDirectory, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . '*.sql');
         if ($files === false) {
             throw new RuntimeException('Unable to enumerate migration files.');
@@ -37,6 +43,11 @@ final readonly class MigrationRunner
         $applied = [];
         foreach ($files as $file) {
             $version = basename($file, '.sql');
+            // Check readability first so an unreadable migration fails with our
+            // RuntimeException rather than a bare file_get_contents warning.
+            if (!is_readable($file)) {
+                throw new RuntimeException(sprintf('Unable to read migration: %s', $file));
+            }
             $sql = file_get_contents($file);
             if ($sql === false) {
                 throw new RuntimeException(sprintf('Unable to read migration: %s', $file));
