@@ -79,6 +79,8 @@ final class ResourcesPromptsTest extends KnossosTestCase
             $text = $get['result']['messages'][0]['content']['text'];
             assertSame(true, str_contains($text, 'review_diff'));
             assertSame(true, str_contains($text, 'origin/main'));
+            // A base_ref review must instruct working_tree: true (base_ref only applies with it).
+            assertSame(true, str_contains($text, 'working_tree'));
 
             $unknown = $server->handle(['jsonrpc' => '2.0', 'id' => 4, 'method' => 'prompts/get', 'params' => ['name' => 'nope']]);
             assertSame(-32602, $unknown['error']['code']);

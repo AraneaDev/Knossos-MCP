@@ -113,6 +113,82 @@ final class HttpTest extends KnossosTestCase
     }
 
     #[Group('http')]
+    public function testHttpBackstopPeerGuardSlidingExpiryAndNotificationInitialize(): void
+    {
+        $pdo = SqliteConnection::open(':memory:');
+        (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+        $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $store = new HttpSessionStore($pdo, ttlSeconds: 1000, maxSessions: 8);
+        $headers = [
+            'Host' => '127.0.0.1:8080', 'Origin' => 'http://127.0.0.1:8080',
+            'Content-Type' => 'application/json',
+            'Accept' => 'application/json, text/event-stream', 'MCP-Protocol-Version' => '2025-11-25',
+        ];
+        $initialize = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+            'protocolVersion' => '2025-11-25', 'capabilities' => [], 'clientInfo' => ['name' => 'test', 'version' => '1'],
+        ]], JSON_THROW_ON_ERROR);
+
+        // Without a bearer token, non-loopback callers are refused but loopback is served.
+        $unauthenticated = new HttpEndpoint($tools, $store, ['127.0.0.1:8080'], ['http://127.0.0.1:8080'], null);
+        assertSame(401, $unauthenticated->handle('POST', $headers, $initialize, '203.0.113.9')['status']);
+        assertSame(200, $unauthenticated->handle('POST', $headers, $initialize, '127.0.0.1')['status']);
+        assertSame(200, $unauthenticated->handle('POST', $headers, $initialize, null)['status']);
+
+        // initialize delivered as a notification (no id) is acknowledged with 202 and no body.
+        $initNotification = json_encode(['jsonrpc' => '2.0', 'method' => 'initialize', 'params' => [
+            'protocolVersion' => '2025-11-25', 'capabilities' => [], 'clientInfo' => ['name' => 'test', 'version' => '1'],
+        ]], JSON_THROW_ON_ERROR);
+        $ack = $unauthenticated->handle('POST', $headers, $initNotification);
+        assertSame(202, $ack['status']);
+        assertSame('', $ack['body']);
+        assertSame(false, array_key_exists('Mcp-Session-Id', $ack['headers']));
+
+        // Sliding expiry: touch() pushes a live session's expiry forward, but never revives an expired one.
+        $sessionId = $store->create();
+        $store->markInitialized($sessionId);
+        $hashed = hash('sha256', $sessionId);
+        $now = time();
+        $pdo->prepare('UPDATE http_sessions SET expires_at = :e WHERE id = :id')->execute(['e' => $now + 1, 'id' => $hashed]);
+        $store->touch($sessionId);
+        assertSame(true, (int) $pdo->query("SELECT expires_at FROM http_sessions WHERE id = '$hashed'")->fetchColumn() > $now + 500);
+        $pdo->prepare('UPDATE http_sessions SET expires_at = 0 WHERE id = :id')->execute(['id' => $hashed]);
+        $store->touch($sessionId);
+        assertSame(0, (int) $pdo->query("SELECT expires_at FROM http_sessions WHERE id = '$hashed'")->fetchColumn());
+
+        // Transport backstop: an unexpected failure while dispatching returns a generic
+        // -32603 with no internal detail leaked.
+        $brokenPdo = SqliteConnection::open(':memory:');
+        (new MigrationRunner($brokenPdo, self::repositoryRoot() . '/migrations'))->migrate();
+        $brokenPdo->exec('DROP TABLE projects');
+        $backstop = new HttpEndpoint(
+            $tools,
+            $store,
+            ['127.0.0.1:8080'],
+            ['http://127.0.0.1:8080'],
+            'secret',
+            resources: new \Knossos\Mcp\ResourceService(new ArchitectureQueryService($brokenPdo)),
+        );
+        $authHeaders = $headers + ['Authorization' => 'Bearer secret'];
+        $init = $backstop->handle('POST', $authHeaders, $initialize);
+        assertSame(200, $init['status']);
+        $session = $init['headers']['Mcp-Session-Id'];
+        $sessionHeaders = $authHeaders + ['Mcp-Session-Id' => $session];
+        $backstop->handle('POST', $sessionHeaders, json_encode(['jsonrpc' => '2.0', 'method' => 'notifications/initialized'], JSON_THROW_ON_ERROR));
+        $failure = $backstop->handle('POST', $sessionHeaders, json_encode(['jsonrpc' => '2.0', 'id' => 5, 'method' => 'resources/list', 'params' => []], JSON_THROW_ON_ERROR));
+        assertSame(500, $failure['status']);
+        $payload = json_decode($failure['body'], true, 512, JSON_THROW_ON_ERROR);
+        assertSame(-32603, $payload['error']['code']);
+        assertSame('Internal error', $payload['error']['message']);
+        assertSame(false, str_contains($failure['body'], 'no such table'));
+    }
+
+    #[Group('http')]
     public function testHttpSessionCapacityAndInitializationTransitionsAreAtomicAcrossConnections(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'knossos-http-session-');

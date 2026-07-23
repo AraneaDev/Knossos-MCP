@@ -25,9 +25,11 @@ final readonly class HttpEndpoint
 
     /**
      * @param array<string, string> $headers
+     * @param string|null $peer Remote address of the caller (e.g. REMOTE_ADDR); used to keep
+     *                          an unauthenticated endpoint loopback-only. null skips the check.
      * @return array{status: int, headers: array<string, string>, body: string}
      */
-    public function handle(string $method, array $headers, string $body): array
+    public function handle(string $method, array $headers, string $body, ?string $peer = null): array
     {
         $headers = array_change_key_case($headers, CASE_LOWER);
         $baseHeaders = ['Cache-Control' => 'no-store', 'X-Content-Type-Options' => 'nosniff'];
@@ -38,6 +40,12 @@ final readonly class HttpEndpoint
         $origin = $headers['origin'] ?? null;
         if ($origin !== null && !in_array($origin, $this->allowedOrigins, true)) {
             return $this->problem(403, 'Origin is not allowed.', $baseHeaders);
+        }
+        // Without a bearer token, any reachable client could open sessions and
+        // exhaust capacity. Refuse non-loopback callers so an unauthenticated
+        // endpoint is only usable from the local host (a token lifts this).
+        if ($this->bearerToken === null && $peer !== null && !self::isLoopback($peer)) {
+            return $this->problem(401, 'Bearer authentication is required from non-loopback clients.', $baseHeaders + ['WWW-Authenticate' => 'Bearer']);
         }
         if ($this->bearerToken !== null) {
             $authorization = $headers['authorization'] ?? '';
@@ -91,10 +99,19 @@ final readonly class HttpEndpoint
             if ($session !== null) {
                 return $this->problem(400, 'Initialization must not supply a session ID.', $baseHeaders);
             }
-            $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
-            $response = $server->handle($message);
-            if ($response === null || isset($response['error'])) {
-                return $this->json(200, $response ?? [], $baseHeaders);
+            try {
+                $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
+                $response = $server->handle($message);
+            } catch (Throwable $error) {
+                return $this->internalError($message['id'] ?? null, $error, $baseHeaders);
+            }
+            if ($response === null) {
+                // initialize delivered as a notification (no id): acknowledge with
+                // no session rather than an empty JSON body.
+                return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
+            }
+            if (isset($response['error'])) {
+                return $this->json(200, $response, $baseHeaders);
             }
             try {
                 $session = $this->sessions->create();
@@ -133,24 +150,51 @@ final readonly class HttpEndpoint
         if (!$initialized) {
             return $this->problem(409, 'MCP session has not been initialized.', $baseHeaders);
         }
+        try {
+            // Slide the expiry forward so an actively used session survives.
+            $this->sessions->touch((string) $session);
+        } catch (Throwable) {
+            return $this->problem(503, 'HTTP session storage is temporarily unavailable.', $baseHeaders);
+        }
         if (!array_key_exists('id', $message)) {
             // Stateless PHP HTTP workers cannot interrupt an already-running request;
             // cancellation notifications are accepted for protocol compatibility.
             return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
         }
-        $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
-        $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
-        $response = $server->handle($message);
-        return $this->json(200, $response ?? [], $baseHeaders);
+        try {
+            $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
+            $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+            $response = $server->handle($message);
+        } catch (Throwable $error) {
+            return $this->internalError($message['id'] ?? null, $error, $baseHeaders);
+        }
+        if ($response === null) {
+            return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
+        }
+        return $this->json(200, $response, $baseHeaders);
+    }
+
+    /**
+     * Map an unexpected transport-layer failure to a generic JSON-RPC internal
+     * error. The raw detail is logged for the operator; nothing about the
+     * exception (message or trace) reaches the client.
+     *
+     * @param array<string, string> $headers
+     * @return array{status: int, headers: array<string, string>, body: string}
+     */
+    private function internalError(mixed $id, Throwable $error, array $headers): array
+    {
+        error_log('knossos http endpoint: ' . $error->getMessage());
+        return $this->json(500, ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32603, 'message' => 'Internal error']], $headers);
     }
 
     /** @param array<string, mixed> $payload @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string} */
     private function json(int $status, array $payload, array $headers): array
     {
-        $encoded = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $encoded = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         if (strlen($encoded) > $this->maxResponseBytes) {
             $status = 500;
-            $encoded = json_encode(['jsonrpc' => '2.0', 'id' => $payload['id'] ?? null, 'error' => ['code' => -32001, 'message' => 'Response exceeds the configured byte limit.']], JSON_THROW_ON_ERROR);
+            $encoded = json_encode(['jsonrpc' => '2.0', 'id' => $payload['id'] ?? null, 'error' => ['code' => -32001, 'message' => 'Response exceeds the configured byte limit.']], JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE);
         }
         return ['status' => $status, 'headers' => $headers + ['Content-Type' => 'application/json'], 'body' => $encoded];
     }
@@ -159,5 +203,15 @@ final readonly class HttpEndpoint
     private function problem(int $status, string $message, array $headers): array
     {
         return $this->json($status, ['error' => $message], $headers);
+    }
+
+    /** Whether a remote address is the local host (IPv4 127.0.0.0/8 or IPv6 ::1). */
+    private static function isLoopback(string $peer): bool
+    {
+        $peer = trim($peer);
+        if ($peer === '::1' || $peer === '::ffff:127.0.0.1') {
+            return true;
+        }
+        return filter_var($peer, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false && str_starts_with($peer, '127.');
     }
 }

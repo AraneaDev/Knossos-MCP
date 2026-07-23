@@ -23,12 +23,41 @@ final readonly class ToolService
     /** @return list<array<string, mixed>> */
     public function definitions(): array
     {
+        return self::allDefinitions();
+    }
+
+    /** @return list<array<string, mixed>> */
+    private static function allDefinitions(): array
+    {
         return [
             ...self::projectDefinitions(),
             ...self::componentDefinitions(),
             ...self::analysisDefinitions(),
             ...self::maintenanceDefinitions(),
         ];
+    }
+
+    /**
+     * The declared property names and required keys for a tool, or null when
+     * the tool name is unknown. Memoized because definitions() is pure data.
+     *
+     * @return array{properties: list<string>, required: list<string>}|null
+     */
+    private static function schemaFor(string $name): ?array
+    {
+        /** @var array<string, array{properties: list<string>, required: list<string>}>|null $index */
+        static $index = null;
+        if ($index === null) {
+            $index = [];
+            foreach (self::allDefinitions() as $definition) {
+                $properties = $definition['inputSchema']['properties'] ?? [];
+                $index[$definition['name']] = [
+                    'properties' => array_keys(is_array($properties) ? $properties : []),
+                    'required' => array_values($definition['inputSchema']['required'] ?? []),
+                ];
+            }
+        }
+        return $index[$name] ?? null;
     }
 
     /**
@@ -67,8 +96,8 @@ final readonly class ToolService
                         'mode' => ['type' => 'string', 'enum' => ['auto', 'full', 'incremental'], 'default' => 'auto'],
                         'max_files' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000],
                         'max_file_bytes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000000],
-                        'worker_timeout_ms' => ['type' => 'integer', 'minimum' => 1000, 'maximum' => 120000, 'default' => 30000],
-                        'snapshot_retention' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 20, 'default' => 5],
+                        'worker_timeout_ms' => ['type' => 'integer', 'minimum' => 1000, 'maximum' => 120000, 'description' => 'Per-file worker timeout. Omit to use the project\'s knossos.json setting, or the built-in default (30000) when it is unset.'],
+                        'snapshot_retention' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 20, 'description' => 'How many historical snapshots to keep. Omit to use the project\'s knossos.json setting, or the built-in default (5) when it is unset.'],
                         'boundaries' => [
                             'type' => 'array', 'maxItems' => 50,
                             'items' => ['type' => 'object', 'properties' => [
@@ -462,15 +491,15 @@ final readonly class ToolService
             [
                 'name' => 'changed_files_impact',
                 'title' => 'Changed files impact',
-                'description' => 'Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches.',
+                'description' => 'Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches. Provide exactly one source: either files (an explicit list) or working_tree: true (let Git supply the changes). base_ref only applies with working_tree: true — it diffs the working tree against that ref; it cannot be combined with files.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
                         ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
-                        'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
-                        'working_tree' => ['type' => 'boolean', 'default' => false],
-                        'base_ref' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200],
+                        'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1], 'description' => 'Explicit changed paths (repo-relative). Mutually exclusive with working_tree.'],
+                        'working_tree' => ['type' => 'boolean', 'default' => false, 'description' => 'Take the change set from Git instead of files. Required to use base_ref.'],
+                        'base_ref' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200, 'description' => 'Git ref to diff the working tree against. Requires working_tree: true.'],
                         'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 8, 'default' => 4],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
                         'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string']],
@@ -711,38 +740,81 @@ final readonly class ToolService
     /** @param array<string, mixed> $arguments */
     public function call(string $name, array $arguments, ?CancellationToken $cancellation = null): ResultEnvelope
     {
+        $schema = self::schemaFor($name);
+        if ($schema === null) {
+            throw new ToolInputException(sprintf('Unknown tool: %s', $name));
+        }
+        $declared = $schema['properties'];
+
+        // Common options are honoured centrally only for the tools whose schema
+        // actually declares them; passing one to a tool that does not (e.g.
+        // refresh_if_stale to maintain_database) is left in $arguments so the
+        // key validation below rejects it as unknown.
         $verbosity = 'compact';
-        if (array_key_exists('verbosity', $arguments)) {
+        if (in_array('verbosity', $declared, true) && array_key_exists('verbosity', $arguments)) {
             $verbosity = $arguments['verbosity'];
             unset($arguments['verbosity']);
             if ($verbosity !== 'compact' && $verbosity !== 'full') {
-                throw new InvalidArgumentException('verbosity must be "compact" or "full".');
+                throw new ToolInputException('verbosity must be "compact" or "full".');
             }
         }
         $maxChars = null;
-        if (array_key_exists('max_chars', $arguments) && !in_array($name, ['architecture_context', 'export_agent_brief'], true)) {
+        if (
+            in_array('max_chars', $declared, true)
+            && !in_array($name, ['architecture_context', 'export_agent_brief'], true)
+            && array_key_exists('max_chars', $arguments)
+        ) {
             $maxChars = $arguments['max_chars'];
             unset($arguments['max_chars']);
             if (!is_int($maxChars) || $maxChars < 4000 || $maxChars > 100_000) {
-                throw new InvalidArgumentException('max_chars must be an integer between 4000 and 100000.');
+                throw new ToolInputException('max_chars must be an integer between 4000 and 100000.');
             }
         }
-        $refreshWarnings = [];
-        if (array_key_exists('refresh_if_stale', $arguments)) {
+        $refreshRequested = false;
+        if (in_array('refresh_if_stale', $declared, true) && array_key_exists('refresh_if_stale', $arguments)) {
             $refresh = $arguments['refresh_if_stale'];
             unset($arguments['refresh_if_stale']);
             if (!is_bool($refresh)) {
-                throw new InvalidArgumentException('refresh_if_stale must be a boolean.');
+                throw new ToolInputException('refresh_if_stale must be a boolean.');
             }
-            if ($refresh && $name !== 'scan_project') {
-                $refreshWarnings = $this->refreshIfStale($arguments, $cancellation);
-            }
+            $refreshRequested = $refresh;
+        }
+
+        // Validate the request's keys before any (potentially expensive) rescan
+        // so a malformed request cannot trigger a refresh it will never use.
+        self::validateKeys($arguments, $schema);
+
+        $refreshWarnings = [];
+        if ($refreshRequested && $name !== 'scan_project') {
+            $refreshWarnings = $this->refreshIfStale($arguments, $cancellation);
         }
         $envelope = $this->dispatch($name, $arguments, $cancellation);
         if ($refreshWarnings !== []) {
             $envelope = $envelope->withWarnings($refreshWarnings);
         }
         return $this->enricher->enrich($envelope, $name, $verbosity, $maxChars);
+    }
+
+    /**
+     * Central pre-dispatch key check: every remaining argument must be declared
+     * and every non-common required key present. Mirrors the per-handler keys()
+     * guard so an invalid request is rejected before refresh_if_stale runs.
+     *
+     * @param array<string, mixed> $arguments
+     * @param array{properties: list<string>, required: list<string>} $schema
+     */
+    private static function validateKeys(array $arguments, array $schema): void
+    {
+        $required = array_diff($schema['required'], ['verbosity', 'max_chars', 'refresh_if_stale']);
+        foreach ($required as $key) {
+            if (!array_key_exists($key, $arguments)) {
+                throw new ToolInputException(sprintf('Missing required argument: %s', $key));
+            }
+        }
+        $unknown = array_diff(array_keys($arguments), $schema['properties']);
+        if ($unknown !== []) {
+            throw new ToolInputException(sprintf('Unknown argument: %s', reset($unknown)));
+        }
     }
 
     /**
@@ -772,6 +844,10 @@ final readonly class ToolService
         try {
             $this->scanner->scan($root, cancellation: $cancellation);
             return [];
+        } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
+            // A client-requested cancellation is not a rescan failure to paper
+            // over; propagate it so the transport can surface/suppress it.
+            throw $cancelled;
         } catch (\Throwable $error) {
             return [sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', $error->getMessage())];
         }
@@ -902,7 +978,9 @@ final readonly class ToolService
         self::keys($arguments, ['project_id', 'baseline_snapshot', 'budgets'], ['policies', 'sarif', 'propose_baseline']);
         $budgets = $arguments['budgets'];
         $policies = $arguments['policies'] ?? [];
-        if (!is_array($budgets) || array_is_list($budgets) || !is_array($policies) || !array_is_list($policies)) {
+        // An empty JSON object decodes to []; accept it as "no budgets" rather
+        // than mistaking it for a list.
+        if (!is_array($budgets) || ($budgets !== [] && array_is_list($budgets)) || !is_array($policies) || !array_is_list($policies)) {
             throw new InvalidArgumentException('budgets must be an object and policies must be a list.');
         }
         return $this->queries->qualityGate(

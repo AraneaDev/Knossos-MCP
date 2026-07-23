@@ -74,6 +74,36 @@ final class MaxCharsTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testEnricherTrimsEvidenceListToFitBudget(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+        $evidence = array_map(static fn(int $i): array => ['path' => 'src/File' . $i . '.php', 'padding' => str_repeat('e', 200)], range(1, 100));
+        // full verbosity keeps the evidence intact, so the budget must be met by
+        // trimming the evidence list itself (there is no large data list here).
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['bounds' => ['limit' => 100]], $evidence);
+        $result = $enricher->enrich($envelope, 'impact_analysis', 'full', 4000);
+        assertSame(true, strlen((string) json_encode($result->jsonSerialize(), JSON_UNESCAPED_SLASHES)) <= 4000);
+        assertSame(true, ($result->meta['dropped_items']['evidence'] ?? 0) > 0);
+        assertSame(true, count($result->evidence) < 100);
+        assertSame(count($result->evidence), $result->meta['evidence_shown']);
+    }
+
+    #[Group('mcp')]
+    public function testEnricherTrimsSingleElementDominantList(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+        // A payload dominated by one single-element list must still be trimmable,
+        // rather than reported as an unmet budget.
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['items' => [['blob' => str_repeat('z', 6000)]]]);
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4000);
+        assertSame(0, count($result->data['items']));
+        assertSame(true, ($result->meta['dropped_items']['items'] ?? 0) > 0);
+        assertSame(false, in_array('The max_chars budget could not be fully met by trimming result lists.', $result->warnings, true));
+    }
+
+    #[Group('mcp')]
     public function testEnricherSurfacesUnmetBudgetWhenNoListIsTrimmable(): void
     {
         $pdo = $this->freshTestDatabase();

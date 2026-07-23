@@ -78,6 +78,94 @@ final class McpTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testPollCancellationDropsOversizedUnterminatedFrames(): void
+    {
+        [$pdo] = $this->storeFixture();
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $input = fopen('php://temp', 'w+');
+        if (!is_resource($input)) {
+            throw new RuntimeException('Unable to allocate cancellation polling stream.');
+        }
+        // A frame that exceeds the line cap with no terminator cannot be a valid
+        // message; polling must drop it instead of buffering it unboundedly.
+        fwrite($input, str_repeat('x', 4096));
+        rewind($input);
+        $server = new StdioServer($tools, maxLineBytes: 64);
+        (new ReflectionProperty($server, 'input'))->setValue($server, $input);
+        $poll = new ReflectionMethod($server, 'pollCancellation');
+        assertSame(false, $poll->invoke($server, 'r1'));
+        assertSame('', (new ReflectionProperty($server, 'inputBuffer'))->getValue($server));
+        assertSame(0, count((new ReflectionProperty($server, 'pendingLines'))->getValue($server)));
+        fclose($input);
+    }
+
+    #[Group('mcp')]
+    public function testTransportMapsInputErrorsToInvalidParamsAndGatesCommonOptions(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+
+        // Common options are honoured only for tools whose schema declares them.
+        $gated = captureThrows(
+            fn() => $tools->call('remove_project', ['project_id' => $ids['project'], 'refresh_if_stale' => true]),
+            \Knossos\Mcp\ToolInputException::class,
+        );
+        assertContains('refresh_if_stale', $gated->getMessage());
+        assertThrows(fn() => $tools->call('nope', []), \Knossos\Mcp\ToolInputException::class);
+
+        // quality_gate accepts an empty budgets object ({} -> [] in PHP): it clears
+        // the structural guard and fails later with a semantic message instead.
+        $emptyBudgets = captureThrows(
+            fn() => $tools->call('quality_gate', ['project_id' => $ids['project'], 'baseline_snapshot' => 'active', 'budgets' => []]),
+            \InvalidArgumentException::class,
+        );
+        assertSame(false, str_contains($emptyBudgets->getMessage(), 'must be an object'));
+
+        // Schema hygiene: scan_project drops misleading defaults; changed_files_impact
+        // documents the base_ref/working_tree coupling.
+        $definitions = [];
+        foreach ($tools->definitions() as $definition) {
+            $definitions[$definition['name']] = $definition;
+        }
+        $scanProps = $definitions['scan_project']['inputSchema']['properties'];
+        assertSame(false, array_key_exists('default', $scanProps['worker_timeout_ms']));
+        assertSame(false, array_key_exists('default', $scanProps['snapshot_retention']));
+        assertContains('knossos.json', $scanProps['worker_timeout_ms']['description']);
+        assertContains('working_tree', $definitions['changed_files_impact']['description']);
+        assertContains('working_tree', $definitions['changed_files_impact']['inputSchema']['properties']['base_ref']['description']);
+
+        // Transport surfaces pre-dispatch validation as JSON-RPC -32602, while a
+        // tool that runs and fails stays an isError result.
+        $server = new StdioServer($tools);
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+        assertSame(-32602, $server->handle([
+            'jsonrpc' => '2.0', 'id' => 2, 'method' => 'tools/call', 'params' => ['name' => 'nope', 'arguments' => []],
+        ])['error']['code']);
+        assertSame(-32602, $server->handle([
+            'jsonrpc' => '2.0', 'id' => 3, 'method' => 'tools/call',
+            'params' => ['name' => 'architecture_summary', 'arguments' => ['project_id' => $ids['project'], 'bogus' => 1]],
+        ])['error']['code']);
+        $runtimeFailure = $server->handle([
+            'jsonrpc' => '2.0', 'id' => 4, 'method' => 'tools/call',
+            'params' => ['name' => 'architecture_summary', 'arguments' => ['project_id' => 'project_' . str_repeat('0', 64)]],
+        ]);
+        assertSame(true, $runtimeFailure['result']['isError']);
+        assertSame('KNOSSOS_INVALID_ARGUMENT', $runtimeFailure['result']['structuredContent']['error']['code']);
+    }
+
+    #[Group('mcp')]
     public function testAnnotateComponentAndListAnnotationsDispatch(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
@@ -150,7 +238,7 @@ final class McpTest extends KnossosTestCase
         assertSame(-32600, $server->handle(['id' => 10])['error']['code']);
         assertSame(-32602, $server->handle(['jsonrpc' => '2.0', 'id' => 11, 'method' => 'initialize'])['error']['code']);
         assertSame('2.0', $server->handle(['jsonrpc' => '2.0', 'id' => 12, 'method' => 'ping'])['jsonrpc']);
-        assertSame(-32002, $server->handle(['jsonrpc' => '2.0', 'id' => 13, 'method' => 'tools/list'])['error']['code']);
+        assertSame(-32003, $server->handle(['jsonrpc' => '2.0', 'id' => 13, 'method' => 'tools/list'])['error']['code']);
         assertSame(null, $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']));
         assertSame(-32602, $server->handle(['jsonrpc' => '2.0', 'id' => 14, 'method' => 'tools/call', 'params' => []])['error']['code']);
         $toolError = $server->handle([
@@ -162,11 +250,15 @@ final class McpTest extends KnossosTestCase
         assertSame(null, $server->handle([
             'jsonrpc' => '2.0', 'method' => 'notifications/cancelled', 'params' => ['requestId' => 'scan-1'],
         ]));
+        // The request whose id was cancelled is answered with no response at all:
+        // the client already withdrew, so nothing is sent back and the entry is pruned.
         $cancelled = $server->handle([
             'jsonrpc' => '2.0', 'id' => 'scan-1', 'method' => 'tools/call',
             'params' => ['name' => 'scan_project', 'arguments' => ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed']],
         ]);
-        assertSame('KNOSSOS_SCAN_CANCELLED', $cancelled['result']['structuredContent']['error']['code']);
+        assertSame(null, $cancelled);
+        $cancelledProperty = new ReflectionProperty($server, 'cancelledRequests');
+        assertSame(false, array_key_exists('scan-1', $cancelledProperty->getValue($server)));
         $scanned = $server->handle([
             'jsonrpc' => '2.0', 'id' => 16, 'method' => 'tools/call',
             'params' => ['name' => 'scan_project', 'arguments' => ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed']],

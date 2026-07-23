@@ -46,7 +46,11 @@ $enricher = new \Knossos\Mcp\ResultEnricher(
     new \Knossos\Query\StalenessProbe($pdo),
     new \Knossos\Mcp\NextStepPlanner(),
 );
-$queries = new ArchitectureQueryService($pdo, gitHistory: new ProcessGitHistoryProvider());
+$queries = new ArchitectureQueryService(
+    $pdo,
+    gitHistory: new ProcessGitHistoryProvider(),
+    gitWorkingTree: new \Knossos\Git\ProcessGitWorkingTreeProvider(),
+);
 $tools = new ToolService(
     new ProjectScanService($pdo, $runtime->installationRoot(), $allowedRoots),
     $queries,
@@ -56,7 +60,23 @@ $tools = new ToolService(
 $endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), $allowedHosts, $allowedOrigins, $token, resources: new ResourceService($queries), prompts: new PromptService());
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $body = file_get_contents('php://input', false, null, 0, 1_048_577);
-$response = $endpoint->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $headers, is_string($body) ? $body : '');
+$peer = isset($_SERVER['REMOTE_ADDR']) && is_string($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null;
+try {
+    $response = $endpoint->handle($_SERVER['REQUEST_METHOD'] ?? 'GET', $headers, is_string($body) ? $body : '', $peer);
+} catch (\Throwable $error) {
+    // Last-resort backstop: never leak a stack trace or internal message to the
+    // client. Log the raw detail for the operator and return a generic error.
+    error_log('knossos http-router: ' . $error->getMessage());
+    http_response_code(500);
+    header('Content-Type: application/json');
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    echo json_encode(
+        ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32603, 'message' => 'Internal error']],
+        JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE,
+    );
+    return;
+}
 http_response_code($response['status']);
 foreach ($response['headers'] as $name => $value) {
     header($name . ': ' . $value);

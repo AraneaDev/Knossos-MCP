@@ -28,8 +28,8 @@ Build or refresh a project's architecture graph. Run this first for a new projec
 | `mode` | string | no | default="auto"; enum=auto, full, incremental |
 | `max_files` | integer | no | minimum=1; maximum=100000 |
 | `max_file_bytes` | integer | no | minimum=1; maximum=100000000 |
-| `worker_timeout_ms` | integer | no | minimum=1000; maximum=120000; default=30000 |
-| `snapshot_retention` | integer | no | minimum=0; maximum=20; default=5 |
+| `worker_timeout_ms` | integer | no | minimum=1000; maximum=120000 |
+| `snapshot_retention` | integer | no | minimum=0; maximum=20 |
 | `boundaries` | array | no | maxItems=50 |
 
 Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
@@ -350,7 +350,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `changed_files_impact`
 
-Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches.
+Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches. Provide exactly one source: either files (an explicit list) or working_tree: true (let Git supply the changes). base_ref only applies with working_tree: true — it diffs the working tree against that ref; it cannot be combined with files.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
