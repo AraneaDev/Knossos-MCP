@@ -181,7 +181,7 @@ final class QueryCommand implements CliCommand
     private function dependencyCycles(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos dependency-cycles <project-id> [options]');
-        $result = $this->queries($c)->dependencyCycles($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 20_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000));
+        $result = $this->queries($c)->dependencyCycles($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 20_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), isset($o['include-self-loops']));
         return $this->result($result, $o, $c);
     }
 

@@ -155,8 +155,9 @@ final readonly class ArchitectureQueryService
         int $maxNodes = 10_000,
         int $maxEdges = 20_000,
         int $timeoutMs = 1000,
+        bool $includeSelfLoops = false,
     ): ResultEnvelope {
-        return $this->topologyQueries->dependencyCycles($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs);
+        return $this->topologyQueries->dependencyCycles($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeSelfLoops);
     }
 
     /** @param list<string> $edgeKinds */

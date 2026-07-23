@@ -37,6 +37,43 @@ final class MaxCharsTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testEnricherTrimsNestedListsToFitBudget(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+        $rows = array_map(static fn(int $i): array => ['name' => 'component_' . $i, 'padding' => str_repeat('x', 200)], range(1, 100));
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', [
+            'change' => ['status' => 'complete', 'direct_components' => $rows, 'impacted_components' => $rows],
+            'bounds' => ['limit' => 100],
+        ]);
+        $result = $enricher->enrich($envelope, 'review_diff', 'compact', 4000);
+        assertSame(true, $result->truncated);
+        assertSame(true, strlen((string) json_encode($result->jsonSerialize(), JSON_UNESCAPED_SLASHES)) <= 4000);
+        assertSame(true, ($result->meta['dropped_items']['change.direct_components'] ?? 0) > 0);
+        assertSame(true, ($result->meta['dropped_items']['change.impacted_components'] ?? 0) > 0);
+        assertSame(false, in_array('The max_chars budget could not be fully met by trimming result lists.', $result->warnings, true));
+        // Determinism: same input, same output.
+        assertSame($result->jsonSerialize(), $enricher->enrich($envelope, 'review_diff', 'compact', 4000)->jsonSerialize());
+    }
+
+    #[Group('mcp')]
+    public function testEnricherTrimsListsInsideListElementsToFitBudget(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+        $rows = array_map(static fn(int $i): array => ['name' => 'dependant_' . $i, 'padding' => str_repeat('x', 200)], range(1, 100));
+        // impact_analysis shape: one distance group holding the entire result set.
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', [
+            'by_distance' => [['distance' => 1, 'dependants' => $rows]],
+            'bounds' => ['limit' => 100],
+        ]);
+        $result = $enricher->enrich($envelope, 'impact_analysis', 'compact', 4000);
+        assertSame(true, strlen((string) json_encode($result->jsonSerialize(), JSON_UNESCAPED_SLASHES)) <= 4000);
+        assertSame(true, ($result->meta['dropped_items']['by_distance.0.dependants'] ?? 0) > 0);
+        assertSame(false, in_array('The max_chars budget could not be fully met by trimming result lists.', $result->warnings, true));
+    }
+
+    #[Group('mcp')]
     public function testEnricherSurfacesUnmetBudgetWhenNoListIsTrimmable(): void
     {
         $pdo = $this->freshTestDatabase();
