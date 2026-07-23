@@ -93,8 +93,11 @@ final class ProjectDiscovererTest extends KnossosTestCase
         $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
         $result = $discoverer->discover($this->root);
 
+        // An unreadable config file is caught during fingerprinting and reported
+        // as DISCOVERY_FILE_UNREADABLE before it reaches config parsing, so that
+        // is the diagnostic discovery actually emits for it.
         $codes = array_column($result->diagnostics, 'code');
-        $this->assertContains('DISCOVERY_CONFIG_UNREADABLE', $codes);
+        $this->assertContains('DISCOVERY_FILE_UNREADABLE', $codes);
         chmod($config, 0600);
     }
 

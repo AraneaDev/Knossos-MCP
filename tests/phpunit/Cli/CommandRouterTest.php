@@ -125,7 +125,7 @@ final class CommandRouterTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         // positional required; with empty :memory: db, query returns
         // empty list and command returns 0.
         $router = $this->newRouter();
-        assertSame(0, $router->route('list-projects', [], []));
+        assertSame(0, $router->route('list-projects', [], ['db' => [':memory:']]));
     }
 
     public function testRouterRoutesQueryCommandFindComponentAndPropagatesThrow(): void
@@ -183,7 +183,7 @@ final class CommandRouterTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     {
         // A valid option passes validation and the command runs normally.
         $router = $this->newRouter();
-        assertSame(0, $router->route('list-projects', [], ['limit' => ['5']]));
+        assertSame(0, $router->route('list-projects', [], ['limit' => ['5'], 'db' => [':memory:']]));
     }
 
     // ===== Foreach dispatch + throw ======================================
@@ -221,7 +221,7 @@ final class CommandRouterTest extends \Knossos\Tests\Phpunit\KnossosTestCase
             assertThrows(fn() => $router->route('scan', [], []), InvalidArgumentException::class);
             assertThrows(fn() => $router->route('watch', [], []), InvalidArgumentException::class);
             assertThrows(fn() => $router->route('export-bundle', ['proj-1'], []), InvalidArgumentException::class);
-            assertSame(0, $router->route('list-projects', [], []));
+            assertSame(0, $router->route('list-projects', [], ['db' => [':memory:']]));
             assertThrows(fn() => $router->route('remove-project', [], []), InvalidArgumentException::class);
             assertThrows(fn() => $router->route('serve', [], []), InvalidArgumentException::class);
         });

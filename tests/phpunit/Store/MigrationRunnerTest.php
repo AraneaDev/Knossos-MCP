@@ -339,21 +339,20 @@ final class MigrationRunnerTest extends TestCase
         $pdo = SqliteConnection::open($this->tempSqlite);
 
         $error = captureThrows(
-            static fn () => (new MigrationRunner($pdo, $this->tempDir))->migrate(),
+            fn () => (new MigrationRunner($pdo, $this->tempDir))->migrate(),
             RuntimeException::class,
         );
 
         $this->assertStringContainsString('Unable to read migration', $error->getMessage());
     }
 
-    public function testMigrateThrowsOnGlobFailure(): void
+    public function testMigrateThrowsWhenDirectoryUnreadable(): void
     {
-        // glob() returns false when the directory contains a pattern that cannot
-        // be accessed. Pass a directory with restrictive permissions that are
-        // removed in the test, simulating glob failure.
-        // This is best-effort — the `glob` return `false` depends on OS / filesystem.
+        // An unreadable migration directory yields an empty glob (not false), so
+        // the runner guards readability explicitly and fails to enumerate rather
+        // than silently applying zero migrations.
         if (posix_getuid() === 0) {
-            $this->markTestSkipped('Cannot reliably simulate glob failure when running as root.');
+            $this->markTestSkipped('Cannot test an unreadable directory when running as root.');
         }
 
         $this->tempDir = sys_get_temp_dir() . '/knossos-glob-fail-' . uniqid('', true);
@@ -367,7 +366,7 @@ final class MigrationRunnerTest extends TestCase
         $pdo = SqliteConnection::open($this->tempSqlite);
 
         $error = captureThrows(
-            static fn () => (new MigrationRunner($pdo, $this->tempDir))->migrate(),
+            fn () => (new MigrationRunner($pdo, $this->tempDir))->migrate(),
             RuntimeException::class,
         );
 
