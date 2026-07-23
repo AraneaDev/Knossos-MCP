@@ -26,3 +26,6 @@ __pycache__/
 /infection.args.log
 /infection.out.log
 .audit-patches/
+
+# Audit reports are working artifacts, not repo content
+docs/audits/
