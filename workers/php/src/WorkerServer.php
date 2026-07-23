@@ -15,6 +15,9 @@ final class WorkerServer
     public function run(): int
     {
         while (($line = fgets(STDIN)) !== false) {
+            // Reset per iteration so a malformed-JSON error is never attributed
+            // to the previous request's id.
+            unset($request);
             try {
                 $request = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
                 if (!is_array($request) || array_is_list($request)) {
@@ -120,7 +123,25 @@ final class WorkerServer
             if ($size === false || $size > $maxFileBytes) {
                 throw new WorkerInputException(sprintf('PHP scan file exceeds the size limit: %s', $relativePath));
             }
-            $contribution = $this->scanner->scan($root, $absolutePath, $relativePath, $laravel, $symfony);
+            // Isolate collection per file: an unexpected fault while scanning one
+            // file degrades to a per-file diagnostic and continues rather than
+            // discarding facts for every other file already streamed. Path and
+            // size validation above stays a request-level error by design.
+            try {
+                $contribution = $this->scanner->scan($root, $absolutePath, $relativePath, $laravel, $symfony);
+            } catch (Throwable $error) {
+                $contribution = [
+                    'owner_key' => 'knossos.php:file:' . $relativePath,
+                    'nodes' => [],
+                    'edges' => [],
+                    'diagnostics' => [[
+                        'severity' => 'error',
+                        'code' => 'PHP_INTERNAL_ERROR',
+                        'message' => $error->getMessage(),
+                        'evidence' => ['path' => $relativePath, 'start_line' => 1, 'end_line' => 1],
+                    ]],
+                ];
+            }
             $this->write([
                 'jsonrpc' => '2.0',
                 'method' => 'scan/contribution',
@@ -186,7 +207,17 @@ final class WorkerServer
     /** @param array<string, mixed> $message */
     private function write(array $message): void
     {
-        fwrite(STDOUT, json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n");
+        // A scanned identifier or string literal may legally carry raw bytes
+        // >= 0x80 (e.g. an ISO-8859-1 class name). JSON_INVALID_UTF8_SUBSTITUTE
+        // degrades that one name to U+FFFD instead of throwing and aborting the
+        // whole batch after facts were already streamed.
+        fwrite(
+            STDOUT,
+            json_encode(
+                $message,
+                JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE,
+            ) . "\n",
+        );
         fflush(STDOUT);
     }
 }

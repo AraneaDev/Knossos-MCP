@@ -54,6 +54,14 @@ export class FactAccumulator {
                     ]),
                 ].sort();
             }
+            // Merge any attributes the first occurrence lacked so a later
+            // contribution (e.g. a NestJS module field or a dynamic import
+            // marker) is not silently dropped on the duplicate edge key.
+            for (const [attribute, value] of Object.entries(attributes)) {
+                if (!(attribute in existing.attributes)) {
+                    existing.attributes[attribute] = value;
+                }
+            }
             return;
         }
         this.edgesByKey.set(key, {

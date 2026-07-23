@@ -25,7 +25,7 @@ final class FactCollector extends NodeVisitorAbstract
     /** @var list<array{id: string, name: string, parent: ?string, properties: array<string, string>}> */
     private array $classes = [];
 
-    /** @var list<array{id: string, variables: array<string, string>}> */
+    /** @var list<array{id: string, variables: array<string, array{type: string, confidence: string}>}> */
     private array $callables = [];
 
     public function __construct(private readonly string $relativePath) {}
@@ -230,14 +230,18 @@ final class FactCollector extends NodeVisitorAbstract
 
     private function assignment(Expr\Assign $node): void
     {
-        if (
-            $node->var instanceof Expr\Variable
-            && is_string($node->var->name)
-            && $node->expr instanceof Expr\New_
-            && $node->expr->class instanceof Name
-        ) {
-            $this->setVariableType($node->var->name, $this->resolvedClassName($node->expr->class));
+        if (!$node->var instanceof Expr\Variable || !is_string($node->var->name)) {
+            return;
         }
+        if ($node->expr instanceof Expr\New_ && $node->expr->class instanceof Name) {
+            // Inferred from local construction flow — only ever probable.
+            $this->setVariableType($node->var->name, $this->resolvedClassName($node->expr->class), 'probable');
+
+            return;
+        }
+        // Reassignment to any untracked value invalidates the inferred type so a
+        // stale `$x = new A; …; $x = something(); $x->m()` no longer resolves to A.
+        $this->clearVariableType($node->var->name);
     }
 
     private function newExpression(Expr\New_ $node): void
@@ -266,10 +270,17 @@ final class FactCollector extends NodeVisitorAbstract
         }
 
         $class = null;
+        // Declared param/property types stay certain; a type inferred from a
+        // local `$x = new Y` assignment is only ever probable (the variable may
+        // be conditional or reassigned before the call).
+        $confidence = 'certain';
         if ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
-            $class = $node->var->name === 'this'
-                ? ($this->currentClass()['name'] ?? null)
-                : $this->variableType($node->var->name);
+            if ($node->var->name === 'this') {
+                $class = $this->currentClass()['name'] ?? null;
+            } else {
+                $class = $this->variableType($node->var->name);
+                $confidence = $this->variableConfidence($node->var->name);
+            }
         } elseif (
             $node->var instanceof Expr\PropertyFetch
             && $node->var->var instanceof Expr\Variable
@@ -280,7 +291,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
 
         if ($class !== null) {
-            $this->addEdge('calls', $source, self::reference('method', $class . '::' . $node->name->toString()), $node);
+            $this->addEdge('calls', $source, self::reference('method', $class . '::' . $node->name->toString()), $node, $confidence);
         }
     }
 
@@ -365,14 +376,14 @@ final class FactCollector extends NodeVisitorAbstract
         ];
     }
 
-    private function addEdge(string $kind, string $source, string $target, Node $evidence): void
+    private function addEdge(string $kind, string $source, string $target, Node $evidence, string $confidence = 'certain'): void
     {
         $this->edges[] = [
             'kind' => $kind,
             'source' => $source,
             'target' => $target,
             'origin' => 'ast',
-            'confidence' => 'certain',
+            'confidence' => $confidence,
             'evidence' => $this->evidence($evidence),
             'attributes' => (object) [],
         ];
@@ -405,10 +416,20 @@ final class FactCollector extends NodeVisitorAbstract
         return $this->currentCallableId() ?? ($this->currentClass()['id'] ?? null);
     }
 
-    private function setVariableType(string $variable, string $type): void
+    private function setVariableType(string $variable, string $type, string $confidence = 'certain'): void
     {
         if ($this->callables !== []) {
-            $this->callables[array_key_last($this->callables)]['variables'][$variable] = $type;
+            $this->callables[array_key_last($this->callables)]['variables'][$variable] = [
+                'type' => $type,
+                'confidence' => $confidence,
+            ];
+        }
+    }
+
+    private function clearVariableType(string $variable): void
+    {
+        if ($this->callables !== []) {
+            unset($this->callables[array_key_last($this->callables)]['variables'][$variable]);
         }
     }
 
@@ -416,7 +437,14 @@ final class FactCollector extends NodeVisitorAbstract
     {
         return $this->callables === []
             ? null
-            : ($this->callables[array_key_last($this->callables)]['variables'][$variable] ?? null);
+            : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['type'] ?? null);
+    }
+
+    private function variableConfidence(string $variable): string
+    {
+        return $this->callables === []
+            ? 'certain'
+            : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['confidence'] ?? 'certain');
     }
 
     private function setPropertyType(string $property, string $type): void

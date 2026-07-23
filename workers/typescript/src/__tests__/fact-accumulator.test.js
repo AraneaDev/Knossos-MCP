@@ -54,4 +54,27 @@ describe("FactAccumulator edges", () => {
             true,
         ]);
     });
+
+    it("merges attributes a later duplicate adds without dropping them", () => {
+        const acc = make();
+        acc.addEdge("imports", "m", "t", {}, {});
+        acc.addEdge(
+            "imports",
+            "m",
+            "t",
+            {},
+            { nestjs_module_field: "imports" },
+        );
+        acc.addEdge("imports", "m", "t", {}, { dynamic: true });
+        expect(acc.edges).toHaveLength(1);
+        expect(acc.edges[0].attributes.nestjs_module_field).toBe("imports");
+        expect(acc.edges[0].attributes.dynamic).toBe(true);
+    });
+
+    it("does not overwrite an attribute the first edge already set", () => {
+        const acc = make();
+        acc.addEdge("imports", "m", "t", {}, { dynamic: false });
+        acc.addEdge("imports", "m", "t", {}, { dynamic: true });
+        expect(acc.edges[0].attributes.dynamic).toBe(false);
+    });
 });
