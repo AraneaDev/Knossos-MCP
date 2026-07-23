@@ -97,6 +97,22 @@ final class BoundaryInference
             $rules['explicit:' . $rule['name']] = ['source' => 'explicit', 'matcher' => $matcher, 'display' => $rule['name']];
         }
         ksort($rules, SORT_STRING);
+        // Identical matchers produce identical member sets by construction; keep one
+        // boundary per matcher. Only inferred rules merge — an explicit rule is a
+        // user declaration and keeps its own identity even on a shared matcher.
+        $byMatcher = [];
+        foreach ($rules as $name => $rule) {
+            if ($rule['source'] !== 'inferred') {
+                continue;
+            }
+            $key = $rule['matcher']['type'] . "\0" . $rule['matcher']['value'];
+            if (!isset($byMatcher[$key])) {
+                $byMatcher[$key] = $name;
+                continue;
+            }
+            $rules[$byMatcher[$key]]['merged_names'][] = $rule['display'] ?? $name;
+            unset($rules[$name]);
+        }
         $facts = [];
         foreach ($rules as $name => $rule) {
             $members = [];
@@ -106,7 +122,11 @@ final class BoundaryInference
                 }
             }
             sort($members, SORT_STRING);
-            $facts[] = new BoundaryFact($rule['display'] ?? $name, $rule['matcher'], $rule['source'], array_values(array_unique($members)));
+            $displayName = $rule['display'] ?? $name;
+            if (isset($rule['merged_names'])) {
+                $displayName .= ' (+' . implode(', ', $rule['merged_names']) . ')';
+            }
+            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], array_values(array_unique($members)));
         }
         return $facts;
     }

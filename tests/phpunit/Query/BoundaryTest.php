@@ -42,7 +42,11 @@ final class BoundaryTest extends KnossosTestCase
             assertSame('explicit', $explicit->data['boundaries'][0]['source']);
             assertSame(false, str_starts_with($explicit->evidence[0]['path'], '/'));
             $inferred = $query->listBoundaries($scan->projectId, 'inferred');
-            assertSame(true, count($inferred->data['boundaries']) >= 4);
+            // Root-level composer/node units and the frontend node/typescript/module
+            // units each share an identical path_prefix matcher, so BoundaryInference
+            // merges them into one boundary apiece; 3 remain (merged root, merged
+            // frontend, namespace:Fixture) rather than the pre-merge 6.
+            assertSame(true, count($inferred->data['boundaries']) >= 3);
             assertArrayContains('namespace:Fixture', array_column($inferred->data['boundaries'], 'name'));
 
             $page = $query->listBoundaries($scan->projectId, null, 1);

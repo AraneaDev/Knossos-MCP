@@ -431,6 +431,32 @@ final class BoundaryInferenceTest extends TestCase
         assertSame([], $facts);
     }
 
+    public function testInferredRulesWithIdenticalMatcherMergeIntoOneBoundary(): void
+    {
+        // A composer root and a node root both produce matcher path_prefix:"".
+        $units = [
+            $this->makeUnit('composer', 'composer.json', ['name' => 'vendor/app']),
+            $this->makeUnit('node', 'package.json', ['name' => 'web-app']),
+        ];
+
+        $facts = (new BoundaryInference())->infer($units, [], []);
+
+        assertSame(1, count($facts));
+        assertSame('composer:vendor/app (+node:web-app)', $facts[0]->name);
+        assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
+        assertSame('inferred', $facts[0]->source);
+    }
+
+    public function testExplicitRuleIsNotMergedWithInferredRuleSharingItsMatcher(): void
+    {
+        $units = [$this->makeUnit('composer', 'composer.json', ['name' => 'vendor/app'])];
+        $explicit = [['name' => 'my-root', 'path_prefix' => '']];
+
+        $facts = (new BoundaryInference())->infer($units, [], $explicit);
+
+        assertSame(2, count($facts));
+    }
+
     public function testNonIdentifierNamespaceSegmentDoesNotSeedBoundary(): void
     {
         // Backstop: even a symbol-kind node whose leading namespace segment is not
