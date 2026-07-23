@@ -56,12 +56,17 @@ final class GraphBundleDecoderTest extends TestCase
 
     public function testMaxUncompressedBytesConstant(): void
     {
-        assertSame(50_000_000, GraphBundleDecoder::MAX_UNCOMPRESSED_BYTES);
+        assertSame(8_000_000, GraphBundleDecoder::MAX_UNCOMPRESSED_BYTES);
     }
 
     public function testMaxFactsConstant(): void
     {
         assertSame(200_000, GraphBundleDecoder::MAX_FACTS);
+    }
+
+    public function testMaxStructuralTokensConstant(): void
+    {
+        assertSame(2_000_000, GraphBundleDecoder::MAX_STRUCTURAL_TOKENS);
     }
 
     // ----- encodeCanonical() -----
@@ -175,6 +180,25 @@ final class GraphBundleDecoderTest extends TestCase
         );
 
         $this->assertStringContainsString('empty or exceeds the compressed byte limit', $error->getMessage());
+    }
+
+    public function testDecodeRejectsHighTokenDensityBeforeJsonDecode(): void
+    {
+        // A tiny gzip that expands to a dense scalar array whose structural-token
+        // count exceeds MAX_STRUCTURAL_TOKENS. Left unchecked, json_decode would
+        // allocate millions of zvals; the density gate must reject it first, and
+        // it fires before the shape/checksum checks (the payload is not a bundle).
+        $dense = '[' . str_repeat('0,', GraphBundleDecoder::MAX_STRUCTURAL_TOKENS + 10) . '0]';
+        $compressed = gzencode($dense, 9, ZLIB_ENCODING_GZIP);
+        $this->assertIsString($compressed);
+        $this->assertLessThan(GraphBundleDecoder::MAX_COMPRESSED_BYTES, strlen($compressed));
+
+        $error = captureThrows(
+            static fn () => (new GraphBundleDecoder())->decodeAndValidate($compressed),
+            InvalidArgumentException::class,
+        );
+
+        $this->assertStringContainsString('structural token density', $error->getMessage());
     }
 
     public function testDecodeRejectsInvalidGzipData(): void

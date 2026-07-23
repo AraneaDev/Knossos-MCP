@@ -18,6 +18,30 @@ final readonly class GraphBundleService
         if (!in_array($redaction, ['none', 'paths', 'strict'], true)) {
             throw new InvalidArgumentException('Bundle redaction must be none, paths, or strict.');
         }
+
+        // Read all seven tables inside a single deferred read transaction so a
+        // concurrent reconcile commit cannot land between the snapshot SELECTs
+        // and produce a torn, self-checksummed bundle that fails on import.
+        $ownsTransaction = !$this->pdo->inTransaction();
+        if ($ownsTransaction) {
+            $this->pdo->beginTransaction();
+        }
+        try {
+            $compressed = $this->readAndEncode($projectId, $redaction);
+            if ($ownsTransaction) {
+                $this->pdo->commit();
+            }
+            return $compressed;
+        } catch (Throwable $error) {
+            if ($ownsTransaction && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $error;
+        }
+    }
+
+    private function readAndEncode(string $projectId, string $redaction): string
+    {
         $project = $this->one('SELECT id, name, active_scan_id FROM projects WHERE id = :id', ['id' => $projectId]);
         if ($project === null || !is_string($project['active_scan_id'])) {
             throw new InvalidArgumentException('Project has no active snapshot to export.');
@@ -95,19 +119,25 @@ final readonly class GraphBundleService
         $checksum = $bundle['checksum'];
         $projectId = 'bundle:' . substr($checksum, 0, 32);
         $scanId = 'bundle-scan:' . substr($checksum, 0, 32);
-        if ($this->one('SELECT id FROM projects WHERE id = :id', ['id' => $projectId]) !== null) {
-            throw new InvalidArgumentException('Bundle is already imported.');
-        }
         $maps = (new BundleIdMapBuilder())->build($projectId, $payload);
 
-        $this->pdo->beginTransaction();
+        // BEGIN IMMEDIATE acquires SQLite's single writer slot before the
+        // duplicate-project check so two concurrent imports of the same bundle
+        // surface the clean "already imported" error instead of one racing past
+        // the check and hitting a raw UNIQUE constraint violation. inTransaction()
+        // does not track a manually issued BEGIN, so ownership is tracked here.
+        $this->pdo->exec('BEGIN IMMEDIATE');
         try {
-            (new PortableGraphImporter($this->pdo))->import($payload, $manifest, $maps, $projectId, $scanId, $checksum, $name);
-            $this->pdo->commit();
-        } catch (Throwable $error) {
-            if ($this->pdo->inTransaction()) {
-                $this->pdo->rollBack();
+            if ($this->one('SELECT id FROM projects WHERE id = :id', ['id' => $projectId]) !== null) {
+                throw new InvalidArgumentException('Bundle is already imported.');
             }
+            (new PortableGraphImporter($this->pdo))->import($payload, $manifest, $maps, $projectId, $scanId, $checksum, $name);
+            $this->pdo->exec('COMMIT');
+        } catch (Throwable $error) {
+            // Any failure before COMMIT leaves the manual transaction open;
+            // inTransaction() does not track a BEGIN issued via exec(), so roll
+            // back unconditionally to release SQLite's writer slot.
+            $this->pdo->exec('ROLLBACK');
             throw $error;
         }
         return new ResultEnvelope($projectId, $scanId, sprintf('Imported %d portable graph facts.', $factCount), ['fact_count' => $factCount, 'redaction' => $manifest['redaction'] ?? 'unknown', 'root_imported' => false]);

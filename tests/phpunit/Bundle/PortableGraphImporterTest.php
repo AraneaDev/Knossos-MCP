@@ -392,6 +392,118 @@ final class PortableGraphImporterTest extends TestCase
         assertSame(null, $row['parent_id']);
     }
 
+    // ----- insertNodes: line-number validation (SQLite affinity bypass) -----
+
+    public function testImportRejectsNonIntegerStartLine(): void
+    {
+        // A TEXT start_line passes the column CHECK (>= 1) because SQLite orders
+        // TEXT above INTEGER; the importer must reject it before the INSERT.
+        $error = $this->expectImportError([
+            'nodes' => [$this->nodeRowWith('n1', ['start_line' => 'evil'])],
+        ]);
+        $this->assertStringContainsString('positive integer', $error->getMessage());
+    }
+
+    public function testImportRejectsZeroStartLine(): void
+    {
+        $error = $this->expectImportError([
+            'nodes' => [$this->nodeRowWith('n1', ['start_line' => 0])],
+        ]);
+        $this->assertStringContainsString('positive integer', $error->getMessage());
+    }
+
+    public function testImportRejectsNegativeEndLine(): void
+    {
+        $error = $this->expectImportError([
+            'nodes' => [$this->nodeRowWith('n1', ['end_line' => -3])],
+        ]);
+        $this->assertStringContainsString('positive integer', $error->getMessage());
+    }
+
+    public function testImportAcceptsPositiveAndNullLineNumbers(): void
+    {
+        $this->expectImportSuccess([
+            'nodes' => [$this->nodeRowWith('n1', ['start_line' => 1, 'end_line' => null])],
+        ]);
+        $row = $this->pdo->query('SELECT start_line, end_line FROM nodes LIMIT 1')->fetch();
+        $this->assertNotFalse($row);
+        assertSame(1, (int) $row['start_line']);
+        assertSame(null, $row['end_line']);
+    }
+
+    public function testImportRejectsNonIntegerDiagnosticStartLine(): void
+    {
+        $error = $this->expectImportError([
+            'diagnostics' => [array_merge($this->diagnosticRow('d1', null), ['start_line' => 'evil'])],
+        ]);
+        $this->assertStringContainsString('positive integer', $error->getMessage());
+    }
+
+    // ----- insertNodes: parent_id acyclicity -----
+
+    public function testImportRejectsSelfParentingNode(): void
+    {
+        $error = $this->expectImportError([
+            'nodes' => [$this->nodeRowWith('n1', ['parent_id' => 'n1'])],
+        ]);
+        $this->assertStringContainsString('cycle', $error->getMessage());
+    }
+
+    public function testImportRejectsParentIdCycle(): void
+    {
+        $error = $this->expectImportError([
+            'nodes' => [
+                $this->nodeRowWith('a', ['parent_id' => 'b']),
+                $this->nodeRowWith('b', ['parent_id' => 'a']),
+            ],
+        ]);
+        $this->assertStringContainsString('cycle', $error->getMessage());
+    }
+
+    // ----- timestamp + hash validation -----
+
+    public function testImportRejectsMalformedFinishedAtTimestamp(): void
+    {
+        $payload = $this->payloadWith([]);
+        $payload['scan']['finished_at'] = 'not-a-timestamp';
+        $error = captureThrows(
+            fn () => $this->callImportWithPayload($payload),
+            InvalidArgumentException::class,
+        );
+        $this->assertStringContainsString('timestamp', $error->getMessage());
+    }
+
+    public function testImportRejectsOverlongFinishedAtTimestamp(): void
+    {
+        $payload = $this->payloadWith([]);
+        $payload['scan']['finished_at'] = str_repeat('9', 50);
+        $error = captureThrows(
+            fn () => $this->callImportWithPayload($payload),
+            InvalidArgumentException::class,
+        );
+        $this->assertStringContainsString('timestamp', $error->getMessage());
+    }
+
+    public function testImportRejectsNonHexContentHash(): void
+    {
+        $error = $this->expectImportError([
+            'files' => [array_merge($this->fileRow('f1', 'src/A.php'), ['content_hash' => 'not hex!'])],
+        ]);
+        $this->assertStringContainsString('hash is malformed', $error->getMessage());
+    }
+
+    public function testImportRejectsNonStringScannerSetHash(): void
+    {
+        // A bare (string) cast would silently store "Array"; the hex check rejects it.
+        $payload = $this->payloadWith([]);
+        $payload['scan']['scanner_set_hash'] = ['not', 'a', 'string'];
+        $error = captureThrows(
+            fn () => $this->callImportWithPayload($payload),
+            InvalidArgumentException::class,
+        );
+        $this->assertStringContainsString('hash is malformed', $error->getMessage());
+    }
+
     public function testImportCanonicalizesNodeAttributesJson(): void
     {
         $row = $this->nodeRow('n1');
@@ -849,7 +961,7 @@ SQL
     {
         return [
             'project_name' => 'Test',
-            'scan' => ['scanner_set_hash' => 'h', 'finished_at' => '2025-01-01T00:00:00+00:00'],
+            'scan' => ['scanner_set_hash' => 'abcdef0123456789', 'finished_at' => '2025-01-01T00:00:00+00:00'],
             'files' => [],
             'nodes' => [],
             'edges' => [],
@@ -878,7 +990,7 @@ SQL
         return [
             'id' => $id,
             'relative_path' => $relativePath,
-            'content_hash' => 'h',
+            'content_hash' => 'abcdef0123456789',
             'size' => 0,
             'line_count' => 0,
             'language' => 'php',
