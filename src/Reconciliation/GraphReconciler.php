@@ -42,6 +42,14 @@ final readonly class GraphReconciler
         );
         $boundaries = $this->resolveBoundaries($projectId, $request->boundaries, $nodeMap);
 
+        $phaseMs = [];
+        $phaseStarted = hrtime(true);
+        $mark = static function (string $phase) use (&$phaseMs, &$phaseStarted): void {
+            $phaseMs[$phase] = round((hrtime(true) - $phaseStarted) / 1_000_000, 3);
+            $phaseStarted = hrtime(true);
+        };
+        $mark('prepare');
+
         $diagnosticCount = 0;
         $this->repository->transaction(function () use (
             $request,
@@ -55,6 +63,7 @@ final readonly class GraphReconciler
             $boundaries,
             $nodeWarnings,
             &$diagnosticCount,
+            $mark,
         ): void {
             $previousProject = $this->repository->findProject($projectId);
             $this->repository->archiveActiveSnapshot(
@@ -62,6 +71,12 @@ final readonly class GraphReconciler
                 hash('sha256', (string) ($previousProject['config_json'] ?? '{}')),
                 $request->projectConfig['snapshot_retention'] ?? 5,
             );
+            $mark('archive_snapshot');
+
+            // saveProject/createScan fall inside the clear_graph window per the
+            // phase-timing contract: they are cheap bookkeeping writes that
+            // immediately precede clearProjectGraph, and splitting them into
+            // their own phase would add noise without profiling value.
             $this->repository->saveProject(
                 $projectId,
                 $request->projectName,
@@ -70,14 +85,19 @@ final readonly class GraphReconciler
             );
             $this->repository->createScan($scanId, $projectId, $request->mode, $scannerSetHash);
             $this->repository->clearProjectGraph($projectId);
+            $mark('clear_graph');
 
             $versions = $this->scannerVersions($request->scanners);
             $this->repository->saveFiles($this->fileRows($request->discovery->files, $fileIds, $versions), $projectId, $scanId);
+            $mark('save_files');
 
             $this->repository->saveNodes(array_values($nodes), $projectId, $scanId);
+            $mark('save_nodes');
             $this->repository->saveEdges(array_values($edges), $projectId, $scanId);
+            $mark('save_edges');
 
             $this->repository->saveClassifications($classifications, $projectId, $scanId);
+            $mark('save_classifications');
 
             $memberships = [];
             foreach ($boundaries as $boundary) {
@@ -94,11 +114,14 @@ final readonly class GraphReconciler
                 }
             }
             $this->repository->saveBoundaryMemberships($memberships, $projectId, $scanId);
+            $mark('save_boundaries');
 
             $this->repository->replaceContributionCache($projectId, $request->contributionCache);
+            $mark('contribution_cache');
 
             $diagnosticCount = $this->saveDiagnostics($request, $projectId, $scanId, $fileIds, $nodeWarnings);
             $this->repository->completeScan($projectId, $scanId);
+            $mark('save_diagnostics');
         });
 
         return new ReconciliationResult(
@@ -109,6 +132,7 @@ final readonly class GraphReconciler
             count($edges),
             $diagnosticCount,
             count($externalNodes),
+            $phaseMs,
         );
     }
 

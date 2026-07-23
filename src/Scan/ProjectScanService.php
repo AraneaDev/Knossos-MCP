@@ -111,6 +111,9 @@ final class ProjectScanService implements ProjectScanner
                 $plan->effectiveMode,
                 $language->cacheEntries,
             ));
+            foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
+                $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
+            }
             $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
 
             return $this->resultFactory->create($plan, $language, $result, $startedAt, $stageMilliseconds);

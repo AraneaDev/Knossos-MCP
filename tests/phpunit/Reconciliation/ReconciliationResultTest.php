@@ -32,19 +32,19 @@ final class ReconciliationResultTest extends TestCase
         return (new ReflectionClass(ReconciliationResult::class))->getProperties(ReflectionProperty::IS_PUBLIC);
     }
 
-    public function testHasExactlySevenPublicPropertiesInExpectedOrder(): void
+    public function testHasExactlyEightPublicPropertiesInExpectedOrder(): void
     {
         // Locks the constructor's promoted-property order into the public surface —
         // reordering any of the fields would change this canonical list.
         assertSame(
-            ['projectId', 'scanId', 'files', 'nodes', 'edges', 'diagnostics', 'unresolvedNodes'],
+            ['projectId', 'scanId', 'files', 'nodes', 'edges', 'diagnostics', 'unresolvedNodes', 'phaseMilliseconds'],
             array_map(static fn (ReflectionProperty $p): string => $p->getName(), self::publicProperties()),
         );
     }
 
-    public function testPropertyTypesAreStringStringIntIntIntIntInt(): void
+    public function testPropertyTypesAreStringStringIntIntIntIntIntArray(): void
     {
-        $expected = ['string', 'string', 'int', 'int', 'int', 'int', 'int'];
+        $expected = ['string', 'string', 'int', 'int', 'int', 'int', 'int', 'array'];
         $actual = array_map(
             static fn (ReflectionProperty $p): string => (string) $p->getType(),
             self::publicProperties(),
@@ -60,7 +60,7 @@ final class ReconciliationResultTest extends TestCase
         }
     }
 
-    public function testConstructorStoresAllSevenProperties(): void
+    public function testConstructorStoresAllEightProperties(): void
     {
         $result = new ReconciliationResult(
             projectId: 'pid',
@@ -70,6 +70,7 @@ final class ReconciliationResultTest extends TestCase
             edges: 200,
             diagnostics: 5,
             unresolvedNodes: 2,
+            phaseMilliseconds: ['prepare' => 1.5],
         );
 
         assertSame('pid', $result->projectId);
@@ -79,6 +80,13 @@ final class ReconciliationResultTest extends TestCase
         assertSame(200, $result->edges);
         assertSame(5, $result->diagnostics);
         assertSame(2, $result->unresolvedNodes);
+        assertSame(['prepare' => 1.5], $result->phaseMilliseconds);
+    }
+
+    public function testPhaseMillisecondsDefaultsToEmptyArray(): void
+    {
+        $result = new ReconciliationResult('pid', 'sid', 1, 2, 3, 4, 5);
+        assertSame([], $result->phaseMilliseconds);
     }
 
     public function testAcceptsZeroCountsForAllIntFields(): void
@@ -101,11 +109,17 @@ final class ReconciliationResultTest extends TestCase
         assertSame('', $result->scanId);
     }
 
-    public function testAllConstructorParametersAreRequiredAndNonNullable(): void
+    public function testAllConstructorParametersAreRequiredAndNonNullableExceptPhaseMilliseconds(): void
     {
-        // Kills any mutation that adds a default value or relaxes null-allowance.
+        // Kills any mutation that adds a default value or relaxes null-allowance
+        // on the original seven fields. phaseMilliseconds is the sole exception:
+        // it must have a default so existing call sites keep compiling.
         $ctor = (new ReflectionClass(ReconciliationResult::class))->getConstructor();
         foreach ($ctor->getParameters() as $param) {
+            if ($param->getName() === 'phaseMilliseconds') {
+                $this->assertTrue($param->isOptional(), 'phaseMilliseconds must be optional');
+                continue;
+            }
             $this->assertFalse($param->isOptional(), $param->getName() . ' must be required');
             $this->assertFalse($param->allowsNull(), $param->getName() . ' must disallow null');
         }
