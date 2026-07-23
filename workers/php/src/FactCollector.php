@@ -13,6 +13,8 @@ use PhpParser\NodeVisitorAbstract;
 
 final class FactCollector extends NodeVisitorAbstract
 {
+    use ResolvesDeclarationName;
+
     /** @var list<array<string, mixed>> */
     private array $nodes = [];
 
@@ -94,7 +96,7 @@ final class FactCollector extends NodeVisitorAbstract
             $node instanceof Stmt\Enum_ => 'enum',
             default => 'class',
         };
-        $name = $this->declarationName($node);
+        $name = $this->declarationName($node, $this->relativePath);
         $id = self::reference($kind, $name);
         $parent = $node instanceof Stmt\Class_ && $node->extends instanceof Name
             ? $this->name($node->extends)
@@ -168,7 +170,7 @@ final class FactCollector extends NodeVisitorAbstract
 
     private function enterFunction(Stmt\Function_ $node): void
     {
-        $name = $this->declarationName($node);
+        $name = $this->declarationName($node, $this->relativePath);
         $id = self::reference('function', $name);
         $this->addNode($id, 'function', $name, $node->name->toString(), $node);
         $this->callables[] = ['id' => $id, 'variables' => []];
@@ -334,17 +336,6 @@ final class FactCollector extends NodeVisitorAbstract
         };
     }
 
-    private function declarationName(Stmt\ClassLike|Stmt\Function_ $node): string
-    {
-        if (isset($node->namespacedName)) {
-            return $node->namespacedName->toString();
-        }
-        if ($node instanceof Stmt\Class_ && $node->name === null) {
-            return sprintf('{anonymous}@%s:%d', $this->relativePath, max(1, $node->getStartLine()));
-        }
-
-        return $node->name?->toString() ?? '{anonymous}';
-    }
 
     private function name(Name $name): string
     {
