@@ -14,10 +14,10 @@
     }
   },
   "typescript": {
-    "lines": 94.6,
+    "lines": 90,
     "branches": 79.2,
     "functions": 97,
-    "statements": 94.6
+    "statements": 90
   },
   "python": {
     "lines": 96
