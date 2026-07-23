@@ -1164,6 +1164,24 @@ final class GraphReconcilerTest extends TestCase
         assertSame(1, $result->unresolvedNodes);
     }
 
+    public function testReconcileReportsPhaseTimings(): void
+    {
+        $request = $this->buildRequest();
+        $reconciler = new GraphReconciler($this->repo);
+
+        $result = $reconciler->reconcile($request);
+
+        $expected = [
+            'prepare', 'archive_snapshot', 'clear_graph', 'save_files', 'save_nodes',
+            'save_edges', 'save_classifications', 'save_boundaries', 'contribution_cache',
+            'save_diagnostics',
+        ];
+        assertSame($expected, array_keys($result->phaseMilliseconds));
+        foreach ($result->phaseMilliseconds as $milliseconds) {
+            assertSame(true, is_float($milliseconds) && $milliseconds >= 0.0);
+        }
+    }
+
     // ----- helpers -----
 
     /**
