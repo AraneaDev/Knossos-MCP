@@ -20,14 +20,22 @@ trait WorkerClients
     public function phpWorkerClient(): ProcessScannerClient
     {
         $coverageDirectory = getenv('KNOSSOS_PHP_COVERAGE_DIR');
-        $coverageArguments = is_string($coverageDirectory) && $coverageDirectory !== ''
+        $command = is_string($coverageDirectory) && $coverageDirectory !== ''
+            // The worker runs under WorkerProcessSupervisor's env allowlist, which
+            // omits KNOSSOS_PHP_COVERAGE_DIR, so tools/pcov-prepend.php would find
+            // no directory and record nothing. Inject it through `env` — the same
+            // wrapper the TypeScript and Python workers use for their coverage vars.
             ? [
+                'env',
+                'KNOSSOS_PHP_COVERAGE_DIR=' . $coverageDirectory,
+                PHP_BINARY,
                 '-d', 'pcov.directory=' . self::repositoryRoot(),
                 '-d', 'auto_prepend_file=' . self::repositoryRoot() . '/tools/pcov-prepend.php',
+                self::repositoryRoot() . '/workers/php/bin/worker',
             ]
-            : [];
+            : [PHP_BINARY, self::repositoryRoot() . '/workers/php/bin/worker'];
         return new ProcessScannerClient(
-            [PHP_BINARY, ...$coverageArguments, self::repositoryRoot() . '/workers/php/bin/worker'],
+            $command,
             new WorkerLimits(requestTimeoutMs: 10_000),
         );
     }
