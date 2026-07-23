@@ -14,7 +14,7 @@ final readonly class ReconciliationResult
         public int $edges,
         public int $diagnostics,
         public int $unresolvedNodes,
-        /** @param array<string, float> $phaseMilliseconds */
+        /** @var array<string, float> */
         public array $phaseMilliseconds = [],
     ) {}
 }

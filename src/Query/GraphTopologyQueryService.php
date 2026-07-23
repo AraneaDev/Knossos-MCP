@@ -789,6 +789,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * `contains` is not a flow edge, so without expansion a class query can never
      * descend into the methods that actually carry calls/constructs edges.
      *
+     * Expansion follows `contains` edges regardless of the query's `min_confidence`:
+     * containment is structural, not a flow relationship, so it isn't filtered by the
+     * same confidence threshold as calls/constructs edges.
+     *
      * @param array<string, mixed> $node
      * @return array<string, array<string, mixed>> id => node row
      */
@@ -814,6 +818,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return $set;
     }
+
     /** @param list<string> $edgeKinds @return list<array<string, mixed>> */
     private function flowEdges(string $projectId, string $sourceId, array $edgeKinds, int $minimumConfidence, bool &$truncated = false): array
     {
