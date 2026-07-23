@@ -804,7 +804,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         $statement = $this->pdo->prepare(
             'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.confidence FROM edges e ' .
-            "JOIN nodes n ON n.id = e.target_id WHERE e.project_id = :project AND e.source_id = :source " .
+            'JOIN nodes n ON n.id = e.target_id WHERE e.project_id = :project AND e.source_id = :source ' .
             "AND e.kind = 'contains' ORDER BY n.canonical_name, n.id LIMIT 201",
         );
         $statement->execute(['project' => $projectId, 'source' => $node['id']]);
