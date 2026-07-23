@@ -114,22 +114,19 @@ final class DiscoveryGuardsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         assertSame(false, $matcher->matches('src/docs/index.md'));
     }
 
-    public function testIgnoreMatcherCustomPatternWithFnmatchGlob(): void
+    public function testIgnoreMatcherCustomPatternWithGitignoreGlob(): void
     {
-        // fnmatch fallback arm: FNM_PATHNAME treats '/' as a path
-        // separator; '*' does NOT cross '/' on its own. So a
-        // single-segment pattern like `*.tmp` only matches
-        // single-segment paths. Multi-segment patterns must include
-        // the literal '/' if they want to cross segments.
+        // Gitignore semantics: a slash-free pattern like `*.tmp` or
+        // `test_*.php` matches its basename at ANY depth (unlike the old
+        // FNM_PATHNAME behaviour, which only matched top-level entries).
+        // '*' still never crosses a '/' within a single segment.
         $matcher = new IgnoreMatcher(['*.tmp', 'test_*.php', 'sub/test_*.php']);
         assertSame(true, $matcher->matches('foo.tmp'));
         assertSame(true, $matcher->matches('test_user.php'));
-        // Multi-segment pattern `sub/test_*.php` matches
-        // `sub/test_inner.php` because the explicit '/' lets the
-        // glob cross segments.
+        // A pattern containing a '/' is anchored to the project root.
         assertSame(true, $matcher->matches('sub/test_inner.php'));
-        // Single-segment patterns do NOT match multi-segment paths.
-        assertSame(false, $matcher->matches('sub/foo.tmp'));
+        // Slash-free `*.tmp` now matches at depth (the gitignore fix).
+        assertSame(true, $matcher->matches('sub/foo.tmp'));
         assertSame(false, $matcher->matches('keep.php'));
     }
 

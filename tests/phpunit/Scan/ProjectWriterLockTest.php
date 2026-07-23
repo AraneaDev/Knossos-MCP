@@ -311,6 +311,100 @@ final class ProjectWriterLockTest extends TestCase
         $lease->release();
     }
 
+    /** PDO reports SQLSTATE as a string code; reflection reproduces that on a crafted exception. */
+    private function pdoExceptionWithSqlstate(string $message, string $sqlstate): PDOException
+    {
+        $error = new PDOException($message);
+        $code = new \ReflectionProperty(\Exception::class, 'code');
+        $code->setValue($error, $sqlstate);
+        return $error;
+    }
+
+    public function testAcquireTranslatesSqliteBusyIntoScanBusyException(): void
+    {
+        $error = $this->pdoExceptionWithSqlstate('SQLSTATE[HY000]: General error: 5 database is locked', 'HY000');
+        $pdo = $this->createStub(PDO::class);
+        $pdo->method('exec')->willReturn(0);
+        $pdo->method('prepare')->willThrowException($error);
+
+        $lock = new ProjectWriterLock($pdo);
+
+        $thrown = captureThrows(
+            static fn(): ProjectWriterLease => $lock->acquire('proj_busy'),
+            ScanBusyException::class,
+        );
+
+        assertSame(true, $thrown instanceof ScanBusyException);
+        assertSame($error, $thrown->getPrevious());
+    }
+
+    public function testAcquireTranslatesBusyKeywordIntoScanBusyException(): void
+    {
+        $error = $this->pdoExceptionWithSqlstate('database is busy', 'HY000');
+        $pdo = $this->createStub(PDO::class);
+        $pdo->method('exec')->willReturn(0);
+        $pdo->method('prepare')->willThrowException($error);
+
+        $lock = new ProjectWriterLock($pdo);
+
+        $thrown = captureThrows(
+            static fn(): ProjectWriterLease => $lock->acquire('proj_busy2'),
+            ScanBusyException::class,
+        );
+
+        assertSame(true, $thrown instanceof ScanBusyException);
+    }
+
+    public function testAcquireDoesNotTreatOtherHy000ErrorsAsBusy(): void
+    {
+        $error = $this->pdoExceptionWithSqlstate('SQLSTATE[HY000]: disk I/O error', 'HY000');
+        $pdo = $this->createStub(PDO::class);
+        $pdo->method('exec')->willReturn(0);
+        $pdo->method('prepare')->willThrowException($error);
+
+        $lock = new ProjectWriterLock($pdo);
+
+        $thrown = captureThrows(
+            static fn(): ProjectWriterLease => $lock->acquire('proj_disk'),
+            PDOException::class,
+        );
+
+        assertSame('SQLSTATE[HY000]: disk I/O error', $thrown->getMessage());
+    }
+
+    public function testAcquireOnGenuinelyLockedDatabaseThrowsScanBusy(): void
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-lock-') ?: sys_get_temp_dir() . '/knossos-lock-' . bin2hex(random_bytes(6));
+        try {
+            $holder = new PDO('sqlite:' . $path);
+            $holder->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $holder->exec('PRAGMA journal_mode=WAL');
+            $holder->exec('CREATE TABLE scan_locks (project_id TEXT PRIMARY KEY, owner_token TEXT NOT NULL, acquired_at INTEGER NOT NULL)');
+
+            $writer = new PDO('sqlite:' . $path);
+            $writer->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $writer->exec('PRAGMA busy_timeout=0');
+
+            // The holder takes the WAL write lock; the writer's BEGIN IMMEDIATE
+            // then fails immediately with SQLSTATE HY000 "database is locked".
+            $holder->exec('BEGIN IMMEDIATE');
+            $holder->exec("INSERT INTO scan_locks VALUES ('other', 'tok', 1)");
+
+            $lock = new ProjectWriterLock($writer);
+            $thrown = captureThrows(
+                static fn(): ProjectWriterLease => $lock->acquire('proj_contended'),
+                ScanBusyException::class,
+            );
+            assertSame(true, $thrown instanceof ScanBusyException);
+
+            $holder->exec('ROLLBACK');
+        } finally {
+            @unlink($path);
+            @unlink($path . '-wal');
+            @unlink($path . '-shm');
+        }
+    }
+
     public function testAcquireWithRecentRowDoesNotExpireUnderDefaultLeaseSeconds(): void
     {
         $pdo = $this->createSchema();

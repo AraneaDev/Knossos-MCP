@@ -71,42 +71,52 @@ final class ProjectScanService implements ProjectScanner
         $cancellation->throwIfCancelled();
         $projectId = \Knossos\Store\StableId::project('root:' . $preparation->discovery->rootRealpath);
         $lease = (new ProjectWriterLock($this->pdo))->acquire($projectId);
-        $plan = $this->planner->finalize($preparation);
-        $this->workerPool->prepare($preparation->executionPolicy);
-        $stageMilliseconds['planning'] = $preparation->planningMilliseconds + self::elapsedMilliseconds($planningStarted);
+        try {
+            $plan = $this->planner->finalize($preparation);
+            $this->workerPool->prepare($preparation->executionPolicy);
+            $stageMilliseconds['planning'] = $preparation->planningMilliseconds + self::elapsedMilliseconds($planningStarted);
 
-        $language = $this->languageRunner->run($plan, $cancellation);
-        $stageMilliseconds += $language->stageMilliseconds;
-        $analysisStarted = hrtime(true);
-        $analysis = $this->analysisPipeline->analyze($plan, $language->contributions);
-        $stageMilliseconds['analysis'] = self::elapsedMilliseconds($analysisStarted);
-        $cancellation->throwIfCancelled();
+            $language = $this->languageRunner->run($plan, $cancellation);
+            $stageMilliseconds += $language->stageMilliseconds;
+            $analysisStarted = hrtime(true);
+            $analysis = $this->analysisPipeline->analyze($plan, $language->contributions);
+            $stageMilliseconds['analysis'] = self::elapsedMilliseconds($analysisStarted);
+            $cancellation->throwIfCancelled();
 
-        $reconciliationStarted = hrtime(true);
-        $projectConfig = $this->projectConfig($preparation);
-        $fastPath = $this->noChangeFastPath($plan, $language, $preparation, $projectConfig);
-        if ($fastPath !== null) {
+            $reconciliationStarted = hrtime(true);
+            $projectConfig = $this->projectConfig($preparation);
+            $fastPath = $this->noChangeFastPath($plan, $language, $preparation, $projectConfig, $name);
+            if ($fastPath !== null) {
+                $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
+                return $this->resultFactory->create($plan, $language, $fastPath, $startedAt, $stageMilliseconds, 'no_change');
+            }
+            // Refresh the lease immediately before the exclusive reconcile write. A
+            // legitimately long scan can outlive the lease window; if another scanner
+            // expired-and-stole it in the meantime, renew() reports zero matched rows
+            // and we must not reconcile — two "exclusive" writers would corrupt the graph.
+            if (!$lease->renew()) {
+                throw new ScanBusyException(sprintf('The writer lease for project %s was lost during the scan; another writer took over.', $projectId));
+            }
+            $result = (new GraphReconciler(new SqliteGraphRepository($this->pdo)))->reconcile(new FullScanRequest(
+                'root:' . $preparation->discovery->rootRealpath,
+                $name ?? basename($preparation->discovery->rootRealpath),
+                $preparation->discovery,
+                $language->manifests,
+                $language->contributions,
+                $projectConfig,
+                $analysis->classifications,
+                $analysis->boundaries,
+                $plan->effectiveMode,
+                $language->cacheEntries,
+            ));
             $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
-            $envelope = $this->resultFactory->create($plan, $language, $fastPath, $startedAt, $stageMilliseconds, 'no_change');
-            $lease->release();
-            return $envelope;
+
+            return $this->resultFactory->create($plan, $language, $result, $startedAt, $stageMilliseconds);
+        } finally {
+            if ($lease->release() === 0) {
+                error_log(sprintf('Knossos: writer lease for project %s released zero rows (already expired or stolen).', $projectId));
+            }
         }
-        $result = (new GraphReconciler(new SqliteGraphRepository($this->pdo)))->reconcile(new FullScanRequest(
-            'root:' . $preparation->discovery->rootRealpath,
-            $name ?? basename($preparation->discovery->rootRealpath),
-            $preparation->discovery,
-            $language->manifests,
-            $language->contributions,
-            $projectConfig,
-            $analysis->classifications,
-            $analysis->boundaries,
-            $plan->effectiveMode,
-            $language->cacheEntries,
-        ));
-        $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
-        $envelope = $this->resultFactory->create($plan, $language, $result, $startedAt, $stageMilliseconds);
-        $lease->release();
-        return $envelope;
     }
 
     private static function elapsedMilliseconds(int $startedAt): float
@@ -134,17 +144,27 @@ final class ProjectScanService implements ProjectScanner
      *
      * @param array<string, mixed> $projectConfig
      */
-    private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig): ?ReconciliationResult
+    private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig, ?string $name): ?ReconciliationResult
     {
         if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0) {
             return null;
         }
+        // Explicit boundary overrides and rename requests arrive as call arguments,
+        // not via knossos.json, so they never move configuration_hash and are absent
+        // from $projectConfig. The freshly computed analysis already incorporates them,
+        // so a fast-path return here would silently discard them and serve stale state.
+        if ($preparation->explicitBoundaries !== []) {
+            return null;
+        }
         $statement = $this->pdo->prepare(
-            'SELECT p.config_json, p.active_scan_id, s.scanner_set_hash FROM projects p JOIN scans s ON s.id = p.active_scan_id WHERE p.id = :id',
+            'SELECT p.name, p.config_json, p.active_scan_id, s.scanner_set_hash FROM projects p JOIN scans s ON s.id = p.active_scan_id WHERE p.id = :id',
         );
         $statement->execute(['id' => $plan->projectId]);
         $row = $statement->fetch();
         if ($row === false) {
+            return null;
+        }
+        if ($name !== null && $name !== (string) $row['name']) {
             return null;
         }
         $stored = json_decode((string) $row['config_json'], true);

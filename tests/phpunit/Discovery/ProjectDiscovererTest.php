@@ -7,6 +7,8 @@ namespace Knossos\Tests\Phpunit\Discovery;
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Scan\CancellationToken;
+use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -369,6 +371,31 @@ TOML
         $requires = $composerUnits[0]->metadata['requires'];
         $this->assertArrayHasKey('valid/pkg', $requires);
         $this->assertArrayNotHasKey('bogus/pkg', $requires);
+    }
+
+    // ── Cancellation ─────────────────────────────────────────────────
+
+    public function testDiscoverObservesCancellationDuringWalk(): void
+    {
+        // The token is polled every 512 entries; create enough files to cross it.
+        for ($i = 0; $i < 600; ++$i) {
+            file_put_contents(sprintf('%s/f%04d.php', $this->root, $i), "<?php\n");
+        }
+        $token = new CancellationToken();
+        $token->cancel();
+
+        assertThrows(
+            fn() => (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root, $token),
+            ScanCancelledException::class,
+        );
+    }
+
+    public function testDiscoverWithFreshTokenCompletesNormally(): void
+    {
+        file_put_contents($this->root . '/a.php', "<?php\n");
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root, new CancellationToken());
+
+        $this->assertCount(1, $result->files);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

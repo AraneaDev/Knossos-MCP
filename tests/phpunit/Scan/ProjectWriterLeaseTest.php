@@ -107,4 +107,66 @@ final class ProjectWriterLeaseTest extends TestCase
 
         assertSame(1, $prepareCount);
     }
+
+    private function schema(): PDO
+    {
+        $pdo = new PDO('sqlite::memory:');
+        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $pdo->exec('CREATE TABLE scan_locks (project_id TEXT PRIMARY KEY, owner_token TEXT NOT NULL, acquired_at INTEGER NOT NULL)');
+        return $pdo;
+    }
+
+    public function testReleaseReturnsDeletedRowCount(): void
+    {
+        $pdo = $this->schema();
+        $pdo->exec("INSERT INTO scan_locks VALUES ('proj_1', 'token-abc', 100)");
+
+        $lease = new ProjectWriterLease($pdo, 'proj_1', 'token-abc');
+
+        assertSame(1, $lease->release());
+        assertSame(0, $lease->release());
+    }
+
+    public function testReleaseReturnsZeroWhenLeaseAlreadyGone(): void
+    {
+        $pdo = $this->schema();
+        // No row for this token — a stolen/expired lease deletes nothing.
+        $lease = new ProjectWriterLease($pdo, 'proj_1', 'ghost-token');
+
+        assertSame(0, $lease->release());
+    }
+
+    public function testRenewRefreshesAcquiredAtForMatchingToken(): void
+    {
+        $pdo = $this->schema();
+        $pdo->exec("INSERT INTO scan_locks VALUES ('proj_1', 'token-abc', 100)");
+
+        $lease = new ProjectWriterLease($pdo, 'proj_1', 'token-abc', static fn(): int => 5_000);
+
+        assertSame(true, $lease->renew());
+        $acquired = (int) $pdo->query("SELECT acquired_at FROM scan_locks WHERE project_id = 'proj_1'")->fetchColumn();
+        assertSame(5_000, $acquired);
+    }
+
+    public function testRenewReturnsFalseWhenLeaseWasStolen(): void
+    {
+        $pdo = $this->schema();
+        // The row now belongs to a different owner — this lease was expired and re-acquired.
+        $pdo->exec("INSERT INTO scan_locks VALUES ('proj_1', 'thief-token', 100)");
+
+        $lease = new ProjectWriterLease($pdo, 'proj_1', 'my-token');
+
+        assertSame(false, $lease->renew());
+    }
+
+    public function testRenewReturnsFalseAfterRelease(): void
+    {
+        $pdo = $this->schema();
+        $pdo->exec("INSERT INTO scan_locks VALUES ('proj_1', 'token-abc', 100)");
+
+        $lease = new ProjectWriterLease($pdo, 'proj_1', 'token-abc');
+        $lease->release();
+
+        assertSame(false, $lease->renew());
+    }
 }

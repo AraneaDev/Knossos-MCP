@@ -15,9 +15,11 @@ use Knossos\Scan\LanguageWorkerPool;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scan\ScanPlan;
 use Knossos\Scan\ScanPreparation;
+use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 #[Group('scan-runner')]
 final class LanguageScanRunnerTest extends TestCase
@@ -140,6 +142,87 @@ final class LanguageScanRunnerTest extends TestCase
                 ),
                 $token,
             ),
+            ScanCancelledException::class,
+        );
+
+        assertSame(true, $error instanceof ScanCancelledException);
+    }
+
+    private function phpDescriptor(): LanguageDescriptor
+    {
+        return new LanguageDescriptor(
+            key: 'php',
+            stage: 'php-analysis',
+            languages: ['php'],
+            command: ['php', '-r', 'echo 1'],
+        );
+    }
+
+    private function planWithOneFile(): ScanPlan
+    {
+        $file = new \stdClass();
+        $file->language = 'php';
+        $file->relativePath = 'src/Foo.php';
+        $file->contentHash = 'hashfoo';
+
+        return new ScanPlan(
+            preparation: $this->makePreparationWithFiles([$file]),
+            projectId: 'plan-worker',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+    }
+
+    public function testWorkerCancelledExceptionIsTranslatedToScanCancelled(): void
+    {
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        // A worker request aborting with WORKER_CANCELLED is a cancellation, even
+        // though the local token was never flipped (the worker saw the cancel first).
+        $pool->method('client')->willThrowException(
+            new WorkerException('WORKER_CANCELLED', 'Scanner worker request was cancelled.'),
+        );
+        $runner = new LanguageScanRunner([$this->phpDescriptor()], $pool, new ContributionCacheService());
+
+        $error = captureThrows(
+            fn(): LanguageScanResult => $runner->run($this->planWithOneFile(), new CancellationToken()),
+            ScanCancelledException::class,
+        );
+
+        assertSame(true, $error instanceof ScanCancelledException);
+        assertSame(true, $error->getPrevious() instanceof WorkerException);
+    }
+
+    public function testGenericWorkerExceptionIsNotTranslatedWhenNotCancelled(): void
+    {
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        $pool->method('client')->willThrowException(
+            new WorkerException('WORKER_EXITED', 'Scanner worker exited unexpectedly.'),
+        );
+        $runner = new LanguageScanRunner([$this->phpDescriptor()], $pool, new ContributionCacheService());
+
+        $error = captureThrows(
+            fn(): LanguageScanResult => $runner->run($this->planWithOneFile(), new CancellationToken()),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_EXITED', $error->diagnosticCode);
+    }
+
+    public function testFailureIsTranslatedWhenTokenFlippedDuringRun(): void
+    {
+        $token = new CancellationToken();
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        // Worker fails with a generic error, but the caller cancelled concurrently:
+        // the flipped token makes this a cancellation.
+        $pool->method('client')->willReturnCallback(function () use ($token): never {
+            $token->cancel();
+            throw new RuntimeException('broken pipe');
+        });
+        $runner = new LanguageScanRunner([$this->phpDescriptor()], $pool, new ContributionCacheService());
+
+        $error = captureThrows(
+            fn(): LanguageScanResult => $runner->run($this->planWithOneFile(), $token),
             ScanCancelledException::class,
         );
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Scanner\Worker\WorkerException;
 use Throwable;
 
 final readonly class LanguageScanRunner
@@ -40,6 +41,7 @@ final readonly class LanguageScanRunner
                     $plan->preparation->configurationHashes[$descriptor->key],
                     $plan->cacheByScannerPath,
                     $plan->effectiveMode === 'full',
+                    $cancellation,
                 );
                 array_push($contributions, ...$partition->cached);
                 array_push($cacheEntries, ...$partition->cacheEntries);
@@ -78,6 +80,13 @@ final readonly class LanguageScanRunner
             }
         } catch (Throwable $error) {
             $this->pool->shutdown();
+            // A worker request aborted because the caller cancelled is a cancellation,
+            // not a worker failure: surface it as ScanCancelledException so the transport
+            // layer suppresses the response instead of reporting an internal error. The
+            // token may also have flipped between the RPC returning and this catch.
+            if ($cancellation->isCancelled() || ($error instanceof WorkerException && $error->diagnosticCode === 'WORKER_CANCELLED')) {
+                throw new ScanCancelledException('Scan was cancelled.', previous: $error);
+            }
             throw $error;
         }
 

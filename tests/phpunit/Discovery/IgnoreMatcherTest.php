@@ -260,11 +260,92 @@ final class IgnoreMatcherTest extends TestCase
 
     public function testCustomGlobQuestionMarkDoesNotCrossSlashes(): void
     {
-        // FNM_PATHNAME: '?' matches exactly one char, never a slash.
+        // '?' matches exactly one char, never a slash.
         $matcher = new IgnoreMatcher(['src/?.php']);
 
         assertSame(true, $matcher->matches('src/A.php'));
         assertSame(false, $matcher->matches('src/sub/A.php'));
         assertSame(false, $matcher->matches('src/AB.php'));
+    }
+
+    // ── Gitignore semantics ──────────────────────────────────────────
+
+    public function testSlashFreePatternMatchesBasenameAtAnyDepth(): void
+    {
+        // The gitignore fix: a slash-free glob matches its basename anywhere,
+        // not just at the top level (the old FNM_PATHNAME limitation).
+        $matcher = new IgnoreMatcher(['*.log']);
+
+        assertSame(true, $matcher->matches('error.log'));
+        assertSame(true, $matcher->matches('var/logs/error.log'));
+        assertSame(true, $matcher->matches('a/b/c/deep.log'));
+        assertSame(false, $matcher->matches('src/error.txt'));
+    }
+
+    public function testSlashFreeLiteralMatchesDirectoryAtAnyDepthAndItsContents(): void
+    {
+        $matcher = new IgnoreMatcher(['generated']);
+
+        assertSame(true, $matcher->matches('generated'));
+        assertSame(true, $matcher->matches('src/generated'));
+        assertSame(true, $matcher->matches('src/generated/output.php'));
+        assertSame(false, $matcher->matches('src/generators/output.php'));
+    }
+
+    public function testLeadingDoubleStarMatchesAtAnyDepth(): void
+    {
+        $matcher = new IgnoreMatcher(['**/fixtures']);
+
+        assertSame(true, $matcher->matches('fixtures'));
+        assertSame(true, $matcher->matches('tests/fixtures'));
+        assertSame(true, $matcher->matches('a/b/fixtures/data.json'));
+        assertSame(false, $matcher->matches('tests/fixture'));
+    }
+
+    public function testMiddleDoubleStarSpansDirectorySegments(): void
+    {
+        $matcher = new IgnoreMatcher(['app/**/cache']);
+
+        assertSame(true, $matcher->matches('app/cache'));
+        assertSame(true, $matcher->matches('app/var/cache'));
+        assertSame(true, $matcher->matches('app/a/b/cache/file'));
+        assertSame(false, $matcher->matches('lib/app/cache'));
+    }
+
+    public function testNegationReincludesPreviouslyIgnoredPath(): void
+    {
+        // Last matching pattern wins; '!' re-includes.
+        $matcher = new IgnoreMatcher(['*.php', '!keep.php']);
+
+        assertSame(true, $matcher->matches('src/drop.php'));
+        assertSame(false, $matcher->matches('src/keep.php'));
+        assertSame(false, $matcher->matches('keep.php'));
+    }
+
+    public function testLaterIgnoreOverridesEarlierNegation(): void
+    {
+        // Order matters: a later ignore re-ignores what an earlier '!' allowed.
+        $matcher = new IgnoreMatcher(['!keep.php', '*.php']);
+
+        assertSame(true, $matcher->matches('keep.php'));
+    }
+
+    public function testBuiltinExcludesCannotBeNegated(): void
+    {
+        // Built-in hard excludes are absolute and win over user negation.
+        $matcher = new IgnoreMatcher(['!vendor/keep.php']);
+
+        assertSame(true, $matcher->matches('vendor/keep.php'));
+    }
+
+    public function testAnchoredPatternDoesNotMatchAtDepth(): void
+    {
+        // A pattern containing a slash is anchored to the project root.
+        // (Uses a non-builtin directory name so only the anchored pattern is at play.)
+        $matcher = new IgnoreMatcher(['assets/output']);
+
+        assertSame(true, $matcher->matches('assets/output'));
+        assertSame(true, $matcher->matches('assets/output/app.js'));
+        assertSame(false, $matcher->matches('packages/assets/output'));
     }
 }
