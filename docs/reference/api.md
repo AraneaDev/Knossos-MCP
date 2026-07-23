@@ -51,6 +51,7 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 - `findProject(string $id): ?array` — Find one project by stable ID
 - `createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void` — Record the start of a scan before graph reconciliation
 - `completeScan(string $projectId, string $scanId): void` — Atomically make a successfully reconciled scan active
+- `recordFailedScan(string $id, string $projectId, string $mode, string $status): void` — Persist a terminal (failed or cancelled) scan attempt so it is observable
 - `archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void` — Retain the active snapshot under the configured bounded history policy
 - `clearProjectGraph(string $projectId): void` — Remove replaceable active graph facts while preserving project identity
 - `saveFile(string $id, string $projectId, string $relativePath, string $contentHash, int $size, int $mtime, string $language, string $scannerVersion, string $scanId, int $lineCount = 0): void` — Persist one scanned file and its content/provenance fingerprints

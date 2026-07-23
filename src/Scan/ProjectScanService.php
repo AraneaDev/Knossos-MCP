@@ -71,8 +71,10 @@ final class ProjectScanService implements ProjectScanner
         $cancellation->throwIfCancelled();
         $projectId = \Knossos\Store\StableId::project('root:' . $preparation->discovery->rootRealpath);
         $lease = (new ProjectWriterLock($this->pdo))->acquire($projectId);
+        $effectiveMode = 'full';
         try {
             $plan = $this->planner->finalize($preparation);
+            $effectiveMode = $plan->effectiveMode;
             $this->workerPool->prepare($preparation->executionPolicy);
             $stageMilliseconds['planning'] = $preparation->planningMilliseconds + self::elapsedMilliseconds($planningStarted);
 
@@ -112,6 +114,23 @@ final class ProjectScanService implements ProjectScanner
             $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
 
             return $this->resultFactory->create($plan, $language, $result, $startedAt, $stageMilliseconds);
+        } catch (\Throwable $error) {
+            // Persist the terminal attempt so it is observable and reapable by
+            // stale-scan cleanup. Best-effort: never let bookkeeping mask the
+            // original failure, and never record for a project that reconcile
+            // never created (recordFailedScan no-ops when the project is absent).
+            $status = $error instanceof ScanCancelledException ? 'cancelled' : 'failed';
+            try {
+                (new SqliteGraphRepository($this->pdo))->recordFailedScan(
+                    \Knossos\Store\StableId::scan($projectId, bin2hex(random_bytes(16))),
+                    $projectId,
+                    $effectiveMode,
+                    $status,
+                );
+            } catch (\Throwable) {
+                // Ignore: the original failure below is what matters.
+            }
+            throw $error;
         } finally {
             if ($lease->release() === 0) {
                 error_log(sprintf('Knossos: writer lease for project %s released zero rows (already expired or stolen).', $projectId));

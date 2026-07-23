@@ -1300,6 +1300,11 @@ final class FakeGraphRepository implements GraphRepository
         $this->completedScans[] = [$projectId, $scanId];
     }
 
+    public function recordFailedScan(string $id, string $projectId, string $mode, string $status): void
+    {
+        $this->scans[] = [$id, $projectId, $mode, $status];
+    }
+
     public function archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void
     {
         $this->archives[] = [$projectId, $configHash, $retention];

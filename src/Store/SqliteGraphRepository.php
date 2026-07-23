@@ -165,6 +165,40 @@ final class SqliteGraphRepository implements GraphRepository
         });
     }
 
+    public function recordFailedScan(string $id, string $projectId, string $mode, string $status): void
+    {
+        if (!in_array($mode, ['full', 'incremental'], true)) {
+            throw new InvalidArgumentException('Scan mode must be full or incremental.');
+        }
+        if (!in_array($status, ['failed', 'cancelled'], true)) {
+            throw new InvalidArgumentException('Terminal scan status must be failed or cancelled.');
+        }
+        $this->transaction(function () use ($id, $projectId, $mode, $status): void {
+            // A terminal record for a project that was never persisted has nothing
+            // to reference and nothing to clean up, so skip it rather than trip the
+            // scans.project_id foreign key.
+            $exists = $this->pdo->prepare('SELECT 1 FROM projects WHERE id = :project');
+            $exists->execute(['project' => $projectId]);
+            if ($exists->fetchColumn() === false) {
+                return;
+            }
+            $now = self::now();
+            $statement = $this->pdo->prepare(
+                'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at, finished_at) ' .
+                'VALUES (:id, :project, :mode, :status, :hash, :started, :finished)',
+            );
+            $statement->execute([
+                'id' => $id,
+                'project' => $projectId,
+                'mode' => $mode,
+                'status' => $status,
+                'hash' => '',
+                'started' => $now,
+                'finished' => $now,
+            ]);
+        });
+    }
+
     public function archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void
     {
         if ($retention < 0 || $retention > 20) {

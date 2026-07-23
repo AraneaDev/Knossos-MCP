@@ -37,6 +37,13 @@ interface GraphRepository
     /** Atomically make a successfully reconciled scan active. */
     public function completeScan(string $projectId, string $scanId): void;
 
+    /**
+     * Persist a terminal (failed or cancelled) scan attempt so it is observable
+     * and removable by stale-scan cleanup. A no-op when the project does not yet
+     * exist (a first-ever scan that failed before its project row was written).
+     */
+    public function recordFailedScan(string $id, string $projectId, string $mode, string $status): void;
+
     /** Retain the active snapshot under the configured bounded history policy. */
     public function archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void;
 
