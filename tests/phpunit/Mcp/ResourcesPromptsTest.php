@@ -96,4 +96,40 @@ final class ResourcesPromptsTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    #[Group('mcp')]
+    public function testPromptsGetOrientVariants(): void
+    {
+        $prompts = new \Knossos\Mcp\PromptService();
+
+        $withPath = $prompts->get('orient', ['path' => 'some/path']);
+        $withPathText = $withPath['messages'][0]['content']['text'];
+        assertSame('Architecture orientation workflow', $withPath['description']);
+        assertSame(true, str_contains($withPathText, 'Call scan_project with path "some/path"'));
+        assertSame(true, str_contains($withPathText, 'Call architecture_health'));
+
+        $withoutPath = $prompts->get('orient', []);
+        $withoutPathText = $withoutPath['messages'][0]['content']['text'];
+        assertSame(true, str_contains($withoutPathText, 'call list_projects to find the project_id'));
+        assertSame(true, str_contains($withoutPathText, 'Call architecture_health'));
+    }
+
+    #[Group('mcp')]
+    public function testResourceServiceReadHandlesInvalidUriAndBoundariesSection(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $service = new ResourceService(new ArchitectureQueryService($pdo));
+
+            assertSame(null, $service->read('not-a-valid-uri'));
+
+            $boundaries = $service->read("knossos://{$projectId}/boundaries");
+            $content = $boundaries['contents'][0];
+            assertSame('application/json', $content['mimeType']);
+            $decoded = json_decode($content['text'], true);
+            assertSame(true, is_array($decoded));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

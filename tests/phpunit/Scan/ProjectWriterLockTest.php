@@ -275,6 +275,31 @@ final class ProjectWriterLockTest extends TestCase
         $lease->release();
     }
 
+    public function testAcquireRollsBackEvenIfRollbackItselfFailsOnGenericThrowable(): void
+    {
+        $execCalls = [];
+        $pdo = $this->createStub(PDO::class);
+        $pdo->method('exec')->willReturnCallback(function (string $sql) use (&$execCalls) {
+            $execCalls[] = $sql;
+            if ($sql === 'ROLLBACK') {
+                throw new RuntimeException('rollback failed');
+            }
+            return 0;
+        });
+        $pdo->method('prepare')->willThrowException(new RuntimeException('boom'));
+
+        $lock = new ProjectWriterLock($pdo);
+
+        $error = captureThrows(
+            static fn(): ProjectWriterLease => $lock->acquire('proj_8'),
+            RuntimeException::class,
+        );
+
+        assertSame(true, $error instanceof RuntimeException);
+        assertSame('boom', $error->getMessage());
+        assertSame(['BEGIN IMMEDIATE', 'ROLLBACK'], $execCalls);
+    }
+
     public function testAcquireBindingsIncludeAllRequiredKeys(): void
     {
         $execCalls = [];

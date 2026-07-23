@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Scan;
 
+use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Scan\ScanPlan;
@@ -216,5 +217,43 @@ final class ScanPlannerTest extends TestCase
         assertSame([], $plan->cacheByScannerPath);
         assertSame(0, $plan->deletedFiles);
         assertSame(true, $plan instanceof ScanPlan);
+    }
+
+    public function testPrepareRejectsInvalidMode(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-mode-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
+
+            $error = captureThrows(
+                static fn() => $planner->prepare($dir, null, null, null, 'bogus-mode', null, null),
+                InvalidArgumentException::class,
+            );
+
+            assertSame('Scan mode must be auto, full, or incremental.', $error->getMessage());
+        } finally {
+            rmdir($dir);
+        }
+    }
+
+    public function testPrepareRejectsSnapshotRetentionOutOfRange(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-retention-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
+
+            $error = captureThrows(
+                static fn() => $planner->prepare($dir, null, null, null, null, 21, null),
+                InvalidArgumentException::class,
+            );
+
+            assertSame('snapshot_retention must be between 0 and 20.', $error->getMessage());
+        } finally {
+            rmdir($dir);
+        }
     }
 }
