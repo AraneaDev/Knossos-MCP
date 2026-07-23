@@ -82,7 +82,7 @@ final class SuggestionTest extends KnossosTestCase
         assertSame(true, in_array('member_limit', $memberLimited->data['bounds']['truncation_reasons'], true));
         $edgeLimited = $query->suggestLocation($ids['project'], 'checkout service', maxEdges: 1);
         assertSame(true, in_array('edge_limit', $edgeLimited->data['bounds']['truncation_reasons'], true));
-        assertThrows(fn() => $query->suggestLocation($ids['project'], 'add new feature'), InvalidArgumentException::class);
+        assertThrows(fn() => $query->suggestLocation($ids['project'], 'a i u'), InvalidArgumentException::class);
 
         $time = 0;
         $timedQuery = new ArchitectureQueryService($pdo, function () use (&$time): int {
@@ -92,5 +92,37 @@ final class SuggestionTest extends KnossosTestCase
         $timed = $timedQuery->suggestLocation($ids['project'], 'checkout service', timeoutMs: 1);
         assertSame(true, $timed->truncated);
         assertSame(true, in_array('time_limit', $timed->data['bounds']['truncation_reasons'], true));
+    }
+
+    #[Group('suggestion')]
+    public function testFeatureTokensDropStopWordsAndShortTokens(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $query = new ArchitectureQueryService($pdo);
+
+        $result = $query->suggestLocation($ids['project'], 'A new exporter that renders the graph as DOT source');
+
+        $tokens = $result->data['tokens'];
+        assertSame(false, in_array('as', $tokens, true));
+        assertSame(false, in_array('that', $tokens, true));
+        assertSame(false, in_array('the', $tokens, true));
+        assertSame(true, in_array('exporter', $tokens, true));
+        assertSame(true, in_array('graph', $tokens, true));
+        assertSame(true, in_array('dot', $tokens, true));
+    }
+
+    #[Group('suggestion')]
+    public function testAllStopWordDescriptionFallsBackToUnfilteredTokens(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $query = new ArchitectureQueryService($pdo);
+
+        // Every word is either a stop word or shorter than three characters;
+        // the fallback keeps the >= 2-char tokens instead of erroring.
+        $result = $query->suggestLocation($ids['project'], 'add new ui db');
+
+        assertSame(['add', 'new', 'ui', 'db'], $result->data['tokens']);
     }
 }
