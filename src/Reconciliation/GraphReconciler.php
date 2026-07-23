@@ -186,7 +186,10 @@ final readonly class GraphReconciler
                 $nodeIds[] = $nodeMap[$reference];
             }
             $resolved[] = [
-                'id' => StableId::boundary($projectId, $fact->name, $fact->source),
+                // Use identityName (the pre-suffix primary rule name) when present so a
+                // merged inferred boundary's stable id is independent of its display-only
+                // merged-from suffix; see BoundaryFact::$identityName.
+                'id' => StableId::boundary($projectId, $fact->identityName ?? $fact->name, $fact->source),
                 'name' => $fact->name,
                 'matcher' => $fact->matcher,
                 'source' => $fact->source,

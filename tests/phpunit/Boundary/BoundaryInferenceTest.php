@@ -40,6 +40,9 @@ final class BoundaryInferenceTest extends TestCase
         assertSame('inferred', $facts[0]->source);
         assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
         assertSame([], $facts[0]->nodeReferences);
+        // Unmerged inferred boundaries leave identityName null: the stable id derives
+        // from $name directly (no suffix to strip).
+        assertSame(null, $facts[0]->identityName);
     }
 
     public function testInferWithSingleNodeUnitCreatesNodeBoundary(): void
@@ -445,6 +448,9 @@ final class BoundaryInferenceTest extends TestCase
         assertSame('composer:vendor/app (+node:web-app)', $facts[0]->name);
         assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
         assertSame('inferred', $facts[0]->source);
+        // identityName pins the stable id to the surviving primary rule's base name so
+        // that adding/removing merge partners renames the display only, not the id.
+        assertSame('composer:vendor/app', $facts[0]->identityName);
     }
 
     public function testExplicitRuleIsNotMergedWithInferredRuleSharingItsMatcher(): void
