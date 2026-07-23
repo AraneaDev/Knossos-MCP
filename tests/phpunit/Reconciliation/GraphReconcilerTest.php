@@ -1180,6 +1180,8 @@ final class GraphReconcilerTest extends TestCase
         foreach ($result->phaseMilliseconds as $milliseconds) {
             assertSame(true, is_float($milliseconds) && $milliseconds >= 0.0);
         }
+        // NOTE: Window-placement (e.g., whether 'prepare' starts before collectNodes or after)
+        // cannot be asserted without wall-clock duration assertions, which would be flaky.
     }
 
     // ----- helpers -----
