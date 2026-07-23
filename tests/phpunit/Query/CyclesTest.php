@@ -67,20 +67,26 @@ final class CyclesTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
 
         $query = new ArchitectureQueryService($pdo);
+        // Self-recursion is not an architectural cycle, so self-loops are excluded by default.
         $result = $query->dependencyCycles($ids['project']);
-        assertSame([2, 1], array_column($result->data['cycles'], 'size'));
+        assertSame([2], array_column($result->data['cycles'], 'size'));
         assertSame('probable', $result->data['cycles'][0]['minimum_confidence']);
-        assertSame('certain', $result->data['cycles'][1]['minimum_confidence']);
         assertSame(['App\\Checkout', 'App\\InvoiceService'], array_column($result->data['cycles'][0]['members'], 'canonical_name'));
         assertSame(2, count($result->data['cycles'][0]['relationships']));
-        assertSame(3, count($result->evidence));
+        assertSame(2, count($result->evidence));
         assertContains('selected static dependency', $result->warnings[0]);
 
+        $withSelfLoops = $query->dependencyCycles($ids['project'], includeSelfLoops: true);
+        assertSame([2, 1], array_column($withSelfLoops->data['cycles'], 'size'));
+        assertSame('certain', $withSelfLoops->data['cycles'][1]['minimum_confidence']);
+
         $certain = $query->dependencyCycles($ids['project'], minConfidence: 'certain');
-        assertSame([1], array_column($certain->data['cycles'], 'size'));
+        assertSame([], $certain->data['cycles']);
+        $certainSelf = $query->dependencyCycles($ids['project'], minConfidence: 'certain', includeSelfLoops: true);
+        assertSame([1], array_column($certainSelf->data['cycles'], 'size'));
         $filtered = $query->dependencyCycles($ids['project'], edgeKinds: ['imports']);
         assertSame([], $filtered->data['cycles']);
-        $limited = $query->dependencyCycles($ids['project'], limit: 1);
+        $limited = $query->dependencyCycles($ids['project'], limit: 1, includeSelfLoops: true);
         assertSame(true, $limited->truncated);
         assertSame(['result_limit'], $limited->data['bounds']['truncation_reasons']);
         $edgeLimited = $query->dependencyCycles($ids['project'], maxEdges: 1);

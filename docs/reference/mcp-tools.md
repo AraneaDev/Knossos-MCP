@@ -265,6 +265,7 @@ Find circular dependencies. Use before a refactor to see which modules are tangl
 | `max_nodes` | integer | no | minimum=1; maximum=50000; default=10000 |
 | `max_edges` | integer | no | minimum=1; maximum=100000; default=20000 |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
+| `include_self_loops` | boolean | no | default=false |
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 

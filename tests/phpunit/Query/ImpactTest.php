@@ -68,7 +68,10 @@ final class ImpactTest extends KnossosTestCase
         $query = new ArchitectureQueryService($pdo);
         $impact = $query->impactAnalysis($ids['project'], $ids['invoice']);
         assertSame(1, count($impact->data['direct_dependants']));
-        assertSame($ids['checkout'], $impact->data['direct_dependants'][0]['node']['id']);
+        // Compact node summaries only; the full records (via, roles, boundaries) live in by_distance.
+        assertSame($ids['checkout'], $impact->data['direct_dependants'][0]['id']);
+        assertSame(false, array_key_exists('via', $impact->data['direct_dependants'][0]));
+        assertSame($ids['checkout'], $impact->data['by_distance'][0]['dependants'][0]['node']['id']);
         assertSame([1, 2], array_column($impact->data['by_distance'], 'distance'));
         assertSame(2, count($impact->data['entry_points']));
         assertSame(2, count($impact->data['by_confidence']['certain']));

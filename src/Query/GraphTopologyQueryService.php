@@ -43,7 +43,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /** @param list<string> $edgeKinds */
-    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000): ResultEnvelope
+    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000, bool $includeSelfLoops = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -124,9 +124,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $truncated = true;
             $truncationReasons[] = 'time_limit';
         }
+        // A single self-recursive symbol is ordinary recursion, not an
+        // architectural tangle, so self-loops are opt-in.
         $components = array_values(array_filter(
             $componentScan['components'],
-            fn(array $component): bool => count($component) > 1 || $this->hasSelfLoop($component[0], $adjacency),
+            fn(array $component): bool => count($component) > 1
+                || ($includeSelfLoops && $this->hasSelfLoop($component[0], $adjacency)),
         ));
         usort($components, static fn(array $a, array $b): int => (count($b) <=> count($a)) ?: ($a[0] <=> $b[0]));
         if (count($components) > $limit) {
@@ -640,7 +643,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             sprintf('Found %d potential static dependant%s within depth %d.', count($dependants), count($dependants) === 1 ? '' : 's', $maxDepth),
             [
                 'target' => $target,
-                'direct_dependants' => $byDistance[1] ?? [],
+                // Node summaries only; the full records (via, roles, boundaries) live in by_distance.
+                'direct_dependants' => array_map(static fn(array $record): array => $record['node'], $byDistance[1] ?? []),
                 'by_distance' => $groups,
                 'by_confidence' => $byConfidence,
                 'entry_points' => $entryPoints,

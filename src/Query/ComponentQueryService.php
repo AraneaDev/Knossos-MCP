@@ -270,11 +270,21 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         if (array_diff($confidences, ['certain', 'probable', 'possible']) !== []) {
             throw new InvalidArgumentException('confidence filter is invalid.');
         }
-        $params = ['project' => $projectId, 'exact' => $query, 'prefix' => self::like($query) . '%', 'contains' => '%' . self::like($query) . '%'];
+        $terms = array_values(array_filter(preg_split('/\s+/', trim($query)) ?: [], static fn(string $term): bool => $term !== ''));
+        if (count($terms) > 8) {
+            throw new InvalidArgumentException('query must contain at most 8 words.');
+        }
+        $params = ['project' => $projectId, 'exact' => $query, 'prefix' => self::like($query) . '%'];
         $sql = "SELECT DISTINCT n.*, f.relative_path, CASE WHEN n.canonical_name = :exact THEN 0 WHEN n.display_name = :exact THEN 1 WHEN n.canonical_name LIKE :prefix ESCAPE '!' THEN 2 ELSE 3 END AS rank " .
-            'FROM nodes n LEFT JOIN files f ON f.id = n.file_id WHERE n.project_id = :project ' .
-            "AND (n.canonical_name LIKE :contains ESCAPE '!' OR n.display_name LIKE :contains ESCAPE '!' OR n.attributes_json LIKE :contains ESCAPE '!' " .
-            "OR EXISTS (SELECT 1 FROM classifications cq WHERE cq.node_id = n.id AND cq.role LIKE :contains ESCAPE '!'))";
+            'FROM nodes n LEFT JOIN files f ON f.id = n.file_id WHERE n.project_id = :project';
+        // Every whitespace-separated term must match somewhere, so natural
+        // phrasings like "review diff" find reviewDiffText.
+        foreach ($terms as $index => $term) {
+            $key = 'contains' . $index;
+            $params[$key] = '%' . self::like($term) . '%';
+            $sql .= " AND (n.canonical_name LIKE :$key ESCAPE '!' OR n.display_name LIKE :$key ESCAPE '!' OR n.attributes_json LIKE :$key ESCAPE '!' " .
+                "OR EXISTS (SELECT 1 FROM classifications cq WHERE cq.node_id = n.id AND cq.role LIKE :$key ESCAPE '!'))";
+        }
         $sql .= $this->filterClause('n.kind', 'kind', $kinds, $params);
         $sql .= $this->filterClause('n.confidence', 'confidence', $confidences, $params);
         if ($roles !== []) {

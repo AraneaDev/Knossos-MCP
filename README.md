@@ -70,11 +70,12 @@ justifies it and the exact source line, so the answer is checkable:
 ```console
 $ knossos impact-analysis project_1b4f41… 'Knossos\Scanner\ScannerClient' --json
 {"summary":"Found 5 potential static dependants within depth 4.",
- "data":{"direct_dependants":[{"node":{"display_name":"ProcessScannerClient"},
-   "distance":1,"path_confidence":"certain",
-   "via":{"kind":"implements","origin":"ast",
-     "explanation":"ProcessScannerClient depends through --implements (certain, ast)--> ScannerClient",
-     "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":10}}}, …]}}
+ "data":{"direct_dependants":[{"display_name":"ProcessScannerClient", …}],
+   "by_distance":[{"distance":1,"dependants":[{"node":{"display_name":"ProcessScannerClient"},
+     "path_confidence":"certain",
+     "via":{"kind":"implements","origin":"ast",
+       "explanation":"ProcessScannerClient depends through --implements (certain, ast)--> ScannerClient",
+       "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":10}}}]}, …]}}
 ```
 
 Find refactor targets without shelling out to `wc` and `find`:

@@ -63,8 +63,9 @@ final readonly class ResultEnricher
                     $met = false;
                     break;
                 }
-                array_pop($data[$victim]);
-                $dropped[$victim] = ($dropped[$victim] ?? 0) + 1;
+                self::popTail($data, $victim);
+                $label = implode('.', $victim);
+                $dropped[$label] = ($dropped[$label] ?? 0) + 1;
             }
         }
 
@@ -103,26 +104,50 @@ final readonly class ResultEnricher
     }
 
     /**
-     * Select the largest top-level list field to trim one tail item from
-     * (alphabetical key on ties), or null if no trimmable list remains.
+     * Select the largest list field to trim one tail item from (alphabetical
+     * dotted path on ties), or null if no trimmable list remains. The walk
+     * descends into maps and list elements alike, so nested payloads such as
+     * review_diff's change.direct_components and impact_analysis's
+     * by_distance.0.dependants are trimmable too.
      *
      * @param array<string, mixed> $data
+     * @return list<string>|null
      */
-    private static function findVictim(array $data): ?string
+    private static function findVictim(array $data): ?array
     {
         $victim = null;
         $victimCount = 1;
-        foreach ($data as $key => $value) {
-            if (!is_array($value) || !array_is_list($value)) {
-                continue;
+        $walk = function (array $container, array $path) use (&$walk, &$victim, &$victimCount): void {
+            foreach ($container as $key => $value) {
+                if (!is_array($value)) {
+                    continue;
+                }
+                $keyPath = [...$path, (string) $key];
+                if (array_is_list($value)) {
+                    $count = count($value);
+                    if ($count > $victimCount || ($count === $victimCount && $victim !== null && strcmp(implode('.', $keyPath), implode('.', $victim)) < 0)) {
+                        $victim = $keyPath;
+                        $victimCount = $count;
+                    }
+                }
+                $walk($value, $keyPath);
             }
-            $count = count($value);
-            if ($count > $victimCount || ($count === $victimCount && $victim !== null && strcmp((string) $key, $victim) < 0)) {
-                $victim = (string) $key;
-                $victimCount = $count;
-            }
-        }
+        };
+        $walk($data, []);
         return $victim;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @param list<string> $path
+     */
+    private static function popTail(array &$data, array $path): void
+    {
+        $ref = &$data;
+        foreach (array_slice($path, 0, -1) as $segment) {
+            $ref = &$ref[$segment];
+        }
+        array_pop($ref[$path[count($path) - 1]]);
     }
 
     private function compact(ResultEnvelope $envelope): ResultEnvelope

@@ -65,6 +65,10 @@ final class BoundaryTest extends KnossosTestCase
 
             $roleSearch = $query->searchArchitecture($scan->projectId, 'application.service');
             assertSame(1, count($roleSearch->data['results']));
+            // Multi-word queries match components whose name contains every term.
+            $multiWord = $query->searchArchitecture($scan->projectId, 'checkout service');
+            assertArrayContains('Fixture\\CheckoutService', array_column($multiWord->data['results'], 'canonical_name'));
+            assertSame('Fixture\\CheckoutService', $multiWord->data['results'][0]['canonical_name']);
             $pagedSearch = $query->searchArchitecture($scan->projectId, 'Checkout', limit: 1);
             assertSame(1, count($pagedSearch->data['results']));
             assertSame(true, $pagedSearch->truncated);
