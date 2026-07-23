@@ -5,7 +5,13 @@
 > php-cs-fixer clean, TS vitest 19 + eslint clean, Python ruff/mypy clean + pytest 19,
 > generated reference docs fresh, `composer.json` valid. Commits `b506a75`, `e49ccea`,
 > `55bda09`, `1311e40`, `eab74a3`, `fa573bc`, `5873309`, `b8c5a4e`, `d660967`, `c3cc244`.
-> Deferred by decision: true incremental reconciliation (its own tracked effort).
+>
+> **Deferred-item follow-up (`6ae1656`):** chose Option B (cheaper full rebuild) —
+> reconciliation's per-row classification/boundary/file inserts are now chunked
+> multi-row inserts; the dead, cascade-unsafe `deleteFactsByOwner` was removed.
+> **Still deferred:** true owner-scoped incremental reconciliation (Option A) —
+> gated behind a large-graph benchmark rather than done speculatively, since it is
+> the highest-risk change in the codebase and Batch 1 already removed the acute pain.
 
 
 
