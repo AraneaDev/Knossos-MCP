@@ -26,6 +26,7 @@ covers it.
 
 Each page documents one query surface, its CLI and MCP forms, and its limits.
 
+- [Response envelopes](features/response-envelopes.md) — the shared result shape, verbosity, size budgets, staleness, and next steps.
 - [Project catalogue](features/project-catalog.md) — stable project IDs and freshness states.
 - [Component inspection](features/component-inspection.md) — single-call component dossiers.
 - [List usages](features/list-usages.md) — every call/reference site of a symbol with file:line evidence.

@@ -40,27 +40,27 @@ command. See the [documentation index](docs/README.md) for the full map.
 
 ## Worked example
 
-Scanning this repository takes about four seconds and yields a graph you can
+Scanning this repository takes about ten seconds and yields a graph you can
 interrogate. Output below is real, abridged with `…`.
 
 ```console
 $ knossos scan . --json
-{"summary":"Scanned 219 files into 1699 nodes and 5943 relationships.",
- "data":{"files":219,"nodes":1699,"edges":5943,"diagnostics":19,"mode":"full",
- "scanner_metadata":{"knossos.php":{"files_scanned":174},
-   "knossos.typescript":{"files_scanned":33,"programs":9},
-   "knossos.python":{"files_scanned":12,"parser":"python.ast"}},
- "metrics":{"elapsed_ms":3981.4, …}}}
+{"summary":"Scanned 402 files into 4965 nodes and 23126 relationships.",
+ "data":{"files":402,"nodes":4965,"edges":23126,"diagnostics":20,"mode":"full",
+ "scanner_metadata":{"knossos.php":{"files_scanned":353},
+   "knossos.typescript":{"files_scanned":34,"programs":9},
+   "knossos.python":{"files_scanned":15,"parser":"python.ast"}},
+ "metrics":{"elapsed_ms":10541.0, …}}}
 ```
 
 Orient yourself in a codebase you have never opened:
 
 ```console
 $ knossos architecture-summary project_1b4f41… --json
-{"summary":"Knossos-MCP contains 1699 nodes and 5943 relationships.",
- "data":{"node_kinds":[{"kind":"method","count":803},{"kind":"class","count":185},
-   {"kind":"function","count":121},{"kind":"interface","count":12},
-   {"kind":"route","count":10}, …]}}
+{"summary":"Knossos-MCP contains 4965 nodes and 23126 relationships.",
+ "data":{"node_kinds":[{"kind":"method","count":3243},{"kind":"class","count":426},
+   {"kind":"function","count":138},{"kind":"interface","count":15},
+   {"kind":"route","count":12}, …]}}
 ```
 
 Ask what breaks if you change an interface. Each dependant carries the edge that
@@ -91,10 +91,10 @@ Find refactor targets without shelling out to `wc` and `find`:
 
 ```console
 $ knossos file-metrics project_1b4f41… --limit=3 --json
-{"summary":"3 of 219 files by line_count desc.",
- "data":{"files":[{"path":"tests/run.php","language":"php","line_count":5200},
-   {"path":"src/Mcp/ToolService.php","language":"php","line_count":1046},
-   {"path":"workers/typescript/src/scanner.js","language":"javascript","line_count":1007}]}}
+{"summary":"3 of 402 files by line_count desc.",
+ "data":{"files":[{"path":"tests/phpunit/Reconciliation/GraphReconcilerTest.php","language":"php","line_count":1666},
+   {"path":"src/Mcp/ToolService.php","language":"php","line_count":1426},
+   {"path":"tests/phpunit/Cli/CommandsTest.php","language":"php","line_count":1354}]}}
 ```
 
 Answers that rest on inference say so. `impact-analysis` returns the warning

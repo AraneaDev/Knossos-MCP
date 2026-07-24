@@ -29,9 +29,9 @@ worker that spawns a long-running child. The Linux supervisor test verifies
 both worker and descendant disappear after cancellation.
 
 ```sh
-php tests/run.php --group=worker
-php tests/run.php --group=concurrency
-php tests/run.php --group=fault-injection
+vendor/bin/phpunit --group=worker
+vendor/bin/phpunit --group=concurrency
+vendor/bin/phpunit --group=fault-injection
 ```
 
 On Linux, Knossos enumerates the supervised worker's `/proc` descendants before
