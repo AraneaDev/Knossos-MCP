@@ -16,6 +16,9 @@
     "markdownlint-cli2": "0.23.0",
     "prettier": "latest"
   },
+  "overrides": {
+    "js-yaml": "5.2.2"
+  },
   "engines": {
     "node": ">=22 <25"
   }
