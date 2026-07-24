@@ -36,14 +36,35 @@ final class ComponentLegendTest extends KnossosTestCase
         assertSame('A\\B::c', $out['direct'][0]);
         assertSame('A\\B::c', $out['grouped'][0]['node']);
         assertSame(1, $out['grouped'][0]['distance']);
-        // The legend holds one identity descriptor, no opaque id / display_name / origin.
+        // The legend holds one identity descriptor with the allowlisted fields
+        // preserved (kind/confidence/origin/boundaries/roles); the opaque id and
+        // the redundant display_name are dropped.
         assertSame(['A\\B::c'], array_keys($legend));
         assertSame('method', $legend['A\\B::c']['kind']);
         assertSame('certain', $legend['A\\B::c']['confidence']);
+        assertSame('ast', $legend['A\\B::c']['origin']);
         assertSame(['boundary_1'], $legend['A\\B::c']['boundaries']);
         assertSame(['application.service'], $legend['A\\B::c']['roles']);
         assertSame(false, array_key_exists('id', $legend['A\\B::c']));
         assertSame(false, array_key_exists('display_name', $legend['A\\B::c']));
+    }
+
+    #[Group('mcp')]
+    public function testHoistedDescriptorPreservesAttributes(): void
+    {
+        // find_component / inspect_component nodes carry origin + attributes
+        // (visibility, static, abstract, extends, …). Those are allowlisted by
+        // IDENTITY_KEYS, so hoisting must keep them, not silently drop them.
+        $node = [
+            'id' => 'symbol_m', 'kind' => 'method', 'canonical_name' => 'A\\B::m',
+            'display_name' => 'm', 'origin' => 'ast',
+            'attributes' => ['visibility' => 'public', 'static' => false, 'abstract' => false],
+        ];
+        [$out, $legend] = ComponentLegend::compress(['items' => [$node]]);
+
+        assertSame('A\\B::m', $out['items'][0]);
+        assertSame(['visibility' => 'public', 'static' => false, 'abstract' => false], $legend['A\\B::m']['attributes']);
+        assertSame('ast', $legend['A\\B::m']['origin']);
     }
 
     #[Group('mcp')]

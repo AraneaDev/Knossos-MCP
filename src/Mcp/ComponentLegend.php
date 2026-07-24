@@ -98,12 +98,21 @@ final class ComponentLegend
             if (isset($node['confidence'])) {
                 $descriptor['confidence'] = $node['confidence'];
             }
+            if (isset($node['origin'])) {
+                $descriptor['origin'] = $node['origin'];
+            }
             if (($node['boundaries'] ?? []) !== []) {
                 $descriptor['boundaries'] = $node['boundaries'];
             }
             $roles = self::roleNames($node['roles'] ?? []);
             if ($roles !== []) {
                 $descriptor['roles'] = $roles;
+            }
+            // Keep attributes (visibility, static, abstract, extends, …) — they
+            // are IDENTITY_KEYS-allowlisted and agent-relevant, so hoisting a
+            // node must not silently drop them.
+            if (($node['attributes'] ?? []) !== []) {
+                $descriptor['attributes'] = $node['attributes'];
             }
             $legend[$name] = $descriptor;
         }
