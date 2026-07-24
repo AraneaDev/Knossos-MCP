@@ -192,6 +192,10 @@ final readonly class ResultEnricher
         if ($legend !== []) {
             $data['boundary_legend'] = $legend;
         }
+        [$data, $components] = ComponentLegend::compress($data);
+        if ($components !== []) {
+            $data['component_legend'] = $components;
+        }
         return new ResultEnvelope(
             $envelope->projectId,
             $envelope->snapshotId,

@@ -5,6 +5,10 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Mcp;
 
 use Knossos\Mcp\ComponentLegend;
+use Knossos\Mcp\NextStepPlanner;
+use Knossos\Mcp\ResultEnricher;
+use Knossos\Query\ResultEnvelope;
+use Knossos\Query\StalenessProbe;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -127,5 +131,24 @@ final class ComponentLegendTest extends KnossosTestCase
 
         assertSame('calls', $out['rec']['via']);
         assertSame('X::y', $out['rec']['node']);
+    }
+
+    #[Group('mcp')]
+    public function testEnrichCompactHoistsComponentsButFullDoesNot(): void
+    {
+        $enricher = new ResultEnricher(
+            new StalenessProbe($this->storeFixture()[0]),
+            new NextStepPlanner(),
+        );
+        $node = ['id' => 'symbol_q', 'kind' => 'class', 'canonical_name' => 'Q', 'display_name' => 'Q', 'confidence' => 'certain'];
+        $envelope = new ResultEnvelope('p', 's', 'sum', ['items' => [$node, $node]]);
+
+        $compact = $enricher->enrich($envelope, 'find_component', 'compact')->jsonSerialize();
+        assertSame(['Q', 'Q'], $compact['data']['items']);
+        assertSame('class', $compact['data']['component_legend']['Q']['kind']);
+
+        $full = $enricher->enrich($envelope, 'find_component', 'full')->jsonSerialize();
+        assertSame('symbol_q', $full['data']['items'][0]['id']); // full keeps descriptors + ids
+        assertSame(false, array_key_exists('component_legend', $full['data']));
     }
 }
