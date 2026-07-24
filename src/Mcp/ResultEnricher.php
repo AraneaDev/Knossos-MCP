@@ -112,7 +112,7 @@ final readonly class ResultEnricher
      * list is folded into the walk under a reserved key so it can be trimmed
      * too. The walk descends into maps and list elements alike, so nested
      * payloads such as review_diff's change.direct_components and
-     * impact_analysis's by_distance.0.dependants are trimmable too. A
+     * impact_analysis's dependants are trimmable too. A
      * single-element list is a valid victim, so a payload dominated by one
      * one-item list can still be trimmed toward the budget.
      *

@@ -129,7 +129,7 @@ final class AuditBatch2Test extends KnossosTestCase
 
         $query = new ArchitectureQueryService($pdo);
         $impact = $query->impactAnalysis($ids['project'], $hub, maxDepth: 1, limit: 100);
-        assertSame(1, count($impact->data['direct_dependants']));
+        assertSame(1, count($impact->data['dependants']));
         assertSame(true, $impact->truncated);
         assertSame('per_node_edge_limit', $impact->data['bounds']['truncation_reason']);
     }
@@ -158,11 +158,9 @@ final class AuditBatch2Test extends KnossosTestCase
         $query = new ArchitectureQueryService($pdo);
         $impact = $query->impactAnalysis($ids['project'], $t, maxDepth: 3);
         $origin = null;
-        foreach ($impact->data['by_distance'] as $group) {
-            foreach ($group['dependants'] as $record) {
-                if ($record['node']['canonical_name'] === 'App\\Origin') {
-                    $origin = $record;
-                }
+        foreach ($impact->data['dependants'] as $record) {
+            if ($record['node']['canonical_name'] === 'App\\Origin') {
+                $origin = $record;
             }
         }
         assertSame('probable', $origin['path_confidence']);

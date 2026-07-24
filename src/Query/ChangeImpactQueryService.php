@@ -43,12 +43,10 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
             );
         }
         $components = [$target['id'] => ['node' => $target, 'distance' => 0, 'path_confidence' => 'certain']];
-        foreach ($impact->data['by_distance'] ?? [] as $group) {
-            foreach ($group['dependants'] as $record) {
-                $components[$record['node']['id']] = [
-                    'node' => $record['node'], 'distance' => $record['distance'], 'path_confidence' => $record['path_confidence'],
-                ];
-            }
+        foreach ($impact->data['dependants'] ?? [] as $record) {
+            $components[$record['node']['id']] = [
+                'node' => $record['node'], 'distance' => $record['distance'], 'path_confidence' => $record['path_confidence'],
+            ];
         }
         $paths = $this->nodePaths(array_keys($components));
         $gitMetadata = ['available' => false, 'reason' => 'provider_unavailable', 'since_days' => $sinceDays, 'max_commits' => $maxCommits];
@@ -170,12 +168,10 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
         foreach (array_slice($direct, 0, 1000) as $node) {
             $impact = $this->topologyQueries->impactAnalysis($projectId, $node['id'], $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs, $deadline);
-            foreach ($impact->data['by_distance'] ?? [] as $group) {
-                foreach ($group['dependants'] as $record) {
-                    $id = $record['node']['id'];
-                    if (!isset($impacted[$id]) || $record['distance'] < $impacted[$id]['distance']) {
-                        $impacted[$id] = $record;
-                    }
+            foreach ($impact->data['dependants'] ?? [] as $record) {
+                $id = $record['node']['id'];
+                if (!isset($impacted[$id]) || $record['distance'] < $impacted[$id]['distance']) {
+                    $impacted[$id] = $record;
                 }
             }
             foreach ($impact->data['entry_points'] ?? [] as $entry) {

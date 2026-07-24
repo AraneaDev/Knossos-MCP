@@ -166,6 +166,35 @@ final class McpTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testImpactAnalysisReturnsFlatDependantsAndCounts(): void
+    {
+        // Not toolServiceWithScannedFixture(): the `mixed` fixture's files carry no
+        // cross-file references (verified directly), so `CheckoutService` would have
+        // zero dependants and the node-compaction assertion below would be vacuous.
+        // storeFixture() ships a real Checkout->InvoiceService `calls` edge, giving
+        // impact_analysis on InvoiceService a genuine distance-1 dependant while still
+        // exercising the same ToolService::call -> ResultEnricher compact path.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $svc = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $env = $svc->call('impact_analysis', ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $data = $env->jsonSerialize()['data'];
+        assertSame(true, array_key_exists('dependants', $data));
+        assertSame(true, array_key_exists('counts', $data));
+        assertSame(false, array_key_exists('by_distance', $data));
+        assertSame(false, array_key_exists('by_confidence', $data));
+        // Flat entries carry distance + name reference (node compacted downstream to a string).
+        assertSame(true, isset($data['dependants'][0]['distance']));
+        assertSame('App\\Checkout', $data['dependants'][0]['node']);
+        assertSame(1, $data['counts']['by_distance'][1]);
+    }
+
+    #[Group('mcp')]
     public function testAnnotateComponentAndListAnnotationsDispatch(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

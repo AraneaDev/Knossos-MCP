@@ -67,24 +67,25 @@ final class ImpactTest extends KnossosTestCase
 
         $query = new ArchitectureQueryService($pdo);
         $impact = $query->impactAnalysis($ids['project'], $ids['invoice']);
-        assertSame(1, count($impact->data['direct_dependants']));
-        // Compact node summaries only; the full records (via, roles, boundaries) live in by_distance.
-        assertSame($ids['checkout'], $impact->data['direct_dependants'][0]['id']);
-        assertSame(false, array_key_exists('via', $impact->data['direct_dependants'][0]));
-        assertSame($ids['checkout'], $impact->data['by_distance'][0]['dependants'][0]['node']['id']);
-        assertSame([1, 2], array_column($impact->data['by_distance'], 'distance'));
+        $dependants = $impact->data['dependants'];
+        assertSame(2, count($dependants));
+        // Flat ranked/BFS-order list; each record carries the full node plus via/roles/boundaries.
+        assertSame($ids['checkout'], $dependants[0]['node']['id']);
+        assertSame(1, $dependants[0]['distance']);
+        assertSame(true, array_key_exists('via', $dependants[0]));
+        assertSame([1, 2], array_map(static fn(array $record): int => $record['distance'], $dependants));
         assertSame(2, count($impact->data['entry_points']));
-        assertSame(2, count($impact->data['by_confidence']['certain']));
-        assertSame([], $impact->data['by_confidence']['probable']);
+        assertSame(2, $impact->data['counts']['by_confidence']['certain']);
+        assertSame(0, $impact->data['counts']['by_confidence']['probable']);
         assertSame('src/Checkout.php', $impact->evidence[0]['path']);
         assertContains('conservative static blast radius', $impact->warnings[0]);
 
         $direct = $query->impactAnalysis($ids['project'], $ids['invoice'], maxDepth: 1);
-        assertSame(1, count($direct->data['by_distance']));
+        assertSame(1, count($direct->data['counts']['by_distance']));
         $limited = $query->impactAnalysis($ids['project'], $ids['invoice'], limit: 1);
         assertSame(true, $limited->truncated);
         $filtered = $query->impactAnalysis($ids['project'], $ids['invoice'], edgeKinds: ['imports']);
-        assertSame([], $filtered->data['direct_dependants']);
+        assertSame([], $filtered->data['dependants']);
         $ambiguous = $query->impactAnalysis($ids['project'], 'InvoiceService');
         assertSame(2, count($ambiguous->data['candidates']));
 

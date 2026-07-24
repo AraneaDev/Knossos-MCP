@@ -81,7 +81,7 @@ final class NextStepPlannerTest extends TestCase
     {
         $steps = $this->plan('impact_analysis', [
             'target' => 'App\\Checkout',
-            'direct_dependants' => [['canonical_name' => 'App\\Invoice']],
+            'dependants' => [['node' => ['canonical_name' => 'App\\Invoice']]],
         ]);
 
         self::assertCount(1, $steps);
@@ -174,7 +174,7 @@ final class NextStepPlannerTest extends TestCase
         $steps = $this->plan('impact_analysis', [
             'target' => 'App\\Real',
             'symbol' => 'App\\Synthetic',
-            'direct_dependants' => [['canonical_name' => 'App\\Invoice']],
+            'dependants' => [['node' => ['canonical_name' => 'App\\Invoice']]],
         ]);
 
         self::assertSame('App\\Real', $steps[0]['args']['from']);
