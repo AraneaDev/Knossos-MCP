@@ -166,6 +166,35 @@ final class McpTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testImpactAnalysisReturnsFlatDependantsAndCounts(): void
+    {
+        // Not toolServiceWithScannedFixture(): the `mixed` fixture's files carry no
+        // cross-file references (verified directly), so `CheckoutService` would have
+        // zero dependants and the node-compaction assertion below would be vacuous.
+        // storeFixture() ships a real Checkout->InvoiceService `calls` edge, giving
+        // impact_analysis on InvoiceService a genuine distance-1 dependant while still
+        // exercising the same ToolService::call -> ResultEnricher compact path.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $svc = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $env = $svc->call('impact_analysis', ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $data = $env->jsonSerialize()['data'];
+        assertSame(true, array_key_exists('dependants', $data));
+        assertSame(true, array_key_exists('counts', $data));
+        assertSame(false, array_key_exists('by_distance', $data));
+        assertSame(false, array_key_exists('by_confidence', $data));
+        // Flat entries carry distance + name reference (node compacted downstream to a string).
+        assertSame(true, isset($data['dependants'][0]['distance']));
+        assertSame('App\\Checkout', $data['dependants'][0]['node']);
+        assertSame(1, $data['counts']['by_distance'][1]);
+    }
+
+    #[Group('mcp')]
     public function testAnnotateComponentAndListAnnotationsDispatch(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
@@ -372,5 +401,41 @@ final class McpTest extends KnossosTestCase
         fclose($loopInput);
         fclose($loopOutput);
         fclose($loopErrors);
+    }
+
+    #[Group('mcp')]
+    public function testSnapshotDiffDefaultsToSmallReportedChangeBudget(): void
+    {
+        // twoSnapshotFixture() seeds 8 added components, 20 added boundaries,
+        // 10 added relationships, and 5 added diagnostics -- 43 total changes,
+        // well past the default 25-change budget. Components (8) fully fit,
+        // then boundaries (20) only partially fit (17 of 20, since 8+17=25),
+        // leaving relationships and diagnostics fully starved. That split only
+        // happens because boundaries is budgeted *before* relationships in the
+        // reordered $tableMap: under the pre-Task-6 order (relationships ahead
+        // of boundaries), relationships would have consumed the remaining
+        // budget instead and boundaries would have been starved -- so this
+        // assertion set is sensitive to the actual reorder, not just to
+        // components already being first.
+        [$svc, $projectId, $fromSnap] = $this->twoSnapshotFixture();
+        $env = $svc->call('snapshot_diff', ['project_id' => $projectId, 'from_snapshot' => $fromSnap], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $envelope = $env->jsonSerialize();
+        $data = $envelope['data'];
+
+        assertSame(25, $data['bounds']['max_changes']);
+        assertSame(25, $data['bounds']['reported_changes']);
+        assertSame(true, $data['bounds']['total_changes'] > 25);
+        assertSame(true, $envelope['truncated']);
+
+        // Structural sections (components, boundaries) consume the budget first.
+        assertSame(true, count($data['changes']['components']['added']) > 0);
+        assertSame(true, count($data['changes']['boundaries']['added']) > 0);
+
+        // Non-structural sections are fully starved despite having real changes,
+        // because the structural sections ahead of them already spent the budget.
+        assertSame(true, $data['changes']['relationships']['counts']['added'] > 0);
+        assertSame(0, count($data['changes']['relationships']['added']));
+        assertSame(true, $data['changes']['diagnostics']['counts']['added'] > 0);
+        assertSame(0, count($data['changes']['diagnostics']['added']));
     }
 }

@@ -303,7 +303,7 @@ final class BundleTest extends KnossosTestCase
             $dead = $envelope->jsonSerialize()['data']['dead_code_candidates'] ?? [];
 
             $names = array_map(
-                fn(array $c): string => $c['component']['canonical_name'],
+                fn(array $c): string => $c['component'],
                 $dead,
             );
 

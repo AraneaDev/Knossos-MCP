@@ -86,9 +86,10 @@ final readonly class NextStepPlanner
      */
     private function afterImpact(array $data): array
     {
-        // Real query emits `target` + `direct_dependants`; tests use `symbol` + `impacted`.
+        // Real query emits `target` + `dependants` (flat, BFS-ordered so distance-1
+        // entries come first); tests use `symbol` + `impacted`.
         $symbol = $this->nameOf($data['target'] ?? ($data['symbol'] ?? null));
-        $impacted = is_array($data['direct_dependants'] ?? null) ? $data['direct_dependants'] : null;
+        $impacted = is_array($data['dependants'] ?? null) ? $data['dependants'] : null;
         $impacted ??= is_array($data['impacted'] ?? null) ? $data['impacted'] : [];
         if ($symbol === null || $impacted === []) {
             return [];

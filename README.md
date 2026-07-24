@@ -68,14 +68,24 @@ justifies it and the exact source line, so the answer is checkable:
 
 ```console
 $ knossos impact-analysis project_1b4f41… 'Knossos\Scanner\ScannerClient' --json
-{"summary":"Found 5 potential static dependants within depth 4.",
- "data":{"direct_dependants":[{"display_name":"ProcessScannerClient", …}],
-   "by_distance":[{"distance":1,"dependants":[{"node":{"display_name":"ProcessScannerClient"},
-     "path_confidence":"certain",
+{"summary":"Found 37 potential static dependants within depth 4.",
+ "data":{"target":{"kind":"interface","canonical_name":"Knossos\\Scanner\\ScannerClient", …},
+   "dependants":[{"node":{"canonical_name":"Knossos\\Scanner\\Worker\\ProcessScannerClient", …},
+     "distance":1,"path_confidence":"certain",
      "via":{"kind":"implements","origin":"ast",
        "explanation":"ProcessScannerClient depends through --implements (certain, ast)--> ScannerClient",
-       "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":10}}}]}, …]}}
+       "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":10}}}, …],
+   "counts":{"by_distance":{"1":1,"2":8,"3":2,"4":26},
+     "by_confidence":{"certain":12,"probable":25,"possible":0}}, …}}
 ```
+
+`dependants` is a flat, BFS-ordered list rather than grouped by distance; sort
+or filter on the `distance` and `path_confidence` fields directly. MCP tool
+calls default to a compact verbosity that agents should prefer over `--json`:
+it hoists each repeated `node` (and `target`) object into a one-time
+`component_legend` keyed by canonical name, leaving a plain name string
+behind wherever the node appeared, and shortens each `via` object down to
+just its edge kind (e.g. `"via":"implements"`).
 
 Find refactor targets without shelling out to `wc` and `find`:
 

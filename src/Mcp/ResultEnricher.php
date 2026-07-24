@@ -112,7 +112,7 @@ final readonly class ResultEnricher
      * list is folded into the walk under a reserved key so it can be trimmed
      * too. The walk descends into maps and list elements alike, so nested
      * payloads such as review_diff's change.direct_components and
-     * impact_analysis's by_distance.0.dependants are trimmable too. A
+     * impact_analysis's dependants are trimmable too. A
      * single-element list is a valid victim, so a payload dominated by one
      * one-item list can still be trimmed toward the budget.
      *
@@ -192,17 +192,53 @@ final readonly class ResultEnricher
         if ($legend !== []) {
             $data['boundary_legend'] = $legend;
         }
+        [$data, $components, $idToName] = ComponentLegend::compressWithIndex($data);
+        if ($components !== []) {
+            $data['component_legend'] = $components;
+        }
+        $evidence = array_slice($envelope->evidence, 0, self::COMPACT_EVIDENCE);
+        if ($idToName !== []) {
+            $evidence = self::rewriteEvidenceIds($evidence, $idToName);
+        }
         return new ResultEnvelope(
             $envelope->projectId,
             $envelope->snapshotId,
             $envelope->summary,
             $data,
-            array_slice($envelope->evidence, 0, self::COMPACT_EVIDENCE),
+            $evidence,
             $envelope->warnings,
             $envelope->truncated,
             $envelope->staleness,
             $envelope->nextSteps,
             $envelope->meta,
         );
+    }
+
+    /**
+     * A node hoisted into component_legend leaves its id-keyed references
+     * (e.g. impact_analysis's dependant_id, find_component's component_id)
+     * dangling: the id no longer appears anywhere in $data for an agent to
+     * join back to a name. Rewrite any `*_id` evidence value that names a
+     * hoisted node into the canonical-name string under a de-`_id`'d key
+     * (dependant_id -> dependant). Keys whose value is not a hoisted node
+     * (e.g. boundary_id, edge_id) are left untouched.
+     *
+     * @param list<array<string, mixed>> $evidence
+     * @param array<string, string> $idToName
+     * @return list<array<string, mixed>>
+     */
+    private static function rewriteEvidenceIds(array $evidence, array $idToName): array
+    {
+        return array_map(static function (array $entry) use ($idToName): array {
+            $rewritten = [];
+            foreach ($entry as $key => $value) {
+                if (is_string($key) && str_ends_with($key, '_id') && is_string($value) && isset($idToName[$value])) {
+                    $rewritten[substr($key, 0, -3)] = $idToName[$value];
+                    continue;
+                }
+                $rewritten[$key] = $value;
+            }
+            return $rewritten;
+        }, $evidence);
     }
 }

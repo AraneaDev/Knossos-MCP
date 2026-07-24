@@ -596,7 +596,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $projectId,
                 $project['active_scan_id'],
                 'Impact analysis requires one unambiguous component.',
-                ['query' => $symbol, 'candidates' => $candidates, 'by_distance' => [], 'entry_points' => [], 'boundaries' => []],
+                ['query' => $symbol, 'candidates' => $candidates, 'dependants' => [], 'counts' => ['by_distance' => [], 'by_confidence' => ['certain' => 0, 'probable' => 0, 'possible' => 0]], 'entry_points' => []],
                 [],
                 ['Use a returned stable component ID to disambiguate the request.'],
             );
@@ -677,15 +677,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         unset($dependant);
         $boundaryMap = $this->boundaryNames(array_map(static fn(array $record): string => $record['node']['id'], $dependants));
-        $boundaryGroups = [];
         foreach ($dependants as &$record) {
             $record['boundaries'] = $boundaryMap[$record['node']['id']] ?? [];
-            foreach ($record['boundaries'] as $boundary) {
-                $boundaryGroups[$boundary['id']] ??= ['boundary' => $boundary, 'dependants' => []];
-            }
-            foreach ($record['boundaries'] as $boundary) {
-                $boundaryGroups[$boundary['id']]['dependants'][] = $record['node'];
-            }
         }
         unset($record);
         $byDistance = [];
@@ -703,22 +696,21 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
         }
         ksort($byDistance, SORT_NUMERIC);
-        $groups = [];
-        foreach ($byDistance as $distance => $items) {
-            $groups[] = ['distance' => $distance, 'dependants' => $items];
-        }
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
             sprintf('Found %d potential static dependant%s within depth %d.', count($dependants), count($dependants) === 1 ? '' : 's', $maxDepth),
             [
                 'target' => $target,
-                // Node summaries only; the full records (via, roles, boundaries) live in by_distance.
-                'direct_dependants' => array_map(static fn(array $record): array => $record['node'], $byDistance[1] ?? []),
-                'by_distance' => $groups,
-                'by_confidence' => $byConfidence,
+                'dependants' => array_map(
+                    static fn(array $r): array => ['node' => $r['node'], 'distance' => $r['distance'], 'path_confidence' => $r['path_confidence'], 'via' => $r['via']],
+                    $dependants,
+                ),
+                'counts' => [
+                    'by_distance' => array_map('count', $byDistance),
+                    'by_confidence' => array_map('count', $byConfidence),
+                ],
                 'entry_points' => $entryPoints,
-                'boundaries' => array_values($boundaryGroups),
                 'bounds' => ['max_depth' => $maxDepth, 'limit' => $limit, 'timeout_ms' => $timeoutMs, 'visited_states' => $visited, 'truncation_reason' => $truncationReason],
             ],
             $evidence,

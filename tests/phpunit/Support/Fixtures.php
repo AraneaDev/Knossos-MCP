@@ -256,4 +256,137 @@ trait Fixtures
         );
         return [$tools, $projectId, $root, $pdo];
     }
+
+    /**
+     * Builds a ToolService wired the same way as McpTest's dispatch tests, but
+     * scans tests/Fixtures/mixed directly via the scan_project tool call
+     * (rather than the ProjectScanService::scan() shortcut used by
+     * buildToolServiceWithScan()) so callers exercise the real dispatch path
+     * end to end. Shared by envelope/shape regression tests (see
+     * EnvelopeBudgetTest) that need a scanned project_id without duplicating
+     * this wiring per test class.
+     *
+     * @return array{0: ToolService, 1: string} [tools, projectId]
+     */
+    public function toolServiceWithScannedFixture(): array
+    {
+        $pdo = $this->freshTestDatabase();
+        $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $scanned = $tools->call('scan_project', ['path' => $root]);
+
+        return [$tools, $scanned->projectId];
+    }
+
+    /**
+     * Two-scan diff fixture for snapshot_diff budget/ordering tests. Builds on
+     * storeFixture()'s single-scan project, then layers a second "diff-next"
+     * scan with deliberately lopsided fact counts:
+     *
+     *  - 8 added components (structural, first in $tableMap either way -- not
+     *    itself proof of the reorder)
+     *  - 20 added boundaries (structural, moved ahead of relationships/roles
+     *    by the Task 6 reorder)
+     *  - 10 added relationships/edges (non-structural, used to come before
+     *    boundaries in $tableMap)
+     *  - 5 added diagnostics (non-structural, last in $tableMap either way)
+     *
+     * Components(8) + boundaries(20) = 28, already past the default 25-change
+     * budget, so boundaries only partially fits and relationships/diagnostics
+     * are fully starved. Under the OLD table order (relationships before
+     * boundaries), relationships would have consumed that remaining budget
+     * instead of boundaries -- so a test asserting boundaries got the budget
+     * and relationships didn't is sensitive to the actual reorder, not just
+     * to components already being first.
+     *
+     * Wires a ToolService over the same PDO so callers can exercise
+     * snapshot_diff through the MCP dispatch path (ToolService::call()) rather
+     * than the query service directly.
+     *
+     * @return array{0: ToolService, 1: string, 2: string} [tools, projectId, fromSnapshotId]
+     */
+    public function twoSnapshotFixture(): array
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $repository->archiveActiveSnapshot($ids['project'], hash('sha256', '{}'), 5);
+        $next = StableId::scan($ids['project'], 'diff-next');
+        $repository->createScan($next, $ids['project'], 'incremental', hash('sha256', 'scanner-next'));
+
+        for ($i = 1; $i <= 8; $i++) {
+            $node = StableId::symbol($ids['project'], 'php', 'class', "App\\Extra{$i}");
+            $repository->saveNode(
+                $node,
+                $ids['project'],
+                'php',
+                'class',
+                "App\\Extra{$i}",
+                "Extra{$i}",
+                null,
+                $ids['file'],
+                40 + $i,
+                45 + $i,
+                'ast',
+                'certain',
+                [],
+                'php:file:src/Checkout.php',
+                $next,
+            );
+        }
+
+        for ($i = 1; $i <= 20; $i++) {
+            $boundary = StableId::boundary($ids['project'], "Boundary{$i}", 'explicit');
+            $repository->saveBoundary($boundary, $ids['project'], "Boundary{$i}", ['path_prefix' => "src/Boundary{$i}"], 'explicit', $next);
+        }
+
+        for ($i = 1; $i <= 10; $i++) {
+            $edge = StableId::edge($ids['project'], 'calls', $ids['checkout'], $ids['invoice'], "extra-edge-{$i}");
+            $repository->saveEdge(
+                $edge,
+                $ids['project'],
+                'calls',
+                $ids['checkout'],
+                $ids['invoice'],
+                $ids['file'],
+                50 + $i,
+                50 + $i,
+                'ast',
+                'certain',
+                [],
+                "php:file:src/Checkout.php#extra-{$i}",
+                $next,
+            );
+        }
+
+        for ($i = 1; $i <= 5; $i++) {
+            $repository->saveDiagnostic(
+                hash('sha256', $ids['project'] . ':extra-diagnostic:' . $i),
+                $ids['project'],
+                $next,
+                $ids['file'],
+                'warning',
+                'EXTRA_DIAGNOSTIC',
+                "Extra diagnostic {$i}.",
+                1,
+                1,
+                'php:file:src/Checkout.php',
+            );
+        }
+
+        $repository->completeScan($ids['project'], $next);
+
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), []),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+
+        return [$tools, $ids['project'], $ids['scan']];
+    }
 }

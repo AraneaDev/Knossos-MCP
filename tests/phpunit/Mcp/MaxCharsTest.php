@@ -61,15 +61,15 @@ final class MaxCharsTest extends KnossosTestCase
     {
         $pdo = $this->freshTestDatabase();
         $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
-        $rows = array_map(static fn(int $i): array => ['name' => 'dependant_' . $i, 'padding' => str_repeat('x', 200)], range(1, 100));
-        // impact_analysis shape: one distance group holding the entire result set.
+        $roles = array_map(static fn(int $i): array => ['role' => 'role_' . $i, 'padding' => str_repeat('x', 200)], range(1, 100));
+        // impact_analysis shape: entry_points is a list whose elements each nest a roles list.
         $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', [
-            'by_distance' => [['distance' => 1, 'dependants' => $rows]],
+            'entry_points' => [['node' => ['name' => 'Entry'], 'roles' => $roles]],
             'bounds' => ['limit' => 100],
         ]);
         $result = $enricher->enrich($envelope, 'impact_analysis', 'compact', 4000);
         assertSame(true, strlen((string) json_encode($result->jsonSerialize(), JSON_UNESCAPED_SLASHES)) <= 4000);
-        assertSame(true, ($result->meta['dropped_items']['by_distance.0.dependants'] ?? 0) > 0);
+        assertSame(true, ($result->meta['dropped_items']['entry_points.0.roles'] ?? 0) > 0);
         assertSame(false, in_array('The max_chars budget could not be fully met by trimming result lists.', $result->warnings, true));
     }
 

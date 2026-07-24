@@ -12,18 +12,7 @@ namespace Knossos\Mcp;
  */
 final class BoundaryLegend
 {
-    private function __construct() {}
-
-    /**
-     * @param array<string, mixed> $data
-     * @return array{0: array<string, mixed>, 1: array<string, array{name: string, source: string}>}
-     */
-    public static function compress(array $data): array
-    {
-        $legend = [];
-        $compressed = self::walk($data, $legend);
-        return [$compressed, $legend];
-    }
+    use LegendCompression;
 
     /**
      * @param array<string, mixed> $value

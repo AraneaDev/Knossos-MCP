@@ -86,7 +86,7 @@ final readonly class ArchitectureQueryService
         return $this->catalogQueries->listSnapshots($projectId, $limit, $offset);
     }
 
-    public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 200): ResultEnvelope
+    public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 25): ResultEnvelope
     {
         return $this->catalogQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
     }

@@ -127,7 +127,10 @@ final class LaravelTest extends KnossosTestCase
             assertSame(['routes_to', 'dispatches'], array_column($flow->data['paths'][0]['hops'], 'kind'));
             assertSame(3, $flow->data['paths'][0]['score']['minimum_confidence']);
             $impact = $architecture->impactAnalysis($result->projectId, 'CheckoutCompleted');
-            assertSame(true, count($impact->data['boundaries']) >= 1);
+            // The tool no longer surfaces a separate top-level boundary grouping
+            // (Task 5 flattened impact_analysis's data shape); entry_points is the
+            // remaining structural signal this fixture's route wiring can assert on.
+            assertSame(true, count($impact->data['dependants']) >= 1);
             assertSame(true, count(array_filter(
                 $impact->data['entry_points'],
                 fn(array $entry): bool => $entry['node']['kind'] === 'route',

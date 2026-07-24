@@ -135,7 +135,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         ], warnings: ['Incomplete archives report metadata but cannot support full fact diffs.'], truncated: $truncated);
     }
 
-    public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 200): ResultEnvelope
+    public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 25): ResultEnvelope
     {
         $project = $this->project($projectId);
         if ($maxChanges < 1 || $maxChanges > 1000) {
@@ -157,9 +157,9 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $sections = [];
         $tableMap = [
             'components' => ['nodes', 'id'],
+            'boundaries' => ['boundaries', 'id'],
             'relationships' => ['edges', 'id'],
             'roles' => ['classifications', 'id'],
-            'boundaries' => ['boundaries', 'id'],
             'boundary_memberships' => ['boundary_memberships', null],
             'diagnostics' => ['diagnostics', 'id'],
         ];

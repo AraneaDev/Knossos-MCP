@@ -9,14 +9,14 @@ normalized graph.
     "project_id": "project_...",
     "from_snapshot": "scan_...",
     "to_snapshot": "active",
-    "max_changes": 200
+    "max_changes": 25
 }
 ```
 
 The CLI equivalent is:
 
 ```sh
-knossos snapshot-diff project_... scan_... active --max-changes=200 --json
+knossos snapshot-diff project_... scan_... active --max-changes=25 --json
 ```
 
 The changelog separates added, removed, changed, and moved components along
