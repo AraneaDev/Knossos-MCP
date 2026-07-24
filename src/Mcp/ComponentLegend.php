@@ -12,20 +12,9 @@ namespace Knossos\Mcp;
  */
 final class ComponentLegend
 {
+    use LegendCompression;
+
     private const IDENTITY_KEYS = ['id', 'kind', 'canonical_name', 'display_name', 'confidence', 'origin', 'roles', 'boundaries', 'attributes', 'scanner_local_id', 'scanner'];
-
-    private function __construct() {}
-
-    /**
-     * @param array<string, mixed> $data
-     * @return array{0: array<string, mixed>, 1: array<string, array<string, mixed>>}
-     */
-    public static function compress(array $data): array
-    {
-        $legend = [];
-        $compressed = self::walk($data, $legend);
-        return [$compressed, $legend];
-    }
 
     /**
      * @param array<string, mixed> $value

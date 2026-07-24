@@ -4,11 +4,16 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Mcp;
 
+use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\ComponentLegend;
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
+use Knossos\Mcp\ToolService;
+use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
+use Knossos\Scan\CancellationToken;
+use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -150,5 +155,54 @@ final class ComponentLegendTest extends KnossosTestCase
         $full = $enricher->enrich($envelope, 'find_component', 'full')->jsonSerialize();
         assertSame('symbol_q', $full['data']['items'][0]['id']); // full keeps descriptors + ids
         assertSame(false, array_key_exists('component_legend', $full['data']));
+    }
+
+    #[Group('mcp')]
+    public function testEveryNameReferenceResolvesInTheComponentsLegend(): void
+    {
+        // The brief's literal test walks toolServiceWithScannedFixture() (the
+        // tests/Fixtures/mixed fixture), but that fixture's files carry no
+        // cross-file references, so impact_analysis there returns zero
+        // dependants and the round-trip walk below would assert nothing --
+        // a vacuous pass. storeFixture() ships a real Checkout->InvoiceService
+        // `calls` edge (see McpTest::testImpactAnalysisReturnsFlatDependantsAndCounts),
+        // so impact_analysis on InvoiceService yields a genuine distance-1
+        // dependant whose `node` is hoisted to a canonical-name string by
+        // ComponentLegend in the compact (default) envelope.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $svc = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
+        );
+        $env = $svc->call(
+            'impact_analysis',
+            ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'],
+            new CancellationToken(static fn(): bool => false),
+        );
+        $data = $env->jsonSerialize()['data'];
+
+        // Collect every name-reference the compact envelope emits: `node` keys
+        // (dependants[].node) and any `target` keys, mirroring how
+        // ComponentLegend::compress() hoists descriptors throughout the tree.
+        $names = [];
+        array_walk_recursive($data, static function ($value, $key) use (&$names): void {
+            if (($key === 'node' || $key === 'target') && is_string($value)) {
+                $names[] = $value;
+            }
+        });
+
+        // Non-vacuousness guard: this fixture's edge must actually surface at
+        // least one name-reference for the resolution assertions below to mean
+        // anything.
+        assertSame(true, count($names) > 0, 'Expected at least one compacted name-reference to walk.');
+
+        foreach ($names as $name) {
+            assertSame(true, array_key_exists('component_legend', $data), 'component_legend missing from response data.');
+            assertSame(true, array_key_exists($name, $data['component_legend']), $name . ' missing from component_legend.');
+            assertSame(true, array_key_exists('kind', $data['component_legend'][$name]), $name . ' legend entry is not a descriptor (no kind).');
+        }
     }
 }
