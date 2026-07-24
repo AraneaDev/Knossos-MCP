@@ -77,11 +77,14 @@ final class StdioServer
             return $this->error($id, -32600, 'Invalid Request');
         }
         if (!isset($message['method'])) {
-            // A JSON-RPC response (id plus result or error, no method), such as
-            // the client's reply to a keepalive ping. It needs no answer;
-            // replying with an error would desync the request/response stream,
-            // so acknowledge it silently.
-            if (array_key_exists('result', $message) || array_key_exists('error', $message)) {
+            // A JSON-RPC response — id plus exactly one of result or error, no
+            // method — such as the client's reply to a keepalive ping. It needs
+            // no answer, so acknowledge it silently. Frames missing an id, or
+            // carrying both result and error, are malformed and still get the
+            // -32600 error rather than being dropped.
+            $hasResult = array_key_exists('result', $message);
+            $hasError = array_key_exists('error', $message);
+            if (array_key_exists('id', $message) && $hasResult !== $hasError) {
                 return null;
             }
             return $this->error($id, -32600, 'Invalid Request');

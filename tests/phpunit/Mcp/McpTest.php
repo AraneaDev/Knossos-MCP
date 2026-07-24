@@ -321,6 +321,13 @@ final class McpTest extends KnossosTestCase
         // A message that is neither a request (no method) nor a response
         // (no result or error) is still a malformed request.
         assertSame(-32600, $server->handle(['jsonrpc' => '2.0', 'id' => 7])['error']['code']);
+        // Response-shaped frames that are not structurally valid responses — one
+        // missing an id, one carrying both result and error — must still receive
+        // the -32600 error rather than being silently dropped.
+        assertSame(-32600, $server->handle(['jsonrpc' => '2.0', 'result' => []])['error']['code']);
+        assertSame(-32600, $server->handle([
+            'jsonrpc' => '2.0', 'id' => 8, 'result' => [], 'error' => ['code' => -1, 'message' => 'both'],
+        ])['error']['code']);
 
         // The ping frame itself is a well-formed JSON-RPC request with a unique,
         // non-null id on every send so the client can correlate its replies.
