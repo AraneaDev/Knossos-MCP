@@ -12,6 +12,8 @@ namespace Knossos\Mcp;
  */
 final class ComponentLegend
 {
+    private const IDENTITY_KEYS = ['id', 'kind', 'canonical_name', 'display_name', 'confidence', 'origin', 'roles', 'boundaries', 'attributes', 'scanner_local_id', 'scanner'];
+
     private function __construct() {}
 
     /**
@@ -47,10 +49,16 @@ final class ComponentLegend
     /** @param array<string, mixed> $item */
     private static function isNodeDescriptor(array $item): bool
     {
-        return isset($item['id'], $item['kind'])
-            && is_string($item['id'])
-            && is_string($item['kind'])
-            && (isset($item['canonical_name']) || isset($item['display_name']));
+        if (!isset($item['id'], $item['kind']) || !is_string($item['id']) || !is_string($item['kind'])
+            || !(isset($item['canonical_name']) || isset($item['display_name']))) {
+            return false;
+        }
+        foreach (array_keys($item) as $key) {
+            if (!in_array($key, self::IDENTITY_KEYS, true)) {
+                return false; // carries payload/relationship keys -> not a bare descriptor, recurse instead
+            }
+        }
+        return true;
     }
 
     /**
@@ -62,6 +70,7 @@ final class ComponentLegend
         $name = is_string($node['canonical_name'] ?? null) && $node['canonical_name'] !== ''
             ? $node['canonical_name']
             : ((string) ($node['display_name'] ?? 'unknown')) . '#' . substr((string) $node['id'], -8);
+        // First occurrence defines the descriptor; duplicates are byte-identical within a response.
         if (!isset($legend[$name])) {
             $descriptor = ['kind' => $node['kind']];
             if (isset($node['confidence'])) {
