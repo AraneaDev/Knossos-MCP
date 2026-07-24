@@ -14,7 +14,10 @@ final class StdioServer
     public const PROTOCOL_VERSION = '2025-11-25';
     /** Ceiling on lines parked during cancellation polling, so a flood cannot grow memory without bound. */
     private const MAX_PENDING_LINES = 1024;
+    /** Idle seconds before the server pings the client to keep the stdio transport warm. */
+    private const KEEPALIVE_INTERVAL_SECONDS = 25.0;
     private bool $initialized = false;
+    private int $keepaliveSequence = 0;
     /** @var resource|null */
     private $input = null;
     /** @var list<string> */
@@ -29,6 +32,9 @@ final class StdioServer
         private readonly int $maxResponseBytes = 1_048_576,
         private readonly ?ResourceService $resources = null,
         private readonly ?PromptService $prompts = null,
+        // Seam for tests: report readability without a real timed stream_select.
+        // Production leaves this null and polls the input stream directly.
+        private readonly ?\Closure $readinessWaiter = null,
     ) {}
 
     /** @param resource $input @param resource $output @param resource $errors */
@@ -36,7 +42,7 @@ final class StdioServer
     {
         $this->input = $input;
         stream_set_read_buffer($input, 0);
-        while (($line = $this->nextLine($input)) !== false) {
+        while (($line = $this->nextLine($input, $output)) !== false) {
             if (strlen($line) > $this->maxLineBytes || !str_ends_with($line, "\n")) {
                 $this->write($output, $this->error(null, -32700, 'Invalid or oversized JSON-RPC frame.'));
                 continue;
@@ -67,7 +73,20 @@ final class StdioServer
     public function handle(array $message): ?array
     {
         $id = $message['id'] ?? null;
-        if (($message['jsonrpc'] ?? null) !== '2.0' || !isset($message['method']) || !is_string($message['method'])) {
+        if (($message['jsonrpc'] ?? null) !== '2.0') {
+            return $this->error($id, -32600, 'Invalid Request');
+        }
+        if (!isset($message['method'])) {
+            // A JSON-RPC response (id plus result or error, no method), such as
+            // the client's reply to a keepalive ping. It needs no answer;
+            // replying with an error would desync the request/response stream,
+            // so acknowledge it silently.
+            if (array_key_exists('result', $message) || array_key_exists('error', $message)) {
+                return null;
+            }
+            return $this->error($id, -32600, 'Invalid Request');
+        }
+        if (!is_string($message['method'])) {
             return $this->error($id, -32600, 'Invalid Request');
         }
         $method = $message['method'];
@@ -240,8 +259,8 @@ final class StdioServer
         fflush($output);
     }
 
-    /** @param resource $input */
-    private function nextLine($input): string|false
+    /** @param resource $input @param resource $output */
+    private function nextLine($input, $output): string|false
     {
         if ($this->pendingLines !== []) {
             return array_shift($this->pendingLines);
@@ -252,6 +271,13 @@ final class StdioServer
                 $line = substr($this->inputBuffer, 0, $newline + 1);
                 $this->inputBuffer = substr($this->inputBuffer, $newline + 1);
                 return $line;
+            }
+            // Wait for input, but wake on the keepalive interval so an idle
+            // connection is pinged instead of sitting silent until the host
+            // decides the server is dead and closes the transport.
+            if ($this->awaitReadable($input) === 0) {
+                $this->sendKeepalive($output);
+                continue;
             }
             $chunk = fread($input, 8192);
             if ($chunk === false) {
@@ -287,6 +313,43 @@ final class StdioServer
                 return str_repeat('x', $this->maxLineBytes + 1) . "\n";
             }
         }
+    }
+
+    /**
+     * Block until $input is readable or the keepalive interval elapses.
+     * Returns a positive count when readable, 0 on the idle timeout, or false
+     * when the wait is interrupted (e.g. by a signal) or the stream cannot be
+     * polled — in which case the caller falls back to a blocking read.
+     *
+     * @param resource $input
+     */
+    private function awaitReadable($input): int|false
+    {
+        if ($this->readinessWaiter !== null) {
+            return ($this->readinessWaiter)($input);
+        }
+        $seconds = (int) self::KEEPALIVE_INTERVAL_SECONDS;
+        $microseconds = (int) round((self::KEEPALIVE_INTERVAL_SECONDS - $seconds) * 1_000_000);
+        $read = [$input];
+        $write = null;
+        $except = null;
+        return @stream_select($read, $write, $except, $seconds, $microseconds);
+    }
+
+    /**
+     * Emit a JSON-RPC ping so an idle client keeps the stdio transport open.
+     * Each ping carries a fresh, non-null id the client echoes back in a
+     * response that handle() then ignores.
+     *
+     * @param resource $output
+     */
+    private function sendKeepalive($output): void
+    {
+        $this->write($output, [
+            'jsonrpc' => '2.0',
+            'id' => 'knossos-keepalive-' . (++$this->keepaliveSequence),
+            'method' => 'ping',
+        ]);
     }
 
     private function pollCancellation(mixed $requestId): bool
