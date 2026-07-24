@@ -39,6 +39,10 @@ final class ComponentLegend
                 $value[$key] = self::register($item, $legend);
                 continue;
             }
+            if ($key === 'via' && is_array($item) && self::isEdge($item)) {
+                $value[$key] = (string) $item['kind'];
+                continue;
+            }
             if (is_array($item)) {
                 $value[$key] = self::walk($item, $legend);
             }
@@ -59,6 +63,15 @@ final class ComponentLegend
             }
         }
         return true;
+    }
+
+    /** @param array<string, mixed> $item */
+    private static function isEdge(array $item): bool
+    {
+        return isset($item['kind']) && is_string($item['kind'])
+            && (isset($item['source_id'], $item['target_id'])
+                || (isset($item['edge_id']) && is_string($item['edge_id']))
+                || (isset($item['id']) && is_string($item['id']) && str_starts_with($item['id'], 'edge_')));
     }
 
     /**

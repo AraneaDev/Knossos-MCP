@@ -111,4 +111,21 @@ final class ComponentLegendTest extends KnossosTestCase
         assertSame('WithStringRoles', $out['item']);
         assertSame(['role.a', 'role.b'], $legend['WithStringRoles']['roles']);
     }
+
+    #[Group('mcp')]
+    public function testCompressesViaEdgeObjectsToKindStrings(): void
+    {
+        $data = ['rec' => ['node' => [
+            'id' => 'symbol_x', 'kind' => 'method', 'canonical_name' => 'X::y',
+        ], 'via' => [
+            'edge_id' => 'edge_1', 'kind' => 'calls', 'source_id' => 'symbol_x',
+            'target_id' => 'symbol_z', 'origin' => 'ast',
+            'explanation' => 'y depends through --calls--> z',
+        ]]];
+
+        [$out] = ComponentLegend::compress($data);
+
+        assertSame('calls', $out['rec']['via']);
+        assertSame('X::y', $out['rec']['node']);
+    }
 }
