@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.5.1...v0.6.0) (2026-07-24)
+
+
+### Features
+
+* **mcp:** token-efficient response envelopes for agents ([#18](https://github.com/AraneaDev/Knossos-MCP/issues/18)) ([e2e4060](https://github.com/AraneaDev/Knossos-MCP/commit/e2e406034311e14c99c7051b5afbc7ba6a27a63b))
+
 ## [0.5.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.5.0...v0.5.1) (2026-07-24)
 
 
