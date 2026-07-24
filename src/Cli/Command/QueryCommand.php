@@ -126,7 +126,7 @@ final class QueryCommand implements CliCommand
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos snapshot-diff <project-id> <from-snapshot> [to-snapshot]');
         $from = $p[1] ?? throw new InvalidArgumentException('A source snapshot is required.');
-        $result = $this->queries($c)->snapshotDiff($project, $from, $p[2] ?? 'active', $c->options->integer($o, 'max-changes', 200, 1, 1000));
+        $result = $this->queries($c)->snapshotDiff($project, $from, $p[2] ?? 'active', $c->options->integer($o, 'max-changes', 25, 1, 1000));
         return $this->result($result, $o, $c);
     }
 

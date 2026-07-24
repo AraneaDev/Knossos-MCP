@@ -282,4 +282,78 @@ trait Fixtures
 
         return [$tools, $scanned->projectId];
     }
+
+    /**
+     * Two-scan diff fixture for snapshot_diff tests. Builds on storeFixture()'s
+     * single-scan project, then layers a second "diff-next" scan with a moved
+     * file, a removed node, an added node, boundary/membership changes, and an
+     * edge swap -- the same differing-facts shape as
+     * QueryTest::testSnapshotDiffReportsBoundedArchitecturalChangesAndRenameHeuristics
+     * -- and wires a ToolService over the same PDO so callers can exercise
+     * snapshot_diff through the MCP dispatch path (ToolService::call()) rather
+     * than the query service directly.
+     *
+     * @return array{0: ToolService, 1: string, 2: string} [tools, projectId, fromSnapshotId]
+     */
+    public function twoSnapshotFixture(): array
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $repository->archiveActiveSnapshot($ids['project'], hash('sha256', '{}'), 5);
+        $next = StableId::scan($ids['project'], 'diff-next');
+        $repository->createScan($next, $ids['project'], 'incremental', hash('sha256', 'scanner-next'));
+        $movedFile = StableId::file($ids['project'], 'src/MovedCheckout.php');
+        $repository->saveFile($movedFile, $ids['project'], 'src/MovedCheckout.php', hash('sha256', 'moved'), 20, 2, 'php', '1', $next);
+        $pdo->exec("UPDATE nodes SET confidence = 'probable', file_id = '" . $movedFile . "' WHERE id = '" . $ids['checkout'] . "'");
+        $pdo->exec("DELETE FROM nodes WHERE id = '" . $ids['invoice'] . "'");
+        $billing = StableId::symbol($ids['project'], 'php', 'class', 'App\\BillingService');
+        $repository->saveNode(
+            $billing,
+            $ids['project'],
+            'php',
+            'class',
+            'App\\BillingService',
+            'InvoiceService',
+            null,
+            $ids['file'],
+            21,
+            35,
+            'ast',
+            'certain',
+            [],
+            'php:file:src/Checkout.php',
+            $next,
+        );
+        $backend = StableId::boundary($ids['project'], 'Backend', 'explicit');
+        $billingBoundary = StableId::boundary($ids['project'], 'Billing', 'explicit');
+        $repository->saveBoundary($backend, $ids['project'], 'Backend', ['path_prefix' => 'src/Moved'], 'explicit', $next);
+        $repository->saveBoundary($billingBoundary, $ids['project'], 'Billing', ['path_prefix' => 'src/Billing'], 'explicit', $next);
+        $repository->saveBoundaryMembership($backend, $ids['project'], $ids['checkout'], $next);
+        $repository->saveBoundaryMembership($billingBoundary, $ids['project'], $billing, $next);
+        $repository->saveEdge(
+            StableId::edge($ids['project'], 'calls', $ids['checkout'], $billing, 'quality-boundary'),
+            $ids['project'],
+            'calls',
+            $ids['checkout'],
+            $billing,
+            $movedFile,
+            5,
+            5,
+            'ast',
+            'certain',
+            [],
+            'php:file:src/MovedCheckout.php',
+            $next,
+        );
+        $repository->completeScan($ids['project'], $next);
+
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), []),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+
+        return [$tools, $ids['project'], $ids['scan']];
+    }
 }

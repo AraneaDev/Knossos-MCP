@@ -140,7 +140,7 @@ final readonly class ToolService
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'from_snapshot' => ['type' => 'string', 'minLength' => 1],
                         'to_snapshot' => ['type' => 'string', 'minLength' => 1, 'default' => 'active'],
-                        'max_changes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 1000, 'default' => 200],
+                        'max_changes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 1000, 'default' => 25],
                     ],
                     'required' => ['project_id', 'from_snapshot'],
                     'additionalProperties' => false,
@@ -968,7 +968,7 @@ final readonly class ToolService
             self::string($arguments, 'project_id'),
             self::string($arguments, 'from_snapshot'),
             array_key_exists('to_snapshot', $arguments) ? self::string($arguments, 'to_snapshot') : 'active',
-            self::integer($arguments, 'max_changes', 200, 1, 1000),
+            self::integer($arguments, 'max_changes', 25, 1, 1000),
         );
     }
 

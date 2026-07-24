@@ -402,4 +402,18 @@ final class McpTest extends KnossosTestCase
         fclose($loopOutput);
         fclose($loopErrors);
     }
+
+    #[Group('mcp')]
+    public function testSnapshotDiffDefaultsToSmallReportedChangeBudget(): void
+    {
+        // Arrange two snapshots that differ by many facts (rescan fixture after an edit,
+        // or seed two scans via the store fixture as McpTest does for diffs).
+        [$svc, $projectId, $fromSnap] = $this->twoSnapshotFixture();
+        $env = $svc->call('snapshot_diff', ['project_id' => $projectId, 'from_snapshot' => $fromSnap], new \Knossos\Scan\CancellationToken(static fn(): bool => false));
+        $data = $env->jsonSerialize()['data'];
+        assertSame(25, $data['bounds']['max_changes']);
+        assertSame(true, $data['bounds']['reported_changes'] <= 25);
+        // Section counts report the FULL totals, independent of the capped slice.
+        assertSame(true, $data['bounds']['total_changes'] >= $data['bounds']['reported_changes']);
+    }
 }

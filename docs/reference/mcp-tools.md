@@ -61,7 +61,7 @@ See what changed architecturally between two scans. Use after a rescan to review
 | `project_id` | string | yes | minLength=1 |
 | `from_snapshot` | string | yes | minLength=1 |
 | `to_snapshot` | string | no | minLength=1; default="active" |
-| `max_changes` | integer | no | minimum=1; maximum=1000; default=200 |
+| `max_changes` | integer | no | minimum=1; maximum=1000; default=25 |
 
 Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
