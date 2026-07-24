@@ -256,4 +256,30 @@ trait Fixtures
         );
         return [$tools, $projectId, $root, $pdo];
     }
+
+    /**
+     * Builds a ToolService wired the same way as McpTest's dispatch tests, but
+     * scans tests/Fixtures/mixed directly via the scan_project tool call
+     * (rather than the ProjectScanService::scan() shortcut used by
+     * buildToolServiceWithScan()) so callers exercise the real dispatch path
+     * end to end. Shared by envelope/shape regression tests (see
+     * EnvelopeBudgetTest) that need a scanned project_id without duplicating
+     * this wiring per test class.
+     *
+     * @return array{0: ToolService, 1: string} [tools, projectId]
+     */
+    public function toolServiceWithScannedFixture(): array
+    {
+        $pdo = $this->freshTestDatabase();
+        $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $scanned = $tools->call('scan_project', ['path' => $root]);
+
+        return [$tools, $scanned->projectId];
+    }
 }
