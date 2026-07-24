@@ -297,4 +297,80 @@ final class McpTest extends KnossosTestCase
         assertSame(2, count($pendingProperty->getValue($polledServer)));
         fclose($pollInput);
     }
+
+    #[Group('mcp')]
+    public function testIdleConnectionEmitsKeepalivePingsAndIgnoresTheirResponses(): void
+    {
+        [$pdo] = $this->storeFixture();
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+
+        // A keepalive ping expects a reply. The client's reply is a JSON-RPC
+        // response (id plus result or error, no method); it must be ignored,
+        // never answered with an Invalid Request error that would desync the
+        // stream and make the host tear the connection down.
+        $server = new StdioServer($tools);
+        assertSame(null, $server->handle(['jsonrpc' => '2.0', 'id' => 'knossos-keepalive-1', 'result' => []]));
+        assertSame(null, $server->handle([
+            'jsonrpc' => '2.0', 'id' => 'knossos-keepalive-2', 'error' => ['code' => -32601, 'message' => 'pong'],
+        ]));
+        // A message that is neither a request (no method) nor a response
+        // (no result or error) is still a malformed request.
+        assertSame(-32600, $server->handle(['jsonrpc' => '2.0', 'id' => 7])['error']['code']);
+        // Response-shaped frames that are not structurally valid responses — one
+        // missing an id, one carrying both result and error — must still receive
+        // the -32600 error rather than being silently dropped.
+        assertSame(-32600, $server->handle(['jsonrpc' => '2.0', 'result' => []])['error']['code']);
+        assertSame(-32600, $server->handle([
+            'jsonrpc' => '2.0', 'id' => 8, 'result' => [], 'error' => ['code' => -1, 'message' => 'both'],
+        ])['error']['code']);
+
+        // The ping frame itself is a well-formed JSON-RPC request with a unique,
+        // non-null id on every send so the client can correlate its replies.
+        $sendKeepalive = new ReflectionMethod($server, 'sendKeepalive');
+        $keepaliveOutput = fopen('php://temp', 'w+');
+        if (!is_resource($keepaliveOutput)) {
+            throw new RuntimeException('Unable to allocate keepalive output stream.');
+        }
+        $sendKeepalive->invoke($server, $keepaliveOutput);
+        $sendKeepalive->invoke($server, $keepaliveOutput);
+        rewind($keepaliveOutput);
+        $frames = array_values(array_filter(explode("\n", (string) stream_get_contents($keepaliveOutput))));
+        assertSame(2, count($frames));
+        $first = json_decode($frames[0], true, 512, JSON_THROW_ON_ERROR);
+        $second = json_decode($frames[1], true, 512, JSON_THROW_ON_ERROR);
+        assertSame('ping', $first['method']);
+        assertSame('2.0', $first['jsonrpc']);
+        assertSame('knossos-keepalive-1', $first['id']);
+        assertSame('knossos-keepalive-2', $second['id']);
+        fclose($keepaliveOutput);
+
+        // Drive the real read loop: the first wait reports an idle timeout (0),
+        // so a ping is emitted; the next wait reports readable, and the empty
+        // input then reaches EOF so run() returns cleanly.
+        $waits = 0;
+        $waiter = static function ($input) use (&$waits): int {
+            $waits++;
+            return $waits === 1 ? 0 : 1;
+        };
+        $loopInput = fopen('php://temp', 'w+');
+        $loopOutput = fopen('php://temp', 'w+');
+        $loopErrors = fopen('php://temp', 'w+');
+        if (!is_resource($loopInput) || !is_resource($loopOutput) || !is_resource($loopErrors)) {
+            throw new RuntimeException('Unable to allocate keepalive loop streams.');
+        }
+        $loopServer = new StdioServer($tools, readinessWaiter: $waiter);
+        assertSame(0, $loopServer->run($loopInput, $loopOutput, $loopErrors));
+        rewind($loopOutput);
+        $loopPayload = (string) stream_get_contents($loopOutput);
+        assertContains('"method":"ping"', $loopPayload);
+        assertContains('knossos-keepalive-1', $loopPayload);
+        fclose($loopInput);
+        fclose($loopOutput);
+        fclose($loopErrors);
+    }
 }
