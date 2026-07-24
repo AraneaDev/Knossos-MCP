@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.5.0...v0.5.1) (2026-07-24)
+
+
+### Bug Fixes
+
+* **mcp:** keep idle stdio connections warm with ping keepalives ([#16](https://github.com/AraneaDev/Knossos-MCP/issues/16)) ([a6e1955](https://github.com/AraneaDev/Knossos-MCP/commit/a6e1955f9aac705b6bf88faeb8c45453ccd5c5d9))
+
 ## [0.5.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.4.0...v0.5.0) (2026-07-23)
 
 
