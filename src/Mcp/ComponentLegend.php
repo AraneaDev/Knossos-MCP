@@ -17,15 +17,34 @@ final class ComponentLegend
     private const IDENTITY_KEYS = ['id', 'kind', 'canonical_name', 'display_name', 'confidence', 'origin', 'roles', 'boundaries', 'attributes', 'scanner_local_id', 'scanner'];
 
     /**
+     * Same compression as compress(), but also returns the id -> canonical-name
+     * index built while hoisting node descriptors. Callers (ResultEnricher) use
+     * this to rewrite dangling `*_id` references in evidence entries -- ids that
+     * pointed at a node which has just been replaced by its name string in
+     * $data -- into name references under a de-`_id`'d key.
+     *
+     * @param array<string, mixed> $data
+     * @return array{0: array<string, mixed>, 1: array<string, mixed>, 2: array<string, string>}
+     */
+    public static function compressWithIndex(array $data): array
+    {
+        $legend = [];
+        $idToName = [];
+        $compressed = self::walk($data, $legend, $idToName);
+        return [$compressed, $legend, $idToName];
+    }
+
+    /**
      * @param array<string, mixed> $value
      * @param array<string, array<string, mixed>> $legend
+     * @param array<string, string>|null $idToName
      * @return array<string, mixed>
      */
-    private static function walk(array $value, array &$legend): array
+    private static function walk(array $value, array &$legend, ?array &$idToName = null): array
     {
         foreach ($value as $key => $item) {
             if (is_array($item) && self::isNodeDescriptor($item)) {
-                $value[$key] = self::register($item, $legend);
+                $value[$key] = self::register($item, $legend, $idToName);
                 continue;
             }
             if ($key === 'via' && is_array($item) && self::isEdge($item)) {
@@ -33,7 +52,7 @@ final class ComponentLegend
                 continue;
             }
             if (is_array($item)) {
-                $value[$key] = self::walk($item, $legend);
+                $value[$key] = self::walk($item, $legend, $idToName);
             }
         }
         return $value;
@@ -66,8 +85,9 @@ final class ComponentLegend
     /**
      * @param array<string, mixed> $node
      * @param array<string, array<string, mixed>> $legend
+     * @param array<string, string>|null $idToName
      */
-    private static function register(array $node, array &$legend): string
+    private static function register(array $node, array &$legend, ?array &$idToName = null): string
     {
         $name = is_string($node['canonical_name'] ?? null) && $node['canonical_name'] !== ''
             ? $node['canonical_name']
@@ -86,6 +106,9 @@ final class ComponentLegend
                 $descriptor['roles'] = $roles;
             }
             $legend[$name] = $descriptor;
+        }
+        if ($idToName !== null && is_string($node['id'] ?? null)) {
+            $idToName[$node['id']] = $name;
         }
         return $name;
     }

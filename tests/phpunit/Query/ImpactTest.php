@@ -88,6 +88,10 @@ final class ImpactTest extends KnossosTestCase
         assertSame([], $filtered->data['dependants']);
         $ambiguous = $query->impactAnalysis($ids['project'], 'InvoiceService');
         assertSame(2, count($ambiguous->data['candidates']));
+        // Ambiguous-candidate fallback's counts.by_confidence mirrors the
+        // success path's stable shape rather than an empty list.
+        assertSame(['certain' => 0, 'probable' => 0, 'possible' => 0], $ambiguous->data['counts']['by_confidence']);
+        assertSame([], $ambiguous->data['counts']['by_distance']);
 
         $time = 0;
         $timedQuery = new ArchitectureQueryService($pdo, function () use (&$time): int {

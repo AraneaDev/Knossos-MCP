@@ -596,7 +596,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $projectId,
                 $project['active_scan_id'],
                 'Impact analysis requires one unambiguous component.',
-                ['query' => $symbol, 'candidates' => $candidates, 'dependants' => [], 'counts' => ['by_distance' => [], 'by_confidence' => []], 'entry_points' => []],
+                ['query' => $symbol, 'candidates' => $candidates, 'dependants' => [], 'counts' => ['by_distance' => [], 'by_confidence' => ['certain' => 0, 'probable' => 0, 'possible' => 0]], 'entry_points' => []],
                 [],
                 ['Use a returned stable component ID to disambiguate the request.'],
             );

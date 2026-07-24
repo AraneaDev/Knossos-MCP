@@ -205,4 +205,82 @@ final class ComponentLegendTest extends KnossosTestCase
             assertSame(true, array_key_exists('kind', $data['component_legend'][$name]), $name . ' legend entry is not a descriptor (no kind).');
         }
     }
+
+    #[Group('mcp')]
+    public function testCompactImpactAnalysisRewritesDependantIdToName(): void
+    {
+        // storeFixture() ships a real Checkout->InvoiceService `calls` edge, so
+        // impact_analysis('InvoiceService') yields a distance-1 dependant
+        // (Checkout) with edge-level evidence. In compact mode, ComponentLegend
+        // hoists that dependant's node to a bare name string, so its evidence's
+        // dependant_id (which pointed at the now-gone inline node) must be
+        // rewritten to a `dependant` name reference that resolves in
+        // component_legend -- otherwise the evidence path:line is unjoinable.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $svc = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
+        );
+        $env = $svc->call(
+            'impact_analysis',
+            ['project_id' => $ids['project'], 'symbol' => 'InvoiceService'],
+            new CancellationToken(static fn(): bool => false),
+        );
+        $json = $env->jsonSerialize();
+        $data = $json['data'];
+        $evidence = $json['evidence'];
+
+        assertSame(true, count($evidence) > 0, 'Expected at least one evidence entry to exercise the rewrite.');
+        assertSame(true, array_key_exists('component_legend', $data), 'component_legend missing from response data.');
+
+        foreach ($evidence as $entry) {
+            assertSame(false, array_key_exists('dependant_id', $entry), 'dependant_id should not dangle in compact evidence.');
+            assertSame(true, array_key_exists('dependant', $entry), 'dependant name reference missing from compact evidence.');
+            assertSame(true, array_key_exists($entry['dependant'], $data['component_legend']), $entry['dependant'] . ' missing from component_legend.');
+        }
+    }
+
+    #[Group('mcp')]
+    public function testFindComponentCompactCandidatesAreNamesWithResolvableEvidence(): void
+    {
+        // Drives find_component through the real compact dispatch path
+        // (ToolService::call, default verbosity). Its `components` list entries
+        // must be hoisted to canonical-name strings resolving in
+        // component_legend, and (Fix 1) its evidence must reference names, not
+        // dangling component_id values.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $svc = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner()),
+        );
+        $env = $svc->call(
+            'find_component',
+            ['project_id' => $ids['project'], 'name' => 'Checkout'],
+            new CancellationToken(static fn(): bool => false),
+        );
+        $json = $env->jsonSerialize();
+        $data = $json['data'];
+        $evidence = $json['evidence'];
+
+        assertSame(true, count($data['components']) > 0, 'Expected at least one find_component candidate.');
+        assertSame(true, array_key_exists('component_legend', $data), 'component_legend missing from response data.');
+
+        foreach ($data['components'] as $component) {
+            assertSame(true, is_string($component), 'Compact find_component candidate should be a hoisted name string.');
+            assertSame(true, array_key_exists($component, $data['component_legend']), $component . ' missing from component_legend.');
+        }
+
+        assertSame(true, count($evidence) > 0, 'Expected at least one evidence entry to exercise the rewrite.');
+        foreach ($evidence as $entry) {
+            assertSame(false, array_key_exists('component_id', $entry), 'component_id should not dangle in compact evidence.');
+            assertSame(true, array_key_exists('component', $entry), 'component name reference missing from compact evidence.');
+            assertSame(true, array_key_exists($entry['component'], $data['component_legend']), $entry['component'] . ' missing from component_legend.');
+        }
+    }
 }
