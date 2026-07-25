@@ -7,11 +7,13 @@ $failures = [];
 $checked = [];
 foreach (glob($root . '/src/*/*.php') ?: [] as $path) {
     $source = (string) file_get_contents($path);
-    if (!str_contains($source, 'interface ')) {
+    // Anchored to a declaration, not to the word: matching `interface` anywhere
+    // let prose ("every interface and enum") pull a plain class into the gate
+    // and name its contracts after the following word.
+    if (preg_match('/^\s*interface\s+(\w+)/m', $source, $interfaceMatch) !== 1) {
         continue;
     }
-    preg_match('/interface\s+(\w+)/', $source, $interfaceMatch);
-    $interface = $interfaceMatch[1] ?? basename($path, '.php');
+    $interface = $interfaceMatch[1];
     preg_match_all('/public function\s+(\w+)\s*\(/', $source, $methods);
     foreach ($methods[1] as $method) {
         $pattern = '/\/\*\*(.*?)\*\/\s*public function\s+' . preg_quote($method, '/') . '\s*\(/s';
