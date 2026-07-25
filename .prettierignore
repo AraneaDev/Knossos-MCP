@@ -12,3 +12,6 @@ docs/Architecture-MCP-Project-Plan.docx
 docs/reference/cli.md
 docs/reference/mcp-tools.md
 docs/reference/api.md
+# Written by release-please. Reformatting it here would be reverted, and then
+# re-flagged, on the next release that regenerates the file.
+CHANGELOG.md

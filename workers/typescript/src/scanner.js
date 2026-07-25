@@ -565,10 +565,7 @@ class TypeScriptLanguageFactCollector {
         );
         if (!declaration) return;
 
-        const target = this.symbolReference(
-            symbol,
-            callableKind(declaration),
-        );
+        const target = this.symbolReference(symbol, callableKind(declaration));
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
@@ -1010,7 +1007,8 @@ function valueReferencePosition(node) {
         return true;
     // `const run = handler;` / `private fn = handler;`
     if (
-        (ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent)) &&
+        (ts.isVariableDeclaration(parent) ||
+            ts.isPropertyDeclaration(parent)) &&
         parent.initializer === node
     )
         return true;
