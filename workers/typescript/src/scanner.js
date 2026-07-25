@@ -101,6 +101,7 @@ export class TypeScriptScanner {
         for (const configPath of configPaths) {
             const parsed = parseConfig(root, configPath);
             const key = `${root}\0${configPath}`;
+            this.#reserveProgramSlot(key);
             const oldProgram = this.programCache.get(key);
             const program = createRestrictedProgram(
                 root,
@@ -136,6 +137,7 @@ export class TypeScriptScanner {
                 projectReferences: undefined,
             };
             const key = `${root}\0<fallback>`;
+            this.#reserveProgramSlot(key);
             const oldProgram = this.programCache.get(key);
             const program = createRestrictedProgram(
                 root,
@@ -154,6 +156,24 @@ export class TypeScriptScanner {
             programs,
             programs_reused: programsReused,
         };
+    }
+
+    // Free a slot before the next program is built. A program is constructed
+    // while the cache still holds its entries, so inserting first and evicting
+    // after leaves MAX_CACHED_PROGRAMS + 1 programs resident at the peak — the
+    // overshoot the cap exists to prevent, and enough to OOM the worker's
+    // 512 MB heap on a project with three tsconfigs over the same sources.
+    //
+    // The entry for `key` is never evicted: that program is handed back to
+    // createRestrictedProgram for incremental reuse, so dropping it would
+    // trade memory for a full rebuild of the very config being scanned.
+    #reserveProgramSlot(key) {
+        const limit = Math.max(0, MAX_CACHED_PROGRAMS - 1);
+        for (const oldest of [...this.programCache.keys()]) {
+            if (this.programCache.size <= limit) break;
+            if (oldest === key) continue;
+            this.programCache.delete(oldest);
+        }
     }
 
     // Insert a program as most-recently-used and evict the least-recently-used

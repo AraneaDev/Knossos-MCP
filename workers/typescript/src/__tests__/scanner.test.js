@@ -281,4 +281,38 @@ describe("TypeScriptScanner.scan program cache", () => {
         // Never retains more than the documented bound, however many configs exist.
         expect(scanner.programCache.size).toBeLessThanOrEqual(2);
     });
+
+    it("frees a cache slot before building the next program", () => {
+        // Retaining the cap and *then* evicting put cap + 1 programs in memory
+        // at the peak, because the new program is constructed while the cache
+        // is still full — the overshoot the cap exists to prevent. A real
+        // 111-file project with three tsconfigs died on it: the worker's
+        // 512 MB heap held two programs and OOMed building the third, so the
+        // scan failed outright while the retained-size assertion above passed.
+        const root = fixture({
+            "package.json": "{}",
+            "a/tsconfig.json": '{"include":["x.ts"]}',
+            "a/x.ts": "export const a = 1;\n",
+            "b/tsconfig.json": '{"include":["y.ts"]}',
+            "b/y.ts": "export const b = 2;\n",
+            "c/tsconfig.json": '{"include":["z.ts"]}',
+            "c/z.ts": "export const c = 3;\n",
+        });
+
+        const scanner = new TypeScriptScanner();
+        // The cache is read immediately before each program is built, so its
+        // size at that moment is the number of programs already resident.
+        const residentAtBuild = [];
+        const cache = scanner.programCache;
+        const realGet = cache.get.bind(cache);
+        cache.get = (key) => {
+            residentAtBuild.push(cache.size);
+            return realGet(key);
+        };
+
+        scanner.scan({ root, files: ["a/x.ts", "b/y.ts", "c/z.ts"] }, () => {});
+
+        expect(residentAtBuild.length).toBeGreaterThanOrEqual(3);
+        expect(Math.max(...residentAtBuild)).toBeLessThanOrEqual(1);
+    });
 });
