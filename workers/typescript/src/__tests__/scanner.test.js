@@ -132,7 +132,13 @@ describe("TypeScriptScanner.scan", () => {
             edges.some((e) => e.kind === "calls" && e.target === run.local_id),
         ).toBe(true);
     });
+});
 
+// A `references` edge is what keeps a function that is used as a VALUE —
+// dispatch tables, registries, callbacks — from being read as dead code. The
+// cases below fix both directions: emitted where a use exists, and withheld
+// where the identifier is a declaration or is already covered by a calls edge.
+describe("TypeScriptScanner.scan value references", () => {
     it("emits a references edge for a function used as a value in a registry array", () => {
         // Regression guard: functions that are never *called* at their use site —
         // dispatch tables, validator registries, callbacks — used to produce no
@@ -154,8 +160,9 @@ describe("TypeScriptScanner.scan", () => {
         });
 
         const contributions = [];
-        new TypeScriptScanner().scan({ root, files: ["src/registry.ts"] }, (c) =>
-            contributions.push(c),
+        new TypeScriptScanner().scan(
+            { root, files: ["src/registry.ts"] },
+            (c) => contributions.push(c),
         );
         const nodes = contributions.flatMap((c) => c.nodes);
         const edges = contributions.flatMap((c) => c.edges);
@@ -246,7 +253,9 @@ describe("TypeScriptScanner.scan", () => {
             ),
         ).toEqual([]);
     });
+});
 
+describe("TypeScriptScanner.scan program cache", () => {
     it("bounds the retained program cache when a project has many tsconfigs", () => {
         // Regression guard for the OOM fix: one full ts.Program per tsconfig,
         // all retained at once, exhausted the worker heap. The cache is LRU-capped.
