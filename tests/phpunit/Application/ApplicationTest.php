@@ -97,19 +97,34 @@ final class ApplicationTest extends TestCase
 
     // ----- error paths -----
     //
-    // CliErrorRenderer.render() writes the diagnostic code to STDERR via
-    // fwrite(STDERR, …) — which is not captured by PHPUnit's output
-    // expectations and not redirectable on PHP's predefined STDERR
-    // constant. The renderer's own tests cover the STDERR contract; here
-    // we verify only that Application's try/catch returns the agreed
-    // exit code 2 on any throwable path.
+    // Application takes an optional error stream, which these tests point at an
+    // in-memory stream. That makes the rendered diagnostic assertable in-process
+    // (it previously could not be — PHP's predefined STDERR constant is not
+    // redirectable and PHPUnit's output expectations do not capture it), and it
+    // keeps the suite from writing to the real STDERR, which
+    // `infection --filter` treats as a signal to SIGTERM the initial test run.
+
+    /** @param list<string> $arguments @return array{0: int, 1: string} */
+    private static function runApplication(array $arguments): array
+    {
+        $stream = fopen('php://memory', 'w+');
+        $exit = (new Application($stream))->run($arguments);
+        rewind($stream);
+        $written = stream_get_contents($stream);
+        fclose($stream);
+
+        return [$exit, $written === false ? '' : $written];
+    }
 
     public function testRunWithUnknownCommandReturnsTwo(): void
     {
         // CliCommandRouter::route() throws InvalidArgumentException when
         // no registered command supports() the name; Application catches
         // it and hands it to CliErrorRenderer::render() which returns 2.
-        assertSame(2, (new Application())->run(['this-command-does-not-exist']));
+        [$exit, $written] = self::runApplication(['this-command-does-not-exist']);
+
+        assertSame(2, $exit);
+        assertContains('KNOSSOS_INVALID_ARGUMENT: ', $written);
     }
 
     public function testRunCatchesInvalidEmptyOptionFromParserAndReturnsTwo(): void
@@ -118,6 +133,9 @@ final class ApplicationTest extends TestCase
         // raises InvalidArgumentException('Invalid empty option.') — caught by
         // Application, rendered by CliErrorRenderer, returns 2. (A lone '--' is
         // now the end-of-options marker and no longer throws.)
-        assertSame(2, (new Application())->run(['help', '--=value']));
+        [$exit, $written] = self::runApplication(['help', '--=value']);
+
+        assertSame(2, $exit);
+        assertContains('KNOSSOS_INVALID_ARGUMENT: Invalid empty option.', $written);
     }
 }

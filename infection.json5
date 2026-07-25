@@ -4,7 +4,18 @@
   // source tree. A full run takes ~80 minutes, so it is not part of any
   // tools/quality profile; .github/workflows/mutation.yml runs it on demand.
   $schema: "vendor/infection/infection/resources/schema.json",
-  timeout: 25,
+  // Infection applies this limit to EVERY test-suite process it spawns —
+  // including the *initial* (coverage) run, not just per-mutant runs. Verified
+  // by setting it to 2: the initial run is killed with SIGTERM and Infection
+  // reports "PHPUnit reported an exit code of 143" under the misleading
+  // "Project tests must be in a passing state" banner.
+  //
+  // The full PHPUnit suite under PCOV takes ~38s wall-clock (1796 tests,
+  // measured 2026-07-25), so the previous value of 25 was below the floor the
+  // initial run needs. Per-mutant runs only execute the tests covering the
+  // mutated line and stay far below this ceiling; the headroom exists for the
+  // initial full run. Re-check if the suite's wall-clock grows again.
+  timeout: 120,
   threads: 4,
   source: {
     directories: ["src"],

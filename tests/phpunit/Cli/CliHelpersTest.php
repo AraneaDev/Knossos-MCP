@@ -323,43 +323,80 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     }
 
     // ===== CliErrorRenderer ================================================
+    //
+    // render() is given an in-memory stream in every test below. Two reasons:
+    // the emitted diagnostic line becomes directly assertable (previously only
+    // the exit code was, leaving every match arm's code string unverified), and
+    // the suite never writes to the real STDERR — which `infection --filter`
+    // treats as a signal to SIGTERM the whole initial test run.
+
+    /** @return array{0: int, 1: string} exit code and everything written to the stream */
+    private static function renderError(\Throwable $error): array
+    {
+        $stream = fopen('php://memory', 'w+');
+        assertSame(true, is_resource($stream));
+
+        $exit = (new CliErrorRenderer($stream))->render($error);
+
+        rewind($stream);
+        $written = stream_get_contents($stream);
+        fclose($stream);
+
+        return [$exit, $written === false ? '' : $written];
+    }
 
     public function testErrorRendererDispatchesDiscoveryException(): void
     {
         // M14 / render() match-arm: DiscoveryException -> KNOSSOS_DISCOVERY_ERROR.
-        // Source always returns 2. The match-arm itself is verifiable only
-        // via STDERR capture which is unreliable under PHPUnit CLI capture.
-        assertSame(2, (new CliErrorRenderer())->render(new DiscoveryException('d')));
+        [$exit, $written] = self::renderError(new DiscoveryException('d'));
+
+        assertSame(2, $exit);
+        assertSame('KNOSSOS_DISCOVERY_ERROR: d' . PHP_EOL, $written);
     }
 
     public function testErrorRendererDispatchesScanBusyException(): void
     {
         // match-arm: ScanBusyException -> KNOSSOS_SCAN_BUSY.
-        assertSame(2, (new CliErrorRenderer())->render(new ScanBusyException('b')));
+        [$exit, $written] = self::renderError(new ScanBusyException('b'));
+
+        assertSame(2, $exit);
+        assertSame('KNOSSOS_SCAN_BUSY: b' . PHP_EOL, $written);
     }
 
     public function testErrorRendererDispatchesScanCancelledException(): void
     {
         // match-arm: ScanCancelledException -> KNOSSOS_SCAN_CANCELLED.
-        assertSame(2, (new CliErrorRenderer())->render(new ScanCancelledException('c')));
+        [$exit, $written] = self::renderError(new ScanCancelledException('c'));
+
+        assertSame(2, $exit);
+        assertSame('KNOSSOS_SCAN_CANCELLED: c' . PHP_EOL, $written);
     }
 
     public function testErrorRendererDispatchesInvalidArgumentException(): void
     {
         // match-arm: InvalidArgumentException -> KNOSSOS_INVALID_ARGUMENT.
-        assertSame(2, (new CliErrorRenderer())->render(new InvalidArgumentException('i')));
+        [$exit, $written] = self::renderError(new InvalidArgumentException('i'));
+
+        assertSame(2, $exit);
+        assertSame('KNOSSOS_INVALID_ARGUMENT: i' . PHP_EOL, $written);
     }
 
     public function testErrorRendererDispatchesPdoException(): void
     {
         // match-arm: PDOException -> KNOSSOS_STORAGE_ERROR.
-        assertSame(2, (new CliErrorRenderer())->render(new \PDOException('p')));
+        [$exit, $written] = self::renderError(new \PDOException('p'));
+
+        assertSame(2, $exit);
+        assertSame('KNOSSOS_STORAGE_ERROR: p' . PHP_EOL, $written);
     }
 
     public function testErrorRendererDispatchesUnknownThrowableToRuntimeError(): void
     {
         // match-arm default: unknown Throwable -> KNOSSOS_RUNTIME_ERROR.
-        assertSame(2, (new CliErrorRenderer())->render(new RuntimeException('r')));
+        [$exit, $written] = self::renderError(new RuntimeException('r'));
+
+        assertSame(2, $exit);
+        assertSame('KNOSSOS_RUNTIME_ERROR: r' . PHP_EOL, $written);
     }
 
     public function testErrorRendererDispatchesWorkerExceptionToItsDiagnosticCode(): void
@@ -368,10 +405,25 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         // arm — important for ordering since match(true) tries arms in
         // declaration order). This lifts coverage from the 6 standard arms
         // to also include the diagnosticCode passthrough arm.
-        $code = (new CliErrorRenderer())->render(
+        [$exit, $written] = self::renderError(
             new WorkerException('KNOSSOS_WORKER_TIMEOUT', 'timed out'),
         );
-        assertSame(2, $code);
+
+        assertSame(2, $exit);
+        assertSame('KNOSSOS_WORKER_TIMEOUT: timed out' . PHP_EOL, $written);
+    }
+
+    public function testErrorRendererDefaultsToStderrWhenNoStreamIsInjected(): void
+    {
+        // The default-argument path must stay wired to STDERR: a mutant that
+        // dropped the default would otherwise go unnoticed by the tests above,
+        // which all inject a stream. Asserted through diagnosticCode() +
+        // construction rather than by writing to the real STDERR.
+        assertSame('KNOSSOS_RUNTIME_ERROR', CliErrorRenderer::diagnosticCode(new RuntimeException('r')));
+        assertSame(
+            'KNOSSOS_INVALID_ARGUMENT',
+            CliErrorRenderer::diagnosticCode(new InvalidArgumentException('i')),
+        );
     }
 
     // ===== CliCommandContext ===============================================
