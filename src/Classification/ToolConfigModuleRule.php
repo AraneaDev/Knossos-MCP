@@ -75,10 +75,15 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
     {
         $file = basename($path);
         $dot = strrpos($file, '.');
-        if ($dot === false || $dot === 0 && substr_count($file, '.') === 1) {
-            // No extension at all, or a bare dotfile such as `.gitignore`.
+        if ($dot === false) {
+            // No extension at all: `Makefile`, `LICENSE`.
             return false;
         }
+        // A bare dotfile needs no special case. `strrpos` finds the LAST dot, so
+        // `$dot === 0` already means the name has exactly one — and whatever
+        // follows it (`gitignore`, `env`) is not a module extension, so the
+        // check below rejects it. An earlier guard spelled that out and four
+        // mutants survived on it, which is what unreachable logic looks like.
         $extension = strtolower(substr($file, $dot + 1));
         if (!in_array($extension, self::MODULE_EXTENSIONS, true)) {
             return false;

@@ -53,6 +53,10 @@ final class ToolConfigModuleRuleTest extends TestCase
             'gulpfile' => ['gulpfile.js'],
             'capitalised gruntfile' => ['Gruntfile.js'],
             'pytest conftest' => ['tests/conftest.py'],
+            // Extension and stem are both matched case-insensitively; a
+            // case-sensitive comparison would silently miss these.
+            'uppercase extension' => ['VITE.CONFIG.TS'],
+            'mixed-case stem' => ['Vite.Config.ts'],
         ];
     }
 
@@ -78,6 +82,17 @@ final class ToolConfigModuleRuleTest extends TestCase
             'json config is not a module' => ['tsconfig.json'],
             'test file' => ['src/__tests__/config.test.ts'],
             'python module' => ['app/settings.py'],
+            // A config-shaped stem on a data extension is still data: the role
+            // exists to explain modules whose declarations need classifying.
+            'config stem on a json file' => ['vite.config.json'],
+            // The rc convention is a *dotfile* convention. A stem that merely
+            // ends in "rc" is an ordinary name.
+            'stem ending in rc without a leading dot' => ['src/marc.js'],
+            // `.config` alone names no tool, so the suffix rule requires
+            // something in front of it.
+            'stem that is exactly the suffix' => ['.config.ts'],
+            'no extension at all' => ['Makefile'],
+            'bare dotfile' => ['.gitignore'],
         ];
     }
 
