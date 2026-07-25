@@ -303,6 +303,7 @@ class TypeScriptLanguageFactCollector {
         if (ts.isNewExpression(node)) this.newExpression(node);
         if (ts.isCallExpression(node)) this.callExpression(node);
         if (ts.isTypeReferenceNode(node)) this.typeReference(node);
+        if (ts.isIdentifier(node)) this.valueReference(node);
     }
 
     leave(pushed) {
@@ -530,6 +531,45 @@ class TypeScriptLanguageFactCollector {
     typeReference(node) {
         const source = this.currentSource();
         const target = this.typeNodeReference(node);
+        if (source !== null && target !== null && source !== target)
+            this.addEdge("references", source, target, node);
+    }
+
+    /**
+     * A callable or type used as a VALUE rather than invoked — pushed into an
+     * array or object literal, passed as a callback, assigned to a const,
+     * exported through a registry.
+     *
+     * Without this, the only edges into a function were `calls` / `constructs`
+     * (from call and new expressions) and `references` (from type positions), so
+     * every dispatch-table entry looked unreferenced and dead-code analysis
+     * reported it as a "probable" dead candidate — e.g. the members of a
+     * `const VALIDATORS = [validateA, validateB]` array, which are demonstrably
+     * live. The edge kind is `references`, matching the type-position case.
+     *
+     * Scope is deliberately narrow: only identifiers resolving to a callable or
+     * type DECLARATION in this repository, and only in positions no other
+     * handler already covers. Emitting an edge for every identifier (locals,
+     * parameters, property reads) would multiply graph size and swamp the
+     * in-degree signal that hub and hotspot ranking depends on.
+     */
+    valueReference(node) {
+        if (!valueReferencePosition(node)) return;
+
+        const symbol = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(node),
+        );
+        const declaration = symbol?.declarations?.find((item) =>
+            referenceableDeclaration(item),
+        );
+        if (!declaration) return;
+
+        const target = this.symbolReference(
+            symbol,
+            callableKind(declaration),
+        );
+        const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
     }
@@ -919,6 +959,66 @@ function canonicalForDeclaration(declaration, relative) {
     }
     const prefix = containers.length > 0 ? `${containers.join(".")}.` : "";
     return `${relative}#${prefix}${ownName ?? ""}`;
+}
+
+/**
+ * Declarations a value reference is allowed to point at: the callables and
+ * types dead-code analysis reasons about. Variables, parameters, properties and
+ * imports are excluded — an edge per local read would dominate the graph without
+ * telling us anything about reachability.
+ */
+function referenceableDeclaration(node) {
+    return (
+        ts.isFunctionDeclaration(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isClassDeclaration(node) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isEnumDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node)
+    );
+}
+
+/**
+ * True when an identifier stands in one of the value positions where a callable
+ * or type is handed around rather than invoked.
+ *
+ * Deliberately an ALLOW-list keyed on the immediate parent, not a deny-list.
+ * Two reasons. Correctness: every listed position is a value position by
+ * construction, so type nodes, declaration names, member names, import/export
+ * specifiers and binding patterns can never reach the checker. Cost: this
+ * predicate runs for every identifier in every file, and the checker call it
+ * guards is the expensive part — a deny-list left the common cases (local reads,
+ * property names, JSX) falling through to `getSymbolAtLocation`, which made a
+ * full scan of a mid-sized project exceed the worker timeout.
+ */
+function valueReferencePosition(node) {
+    const parent = node.parent;
+    if (!parent) return false;
+
+    // `[a, b]` — registry / dispatch-table arrays.
+    if (ts.isArrayLiteralExpression(parent)) return true;
+    // `{ key: handler }` and the `{ handler }` shorthand.
+    if (ts.isPropertyAssignment(parent) && parent.initializer === node)
+        return true;
+    if (ts.isShorthandPropertyAssignment(parent)) return true;
+    // `register(handler)` — a callback argument, never the callee (which is
+    // `parent.expression` and already yields a `calls` / `constructs` edge).
+    if (
+        (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+        parent.arguments?.includes(node)
+    )
+        return true;
+    // `const run = handler;` / `private fn = handler;`
+    if (
+        (ts.isVariableDeclaration(parent) || ts.isPropertyDeclaration(parent)) &&
+        parent.initializer === node
+    )
+        return true;
+    // `return handler;` and `() => handler`
+    if (ts.isReturnStatement(parent) && parent.expression === node) return true;
+    if (ts.isArrowFunction(parent) && parent.body === node) return true;
+
+    return false;
 }
 
 function callableKind(declaration) {
