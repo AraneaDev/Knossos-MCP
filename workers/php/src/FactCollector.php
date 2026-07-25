@@ -56,7 +56,7 @@ final class FactCollector extends NodeVisitorAbstract
             $this->classReference($node->class, $node);
         } elseif ($node instanceof Expr\Instanceof_) {
             $this->classReference($node->class, $node);
-        } elseif ($node instanceof Expr\MethodCall) {
+        } elseif ($node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall) {
             $this->methodCall($node);
         } elseif ($node instanceof Expr\FuncCall) {
             $this->functionCall($node);
@@ -298,7 +298,7 @@ final class FactCollector extends NodeVisitorAbstract
         $this->addEdge('references', $source, self::reference('class', $resolved), $evidence);
     }
 
-    private function methodCall(Expr\MethodCall $node): void
+    private function methodCall(Expr\MethodCall|Expr\NullsafeMethodCall $node): void
     {
         $source = $this->currentSource();
         if ($source === null || !$node->name instanceof Identifier) {
@@ -310,7 +310,14 @@ final class FactCollector extends NodeVisitorAbstract
         // local `$x = new Y` assignment is only ever probable (the variable may
         // be conditional or reassigned before the call).
         $confidence = 'certain';
-        if ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
+        if ($node->var instanceof Expr\New_) {
+            // `(new Y())->m()` names its receiver inline, so — unlike a variable
+            // assigned earlier — there is nothing that could reassign it before
+            // the call. An anonymous class has no name and is skipped.
+            $class = $node->var->class instanceof Name
+                ? $this->resolvedClassName($node->var->class)
+                : null;
+        } elseif ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
             if ($node->var->name === 'this') {
                 $class = $this->currentClass()['name'] ?? null;
             } else {
@@ -318,7 +325,7 @@ final class FactCollector extends NodeVisitorAbstract
                 $confidence = $this->variableConfidence($node->var->name);
             }
         } elseif (
-            $node->var instanceof Expr\PropertyFetch
+            ($node->var instanceof Expr\PropertyFetch || $node->var instanceof Expr\NullsafePropertyFetch)
             && $node->var->var instanceof Expr\Variable
             && $node->var->var->name === 'this'
             && $node->var->name instanceof Identifier
