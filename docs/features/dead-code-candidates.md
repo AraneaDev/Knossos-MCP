@@ -33,7 +33,7 @@ auditable rather than invisible.
 | `excluded_inherited_methods`   | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.    |
 | `excluded_constructors`        | Engine-invoked members — constructors, destructors, magic/protocol methods — whose declaring type is referenced (see below).           |
 | `suppressed_candidates`        | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                    |
-| _(not counted)_                | Components carrying an entry-point role — a controller, a command, a job, or `tooling.config` (see below).                             |
+| _(not counted)_                | Components carrying an entry-point role — a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).  |
 | `annotated_false_positives`    | Components carrying a `false_positive` [annotation](annotations.md).                                                                   |
 
 ### Why engine-invoked members are excluded
@@ -57,6 +57,26 @@ Recognised names are `constructor` (TypeScript/JavaScript) and any member
 starting with `__` — the prefix PHP and Python both reserve for engine
 dispatch, covering `__construct`, `__init__`, and every magic or protocol
 method beside them. Ordinary members of the same type are unaffected.
+
+### Why manifest entry points are excluded
+
+`npm run build` invokes `scripts/build.mjs` by name, and Composer invokes
+`bin/console` the same way. Nothing in the project imports either, so both
+carry an in-degree of zero however central they are — five of the eight
+candidates on that same 111-file scan were scripts of this kind.
+
+Discovery reads each `package.json` and `composer.json` for the paths it names
+as `bin`, `main`/`module`, and `scripts`, anchored to the manifest's own
+directory so a monorepo package resolves correctly. Script values are shell
+commands, so they are tokenised and only tokens shaped like a source file are
+kept. That tokenising is loose on purpose: matching is by exact
+project-relative path, so a token naming something no scanner emitted never
+matches anything. Files that do match are classified `application.entry_point`
+(rule `core.manifest.entrypoints.v1`).
+
+A script the manifest does not name stays reportable — which is the useful
+signal: after this exclusion the same scan reported exactly one script, and it
+was a developer tool wired into nothing.
 
 ### Why tool configuration is excluded
 

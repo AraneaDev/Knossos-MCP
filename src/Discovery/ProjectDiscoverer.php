@@ -227,11 +227,13 @@ final readonly class ProjectDiscoverer
                 'name' => is_string($decoded['name'] ?? null) ? $decoded['name'] : null,
                 'psr4' => self::composerPsr4($decoded),
                 'requires' => self::composerRequirements($decoded),
+                'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin']),
             ],
             'node' => [
                 'name' => is_string($decoded['name'] ?? null) ? $decoded['name'] : null,
                 'type' => is_string($decoded['type'] ?? null) ? $decoded['type'] : null,
                 'workspaces' => self::workspaces($decoded['workspaces'] ?? []),
+                'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
             ],
             'typescript' => self::typescriptMetadata($decoded),
             'knossos' => ['version' => $decoded['version'] ?? null],
@@ -239,6 +241,98 @@ final readonly class ProjectDiscoverer
         };
 
         return new ProjectUnit($kind, $relative, $contentHash, $metadata);
+    }
+
+    /** Extensions a scanner emits nodes for; anything else cannot be matched later. */
+    private const ENTRY_POINT_EXTENSIONS = [
+        'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'py', 'pyi',
+    ];
+
+    /**
+     * Collect the source files a package manifest names, anchored to the
+     * project root.
+     *
+     * Nothing in a project imports its own bin or its build scripts — npm and
+     * Composer invoke them by name — so each has an in-degree of zero and reads
+     * as unreferenced code. The manifest is the reference, and this is the only
+     * place it is visible.
+     *
+     * `$fields` are read as paths directly (`bin`, `main`); `scripts` values are
+     * shell commands and are tokenised, keeping only tokens that look like a
+     * source file. That tokenising is deliberately loose because it cannot
+     * produce a false positive on its own: classification matches these paths
+     * exactly against emitted nodes, so a token naming something that is not a
+     * scanned file simply never matches.
+     *
+     * @param array<string, mixed> $manifest
+     * @param list<string> $fields
+     * @return list<string>
+     */
+    private static function manifestEntryPoints(array $manifest, string $configPath, array $fields): array
+    {
+        $directory = trim(dirname($configPath), '.' . DIRECTORY_SEPARATOR . '/');
+        $candidates = [];
+        foreach ($fields as $field) {
+            $value = $manifest[$field] ?? null;
+            foreach (is_array($value) ? $value : [$value] as $entry) {
+                if (is_string($entry)) {
+                    $candidates[] = $entry;
+                }
+            }
+        }
+        if (is_array($manifest['scripts'] ?? null)) {
+            foreach ($manifest['scripts'] as $command) {
+                foreach (is_array($command) ? $command : [$command] as $line) {
+                    if (is_string($line)) {
+                        // Quotes and parentheses are token boundaries too, so a
+                        // path inside `node -e "require('./x.js')"` is separated
+                        // from the code around it.
+                        $candidates = [...$candidates, ...preg_split('/[\s"\'()]+/', $line, -1, PREG_SPLIT_NO_EMPTY)];
+                    }
+                }
+            }
+        }
+
+        $paths = [];
+        foreach ($candidates as $candidate) {
+            $path = self::entryPointPath($candidate, $directory);
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
+        }
+        $paths = array_keys($paths);
+        sort($paths, SORT_STRING);
+
+        return $paths;
+    }
+
+    /**
+     * Normalise one manifest token to a root-relative source path, or null when
+     * it is not one: a flag, a bare command, a glob, a dependency's binary, or
+     * a path that climbs out of the project.
+     */
+    private static function entryPointPath(string $candidate, string $directory): ?string
+    {
+        $token = str_replace('\\', '/', trim($candidate));
+        // `@php`, `@composer`, and `@script` are Composer's own indirections.
+        if ($token === '' || str_starts_with($token, '-') || str_starts_with($token, '@')) {
+            return null;
+        }
+        if (str_contains($token, '*') || str_contains($token, '..')) {
+            return null;
+        }
+        if (!in_array(strtolower(pathinfo($token, PATHINFO_EXTENSION)), self::ENTRY_POINT_EXTENSIONS, true)) {
+            return null;
+        }
+        $token = ltrim($token, '/');
+        if (str_starts_with($token, './')) {
+            $token = substr($token, 2);
+        }
+        if ($token === '' || str_starts_with($token, 'node_modules/') || str_starts_with($token, 'vendor/')) {
+            return null;
+        }
+
+        return $directory === '' ? $token : $directory . '/' . $token;
     }
 
     /** @param array<string, mixed> $composer @return array<string, string|list<string>> */

@@ -9,6 +9,7 @@ use Knossos\Classification\{
     ClassificationEngine,
     LaravelPathRoleRule,
     LaravelRoleRule,
+    ManifestEntryPointRule,
     NameSuffixRule,
     NestJsRoleRule,
     PythonFrameworkRoleRule,
@@ -36,6 +37,7 @@ final readonly class ScanAnalysisPipeline
             new TypeScriptFrameworkRoleRule(),
             new TestModuleRule(),
             new ToolConfigModuleRule(),
+            new ManifestEntryPointRule(self::manifestEntryPoints($plan)),
         ];
         if ($plan->preparation->laravel) {
             $rules[] = new LaravelRoleRule();
@@ -57,5 +59,27 @@ final readonly class ScanAnalysisPipeline
                 $plan->preparation->explicitBoundaries,
             ),
         );
+    }
+
+    /**
+     * Every project-relative path the discovered manifests name as a binary,
+     * an entry module, or a script.
+     *
+     * @return list<string>
+     */
+    private static function manifestEntryPoints(ScanPlan $plan): array
+    {
+        $paths = [];
+        foreach ($plan->preparation->discovery->units as $unit) {
+            foreach ($unit->metadata['entry_points'] ?? [] as $path) {
+                if (is_string($path) && $path !== '') {
+                    $paths[$path] = true;
+                }
+            }
+        }
+        $paths = array_keys($paths);
+        sort($paths, SORT_STRING);
+
+        return $paths;
     }
 }
