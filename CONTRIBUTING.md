@@ -49,6 +49,36 @@ each stage asserts and how to read its report.
 tools/install-hooks
 ```
 
+## Test Suite Invariants
+
+Two rules exist because breaking either one silently disables mutation testing
+for the whole repository, with an error message that points somewhere else
+entirely. `.github/workflows/mutation.yml` and Chaos-MCP's PHP engine both drive
+`vendor/bin/infection --filter=<file>`.
+
+**The suite must write nothing to STDERR.** Verify with:
+
+```bash
+vendor/bin/phpunit 2>/tmp/suite.err && test ! -s /tmp/suite.err
+```
+
+Infection's `InitialTestsRunner` stops the test process on the _first byte_ it
+writes to STDERR (Symfony `Process::ERR`), whether or not a test failed. PHPUnit
+is then SIGTERMed mid-suite and Infection reports `PHPUnit reported an exit code
+of 143` under a "Project tests must be in a passing state" banner — pointing at
+the suite's health and the coverage driver, neither of which is the cause. Code
+that emits diagnostics must take an injectable stream (see
+`Knossos\Cli\CliErrorRenderer`) so tests can render into `php://memory` and
+assert the output instead of leaking it.
+
+**No test may carry a coverage-target attribute** (`#[CoversClass]`,
+`#[UsesClass]`, and friends). `--filter` narrows the generated initial-run
+PHPUnit config's `<source>` to the single target file, which invalidates every
+coverage target pointing elsewhere; Infection injects `stopOnDefect="true"` into
+that same config, so the resulting warning aborts the suite.
+`tests/phpunit/NoCoverageTargetAttributesTest` enforces this. Express targeted
+coverage through `<source>` in `phpunit.xml` instead.
+
 ## Commit Messages
 
 This repository releases through
