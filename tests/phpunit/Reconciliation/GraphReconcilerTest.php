@@ -720,6 +720,131 @@ final class GraphReconcilerTest extends TestCase
         $this->assertCount(2, $this->repo->diagnostics);
     }
 
+    // ----- resolveEdges: type-kind aliasing -----
+
+    /**
+     * A scanner reading `Payable $x` in one file cannot know whether `Payable`
+     * is declared as a class, an interface, a trait, or an enum somewhere else,
+     * so the PHP worker emits every type-position reference as `class`. Without
+     * aliasing, the exact lookup misses the declaration and a phantom
+     * `external_class` twin is fabricated beside the real interface — which is
+     * what made every interface and enum in a PHP graph look unused.
+     */
+    public function testResolveEdgesResolvesAClassReferenceToAnInterfaceDeclaration(): void
+    {
+        $result = $this->reconcileTypeReference('interface', 'App\\Payable');
+
+        assertSame(0, $result->unresolvedNodes);
+        assertSame(2, $result->nodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    public function testResolveEdgesResolvesAClassReferenceToAnEnumDeclaration(): void
+    {
+        $result = $this->reconcileTypeReference('enum', 'App\\Mode');
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    public function testResolveEdgesResolvesAClassReferenceToATraitDeclaration(): void
+    {
+        $result = $this->reconcileTypeReference('trait', 'App\\LogsPayments');
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    /**
+     * The aliased edge must land on the declaration's own stable id, not on a
+     * second id derived from the reference — otherwise the phantom node is gone
+     * but the usage still hangs off nothing.
+     */
+    public function testAliasedReferenceTargetsTheDeclarationStableId(): void
+    {
+        $this->reconcileTypeReference('interface', 'App\\Payable');
+
+        $declaration = collectMatching($this->repo->nodes, fn($n) => $n[3] === 'interface');
+        $this->assertCount(1, $declaration);
+        $this->assertCount(1, $this->repo->edges);
+        assertSame($declaration[0][0], $this->repo->edges[0][4]);
+    }
+
+    /**
+     * Aliasing is confined to type kinds: a method reference that matches no
+     * declaration is still an external node, not a silent match against some
+     * same-named class.
+     */
+    public function testAliasingDoesNotApplyToNonTypeKinds(): void
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $declaration = new NodeFact(
+            localId: 'php:class:App\\Payable',
+            kind: 'class',
+            canonicalName: 'App\\Payable',
+            displayName: 'Payable',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 5),
+        );
+        $edge = new EdgeFact(
+            kind: 'calls',
+            sourceReference: $source->localId,
+            targetReference: 'php:method:App\\Payable',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 3, 3),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$source, $declaration], [$edge])],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(1, $result->unresolvedNodes);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        $this->assertCount(1, $external);
+        assertSame('external_method', $external[0][3]);
+    }
+
+    private function reconcileTypeReference(string $declaredKind, string $canonical): ReconciliationResult
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $declaration = new NodeFact(
+            localId: 'php:' . $declaredKind . ':' . $canonical,
+            kind: $declaredKind,
+            canonicalName: $canonical,
+            displayName: $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 7, 9),
+        );
+        $edge = new EdgeFact(
+            kind: 'references',
+            sourceReference: $source->localId,
+            targetReference: 'php:class:' . $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 3, 3),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$source, $declaration], [$edge])],
+        ]);
+
+        return (new GraphReconciler($this->repo))->reconcile($request);
+    }
+
     // ----- resolveEdges: external nodes -----
 
     public function testResolveEdgesCreatesExternalNodeForUnresolvedTarget(): void

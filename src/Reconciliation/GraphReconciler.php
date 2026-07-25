@@ -16,6 +16,22 @@ use Knossos\Store\StableId;
 
 final readonly class GraphReconciler
 {
+    /**
+     * Kinds a scanner may name interchangeably when a type appears in a type
+     * position (a parameter, a property, a return, a static access target).
+     *
+     * A scanner reads one file at a time: seeing `Payable $x`, it cannot know
+     * whether `Payable` is declared as a class, an interface, a trait, or an
+     * enum elsewhere, so the PHP worker emits every such reference as `class`.
+     * Resolution is by exact reference string, so without this list the lookup
+     * misses the real declaration and a phantom `external_class` twin is
+     * fabricated beside it — leaving every interface and enum in a PHP graph
+     * with an in-degree of zero however heavily it is used.
+     *
+     * Order is fixed so a resolution never depends on scan order.
+     */
+    private const TYPE_KINDS = ['class', 'interface', 'trait', 'enum'];
+
     public function __construct(private GraphRepository $repository) {}
 
     public function reconcile(FullScanRequest $request): ReconciliationResult
@@ -282,7 +298,8 @@ final readonly class GraphReconciler
                     ));
                 }
 
-                $targetId = $nodeMap[$edge->targetReference] ?? null;
+                $targetId = $nodeMap[$edge->targetReference]
+                    ?? $this->aliasedTypeTarget($edge->targetReference, $nodeMap);
                 if ($targetId === null) {
                     [$targetId, $externalNode] = $this->externalNode(
                         $projectId,
@@ -343,6 +360,41 @@ final readonly class GraphReconciler
      * @param array<string, string> $fileIds
      * @return array{0: string, 1: array<string, mixed>}
      */
+    /**
+     * Resolve a type reference whose kind segment disagrees with the kind the
+     * declaration was emitted under, by retrying the lookup against the other
+     * {@see self::TYPE_KINDS}. The language segment is never varied: a PHP
+     * `Error` and a TypeScript `Error` are different symbols.
+     *
+     * Returns null when the reference is not in a type position, or names
+     * nothing declared in this graph — both of which stay external.
+     *
+     * @param array<string, string> $nodeMap
+     */
+    private function aliasedTypeTarget(string $reference, array $nodeMap): ?string
+    {
+        $parts = explode(':', $reference, 3);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        [$language, $kind, $canonical] = $parts;
+        if (!in_array($kind, self::TYPE_KINDS, true)) {
+            return null;
+        }
+
+        foreach (self::TYPE_KINDS as $alias) {
+            if ($alias === $kind) {
+                continue;
+            }
+            $candidate = $nodeMap[$language . ':' . $alias . ':' . $canonical] ?? null;
+            if ($candidate !== null) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
     private function externalNode(
         string $projectId,
         string $reference,
