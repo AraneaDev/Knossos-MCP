@@ -14,6 +14,7 @@ use Knossos\Classification\{
     PythonFrameworkRoleRule,
     SymfonyRoleRule,
     TestModuleRule,
+    ToolConfigModuleRule,
     TypeScriptFrameworkRoleRule
 };
 use Knossos\Scanner\Protocol\Confidence;
@@ -34,6 +35,7 @@ final readonly class ScanAnalysisPipeline
             new PythonFrameworkRoleRule(),
             new TypeScriptFrameworkRoleRule(),
             new TestModuleRule(),
+            new ToolConfigModuleRule(),
         ];
         if ($plan->preparation->laravel) {
             $rules[] = new LaravelRoleRule();

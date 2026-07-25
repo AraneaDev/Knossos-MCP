@@ -371,7 +371,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 ++$excludedInherited;
                 continue;
             }
-            if ($this->isConstructorOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)) {
+            if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)) {
                 ++$excludedConstructors;
                 continue;
             }
@@ -901,14 +901,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return false;
     }
     /**
-     * Constructor names that are reached by instantiating the declaring type
-     * rather than by naming the member.
+     * The TypeScript/JavaScript constructor. PHP and Python both spell their
+     * engine-dispatched members with a leading `__` instead, which
+     * `isEngineInvokedMemberOfReferencedType` matches by prefix.
      */
-    private const CONSTRUCTOR_MEMBER_NAMES = ['__construct', 'constructor', '__init__'];
+    private const CONSTRUCTOR_MEMBER_NAME = 'constructor';
 
     /**
-     * True when the candidate is a constructor whose declaring type IS
-     * referenced somewhere.
+     * True when the candidate is a member the language runtime invokes, rather
+     * than one a call site names, whose declaring type IS referenced somewhere.
      *
      * `new Foo(...)` is recorded as a `constructs` edge to the class `Foo`, not
      * to `Foo::__construct`, so a constructor's in-degree is 0 for every class
@@ -917,21 +918,29 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * TypeScript project, five of the thirteen surviving candidates were
      * constructors of classes the same graph showed being instantiated.
      *
-     * The declaring type having ANY inbound reference is enough. A constructor
-     * of a type that is itself unreferenced stays a candidate — that type (and
-     * with it the constructor) really may be dead, and it is reported through
-     * the type, which is the more useful unit to delete.
+     * Constructors are only the most common case. `__destruct` runs when the
+     * last reference drops, `__toString` on a string cast, `__invoke` on a
+     * call, and Python's protocol methods (`__repr__`, `__enter__`, `__eq__`)
+     * likewise — none is ever written at a call site, so every one of them is
+     * structurally unreferenced. Both languages reserve the `__` prefix for
+     * exactly this dispatch, which is why the prefix is the test.
+     *
+     * The declaring type having ANY inbound reference is enough. Such a member
+     * on a type that is itself unreferenced stays a candidate — that type (and
+     * with it the member) really may be dead, and it is reported through the
+     * type, which is the more useful unit to delete.
      *
      * @param array<string, mixed>  $node
      * @param array<string, string> $idsByCanonicalName
      * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
      */
-    private function isConstructorOfReferencedType(array $node, array $idsByCanonicalName, array $metrics): bool
+    private function isEngineInvokedMemberOfReferencedType(array $node, array $idsByCanonicalName, array $metrics): bool
     {
         if ($node['kind'] !== 'method') {
             return false;
         }
-        if (!in_array((string) $node['display_name'], self::CONSTRUCTOR_MEMBER_NAMES, true)) {
+        $displayName = (string) $node['display_name'];
+        if ($displayName !== self::CONSTRUCTOR_MEMBER_NAME && !str_starts_with($displayName, '__')) {
             return false;
         }
         $canonical = (string) $node['canonical_name'];
@@ -959,6 +968,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             // A test runner discovers these by glob, so in-degree 0 is structural,
             // not evidence that the module is unused.
             'quality.test_module',
+            // Likewise a build or quality tool loading its own config by
+            // filename: nothing in the project ever imports `eslint.config.js`.
+            'tooling.config',
         ];
         foreach ($roles as $role) {
             if (in_array($role['role'], $entryRoles, true)) {

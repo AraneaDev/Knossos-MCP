@@ -155,6 +155,77 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testDeadCodeExcludesEngineInvokedMembersOfTypesThatAreReferenced(): void
+    {
+        // A destructor runs when the runtime drops the last reference, and
+        // `__toString` runs on a string cast — neither is ever named at a call
+        // site, so both carry the same structural in-degree of zero a
+        // constructor does. PHP reserves the `__` prefix for exactly these
+        // engine-dispatched members, and Python spells its protocol methods
+        // the same way (`__repr__`, `__enter__`, `__eq__`).
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $invoice = StableId::symbol($ids['project'], 'php', 'class', 'App\\Invoice');
+        $destructor = StableId::symbol($ids['project'], 'php', 'method', 'App\\Invoice::__destruct');
+        $toString = StableId::symbol($ids['project'], 'php', 'method', 'App\\Invoice::__toString');
+        $plain = StableId::symbol($ids['project'], 'php', 'method', 'App\\Invoice::total');
+        foreach ([
+            [$invoice, 'class', 'App\\Invoice', 'Invoice'],
+            [$destructor, 'method', 'App\\Invoice::__destruct', '__destruct'],
+            [$toString, 'method', 'App\\Invoice::__toString', '__toString'],
+            [$plain, 'method', 'App\\Invoice::total', 'total'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 1, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $ids['checkout'], $invoice, 'm1'), $ids['project'], 'constructs', $ids['checkout'], $invoice, $file, 7, 7, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('App\\Invoice::__destruct', $names, true));
+        assertSame(false, in_array('App\\Invoice::__toString', $names, true));
+        assertSame(2, $data['bounds']['excluded_constructors']);
+        // An ordinary method of the same referenced class is still reportable —
+        // the exclusion is about engine dispatch, not about the owning type.
+        assertArrayContains('App\\Invoice::total', $names);
+    }
+
+    /**
+     * A tool loads its own config by filename, so `vitest.config.ts` and its
+     * kind have an in-degree of zero in every project — the same structural
+     * blindness that made test modules candidates.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesToolConfigModules(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $config = StableId::symbol($ids['project'], 'typescript', 'module', 'vitest.config.ts');
+        $repository->saveNode($config, $ids['project'], 'typescript', 'module', 'vitest.config.ts', 'vitest.config.ts', null, $ids['file'], 1, 20, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveClassification(
+            StableId::classification($ids['project'], $config, 'tooling.config', 'core.tooling.config.v1'),
+            $ids['project'],
+            $config,
+            'tooling.config',
+            'derived',
+            'probable',
+            'core.tooling.config.v1',
+            $ids['file'],
+            1,
+            20,
+            [],
+            $ids['scan'],
+        );
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('vitest.config.ts', $names, true));
+    }
+
+    #[Group('query')]
     public function testDeadCodeSuppressionsFromProjectConfigAreHonored(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

@@ -31,11 +31,12 @@ auditable rather than invisible.
 | `excluded_external_components` | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.             |
 | `excluded_test_components`     | Nodes classified `quality.test_module` — a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`. |
 | `excluded_inherited_methods`   | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.    |
-| `excluded_constructors`        | Constructors whose declaring type is referenced (see below).                                                                           |
+| `excluded_constructors`        | Engine-invoked members — constructors, destructors, magic/protocol methods — whose declaring type is referenced (see below).           |
 | `suppressed_candidates`        | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                    |
+| _(not counted)_                | Components carrying an entry-point role — a controller, a command, a job, or `tooling.config` (see below).                             |
 | `annotated_false_positives`    | Components carrying a `false_positive` [annotation](annotations.md).                                                                   |
 
-### Why constructors are excluded
+### Why engine-invoked members are excluded
 
 Instantiating a type is recorded as a `constructs` edge to the **class**, never
 to its constructor. Every constructor in every graph therefore has an in-degree
@@ -43,12 +44,34 @@ of zero, however heavily the class is used — on one 109-file TypeScript projec
 five of thirteen surviving candidates were constructors of classes the same
 graph showed being instantiated.
 
-A constructor is excluded when its declaring type has any inbound reference.
-When the type itself is unreferenced, both stay reportable: the type is the
-unit worth deleting, and the constructor goes with it.
+Constructors are the most common case, not the only one. `__destruct` runs when
+the last reference drops, `__toString` on a string cast, `__invoke` on a call,
+and Python's protocol methods (`__repr__`, `__enter__`, `__eq__`) the same way.
+None is ever written at a call site, so each is structurally unreferenced.
 
-Recognised constructor member names are `__construct` (PHP), `constructor`
-(TypeScript/JavaScript), and `__init__` (Python).
+Such a member is excluded when its declaring type has any inbound reference.
+When the type itself is unreferenced, both stay reportable: the type is the
+unit worth deleting, and the member goes with it.
+
+Recognised names are `constructor` (TypeScript/JavaScript) and any member
+starting with `__` — the prefix PHP and Python both reserve for engine
+dispatch, covering `__construct`, `__init__`, and every magic or protocol
+method beside them. Ordinary members of the same type are unaffected.
+
+### Why tool configuration is excluded
+
+ESLint reads `eslint.config.js`, Vitest reads `vitest.config.ts`, pytest reads
+`conftest.py` — the tool finds each by filename and no project code imports it,
+so its in-degree is zero in every project. A self-scan of a 111-file TypeScript
+project returned eight candidates and all eight were configuration of this
+shape.
+
+Such modules are classified `tooling.config` (rule `core.tooling.config.v1`)
+and, like test modules, are not reported. Recognition is by filename convention
+only — `<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
+`gruntfile`, or `conftest.py` — and deliberately narrow: a module that merely
+reads configuration, such as `src/utils/config-loader.ts`, is ordinary source
+and stays reportable.
 
 ## Acting on a candidate
 
