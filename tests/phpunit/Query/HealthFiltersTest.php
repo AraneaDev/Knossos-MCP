@@ -225,6 +225,113 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(false, in_array('vitest.config.ts', $names, true));
     }
 
+    /**
+     * The mirror of the inherited-method exclusion. That one drops the
+     * override because the ancestor carries the contract; nothing dropped the
+     * declaration when the implementation is what call sites reach. A call
+     * only edges to the interface when its receiver is typed as the
+     * interface — `foreach ($this->rules as $rule) $rule->classify(...)`
+     * types nothing, so this repository reported `ClassificationRule::classify`
+     * and five sibling contracts as unreferenced while ten implementations
+     * ran on every scan.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesContractMethodsAnImplementationCarries(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $contract = StableId::symbol($ids['project'], 'php', 'interface', 'App\\Rule');
+        $declaration = StableId::symbol($ids['project'], 'php', 'method', 'App\\Rule::classify');
+        $implementation = StableId::symbol($ids['project'], 'php', 'class', 'App\\NameRule');
+        $override = StableId::symbol($ids['project'], 'php', 'method', 'App\\NameRule::classify');
+        foreach ([
+            [$contract, 'interface', 'App\\Rule', 'Rule'],
+            [$declaration, 'method', 'App\\Rule::classify', 'classify'],
+            [$implementation, 'class', 'App\\NameRule', 'NameRule'],
+            [$override, 'method', 'App\\NameRule::classify', 'classify'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 1, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $contract, $declaration, 'q1'), $ids['project'], 'contains', $contract, $declaration, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $implementation, $override, 'q2'), $ids['project'], 'contains', $implementation, $override, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'implements', $implementation, $contract, 'q3'), $ids['project'], 'implements', $implementation, $contract, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        // The contract itself is used: something names the interface as a type.
+        $repository->saveEdge(StableId::edge($ids['project'], 'references', $ids['checkout'], $contract, 'q4'), $ids['project'], 'references', $ids['checkout'], $contract, $file, 5, 5, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('App\\Rule::classify', $names, true));
+        assertSame(1, $data['bounds']['excluded_contract_methods']);
+    }
+
+    /**
+     * The exclusion is earned by an implementation, not by being an interface:
+     * a contract nothing implements has nothing dispatching to it.
+     */
+    #[Group('query')]
+    public function testDeadCodeKeepsAContractMethodNothingImplements(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $contract = StableId::symbol($ids['project'], 'php', 'interface', 'App\\Rule');
+        $declaration = StableId::symbol($ids['project'], 'php', 'method', 'App\\Rule::classify');
+        foreach ([
+            [$contract, 'interface', 'App\\Rule', 'Rule'],
+            [$declaration, 'method', 'App\\Rule::classify', 'classify'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 1, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $contract, $declaration, 'r1'), $ids['project'], 'contains', $contract, $declaration, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'references', $ids['checkout'], $contract, 'r2'), $ids['project'], 'references', $ids['checkout'], $contract, $file, 5, 5, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertArrayContains('App\\Rule::classify', $names);
+        assertSame(0, $data['bounds']['excluded_contract_methods']);
+    }
+
+    /**
+     * When nothing references the declaring type, the type and its members are
+     * all reportable — the same call the constructor exclusion makes, for the
+     * same reason: the type is the unit worth deleting.
+     */
+    #[Group('query')]
+    public function testDeadCodeKeepsAContractMethodOfAnUnreferencedType(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $contract = StableId::symbol($ids['project'], 'php', 'interface', 'App\\Rule');
+        $declaration = StableId::symbol($ids['project'], 'php', 'method', 'App\\Rule::classify');
+        $implementation = StableId::symbol($ids['project'], 'php', 'class', 'App\\NameRule');
+        $override = StableId::symbol($ids['project'], 'php', 'method', 'App\\NameRule::classify');
+        foreach ([
+            [$contract, 'interface', 'App\\Rule', 'Rule'],
+            [$declaration, 'method', 'App\\Rule::classify', 'classify'],
+            [$implementation, 'class', 'App\\NameRule', 'NameRule'],
+            [$override, 'method', 'App\\NameRule::classify', 'classify'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 1, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $contract, $declaration, 's1'), $ids['project'], 'contains', $contract, $declaration, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $implementation, $override, 's2'), $ids['project'], 'contains', $implementation, $override, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        // `implements` is the only inbound edge the interface has, and an
+        // implementation is not evidence that anything uses the contract.
+        $repository->saveEdge(StableId::edge($ids['project'], 'implements', $implementation, $contract, 's3'), $ids['project'], 'implements', $implementation, $contract, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertArrayContains('App\\Rule::classify', $names);
+    }
+
     #[Group('query')]
     public function testDeadCodeSuppressionsFromProjectConfigAreHonored(): void
     {

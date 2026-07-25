@@ -260,6 +260,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         foreach ($nodeIds as $id) {
             $metrics[$id] = ['in_degree' => 0, 'out_degree' => 0, 'cross_boundary_degree' => 0];
         }
+        // Inbound `implements`/`extends` counted separately: a type being
+        // implemented is not evidence that anything uses it, so the contract
+        // gate below has to be able to discount them.
+        $inheritanceInDegree = [];
         $edgesExamined = 0;
         foreach ($edgeRows as $edge) {
             if ((++$edgesExamined % 256) === 0 && $this->now() > $deadline) {
@@ -272,6 +276,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
             ++$metrics[$edge['source_id']]['out_degree'];
             ++$metrics[$edge['target_id']]['in_degree'];
+            if (in_array($edge['kind'], ['implements', 'extends'], true)) {
+                $inheritanceInDegree[$edge['target_id']] = ($inheritanceInDegree[$edge['target_id']] ?? 0) + 1;
+            }
             $sourceBoundaries = array_column($boundaries[$edge['source_id']] ?? [], 'id');
             $targetBoundaries = array_column($boundaries[$edge['target_id']] ?? [], 'id');
             if ($sourceBoundaries !== [] && $targetBoundaries !== [] && array_intersect($sourceBoundaries, $targetBoundaries) === []) {
@@ -352,6 +359,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $idsByCanonicalName[(string) $nodeRow['canonical_name']] = $nodeId;
         }
         $excludedConstructors = 0;
+        $excludedContracts = 0;
         $suppressions = $this->deadCodeSuppressions($projectId);
         $suppressedCount = 0;
         $annotationsByName = $this->componentAnnotations($projectId);
@@ -366,10 +374,28 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 ++$annotatedFalsePositives;
                 continue;
             }
-            $context = $inheritance[$id] ?? ['inherited' => false, 'external_ancestor' => null];
+            $context = $inheritance[$id] ?? [
+                'inherited' => false,
+                'implemented' => false,
+                'declaring_type' => null,
+                'external_ancestor' => null,
+            ];
             if ($context['inherited']) {
                 ++$excludedInherited;
                 continue;
+            }
+            // A contract an implementation carries. Gated on the declaring type
+            // being referenced for the same reason constructors are: when
+            // nothing uses the type, the type is the unit worth deleting and
+            // both it and its members stay reportable.
+            if ($context['implemented'] && $context['declaring_type'] !== null) {
+                $declaringType = $context['declaring_type'];
+                $declaringUses = ($metrics[$declaringType]['in_degree'] ?? 0)
+                    - ($inheritanceInDegree[$declaringType] ?? 0);
+                if ($declaringUses > 0) {
+                    ++$excludedContracts;
+                    continue;
+                }
             }
             if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)) {
                 ++$excludedConstructors;
@@ -440,6 +466,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excludedInherited,
+                    'excluded_contract_methods' => $excludedContracts,
                     'excluded_constructors' => $excludedConstructors,
                     'suppressed_candidates' => $suppressedCount,
                     'annotated_false_positives' => $annotatedFalsePositives,
@@ -980,14 +1007,81 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return true;
     }
     /**
-     * Resolve, for candidate methods, whether an ancestor of the containing
-     * class declares a same-named member (making in-degree 0 structural, not
-     * evidence of death) or whether the hierarchy leaves an external type
-     * whose members static analysis cannot see.
+     * Member names declared by the internal types that implement or extend
+     * each of `$typeIds`.
+     *
+     * Only direct subtypes are read. A grandchild that redeclares a member its
+     * own parent already declares is reached through that parent, so one level
+     * answers the question this asks: does some implementation carry this
+     * contract?
+     *
+     * @param list<string> $typeIds
+     * @return array<string, array<string, true>> type id => member display names
+     */
+    private function subtypeMemberNames(string $projectId, array $typeIds): array
+    {
+        $subtypesOf = [];
+        foreach (array_chunk($typeIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
+                sprintf('AND target_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $subtypesOf[$row['target_id']][] = $row['source_id'];
+            }
+        }
+        if ($subtypesOf === []) {
+            return [];
+        }
+
+        $memberNames = [];
+        $subtypeIds = array_values(array_unique(array_merge(...array_values($subtypesOf))));
+        foreach (array_chunk($subtypeIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
+                "WHERE e.project_id = ? AND e.kind = 'contains' " .
+                sprintf('AND e.source_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $memberNames[$row['source_id']][(string) $row['display_name']] = true;
+            }
+        }
+
+        $result = [];
+        foreach ($subtypesOf as $typeId => $subtypes) {
+            foreach ($subtypes as $subtypeId) {
+                foreach ($memberNames[$subtypeId] ?? [] as $name => $_) {
+                    $result[$typeId][$name] = true;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Resolve, for candidate methods, how dispatch could reach them without
+     * leaving a direct inbound edge — in either direction of the hierarchy.
+     *
+     * Upwards: an ancestor of the containing type declares a same-named member,
+     * so the ancestor carries the contract and the override is reached through
+     * it; or the hierarchy leaves an external type whose members static
+     * analysis cannot see.
+     *
+     * Downwards: an internal type implements or extends the containing type and
+     * declares a same-named member, so this is the declaration and the
+     * implementation is what call sites reach. An edge lands on the declaration
+     * only when a receiver is typed as the contract; iterating an untyped array
+     * of implementations types nothing, which is why a heavily used interface
+     * method can carry an in-degree of zero.
      *
      * @param list<string> $methodIds
      * @param array<string, string> $methodNames method node id => display_name
-     * @return array<string, array{inherited: bool, external_ancestor: ?string}>
+     * @return array<string, array{inherited: bool, implemented: bool, declaring_type: ?string, external_ancestor: ?string}>
      */
     private function inheritedMethodContext(string $projectId, array $methodIds, array $methodNames): array
     {
@@ -1092,6 +1186,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             return $closureCache[$classId];
         };
 
+        $subtypeMembers = $this->subtypeMemberNames($projectId, array_values(array_unique(array_values($classOfMethod))));
+
         $result = [];
         foreach ($methodIds as $methodId) {
             $classId = $classOfMethod[$methodId] ?? null;
@@ -1113,7 +1209,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     break;
                 }
             }
-            $result[$methodId] = ['inherited' => $inherited, 'external_ancestor' => $externalAncestor];
+            $result[$methodId] = [
+                'inherited' => $inherited,
+                'implemented' => $classId !== null
+                    && isset($subtypeMembers[$classId][$methodNames[$methodId]]),
+                'declaring_type' => $classId,
+                'external_ancestor' => $externalAncestor,
+            ];
         }
         return $result;
     }

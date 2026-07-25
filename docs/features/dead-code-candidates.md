@@ -31,6 +31,7 @@ auditable rather than invisible.
 | `excluded_external_components` | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.             |
 | `excluded_test_components`     | Nodes classified `quality.test_module` — a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`. |
 | `excluded_inherited_methods`   | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.    |
+| `excluded_contract_methods`    | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                              |
 | `excluded_constructors`        | Engine-invoked members — constructors, destructors, magic/protocol methods — whose declaring type is referenced (see below).           |
 | `suppressed_candidates`        | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                    |
 | _(not counted)_                | Components carrying an entry-point role — a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).  |
@@ -57,6 +58,26 @@ Recognised names are `constructor` (TypeScript/JavaScript) and any member
 starting with `__` — the prefix PHP and Python both reserve for engine
 dispatch, covering `__construct`, `__init__`, and every magic or protocol
 method beside them. Ordinary members of the same type are unaffected.
+
+### Why contract declarations are excluded
+
+A call edges to an interface method only when its receiver is typed as the
+interface. `foreach ($this->rules as $rule) { $rule->classify($node); }` types
+nothing, so the declaration carries an in-degree of zero while every
+implementation runs on every scan — this repository reported six such contracts
+at once.
+
+A candidate method is excluded when an internal type that implements or extends
+the declaring type declares a member of the same name, and the declaring type
+is used by something other than those `implements`/`extends` edges. Being
+implemented is not evidence that a contract is used, so those edges are
+discounted; when nothing else references the type, the type and its members all
+stay reportable, on the same reasoning the constructor exclusion uses — the type
+is the unit worth deleting.
+
+This is the mirror of `excluded_inherited_methods`, which drops the override on
+the grounds that the ancestor carries the contract. Together they report a
+hierarchy once, through whichever end is genuinely unreachable.
 
 ### Why manifest entry points are excluded
 
