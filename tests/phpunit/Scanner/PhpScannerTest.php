@@ -76,6 +76,53 @@ final class PhpScannerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    /**
+     * A static call, a constant fetch, a `::class` fetch, a static property
+     * fetch, and an `instanceof` all name a class in an expression position.
+     * Only the member was edged before, so a class or enum reached solely
+     * through its static members carried an in-degree of zero and was reported
+     * as an unreferenced-code candidate however heavily it was used.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReferencesTheClassNamedByStaticAccess(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => $root,
+            'files' => ['src/StaticAccess.php'],
+        ]));
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $contributions[0]->edges,
+        );
+
+        // Ids::next(), Ids::PREFIX, Ids::class, and Ids::$counter each name Ids.
+        assertArrayContains(
+            ['references', 'php:method:Fixture\\Consumer::run', 'php:class:Fixture\\Ids'],
+            $edgeTuples,
+        );
+        // The enum is reached only through a case fetch.
+        assertArrayContains(
+            ['references', 'php:method:Fixture\\Consumer::run', 'php:class:Fixture\\Mode'],
+            $edgeTuples,
+        );
+        // The member edge is unchanged — the class edge is added beside it.
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Consumer::run', 'php:method:Fixture\\Ids::next'],
+            $edgeTuples,
+        );
+
+        // `self::class` in Consumer::local() must not make Consumer look used.
+        $selfReferences = array_filter(
+            $edgeTuples,
+            fn(array $tuple): bool => $tuple[0] === 'references'
+                && $tuple[2] === 'php:class:Fixture\\Consumer',
+        );
+        assertSame([], array_values($selfReferences));
+        $client->shutdown();
+    }
+
     #[Group('php-scanner')]
     public function testPhpWorkerReportsParseErrorsWithoutExecutingProjectCode(): void
     {
