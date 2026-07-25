@@ -272,6 +272,85 @@ final class ProjectDiscovererTest extends KnossosTestCase
         assertSame(['packages/web/build.js'], $nodeUnits[0]->metadata['entry_points']);
     }
 
+    /**
+     * A manifest inside a dotted directory — `.github/actions/setup` is the
+     * common one — must anchor to that directory, dot included. Trimming the
+     * leading dot turned `.github/...` into `github/...`, which matches
+     * nothing and silently loses the entry point.
+     */
+    public function testDiscoverKeepsALeadingDotInTheManifestDirectory(): void
+    {
+        mkdir($this->root . '/.github/actions/setup', 0o777, true);
+        file_put_contents($this->root . '/.github/actions/setup/package.json', json_encode([
+            'name' => 'test/action',
+            'main' => 'index.js',
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $nodeUnits = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'node'));
+        $this->assertNotEmpty($nodeUnits);
+        assertSame(['.github/actions/setup/index.js'], $nodeUnits[0]->metadata['entry_points']);
+    }
+
+    /**
+     * `"bin": "./cli.js"` — the single-binary shorthand npm documents first,
+     * and a different shape from the `{name: path}` map above.
+     */
+    public function testDiscoverReadsANodeBinDeclaredAsAPlainString(): void
+    {
+        file_put_contents($this->root . '/package.json', json_encode([
+            'name' => 'test/single-bin',
+            'bin' => './cli.js',
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $nodeUnits = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'node'));
+        $this->assertNotEmpty($nodeUnits);
+        assertSame(['cli.js'], $nodeUnits[0]->metadata['entry_points']);
+    }
+
+    /**
+     * Composer scripts are commonly a list of commands rather than one string
+     * — this repository's own `composer.json` declares `lint` that way, and
+     * every path in it would be missed if only strings were read.
+     */
+    public function testDiscoverReadsEveryLineOfAMultiCommandScript(): void
+    {
+        file_put_contents($this->root . '/composer.json', json_encode([
+            'name' => 'test/multi-command',
+            'scripts' => [
+                'lint' => ['php -l tools/first.php', 'php -l tools/second.php'],
+            ],
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $composerUnits = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'composer'));
+        $this->assertNotEmpty($composerUnits);
+        assertSame(['tools/first.php', 'tools/second.php'], $composerUnits[0]->metadata['entry_points']);
+    }
+
+    /** A manifest with no scripts at all yields the declared paths and nothing else. */
+    public function testDiscoverHandlesAManifestWithoutScripts(): void
+    {
+        file_put_contents($this->root . '/package.json', json_encode([
+            'name' => 'test/no-scripts',
+            'main' => 'src/index.js',
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $nodeUnits = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'node'));
+        $this->assertNotEmpty($nodeUnits);
+        assertSame(['src/index.js'], $nodeUnits[0]->metadata['entry_points']);
+    }
+
     public function testDiscoverReadsComposerEntryPointsFromBinAndScripts(): void
     {
         file_put_contents($this->root . '/composer.json', json_encode([

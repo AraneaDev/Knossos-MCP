@@ -270,7 +270,12 @@ final readonly class ProjectDiscoverer
      */
     private static function manifestEntryPoints(array $manifest, string $configPath, array $fields): array
     {
-        $directory = trim(dirname($configPath), '.' . DIRECTORY_SEPARATOR . '/');
+        // `dirname()` answers '.' for a manifest at the root. Only that exact
+        // answer means "no directory" — trimming dots off the string instead
+        // turned `.github/actions/setup` into `github/actions/setup`, a path
+        // that matches no emitted node, so the entry point was lost silently.
+        $directory = dirname($configPath);
+        $directory = in_array($directory, ['.', '', DIRECTORY_SEPARATOR, '/'], true) ? '' : $directory;
         $candidates = [];
         foreach ($fields as $field) {
             $value = $manifest[$field] ?? null;
