@@ -338,6 +338,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
         $excludedInherited = 0;
+        $idsByCanonicalName = [];
+        foreach ($nodes as $nodeId => $nodeRow) {
+            $idsByCanonicalName[(string) $nodeRow['canonical_name']] = $nodeId;
+        }
+        $excludedConstructors = 0;
         $suppressions = $this->deadCodeSuppressions($projectId);
         $suppressedCount = 0;
         $annotationsByName = $this->componentAnnotations($projectId);
@@ -355,6 +360,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $context = $inheritance[$id] ?? ['inherited' => false, 'external_ancestor' => null];
             if ($context['inherited']) {
                 ++$excludedInherited;
+                continue;
+            }
+            if ($this->isConstructorOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)) {
+                ++$excludedConstructors;
                 continue;
             }
             $dynamicRisk = $candidate['row']['origin'] !== 'ast' || $this->hasFrameworkRole($candidate['roles']);
@@ -422,6 +431,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excludedInherited,
+                    'excluded_constructors' => $excludedConstructors,
                     'suppressed_candidates' => $suppressedCount,
                     'annotated_false_positives' => $annotatedFalsePositives,
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
@@ -881,6 +891,50 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return false;
     }
+    /**
+     * Constructor names that are reached by instantiating the declaring type
+     * rather than by naming the member.
+     */
+    private const CONSTRUCTOR_MEMBER_NAMES = ['__construct', 'constructor', '__init__'];
+
+    /**
+     * True when the candidate is a constructor whose declaring type IS
+     * referenced somewhere.
+     *
+     * `new Foo(...)` is recorded as a `constructs` edge to the class `Foo`, not
+     * to `Foo::__construct`, so a constructor's in-degree is 0 for every class
+     * in the graph — including heavily used ones. Reporting those as
+     * unreferenced code drowned the real signal: on a scan of a 109-file
+     * TypeScript project, five of the thirteen surviving candidates were
+     * constructors of classes the same graph showed being instantiated.
+     *
+     * The declaring type having ANY inbound reference is enough. A constructor
+     * of a type that is itself unreferenced stays a candidate — that type (and
+     * with it the constructor) really may be dead, and it is reported through
+     * the type, which is the more useful unit to delete.
+     *
+     * @param array<string, mixed>  $node
+     * @param array<string, string> $idsByCanonicalName
+     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
+     */
+    private function isConstructorOfReferencedType(array $node, array $idsByCanonicalName, array $metrics): bool
+    {
+        if ($node['kind'] !== 'method') {
+            return false;
+        }
+        if (!in_array((string) $node['display_name'], self::CONSTRUCTOR_MEMBER_NAMES, true)) {
+            return false;
+        }
+        $canonical = (string) $node['canonical_name'];
+        $separator = strrpos($canonical, '::');
+        if ($separator === false || $separator === 0) {
+            return false;
+        }
+        $ownerId = $idsByCanonicalName[substr($canonical, 0, $separator)] ?? null;
+
+        return $ownerId !== null && ($metrics[$ownerId]['in_degree'] ?? 0) > 0;
+    }
+
     /** @param array<string, mixed> $node @param list<array<string, mixed>> $roles */
     private function isDeadCodeCandidate(array $node, array $roles): bool
     {

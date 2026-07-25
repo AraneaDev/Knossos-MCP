@@ -115,6 +115,46 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testDeadCodeExcludesConstructorsOfTypesThatAreReferenced(): void
+    {
+        // `new App\Invoice(...)` is recorded as a `constructs` edge to the CLASS,
+        // never to `App\Invoice::__construct`, so every constructor in the graph
+        // has in-degree 0. Reporting them buried the real candidates: on a scan
+        // of a mid-sized TypeScript project five of thirteen surviving
+        // candidates were constructors of demonstrably instantiated classes.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $invoice = StableId::symbol($ids['project'], 'php', 'class', 'App\\Invoice');
+        $invoiceCtor = StableId::symbol($ids['project'], 'php', 'method', 'App\\Invoice::__construct');
+        $orphan = StableId::symbol($ids['project'], 'php', 'class', 'App\\Orphan');
+        $orphanCtor = StableId::symbol($ids['project'], 'php', 'method', 'App\\Orphan::__construct');
+        foreach ([
+            [$invoice, 'class', 'App\\Invoice', 'Invoice'],
+            [$invoiceCtor, 'method', 'App\\Invoice::__construct', '__construct'],
+            [$orphan, 'class', 'App\\Orphan', 'Orphan'],
+            [$orphanCtor, 'method', 'App\\Orphan::__construct', '__construct'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 1, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $invoice, $invoiceCtor, 'k1'), $ids['project'], 'contains', $invoice, $invoiceCtor, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $orphan, $orphanCtor, 'k2'), $ids['project'], 'contains', $orphan, $orphanCtor, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        // Only App\Invoice is ever instantiated.
+        $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $ids['checkout'], $invoice, 'k3'), $ids['project'], 'constructs', $ids['checkout'], $invoice, $file, 7, 7, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('App\\Invoice::__construct', $names, true));
+        assertSame(1, $data['bounds']['excluded_constructors']);
+        // A constructor of a type nothing references stays reportable — and so
+        // does the unreferenced type itself, which is the unit worth deleting.
+        assertArrayContains('App\\Orphan::__construct', $names);
+        assertArrayContains('App\\Orphan', $names);
+    }
+
+    #[Group('query')]
     public function testDeadCodeSuppressionsFromProjectConfigAreHonored(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
