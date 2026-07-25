@@ -845,6 +845,148 @@ final class GraphReconcilerTest extends TestCase
         return (new GraphReconciler($this->repo))->reconcile($request);
     }
 
+    // ----- resolveEdges: trait member resolution -----
+
+    /**
+     * A trait's methods become members of every using class, but the scanner
+     * sees `$this->log()` inside `App\Invoice` and can only emit
+     * `php:method:App\Invoice::log` — the declaration lives on the trait. The
+     * exact lookup misses, so a phantom `external_method` twin is fabricated
+     * and the real trait method keeps an in-degree of zero. This repository's
+     * own graph carried such twins for both of its traits; a Laravel codebase,
+     * where `HasFactory`/`Notifiable`/`SoftDeletes` are everywhere, carries one
+     * per trait-method call site.
+     */
+    public function testResolveEdgesResolvesAMemberCallThroughAUsedTrait(): void
+    {
+        $result = $this->reconcileTraitMemberCall();
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    /** The call must land on the trait declaration's own stable id. */
+    public function testTraitMemberCallTargetsTheTraitDeclarationStableId(): void
+    {
+        $this->reconcileTraitMemberCall();
+
+        $declaration = collectMatching($this->repo->nodes, fn($n) => $n[3] === 'method');
+        $this->assertCount(1, $declaration);
+        $callEdges = collectMatching($this->repo->edges, fn($e) => $e[2] === 'calls');
+        $this->assertCount(1, $callEdges);
+        assertSame($declaration[0][0], $callEdges[0][4]);
+    }
+
+    /** Traits compose, so the search follows a trait's own `use` statements. */
+    public function testTraitMemberResolutionFollowsNestedTraits(): void
+    {
+        $result = $this->reconcileTraitMemberCall(nested: true);
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    /**
+     * A member no used trait declares stays external: the fallback resolves
+     * real trait members, it does not make every missed member call disappear.
+     */
+    public function testTraitMemberResolutionLeavesMembersNoTraitDeclaresExternal(): void
+    {
+        $result = $this->reconcileTraitMemberCall(member: 'somethingElse');
+
+        assertSame(1, $result->unresolvedNodes);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        $this->assertCount(1, $external);
+        assertSame('external_method', $external[0][3]);
+    }
+
+    /**
+     * A trait `use` cycle is not expressible in PHP, but a malformed or partial
+     * contribution can still describe one; resolution must terminate.
+     */
+    public function testTraitMemberResolutionTerminatesOnACyclicTraitGraph(): void
+    {
+        $class = $this->minimalNode('php:class:App\\Invoice', 'App\\Invoice');
+        $traitA = $this->traitNode('App\\Alpha');
+        $traitB = $this->traitNode('App\\Beta');
+        $edges = [
+            $this->edge('uses_trait', 'php:class:App\\Invoice', 'php:trait:App\\Alpha'),
+            $this->edge('uses_trait', 'php:trait:App\\Alpha', 'php:trait:App\\Beta'),
+            $this->edge('uses_trait', 'php:trait:App\\Beta', 'php:trait:App\\Alpha'),
+            $this->edge('calls', 'php:class:App\\Invoice', 'php:method:App\\Invoice::log'),
+        ];
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$class, $traitA, $traitB], $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(1, $result->unresolvedNodes);
+    }
+
+    private function reconcileTraitMemberCall(
+        bool $nested = false,
+        string $member = 'log',
+    ): ReconciliationResult {
+        $declaringTrait = $nested ? 'App\\WritesLines' : 'App\\LogsPayments';
+        $class = $this->minimalNode('php:class:App\\Invoice', 'App\\Invoice');
+        $nodes = [$class, $this->traitNode('App\\LogsPayments')];
+        $edges = [$this->edge('uses_trait', 'php:class:App\\Invoice', 'php:trait:App\\LogsPayments')];
+        if ($nested) {
+            $nodes[] = $this->traitNode('App\\WritesLines');
+            $edges[] = $this->edge('uses_trait', 'php:trait:App\\LogsPayments', 'php:trait:App\\WritesLines');
+        }
+        $nodes[] = new NodeFact(
+            localId: 'php:method:' . $declaringTrait . '::log',
+            kind: 'method',
+            canonicalName: $declaringTrait . '::log',
+            displayName: 'log',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 7, 9),
+        );
+        // What the scanner emits for `$this->log()` inside App\Invoice.
+        $edges[] = $this->edge('calls', 'php:class:App\\Invoice', 'php:method:App\\Invoice::' . $member);
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        return (new GraphReconciler($this->repo))->reconcile($request);
+    }
+
+    private function traitNode(string $canonical): NodeFact
+    {
+        return new NodeFact(
+            localId: 'php:trait:' . $canonical,
+            kind: 'trait',
+            canonicalName: $canonical,
+            displayName: $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 5),
+        );
+    }
+
+    private function edge(string $kind, string $source, string $target): EdgeFact
+    {
+        return new EdgeFact(
+            kind: $kind,
+            sourceReference: $source,
+            targetReference: $target,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 3, 3),
+        );
+    }
+
     // ----- resolveEdges: external nodes -----
 
     public function testResolveEdgesCreatesExternalNodeForUnresolvedTarget(): void

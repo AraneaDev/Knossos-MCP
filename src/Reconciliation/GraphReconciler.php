@@ -32,6 +32,18 @@ final readonly class GraphReconciler
      */
     private const TYPE_KINDS = ['class', 'interface', 'trait', 'enum'];
 
+    /**
+     * Kinds that name a member of a type, written `<type>::<member>`, and so
+     * may be satisfied by a trait the type uses rather than by the type itself.
+     */
+    private const MEMBER_KINDS = ['method', 'property'];
+
+    /**
+     * Guard against a cyclic `uses_trait` graph. PHP cannot express one, but a
+     * partial or malformed contribution can, and resolution must terminate.
+     */
+    private const MAX_TRAIT_DEPTH = 20;
+
     public function __construct(private GraphRepository $repository) {}
 
     public function reconcile(FullScanRequest $request): ReconciliationResult
@@ -288,6 +300,7 @@ final readonly class GraphReconciler
     {
         $external = [];
         $edges = [];
+        $traitUses = $this->traitUses($contributions);
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -299,7 +312,8 @@ final readonly class GraphReconciler
                 }
 
                 $targetId = $nodeMap[$edge->targetReference]
-                    ?? $this->aliasedTypeTarget($edge->targetReference, $nodeMap);
+                    ?? $this->aliasedTypeTarget($edge->targetReference, $nodeMap)
+                    ?? $this->traitMemberTarget($edge->targetReference, $nodeMap, $traitUses);
                 if ($targetId === null) {
                     [$targetId, $externalNode] = $this->externalNode(
                         $projectId,
@@ -390,6 +404,103 @@ final readonly class GraphReconciler
             if ($candidate !== null) {
                 return $candidate;
             }
+        }
+
+        return null;
+    }
+
+    /**
+     * Index the `uses_trait` edges of this scan as type reference => the trait
+     * references it uses, so a member lookup can walk the composition.
+     *
+     * @param list<ScanContribution> $contributions
+     * @return array<string, list<string>>
+     */
+    private function traitUses(array $contributions): array
+    {
+        $uses = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'uses_trait') {
+                    $uses[$edge->sourceReference][] = $edge->targetReference;
+                }
+            }
+        }
+
+        return $uses;
+    }
+
+    /**
+     * Resolve a member reference the declaring type does not itself declare to
+     * the trait that does.
+     *
+     * A scanner reads one file at a time: seeing `$this->log()` inside
+     * `App\Invoice` it can only emit `php:method:App\Invoice::log`, even when
+     * `log` is declared by a trait `App\Invoice` uses. Resolution is by exact
+     * reference string, so without this the lookup misses the declaration and a
+     * phantom `external_method` twin is fabricated beside it — leaving every
+     * trait method with an in-degree of zero however heavily it is called.
+     *
+     * The search follows nested `use` statements, since traits compose, and is
+     * depth-bounded so a cyclic contribution cannot hang the reconcile. Returns
+     * null when the reference is not a member, names no known type, or names a
+     * member no used trait declares — all of which stay external.
+     *
+     * @param array<string, string> $nodeMap
+     * @param array<string, list<string>> $traitUses
+     */
+    private function traitMemberTarget(string $reference, array $nodeMap, array $traitUses): ?string
+    {
+        if ($traitUses === []) {
+            return null;
+        }
+        $parts = explode(':', $reference, 3);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        [$language, $kind, $canonical] = $parts;
+        if (!in_array($kind, self::MEMBER_KINDS, true)) {
+            return null;
+        }
+        $separator = strrpos($canonical, '::');
+        if ($separator === false) {
+            return null;
+        }
+        $type = substr($canonical, 0, $separator);
+        $member = substr($canonical, $separator + 2);
+        if ($type === '' || $member === '') {
+            return null;
+        }
+
+        // The reference carries the member's kind, not the declaring type's, so
+        // every type kind that could carry a `use` statement is tried.
+        $frontier = [];
+        foreach (self::TYPE_KINDS as $typeKind) {
+            foreach ($traitUses[$language . ':' . $typeKind . ':' . $type] ?? [] as $usedTrait) {
+                $frontier[] = $usedTrait;
+            }
+        }
+        $seen = [];
+        for ($depth = 0; $depth < self::MAX_TRAIT_DEPTH && $frontier !== []; $depth++) {
+            $next = [];
+            foreach ($frontier as $traitReference) {
+                if (isset($seen[$traitReference])) {
+                    continue;
+                }
+                $seen[$traitReference] = true;
+                $traitParts = explode(':', $traitReference, 3);
+                if (count($traitParts) !== 3 || $traitParts[0] !== $language) {
+                    continue;
+                }
+                $candidate = $nodeMap[$language . ':' . $kind . ':' . $traitParts[2] . '::' . $member] ?? null;
+                if ($candidate !== null) {
+                    return $candidate;
+                }
+                foreach ($traitUses[$traitReference] ?? [] as $nestedTrait) {
+                    $next[] = $nestedTrait;
+                }
+            }
+            $frontier = $next;
         }
 
         return null;
