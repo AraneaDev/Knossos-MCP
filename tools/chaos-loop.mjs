@@ -168,7 +168,17 @@ const client = new Client(
 try {
   await client.connect(transport);
   const t0 = Date.now();
-  const result = await client.callTool({ name: toolName, arguments: args });
+  // The MCP SDK enforces its own per-request timeout (60s by default) on top of
+  // the tool's `timeoutMs`. Without raising it here, any audit running longer
+  // than a minute died as "MCP error -32001: Request timed out" however large a
+  // --timeoutMs was passed — the mutation run was still going when the client
+  // gave up. The margin covers sandbox provisioning, which happens before the
+  // engine's own mutation budget starts.
+  const requestTimeout = (args.timeoutMs ?? 600000) + 120000;
+  const result = await client.callTool({ name: toolName, arguments: args }, undefined, {
+    timeout: requestTimeout,
+    maxTotalTimeout: requestTimeout,
+  });
   const t1 = Date.now();
   process.stdout.write(
     JSON.stringify(
