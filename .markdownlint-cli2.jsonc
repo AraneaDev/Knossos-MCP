@@ -1,4 +1,12 @@
 {
+    // Skip what git skips. `**/*.md` otherwise sweeps in gitignored local
+    // scratch — .superpowers/ and docs/superpowers/ agent session artifacts —
+    // which never reach CI, so the gate failed on a developer's machine over
+    // files that are not part of the repository.
+    "gitignore": true,
+    // Written by release-please; reformatting it is reverted on the next
+    // release. Ignored for the same reason it is in .prettierignore.
+    "ignores": ["CHANGELOG.md"],
     "config": {
         "MD013": false,
         "MD024": { "siblings_only": true },
