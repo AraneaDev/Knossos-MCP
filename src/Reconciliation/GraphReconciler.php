@@ -34,15 +34,22 @@ final readonly class GraphReconciler
 
     /**
      * Kinds that name a member of a type, written `<type>::<member>`, and so
-     * may be satisfied by a trait the type uses rather than by the type itself.
+     * may be satisfied by a trait the type uses or a type it inherits from
+     * rather than by the type itself.
      */
     private const MEMBER_KINDS = ['method', 'property'];
 
     /**
-     * Guard against a cyclic `uses_trait` graph. PHP cannot express one, but a
+     * Edge kinds that put another type's members in scope on the source type,
+     * in PHP's own resolution order: a trait method shadows an inherited one.
+     */
+    private const INHERITANCE_KINDS = ['uses_trait', 'extends', 'implements'];
+
+    /**
+     * Guard against a cyclic inheritance graph. PHP cannot express one, but a
      * partial or malformed contribution can, and resolution must terminate.
      */
-    private const MAX_TRAIT_DEPTH = 20;
+    private const MAX_INHERITANCE_DEPTH = 20;
 
     public function __construct(private GraphRepository $repository) {}
 
@@ -300,7 +307,7 @@ final readonly class GraphReconciler
     {
         $external = [];
         $edges = [];
-        $traitUses = $this->traitUses($contributions);
+        $inheritanceSources = $this->inheritanceSources($contributions);
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -313,7 +320,7 @@ final readonly class GraphReconciler
 
                 $targetId = $nodeMap[$edge->targetReference]
                     ?? $this->aliasedTypeTarget($edge->targetReference, $nodeMap)
-                    ?? $this->traitMemberTarget($edge->targetReference, $nodeMap, $traitUses);
+                    ?? $this->inheritedMemberTarget($edge->targetReference, $nodeMap, $inheritanceSources);
                 if ($targetId === null) {
                     [$targetId, $externalNode] = $this->externalNode(
                         $projectId,
@@ -410,48 +417,63 @@ final readonly class GraphReconciler
     }
 
     /**
-     * Index the `uses_trait` edges of this scan as type reference => the trait
-     * references it uses, so a member lookup can walk the composition.
+     * Index the `uses_trait`, `extends`, and `implements` edges of this scan as
+     * type reference => the type references whose members it inherits, so a
+     * member lookup can walk the composition.
+     *
+     * Each kind is collected separately and merged in INHERITANCE_KINDS order,
+     * so the breadth-first search visits a type's traits before its parents —
+     * PHP's own precedence — however the scanner happened to order its edges.
      *
      * @param list<ScanContribution> $contributions
      * @return array<string, list<string>>
      */
-    private function traitUses(array $contributions): array
+    private function inheritanceSources(array $contributions): array
     {
-        $uses = [];
+        $byKind = array_fill_keys(self::INHERITANCE_KINDS, []);
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
-                if ($edge->kind === 'uses_trait') {
-                    $uses[$edge->sourceReference][] = $edge->targetReference;
+                if (isset($byKind[$edge->kind])) {
+                    $byKind[$edge->kind][$edge->sourceReference][] = $edge->targetReference;
                 }
             }
         }
 
-        return $uses;
+        $sources = [];
+        foreach (self::INHERITANCE_KINDS as $kind) {
+            foreach ($byKind[$kind] as $source => $targets) {
+                $sources[$source] = [...($sources[$source] ?? []), ...$targets];
+            }
+        }
+
+        return $sources;
     }
 
     /**
-     * Resolve a member reference the declaring type does not itself declare to
-     * the trait that does.
+     * Resolve a member reference the named type does not itself declare to the
+     * trait, parent class, or interface that does.
      *
      * A scanner reads one file at a time: seeing `$this->log()` inside
      * `App\Invoice` it can only emit `php:method:App\Invoice::log`, even when
-     * `log` is declared by a trait `App\Invoice` uses. Resolution is by exact
-     * reference string, so without this the lookup misses the declaration and a
-     * phantom `external_method` twin is fabricated beside it — leaving every
-     * trait method with an in-degree of zero however heavily it is called.
+     * `log` is declared by a trait `App\Invoice` uses or by the class it
+     * extends. Resolution is by exact reference string, so without this the
+     * lookup misses the declaration and a phantom `external_method` twin is
+     * fabricated beside it — leaving every trait method, every inherited
+     * helper, and every interface method with an in-degree of zero however
+     * heavily it is called.
      *
-     * The search follows nested `use` statements, since traits compose, and is
-     * depth-bounded so a cyclic contribution cannot hang the reconcile. Returns
-     * null when the reference is not a member, names no known type, or names a
-     * member no used trait declares — all of which stay external.
+     * The search follows nested `use` statements and the full inheritance
+     * chain, since both compose, and is depth-bounded so a cyclic contribution
+     * cannot hang the reconcile. Returns null when the reference is not a
+     * member, names no known type, or names a member nothing in scope declares
+     * — all of which stay external.
      *
      * @param array<string, string> $nodeMap
-     * @param array<string, list<string>> $traitUses
+     * @param array<string, list<string>> $inheritanceSources
      */
-    private function traitMemberTarget(string $reference, array $nodeMap, array $traitUses): ?string
+    private function inheritedMemberTarget(string $reference, array $nodeMap, array $inheritanceSources): ?string
     {
-        if ($traitUses === []) {
+        if ($inheritanceSources === []) {
             return null;
         }
         $parts = explode(':', $reference, 3);
@@ -473,31 +495,31 @@ final readonly class GraphReconciler
         }
 
         // The reference carries the member's kind, not the declaring type's, so
-        // every type kind that could carry a `use` statement is tried.
+        // every type kind that could inherit members is tried.
         $frontier = [];
         foreach (self::TYPE_KINDS as $typeKind) {
-            foreach ($traitUses[$language . ':' . $typeKind . ':' . $type] ?? [] as $usedTrait) {
-                $frontier[] = $usedTrait;
+            foreach ($inheritanceSources[$language . ':' . $typeKind . ':' . $type] ?? [] as $source) {
+                $frontier[] = $source;
             }
         }
         $seen = [];
-        for ($depth = 0; $depth < self::MAX_TRAIT_DEPTH && $frontier !== []; $depth++) {
+        for ($depth = 0; $depth < self::MAX_INHERITANCE_DEPTH && $frontier !== []; $depth++) {
             $next = [];
-            foreach ($frontier as $traitReference) {
-                if (isset($seen[$traitReference])) {
+            foreach ($frontier as $sourceReference) {
+                if (isset($seen[$sourceReference])) {
                     continue;
                 }
-                $seen[$traitReference] = true;
-                $traitParts = explode(':', $traitReference, 3);
-                if (count($traitParts) !== 3 || $traitParts[0] !== $language) {
+                $seen[$sourceReference] = true;
+                $sourceParts = explode(':', $sourceReference, 3);
+                if (count($sourceParts) !== 3 || $sourceParts[0] !== $language) {
                     continue;
                 }
-                $candidate = $nodeMap[$language . ':' . $kind . ':' . $traitParts[2] . '::' . $member] ?? null;
+                $candidate = $nodeMap[$language . ':' . $kind . ':' . $sourceParts[2] . '::' . $member] ?? null;
                 if ($candidate !== null) {
                     return $candidate;
                 }
-                foreach ($traitUses[$traitReference] ?? [] as $nestedTrait) {
-                    $next[] = $nestedTrait;
+                foreach ($inheritanceSources[$sourceReference] ?? [] as $nested) {
+                    $next[] = $nested;
                 }
             }
             $frontier = $next;
