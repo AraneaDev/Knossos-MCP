@@ -168,4 +168,31 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(false, in_array('App\\Legacy\\Exporter', $names, true));
         assertSame(1, $data['bounds']['suppressed_candidates']);
     }
+
+    #[Group('query')]
+    public function testDeadCodeIgnoresInDegreeMeasuredOnATruncatedEdgeSlice(): void
+    {
+        // In-degree is accumulated over the edge slice the scan actually read.
+        // When that slice is cut short (edge/node/time limit) the dropped edges
+        // make referenced symbols look unreferenced: a self-scan of this
+        // repository reported five live PHP-scanner methods as dead purely
+        // because the graph's 25k edges overran the 20k default.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        $reporter = StableId::symbol($ids['project'], 'php', 'class', 'App\\Reporter');
+        $repository->saveNode($reporter, $ids['project'], 'php', 'class', 'App\\Reporter', 'Reporter', null, $ids['file'], 60, 70, 'ast', 'certain', [], $owner, $ids['scan']);
+        // Two inbound edges, so a one-edge budget must drop exactly one of them.
+        $repository->saveEdge(StableId::edge($ids['project'], 'calls', $reporter, $ids['checkout'], 't1'), $ids['project'], 'calls', $reporter, $ids['checkout'], $ids['file'], 61, 61, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], maxEdges: 1);
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $result->data['dead_code_candidates']);
+
+        assertSame(true, in_array('edge_limit', $result->data['bounds']['truncation_reasons'], true));
+        // Whichever edge survived the cut, neither target is unreferenced.
+        assertSame(false, in_array('App\\Checkout', $names, true));
+        assertSame(false, in_array('App\\InvoiceService', $names, true));
+        // The genuinely unreferenced class is still reported.
+        assertArrayContains('App\\Reporter', $names);
+    }
 }

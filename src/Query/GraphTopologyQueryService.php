@@ -330,6 +330,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
             }
         }
+        // The in-degree above only counts edges from the slice actually read, so
+        // a zero is provisional: node/edge/time limits drop edges, and a dropped
+        // inbound edge makes a referenced symbol look unreferenced. Re-check the
+        // survivors against the whole edge table before calling anything dead.
+        if ($provisional !== [] && array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== []) {
+            foreach ($this->referencedNodes($projectId, array_keys($provisional), $edgeKinds, $confidenceRank[$minConfidence]) as $referencedId) {
+                unset($provisional[$referencedId]);
+            }
+        }
         $methodNames = [];
         foreach ($provisional as $id => $candidate) {
             if ($candidate['row']['kind'] === 'method') {
@@ -1098,6 +1107,35 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /** @return list<string> */
+    /**
+     * Which of the given nodes have at least one inbound edge in the full edge
+     * table, unconstrained by the scan's node/edge budget. Used to clear
+     * dead-code candidates whose in-degree was only zero because the slice the
+     * health scan read stopped short of the edges pointing at them.
+     *
+     * @param list<string> $nodeIds
+     * @param list<string> $edgeKinds
+     * @return list<string>
+     */
+    private function referencedNodes(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank): array
+    {
+        $referenced = [];
+        foreach (array_chunk($nodeIds, 500) as $chunk) {
+            $targets = implode(',', array_fill(0, count($chunk), '?'));
+            $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
+            $statement = $this->pdo->prepare(
+                'SELECT DISTINCT target_id FROM edges WHERE project_id = ? ' .
+                sprintf('AND kind IN (%s) ', $kinds) .
+                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+                sprintf('AND target_id IN (%s)', $targets),
+            );
+            $statement->execute([$projectId, ...$edgeKinds, $minConfidenceRank, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $referenced[] = (string) $row['target_id'];
+            }
+        }
+        return $referenced;
+    }
     private function deadCodeSuppressions(string $projectId): array
     {
         $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
