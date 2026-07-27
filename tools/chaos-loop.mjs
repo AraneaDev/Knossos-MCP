@@ -86,10 +86,18 @@ if (!cmd || !file) {
   process.exit(2);
 }
 
+// Node fires a timer whose delay exceeds the signed 32-bit millisecond range
+// after ~1ms instead of the requested delay, so a --timeoutMs past this bound
+// would make the request below give up immediately -- the opposite of what the
+// flag asks for. The margin is what the client adds on top before arming the
+// SDK's request timer.
+const REQUEST_TIMEOUT_MARGIN_MS = 120000;
+const MAX_TIMEOUT_MS = 2147483647 - REQUEST_TIMEOUT_MARGIN_MS;
+
 // Numeric flag helper: rejects values that aren't a number and aren't followed
 // by another flag (so `--timeoutMs --maxSurvivors 50` doesn't capture
 // "--maxSurvivors" as the timeout).
-function numericFlag(name, fallback) {
+function numericFlag(name, fallback, max = Number.MAX_SAFE_INTEGER) {
   const idx = rest.indexOf(`--${name}`);
   if (idx < 0 || idx + 1 >= rest.length) return fallback;
   const next = rest[idx + 1];
@@ -97,6 +105,10 @@ function numericFlag(name, fallback) {
   const n = Number(next);
   if (!Number.isFinite(n)) {
     console.error(`error: --${name} expects a number, got ${JSON.stringify(next)}`);
+    process.exit(2);
+  }
+  if (n > max) {
+    console.error(`error: --${name} must not exceed ${max}, got ${n}`);
     process.exit(2);
   }
   return n;
@@ -111,7 +123,7 @@ if (cmd === "estimate") {
   const hasMaxSurvivors = rest.includes("--maxSurvivors");
   args = {
     filePath: file,
-    timeoutMs: numericFlag("timeoutMs", 600000),
+    timeoutMs: numericFlag("timeoutMs", 600000, MAX_TIMEOUT_MS),
     outputFormat: "json",
     ...(hasMaxSurvivors ? { maxSurvivors: numericFlag("maxSurvivors", 20) } : {}),
   };

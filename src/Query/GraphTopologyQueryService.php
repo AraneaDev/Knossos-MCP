@@ -1220,7 +1220,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return $result;
     }
 
-    /** @return list<string> */
     /**
      * Which of the given nodes have at least one inbound edge in the full edge
      * table, unconstrained by the scan's node/edge budget. Used to clear

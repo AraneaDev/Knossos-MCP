@@ -416,9 +416,30 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     public function testErrorRendererDefaultsToStderrWhenNoStreamIsInjected(): void
     {
         // The default-argument path must stay wired to STDERR: a mutant that
-        // dropped the default would otherwise go unnoticed by the tests above,
-        // which all inject a stream. Asserted through diagnosticCode() +
-        // construction rather than by writing to the real STDERR.
+        // dropped the `?? STDERR` fallback would otherwise go unnoticed by the
+        // tests above, which all inject a stream. The destination is read back
+        // by reflection rather than by calling render(), because a real write to
+        // STDERR stops the whole Infection run on its first byte (see the
+        // constructor docblock on CliErrorRenderer).
+        $stream = new \ReflectionProperty(CliErrorRenderer::class, 'stream');
+
+        assertSame(STDERR, $stream->getValue(new CliErrorRenderer()));
+        assertSame(STDERR, $stream->getValue(new CliErrorRenderer(null)));
+    }
+
+    public function testErrorRendererKeepsAnInjectedStreamOverTheStderrDefault(): void
+    {
+        $injected = fopen('php://memory', 'w+');
+        assertSame(true, is_resource($injected));
+
+        $stream = new \ReflectionProperty(CliErrorRenderer::class, 'stream');
+
+        assertSame($injected, $stream->getValue(new CliErrorRenderer($injected)));
+        fclose($injected);
+    }
+
+    public function testErrorRendererDiagnosticCodeClassifiesUnmatchedThrowables(): void
+    {
         assertSame('KNOSSOS_RUNTIME_ERROR', CliErrorRenderer::diagnosticCode(new RuntimeException('r')));
         assertSame(
             'KNOSSOS_INVALID_ARGUMENT',
