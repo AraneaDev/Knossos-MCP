@@ -1,0 +1,37 @@
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-title:
+    runs-on: ubuntu-latest
+    steps:
+      # A squash merge of a multi-commit branch takes the PR title as the commit
+      # subject, so the title -- not the branch's own commits -- is what
+      # release-please parses on main. PR #21 merged as "Fix/mutation testing and
+      # dead code signal", which release-please could not classify, and the
+      # release it should have cut was silently skipped.
+      #
+      # The title is read from the event payload rather than a ${{ }} expression:
+      # interpolating it into the script would let a PR title inject shell
+      # commands into this runner.
+      - name: Check the title is a Conventional Commit
+        run: |
+          title=$(jq -r '.pull_request.title' "$GITHUB_EVENT_PATH")
+          pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._/-]+\))?!?: .+'
+          if printf '%s' "$title" | grep -qE "$pattern"; then
+            printf 'Title is a Conventional Commit: %s\n' "$title"
+            exit 0
+          fi
+          printf 'Pull request title is not a Conventional Commit:\n\n  %s\n\n' "$title" >&2
+          printf 'Use "<type>(<optional scope>): <description>", for example:\n' >&2
+          printf '  fix(query): exclude constructors from dead-code candidates\n' >&2
+          printf '  feat(scanner): emit references for callables used as values\n\n' >&2
+          printf 'Types: build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test.\n' >&2
+          printf 'Only feat and fix (or a "!" / BREAKING CHANGE) cut a release. See CONTRIBUTING.md.\n' >&2
+          exit 1

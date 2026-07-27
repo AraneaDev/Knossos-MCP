@@ -96,6 +96,14 @@ release process, not just documentation:
 
 A scope is encouraged — `fix(query): …`, `feat(scanner): …`.
 
+The **pull request title** follows the same rules, and on a branch with more
+than one commit it matters more than the commits do: a squash merge uses the PR
+title as the subject of the single commit that lands on `main`, and that subject
+is what release-please reads. A title like `Fix/my branch name` classifies as
+nothing, so the release it should have cut is skipped silently — the individual
+commit subjects survive only as body text, which release-please does not parse.
+The `PR Title` workflow rejects a non-conforming title before it can merge.
+
 ## Releases
 
 Releases are automated. Merging to `main` opens or updates a Release PR that
