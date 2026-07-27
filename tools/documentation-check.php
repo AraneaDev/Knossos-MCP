@@ -61,7 +61,7 @@ if ($failures !== []) {
 printf("Documentation links passed: %d files, %d external%s.\n", count($paths), count($external), $checkExternal ? ' checked' : ' syntax-checked');
 
 /**
- * Every committed Markdown file under docs/, excluding local-only working notes.
+ * Every Markdown file under docs/.
  *
  * @return list<string>
  */
@@ -74,9 +74,6 @@ function documentationFiles(string $directory): array
             continue;
         }
         $path = str_replace('\\', '/', $file->getPathname());
-        if (str_contains($path, '/docs/superpowers/')) {
-            continue;
-        }
         $files[] = $path;
     }
     sort($files, SORT_STRING);

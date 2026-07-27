@@ -76,6 +76,137 @@ final class PhpScannerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    /**
+     * A static call, a constant fetch, a `::class` fetch, a static property
+     * fetch, and an `instanceof` all name a class in an expression position.
+     * Only the member was edged before, so a class or enum reached solely
+     * through its static members carried an in-degree of zero and was reported
+     * as an unreferenced-code candidate however heavily it was used.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReferencesTheClassNamedByStaticAccess(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => $root,
+            'files' => ['src/StaticAccess.php'],
+        ]));
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $contributions[0]->edges,
+        );
+
+        // Ids::next(), Ids::PREFIX, Ids::class, and Ids::$counter each name Ids.
+        assertArrayContains(
+            ['references', 'php:method:Fixture\\Consumer::run', 'php:class:Fixture\\Ids'],
+            $edgeTuples,
+        );
+        // The enum is reached only through a case fetch.
+        assertArrayContains(
+            ['references', 'php:method:Fixture\\Consumer::run', 'php:class:Fixture\\Mode'],
+            $edgeTuples,
+        );
+        // The member edge is unchanged — the class edge is added beside it.
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Consumer::run', 'php:method:Fixture\\Ids::next'],
+            $edgeTuples,
+        );
+
+        // `self::class` in Consumer::local() must not make Consumer look used.
+        $selfReferences = array_filter(
+            $edgeTuples,
+            fn(array $tuple): bool => $tuple[0] === 'references'
+                && $tuple[2] === 'php:class:Fixture\\Consumer',
+        );
+        assertSame([], array_values($selfReferences));
+        $client->shutdown();
+    }
+
+    /**
+     * `(new Foo())->bar()` names its receiver inline. Only variable, property,
+     * and `$this` receivers were resolved before, so a method reached solely
+     * through an immediately-constructed receiver carried no inbound call edge
+     * and was reported as an unreferenced-code candidate.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerResolvesCallsOnAnImmediatelyConstructedReceiver(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => $root,
+            'files' => ['src/ImmediateCall.php'],
+        ]));
+        $edges = $contributions[0]->edges;
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $edges,
+        );
+
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Dispatcher::dispatch', 'php:method:Fixture\\Mailer::send'],
+            $edgeTuples,
+        );
+        // The construction edge is unchanged — the call edge is added beside it.
+        assertArrayContains(
+            ['constructs', 'php:method:Fixture\\Dispatcher::dispatch', 'php:class:Fixture\\Mailer'],
+            $edgeTuples,
+        );
+
+        // The receiver type is unambiguous at the call site, unlike a type
+        // inferred from an earlier `$x = new Y` assignment.
+        $call = array_values(array_filter(
+            $edges,
+            fn(EdgeFact $edge): bool => $edge->kind === 'calls'
+                && $edge->sourceReference === 'php:method:Fixture\\Dispatcher::dispatch'
+                && $edge->targetReference === 'php:method:Fixture\\Mailer::send',
+        ));
+        assertSame(1, count($call));
+        assertSame('certain', $call[0]->confidence->value);
+
+        // The anonymous-class receiver has no name to resolve, so it must emit
+        // no call edge at all rather than one pointing at a made-up target.
+        $anonymous = array_filter(
+            $edgeTuples,
+            fn(array $tuple): bool => $tuple[0] === 'calls'
+                && $tuple[1] === 'php:method:Fixture\\Dispatcher::anonymous',
+        );
+        assertSame([], array_values($anonymous));
+        $client->shutdown();
+    }
+
+    /**
+     * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
+     * produced no call edge at all — on either a variable or a property
+     * receiver — however precisely the receiver was typed.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerResolvesNullsafeCallsThroughDeclaredReceiverTypes(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => $root,
+            'files' => ['src/ImmediateCall.php'],
+        ]));
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $contributions[0]->edges,
+        );
+
+        // `$mailer?->send()` — parameter receiver.
+        // `$this->mailer?->send()` — promoted-property receiver.
+        $calls = array_values(array_filter(
+            $edgeTuples,
+            fn(array $tuple): bool => $tuple[0] === 'calls'
+                && $tuple[1] === 'php:method:Fixture\\Registry::notify'
+                && $tuple[2] === 'php:method:Fixture\\Mailer::send',
+        ));
+        assertSame(2, count($calls));
+        $client->shutdown();
+    }
+
     #[Group('php-scanner')]
     public function testPhpWorkerReportsParseErrorsWithoutExecutingProjectCode(): void
     {

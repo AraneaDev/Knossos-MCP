@@ -9,12 +9,22 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
-use PHPUnit\Framework\Attributes\CoversClass;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * Conventions match the rest of tests/phpunit/: a class-level `#[Group]` and no
+ * coverage-target attribute.
+ *
+ * `#[CoversClass]` is deliberately absent, and must stay absent everywhere under
+ * tests/phpunit/ — see NoCoverageTargetAttributesTest for the enforced rule and
+ * the full rationale. In short: `infection --filter=<file>` narrows the
+ * generated initial-run PHPUnit config's `<source>` to that one file, which
+ * makes every other coverage target invalid; PHPUnit then emits "Class X is not
+ * a valid target for code coverage" and Infection's own `stopOnDefect="true"`
+ * halts the suite, aborting the whole mutation run.
+ */
 #[Group('typescript-framework-role-rule')]
-#[CoversClass(TypeScriptFrameworkRoleRule::class)]
 final class TypeScriptFrameworkRoleRuleTest extends TestCase
 {
     public function testIdReturnsConstant(): void

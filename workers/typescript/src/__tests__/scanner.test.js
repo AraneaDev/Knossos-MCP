@@ -132,7 +132,130 @@ describe("TypeScriptScanner.scan", () => {
             edges.some((e) => e.kind === "calls" && e.target === run.local_id),
         ).toBe(true);
     });
+});
 
+// A `references` edge is what keeps a function that is used as a VALUE —
+// dispatch tables, registries, callbacks — from being read as dead code. The
+// cases below fix both directions: emitted where a use exists, and withheld
+// where the identifier is a declaration or is already covered by a calls edge.
+describe("TypeScriptScanner.scan value references", () => {
+    it("emits a references edge for a function used as a value in a registry array", () => {
+        // Regression guard: functions that are never *called* at their use site —
+        // dispatch tables, validator registries, callbacks — used to produce no
+        // inbound edge at all, so architecture_health reported every one of them
+        // as a probable dead-code candidate. Found by scanning a real project
+        // whose `TOOL_ARG_VALIDATORS` array is exactly this shape.
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false},"include":["src"]}',
+            "src/registry.ts": [
+                "function validateA(): string { return 'a'; }",
+                "function validateB(): string { return 'b'; }",
+                "function unused(): string { return 'u'; }",
+                "export const VALIDATORS = [validateA, validateB];",
+                "export const BY_NAME = { b: validateB };",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/registry.ts"] },
+            (c) => contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const edges = contributions.flatMap((c) => c.edges);
+
+        const idOf = (name) =>
+            nodes.find((n) => n.kind === "function" && n.display_name === name)
+                ?.local_id;
+        const referencesTo = (name) =>
+            edges.filter(
+                (e) => e.kind === "references" && e.target === idOf(name),
+            );
+
+        expect(idOf("validateA")).toBeDefined();
+        // Both the array-literal element and the object-literal value count.
+        expect(referencesTo("validateA").length).toBeGreaterThan(0);
+        expect(referencesTo("validateB").length).toBeGreaterThan(0);
+        // A genuinely unreferenced function still gets no inbound reference, so
+        // the dead-code signal is not blanket-suppressed.
+        expect(referencesTo("unused")).toEqual([]);
+    });
+
+    it("does not emit a value reference for a declaration's own name", () => {
+        // The identifier in `function f()` is the definition, not a use of it;
+        // counting it would make every declared function self-referencing and
+        // permanently non-dead.
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false},"include":["src"]}',
+            "src/lonely.ts": [
+                "function orphan(): number { return 1; }",
+                "export const value = 1;",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/lonely.ts"] }, (c) =>
+            contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const edges = contributions.flatMap((c) => c.edges);
+
+        const orphan = nodes.find(
+            (n) => n.kind === "function" && n.display_name === "orphan",
+        );
+        expect(orphan).toBeDefined();
+        expect(
+            edges.filter(
+                (e) => e.kind === "references" && e.target === orphan.local_id,
+            ),
+        ).toEqual([]);
+    });
+
+    it("does not double-count a called function as a value reference", () => {
+        // The callee position already produces a `calls` edge; adding a
+        // `references` edge for the same identifier would inflate in-degree and
+        // distort hub/hotspot ranking.
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false},"include":["src"]}',
+            "src/direct.ts": [
+                "function helper(): number { return 1; }",
+                "export function caller(): number { return helper(); }",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/direct.ts"] }, (c) =>
+            contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const edges = contributions.flatMap((c) => c.edges);
+
+        const helper = nodes.find(
+            (n) => n.kind === "function" && n.display_name === "helper",
+        );
+        expect(
+            edges.some(
+                (e) => e.kind === "calls" && e.target === helper.local_id,
+            ),
+        ).toBe(true);
+        expect(
+            edges.filter(
+                (e) => e.kind === "references" && e.target === helper.local_id,
+            ),
+        ).toEqual([]);
+    });
+});
+
+describe("TypeScriptScanner.scan program cache", () => {
     it("bounds the retained program cache when a project has many tsconfigs", () => {
         // Regression guard for the OOM fix: one full ts.Program per tsconfig,
         // all retained at once, exhausted the worker heap. The cache is LRU-capped.
@@ -157,5 +280,39 @@ describe("TypeScriptScanner.scan", () => {
         expect(new Set(emitted.map((c) => c.owner_key)).size).toBe(3);
         // Never retains more than the documented bound, however many configs exist.
         expect(scanner.programCache.size).toBeLessThanOrEqual(2);
+    });
+
+    it("frees a cache slot before building the next program", () => {
+        // Retaining the cap and *then* evicting put cap + 1 programs in memory
+        // at the peak, because the new program is constructed while the cache
+        // is still full — the overshoot the cap exists to prevent. A real
+        // 111-file project with three tsconfigs died on it: the worker's
+        // 512 MB heap held two programs and OOMed building the third, so the
+        // scan failed outright while the retained-size assertion above passed.
+        const root = fixture({
+            "package.json": "{}",
+            "a/tsconfig.json": '{"include":["x.ts"]}',
+            "a/x.ts": "export const a = 1;\n",
+            "b/tsconfig.json": '{"include":["y.ts"]}',
+            "b/y.ts": "export const b = 2;\n",
+            "c/tsconfig.json": '{"include":["z.ts"]}',
+            "c/z.ts": "export const c = 3;\n",
+        });
+
+        const scanner = new TypeScriptScanner();
+        // The cache is read immediately before each program is built, so its
+        // size at that moment is the number of programs already resident.
+        const residentAtBuild = [];
+        const cache = scanner.programCache;
+        const realGet = cache.get.bind(cache);
+        cache.get = (key) => {
+            residentAtBuild.push(cache.size);
+            return realGet(key);
+        };
+
+        scanner.scan({ root, files: ["a/x.ts", "b/y.ts", "c/z.ts"] }, () => {});
+
+        expect(residentAtBuild.length).toBeGreaterThanOrEqual(3);
+        expect(Math.max(...residentAtBuild)).toBeLessThanOrEqual(1);
     });
 });

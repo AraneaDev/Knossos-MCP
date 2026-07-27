@@ -16,6 +16,41 @@ use Knossos\Store\StableId;
 
 final readonly class GraphReconciler
 {
+    /**
+     * Kinds a scanner may name interchangeably when a type appears in a type
+     * position (a parameter, a property, a return, a static access target).
+     *
+     * A scanner reads one file at a time: seeing `Payable $x`, it cannot know
+     * whether `Payable` is declared as a class, an interface, a trait, or an
+     * enum elsewhere, so the PHP worker emits every such reference as `class`.
+     * Resolution is by exact reference string, so without this list the lookup
+     * misses the real declaration and a phantom `external_class` twin is
+     * fabricated beside it — leaving every interface and enum in a PHP graph
+     * with an in-degree of zero however heavily it is used.
+     *
+     * Order is fixed so a resolution never depends on scan order.
+     */
+    private const TYPE_KINDS = ['class', 'interface', 'trait', 'enum'];
+
+    /**
+     * Kinds that name a member of a type, written `<type>::<member>`, and so
+     * may be satisfied by a trait the type uses or a type it inherits from
+     * rather than by the type itself.
+     */
+    private const MEMBER_KINDS = ['method', 'property'];
+
+    /**
+     * Edge kinds that put another type's members in scope on the source type,
+     * in PHP's own resolution order: a trait method shadows an inherited one.
+     */
+    private const INHERITANCE_KINDS = ['uses_trait', 'extends', 'implements'];
+
+    /**
+     * Guard against a cyclic inheritance graph. PHP cannot express one, but a
+     * partial or malformed contribution can, and resolution must terminate.
+     */
+    private const MAX_INHERITANCE_DEPTH = 20;
+
     public function __construct(private GraphRepository $repository) {}
 
     public function reconcile(FullScanRequest $request): ReconciliationResult
@@ -272,6 +307,7 @@ final readonly class GraphReconciler
     {
         $external = [];
         $edges = [];
+        $inheritanceSources = $this->inheritanceSources($contributions);
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -282,7 +318,9 @@ final readonly class GraphReconciler
                     ));
                 }
 
-                $targetId = $nodeMap[$edge->targetReference] ?? null;
+                $targetId = $nodeMap[$edge->targetReference]
+                    ?? $this->aliasedTypeTarget($edge->targetReference, $nodeMap)
+                    ?? $this->inheritedMemberTarget($edge->targetReference, $nodeMap, $inheritanceSources);
                 if ($targetId === null) {
                     [$targetId, $externalNode] = $this->externalNode(
                         $projectId,
@@ -343,6 +381,153 @@ final readonly class GraphReconciler
      * @param array<string, string> $fileIds
      * @return array{0: string, 1: array<string, mixed>}
      */
+    /**
+     * Resolve a type reference whose kind segment disagrees with the kind the
+     * declaration was emitted under, by retrying the lookup against the other
+     * {@see self::TYPE_KINDS}. The language segment is never varied: a PHP
+     * `Error` and a TypeScript `Error` are different symbols.
+     *
+     * Returns null when the reference is not in a type position, or names
+     * nothing declared in this graph — both of which stay external.
+     *
+     * @param array<string, string> $nodeMap
+     */
+    private function aliasedTypeTarget(string $reference, array $nodeMap): ?string
+    {
+        $parts = explode(':', $reference, 3);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        [$language, $kind, $canonical] = $parts;
+        if (!in_array($kind, self::TYPE_KINDS, true)) {
+            return null;
+        }
+
+        foreach (self::TYPE_KINDS as $alias) {
+            if ($alias === $kind) {
+                continue;
+            }
+            $candidate = $nodeMap[$language . ':' . $alias . ':' . $canonical] ?? null;
+            if ($candidate !== null) {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Index the `uses_trait`, `extends`, and `implements` edges of this scan as
+     * type reference => the type references whose members it inherits, so a
+     * member lookup can walk the composition.
+     *
+     * Each kind is collected separately and merged in INHERITANCE_KINDS order,
+     * so the breadth-first search visits a type's traits before its parents —
+     * PHP's own precedence — however the scanner happened to order its edges.
+     *
+     * @param list<ScanContribution> $contributions
+     * @return array<string, list<string>>
+     */
+    private function inheritanceSources(array $contributions): array
+    {
+        $byKind = array_fill_keys(self::INHERITANCE_KINDS, []);
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if (isset($byKind[$edge->kind])) {
+                    $byKind[$edge->kind][$edge->sourceReference][] = $edge->targetReference;
+                }
+            }
+        }
+
+        $sources = [];
+        foreach (self::INHERITANCE_KINDS as $kind) {
+            foreach ($byKind[$kind] as $source => $targets) {
+                $sources[$source] = [...($sources[$source] ?? []), ...$targets];
+            }
+        }
+
+        return $sources;
+    }
+
+    /**
+     * Resolve a member reference the named type does not itself declare to the
+     * trait, parent class, or interface that does.
+     *
+     * A scanner reads one file at a time: seeing `$this->log()` inside
+     * `App\Invoice` it can only emit `php:method:App\Invoice::log`, even when
+     * `log` is declared by a trait `App\Invoice` uses or by the class it
+     * extends. Resolution is by exact reference string, so without this the
+     * lookup misses the declaration and a phantom `external_method` twin is
+     * fabricated beside it — leaving every trait method, every inherited
+     * helper, and every interface method with an in-degree of zero however
+     * heavily it is called.
+     *
+     * The search follows nested `use` statements and the full inheritance
+     * chain, since both compose, and is depth-bounded so a cyclic contribution
+     * cannot hang the reconcile. Returns null when the reference is not a
+     * member, names no known type, or names a member nothing in scope declares
+     * — all of which stay external.
+     *
+     * @param array<string, string> $nodeMap
+     * @param array<string, list<string>> $inheritanceSources
+     */
+    private function inheritedMemberTarget(string $reference, array $nodeMap, array $inheritanceSources): ?string
+    {
+        if ($inheritanceSources === []) {
+            return null;
+        }
+        $parts = explode(':', $reference, 3);
+        if (count($parts) !== 3) {
+            return null;
+        }
+        [$language, $kind, $canonical] = $parts;
+        if (!in_array($kind, self::MEMBER_KINDS, true)) {
+            return null;
+        }
+        $separator = strrpos($canonical, '::');
+        if ($separator === false) {
+            return null;
+        }
+        $type = substr($canonical, 0, $separator);
+        $member = substr($canonical, $separator + 2);
+        if ($type === '' || $member === '') {
+            return null;
+        }
+
+        // The reference carries the member's kind, not the declaring type's, so
+        // every type kind that could inherit members is tried.
+        $frontier = [];
+        foreach (self::TYPE_KINDS as $typeKind) {
+            foreach ($inheritanceSources[$language . ':' . $typeKind . ':' . $type] ?? [] as $source) {
+                $frontier[] = $source;
+            }
+        }
+        $seen = [];
+        for ($depth = 0; $depth < self::MAX_INHERITANCE_DEPTH && $frontier !== []; $depth++) {
+            $next = [];
+            foreach ($frontier as $sourceReference) {
+                if (isset($seen[$sourceReference])) {
+                    continue;
+                }
+                $seen[$sourceReference] = true;
+                $sourceParts = explode(':', $sourceReference, 3);
+                if (count($sourceParts) !== 3 || $sourceParts[0] !== $language) {
+                    continue;
+                }
+                $candidate = $nodeMap[$language . ':' . $kind . ':' . $sourceParts[2] . '::' . $member] ?? null;
+                if ($candidate !== null) {
+                    return $candidate;
+                }
+                foreach ($inheritanceSources[$sourceReference] ?? [] as $nested) {
+                    $next[] = $nested;
+                }
+            }
+            $frontier = $next;
+        }
+
+        return null;
+    }
+
     private function externalNode(
         string $projectId,
         string $reference,

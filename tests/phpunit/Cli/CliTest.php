@@ -598,20 +598,28 @@ final class CliTest extends KnossosTestCase
     #[Group('cli')]
     public function testErrorRendererReturnsExitCode2ForAnyException(): void
     {
-        // All exception types must return exit code 2.
-        // Note: fwrite(STDERR, ...) cannot be captured with ob_start(),
-        // so we only test the return code here. The diagnostic codes are
-        // verified through subprocess tests (testCliFailuresExposeStableAutomationDiagnostics).
+        // All exception types must return exit code 2, and each must emit its
+        // own diagnostic code. Rendering into an in-memory stream makes the
+        // code assertable in-process AND keeps the suite off the real STDERR,
+        // which `infection --filter` treats as a reason to SIGTERM the initial
+        // test run. Subprocess coverage still exists in
+        // testCliFailuresExposeStableAutomationDiagnostics.
         foreach ([
-            new RuntimeException('msg'),
-            new InvalidArgumentException('msg'),
-            new PDOException('msg'),
-            new WorkerException('WORKER_TIMEOUT', 'msg'),
-            new ScanBusyException('msg'),
-            new DiscoveryException('msg'),
-        ] as $error) {
-            $exit = (new CliErrorRenderer())->render($error);
+            [new RuntimeException('msg'), 'KNOSSOS_RUNTIME_ERROR'],
+            [new InvalidArgumentException('msg'), 'KNOSSOS_INVALID_ARGUMENT'],
+            [new PDOException('msg'), 'KNOSSOS_STORAGE_ERROR'],
+            [new WorkerException('WORKER_TIMEOUT', 'msg'), 'WORKER_TIMEOUT'],
+            [new ScanBusyException('msg'), 'KNOSSOS_SCAN_BUSY'],
+            [new DiscoveryException('msg'), 'KNOSSOS_DISCOVERY_ERROR'],
+        ] as [$error, $expectedCode]) {
+            $stream = fopen('php://memory', 'w+');
+            $exit = (new CliErrorRenderer($stream))->render($error);
+            rewind($stream);
+            $written = stream_get_contents($stream);
+            fclose($stream);
+
             assertSame(2, $exit);
+            assertSame($expectedCode . ': msg' . PHP_EOL, $written);
         }
     }
 
@@ -621,10 +629,14 @@ final class CliTest extends KnossosTestCase
         // Any exception that doesn't match a specific type gets KNOSSOS_RUNTIME_ERROR.
         // Note: The default case in the match() also catches RuntimeException
         // (which is NOT a subclass of any of the other matched types).
-        // This test verifies that an unrecognized exception type still returns
-        // exit code 2 without crashing.
-        $exit = (new CliErrorRenderer())->render(new \BadMethodCallException('unexpected'));
+        $stream = fopen('php://memory', 'w+');
+        $exit = (new CliErrorRenderer($stream))->render(new \BadMethodCallException('unexpected'));
+        rewind($stream);
+        $written = stream_get_contents($stream);
+        fclose($stream);
+
         assertSame(2, $exit);
+        assertSame('KNOSSOS_RUNTIME_ERROR: unexpected' . PHP_EOL, $written);
     }
 
     // ── CliInputLoader ────────────────────────────────────────────────────

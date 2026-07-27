@@ -34,4 +34,49 @@ final class DocumentationTest extends KnossosTestCase
         }
         assertContains('API documentation passed:', $apiOutput);
     }
+
+    /**
+     * The API gate covers the interfaces under `src/`, and it selects its files
+     * by looking for the word `interface`. Prose containing that word — "every
+     * interface and enum", say — used to pull a plain class into the check and
+     * name every contract in it after whatever word followed, so the report
+     * described contracts that do not exist and the failure text pointed at
+     * nothing. Every reported PHP contract must name a real interface.
+     */
+    #[Group('documentation')]
+    public function testApiDocumentationContractsNameDeclaredInterfaces(): void
+    {
+        $root = self::repositoryRoot();
+        [$exit, , $errors] = $this->runFixtureCommandOutput([PHP_BINARY, $root . '/tools/api-documentation-check.php']);
+        if ($exit !== 0) {
+            throw new RuntimeException($errors);
+        }
+
+        $declared = [];
+        foreach (glob($root . '/src/*/*.php') ?: [] as $path) {
+            if (preg_match('/^\s*interface\s+(\w+)/m', (string) file_get_contents($path), $match) === 1) {
+                $declared[$match[1]] = true;
+            }
+        }
+
+        $report = json_decode(
+            (string) file_get_contents($root . '/coverage/quality/api-documentation.json'),
+            true,
+            512,
+            JSON_THROW_ON_ERROR,
+        );
+        $unknown = [];
+        foreach ($report['contracts'] as $contract) {
+            if (!str_starts_with($contract, 'php:')) {
+                continue;
+            }
+            $separator = strpos($contract, '::');
+            $name = $separator === false ? $contract : substr($contract, 4, $separator - 4);
+            if (!isset($declared[$name])) {
+                $unknown[] = $contract;
+            }
+        }
+
+        assertSame([], $unknown);
+    }
 }

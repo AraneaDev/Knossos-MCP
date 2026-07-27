@@ -14,6 +14,22 @@ final class Application
 {
     public const VERSION = '0.6.0'; // x-release-please-version
 
+    /** @var resource|null */
+    private $errorStream;
+
+    /**
+     * @param resource|null $errorStream Destination for the failure diagnostic;
+     *                                   null uses the process STDERR. Tests pass
+     *                                   an in-memory stream so the suite never
+     *                                   writes to the real STDERR — see
+     *                                   CliErrorRenderer for why that matters to
+     *                                   mutation testing.
+     */
+    public function __construct($errorStream = null)
+    {
+        $this->errorStream = $errorStream;
+    }
+
     /** @param list<string> $arguments */
     public function run(array $arguments): int
     {
@@ -24,7 +40,7 @@ final class Application
             return (new CliCommandRouter(dirname(__DIR__), $parser, new CliHelpRenderer(), self::VERSION))
                 ->route($command, $positionals, $options);
         } catch (Throwable $error) {
-            return (new CliErrorRenderer())->render($error);
+            return (new CliErrorRenderer($this->errorStream))->render($error);
         }
     }
 }

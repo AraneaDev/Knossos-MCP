@@ -4,6 +4,10 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      - id: no-commit-to-branch
+        # Work belongs on a topic branch so it can be reviewed as a pull
+        # request. `git commit --no-verify` remains the deliberate exception.
+        args: [--branch, main, --branch, master]
       - id: check-added-large-files
         args: [--maxkb=2000]
       - id: check-json

@@ -11,7 +11,7 @@
          bootstrap="tests/phpunit/bootstrap.php"
          colors="true"
          failOnRisky="true"
-         failOnWarning="false"
+         failOnWarning="true"
          cacheDirectory=".phpunit.cache">
     <testsuites>
         <testsuite name="knossos">

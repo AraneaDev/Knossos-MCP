@@ -260,6 +260,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         foreach ($nodeIds as $id) {
             $metrics[$id] = ['in_degree' => 0, 'out_degree' => 0, 'cross_boundary_degree' => 0];
         }
+        // Inbound `implements`/`extends` counted separately: a type being
+        // implemented is not evidence that anything uses it, so the contract
+        // gate below has to be able to discount them.
+        $inheritanceInDegree = [];
         $edgesExamined = 0;
         foreach ($edgeRows as $edge) {
             if ((++$edgesExamined % 256) === 0 && $this->now() > $deadline) {
@@ -272,6 +276,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             }
             ++$metrics[$edge['source_id']]['out_degree'];
             ++$metrics[$edge['target_id']]['in_degree'];
+            if (in_array($edge['kind'], ['implements', 'extends'], true)) {
+                $inheritanceInDegree[$edge['target_id']] = ($inheritanceInDegree[$edge['target_id']] ?? 0) + 1;
+            }
             $sourceBoundaries = array_column($boundaries[$edge['source_id']] ?? [], 'id');
             $targetBoundaries = array_column($boundaries[$edge['target_id']] ?? [], 'id');
             if ($sourceBoundaries !== [] && $targetBoundaries !== [] && array_intersect($sourceBoundaries, $targetBoundaries) === []) {
@@ -330,6 +337,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
             }
         }
+        // The in-degree above only counts edges from the slice actually read, so
+        // a zero is provisional: node/edge/time limits drop edges, and a dropped
+        // inbound edge makes a referenced symbol look unreferenced. Re-check the
+        // survivors against the whole edge table before calling anything dead.
+        if ($provisional !== [] && array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== []) {
+            foreach ($this->referencedNodes($projectId, array_keys($provisional), $edgeKinds, $confidenceRank[$minConfidence]) as $referencedId) {
+                unset($provisional[$referencedId]);
+            }
+        }
         $methodNames = [];
         foreach ($provisional as $id => $candidate) {
             if ($candidate['row']['kind'] === 'method') {
@@ -338,6 +354,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
         $excludedInherited = 0;
+        $idsByCanonicalName = [];
+        foreach ($nodes as $nodeId => $nodeRow) {
+            $idsByCanonicalName[(string) $nodeRow['canonical_name']] = $nodeId;
+        }
+        $excludedConstructors = 0;
+        $excludedContracts = 0;
         $suppressions = $this->deadCodeSuppressions($projectId);
         $suppressedCount = 0;
         $annotationsByName = $this->componentAnnotations($projectId);
@@ -352,9 +374,31 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 ++$annotatedFalsePositives;
                 continue;
             }
-            $context = $inheritance[$id] ?? ['inherited' => false, 'external_ancestor' => null];
+            $context = $inheritance[$id] ?? [
+                'inherited' => false,
+                'implemented' => false,
+                'declaring_type' => null,
+                'external_ancestor' => null,
+            ];
             if ($context['inherited']) {
                 ++$excludedInherited;
+                continue;
+            }
+            // A contract an implementation carries. Gated on the declaring type
+            // being referenced for the same reason constructors are: when
+            // nothing uses the type, the type is the unit worth deleting and
+            // both it and its members stay reportable.
+            if ($context['implemented'] && $context['declaring_type'] !== null) {
+                $declaringType = $context['declaring_type'];
+                $declaringUses = ($metrics[$declaringType]['in_degree'] ?? 0)
+                    - ($inheritanceInDegree[$declaringType] ?? 0);
+                if ($declaringUses > 0) {
+                    ++$excludedContracts;
+                    continue;
+                }
+            }
+            if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)) {
+                ++$excludedConstructors;
                 continue;
             }
             $dynamicRisk = $candidate['row']['origin'] !== 'ast' || $this->hasFrameworkRole($candidate['roles']);
@@ -422,6 +466,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excludedInherited,
+                    'excluded_contract_methods' => $excludedContracts,
+                    'excluded_constructors' => $excludedConstructors,
                     'suppressed_candidates' => $suppressedCount,
                     'annotated_false_positives' => $annotatedFalsePositives,
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
@@ -881,6 +927,59 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return false;
     }
+    /**
+     * The TypeScript/JavaScript constructor. PHP and Python both spell their
+     * engine-dispatched members with a leading `__` instead, which
+     * `isEngineInvokedMemberOfReferencedType` matches by prefix.
+     */
+    private const CONSTRUCTOR_MEMBER_NAME = 'constructor';
+
+    /**
+     * True when the candidate is a member the language runtime invokes, rather
+     * than one a call site names, whose declaring type IS referenced somewhere.
+     *
+     * `new Foo(...)` is recorded as a `constructs` edge to the class `Foo`, not
+     * to `Foo::__construct`, so a constructor's in-degree is 0 for every class
+     * in the graph — including heavily used ones. Reporting those as
+     * unreferenced code drowned the real signal: on a scan of a 109-file
+     * TypeScript project, five of the thirteen surviving candidates were
+     * constructors of classes the same graph showed being instantiated.
+     *
+     * Constructors are only the most common case. `__destruct` runs when the
+     * last reference drops, `__toString` on a string cast, `__invoke` on a
+     * call, and Python's protocol methods (`__repr__`, `__enter__`, `__eq__`)
+     * likewise — none is ever written at a call site, so every one of them is
+     * structurally unreferenced. Both languages reserve the `__` prefix for
+     * exactly this dispatch, which is why the prefix is the test.
+     *
+     * The declaring type having ANY inbound reference is enough. Such a member
+     * on a type that is itself unreferenced stays a candidate — that type (and
+     * with it the member) really may be dead, and it is reported through the
+     * type, which is the more useful unit to delete.
+     *
+     * @param array<string, mixed>  $node
+     * @param array<string, string> $idsByCanonicalName
+     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
+     */
+    private function isEngineInvokedMemberOfReferencedType(array $node, array $idsByCanonicalName, array $metrics): bool
+    {
+        if ($node['kind'] !== 'method') {
+            return false;
+        }
+        $displayName = (string) $node['display_name'];
+        if ($displayName !== self::CONSTRUCTOR_MEMBER_NAME && !str_starts_with($displayName, '__')) {
+            return false;
+        }
+        $canonical = (string) $node['canonical_name'];
+        $separator = strrpos($canonical, '::');
+        if ($separator === false || $separator === 0) {
+            return false;
+        }
+        $ownerId = $idsByCanonicalName[substr($canonical, 0, $separator)] ?? null;
+
+        return $ownerId !== null && ($metrics[$ownerId]['in_degree'] ?? 0) > 0;
+    }
+
     /** @param array<string, mixed> $node @param list<array<string, mixed>> $roles */
     private function isDeadCodeCandidate(array $node, array $roles): bool
     {
@@ -896,6 +995,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             // A test runner discovers these by glob, so in-degree 0 is structural,
             // not evidence that the module is unused.
             'quality.test_module',
+            // Likewise a build or quality tool loading its own config by
+            // filename: nothing in the project ever imports `eslint.config.js`.
+            'tooling.config',
         ];
         foreach ($roles as $role) {
             if (in_array($role['role'], $entryRoles, true)) {
@@ -905,14 +1007,81 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return true;
     }
     /**
-     * Resolve, for candidate methods, whether an ancestor of the containing
-     * class declares a same-named member (making in-degree 0 structural, not
-     * evidence of death) or whether the hierarchy leaves an external type
-     * whose members static analysis cannot see.
+     * Member names declared by the internal types that implement or extend
+     * each of `$typeIds`.
+     *
+     * Only direct subtypes are read. A grandchild that redeclares a member its
+     * own parent already declares is reached through that parent, so one level
+     * answers the question this asks: does some implementation carry this
+     * contract?
+     *
+     * @param list<string> $typeIds
+     * @return array<string, array<string, true>> type id => member display names
+     */
+    private function subtypeMemberNames(string $projectId, array $typeIds): array
+    {
+        $subtypesOf = [];
+        foreach (array_chunk($typeIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
+                sprintf('AND target_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $subtypesOf[$row['target_id']][] = $row['source_id'];
+            }
+        }
+        if ($subtypesOf === []) {
+            return [];
+        }
+
+        $memberNames = [];
+        $subtypeIds = array_values(array_unique(array_merge(...array_values($subtypesOf))));
+        foreach (array_chunk($subtypeIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
+                "WHERE e.project_id = ? AND e.kind = 'contains' " .
+                sprintf('AND e.source_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $memberNames[$row['source_id']][(string) $row['display_name']] = true;
+            }
+        }
+
+        $result = [];
+        foreach ($subtypesOf as $typeId => $subtypes) {
+            foreach ($subtypes as $subtypeId) {
+                foreach ($memberNames[$subtypeId] ?? [] as $name => $_) {
+                    $result[$typeId][$name] = true;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Resolve, for candidate methods, how dispatch could reach them without
+     * leaving a direct inbound edge — in either direction of the hierarchy.
+     *
+     * Upwards: an ancestor of the containing type declares a same-named member,
+     * so the ancestor carries the contract and the override is reached through
+     * it; or the hierarchy leaves an external type whose members static
+     * analysis cannot see.
+     *
+     * Downwards: an internal type implements or extends the containing type and
+     * declares a same-named member, so this is the declaration and the
+     * implementation is what call sites reach. An edge lands on the declaration
+     * only when a receiver is typed as the contract; iterating an untyped array
+     * of implementations types nothing, which is why a heavily used interface
+     * method can carry an in-degree of zero.
      *
      * @param list<string> $methodIds
      * @param array<string, string> $methodNames method node id => display_name
-     * @return array<string, array{inherited: bool, external_ancestor: ?string}>
+     * @return array<string, array{inherited: bool, implemented: bool, declaring_type: ?string, external_ancestor: ?string}>
      */
     private function inheritedMethodContext(string $projectId, array $methodIds, array $methodNames): array
     {
@@ -1017,6 +1186,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             return $closureCache[$classId];
         };
 
+        $subtypeMembers = $this->subtypeMemberNames($projectId, array_values(array_unique(array_values($classOfMethod))));
+
         $result = [];
         foreach ($methodIds as $methodId) {
             $classId = $classOfMethod[$methodId] ?? null;
@@ -1038,12 +1209,46 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     break;
                 }
             }
-            $result[$methodId] = ['inherited' => $inherited, 'external_ancestor' => $externalAncestor];
+            $result[$methodId] = [
+                'inherited' => $inherited,
+                'implemented' => $classId !== null
+                    && isset($subtypeMembers[$classId][$methodNames[$methodId]]),
+                'declaring_type' => $classId,
+                'external_ancestor' => $externalAncestor,
+            ];
         }
         return $result;
     }
 
-    /** @return list<string> */
+    /**
+     * Which of the given nodes have at least one inbound edge in the full edge
+     * table, unconstrained by the scan's node/edge budget. Used to clear
+     * dead-code candidates whose in-degree was only zero because the slice the
+     * health scan read stopped short of the edges pointing at them.
+     *
+     * @param list<string> $nodeIds
+     * @param list<string> $edgeKinds
+     * @return list<string>
+     */
+    private function referencedNodes(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank): array
+    {
+        $referenced = [];
+        foreach (array_chunk($nodeIds, 500) as $chunk) {
+            $targets = implode(',', array_fill(0, count($chunk), '?'));
+            $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
+            $statement = $this->pdo->prepare(
+                'SELECT DISTINCT target_id FROM edges WHERE project_id = ? ' .
+                sprintf('AND kind IN (%s) ', $kinds) .
+                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+                sprintf('AND target_id IN (%s)', $targets),
+            );
+            $statement->execute([$projectId, ...$edgeKinds, $minConfidenceRank, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $referenced[] = (string) $row['target_id'];
+            }
+        }
+        return $referenced;
+    }
     private function deadCodeSuppressions(string $projectId): array
     {
         $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');

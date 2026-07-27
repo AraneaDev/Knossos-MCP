@@ -44,6 +44,7 @@ Each page documents one query surface, its CLI and MCP forms, and its limits.
 - [Diagram source export](features/diagram-export.md) — deterministic Mermaid and PlantUML.
 - [Semantic location ranking](features/semantic-ranking.md) — optional, opt-in, with exact fallback.
 - [Component annotations](features/annotations.md) — durable agent-written judgments that survive rescans.
+- [Dead-code candidates](features/dead-code-candidates.md) — what `architecture_health` reports as unreferenced, and everything it excludes first.
 
 ## Language and framework support
 

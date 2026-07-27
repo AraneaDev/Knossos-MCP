@@ -720,6 +720,426 @@ final class GraphReconcilerTest extends TestCase
         $this->assertCount(2, $this->repo->diagnostics);
     }
 
+    // ----- resolveEdges: type-kind aliasing -----
+
+    /**
+     * A scanner reading `Payable $x` in one file cannot know whether `Payable`
+     * is declared as a class, an interface, a trait, or an enum somewhere else,
+     * so the PHP worker emits every type-position reference as `class`. Without
+     * aliasing, the exact lookup misses the declaration and a phantom
+     * `external_class` twin is fabricated beside the real interface — which is
+     * what made every interface and enum in a PHP graph look unused.
+     */
+    public function testResolveEdgesResolvesAClassReferenceToAnInterfaceDeclaration(): void
+    {
+        $result = $this->reconcileTypeReference('interface', 'App\\Payable');
+
+        assertSame(0, $result->unresolvedNodes);
+        assertSame(2, $result->nodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    public function testResolveEdgesResolvesAClassReferenceToAnEnumDeclaration(): void
+    {
+        $result = $this->reconcileTypeReference('enum', 'App\\Mode');
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    public function testResolveEdgesResolvesAClassReferenceToATraitDeclaration(): void
+    {
+        $result = $this->reconcileTypeReference('trait', 'App\\LogsPayments');
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    /**
+     * The aliased edge must land on the declaration's own stable id, not on a
+     * second id derived from the reference — otherwise the phantom node is gone
+     * but the usage still hangs off nothing.
+     */
+    public function testAliasedReferenceTargetsTheDeclarationStableId(): void
+    {
+        $this->reconcileTypeReference('interface', 'App\\Payable');
+
+        $declaration = collectMatching($this->repo->nodes, fn($n) => $n[3] === 'interface');
+        $this->assertCount(1, $declaration);
+        $this->assertCount(1, $this->repo->edges);
+        assertSame($declaration[0][0], $this->repo->edges[0][4]);
+    }
+
+    /**
+     * Aliasing is confined to type kinds: a method reference that matches no
+     * declaration is still an external node, not a silent match against some
+     * same-named class.
+     */
+    public function testAliasingDoesNotApplyToNonTypeKinds(): void
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $declaration = new NodeFact(
+            localId: 'php:class:App\\Payable',
+            kind: 'class',
+            canonicalName: 'App\\Payable',
+            displayName: 'Payable',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 5),
+        );
+        $edge = new EdgeFact(
+            kind: 'calls',
+            sourceReference: $source->localId,
+            targetReference: 'php:method:App\\Payable',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 3, 3),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$source, $declaration], [$edge])],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(1, $result->unresolvedNodes);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        $this->assertCount(1, $external);
+        assertSame('external_method', $external[0][3]);
+    }
+
+    private function reconcileTypeReference(string $declaredKind, string $canonical): ReconciliationResult
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $declaration = new NodeFact(
+            localId: 'php:' . $declaredKind . ':' . $canonical,
+            kind: $declaredKind,
+            canonicalName: $canonical,
+            displayName: $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 7, 9),
+        );
+        $edge = new EdgeFact(
+            kind: 'references',
+            sourceReference: $source->localId,
+            targetReference: 'php:class:' . $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 3, 3),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$source, $declaration], [$edge])],
+        ]);
+
+        return (new GraphReconciler($this->repo))->reconcile($request);
+    }
+
+    // ----- resolveEdges: trait member resolution -----
+
+    /**
+     * A trait's methods become members of every using class, but the scanner
+     * sees `$this->log()` inside `App\Invoice` and can only emit
+     * `php:method:App\Invoice::log` — the declaration lives on the trait. The
+     * exact lookup misses, so a phantom `external_method` twin is fabricated
+     * and the real trait method keeps an in-degree of zero. This repository's
+     * own graph carried such twins for both of its traits; a Laravel codebase,
+     * where `HasFactory`/`Notifiable`/`SoftDeletes` are everywhere, carries one
+     * per trait-method call site.
+     */
+    public function testResolveEdgesResolvesAMemberCallThroughAUsedTrait(): void
+    {
+        $result = $this->reconcileTraitMemberCall();
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    /** The call must land on the trait declaration's own stable id. */
+    public function testTraitMemberCallTargetsTheTraitDeclarationStableId(): void
+    {
+        $this->reconcileTraitMemberCall();
+
+        $declaration = collectMatching($this->repo->nodes, fn($n) => $n[3] === 'method');
+        $this->assertCount(1, $declaration);
+        $callEdges = collectMatching($this->repo->edges, fn($e) => $e[2] === 'calls');
+        $this->assertCount(1, $callEdges);
+        assertSame($declaration[0][0], $callEdges[0][4]);
+    }
+
+    /** Traits compose, so the search follows a trait's own `use` statements. */
+    public function testTraitMemberResolutionFollowsNestedTraits(): void
+    {
+        $result = $this->reconcileTraitMemberCall(nested: true);
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    /**
+     * A member no used trait declares stays external: the fallback resolves
+     * real trait members, it does not make every missed member call disappear.
+     */
+    public function testTraitMemberResolutionLeavesMembersNoTraitDeclaresExternal(): void
+    {
+        $result = $this->reconcileTraitMemberCall(member: 'somethingElse');
+
+        assertSame(1, $result->unresolvedNodes);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        $this->assertCount(1, $external);
+        assertSame('external_method', $external[0][3]);
+    }
+
+    /**
+     * A trait `use` cycle is not expressible in PHP, but a malformed or partial
+     * contribution can still describe one; resolution must terminate.
+     */
+    public function testTraitMemberResolutionTerminatesOnACyclicTraitGraph(): void
+    {
+        $class = $this->minimalNode('php:class:App\\Invoice', 'App\\Invoice');
+        $traitA = $this->traitNode('App\\Alpha');
+        $traitB = $this->traitNode('App\\Beta');
+        $edges = [
+            $this->edge('uses_trait', 'php:class:App\\Invoice', 'php:trait:App\\Alpha'),
+            $this->edge('uses_trait', 'php:trait:App\\Alpha', 'php:trait:App\\Beta'),
+            $this->edge('uses_trait', 'php:trait:App\\Beta', 'php:trait:App\\Alpha'),
+            $this->edge('calls', 'php:class:App\\Invoice', 'php:method:App\\Invoice::log'),
+        ];
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$class, $traitA, $traitB], $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(1, $result->unresolvedNodes);
+    }
+
+    private function reconcileTraitMemberCall(
+        bool $nested = false,
+        string $member = 'log',
+    ): ReconciliationResult {
+        $declaringTrait = $nested ? 'App\\WritesLines' : 'App\\LogsPayments';
+        $class = $this->minimalNode('php:class:App\\Invoice', 'App\\Invoice');
+        $nodes = [$class, $this->traitNode('App\\LogsPayments')];
+        $edges = [$this->edge('uses_trait', 'php:class:App\\Invoice', 'php:trait:App\\LogsPayments')];
+        if ($nested) {
+            $nodes[] = $this->traitNode('App\\WritesLines');
+            $edges[] = $this->edge('uses_trait', 'php:trait:App\\LogsPayments', 'php:trait:App\\WritesLines');
+        }
+        $nodes[] = new NodeFact(
+            localId: 'php:method:' . $declaringTrait . '::log',
+            kind: 'method',
+            canonicalName: $declaringTrait . '::log',
+            displayName: 'log',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 7, 9),
+        );
+        // What the scanner emits for `$this->log()` inside App\Invoice.
+        $edges[] = $this->edge('calls', 'php:class:App\\Invoice', 'php:method:App\\Invoice::' . $member);
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        return (new GraphReconciler($this->repo))->reconcile($request);
+    }
+
+    // ----- resolveEdges: inherited member resolution -----
+
+    /**
+     * The same one-file-at-a-time blindness that hides trait members hides
+     * inherited ones: the scanner sees `self::assertLimit()` inside a subclass
+     * and emits `php:method:App\Child::assertLimit`, but the declaration lives
+     * on the abstract parent. This repository's own graph reported every
+     * protected helper on `AbstractArchitectureQueryService` as unreferenced
+     * while a dozen subclasses called it.
+     */
+    public function testResolveEdgesResolvesAMemberCallThroughAParentClass(): void
+    {
+        $result = $this->reconcileInheritedMemberCall('extends', 'class');
+
+        assertSame(0, $result->unresolvedNodes);
+        $this->assertCount(
+            0,
+            collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_')),
+        );
+    }
+
+    /** An abstract class satisfies a call through the interface it implements. */
+    public function testResolveEdgesResolvesAMemberCallThroughAnImplementedInterface(): void
+    {
+        $result = $this->reconcileInheritedMemberCall('implements', 'interface');
+
+        assertSame(0, $result->unresolvedNodes);
+        $callEdges = collectMatching($this->repo->edges, fn($e) => $e[2] === 'calls');
+        $declaration = collectMatching($this->repo->nodes, fn($n) => $n[3] === 'method');
+        $this->assertCount(1, $declaration);
+        assertSame($declaration[0][0], $callEdges[0][4]);
+    }
+
+    /**
+     * PHP resolves a trait method ahead of an inherited one, so when both a used
+     * trait and a parent declare the member the trait declaration must win.
+     */
+    public function testInheritedMemberResolutionPrefersATraitOverAParent(): void
+    {
+        $class = $this->minimalNode('php:class:App\\Invoice', 'App\\Invoice');
+        $nodes = [
+            $class,
+            $this->traitNode('App\\LogsPayments'),
+            $this->minimalNode('php:class:App\\Base', 'App\\Base'),
+            $this->memberNode('App\\LogsPayments::log'),
+            $this->memberNode('App\\Base::log'),
+        ];
+        $edges = [
+            $this->edge('extends', 'php:class:App\\Invoice', 'php:class:App\\Base'),
+            $this->edge('uses_trait', 'php:class:App\\Invoice', 'php:trait:App\\LogsPayments'),
+            $this->edge('calls', 'php:class:App\\Invoice', 'php:method:App\\Invoice::log'),
+        ];
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(0, $result->unresolvedNodes);
+        $callEdges = collectMatching($this->repo->edges, fn($e) => $e[2] === 'calls');
+        $traitMember = collectMatching(
+            $this->repo->nodes,
+            fn($n) => $n[3] === 'method' && $n[4] === 'App\\LogsPayments::log',
+        );
+        $this->assertCount(1, $traitMember);
+        assertSame($traitMember[0][0], $callEdges[0][4]);
+    }
+
+    /**
+     * A member neither the parent nor the interface declares stays external:
+     * the fallback resolves real inherited members, it does not make every
+     * missed member call disappear.
+     */
+    public function testInheritedMemberResolutionLeavesUndeclaredMembersExternal(): void
+    {
+        $result = $this->reconcileInheritedMemberCall('extends', 'class', member: 'somethingElse');
+
+        assertSame(1, $result->unresolvedNodes);
+        $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
+        $this->assertCount(1, $external);
+        assertSame('external_method', $external[0][3]);
+    }
+
+    /**
+     * PHP cannot express an inheritance cycle, but a malformed or partial
+     * contribution can still describe one; resolution must terminate.
+     */
+    public function testInheritedMemberResolutionTerminatesOnACyclicInheritanceGraph(): void
+    {
+        $nodes = [
+            $this->minimalNode('php:class:App\\Invoice', 'App\\Invoice'),
+            $this->minimalNode('php:class:App\\Alpha', 'App\\Alpha'),
+            $this->minimalNode('php:class:App\\Beta', 'App\\Beta'),
+        ];
+        $edges = [
+            $this->edge('extends', 'php:class:App\\Invoice', 'php:class:App\\Alpha'),
+            $this->edge('extends', 'php:class:App\\Alpha', 'php:class:App\\Beta'),
+            $this->edge('extends', 'php:class:App\\Beta', 'php:class:App\\Alpha'),
+            $this->edge('calls', 'php:class:App\\Invoice', 'php:method:App\\Invoice::log'),
+        ];
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(1, $result->unresolvedNodes);
+    }
+
+    private function reconcileInheritedMemberCall(
+        string $edgeKind,
+        string $parentKind,
+        string $member = 'log',
+    ): ReconciliationResult {
+        $parentReference = 'php:' . $parentKind . ':App\\Base';
+        $nodes = [
+            $this->minimalNode('php:class:App\\Invoice', 'App\\Invoice'),
+            $this->typeNode($parentKind, 'App\\Base'),
+            $this->memberNode('App\\Base::log'),
+        ];
+        $edges = [
+            $this->edge($edgeKind, 'php:class:App\\Invoice', $parentReference),
+            // What the scanner emits for `$this->log()` inside App\Invoice.
+            $this->edge('calls', 'php:class:App\\Invoice', 'php:method:App\\Invoice::' . $member),
+        ];
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        return (new GraphReconciler($this->repo))->reconcile($request);
+    }
+
+    private function memberNode(string $canonical): NodeFact
+    {
+        return new NodeFact(
+            localId: 'php:method:' . $canonical,
+            kind: 'method',
+            canonicalName: $canonical,
+            displayName: substr($canonical, (int) strrpos($canonical, '::') + 2),
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 7, 9),
+        );
+    }
+
+    private function traitNode(string $canonical): NodeFact
+    {
+        return $this->typeNode('trait', $canonical);
+    }
+
+    private function typeNode(string $kind, string $canonical): NodeFact
+    {
+        return new NodeFact(
+            localId: 'php:' . $kind . ':' . $canonical,
+            kind: $kind,
+            canonicalName: $canonical,
+            displayName: $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 5),
+        );
+    }
+
+    private function edge(string $kind, string $source, string $target): EdgeFact
+    {
+        return new EdgeFact(
+            kind: $kind,
+            sourceReference: $source,
+            targetReference: $target,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 3, 3),
+        );
+    }
+
     // ----- resolveEdges: external nodes -----
 
     public function testResolveEdgesCreatesExternalNodeForUnresolvedTarget(): void

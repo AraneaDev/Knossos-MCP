@@ -50,7 +50,13 @@ final class FactCollector extends NodeVisitorAbstract
             $this->newExpression($node);
         } elseif ($node instanceof Expr\StaticCall) {
             $this->staticCall($node);
-        } elseif ($node instanceof Expr\MethodCall) {
+        } elseif ($node instanceof Expr\ClassConstFetch) {
+            $this->classReference($node->class, $node);
+        } elseif ($node instanceof Expr\StaticPropertyFetch) {
+            $this->classReference($node->class, $node);
+        } elseif ($node instanceof Expr\Instanceof_) {
+            $this->classReference($node->class, $node);
+        } elseif ($node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall) {
             $this->methodCall($node);
         } elseif ($node instanceof Expr\FuncCall) {
             $this->functionCall($node);
@@ -262,9 +268,37 @@ final class FactCollector extends NodeVisitorAbstract
         }
         $class = $this->resolvedClassName($node->class);
         $this->addEdge('calls', $source, self::reference('method', $class . '::' . $node->name->toString()), $node);
+        $this->classReference($node->class, $node);
     }
 
-    private function methodCall(Expr\MethodCall $node): void
+    /**
+     * Record that the enclosing symbol names a class in an expression position:
+     * `Foo::bar()`, `Foo::CONST`, `Foo::class`, `Foo::$prop`, `x instanceof Foo`.
+     *
+     * The call and constant edges point at the *member*, so without this a class
+     * or enum reached only through its static members has no inbound edge of its
+     * own and reads as unreferenced — the same gap parameter and property types
+     * already close by edging `references` to the declaring type.
+     *
+     * A class naming itself is skipped: `self::`, `static::`, and an explicit
+     * mention of the enclosing class are internal traffic, not usage, and
+     * counting them would make every class with one internal static call look
+     * reachable. `parent::` resolves to a different class and is kept.
+     */
+    private function classReference(Node $class, Node $evidence): void
+    {
+        $source = $this->currentSource();
+        if ($source === null || !$class instanceof Name) {
+            return;
+        }
+        $resolved = $this->resolvedClassName($class);
+        if ($resolved === ($this->currentClass()['name'] ?? null)) {
+            return;
+        }
+        $this->addEdge('references', $source, self::reference('class', $resolved), $evidence);
+    }
+
+    private function methodCall(Expr\MethodCall|Expr\NullsafeMethodCall $node): void
     {
         $source = $this->currentSource();
         if ($source === null || !$node->name instanceof Identifier) {
@@ -276,7 +310,14 @@ final class FactCollector extends NodeVisitorAbstract
         // local `$x = new Y` assignment is only ever probable (the variable may
         // be conditional or reassigned before the call).
         $confidence = 'certain';
-        if ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
+        if ($node->var instanceof Expr\New_) {
+            // `(new Y())->m()` names its receiver inline, so — unlike a variable
+            // assigned earlier — there is nothing that could reassign it before
+            // the call. An anonymous class has no name and is skipped.
+            $class = $node->var->class instanceof Name
+                ? $this->resolvedClassName($node->var->class)
+                : null;
+        } elseif ($node->var instanceof Expr\Variable && is_string($node->var->name)) {
             if ($node->var->name === 'this') {
                 $class = $this->currentClass()['name'] ?? null;
             } else {
@@ -284,7 +325,7 @@ final class FactCollector extends NodeVisitorAbstract
                 $confidence = $this->variableConfidence($node->var->name);
             }
         } elseif (
-            $node->var instanceof Expr\PropertyFetch
+            ($node->var instanceof Expr\PropertyFetch || $node->var instanceof Expr\NullsafePropertyFetch)
             && $node->var->var instanceof Expr\Variable
             && $node->var->var->name === 'this'
             && $node->var->name instanceof Identifier
