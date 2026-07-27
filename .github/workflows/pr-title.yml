@@ -1,11 +1,19 @@
 name: PR Title
 
+# pull_request_target, not pull_request: the workflow definition is taken from
+# the base branch, so a pull request cannot weaken or delete this check in the
+# same change it is meant to police. That trigger runs in a trusted context, so
+# this job MUST stay payload-only -- never add a checkout of the pull request's
+# code here, and never run anything from its tree. `permissions: {}` withholds
+# the token so the trusted context grants nothing even if that rule is broken.
+#
+# The consequence to know: the version of this file that runs is the one on
+# main, so an edit to the check itself is only exercised after it merges.
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, reopened, synchronize]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   conventional-title:
@@ -19,7 +27,8 @@ jobs:
       #
       # The title is read from the event payload rather than a ${{ }} expression:
       # interpolating it into the script would let a PR title inject shell
-      # commands into this runner.
+      # commands into this runner, which under pull_request_target is a trusted
+      # one.
       - name: Check the title is a Conventional Commit
         run: |
           title=$(jq -r '.pull_request.title' "$GITHUB_EVENT_PATH")

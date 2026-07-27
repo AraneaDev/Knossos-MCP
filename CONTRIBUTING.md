@@ -102,7 +102,10 @@ title as the subject of the single commit that lands on `main`, and that subject
 is what release-please reads. A title like `Fix/my branch name` classifies as
 nothing, so the release it should have cut is skipped silently — the individual
 commit subjects survive only as body text, which release-please does not parse.
-The `PR Title` workflow rejects a non-conforming title before it can merge.
+The `PR Title` workflow fails its `conventional-title` check on a title that
+does not conform. That check is advisory until it is added to the required
+status checks for `main`, so until then a red check does not itself stop a
+merge.
 
 ## Releases
 
