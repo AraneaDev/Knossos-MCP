@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.6.0...v0.7.0) (2026-07-27)
+
+
+### Bug Fixes
+
+* **review:** harden the PR title check and stop overclaiming it ([5058f25](https://github.com/AraneaDev/Knossos-MCP/commit/5058f253b471aa64aa06def368a69abac1200507))
+
+
+### Continuous Integration
+
+* require conventional pull request titles ([3db958e](https://github.com/AraneaDev/Knossos-MCP/commit/3db958e015971a94771937436681701d8db5d655))
+
 ## [0.6.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.5.1...v0.6.0) (2026-07-24)
 
 
