@@ -3,9 +3,39 @@
 ## [0.7.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.6.0...v0.7.0) (2026-07-27)
 
 
+### Features
+
+* **classification:** tag manifest entry points so scripts stop reading as dead ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+
+
 ### Bug Fixes
 
+* **classification:** drop unreachable guard and pin the path rules ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **cli:** render CLI diagnostics to an injectable stream ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **discovery:** keep a leading dot in a nested manifest's directory ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **docs-gate:** check every doc file instead of skipping an ignored path ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **health:** exclude contract declarations an implementation carries ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **health:** stop reporting engine-invoked members and tool config as dead ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **php-scanner:** edge calls on constructed and nullsafe receivers ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **quality:** fail on warnings so mutation scores stop reporting phantoms ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **query:** exclude constructors of referenced types from dead-code candidates ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **query:** stop reporting dead code from a truncated edge scan ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **reconciler:** resolve member references through used traits ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **reconciler:** resolve members through parents and interfaces ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **reconciler:** resolve type references to interface, enum, and trait declarations ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
 * **review:** harden the PR title check and stop overclaiming it ([5058f25](https://github.com/AraneaDev/Knossos-MCP/commit/5058f253b471aa64aa06def368a69abac1200507))
+* **scanner:** emit references for callables used as values ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **scanner:** reference the class named by PHP static access ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **tools:** anchor the API documentation gate to real interface declarations ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **tools:** bound chaos-loop's --timeoutMs below Node's timer limit ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **tools:** raise the MCP request timeout in chaos-loop ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **ts-worker:** free a program cache slot before building the next program ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+
+
+### Build System
+
+* **deps:** move the TypeScript worker to vitest 4 ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
+* **deps:** take the patched brace-expansion in the quality lockfile, clearing GHSA-mh99-v99m-4gvg ([#21](https://github.com/AraneaDev/Knossos-MCP/issues/21)) ([066d93f](https://github.com/AraneaDev/Knossos-MCP/commit/066d93fd5eda7b86d0341b00b42abec7dcd90bb8))
 
 
 ### Continuous Integration
