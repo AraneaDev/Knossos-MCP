@@ -6,14 +6,19 @@ namespace Knossos\Scan;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfigurationLoader;
-use Knossos\Discovery\{DiscoveryConfig, ProjectDiscoverer};
+use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer};
 use Knossos\Store\StableId;
 use PDO;
 
 final readonly class ScanPlanner
 {
-    /** @param list<string> $allowedRoots */
-    public function __construct(private PDO $pdo, private array $allowedRoots) {}
+    private readonly AllowedRoots $roots;
+
+    /** @param AllowedRoots|list<string> $allowedRoots */
+    public function __construct(private PDO $pdo, AllowedRoots|array $allowedRoots)
+    {
+        $this->roots = AllowedRoots::of($allowedRoots);
+    }
 
     /** @param list<array<string, mixed>>|null $explicitBoundaries */
     public function prepare(
@@ -26,7 +31,13 @@ final readonly class ScanPlanner
         ?int $workerTimeoutMs,
     ): ScanPreparation {
         $started = hrtime(true);
-        $configuration = ProjectConfigurationLoader::load($root, $this->allowedRoots);
+        // Resolved here, not in the constructor: a root added to the
+        // configuration file must take effect on the next scan, not the next
+        // restart.
+        $allowedRoots = $this->roots->current();
+        // Pass the resolver, not the resolved list: it carries the roots-file
+        // path, which is what makes a rejection actionable.
+        $configuration = ProjectConfigurationLoader::load($root, $this->roots);
         $maxFiles ??= $configuration->maxFiles ?? 100_000;
         $maxFileBytes ??= $configuration->maxFileBytes ?? 2_000_000;
         $explicitBoundaries ??= $configuration->boundaries;
@@ -44,7 +55,7 @@ final readonly class ScanPlanner
         $configurationMilliseconds = self::elapsedMilliseconds($started);
         $started = hrtime(true);
         $discovery = (new ProjectDiscoverer(new DiscoveryConfig(
-            $this->allowedRoots,
+            $allowedRoots,
             ignorePatterns: $configuration->ignores,
             maxFiles: $maxFiles,
             maxFileBytes: $maxFileBytes,

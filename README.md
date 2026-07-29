@@ -35,8 +35,9 @@ module, or boots an application framework.
 - What does this working tree risk, reviewed architecturally in one call?
 - Where would a refunds feature fit the existing structure?
 
-Every capability is available both as an MCP tool and as an equivalent CLI
-command. See the [documentation index](docs/README.md) for the full map.
+Every query and analysis capability is available both as an MCP tool and as an
+equivalent CLI command; `watch`, `serve`, and the graph-bundle commands remain
+CLI-only. See the [documentation index](docs/README.md) for the full map.
 
 ## Worked example
 
@@ -104,7 +105,7 @@ rather than proven absence.
 
 ## Tools
 
-Thirty-one MCP tools, each with an equivalent CLI command. Read tools are
+Thirty-three MCP tools, all but `server_info` with an equivalent CLI command. Read tools are
 annotated read-only and idempotent. The four write tools —
 `annotate_component`, `remove_project`, `cleanup_stale_scans`, and
 `maintain_database` — preview by default and only apply once called with
@@ -116,6 +117,13 @@ equivalent. Agent annotations
 (`intended_boundary`, `confirmed_dead`, `false_positive`, `note`) record a
 durable judgment on a component that survives rescans; a `false_positive`
 annotation removes that component from future dead-code candidates.
+
+**Orientation**
+
+| MCP tool           | CLI      | Answers                                                                                      |
+| ------------------ | -------- | -------------------------------------------------------------------------------------------- |
+| `server_info`      | —        | Which roots this server may read, the roots file to extend, and whether it is containerised. |
+| `diagnose_runtime` | `doctor` | Whether the runtimes, scanner workers, database, and migrations are healthy.                 |
 
 **Projects and history**
 
@@ -168,9 +176,9 @@ annotation removes that component from future dead-code candidates.
 | `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.                    |
 | `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.              |
 
-CLI-only helpers round this out: `doctor` verifies the runtime, workers,
-protocol, and database; `watch` rescans on change; `export-bundle` and
-`import-bundle` move a graph between databases; `serve` starts the MCP server.
+Three helpers remain CLI-only: `watch` rescans on change, `export-bundle` and
+`import-bundle` move a graph between databases, and `serve` starts the server
+itself. `doctor` is also available over MCP as `diagnose_runtime`.
 Full input schemas are in the [MCP tool reference](docs/reference/mcp-tools.md)
 and [CLI reference](docs/reference/cli.md).
 
@@ -234,8 +242,11 @@ isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.m
 - Scanning never installs dependencies, executes project code, or boots a
   framework; workers are supervised, resource-capped, and their output is
   untrusted until it passes schema and limit validation.
-- `--allow-root` is a security boundary, not a convenience flag. `serve` refuses
-  to start without one.
+- The allow-list is a security boundary, not a convenience. `serve` refuses to
+  start with no root from `--allow-root`, `KNOSSOS_ALLOWED_ROOTS`, or the roots
+  file. That file is re-read per request so one installation can serve every
+  project; Knossos only ever reads it, so widening the boundary stays a
+  deliberate act recorded on disk.
 - The SQLite database is derived and rebuildable; source mounts stay read-only.
   The one exception is `architecture_context`'s opt-in `include_source`, which
   reads a bounded query-time excerpt (≤40 lines, files ≤2MB) through the same

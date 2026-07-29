@@ -7,18 +7,29 @@ set -eu
 # server can answer queries immediately, and registers the Knossos stdio MCP
 # server with Claude Code. Idempotent: re-running re-registers cleanly.
 #
+# One installation serves every project. The allow-list lives in a roots file
+# that the server re-reads on each request, so adding a project later needs no
+# re-registration and no restart -- append to that file and scan.
+#
 # Overridable via environment:
 #   KNOSSOS_MCP_NAME    server name registered with the client   (default: knossos)
 #   KNOSSOS_MCP_SCOPE   claude mcp scope: local|user|project     (default: user)
-#   KNOSSOS_ALLOW_ROOT  absolute project root the server may scan (default: repo root)
-#   KNOSSOS_DATA_DIR    directory holding the derived database    (default: <root>/.knossos)
+#   KNOSSOS_ALLOW_ROOT  project root to seed the roots file with  (default: current directory)
+#   KNOSSOS_DATA_DIR    directory holding the database and roots  (default: ~/.knossos)
 #   KNOSSOS_SEED_SCAN   1 to seed an initial scan, 0 to skip      (default: 1)
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 NAME="${KNOSSOS_MCP_NAME:-knossos}"
 SCOPE="${KNOSSOS_MCP_SCOPE:-user}"
-ALLOW_ROOT="${KNOSSOS_ALLOW_ROOT:-$ROOT}"
-DATA_DIR="${KNOSSOS_DATA_DIR:-$ROOT/.knossos}"
+# The directory the installer was run from, not the Knossos checkout: installing
+# from inside Knossos and getting Knossos as your only scannable project is
+# never what the operator meant.
+ALLOW_ROOT="${KNOSSOS_ALLOW_ROOT:-$(pwd)}"
+# Deliberately outside the checkout. A data directory under $ROOT would tie every
+# project's graph to one clone, and a working-directory-relative default would
+# give each project a different database.
+DATA_DIR="${KNOSSOS_DATA_DIR:-$HOME/.knossos}"
+ROOTS_FILE="${KNOSSOS_ROOTS_FILE:-$DATA_DIR/roots.json}"
 SEED_SCAN="${KNOSSOS_SEED_SCAN:-1}"
 
 log() { printf '  %s\n' "$1"; }
@@ -26,7 +37,8 @@ log() { printf '  %s\n' "$1"; }
 echo "Knossos MCP installer"
 echo "  root:       $ROOT"
 echo "  server:     $NAME (scope: $SCOPE)"
-echo "  allow-root: $ALLOW_ROOT"
+echo "  grants:     $ALLOW_ROOT"
+echo "  roots file: $ROOTS_FILE"
 echo "  data dir:   $DATA_DIR"
 
 echo "Checking runtimes..."
@@ -67,6 +79,33 @@ else
         | php -r '$d = json_decode(stream_get_contents(STDIN), true) ?: []; foreach ($d["checks"] ?? [] as $c) { if (($c["status"] ?? "") !== "ok") { fwrite(STDERR, "    - " . $c["name"] . ": " . $c["detail"] . "\n"); } }' || true
 fi
 
+echo "Recording the allowed root..."
+mkdir -p "$DATA_DIR"
+# Merge rather than overwrite: re-running the installer from a second project
+# must add that project, not silently revoke the first one.
+KNOSSOS_ROOTS_FILE="$ROOTS_FILE" KNOSSOS_NEW_ROOT="$ALLOW_ROOT" php -r '
+$file = getenv("KNOSSOS_ROOTS_FILE");
+$new = rtrim(getenv("KNOSSOS_NEW_ROOT"), "/");
+$roots = [];
+if (is_file($file)) {
+    $decoded = json_decode((string) file_get_contents($file), true);
+    if (is_array($decoded)) {
+        $existing = $decoded["roots"] ?? $decoded;
+        if (is_array($existing)) {
+            foreach ($existing as $root) {
+                if (is_string($root) && trim($root) !== "") { $roots[] = rtrim(trim($root), "/"); }
+            }
+        }
+    }
+}
+if (!in_array($new, $roots, true)) { $roots[] = $new; }
+$roots = array_values(array_unique($roots));
+file_put_contents($file, json_encode(["roots" => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+printf("  %d root(s) granted\n", count($roots));
+'
+echo "  add more later by appending to $ROOTS_FILE - it is re-read per request,"
+echo "  so no restart or re-registration is needed."
+
 if [ "$SEED_SCAN" = "1" ]; then
     echo "Seeding an initial scan of $ALLOW_ROOT ..."
     if KNOSSOS_DATA_DIR="$DATA_DIR" "$ROOT/bin/knossos" scan "$ALLOW_ROOT" >/dev/null 2>&1; then
@@ -82,12 +121,15 @@ fi
 if command -v claude >/dev/null 2>&1; then
     echo "Registering the MCP server with Claude Code..."
     claude mcp remove "$NAME" -s "$SCOPE" >/dev/null 2>&1 || true
+    # No --allow-root: the roots file governs, so this registration stays correct
+    # as projects are added and does not need rewriting per project.
     claude mcp add "$NAME" -s "$SCOPE" -e "KNOSSOS_DATA_DIR=$DATA_DIR" -- \
-        "$ROOT/tools/mcp-serve" --allow-root="$ALLOW_ROOT"
+        "$ROOT/tools/mcp-serve"
     log "registered as '$NAME' (scope: $SCOPE)"
     echo
-    echo "Done. Restart Claude Code (or reload MCP servers) to use the '$NAME' tools,"
-    echo "for example 'file_metrics', 'architecture_summary', and 'search_architecture'."
+    echo "Done. Restart Claude Code (or reload MCP servers) to use the '$NAME' tools."
+    echo "Call 'server_info' first in any project: it reports the roots this server"
+    echo "can reach and the file to extend to add another."
     echo "Remove it later with: claude mcp remove $NAME -s $SCOPE"
 else
     echo "Claude CLI not found. Add this stdio server to your MCP client manually:"
@@ -96,7 +138,6 @@ else
   "mcpServers": {
     "$NAME": {
       "command": "$ROOT/tools/mcp-serve",
-      "args": ["--allow-root=$ALLOW_ROOT"],
       "env": { "KNOSSOS_DATA_DIR": "$DATA_DIR" }
     }
   }

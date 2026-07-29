@@ -7,12 +7,8 @@ namespace Knossos\Cli\Command;
 use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
-use Knossos\Mcp\PromptService;
-use Knossos\Mcp\ResourceService;
-use Knossos\Mcp\StdioServer;
-use Knossos\Mcp\ToolService;
-use Knossos\Query\ArchitectureQueryService;
-use Knossos\Scan\ProjectScanService;
+use Knossos\Discovery\AllowedRoots;
+use Knossos\Mcp\McpServerAssembly;
 
 final class ServeCommand implements CliCommand
 {
@@ -28,31 +24,43 @@ final class ServeCommand implements CliCommand
 
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
-        $allowedRoots = $options['allow-root'] ?? [];
-        if ($allowedRoots === []) {
+        $allowedRoots = self::resolveRoots($options, $context->databasePath());
+
+        return (new McpServerAssembly(
+            $context->database(),
+            $context->installationRoot(),
+            $context->databasePath(),
+            $allowedRoots,
+            $context->maintenance(),
+        ))->stdioServer()->run(STDIN, STDOUT, STDERR);
+    }
+
+    /**
+     * Flags, environment, and the roots file, unioned.
+     *
+     * The file is the portable source: it is re-read per request, so a project
+     * added to it becomes scannable without re-registering this server.
+     *
+     * @param array<string, list<string>> $options
+     */
+    private static function resolveRoots(array $options, string $databasePath): AllowedRoots
+    {
+        $staticRoots = $options['allow-root'] ?? [];
+        if ($staticRoots === []) {
             $configured = getenv('KNOSSOS_ALLOWED_ROOTS');
             if (is_string($configured) && $configured !== '') {
-                $allowedRoots = array_values(array_filter(explode(PATH_SEPARATOR, $configured)));
+                $staticRoots = array_values(array_filter(explode(PATH_SEPARATOR, $configured)));
             }
         }
-        if ($allowedRoots === []) {
-            throw new InvalidArgumentException('serve requires at least one --allow-root=PATH or KNOSSOS_ALLOWED_ROOTS.');
+        $rootsFile = AllowedRoots::defaultConfigPath($databasePath);
+        $allowedRoots = new AllowedRoots(array_values($staticRoots), $rootsFile);
+        if ($allowedRoots->current() === []) {
+            throw new InvalidArgumentException(sprintf(
+                'serve needs at least one allowed root. Pass --allow-root=PATH, set KNOSSOS_ALLOWED_ROOTS, or create %s containing {"roots": ["/absolute/path"]}.',
+                $rootsFile,
+            ));
         }
-        $enricher = new \Knossos\Mcp\ResultEnricher(
-            new \Knossos\Query\StalenessProbe($context->database()),
-            new \Knossos\Mcp\NextStepPlanner(),
-        );
-        $queries = new ArchitectureQueryService(
-            $context->database(),
-            gitHistory: new \Knossos\Git\ProcessGitHistoryProvider(),
-            gitWorkingTree: new \Knossos\Git\ProcessGitWorkingTreeProvider(),
-        );
-        $tools = new ToolService(
-            new ProjectScanService($context->database(), $context->installationRoot(), $allowedRoots),
-            $queries,
-            $context->maintenance(),
-            $enricher,
-        );
-        return (new StdioServer($tools, resources: new ResourceService($queries), prompts: new PromptService()))->run(STDIN, STDOUT, STDERR);
+
+        return $allowedRoots;
     }
 }

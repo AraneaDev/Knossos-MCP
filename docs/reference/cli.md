@@ -85,7 +85,9 @@ Usage:
                              [--remove] [--execute] [--db=PATH] [--json]
   knossos list-annotations <project-id> [--component=NAME] [--kind=KIND]
                            [--limit=N] [--offset=N] [--db=PATH] [--json]
-  knossos serve --allow-root=PATH [--allow-root=PATH] [--db=PATH]
+  knossos serve [--allow-root=PATH]... [--db=PATH]
+                (roots also come from KNOSSOS_ALLOWED_ROOTS and the roots
+                 file beside the database, re-read on every request)
 
 Docker supplies PHP, Node, Composer, and SQLite; mount source read-only at an
 allowed path and graph data read-write at /data.

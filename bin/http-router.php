@@ -2,16 +2,11 @@
 
 declare(strict_types=1);
 
-use Knossos\Git\ProcessGitHistoryProvider;
-use Knossos\Maintenance\DatabaseMaintenanceService;
+use Knossos\Discovery\AllowedRoots;
 use Knossos\Mcp\HttpEndpoint;
 use Knossos\Mcp\HttpSessionStore;
-use Knossos\Mcp\PromptService;
-use Knossos\Mcp\ResourceService;
-use Knossos\Mcp\ToolService;
-use Knossos\Query\ArchitectureQueryService;
+use Knossos\Mcp\McpServerAssembly;
 use Knossos\Runtime\RuntimeFactory;
-use Knossos\Scan\ProjectScanService;
 
 require dirname(__DIR__) . '/vendor/autoload.php';
 
@@ -23,12 +18,7 @@ if (parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) !== '/mcp') {
 }
 
 $rootsValue = getenv('KNOSSOS_ALLOWED_ROOTS');
-$allowedRoots = is_string($rootsValue) ? array_values(array_filter(explode(PATH_SEPARATOR, $rootsValue))) : [];
-if ($allowedRoots === []) {
-    http_response_code(500);
-    echo '{"error":"KNOSSOS_ALLOWED_ROOTS is required"}';
-    return;
-}
+$staticRoots = is_string($rootsValue) ? array_values(array_filter(explode(PATH_SEPARATOR, $rootsValue))) : [];
 $hostsValue = getenv('KNOSSOS_HTTP_ALLOWED_HOSTS');
 $allowedHosts = is_string($hostsValue) && $hostsValue !== ''
     ? array_map('strtolower', array_values(array_filter(array_map('trim', explode(',', $hostsValue)))))
@@ -41,23 +31,33 @@ $tokenValue = getenv('KNOSSOS_HTTP_BEARER_TOKEN');
 $token = is_string($tokenValue) && $tokenValue !== '' ? $tokenValue : null;
 
 $runtime = new RuntimeFactory(dirname(__DIR__));
+// Resolved after the runtime so the roots file can sit beside the database.
+$allowedRoots = new AllowedRoots(
+    $staticRoots,
+    AllowedRoots::defaultConfigPath($runtime->defaultDatabasePath()),
+);
+if ($allowedRoots->current() === []) {
+    http_response_code(500);
+    echo '{"error":"KNOSSOS_ALLOWED_ROOTS or a roots file is required"}';
+    return;
+}
 $pdo = $runtime->database();
-$enricher = new \Knossos\Mcp\ResultEnricher(
-    new \Knossos\Query\StalenessProbe($pdo),
-    new \Knossos\Mcp\NextStepPlanner(),
-);
-$queries = new ArchitectureQueryService(
+// Shared with `serve`, so a capability cannot land on one transport only.
+$assembly = new McpServerAssembly(
     $pdo,
-    gitHistory: new ProcessGitHistoryProvider(),
-    gitWorkingTree: new \Knossos\Git\ProcessGitWorkingTreeProvider(),
+    $runtime->installationRoot(),
+    $runtime->defaultDatabasePath(),
+    $allowedRoots,
 );
-$tools = new ToolService(
-    new ProjectScanService($pdo, $runtime->installationRoot(), $allowedRoots),
-    $queries,
-    new DatabaseMaintenanceService($pdo, $runtime->defaultDatabasePath()),
-    $enricher,
+$endpoint = new HttpEndpoint(
+    $assembly->tools,
+    new HttpSessionStore($pdo),
+    $allowedHosts,
+    $allowedOrigins,
+    $token,
+    resources: $assembly->resources(),
+    prompts: $assembly->prompts(),
 );
-$endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), $allowedHosts, $allowedOrigins, $token, resources: new ResourceService($queries), prompts: new PromptService());
 $headers = function_exists('getallheaders') ? getallheaders() : [];
 $body = file_get_contents('php://input', false, null, 0, 1_048_577);
 $peer = isset($_SERVER['REMOTE_ADDR']) && is_string($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : null;

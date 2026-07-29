@@ -352,7 +352,12 @@ final class QueryTest extends KnossosTestCase
             assertSame(7, count($lines));
             $responses = array_map(fn(string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR), $lines);
             assertSame('2025-11-25', $responses[0]['result']['protocolVersion']);
-            assertSame(31, count($responses[1]['result']['tools']));
+            // 31 graph tools plus server_info and diagnose_runtime, which a real
+            // `serve` offers because it wires a ServerEnvironment.
+            $toolNames = array_column($responses[1]['result']['tools'], 'name');
+            assertSame(33, count($toolNames));
+            assertArrayContains('server_info', $toolNames);
+            assertArrayContains('diagnose_runtime', $toolNames);
             assertSame(true, $responses[2]['result']['isError']);
             assertContains('allowed root', $responses[2]['result']['content'][0]['text']);
             assertSame('KNOSSOS_UNSAFE_PATH', $responses[2]['result']['structuredContent']['error']['code']);

@@ -2,6 +2,24 @@
 
 This file is generated from the live `ToolService` definitions; edit the source schemas, not this file.
 
+## `server_info`
+
+Where this server may read and what it is. Call this first in an unfamiliar setup, or whenever a path is rejected: it returns the allowed roots, the roots file to extend to add a project, the data directory, and whether the server runs in a container (where host paths are not its paths).
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
+## `diagnose_runtime`
+
+Check the runtimes, scanner workers, protocol, database, and migrations. Use when a scan fails for no obvious reason. Slower than server_info because it starts each language worker.
+
+| Input | Type | Required | Constraints/default |
+| --- | --- | --- | --- |
+
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+
 ## `list_projects`
 
 Start here to find a project_id. Lists scanned projects with freshness and graph size so you can pick the right project_id before any other call.

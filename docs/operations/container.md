@@ -30,6 +30,17 @@ The eventual `scan_project` path inside the container is `/workspace`, not the
 host path. `--network none` is recommended because scanning is local and never
 needs dependency installation or network access.
 
+An agent cannot infer that mapping, so ask the server: `server_info` reports the
+roots it can actually reach and sets `containerised: true`, and a rejected path
+says so explicitly rather than leaving the host path looking merely wrong. A
+root that was configured on the host and is not mounted shows up under
+`unreachable_roots` instead of failing only when a scan is attempted.
+
+The roots file is read from inside the container, so it belongs on the `/data`
+volume (`/data/roots.json`) and must name container paths. Adding a project
+still means adding a mount, which is a `docker run` change — the file removes
+the restart, not the mount.
+
 An MCP client can use `docker` as its server command and pass the `run` arguments
 above. The `-i` flag is required for MCP standard-input/output transport. Avoid
 `-t`: terminal framing can interfere with protocol messages.

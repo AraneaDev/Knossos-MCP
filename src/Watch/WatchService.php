@@ -16,8 +16,13 @@ final readonly class WatchService
 {
     private const MAX_BACKOFF_MS = 30_000;
 
-    /** @param list<string> $allowedRoots */
-    public function __construct(private ProjectScanner $scanner, private array $allowedRoots) {}
+    private readonly \Knossos\Discovery\AllowedRoots $roots;
+
+    /** @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots */
+    public function __construct(private ProjectScanner $scanner, \Knossos\Discovery\AllowedRoots|array $allowedRoots)
+    {
+        $this->roots = \Knossos\Discovery\AllowedRoots::of($allowedRoots);
+    }
 
     /**
      * @param callable(array<string, mixed>): void|null $observer
@@ -165,9 +170,10 @@ final readonly class WatchService
     /** @return array<string, string> */
     private function fingerprint(string $root): array
     {
-        $configuration = ProjectConfigurationLoader::load($root, $this->allowedRoots);
+        $allowedRoots = $this->roots->current();
+        $configuration = ProjectConfigurationLoader::load($root, $this->roots);
         $discovery = (new ProjectDiscoverer(new DiscoveryConfig(
-            $this->allowedRoots,
+            $allowedRoots,
             $configuration->ignores,
             $configuration->maxFiles ?? 100_000,
             $configuration->maxFileBytes ?? 2_000_000,
