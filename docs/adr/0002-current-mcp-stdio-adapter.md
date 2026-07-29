@@ -1,6 +1,7 @@
 # ADR 0002: Isolate a current MCP stdio adapter
 
-Status: Accepted (2026-07-17)
+Status: Accepted (2026-07-17); the single-revision pin superseded by
+[ADR 0004](0004-protocol-2026-07-28.md) (2026-07-29)
 
 ## Context
 

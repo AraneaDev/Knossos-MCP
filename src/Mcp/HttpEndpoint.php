@@ -5,11 +5,19 @@ declare(strict_types=1);
 namespace Knossos\Mcp;
 
 use JsonException;
+use Knossos\Mcp\Protocol\Profile20260728;
+use Knossos\Mcp\Protocol\ProtocolNegotiator;
+use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
 use RuntimeException;
 use Throwable;
 
 final readonly class HttpEndpoint
 {
+    /** Mirrored headers disagree with the request body, or a required one is absent. */
+    private const HEADER_MISMATCH = -32020;
+    private const BASE64_PREFIX = '=?base64?';
+    private const BASE64_SUFFIX = '?=';
+
     /** @param list<string> $allowedHosts @param list<string> $allowedOrigins */
     public function __construct(
         private ToolService $tools,
@@ -54,6 +62,13 @@ final readonly class HttpEndpoint
                 return $this->problem(401, 'Bearer authentication is required.', $baseHeaders + ['WWW-Authenticate' => 'Bearer']);
             }
         }
+        // `2026-07-28` removed sessions and the GET stream, so a caller that
+        // declares it gets 405 for both rather than the legacy machinery.
+        $declaredVersion = $headers['mcp-protocol-version'] ?? null;
+        $modern = $declaredVersion === Profile20260728::VERSION;
+        if ($modern && ($method === 'GET' || $method === 'DELETE')) {
+            return $this->problem(405, 'This protocol version supports POST only.', $baseHeaders + ['Allow' => 'POST']);
+        }
         if ($method === 'DELETE') {
             $session = $headers['mcp-session-id'] ?? '';
             try {
@@ -78,9 +93,15 @@ final readonly class HttpEndpoint
         if (!str_contains($accept, 'application/json') || !str_contains($accept, 'text/event-stream')) {
             return $this->problem(406, 'Accept must include application/json and text/event-stream.', $baseHeaders);
         }
-        $protocol = $headers['mcp-protocol-version'] ?? null;
-        if ($protocol !== null && $protocol !== StdioServer::PROTOCOL_VERSION) {
-            return $this->problem(400, 'Unsupported MCP-Protocol-Version.', $baseHeaders);
+        $protocol = $declaredVersion;
+        if ($protocol !== null && !in_array($protocol, ProtocolNegotiator::SUPPORTED, true)) {
+            // The specification requires the supported set to be advertised, so a
+            // client can retry on common ground instead of blindly downgrading.
+            $unsupported = new UnsupportedProtocolVersionException($protocol, ProtocolNegotiator::SUPPORTED);
+            return $this->json(400, [
+                'jsonrpc' => '2.0', 'id' => null,
+                'error' => ['code' => $unsupported->getCode(), 'message' => $unsupported->getMessage(), 'data' => $unsupported->data()],
+            ], $baseHeaders);
         }
         try {
             $message = json_decode($body, true, 512, JSON_THROW_ON_ERROR);
@@ -91,6 +112,9 @@ final readonly class HttpEndpoint
             return $this->json(400, ['jsonrpc' => '2.0', 'id' => null, 'error' => ['code' => -32700, 'message' => 'Parse error']], $baseHeaders);
         }
         $rpcMethod = $message['method'] ?? null;
+        if ($modern) {
+            return $this->handleModern($message, $headers, $baseHeaders);
+        }
         if ($rpcMethod !== 'initialize' && $protocol === null) {
             return $this->problem(400, 'MCP-Protocol-Version is required after initialization.', $baseHeaders);
         }
@@ -172,6 +196,117 @@ final readonly class HttpEndpoint
             return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
         }
         return $this->json(200, $response, $baseHeaders);
+    }
+
+    /**
+     * Serve a `2026-07-28` request: no session, no handshake, and the mirrored
+     * request headers validated against the body.
+     *
+     * @param array<string, mixed> $message
+     * @param array<string, string> $headers lower-cased request headers
+     * @param array<string, string> $baseHeaders
+     * @return array{status: int, headers: array<string, string>, body: string}
+     */
+    private function handleModern(array $message, array $headers, array $baseHeaders): array
+    {
+        $rpcMethod = $message['method'] ?? null;
+        $id = $message['id'] ?? null;
+
+        // This revision defines no client-to-server notification over Streamable
+        // HTTP, and explicitly leaves header rules for notification POSTs
+        // undefined; accept and acknowledge rather than invent a requirement.
+        if (!array_key_exists('id', $message)) {
+            return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
+        }
+        if (!is_string($rpcMethod)) {
+            return $this->json(400, ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32600, 'message' => 'Invalid Request']], $baseHeaders);
+        }
+        $mismatch = $this->headerMismatch($message, $rpcMethod, $headers);
+        if ($mismatch !== null) {
+            return $this->json(400, ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => self::HEADER_MISMATCH, 'message' => $mismatch]], $baseHeaders);
+        }
+        try {
+            $server = new StdioServer($this->tools, resources: $this->resources, prompts: $this->prompts);
+            $response = $server->handle($message);
+        } catch (Throwable $error) {
+            return $this->internalError($id, $error, $baseHeaders);
+        }
+        if ($response === null) {
+            return ['status' => 202, 'headers' => $baseHeaders, 'body' => ''];
+        }
+        // An unimplemented method answers 404, which is how a client tells a
+        // modern server apart from a legacy endpoint that does not host this
+        // path at all. The JSON-RPC body is what disambiguates the two.
+        $status = ($response['error']['code'] ?? null) === -32601 ? 404 : 200;
+
+        return $this->json($status, $response, $baseHeaders);
+    }
+
+    /**
+     * Why the mirrored headers do not match the body, or null when they agree.
+     *
+     * Intermediaries route and authorise on these headers while the server acts
+     * on the body; letting the two disagree is the confused-deputy the rule
+     * exists to close.
+     *
+     * @param array<string, mixed> $message
+     * @param array<string, string> $headers
+     */
+    private function headerMismatch(array $message, string $rpcMethod, array $headers): ?string
+    {
+        $declaredVersion = $headers['mcp-protocol-version'] ?? null;
+        $bodyVersion = ProtocolNegotiator::requestedVersion($message);
+        if ($bodyVersion !== null && $bodyVersion !== $declaredVersion) {
+            return sprintf('Header mismatch: MCP-Protocol-Version header value %s does not match body value %s', json_encode($declaredVersion), json_encode($bodyVersion));
+        }
+        $headerMethod = $headers['mcp-method'] ?? null;
+        if ($headerMethod === null) {
+            return 'Header mismatch: Mcp-Method header is required.';
+        }
+        if ($headerMethod !== $rpcMethod) {
+            return sprintf('Header mismatch: Mcp-Method header value %s does not match body value %s', json_encode($headerMethod), json_encode($rpcMethod));
+        }
+
+        $params = $message['params'] ?? [];
+        $bodyName = match ($rpcMethod) {
+            'tools/call', 'prompts/get' => is_array($params) ? ($params['name'] ?? null) : null,
+            'resources/read' => is_array($params) ? ($params['uri'] ?? null) : null,
+            default => null,
+        };
+        if (!in_array($rpcMethod, ['tools/call', 'prompts/get', 'resources/read'], true)) {
+            return null;
+        }
+        $headerName = $headers['mcp-name'] ?? null;
+        if ($headerName === null) {
+            return 'Header mismatch: Mcp-Name header is required for ' . $rpcMethod . '.';
+        }
+        $decoded = self::decodeHeaderValue($headerName);
+        if ($decoded === null) {
+            return 'Header mismatch: Mcp-Name header is not a valid Base64 sentinel value.';
+        }
+        if (!is_string($bodyName) || $decoded !== $bodyName) {
+            return sprintf('Header mismatch: Mcp-Name header value %s does not match body value %s', json_encode($decoded), json_encode($bodyName));
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolve a mirrored header value, unwrapping the `=?base64?…?=` sentinel
+     * that carries values which cannot travel as plain ASCII.
+     *
+     * Returns null when the sentinel is present but its payload is not valid
+     * Base64 — a malformed value must be rejected, not silently compared raw.
+     */
+    private static function decodeHeaderValue(string $value): ?string
+    {
+        if (!str_starts_with($value, self::BASE64_PREFIX) || !str_ends_with($value, self::BASE64_SUFFIX)) {
+            return $value;
+        }
+        $payload = substr($value, strlen(self::BASE64_PREFIX), -strlen(self::BASE64_SUFFIX));
+        $decoded = base64_decode($payload, true);
+
+        return $decoded === false ? null : $decoded;
     }
 
     /**
