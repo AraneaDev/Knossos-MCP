@@ -57,6 +57,25 @@ final class AllowedRootsTest extends KnossosTestCase
     }
 
     #[Group('discovery')]
+    public function testTheSameDirectoryWrittenTwoWaysIsOneGrant(): void
+    {
+        $parent = $this->makeTempDir();
+        $granted = $parent . '/p';
+        mkdir($granted);
+        $file = $parent . '/roots.json';
+        file_put_contents($file, json_encode(['roots' => [$granted]], JSON_THROW_ON_ERROR));
+
+        // Flag with a trailing separator, file without one. Normalising only the
+        // file side would grant the same directory twice and make server_info --
+        // the one tool whose job is reporting what is granted -- contradict
+        // itself, listing one entry "configured" and the other "roots-file".
+        $roots = new AllowedRoots([$granted . '/'], $file);
+
+        assertSame([$granted], $roots->current());
+        assertSame([AllowedRoots::SOURCE_STATIC], array_column($roots->describe(), 'source'));
+    }
+
+    #[Group('discovery')]
     public function testAFilesystemRootGrantSurvivesNormalisation(): void
     {
         $file = $this->makeTempDir() . '/roots.json';
@@ -184,11 +203,12 @@ final class AllowedRootsTest extends KnossosTestCase
     {
         assertSame('/var/data/roots.json', AllowedRoots::defaultConfigPath('/var/data/knossos.sqlite'));
 
+        $previous = getenv('KNOSSOS_ROOTS_FILE');
         putenv('KNOSSOS_ROOTS_FILE=/elsewhere/custom.json');
         try {
             assertSame('/elsewhere/custom.json', AllowedRoots::defaultConfigPath('/var/data/knossos.sqlite'));
         } finally {
-            putenv('KNOSSOS_ROOTS_FILE');
+            $previous === false ? putenv('KNOSSOS_ROOTS_FILE') : putenv('KNOSSOS_ROOTS_FILE=' . $previous);
         }
     }
 

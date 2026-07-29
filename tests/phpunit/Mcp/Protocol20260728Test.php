@@ -330,11 +330,15 @@ final class Protocol20260728Test extends KnossosTestCase
             'protocolVersion' => '2025-11-25',
         ]], JSON_THROW_ON_ERROR);
 
+        // Capture and restore rather than blindly unset: a suite run with this
+        // variable already set would otherwise have it cleared for every later
+        // test, which changes the supported-version set they observe.
+        $previous = getenv('KNOSSOS_LEGACY_PROTOCOL');
         putenv('KNOSSOS_LEGACY_PROTOCOL=0');
         try {
             $response = $endpoint->handle('POST', $headers, $body);
         } finally {
-            putenv('KNOSSOS_LEGACY_PROTOCOL');
+            $previous === false ? putenv('KNOSSOS_LEGACY_PROTOCOL') : putenv('KNOSSOS_LEGACY_PROTOCOL=' . $previous);
         }
 
         // Gating on the static constant instead of the accessor would let this

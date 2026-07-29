@@ -27,12 +27,25 @@ final class AllowedRoots
 
     /** @var list<string> */
     private array $fileRoots = [];
-    /** Raw bytes behind $fileRoots, or null when the file was absent or unreadable. */
+    /**
+     * Raw bytes behind $fileRoots, or null before the first read and whenever the
+     * file was absent or unreadable. A successful read always yields a string, so
+     * null doubles as "nothing cached" without a separate flag.
+     */
     private ?string $rawContents = null;
-    private bool $loaded = false;
+    /** @var list<string> */
+    private readonly array $staticRoots;
 
     /** @param list<string> $staticRoots roots fixed for the lifetime of the process (flags, environment) */
-    public function __construct(private readonly array $staticRoots, private readonly ?string $configPath = null) {}
+    public function __construct(array $staticRoots, private readonly ?string $configPath = null)
+    {
+        // Normalised on the same terms as file roots. Otherwise `--allow-root=/p/`
+        // and a `/p` entry in the file are two different strings, so the same
+        // directory is granted twice and `server_info` reports it twice with
+        // conflicting sources — in the one tool whose job is saying what is
+        // granted.
+        $this->staticRoots = self::normalise($staticRoots);
+    }
 
     /**
      * Accept either an already-built instance or a plain list.
@@ -120,15 +133,13 @@ final class AllowedRoots
         // holds a handful of paths.
         $contents = @file_get_contents($this->configPath);
         if ($contents === false) {
-            $this->loaded = true;
             $this->rawContents = null;
 
             return $this->fileRoots = [];
         }
-        if ($this->loaded && $contents === $this->rawContents) {
+        if ($contents === $this->rawContents) {
             return $this->fileRoots;
         }
-        $this->loaded = true;
         $this->rawContents = $contents;
 
         return $this->fileRoots = self::parse($contents);
@@ -148,18 +159,31 @@ final class AllowedRoots
         if (!is_array($roots)) {
             return [];
         }
+        return self::normalise($roots);
+    }
+
+    /**
+     * Trim, strip trailing separators, drop blanks, and de-duplicate.
+     *
+     * Shared by both sources so the same directory written two ways cannot become
+     * two grants.
+     *
+     * @param array<mixed> $roots
+     * @return list<string>
+     */
+    private static function normalise(array $roots): array
+    {
         $resolved = [];
         foreach ($roots as $root) {
             if (!is_string($root) || trim($root) === '') {
                 continue;
             }
-            $trimmed = trim($root);
             // rtrim would reduce "/" to "", which realpath() then rejects — a
             // filesystem-root grant would silently grant nothing at all. Whether
             // granting "/" is wise is the operator's call; silently ignoring what
             // they wrote is not.
-            $normalised = rtrim($trimmed, '/');
-            $resolved[] = $normalised === '' ? '/' : $normalised;
+            $trimmed = rtrim(trim($root), '/');
+            $resolved[] = $trimmed === '' ? '/' : $trimmed;
         }
 
         return array_values(array_unique($resolved));

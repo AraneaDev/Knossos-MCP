@@ -49,7 +49,9 @@ if ($allowedRoots->current() === []) {
             'No allowed roots. Set KNOSSOS_ALLOWED_ROOTS, or create %s containing {"roots": ["/absolute/path"]}.',
             (string) $allowedRoots->configPath(),
         ),
-    ], JSON_UNESCAPED_SLASHES);
+        // A roots path may hold invalid UTF-8; without substitution json_encode
+        // returns false and the 500 carries an empty body.
+    ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     return;
 }
 $pdo = $runtime->database();

@@ -105,6 +105,7 @@ final class ServerEnvironmentToolsTest extends KnossosTestCase
     #[Group('mcp')]
     public function testLegacyRevisionCanBeWithdrawnWithoutCodeChanges(): void
     {
+        $previous = getenv('KNOSSOS_LEGACY_PROTOCOL');
         putenv('KNOSSOS_LEGACY_PROTOCOL=0');
         try {
             // Advertising a revision the negotiator would then refuse is worse
@@ -112,7 +113,7 @@ final class ServerEnvironmentToolsTest extends KnossosTestCase
             assertSame([Profile20260728::VERSION], ProtocolNegotiator::supported());
             assertSame(false, ProtocolNegotiator::legacyEnabled());
         } finally {
-            putenv('KNOSSOS_LEGACY_PROTOCOL');
+            $previous === false ? putenv('KNOSSOS_LEGACY_PROTOCOL') : putenv('KNOSSOS_LEGACY_PROTOCOL=' . $previous);
         }
 
         assertSame(true, ProtocolNegotiator::legacyEnabled());

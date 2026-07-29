@@ -104,10 +104,19 @@ if (is_file($file)) {
 }
 if (!in_array($new, $roots, true)) { $roots[] = $new; }
 $roots = array_values(array_unique($roots));
+// Encode before writing. json_encode() returns false for a path holding
+// invalid UTF-8 -- legal on a Unix filesystem -- and "false . \n" is just
+// "\n", so the write would succeed, truncate the allow-list to nothing, and
+// still report a grant.
+try {
+    $payload = json_encode(["roots" => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
+} catch (JsonException $error) {
+    fwrite(STDERR, "  unable to encode the roots file (is the path valid UTF-8?): " . $error->getMessage() . "\n");
+    exit(1);
+}
 // Reporting a grant that was never written would register an unusable
 // server and blame the client for it.
-$written = @file_put_contents($file, json_encode(["roots" => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
-if ($written === false) {
+if (@file_put_contents($file, $payload) === false) {
     fwrite(STDERR, "  unable to write the roots file: " . $file . "\n");
     exit(1);
 }
