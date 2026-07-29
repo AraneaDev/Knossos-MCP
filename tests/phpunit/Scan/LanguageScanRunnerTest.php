@@ -51,7 +51,7 @@ final class LanguageScanRunnerTest extends TestCase
         );
     }
 
-    private function makePlan(ScanPreparation $preparation = null): ScanPlan
+    private function makePlan(?ScanPreparation $preparation = null): ScanPlan
     {
         return new ScanPlan(
             preparation: $preparation ?? $this->makePreparation(),
