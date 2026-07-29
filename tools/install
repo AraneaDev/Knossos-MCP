@@ -16,6 +16,7 @@ set -eu
 #   KNOSSOS_MCP_SCOPE   claude mcp scope: local|user|project     (default: user)
 #   KNOSSOS_ALLOW_ROOT  project root to seed the roots file with  (default: current directory)
 #   KNOSSOS_DATA_DIR    directory holding the database and roots  (default: ~/.knossos)
+#   KNOSSOS_ROOTS_FILE  the allow-list file itself       (default: <data dir>/roots.json)
 #   KNOSSOS_SEED_SCAN   1 to seed an initial scan, 0 to skip      (default: 1)
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -81,6 +82,9 @@ fi
 
 echo "Recording the allowed root..."
 mkdir -p "$DATA_DIR"
+# KNOSSOS_ROOTS_FILE may point outside $DATA_DIR, whose parent would then
+# never be created and the write below would fail.
+mkdir -p "$(dirname -- "$ROOTS_FILE")"
 # Merge rather than overwrite: re-running the installer from a second project
 # must add that project, not silently revoke the first one.
 KNOSSOS_ROOTS_FILE="$ROOTS_FILE" KNOSSOS_NEW_ROOT="$ALLOW_ROOT" php -r '
@@ -100,7 +104,13 @@ if (is_file($file)) {
 }
 if (!in_array($new, $roots, true)) { $roots[] = $new; }
 $roots = array_values(array_unique($roots));
-file_put_contents($file, json_encode(["roots" => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+// Reporting a grant that was never written would register an unusable
+// server and blame the client for it.
+$written = @file_put_contents($file, json_encode(["roots" => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+if ($written === false) {
+    fwrite(STDERR, "  unable to write the roots file: " . $file . "\n");
+    exit(1);
+}
 printf("  %d root(s) granted\n", count($roots));
 '
 echo "  add more later by appending to $ROOTS_FILE - it is re-read per request,"
@@ -123,7 +133,11 @@ if command -v claude >/dev/null 2>&1; then
     claude mcp remove "$NAME" -s "$SCOPE" >/dev/null 2>&1 || true
     # No --allow-root: the roots file governs, so this registration stays correct
     # as projects are added and does not need rewriting per project.
-    claude mcp add "$NAME" -s "$SCOPE" -e "KNOSSOS_DATA_DIR=$DATA_DIR" -- \
+    # KNOSSOS_ROOTS_FILE too: the server otherwise derives the roots file
+    # from its database path and would read $DATA_DIR/roots.json rather than
+    # the file just seeded.
+    claude mcp add "$NAME" -s "$SCOPE" \
+        -e "KNOSSOS_DATA_DIR=$DATA_DIR" -e "KNOSSOS_ROOTS_FILE=$ROOTS_FILE" -- \
         "$ROOT/tools/mcp-serve"
     log "registered as '$NAME' (scope: $SCOPE)"
     echo
@@ -138,7 +152,7 @@ else
   "mcpServers": {
     "$NAME": {
       "command": "$ROOT/tools/mcp-serve",
-      "env": { "KNOSSOS_DATA_DIR": "$DATA_DIR" }
+      "env": { "KNOSSOS_DATA_DIR": "$DATA_DIR", "KNOSSOS_ROOTS_FILE": "$ROOTS_FILE" }
     }
   }
 }

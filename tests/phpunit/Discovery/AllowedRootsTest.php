@@ -33,6 +33,43 @@ final class AllowedRootsTest extends KnossosTestCase
     }
 
     #[Group('discovery')]
+    public function testANarrowedGrantIsHonouredEvenWhenSizeAndMtimeAreUnchanged(): void
+    {
+        // Named so the two paths are the same length by construction; deriving
+        // them from uniqid() would make this pass or fail on name length.
+        $parent = $this->makeTempDir();
+        $kept = $parent . '/keep';
+        $revoked = $parent . '/gone';
+        mkdir($kept);
+        mkdir($revoked);
+        $file = $parent . '/roots.json';
+        // Equal-length paths written back-to-back: identical size, and mtime's
+        // one-second granularity cannot separate them. A stat-based fingerprint
+        // reports "unchanged" here and keeps granting the revoked root -- and
+        // PHP's per-path stat cache would hide the change even a second later.
+        assertSame(strlen($kept), strlen($revoked));
+        file_put_contents($file, json_encode(['roots' => [$revoked]], JSON_THROW_ON_ERROR));
+        $roots = new AllowedRoots([], $file);
+        assertSame([$revoked], $roots->current());
+
+        file_put_contents($file, json_encode(['roots' => [$kept]], JSON_THROW_ON_ERROR));
+        assertSame([$kept], $roots->current());
+    }
+
+    #[Group('discovery')]
+    public function testAFilesystemRootGrantSurvivesNormalisation(): void
+    {
+        $file = $this->makeTempDir() . '/roots.json';
+        file_put_contents($file, json_encode(['roots' => ['/']], JSON_THROW_ON_ERROR));
+
+        // Trailing-separator trimming would reduce "/" to "", which realpath()
+        // rejects -- granting the filesystem root would silently grant nothing.
+        // Whether that grant is wise is the operator's call; discarding what they
+        // wrote without saying so is not.
+        assertSame(['/'], (new AllowedRoots([], $file))->current());
+    }
+
+    #[Group('discovery')]
     public function testStaticAndFileRootsAreUnionedWithoutDuplicates(): void
     {
         $shared = $this->makeTempDir();
@@ -162,7 +199,7 @@ final class AllowedRootsTest extends KnossosTestCase
     {
         foreach ($this->tempDirs as $dir) {
             foreach (glob($dir . '/*') ?: [] as $file) {
-                @unlink($file);
+                is_dir($file) ? @rmdir($file) : @unlink($file);
             }
             @rmdir($dir);
         }

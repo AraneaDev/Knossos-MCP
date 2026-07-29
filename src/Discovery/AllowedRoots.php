@@ -27,8 +27,8 @@ final class AllowedRoots
 
     /** @var list<string> */
     private array $fileRoots = [];
-    /** Fingerprint (mtime:size) of the file behind $fileRoots, or null when it was absent. */
-    private ?string $fingerprint = null;
+    /** Raw bytes behind $fileRoots, or null when the file was absent or unreadable. */
+    private ?string $rawContents = null;
     private bool $loaded = false;
 
     /** @param list<string> $staticRoots roots fixed for the lifetime of the process (flags, environment) */
@@ -106,30 +106,37 @@ final class AllowedRoots
         if ($this->configPath === null) {
             return [];
         }
-        // Stat rather than parse: an unchanged file is the overwhelmingly common
-        // case and costs one syscall here instead of a read plus a JSON decode.
-        $fingerprint = null;
-        if (is_file($this->configPath)) {
-            $stat = @stat($this->configPath);
-            $fingerprint = $stat === false ? null : $stat['mtime'] . ':' . $stat['size'];
+        // Compare contents, not a stat fingerprint. Two independent reasons a
+        // stat cannot be trusted here, both of which would leave a long-lived
+        // server serving an allow-list that has since been narrowed:
+        //   1. PHP caches stat results per path, so is_file()/stat() keep
+        //      reporting the values from the first call unless the cache is
+        //      explicitly cleared.
+        //   2. stat()'s mtime has one-second granularity, so even with the cache
+        //      cleared, two same-size edits within one second are
+        //      indistinguishable — swapping one root for another of equal length
+        //      is exactly that case.
+        // Reading is also what a stat would have preceded anyway, and the file
+        // holds a handful of paths.
+        $contents = @file_get_contents($this->configPath);
+        if ($contents === false) {
+            $this->loaded = true;
+            $this->rawContents = null;
+
+            return $this->fileRoots = [];
         }
-        if ($this->loaded && $fingerprint === $this->fingerprint) {
+        if ($this->loaded && $contents === $this->rawContents) {
             return $this->fileRoots;
         }
         $this->loaded = true;
-        $this->fingerprint = $fingerprint;
-        $this->fileRoots = $fingerprint === null ? [] : self::parse($this->configPath);
+        $this->rawContents = $contents;
 
-        return $this->fileRoots;
+        return $this->fileRoots = self::parse($contents);
     }
 
     /** @return list<string> */
-    private static function parse(string $path): array
+    private static function parse(string $contents): array
     {
-        $contents = @file_get_contents($path);
-        if ($contents === false) {
-            return [];
-        }
         try {
             $decoded = json_decode($contents, true, 8, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
@@ -143,9 +150,16 @@ final class AllowedRoots
         }
         $resolved = [];
         foreach ($roots as $root) {
-            if (is_string($root) && trim($root) !== '') {
-                $resolved[] = rtrim(trim($root), '/');
+            if (!is_string($root) || trim($root) === '') {
+                continue;
             }
+            $trimmed = trim($root);
+            // rtrim would reduce "/" to "", which realpath() then rejects — a
+            // filesystem-root grant would silently grant nothing at all. Whether
+            // granting "/" is wise is the operator's call; silently ignoring what
+            // they wrote is not.
+            $normalised = rtrim($trimmed, '/');
+            $resolved[] = $normalised === '' ? '/' : $normalised;
         }
 
         return array_values(array_unique($resolved));

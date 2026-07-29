@@ -116,6 +116,78 @@ final class HttpRouterTest extends KnossosTestCase
         }
     }
 
+    #[Group('http')]
+    public function testHttpRouterRefusesToServeWithNoAllowedRootsAndNamesTheRootsFile(): void
+    {
+        $port = self::reserveEphemeralPort();
+        $dataDir = self::makeTempDir('knossos-router-noroots-');
+        $logFile = tempnam(sys_get_temp_dir(), 'knossos-router-log-');
+        if ($logFile === false) {
+            throw new RuntimeException('Unable to allocate router log file.');
+        }
+        $root = self::repositoryRoot();
+
+        $command = [PHP_BINARY];
+        $coverageDir = getenv('KNOSSOS_PHP_COVERAGE_DIR');
+        if (is_string($coverageDir) && $coverageDir !== '') {
+            $command[] = '-d';
+            $command[] = 'pcov.directory=' . $root;
+            $command[] = '-d';
+            $command[] = 'auto_prepend_file=' . $root . '/tools/pcov-prepend.php';
+        }
+        $command[] = '-S';
+        $command[] = '127.0.0.1:' . $port;
+        $command[] = $root . '/bin/http-router.php';
+
+        $env = getenv();
+        // Neither source of roots: no environment variable, and a data directory
+        // with no roots.json in it.
+        unset($env['KNOSSOS_ALLOWED_ROOTS'], $env['KNOSSOS_ROOTS_FILE']);
+        $env['KNOSSOS_HTTP_BEARER_TOKEN'] = 'router-secret';
+        $env['KNOSSOS_HTTP_ALLOWED_HOSTS'] = '127.0.0.1:' . $port;
+        $env['KNOSSOS_HTTP_ALLOWED_ORIGINS'] = 'http://127.0.0.1:' . $port;
+        $env['KNOSSOS_DATA_DIR'] = $dataDir;
+
+        $descriptors = [0 => ['file', '/dev/null', 'r'], 1 => ['file', $logFile, 'a'], 2 => ['file', $logFile, 'a']];
+        $process = proc_open($command, $descriptors, $pipes, $root, $env);
+        if (!is_resource($process)) {
+            throw new RuntimeException('Unable to launch http-router server.');
+        }
+
+        try {
+            self::waitForServer($port);
+            $response = self::request($port, 'POST', '/mcp', [
+                'Host' => '127.0.0.1:' . $port,
+                'Origin' => 'http://127.0.0.1:' . $port,
+                'Content-Type' => 'application/json',
+                'Accept' => 'application/json, text/event-stream',
+                'Authorization' => 'Bearer router-secret',
+                'MCP-Protocol-Version' => '2026-07-28',
+            ], '{"jsonrpc":"2.0","id":1,"method":"tools/list"}');
+
+            assertSame(500, $response['status']);
+            // The refusal must be machine-readable and must name the file to
+            // create; an operator reading this in a container log should not have
+            // to go hunting for which path the server derived.
+            assertContains('application/json', strtolower($response['headers']));
+            assertContains('nosniff', strtolower($response['headers']));
+            $decoded = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR);
+            assertContains($dataDir . '/roots.json', $decoded['error']);
+        } finally {
+            proc_terminate($process, defined('SIGTERM') ? SIGTERM : 15);
+            $deadline = microtime(true) + 5.0;
+            while (microtime(true) < $deadline) {
+                if (!proc_get_status($process)['running']) {
+                    break;
+                }
+                usleep(10_000);
+            }
+            proc_close($process);
+            @unlink($logFile);
+            self::removeTree($dataDir);
+        }
+    }
+
     private static function reserveEphemeralPort(): int
     {
         $server = @stream_socket_server('tcp://127.0.0.1:0', $errno, $errstr);
@@ -165,7 +237,8 @@ final class HttpRouterTest extends KnossosTestCase
 
     /**
      * @param array<string, string> $headers
-     * @return array{status: int, body: string}
+     * @return array{status: int, headers: string, body: string} headers are the raw response block, so a
+     *                                                          test can assert on ones the router sets directly
      */
     private static function request(int $port, string $method, string $path, array $headers, string $body): array
     {
@@ -201,6 +274,7 @@ final class HttpRouterTest extends KnossosTestCase
 
         return [
             'status' => (int) $matches[1],
+            'headers' => $separator === false ? $response : substr($response, 0, $separator),
             'body' => $separator === false ? '' : substr($response, $separator + 4),
         ];
     }

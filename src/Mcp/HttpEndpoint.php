@@ -94,10 +94,15 @@ final readonly class HttpEndpoint
             return $this->problem(406, 'Accept must include application/json and text/event-stream.', $baseHeaders);
         }
         $protocol = $declaredVersion;
-        if ($protocol !== null && !in_array($protocol, ProtocolNegotiator::SUPPORTED, true)) {
+        // supported(), not the SUPPORTED constant: with KNOSSOS_LEGACY_PROTOCOL=0
+        // the constant still lists the withdrawn revision, so a legacy client
+        // would slip past this gate into the session path and be refused further
+        // in — surfacing as 200 with an embedded error instead of 400, and
+        // advertising a revision this server has stopped serving.
+        if ($protocol !== null && !in_array($protocol, ProtocolNegotiator::supported(), true)) {
             // The specification requires the supported set to be advertised, so a
             // client can retry on common ground instead of blindly downgrading.
-            $unsupported = new UnsupportedProtocolVersionException($protocol, ProtocolNegotiator::SUPPORTED);
+            $unsupported = new UnsupportedProtocolVersionException($protocol, ProtocolNegotiator::supported());
             return $this->json(400, [
                 'jsonrpc' => '2.0', 'id' => null,
                 'error' => ['code' => $unsupported->getCode(), 'message' => $unsupported->getMessage(), 'data' => $unsupported->data()],

@@ -322,6 +322,33 @@ final class Protocol20260728Test extends KnossosTestCase
     }
 
     #[Group('http')]
+    public function testHttpRefusesTheWithdrawnRevisionWhenLegacyIsDisabled(): void
+    {
+        [$endpoint, $headers] = $this->endpoint();
+        $headers['MCP-Protocol-Version'] = '2025-11-25';
+        $body = json_encode(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+            'protocolVersion' => '2025-11-25',
+        ]], JSON_THROW_ON_ERROR);
+
+        putenv('KNOSSOS_LEGACY_PROTOCOL=0');
+        try {
+            $response = $endpoint->handle('POST', $headers, $body);
+        } finally {
+            putenv('KNOSSOS_LEGACY_PROTOCOL');
+        }
+
+        // Gating on the static constant instead of the accessor would let this
+        // through to the session path and refuse it deeper in, surfacing as 200
+        // with an embedded error -- and would advertise a revision this server
+        // has stopped serving.
+        assertSame(400, $response['status']);
+        $error = json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR)['error'];
+        assertSame(-32022, $error['code']);
+        assertSame([self::VERSION], $error['data']['supported']);
+        assertSame(false, array_key_exists('Mcp-Session-Id', $response['headers']));
+    }
+
+    #[Group('http')]
     public function testHttpAdvertisesSupportedRevisionsWhenAskedForAnUnknownOne(): void
     {
         [$endpoint, $headers] = $this->endpoint();

@@ -37,8 +37,19 @@ $allowedRoots = new AllowedRoots(
     AllowedRoots::defaultConfigPath($runtime->defaultDatabasePath()),
 );
 if ($allowedRoots->current() === []) {
+    // Same headers the 404 above and HttpEndpoint apply, and the roots-file path
+    // that `serve` and `server_info` both name: an operator reading this in a
+    // container log should not have to go looking for which file to create.
     http_response_code(500);
-    echo '{"error":"KNOSSOS_ALLOWED_ROOTS or a roots file is required"}';
+    header('Content-Type: application/json');
+    header('Cache-Control: no-store');
+    header('X-Content-Type-Options: nosniff');
+    echo json_encode([
+        'error' => sprintf(
+            'No allowed roots. Set KNOSSOS_ALLOWED_ROOTS, or create %s containing {"roots": ["/absolute/path"]}.',
+            (string) $allowedRoots->configPath(),
+        ),
+    ], JSON_UNESCAPED_SLASHES);
     return;
 }
 $pdo = $runtime->database();
