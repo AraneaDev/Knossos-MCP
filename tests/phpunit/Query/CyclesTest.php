@@ -104,4 +104,46 @@ final class CyclesTest extends KnossosTestCase
         assertSame(true, $timed->truncated);
         assertSame(true, in_array('time_limit', $timed->data['bounds']['truncation_reasons'], true));
     }
+
+    /**
+     * A bounded search must not read as an exhaustive one.
+     *
+     * The default edge bound sat below the size of a mid-sized graph, so a real
+     * cycle beyond the cap went unreported while the summary said "Found 0
+     * dependency cycle components" — the same sentence an genuinely acyclic
+     * project gets. architecture_trends, which counts over the whole snapshot,
+     * disagreed with dependency_cycles for exactly this reason.
+     */
+    #[Group('cycles')]
+    public function testATruncatedSearchSaysSoInTheSummary(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->saveEdge(
+            StableId::edge($ids['project'], 'calls', $ids['invoice'], $ids['checkout'], 'reverse'),
+            $ids['project'],
+            'calls',
+            $ids['invoice'],
+            $ids['checkout'],
+            $ids['file'],
+            30,
+            30,
+            'ast',
+            'certain',
+            [],
+            'php:file:src/InvoiceService.php',
+            $ids['scan'],
+        );
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $query = new ArchitectureQueryService($pdo);
+
+        $bounded = $query->dependencyCycles($ids['project'], maxEdges: 1);
+        assertSame([], $bounded->data['cycles']);
+        assertSame(true, str_contains($bounded->summary, 'search was truncated'));
+        assertSame(true, str_contains($bounded->summary, 'edge_limit'));
+
+        // An exhaustive search keeps the plain sentence.
+        $complete = $query->dependencyCycles($ids['project']);
+        assertSame(1, count($complete->data['cycles']));
+        assertSame(false, str_contains($complete->summary, 'truncated'));
+    }
 }

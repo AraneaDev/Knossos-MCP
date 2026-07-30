@@ -23,6 +23,13 @@ use Knossos\Scan\ProjectScanService;
  */
 final readonly class ToolService
 {
+    /**
+     * Response budget applied when a caller names none. Sized to stay well
+     * inside a host's per-result cap while leaving room for a substantial
+     * answer; callers who want more pass max_chars explicitly, up to 100000.
+     */
+    private const DEFAULT_MAX_CHARS = 30_000;
+
     public function __construct(
         private ProjectScanService $scanner,
         private ArchitectureQueryService $queries,
@@ -206,7 +213,7 @@ final readonly class ToolService
                         'baseline_snapshot' => ['type' => 'string', 'minLength' => 1],
                         'budgets' => ['type' => 'object', 'properties' => [
                             'new_cycles' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
-                            'boundary_violations' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
+                            'boundary_violations' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'description' => 'Requires policies: there is nothing to count violations against without them.'],
                             'error_diagnostics' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
                             'warning_diagnostics' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
                             'hub_degree_growth' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
@@ -424,7 +431,7 @@ final readonly class ToolService
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
                         'max_nodes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 50000, 'default' => 10000],
-                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 20000],
+                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 100000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
                         'include_self_loops' => ['type' => 'boolean', 'default' => false, 'description' => 'Include single-symbol self-recursion; excluded by default because recursion is not an architectural cycle.'],
                     ],
@@ -446,7 +453,7 @@ final readonly class ToolService
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
                         'max_nodes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 50000, 'default' => 10000],
-                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 20000],
+                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 100000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
                         'include_external' => ['type' => 'boolean', 'default' => false, 'description' => 'Include external/unresolved symbols (builtins, vendor targets) in hubs and hotspots.'],
                         'include_tests' => ['type' => 'boolean', 'default' => false, 'description' => 'Include test-role components in hubs and hotspots.'],
@@ -483,7 +490,7 @@ final readonly class ToolService
                         ],
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
-                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 20000],
+                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 100000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
                     ],
                     'required' => ['project_id', 'policies'],
@@ -503,7 +510,7 @@ final readonly class ToolService
                         'feature_description' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 2000],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 20, 'default' => 5],
                         'max_members' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 50000, 'default' => 20000],
-                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 20000],
+                        'max_edges' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000, 'default' => 100000],
                         'timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 5000, 'default' => 1000],
                         'ranking_mode' => ['type' => 'string', 'enum' => ['deterministic', 'semantic_if_available'], 'default' => 'deterministic'],
                     ],
@@ -736,7 +743,7 @@ final readonly class ToolService
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'action' => ['type' => 'string', 'enum' => ['integrity', 'checkpoint', 'optimize', 'backup']],
                     'execute' => ['type' => 'boolean', 'default' => false],
-                    'backup_name' => ['type' => 'string', 'minLength' => 8, 'maxLength' => 127],
+                    'backup_name' => ['type' => 'string', 'minLength' => 8, 'maxLength' => 127, 'pattern' => '^[A-Za-z0-9._-]+\\.sqlite$', 'description' => 'A plain filename ending in .sqlite, with no directory part; the backup is written inside the server\'s data directory.'],
                 ], 'required' => ['action'], 'additionalProperties' => false],
                 'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => false, 'openWorldHint' => false],
             ],
@@ -753,7 +760,7 @@ final readonly class ToolService
     {
         return [
             'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
-            'max_chars' => ['type' => 'integer', 'minimum' => 4000, 'maximum' => 100000, 'description' => 'Byte budget for the serialized result; oversized list fields are trimmed tail-first and reported in meta.dropped_items.'],
+            'max_chars' => ['type' => 'integer', 'minimum' => 4000, 'maximum' => 100000, 'default' => 30000, 'description' => 'Byte budget for the serialized result; supporting material (legends, evidence) is trimmed before findings, tail-first, and reported in meta.dropped_items. Defaults to 30000 so a large result cannot exceed the host\'s response cap; raise it to trade context window for detail.'],
             'refresh_if_stale' => ['type' => 'boolean', 'default' => false, 'description' => 'If the graph is stale, run an incremental rescan (of Knossos\'s own derived database only) before answering; a failed rescan serves the last complete graph with a warning. A missing graph still requires scan_project.'],
         ];
     }
@@ -817,12 +824,20 @@ final readonly class ToolService
         if (
             in_array('max_chars', $declared, true)
             && !in_array($name, ['architecture_context', 'export_agent_brief'], true)
-            && array_key_exists('max_chars', $arguments)
         ) {
-            $maxChars = $arguments['max_chars'];
-            unset($arguments['max_chars']);
-            if (!is_int($maxChars) || $maxChars < 4000 || $maxChars > 100_000) {
-                throw new ToolInputException('max_chars must be an integer between 4000 and 100000.');
+            // Budgeted even when the caller says nothing. An unbounded result is
+            // bounded by the graph rather than by anything the host can take:
+            // changed_files_impact over a ten-file diff serialized to ~70,000
+            // characters and was rejected outright by the client, so the caller
+            // got nothing at all instead of a trimmed answer that says what it
+            // dropped. Raise it explicitly to trade context window for detail.
+            $maxChars = self::DEFAULT_MAX_CHARS;
+            if (array_key_exists('max_chars', $arguments)) {
+                $maxChars = $arguments['max_chars'];
+                unset($arguments['max_chars']);
+                if (!is_int($maxChars) || $maxChars < 4000 || $maxChars > 100_000) {
+                    throw new ToolInputException('max_chars must be an integer between 4000 and 100000.');
+                }
             }
         }
         $refreshRequested = false;
@@ -1345,7 +1360,7 @@ final readonly class ToolService
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'limit', 20, 1, 100),
             self::integer($arguments, 'max_nodes', 10_000, 1, 50_000),
-            self::integer($arguments, 'max_edges', 20_000, 1, 100_000),
+            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
             self::boolean($arguments, 'include_self_loops', false),
         );
@@ -1365,7 +1380,7 @@ final readonly class ToolService
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'limit', 20, 1, 100),
             self::integer($arguments, 'max_nodes', 10_000, 1, 50_000),
-            self::integer($arguments, 'max_edges', 20_000, 1, 100_000),
+            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
             self::boolean($arguments, 'include_external', false),
             self::boolean($arguments, 'include_tests', false),
@@ -1389,7 +1404,7 @@ final readonly class ToolService
             $policies,
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'limit', 100, 1, 100),
-            self::integer($arguments, 'max_edges', 20_000, 1, 100_000),
+            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         );
     }
@@ -1407,7 +1422,7 @@ final readonly class ToolService
             self::string($arguments, 'feature_description'),
             self::integer($arguments, 'limit', 5, 1, 20),
             self::integer($arguments, 'max_members', 20_000, 1, 50_000),
-            self::integer($arguments, 'max_edges', 20_000, 1, 100_000),
+            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
             array_key_exists('ranking_mode', $arguments) ? self::string($arguments, 'ranking_mode') : 'deterministic',
         );

@@ -22,6 +22,16 @@ use Throwable;
  */
 final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryService
 {
+    /**
+     * How wide test_impact's underlying blast-radius scan runs, independent of
+     * the result cap the caller asks for. Test files are filtered out of the
+     * impacted set by role, so the search has to be wide enough that production
+     * dependants sorting ahead of them cannot crowd them out. Pinned to the
+     * per-query maximum the topology service accepts, so narrowing the answer
+     * never narrows the search.
+     */
+    private const TEST_IMPACT_SCAN_LIMIT = 100;
+
     public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ?GitHistoryProvider $gitHistory = null, private ?GitWorkingTreeProvider $gitWorkingTree = null)
     {
         parent::__construct($pdo, $clock);
@@ -229,7 +239,12 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
      */
     public function testImpact(string $projectId, array $files = [], bool $workingTree = false, ?string $baseRef = null, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
     {
-        $impact = $this->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
+        // The caller's limit caps the answer, not the search. Handing it to the
+        // blast-radius scan let production dependants that sort ahead of a test
+        // file consume the whole window, so narrowing the result set turned a
+        // truncation into "0 test files statically exercise the change" — a false
+        // negative for the one tool whose output decides which tests get run.
+        $impact = $this->changedFilesImpact($projectId, $files, $workingTree, $baseRef, $maxDepth, self::TEST_IMPACT_SCAN_LIMIT, $edgeKinds, $minConfidence, $timeoutMs);
         $distances = [];
         foreach ($impact->data['direct_components'] as $component) {
             $distances[$component['id']] = 0;
@@ -273,6 +288,8 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
             $testFiles[] = $entry;
         }
         usort($testFiles, static fn(array $a, array $b): int => ($a['distance'] <=> $b['distance']) ?: ($a['path'] <=> $b['path']));
+        $truncated = $impact->truncated || count($testFiles) > $limit;
+        $testFiles = array_slice($testFiles, 0, $limit);
         $warnings = [
             ...$impact->warnings,
             'Test impact is a static lower bound: run these first, not only these. Data-driven tests, fixtures, and glob-only discovery are not visible to the graph, and the per-component dependant scan is bounded.',
@@ -286,11 +303,17 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
                 'changed_files' => $impact->data['changed_files'],
                 'unresolved_files' => $impact->data['unresolved_files'],
                 'test_files' => $testFiles,
-                'bounds' => $impact->data['bounds'] + ['impacted_scan_limit' => $limit],
+                // `limit` is what the caller asked for; `impacted_scan_limit` is
+                // how wide the search actually ran, so a caller can tell a genuine
+                // "nothing found" from a bounded one.
+                'bounds' => array_merge($impact->data['bounds'], [
+                    'limit' => $limit,
+                    'impacted_scan_limit' => self::TEST_IMPACT_SCAN_LIMIT,
+                ]),
             ],
             array_slice(array_map(static fn(array $entry): array => ['path' => $entry['path'], 'start_line' => null, 'end_line' => null], $testFiles), 0, 100),
             array_values(array_unique($warnings)),
-            $impact->truncated,
+            $truncated,
         );
     }
 

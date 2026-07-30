@@ -171,10 +171,22 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             }
         }
         $truncationReasons = array_values(array_unique($truncationReasons));
+        // Report the total found, not the page returned. Announcing "Found 4
+        // declared architecture policy violations" over a listing capped at 4,
+        // while bounds.violation_count said 322, understated the finding by two
+        // orders of magnitude to anyone reading only the summary.
+        $summary = sprintf('Found %d declared architecture policy violation%s.', $violationCount, $violationCount === 1 ? '' : 's');
+        if ($violationCount > count($violations)) {
+            $summary .= sprintf(' Listing the first %d; raise limit to see more.', count($violations));
+        }
+        if ($truncationReasons !== [] && !in_array('result_limit', $truncationReasons, true)) {
+            $summary .= sprintf(' The search was truncated (%s), so violations beyond that bound are not counted.', implode(', ', $truncationReasons));
+        }
+
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Found %d declared architecture policy violation%s.', count($violations), count($violations) === 1 ? '' : 's'),
+            $summary,
             [
                 'violations' => $violations,
                 'policies_evaluated' => array_map(static fn(array $policy): array => [

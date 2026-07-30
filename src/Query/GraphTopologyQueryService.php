@@ -56,7 +56,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *
      * @param list<string> $edgeKinds
      */
-    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000, bool $includeSelfLoops = false): ResultEnvelope
+    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeSelfLoops = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -201,10 +201,20 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
 
         $truncationReasons = array_values(array_unique($truncationReasons));
+        // A bounded search must not read as an exhaustive one: "Found 0
+        // dependency cycle components" is the same sentence a genuinely acyclic
+        // project gets, and a cycle living beyond the edge cap is invisible in
+        // it. Naming the bound in the summary is what lets a caller tell the two
+        // apart without reading bounds.truncation_reasons.
+        $summary = sprintf('Found %d dependency cycle component%s.', count($cycles), count($cycles) === 1 ? '' : 's');
+        if ($truncationReasons !== []) {
+            $summary .= sprintf(' The search was truncated (%s), so cycles beyond that bound are not reported.', implode(', ', $truncationReasons));
+        }
+
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Found %d dependency cycle component%s.', count($cycles), count($cycles) === 1 ? '' : 's'),
+            $summary,
             [
                 'cycles' => $cycles,
                 'bounds' => [
@@ -224,7 +234,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *
      * @param list<string> $edgeKinds
      */
-    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false): ResultEnvelope
+    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);

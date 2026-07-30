@@ -174,7 +174,7 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $limit = 20,
         int $maxNodes = 10_000,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
         bool $includeSelfLoops = false,
     ): ResultEnvelope {
@@ -189,7 +189,7 @@ final readonly class ArchitectureQueryService
         string $minConfidence = 'possible',
         int $limit = 20,
         int $maxNodes = 10_000,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
         bool $includeExternal = false,
         bool $includeTests = false,
@@ -204,7 +204,7 @@ final readonly class ArchitectureQueryService
         array $policies,
         string $minConfidence = 'possible',
         int $limit = 100,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
     ): ResultEnvelope {
         return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs);
@@ -216,7 +216,7 @@ final readonly class ArchitectureQueryService
         string $featureDescription,
         int $limit = 5,
         int $maxMembers = 20_000,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
         string $rankingMode = 'deterministic',
     ): ResultEnvelope {

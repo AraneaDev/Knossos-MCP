@@ -90,17 +90,47 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
             }
             $dossiers[] = $dossier;
         }
-        $sections = [
-            'summary' => $this->fitContextSection($summary->jsonSerialize(), $allocations['summary']),
-            'locations' => $locations === null ? ['status' => 'not_requested'] : $this->fitContextSection($locations->jsonSerialize(), $allocations['locations']),
-            'change_impact' => $change === null ? ['status' => 'not_requested'] : $this->fitContextSection($change->jsonSerialize(), $allocations['change_impact']),
-            'dossiers' => $this->fitContextSection(['items' => $dossiers], $allocations['dossiers']),
+        $payloads = [
+            'summary' => $summary->jsonSerialize(),
+            'locations' => $locations?->jsonSerialize(),
+            'change_impact' => $change?->jsonSerialize(),
+            'dossiers' => ['items' => $dossiers],
         ];
+        $sections = [];
+        foreach ($payloads as $name => $payload) {
+            $sections[$name] = $payload === null
+                ? ['status' => 'not_requested']
+                : $this->fitContextSection($payload, $allocations[$name]);
+        }
         $context = [
             'task_description' => $taskDescription === '' ? null : $taskDescription,
             'files' => $files,
             'sections' => $sections,
         ];
+        // A section is fitted against its own share first, so the proportions
+        // hold whenever everything fits. What the fixed shares got wrong was the
+        // case where they do not: a section over its slice was dropped whole
+        // while the budget its neighbours left unspent went nowhere, so a caller
+        // asking for 12,000 characters could be handed 2,481 with three of four
+        // sections empty. Anything still dropped is offered the remainder, most
+        // task-specific section first. The remainder is measured against the
+        // whole context, not just the sections, so reclaiming can never overrun
+        // the total and force the backstop below to drop a section that fitted.
+        foreach (['change_impact', 'locations', 'dossiers'] as $name) {
+            if (($context['sections'][$name]['status'] ?? null) !== 'truncated') {
+                continue;
+            }
+            $spare = $maxChars - self::encodedLength($context);
+            if ($spare <= $allocations[$name]) {
+                continue;
+            }
+            $reclaimed = $this->fitContextSection($payloads[$name], $spare);
+            $candidate = $context;
+            $candidate['sections'][$name] = $reclaimed;
+            if (self::encodedLength($candidate) <= $maxChars) {
+                $context = $candidate;
+            }
+        }
         $encoded = json_encode($context, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         foreach (['dossiers', 'locations', 'change_impact'] as $sectionName) {
             if (strlen($encoded) <= $maxChars) {
@@ -134,6 +164,17 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
                 : ['Context sections are bounded static evidence and may omit dynamic runtime behavior.'],
             $truncated,
         );
+    }
+
+    /**
+     * Serialized size of the context assembled so far, which is what the
+     * remaining budget is measured against.
+     *
+     * @param array<string, mixed> $context
+     */
+    private static function encodedLength(array $context): int
+    {
+        return strlen(json_encode($context, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
     }
 
     /**
