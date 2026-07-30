@@ -8,6 +8,14 @@ use Closure;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Shared foundation for the query services.
+ *
+ * Holds the edge-kind sets that decide what "reachable" and "impacted" mean, plus
+ * the confidence filtering and traversal limits every graph walk needs. Those sets
+ * live here rather than per service so two queries cannot quietly disagree about
+ * which relationships count as a dependency.
+ */
 abstract readonly class AbstractArchitectureQueryService
 {
     protected const FLOW_EDGE_KINDS = [
@@ -25,7 +33,11 @@ abstract readonly class AbstractArchitectureQueryService
         protected ?Closure $clock = null,
     ) {}
 
-    /** @return array<string, mixed> */
+    /**
+     * Assert the project exists, so a bad project_id fails clearly rather than returning empty results.
+     *
+     * @return array<string, mixed>
+     */
     protected function project(string $projectId): array
     {
         if ($projectId === '') {
@@ -44,7 +56,11 @@ abstract readonly class AbstractArchitectureQueryService
         return $project;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * Resolve a component reference to one node, reporting ambiguity rather than guessing.
+     *
+     * @return list<array<string, mixed>>
+     */
     protected function resolve(string $projectId, string $query): array
     {
         if (trim($query) === '') {
@@ -74,13 +90,18 @@ abstract readonly class AbstractArchitectureQueryService
         $statement->execute(['project' => $projectId, 'prefix' => self::like($query) . '%']);
         return $statement->fetchAll();
     }
+    /** Escape a value for a LIKE pattern so user input cannot inject wildcards. */
 
     protected static function like(string $value): string
     {
         return str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value);
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * Fetch one node row by id.
+     *
+     * @return array<string, mixed>|null
+     */
     protected function node(string $id): ?array
     {
         $statement = $this->pdo->prepare('SELECT id, kind, canonical_name, display_name, confidence FROM nodes WHERE id = :id');
@@ -89,7 +110,11 @@ abstract readonly class AbstractArchitectureQueryService
         return $row === false ? null : $row;
     }
 
-    /** @param list<array<string, mixed>> $boundaries */
+    /**
+     * Resolve a policy's boundary reference by id or name, reporting an ambiguous match.
+     *
+     * @param list<array<string, mixed>> $boundaries
+     */
     protected function resolvePolicyBoundary(string $reference, array $boundaries): string
     {
         $idMatches = array_values(array_filter($boundaries, static fn(array $boundary): bool => $boundary['id'] === $reference));
@@ -105,13 +130,18 @@ abstract readonly class AbstractArchitectureQueryService
         }
         return $nameMatches[0]['id'];
     }
+    /** The clock, injectable so time-dependent results are testable. */
 
     protected function now(): int
     {
         return $this->clock === null ? hrtime(true) : ($this->clock)();
     }
 
-    /** @return array<string, int> */
+    /**
+     * SQL bounds for a minimum confidence, so filtering happens in the query rather than in PHP.
+     *
+     * @return array<string, int>
+     */
     protected function confidenceQueryBounds(int $maxEdges, int $timeoutMs, string $minConfidence): array
     {
         if ($maxEdges < 1 || $maxEdges > 100_000) {
@@ -120,7 +150,11 @@ abstract readonly class AbstractArchitectureQueryService
         return $this->confidenceThreshold($timeoutMs, $minConfidence);
     }
 
-    /** @return array<string, int> */
+    /**
+     * Validate a confidence level, rejecting an unknown one rather than defaulting it.
+     *
+     * @return array<string, int>
+     */
     protected function confidenceThreshold(int $timeoutMs, string $minConfidence): array
     {
         if ($timeoutMs < 1 || $timeoutMs > 5000) {
@@ -134,6 +168,8 @@ abstract readonly class AbstractArchitectureQueryService
     }
 
     /**
+     * Tarjan's algorithm over the edge set, bounded so a large graph cannot run unchecked.
+     *
      * @param array<string, list<string>> $adjacency
      * @param array<string, list<string>> $reverse
      * @return array{components: list<list<string>>, timed_out: bool}
@@ -209,7 +245,11 @@ abstract readonly class AbstractArchitectureQueryService
         return ['components' => $components, 'timed_out' => $timedOut];
     }
 
-    /** @param list<string> $nodeIds @return array<string, list<array<string, mixed>>> */
+    /**
+     * Classified roles for a set of nodes, fetched in one query.
+     *
+     * @param list<string> $nodeIds @return array<string, list<array<string, mixed>>>
+     */
     protected function roles(array $nodeIds): array
     {
         if ($nodeIds === []) {
@@ -234,7 +274,11 @@ abstract readonly class AbstractArchitectureQueryService
         return $result;
     }
 
-    /** @param list<string> $nodeIds @return array<string, list<array{id: string, name: string, source: string}>> */
+    /**
+     * Boundary names for a set of nodes, for annotating results.
+     *
+     * @param list<string> $nodeIds @return array<string, list<array{id: string, name: string, source: string}>>
+     */
     protected function boundaryNames(array $nodeIds): array
     {
         if ($nodeIds === []) {
@@ -256,12 +300,17 @@ abstract readonly class AbstractArchitectureQueryService
         return $result;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Decode a stored JSON column, tolerating a null.
+     *
+     * @return array<string, mixed>
+     */
     protected static function decode(string $json): array
     {
         $decoded = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
         return is_array($decoded) ? $decoded : [];
     }
+    /** Reject a limit outside its bounds rather than clamping it silently. */
 
     protected static function assertLimit(int $limit): void
     {

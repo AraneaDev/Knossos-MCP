@@ -21,6 +21,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
     {
         parent::__construct($pdo, $clock);
     }
+    /** A Markdown orientation brief for an agent starting work on a project. */
 
     public function exportAgentBrief(string $projectId, int $maxChars = 4000): ResultEnvelope
     {
@@ -85,7 +86,11 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         );
     }
 
-    /** @return array{files: int, nodes: int, edges: int, languages: string} */
+    /**
+     * Graph size figures, so the brief conveys scale before detail.
+     *
+     * @return array{files: int, nodes: int, edges: int, languages: string}
+     */
     private function counts(string $projectId): array
     {
         $count = function (string $sql) use ($projectId): int {
@@ -113,6 +118,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
             'languages' => implode(', ', $parts),
         ];
     }
+    /** When the graph was built, stated in the brief so a reader can judge its currency. */
 
     private function scannedAt(string $scanId): ?string
     {
@@ -121,6 +127,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         $finished = $statement->fetchColumn();
         return is_string($finished) ? $finished : null;
     }
+    /** The brief's boundary section: how the project is partitioned. */
 
     private function boundariesSection(string $projectId): ?string
     {
@@ -140,6 +147,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         );
         return "\n## Boundaries\n\n" . implode("\n", $lines) . "\n";
     }
+    /** The brief's entry-point section: where execution enters the system. */
 
     private function entryPointsSection(string $projectId): ?string
     {
@@ -166,6 +174,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         );
         return "\n## Entry points\n\n" . implode("\n", $lines) . "\n";
     }
+    /** The brief's hub section: the components a change is most likely to reach. */
 
     private function hubsSection(string $projectId): ?string
     {
@@ -184,6 +193,7 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         );
         return "\n## Key hubs (most depended-on)\n\n" . implode("\n", $lines) . "\n";
     }
+    /** The brief's framework section, since conventions change what the code means. */
 
     private function frameworksSection(string $projectId): ?string
     {

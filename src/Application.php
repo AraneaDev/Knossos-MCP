@@ -10,6 +10,12 @@ use Knossos\Cli\CliHelpRenderer;
 use Knossos\Cli\CliOptionParser;
 use Throwable;
 
+/**
+ * CLI entry point: parses argv, routes to a command, renders errors.
+ *
+ * Every failure leaves through here as a stable diagnostic code and a non-zero
+ * exit, because the CLI is consumed by CI as well as by people.
+ */
 final class Application
 {
     public const VERSION = '0.8.0'; // x-release-please-version
@@ -30,7 +36,11 @@ final class Application
         $this->errorStream = $errorStream;
     }
 
-    /** @param list<string> $arguments */
+    /**
+     * Parse argv, route to a command, and turn any failure into a diagnostic code and exit status.
+     *
+     * @param list<string> $arguments
+     */
     public function run(array $arguments): int
     {
         $command = array_shift($arguments) ?? 'help';

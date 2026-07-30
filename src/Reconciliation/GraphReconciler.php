@@ -14,6 +14,14 @@ use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Store\GraphRepository;
 use Knossos\Store\StableId;
 
+/**
+ * Merges scanner contributions into the persisted graph.
+ *
+ * The hard part is identity: facts arrive per file with canonical names, and have
+ * to become stable ids, resolved edges, and per-scanner ownership so one language's
+ * facts can be replaced without disturbing another's. Runs in one transaction — a
+ * partially reconciled graph would answer queries confidently and wrongly.
+ */
 final readonly class GraphReconciler
 {
     /**
@@ -52,6 +60,7 @@ final readonly class GraphReconciler
     private const MAX_INHERITANCE_DEPTH = 20;
 
     public function __construct(private GraphRepository $repository) {}
+    /** Merge a scan's contributions into the graph, in one transaction. */
 
     public function reconcile(FullScanRequest $request): ReconciliationResult
     {
@@ -180,6 +189,8 @@ final readonly class GraphReconciler
     }
 
     /**
+     * Resolve classification facts onto node ids, dropping any whose node vanished.
+     *
      * @param list<\Knossos\Classification\ClassificationFact> $facts
      * @param array<string, string> $nodeMap
      * @param array<string, string> $fileIds
@@ -213,7 +224,11 @@ final readonly class GraphReconciler
         return $resolved;
     }
 
-    /** @param list<\Knossos\Boundary\BoundaryFact> $facts @param array<string, string> $nodeMap @return list<array<string, mixed>> */
+    /**
+     * Resolve boundary definitions and their memberships onto node ids.
+     *
+     * @param list<\Knossos\Boundary\BoundaryFact> $facts @param array<string, string> $nodeMap @return list<array<string, mixed>>
+     */
     private function resolveBoundaries(string $projectId, array $facts, array $nodeMap): array
     {
         $resolved = [];
@@ -240,6 +255,8 @@ final readonly class GraphReconciler
     }
 
     /**
+     * Assign stable ids to the reported nodes and index them for edge resolution.
+     *
      * @param list<ScanContribution> $contributions
      * @return array{0: array<string, string>, 1: array<string, array<string, mixed>>, 2: list<array<string, string>>}
      */
@@ -298,6 +315,8 @@ final readonly class GraphReconciler
     }
 
     /**
+     * Resolve each edge's endpoints to node ids, synthesising externals for unknown targets.
+     *
      * @param list<ScanContribution> $contributions
      * @param array<string, string> $nodeMap
      * @param array<string, string> $fileIds
@@ -354,7 +373,11 @@ final readonly class GraphReconciler
         return [$external, $edges];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Build the persisted row for one reported node.
+     *
+     * @return array<string, mixed>
+     */
     private function nodeRecord(string $id, string $language, NodeFact $node, string $owner, string $scanner): array
     {
         return [
@@ -527,6 +550,7 @@ final readonly class GraphReconciler
 
         return null;
     }
+    /** Synthesise a node for a referenced symbol outside the scanned tree, so the edge still has a target. */
 
     private function externalNode(
         string $projectId,
@@ -559,7 +583,11 @@ final readonly class GraphReconciler
         ]];
     }
 
-    /** @param array<string, string> $fileIds @return array<string, mixed> */
+    /**
+     * Build the persisted row for one resolved edge.
+     *
+     * @param array<string, string> $fileIds @return array<string, mixed>
+     */
     private function edgeRecord(
         string $id,
         EdgeFact $edge,
@@ -591,7 +619,11 @@ final readonly class GraphReconciler
         ];
     }
 
-    /** @param array<string, string> $fileIds */
+    /**
+     * Attach nodes to their file rows, which is what makes evidence paths resolvable.
+     *
+     * @param array<string, string> $fileIds
+     */
     private function attachNodeFiles(array &$nodes, array $fileIds): void
     {
         foreach ($nodes as &$node) {
@@ -607,6 +639,8 @@ final readonly class GraphReconciler
     }
 
     /**
+     * Persist the scan's diagnostics alongside the graph.
+     *
      * @param array<string, string> $fileIds
      * @param list<array<string, string>> $nodeWarnings
      */
@@ -669,7 +703,11 @@ final readonly class GraphReconciler
         return $count;
     }
 
-    /** @param array<string, string> $fileIds */
+    /**
+     * Persist one diagnostic.
+     *
+     * @param array<string, string> $fileIds
+     */
     private function saveDiagnostic(
         Diagnostic $diagnostic,
         string $owner,
@@ -696,6 +734,8 @@ final readonly class GraphReconciler
 
     /** @param array<string, string> $versions */
     /**
+     * The file rows this scan wrote, indexed for node attachment.
+     *
      * @param list<DiscoveredFile> $files
      * @param array<string, string> $fileIds relative path => stable file id
      * @param array<string, string> $versions language => scanner version
@@ -719,7 +759,11 @@ final readonly class GraphReconciler
         return $rows;
     }
 
-    /** @param list<ScannerManifest> $scanners @return array<string, string> */
+    /**
+     * Which scanner produced each contribution, recorded for provenance.
+     *
+     * @param list<ScannerManifest> $scanners @return array<string, string>
+     */
     private function scannerVersions(array $scanners): array
     {
         $versions = [];
@@ -731,7 +775,11 @@ final readonly class GraphReconciler
         return $versions;
     }
 
-    /** @param list<ScannerManifest> $scanners */
+    /**
+     * Identity of the analyzer set, so a change invalidates incremental reuse.
+     *
+     * @param list<ScannerManifest> $scanners
+     */
     public static function scannerSetHash(array $scanners): string
     {
         $serialized = [];
@@ -741,12 +789,14 @@ final readonly class GraphReconciler
         ksort($serialized, SORT_STRING);
         return hash('sha256', json_encode($serialized, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
     }
+    /** The owning scanner for a fact, from its owner key. */
 
     private function scannerFromOwner(string $owner): string
     {
         $parts = explode(':', $owner, 2);
         return $parts[0];
     }
+    /** The language a canonical reference belongs to, used when synthesising an external node. */
 
     private function languageFromReference(string $reference): string
     {
@@ -756,6 +806,7 @@ final readonly class GraphReconciler
         }
         return $parts[0];
     }
+    /** The short name shown to a reader, derived from the canonical name. */
 
     private function displayName(string $canonical): string
     {

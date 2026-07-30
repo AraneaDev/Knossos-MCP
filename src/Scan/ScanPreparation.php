@@ -8,6 +8,7 @@ use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveryResult;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 
+/** A prepared scan: its plan, discovery result, and the timings spent getting there. */
 final readonly class ScanPreparation
 {
     /** @param list<array<string, mixed>> $explicitBoundaries */

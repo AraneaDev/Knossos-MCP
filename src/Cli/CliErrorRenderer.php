@@ -12,6 +12,12 @@ use Knossos\Scanner\Worker\WorkerException;
 use PDOException;
 use Throwable;
 
+/**
+ * Renders failures as a stable diagnostic code plus a human message.
+ *
+ * The codes are the contract CI scripts match on, so they are deliberately more
+ * durable than the prose beside them.
+ */
 final class CliErrorRenderer
 {
     /** @var resource */
@@ -53,6 +59,7 @@ final class CliErrorRenderer
             default => 'KNOSSOS_RUNTIME_ERROR',
         };
     }
+    /** Render a failure as a stable diagnostic code plus a human message. */
 
     public function render(Throwable $error): int
     {

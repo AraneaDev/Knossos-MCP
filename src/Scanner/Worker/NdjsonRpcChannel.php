@@ -6,6 +6,13 @@ namespace Knossos\Scanner\Worker;
 
 use JsonException;
 
+/**
+ * Newline-delimited JSON-RPC over a worker's pipes.
+ *
+ * Reads are non-blocking with a deadline and a size cap, because a worker that
+ * floods stdout or stops answering must not hang the scan. stderr is drained
+ * alongside so a chatty worker cannot deadlock on a full pipe.
+ */
 final class NdjsonRpcChannel implements RpcChannelInterface
 {
     private string $stdoutBuffer = '';
@@ -30,6 +37,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->maxRequestLineBytes = $maxRequestLineBytes ?? max($limits->maxLineBytes, $limits->maxOutputBytes);
     }
 
+    /** {@inheritDoc} */
     public function beginRequest(): int
     {
         $this->process->start();
@@ -42,6 +50,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     }
 
     /**
+     * Write one request frame to the worker.
+     *
      * @param array<string, mixed> $message
      * @param callable(): bool|null $cancelled
      */
@@ -107,7 +117,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         @fflush($stdin);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Read one reply within the deadline, without blocking indefinitely on a silent worker.
+     *
+     * @return array<string, mixed>
+     */
     public function readMessage(int $deadline, ?callable $cancelled = null): array
     {
         $stdout = $this->process->stdout();
@@ -185,6 +199,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
     }
 
+    /** {@inheritDoc} */
     public function stderr(): string
     {
         return $this->stderrBuffer;
@@ -210,7 +225,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->appendStdout($chunk);
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * Take a complete frame from the buffer, leaving any partial remainder.
+     *
+     * @return array<string, mixed>|null
+     */
     private function extractMessage(): ?array
     {
         $newline = strpos($this->stdoutBuffer, "\n");
@@ -234,6 +253,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
 
         return $message;
     }
+    /** Buffer stdout, enforcing the byte cap so a flooding worker cannot exhaust memory. */
 
     private function appendStdout(string $chunk): void
     {
@@ -243,6 +263,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
         }
     }
+    /** Buffer stderr under its own cap, so diagnostics survive without competing with frames. */
 
     private function appendStderr(string $chunk): void
     {
@@ -252,6 +273,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
         $this->stderrBuffer .= $chunk;
     }
+    /** Attach the captured stderr to an error, which is usually the only clue to why a worker failed. */
 
     private function withStderr(string $message): string
     {

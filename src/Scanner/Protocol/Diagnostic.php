@@ -7,6 +7,12 @@ namespace Knossos\Scanner\Protocol;
 use InvalidArgumentException;
 use JsonSerializable;
 
+/**
+ * Something a scanner could not analyse, reported rather than thrown.
+ *
+ * A file it cannot parse must not fail the scan: the rest of the graph is still
+ * worth having, and the caller needs to know the answer is incomplete and where.
+ */
 final readonly class Diagnostic implements JsonSerializable
 {
     public function __construct(
@@ -24,7 +30,11 @@ final readonly class Diagnostic implements JsonSerializable
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The wire shape of the diagnostic.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         return array_filter([

@@ -11,9 +11,18 @@ use Knossos\Scanner\Protocol\{ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\ContributionDecoder;
 use Throwable;
 
+/**
+ * Decides which files an incremental scan can reuse instead of re-analysing.
+ *
+ * Reuse is keyed on the file's fingerprint *and* the analyzer configuration hash,
+ * so changing analyzer behaviour invalidates the cache rather than silently
+ * serving facts the current code would no longer produce.
+ */
 final readonly class ContributionCacheService
 {
     /**
+     * Split the discovered files into reusable and must-scan sets.
+     *
      * @param list<object> $files
      * @param array<string, array<string, mixed>> $cache
      */
@@ -55,6 +64,8 @@ final readonly class ContributionCacheService
     }
 
     /**
+     * Cache entries for the files this scan analysed.
+     *
      * @param list<ScanContribution> $scanned
      * @param list<object> $files
      * @return array{contributions: list<ScanContribution>, cache_entries: list<ContributionCacheEntry>}
@@ -104,6 +115,7 @@ final readonly class ContributionCacheService
 
         return $fingerprint->contentHash === $file->contentHash;
     }
+    /** One cache entry for a scanned file. */
 
     private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
     {

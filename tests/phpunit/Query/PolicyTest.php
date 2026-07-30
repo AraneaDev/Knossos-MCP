@@ -82,6 +82,13 @@ final class PolicyTest extends KnossosTestCase
         $limited = $query->checkArchitecture($ids['project'], $policies, limit: 1);
         assertSame(true, $limited->truncated);
         assertSame(['result_limit'], $limited->data['bounds']['truncation_reasons']);
+        // The summary counts every violation found, not the page returned:
+        // announcing the listing size understated real findings by orders of
+        // magnitude to anyone who read no further than the sentence.
+        assertSame(1, count($limited->data['violations']));
+        assertSame($limited->data['bounds']['violation_count'], count($result->data['violations']));
+        assertSame(true, str_contains($limited->summary, sprintf('Found %d declared', $limited->data['bounds']['violation_count'])));
+        assertSame(true, str_contains($limited->summary, 'Listing the first 1'));
         $edgeLimited = $query->checkArchitecture($ids['project'], $policies, maxEdges: 1);
         assertSame(true, $edgeLimited->truncated);
         assertSame(true, in_array('edge_limit', $edgeLimited->data['bounds']['truncation_reasons'], true));

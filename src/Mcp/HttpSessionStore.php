@@ -8,6 +8,16 @@ use PDO;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Session lifecycle for the handshake-era HTTP revision.
+ *
+ * Ids are stored only as SHA-256 hashes, so a copied database cannot be replayed
+ * as a live session, and they expire and are capacity-capped because an
+ * unauthenticated endpoint would otherwise let a caller exhaust storage.
+ *
+ * `2026-07-28` removed protocol-level sessions, so this serves only clients on
+ * the older revision and is expected to be deleted with it.
+ */
 final readonly class HttpSessionStore
 {
     public const INITIALIZED = 'initialized';
@@ -17,6 +27,7 @@ final readonly class HttpSessionStore
 
     public function __construct(private PDO $pdo, private int $ttlSeconds = 1800, private int $maxSessions = 1000) {}
 
+    /** Mint a session, returning the id; only its hash is stored. */
     public function create(): string
     {
         $now = time();
@@ -51,17 +62,23 @@ final readonly class HttpSessionStore
         }
     }
 
+    /** Whether the session is known and unexpired. */
     public function exists(string $id): bool
     {
         return $this->row($id) !== null;
     }
 
+    /** Whether the handshake completed, which gates every other method. */
     public function initialized(string $id): bool
     {
         return ($this->row($id)['initialized'] ?? 0) === 1;
     }
 
-    /** @return self::INITIALIZED|self::ALREADY_INITIALIZED|self::UNKNOWN_OR_EXPIRED */
+    /**
+     * Complete the handshake once, reporting a repeat rather than silently accepting it.
+     *
+     * @return self::INITIALIZED|self::ALREADY_INITIALIZED|self::UNKNOWN_OR_EXPIRED
+     */
     public function markInitialized(string $id): string
     {
         if (!preg_match('/^[a-f0-9]{64}$/', $id)) {
@@ -95,12 +112,17 @@ final readonly class HttpSessionStore
             ->execute(['id' => hash('sha256', $id), 'now' => $now, 'expires' => $now + $this->ttlSeconds]);
     }
 
+    /** Terminate a session, the DELETE verb's effect on the legacy transport. */
     public function delete(string $id): void
     {
         $this->pdo->prepare('DELETE FROM http_sessions WHERE id = :id')->execute(['id' => hash('sha256', $id)]);
     }
 
-    /** @return array{initialized: int}|null */
+    /**
+     * The stored session row, looked up by hash.
+     *
+     * @return array{initialized: int}|null
+     */
     private function row(string $id): ?array
     {
         if (!preg_match('/^[a-f0-9]{64}$/', $id)) {

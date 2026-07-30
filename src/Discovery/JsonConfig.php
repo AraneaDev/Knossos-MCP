@@ -6,11 +6,22 @@ namespace Knossos\Discovery;
 
 use JsonException;
 
+/**
+ * Reads the project's JSON configuration, tolerating JSONC.
+ *
+ * Comments and trailing commas are accepted because `knossos.jsonc` is
+ * hand-edited, and rejecting a trailing comma would be a hostile way to report a
+ * configuration problem.
+ */
 final class JsonConfig
 {
     private function __construct() {}
 
-    /** @return array<string, mixed> */
+    /**
+     * Decode JSON, optionally tolerating comments and trailing commas for JSONC.
+     *
+     * @return array<string, mixed>
+     */
     public static function decode(string $contents, bool $allowComments = false): array
     {
         if ($allowComments) {
@@ -30,6 +41,7 @@ final class JsonConfig
 
         return $decoded;
     }
+    /** Remove comments without disturbing string contents. */
 
     private static function stripComments(string $input): string
     {
@@ -83,6 +95,7 @@ final class JsonConfig
 
         return $output;
     }
+    /** Remove trailing commas, which JSON rejects but hand-edited files routinely contain. */
 
     private static function stripTrailingCommas(string $input): string
     {

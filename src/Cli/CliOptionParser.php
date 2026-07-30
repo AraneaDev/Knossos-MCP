@@ -6,9 +6,19 @@ namespace Knossos\Cli;
 
 use InvalidArgumentException;
 
+/**
+ * Parses `--flag` and `--key=value` arguments against a command's allow-list.
+ *
+ * Repeatable options collect rather than overwrite, so `--allow-root` can be given
+ * more than once; an empty value is rejected rather than treated as absent.
+ */
 final class CliOptionParser
 {
-    /** @param list<string> $arguments @return array{0: list<string>, 1: array<string, list<string>>} */
+    /**
+     * Split argv into positionals and options, rejecting anything outside the allow-list.
+     *
+     * @param list<string> $arguments @return array{0: list<string>, 1: array<string, list<string>>}
+     */
     public function parse(array $arguments): array
     {
         $positionals = [];
@@ -67,7 +77,11 @@ final class CliOptionParser
         return !in_array($value, ['false', '0', 'no', 'off'], true);
     }
 
-    /** @param array<string, list<string>> $options */
+    /**
+     * One value for an option, erroring when it was repeated.
+     *
+     * @param array<string, list<string>> $options
+     */
     public function single(array $options, string $name): ?string
     {
         if (!isset($options[$name])) {
@@ -79,7 +93,11 @@ final class CliOptionParser
         return $options[$name][0];
     }
 
-    /** @param array<string, list<string>> $options */
+    /**
+     * An option parsed as an integer within bounds, rejecting anything else.
+     *
+     * @param array<string, list<string>> $options
+     */
     public function integer(array $options, string $name, int $default, int $minimum, int $maximum): int
     {
         $value = $this->single($options, $name);
@@ -93,7 +111,11 @@ final class CliOptionParser
         return $parsed;
     }
 
-    /** @param list<string> $values @return list<array<string, string>> */
+    /**
+     * Repeated --boundary=NAME:path:PREFIX values parsed into boundary definitions.
+     *
+     * @param list<string> $values @return list<array<string, string>>
+     */
     public function boundaries(array $values): array
     {
         $boundaries = [];

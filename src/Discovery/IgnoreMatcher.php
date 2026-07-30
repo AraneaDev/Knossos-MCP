@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+/**
+ * Decides which paths discovery skips.
+ *
+ * Dependency and build directories are excluded by default — scanning
+ * `node_modules` produces a graph about someone else's code — on top of whatever
+ * the project's own configuration adds.
+ */
 final readonly class IgnoreMatcher
 {
     private const EXCLUDED_SEGMENTS = [
@@ -36,6 +43,7 @@ final readonly class IgnoreMatcher
 
     /** @param list<string> $patterns */
     public function __construct(private array $patterns) {}
+    /** Whether a path is ignored, applying built-in exclusions then the user patterns. */
 
     public function matches(string $relativePath): bool
     {
@@ -59,12 +67,16 @@ final readonly class IgnoreMatcher
         // absolute and cannot be negated.
         $ignored = false;
         foreach ($this->patterns as $pattern) {
-            $normalized = str_replace('\\', '/', $pattern);
+            // Trim before reading the negation marker, not after. Testing the raw
+            // pattern meant a single leading space turned "!keep.js" into a literal
+            // pattern matching nothing, silently discarding the re-include while the
+            // trim two lines later made the same whitespace irrelevant everywhere
+            // else. Whitespace is either significant here or it is not.
+            $normalized = trim(str_replace('\\', '/', $pattern));
             $negated = str_starts_with($normalized, '!');
             if ($negated) {
-                $normalized = substr($normalized, 1);
+                $normalized = trim(substr($normalized, 1));
             }
-            $normalized = trim($normalized);
             $anchored = str_starts_with($normalized, '/') || str_contains(trim($normalized, '/'), '/');
             $normalized = trim($normalized, '/');
             if ($normalized === '') {
@@ -79,7 +91,11 @@ final readonly class IgnoreMatcher
         return $ignored;
     }
 
-    /** @param list<string> $segments */
+    /**
+     * Whether one normalised pattern matches, honouring anchoring and descendants.
+     *
+     * @param list<string> $segments
+     */
     private function patternMatches(string $pattern, bool $anchored, string $path, array $segments): bool
     {
         // Trailing '/**' ignores the directory itself and everything under it, so
@@ -146,6 +162,7 @@ final readonly class IgnoreMatcher
 
         return $out;
     }
+    /** The index closing a bracket class, or null when it is unterminated. */
 
     private static function characterClassEnd(string $pattern, int $start, int $length): ?int
     {

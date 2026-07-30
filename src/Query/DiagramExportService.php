@@ -7,9 +7,19 @@ namespace Knossos\Query;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Renders a slice of the graph as Mermaid or PlantUML source.
+ *
+ * Node and edge caps are the point: a diagram of a whole real codebase is
+ * unreadable, so the slice is bounded and the omission reported.
+ */
 final readonly class DiagramExportService extends AbstractArchitectureQueryService
 {
-    /** @param list<string> $edgeKinds */
+    /**
+     * Render a bounded slice of the graph as Mermaid or PlantUML.
+     *
+     * @param list<string> $edgeKinds
+     */
     public function exportDiagram(string $projectId, string $format = 'mermaid', ?string $boundary = null, array $edgeKinds = [], string $minConfidence = 'possible', string $direction = 'LR', int $maxNodes = 200, int $maxEdges = 500): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -129,7 +139,11 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         );
     }
 
-    /** @param array<string, mixed> $node */
+    /**
+     * A node label safe to embed in diagram source.
+     *
+     * @param array<string, mixed> $node
+     */
     private function diagramLabel(array $node, string $format): string
     {
         $label = preg_replace('/[\x00-\x1F\x7F]/u', ' ', $node['display_name'] . ' (' . $node['kind'] . ')') ?? 'component';
@@ -138,6 +152,7 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         }
         return str_replace(['\\', '"'], ['\\\\', '\\"'], $label);
     }
+    /** An edge label safe to embed in diagram source. */
     private function diagramEdgeLabel(string $kind): string
     {
         return preg_replace('/[^A-Za-z0-9_.-]/', '_', $kind) ?? 'depends_on';

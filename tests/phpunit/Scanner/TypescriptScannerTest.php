@@ -13,6 +13,69 @@ use PHPUnit\Framework\Attributes\Group;
 
 final class TypescriptScannerTest extends KnossosTestCase
 {
+    /**
+     * Discovery classifies an extensionless script by its shebang and routes it
+     * here, so the worker has to accept one. TypeScript itself silently drops a
+     * root file whose name carries no recognised extension, so the script is
+     * offered to the program under a synthetic name — which must never surface:
+     * every node, edge, and owner key has to name the file that exists on disk.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerScansAnExtensionlessShebangScriptUnderItsRealPath(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-shebang-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o755, true);
+        mkdir($root . '/src', 0o755, true);
+        file_put_contents($root . '/package.json', '{"name":"shebang-fixture"}');
+        file_put_contents($root . '/src/helper.js', "export function helper() {\n    return 1;\n}\n");
+        file_put_contents(
+            $root . '/bin/cli',
+            "#!/usr/bin/env node\nimport { helper } from '../src/helper.js';\nexport function run() {\n    return helper();\n}\n",
+        );
+        // Not JavaScript at all: a shebang naming another interpreter, and a
+        // path that merely contains one, must both still be refused.
+        file_put_contents($root . '/bin/other', "#!/bin/sh\necho hi\n");
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['bin/cli', 'bin/other'],
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (['bin/cli', 'bin/other', 'src/helper.js', 'package.json'] as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/bin');
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $byOwner = [];
+        foreach ($contributions as $contribution) {
+            $byOwner[str_replace('knossos.typescript:file:', '', $contribution->ownerKey)] = $contribution;
+        }
+        // Rejections are emitted before the program is built, so sort rather
+        // than pin an order the protocol does not promise.
+        $owners = array_keys($byOwner);
+        sort($owners, SORT_STRING);
+        assertSame(['bin/cli', 'bin/other'], $owners);
+
+        $names = array_map(fn(NodeFact $node): string => $node->canonicalName, $byOwner['bin/cli']->nodes);
+        assertSame(true, count($names) > 0);
+        // The synthetic name must not leak into the graph.
+        assertSame([], array_values(array_filter($names, fn(string $n): bool => str_contains($n, 'knossos-shebang'))));
+        assertSame(true, count(array_filter($names, fn(string $n): bool => str_contains($n, 'run'))) > 0);
+        assertSame([], $byOwner['bin/cli']->diagnostics);
+
+        assertSame([], $byOwner['bin/other']->nodes);
+        assertSame(
+            ['TS_UNSCANNABLE_FILE'],
+            array_map(fn(Diagnostic $d): string => $d->code, $byOwner['bin/other']->diagnostics),
+        );
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerDiscoversConfigsAndExtractsCrossProjectArchitecture(): void
     {
@@ -154,15 +217,16 @@ final class TypescriptScannerTest extends KnossosTestCase
         );
         assertSame('WORKER_RPC_ERROR', $error->diagnosticCode);
 
+        // A file over the byte cap is well-formed, so it costs only itself: the
+        // request succeeds and the file arrives as a diagnostic-only contribution.
         $limited = $this->typescriptWorkerClient();
-        $error = captureThrows(
-            fn() => iterator_to_array($limited->scan([
-                'root' => $root,
-                'files' => ['packages/app/src/service.ts'],
-                'limits' => ['max_file_bytes' => 1],
-            ])),
-            WorkerException::class,
-        );
-        assertSame('WORKER_RPC_ERROR', $error->diagnosticCode);
+        $contributions = iterator_to_array($limited->scan([
+            'root' => $root,
+            'files' => ['packages/app/src/service.ts'],
+            'limits' => ['max_file_bytes' => 1],
+        ]));
+        assertSame(1, count($contributions));
+        assertSame([], $contributions[0]->nodes);
+        assertSame('TS_UNSCANNABLE_FILE', $contributions[0]->diagnostics[0]->code);
     }
 }

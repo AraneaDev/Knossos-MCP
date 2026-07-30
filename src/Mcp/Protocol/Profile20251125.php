@@ -20,28 +20,51 @@ final readonly class Profile20251125 implements ProtocolProfile
 {
     public const VERSION = '2025-11-25';
 
+    /** {@inheritDoc} */
     public function version(): string
     {
         return self::VERSION;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * This revision defines no envelope additions, so results travel exactly as
+     * the dispatcher built them.
+     */
     public function decorate(array $result, string $method): array
     {
-        // This revision defines no envelope additions: results travel exactly as
-        // the dispatcher built them.
         return $result;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * -32002, which predates this revision's successor aligning the code with
+     * JSON-RPC's -32602 (Invalid Params).
+     */
     public function resourceNotFoundCode(): int
     {
         return -32002;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * True: `ping` still exists in this revision, and hosts close an idle stdio
+     * transport at 60 seconds.
+     */
     public function emitsKeepalive(): bool
     {
         return true;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * True: `initialize` then `notifications/initialized` must precede any other
+     * method, and this profile enforces that gate.
+     */
     public function requiresHandshake(): bool
     {
         return true;

@@ -19,6 +19,7 @@ class LanguageWorkerPool
     private array $clients = [];
     private ?int $timeoutMs = null;
 
+    /** Start the worker for a language if it is not already running. */
     public function prepare(WorkerExecutionPolicy $policy): void
     {
         if ($this->timeoutMs !== null && $this->timeoutMs !== $policy->requestTimeoutMs) {
@@ -27,12 +28,14 @@ class LanguageWorkerPool
         $this->timeoutMs = $policy->requestTimeoutMs;
     }
 
+    /** The running client for a language, started on demand. */
     public function client(LanguageDescriptor $descriptor, WorkerExecutionPolicy $policy): ProcessScannerClient
     {
         $this->prepare($policy);
         return $this->clients[$descriptor->key] ??= new ProcessScannerClient($descriptor->command, $policy->limits());
     }
 
+    /** Stop every worker; called on the way out of a scan, including a failed one. */
     public function shutdown(): void
     {
         foreach ($this->clients as $client) {

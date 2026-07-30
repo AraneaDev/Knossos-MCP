@@ -35,6 +35,25 @@ final class ProjectConfigurationLoaderTest extends TestCase
         return $this->tempDir;
     }
 
+    /**
+     * A project root outside $tempDir, cleaned immediately.
+     *
+     * The boundary tests need two roots in one test — one at the limit, one over
+     * it — and tearDown only removes the last $tempDir, so the second would leak.
+     */
+    private static function isolatedRoot(string $filename, string $contents): string
+    {
+        $root = sys_get_temp_dir() . '/knossos-bound-' . uniqid('', true);
+        mkdir($root, 0o777, true);
+        file_put_contents($root . '/' . $filename, $contents);
+        register_shutdown_function(static function () use ($root, $filename): void {
+            @unlink($root . '/' . $filename);
+            @rmdir($root);
+        });
+
+        return $root;
+    }
+
     private function writeConfig(string $filename, string $contents): string
     {
         $root = $this->tempDir ?? $this->freshProjectRoot();
@@ -94,7 +113,7 @@ JSON;
         file_put_contents($root . '/knossos.jsonc', self::minimalValidJson());
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -109,7 +128,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', $oversized);
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -134,7 +153,7 @@ JSON;
             file_put_contents($path, $contents);
 
             $error = captureThrows(
-                static fn () => ProjectConfigurationLoader::load($root, [$root]),
+                static fn() => ProjectConfigurationLoader::load($root, [$root]),
                 DiscoveryException::class,
             );
 
@@ -149,7 +168,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "ignores": [], "wat": true}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -161,7 +180,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "limits": {"wat": 1}}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -183,7 +202,7 @@ JSON;
         file_put_contents($path, "{\"version\":1,\"ignores\":[\"a\0b\"]}");
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -195,7 +214,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "ignores": ["../etc/passwd"]}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -207,7 +226,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "ignores": ["/abs/path"]}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -221,7 +240,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "limits": {"max_files": 0}}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -254,7 +273,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "frameworks": ["ruby-on-rails"]}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -286,7 +305,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "boundaries": [{"path_prefix": "src/Domain"}]}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -298,7 +317,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "boundaries": [{"name": "Core", "path_prefix": "/abs/foo"}]}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -310,7 +329,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "boundaries": [{"name": "Core", "path_prefix": "src/A"}, {"name": "Core", "path_prefix": "src/B"}]}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -322,7 +341,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "boundaries": [{"name": "Core", "path_prefix": "src/A", "namespace_prefix": "App\\\\Core"}]}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -345,7 +364,7 @@ JSON;
         $root = $this->writeConfig('knossos.json', '{"version": 1, "quality_budgets": {"new_cycles": 100001}}');
 
         $error = captureThrows(
-            static fn () => ProjectConfigurationLoader::load($root, [$root]),
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
             DiscoveryException::class,
         );
 
@@ -407,4 +426,67 @@ JSON;
             @rmdir($root);
         }
     }
+
+    /**
+     * The declared limits are behaviour, not decoration.
+     *
+     * Mutation testing left every one of these bounds alive: the ignore-list cap,
+     * the max_files ceiling, and the configuration size cap could each be shifted
+     * by one without a test noticing. A limit nothing pins is a limit that can be
+     * changed by accident, and these ones decide whether a hostile or malformed
+     * project configuration is rejected.
+     */
+    public function testTheIgnoreListCapAcceptsExactlyItsLimitAndRejectsOneMore(): void
+    {
+        $atLimit = $this->writeConfig('knossos.json', json_encode([
+            'version' => 1,
+            'ignores' => array_map(static fn(int $i): string => 'pattern' . $i, range(1, 100)),
+        ], JSON_THROW_ON_ERROR));
+        assertSame(100, count(ProjectConfigurationLoader::load($atLimit, [$atLimit])->ignores));
+
+        $overLimit = self::isolatedRoot('knossos.json', json_encode([
+            'version' => 1,
+            'ignores' => array_map(static fn(int $i): string => 'pattern' . $i, range(1, 101)),
+        ], JSON_THROW_ON_ERROR));
+        $error = captureThrows(
+            static fn() => ProjectConfigurationLoader::load($overLimit, [$overLimit]),
+            DiscoveryException::class,
+        );
+        assertContains('ignores must be a bounded list', $error->getMessage());
+    }
+
+    public function testTheMaxFilesCeilingAcceptsItsUpperBoundAndRejectsOneMore(): void
+    {
+        $atLimit = $this->writeConfig('knossos.json', json_encode([
+            'version' => 1, 'limits' => ['max_files' => 100000],
+        ], JSON_THROW_ON_ERROR));
+        assertSame(100000, ProjectConfigurationLoader::load($atLimit, [$atLimit])->maxFiles);
+
+        $overLimit = self::isolatedRoot('knossos.json', json_encode([
+            'version' => 1, 'limits' => ['max_files' => 100001],
+        ], JSON_THROW_ON_ERROR));
+        $error = captureThrows(
+            static fn() => ProjectConfigurationLoader::load($overLimit, [$overLimit]),
+            DiscoveryException::class,
+        );
+        assertContains('max_files', $error->getMessage());
+    }
+
+    public function testTheConfigurationSizeCapAcceptsItsLimitAndRejectsOneMoreByte(): void
+    {
+        // Padding inside a comment keeps the document valid JSONC while letting the
+        // file size be controlled to the byte, so the boundary is exercised without
+        // depending on how the parser handles a truncated document.
+        $prefix = '{"version":1,"ignores":["x"]} //';
+        $atLimit = $this->writeConfig('knossos.jsonc', $prefix . str_repeat('p', 1000000 - strlen($prefix)));
+        assertSame(['x'], ProjectConfigurationLoader::load($atLimit, [$atLimit])->ignores);
+
+        $overLimit = self::isolatedRoot('knossos.jsonc', $prefix . str_repeat('p', 1000001 - strlen($prefix)));
+        $error = captureThrows(
+            static fn() => ProjectConfigurationLoader::load($overLimit, [$overLimit]),
+            DiscoveryException::class,
+        );
+        assertContains('PROJECT_CONFIG_UNSAFE', $error->getMessage());
+    }
+
 }

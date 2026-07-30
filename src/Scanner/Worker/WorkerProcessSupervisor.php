@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace Knossos\Scanner\Worker;
 
+/**
+ * Owns a worker's OS process and pipes.
+ *
+ * Termination is deliberate: a worker that ignores a graceful stop is signalled,
+ * because a scan must not leave orphaned analysers holding memory after it exits.
+ */
 final class WorkerProcessSupervisor implements ProcessSupervisorInterface
 {
     /** @var resource|null */
@@ -27,12 +33,14 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         private readonly array $command,
         private readonly ?array $environment = null,
     ) {}
+    /** Terminate the process tree, so an abandoned supervisor leaves nothing running. */
 
     public function __destruct()
     {
         $this->close(true);
     }
 
+    /** {@inheritDoc} */
     public function start(): void
     {
         if ($this->process !== null) {
@@ -71,26 +79,39 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         $this->placeInOwnProcessGroup();
     }
 
+    /** {@inheritDoc} */
     public function isRunning(): bool
     {
         return $this->process !== null;
     }
 
-    /** @return resource */
+    /**
+     * The worker's standard input.
+     *
+     * @return resource
+     */
     public function stdin()
     {
         $this->start();
         return $this->pipes[0];
     }
 
-    /** @return resource */
+    /**
+     * The worker's standard output, carrying protocol frames only.
+     *
+     * @return resource
+     */
     public function stdout()
     {
         $this->start();
         return $this->pipes[1];
     }
 
-    /** @return resource */
+    /**
+     * The worker's standard error, drained so a chatty process cannot block on a full pipe.
+     *
+     * @return resource
+     */
     public function stderr()
     {
         $this->start();
@@ -127,6 +148,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         return proc_get_status($this->process);
     }
 
+    /** {@inheritDoc} */
     public function close(bool $terminate): void
     {
         if ($this->process === null) {
@@ -148,6 +170,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         $this->process = null;
         $this->processGroupId = null;
     }
+    /** Stop the worker and everything it spawned, so a scan leaves no orphaned analysers holding memory. */
 
     private function terminateTree(): void
     {
@@ -189,6 +212,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             proc_terminate($this->process, 9);
         }
     }
+    /** Signal the process group, escalating only after a graceful stop was given a chance. */
 
     private function signalTree(int $pid, int $signal): void
     {
@@ -218,6 +242,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             @posix_kill($descendant, $signal);
         }
     }
+    /** Put the child in its own group so signalling it cannot reach this process or its siblings. */
 
     private function placeInOwnProcessGroup(): void
     {
@@ -237,6 +262,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             $this->processGroupId = $pid;
         }
     }
+    /** The directory the worker runs in, fixed so relative evidence paths mean the same thing to both sides. */
 
     private function workingDirectory(): string
     {
@@ -294,7 +320,11 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         return $descendants;
     }
 
-    /** @return list<int> */
+    /**
+     * Child process ids, gathered so termination covers the whole tree rather than just the parent.
+     *
+     * @return list<int>
+     */
     private function descendantPids(int $pid): array
     {
         if ($pid <= 0) {
@@ -309,7 +339,11 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         return [];
     }
 
-    /** @return list<int> */
+    /**
+     * Read descendants from /proc, the reliable route where it is mounted.
+     *
+     * @return list<int>
+     */
     private function descendantPidsProc(int $pid): array
     {
         $children = @file_get_contents(sprintf('/proc/%d/task/%d/children', $pid, $pid));
@@ -326,7 +360,11 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         return array_values(array_unique($descendants));
     }
 
-    /** @return list<int> */
+    /**
+     * Fall back to pgrep where /proc is unavailable, such as inside some containers.
+     *
+     * @return list<int>
+     */
     private function descendantPidsPgrep(int $pid): array
     {
         $output = [];
@@ -341,6 +379,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         }
         return array_values(array_unique($descendants));
     }
+    /** A process's start time, used to confirm a pid was not recycled before signalling it. */
 
     private function processStartTime(int $pid): ?int
     {

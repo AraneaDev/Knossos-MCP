@@ -15,6 +15,8 @@ final class BoundaryLegend
     use LegendCompression;
 
     /**
+     * Recurse a result, replacing repeated boundary objects with legend keys.
+     *
      * @param array<string, mixed> $value
      * @param array<string, array{name: string, source: string}> $legend
      * @return array<string, mixed>
@@ -39,6 +41,8 @@ final class BoundaryLegend
     }
 
     /**
+     * Whether a value is a boundary list worth hoisting into the legend.
+     *
      * @phpstan-assert-if-true list<array{id: string, name: string, source: string}> $item
      */
     private static function isBoundaryList(mixed $item): bool

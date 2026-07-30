@@ -394,4 +394,23 @@ final class ResultEnvelopeTest extends TestCase
         assertSame([['n']], $copy->nextSteps);
         assertSame(['m' => 1], $copy->meta);
     }
+
+    public function testWithWarningsAppendsRatherThanReplacing(): void
+    {
+        // Enrichment adds warnings in layers — staleness, then truncation — so
+        // replacing instead of appending would drop whichever qualification was
+        // attached first, and the caller would read a partial answer as complete.
+        $envelope = (new ResultEnvelope('p', 's', 'sum', [], warnings: ['first']))
+            ->withWarnings(['second', 'third']);
+
+        assertSame(['first', 'second', 'third'], $envelope->warnings);
+    }
+
+    public function testWithWarningsOnAnEmptyListKeepsTheOriginal(): void
+    {
+        $envelope = (new ResultEnvelope('p', 's', 'sum', [], warnings: ['only']))->withWarnings([]);
+
+        assertSame(['only'], $envelope->warnings);
+    }
+
 }

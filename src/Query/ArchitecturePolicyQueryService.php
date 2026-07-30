@@ -9,6 +9,14 @@ use InvalidArgumentException;
 use PDO;
 use Throwable;
 
+/**
+ * Evaluates declared architecture policies and budgets against the graph.
+ *
+ * Answers whether a relationship crosses a boundary it should not, and whether a
+ * change breaches a budget relative to a baseline snapshot. Violations carry the
+ * offending edge and its evidence, because a policy failure a developer cannot
+ * locate is a failure they will disable.
+ */
 final readonly class ArchitecturePolicyQueryService extends AbstractArchitectureQueryService
 {
     public function __construct(PDO $pdo, ?Closure $clock, private ?SemanticRanker $semanticRanker = null)
@@ -16,7 +24,11 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         parent::__construct($pdo, $clock);
     }
 
-    /** @param list<array<string, mixed>> $policies */
+    /**
+     * Evaluate declared policies, returning each violation with the edge that breaches it.
+     *
+     * @param list<array<string, mixed>> $policies
+     */
     public function checkArchitecture(string $projectId, array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = 20_000, int $timeoutMs = 1000): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -159,10 +171,22 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             }
         }
         $truncationReasons = array_values(array_unique($truncationReasons));
+        // Report the total found, not the page returned. Announcing "Found 4
+        // declared architecture policy violations" over a listing capped at 4,
+        // while bounds.violation_count said 322, understated the finding by two
+        // orders of magnitude to anyone reading only the summary.
+        $summary = sprintf('Found %d declared architecture policy violation%s.', $violationCount, $violationCount === 1 ? '' : 's');
+        if ($violationCount > count($violations)) {
+            $summary .= sprintf(' Listing the first %d; raise limit to see more.', count($violations));
+        }
+        if ($truncationReasons !== [] && !in_array('result_limit', $truncationReasons, true)) {
+            $summary .= sprintf(' The search was truncated (%s), so violations beyond that bound are not counted.', implode(', ', $truncationReasons));
+        }
+
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Found %d declared architecture policy violation%s.', count($violations), count($violations) === 1 ? '' : 's'),
+            $summary,
             [
                 'violations' => $violations,
                 'policies_evaluated' => array_map(static fn(array $policy): array => [
@@ -180,6 +204,7 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             $truncated,
         );
     }
+    /** Rank where a described feature would fit the existing structure. */
 
     public function suggestLocation(string $projectId, string $featureDescription, int $limit = 5, int $maxMembers = 20_000, int $maxEdges = 20_000, int $timeoutMs = 1000, string $rankingMode = 'deterministic'): ResultEnvelope
     {
@@ -457,7 +482,11 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         );
     }
 
-    /** @param array<string, mixed> $policy @return list<string> */
+    /**
+     * Validate and normalise the policy definitions.
+     *
+     * @param array<string, mixed> $policy @return list<string>
+     */
     private function policyList(array $policy, string $key): array
     {
         if (!array_key_exists($key, $policy)) {
@@ -474,7 +503,11 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         }
         return array_values(array_unique($values));
     }
-    /** @return list<string> */
+    /**
+     * Tokenise a feature description into the terms ranking scores against.
+     *
+     * @return list<string>
+     */
     private function featureTokens(string $description): array
     {
         $parts = preg_split('/[^\pL\pN]+/u', strtolower($description), -1, PREG_SPLIT_NO_EMPTY);

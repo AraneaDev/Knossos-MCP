@@ -8,6 +8,13 @@ use PDO;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Applies the schema migrations a graph database needs.
+ *
+ * Runs on every connection rather than as a deploy step, because the database is
+ * derived state a user may delete at will and the server has to rebuild it
+ * unattended. Applied migrations are recorded, so re-running is a no-op.
+ */
 final readonly class MigrationRunner
 {
     public function __construct(
@@ -15,7 +22,11 @@ final readonly class MigrationRunner
         private string $migrationDirectory,
     ) {}
 
-    /** @return list<string> versions applied by this invocation */
+    /**
+     * Apply any migrations this database has not yet recorded.
+     *
+     * @return list<string> versions applied by this invocation
+     */
     public function migrate(): array
     {
         if (!is_dir($this->migrationDirectory)) {
@@ -129,6 +140,7 @@ final readonly class MigrationRunner
 
         return $applied;
     }
+    /** Record an applied migration, which is what makes re-running a no-op. */
 
     private function recordVersion(string $version, string $checksum): void
     {

@@ -7,9 +7,19 @@ namespace Knossos\Scan;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Reconciliation\ReconciliationResult;
 
+/**
+ * Builds the envelope a scan returns.
+ *
+ * Reports counts, timings, per-scanner metadata, and diagnostics together, so a
+ * caller can tell a complete scan from one where a worker degraded.
+ */
 final readonly class ScanResultFactory
 {
-    /** @param array<string, float> $stageMilliseconds */
+    /**
+     * Build the scan's result envelope from its counts, timings, and diagnostics.
+     *
+     * @param array<string, float> $stageMilliseconds
+     */
     public function create(
         ScanPlan $plan,
         LanguageScanResult $language,

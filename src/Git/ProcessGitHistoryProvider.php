@@ -8,6 +8,13 @@ use Knossos\Scanner\Protocol\RelativePath;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Reads history by running `git`, under a deadline and with bounded output.
+ *
+ * Shells out rather than linking a Git library: the binary is already required, and
+ * its output is a stable contract. The deadline matters because a huge or
+ * pathological history would otherwise hang a query.
+ */
 final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
 {
     private GitProcessRunnerInterface $runner;
@@ -17,6 +24,7 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         $this->runner = $runner ?? new GitProcessRunner($maxOutputBytes, $maxErrorBytes);
     }
 
+    /** {@inheritDoc} */
     public function history(string $projectRoot, int $sinceDays, int $maxCommits, int $timeoutMs): array
     {
         if ($sinceDays < 1 || $sinceDays > 3650) {
@@ -40,7 +48,11 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         return $this->parse($output, $maxCommits);
     }
 
-    /** @return array{files: array<string, array{commit_count: int, authors: list<string>, last_changed_at: string}>, commits_examined: int, truncated: bool} */
+    /**
+     * Parse git log output into commit records.
+     *
+     * @return array{files: array<string, array{commit_count: int, authors: list<string>, last_changed_at: string}>, commits_examined: int, truncated: bool}
+     */
     private function parse(string $output, int $maxCommits): array
     {
         $commits = [];

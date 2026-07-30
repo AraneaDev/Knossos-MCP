@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 namespace Knossos\Scanner\Protocol;
 
+/**
+ * Wire constants for the scanner worker protocol.
+ *
+ * The versions here gate compatibility: a worker announcing a different protocol
+ * version is refused rather than half-understood, and the output schema version
+ * invalidates cached contributions whose shape no longer matches.
+ */
 final class Protocol
 {
     public const VERSION = '1.0';

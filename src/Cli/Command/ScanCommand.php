@@ -9,18 +9,22 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Scan\ProjectScanService;
 
+/** `scan`: build or refresh a project's graph, honouring interrupt signals. */
 final class ScanCommand implements CliCommand
 {
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return $command === 'scan';
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return ['db', 'json', 'name', 'max-files', 'max-file-bytes', 'boundary', 'mode', 'snapshot-retention', 'worker-timeout-ms'];
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $root = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos scan <path> [--name=NAME] [--db=PATH] [--json]');

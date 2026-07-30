@@ -4,6 +4,16 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+/**
+ * The filesystem boundary: resolves a requested path or refuses it.
+ *
+ * The only thing standing between the server and the rest of the disk, so it
+ * canonicalises with realpath before comparing — a `..` traversal or a symlink
+ * would otherwise pass a naive prefix check. A stale entry in the allow-list is
+ * skipped rather than vetoing every later root, and a rejection explains which
+ * roots are in force and where to add another, because a caller told only "no" can
+ * do nothing but guess.
+ */
 final readonly class RootGuard
 {
     private AllowedRoots $roots;
@@ -13,6 +23,7 @@ final readonly class RootGuard
     {
         $this->roots = AllowedRoots::of($allowedRoots);
     }
+    /** Canonicalise a requested root and confirm it lies inside an allowed one. */
 
     public function resolve(string $requestedRoot): string
     {
@@ -70,6 +81,7 @@ final readonly class RootGuard
     {
         return is_file('/.dockerenv') || getenv('KNOSSOS_CONTAINER') !== false;
     }
+    /** Whether a canonical candidate lies within a canonical root, on segment boundaries. */
 
     public static function contains(string $root, string $candidate): bool
     {
@@ -78,6 +90,7 @@ final readonly class RootGuard
 
         return $candidate === $root || str_starts_with($candidate, $root . '/');
     }
+    /** Normalise separators so comparison is platform-independent. */
 
     private static function normalize(string $path): string
     {

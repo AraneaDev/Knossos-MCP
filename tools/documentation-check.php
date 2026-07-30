@@ -81,6 +81,7 @@ function documentationFiles(string $directory): array
     return $files;
 }
 
+/** A path shown relative to the repository root, so failures name what a reader can find. */
 function relative(string $root, string $path): string
 {
     return str_replace($root . '/', '', $path);

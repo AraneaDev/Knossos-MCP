@@ -7,6 +7,15 @@ namespace Knossos\Mcp;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
 
+/**
+ * Prepares a query result for an agent rather than a human.
+ *
+ * Three jobs, all about the caller's context budget and next move: trim evidence
+ * to a preview unless full verbosity was asked for, enforce the byte budget by
+ * dropping list tails and *reporting* what was dropped, and attach staleness plus
+ * suggested next steps so a caller can tell an incomplete answer from a complete
+ * one. Silent truncation is the failure mode this exists to prevent.
+ */
 final readonly class ResultEnricher
 {
     private const COMPACT_EVIDENCE = 3;
@@ -17,6 +26,7 @@ final readonly class ResultEnricher
         private StalenessProbe $probe,
         private NextStepPlanner $planner,
     ) {}
+    /** Trim, budget, and annotate a result for an agent rather than a human. */
 
     public function enrich(ResultEnvelope $envelope, string $toolName, string $verbosity, ?int $maxChars = null): ResultEnvelope
     {
@@ -107,14 +117,22 @@ final readonly class ResultEnricher
     }
 
     /**
-     * Select the largest non-empty list to trim one tail item from (alphabetical
-     * dotted path on ties), or null if no trimmable list remains. The evidence
-     * list is folded into the walk under a reserved key so it can be trimmed
-     * too. The walk descends into maps and list elements alike, so nested
-     * payloads such as review_diff's change.direct_components and
-     * impact_analysis's dependants are trimmable too. A
-     * single-element list is a valid victim, so a payload dominated by one
-     * one-item list can still be trimmed toward the budget.
+     * Select the next collection to trim one tail item from, or null if none
+     * remains.
+     *
+     * Decoration is spent before findings. Legends and evidence only annotate
+     * the payload, and a legend is routinely the longest thing in a result, so
+     * selecting purely by length emptied the payload while every legend entry
+     * survived — dependency_cycles reported "Found 16 dependency cycle
+     * components" over `cycles: []`. Supporting material is therefore exhausted
+     * first, and only then does the payload pay.
+     *
+     * Within a tier the largest collection is chosen (alphabetical dotted path
+     * on ties). The evidence list is folded into the walk under a reserved key
+     * so it can be trimmed too, and the walk descends into maps and list
+     * elements alike, so nested payloads such as review_diff's
+     * change.direct_components are trimmable. A single-element list is a valid
+     * victim, so a payload dominated by one one-item list can still be trimmed.
      *
      * @param array<string, mixed> $data
      * @param list<array<string, mixed>> $evidence
@@ -124,26 +142,60 @@ final readonly class ResultEnricher
     {
         $root = $data;
         $root[self::EVIDENCE_KEY] = $evidence;
+        foreach ([true, false] as $supporting) {
+            $victim = self::largestIn($root, $supporting);
+            if ($victim !== null) {
+                return $victim;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The largest trimmable collection in one tier, or null when that tier is
+     * already exhausted.
+     *
+     * @param array<string, mixed> $root
+     * @return list<string>|null
+     */
+    private static function largestIn(array $root, bool $supporting): ?array
+    {
         $victim = null;
         $victimCount = 0;
-        $walk = function (array $container, array $path) use (&$walk, &$victim, &$victimCount): void {
+        $walk = function (array $container, array $path, bool $inSupporting) use (&$walk, &$victim, &$victimCount, $supporting): void {
             foreach ($container as $key => $value) {
                 if (!is_array($value)) {
                     continue;
                 }
                 $keyPath = [...$path, (string) $key];
-                if (array_is_list($value)) {
+                $valueSupporting = $inSupporting || self::isSupportingKey((string) $key);
+                // A legend is a map keyed by component name rather than a list, so
+                // it is trimmable in its own right; other maps are not, because
+                // popping a named field would change the result's shape. A
+                // non-list array is necessarily non-empty, since [] is a list.
+                $trimmable = array_is_list($value)
+                    ? $value !== []
+                    : self::isSupportingKey((string) $key);
+                if ($trimmable && $valueSupporting === $supporting) {
                     $count = count($value);
                     if ($count > $victimCount || ($count === $victimCount && $victim !== null && strcmp(implode('.', $keyPath), implode('.', $victim)) < 0)) {
                         $victim = $keyPath;
                         $victimCount = $count;
                     }
                 }
-                $walk($value, $keyPath);
+                $walk($value, $keyPath, $valueSupporting);
             }
         };
-        $walk($root, []);
+        $walk($root, [], false);
+
         return $victim;
+    }
+
+    /** Whether a key names material that only annotates the payload. */
+    private static function isSupportingKey(string $key): bool
+    {
+        return $key === self::EVIDENCE_KEY || str_ends_with($key, '_legend');
     }
 
     /**
@@ -185,6 +237,7 @@ final readonly class ResultEnricher
         }
         return implode('.', $path);
     }
+    /** Trim evidence to a preview, which is the default because full evidence rarely fits a context budget. */
 
     private function compact(ResultEnvelope $envelope): ResultEnvelope
     {

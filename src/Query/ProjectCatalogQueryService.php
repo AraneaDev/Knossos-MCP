@@ -8,12 +8,22 @@ use Closure;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * The project catalogue and its retained scan history.
+ *
+ * Answers which projects exist and how fresh each is, diffs two snapshots, and
+ * evaluates the CI quality gate. Freshness is reported everywhere because a
+ * confident answer from a stale graph is the most misleading thing this system can
+ * produce.
+ */
 final readonly class ProjectCatalogQueryService extends AbstractArchitectureQueryService
 {
     public function __construct(PDO $pdo, ?Closure $clock, private ArchitecturePolicyQueryService $policyQueries)
     {
         parent::__construct($pdo, $clock);
     }
+
+    /** Scanned projects with freshness and graph size, so a caller can pick the right project_id. */
 
     public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
     {
@@ -98,6 +108,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         );
     }
 
+    /** Retained scan history, for choosing a baseline to diff or gate against. */
+
     public function listSnapshots(string $projectId, int $limit = 20, int $offset = 0): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -134,6 +146,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             'snapshots' => $snapshots, 'pagination' => ['limit' => $limit, 'offset' => $offset, 'next_offset' => $truncated ? $offset + $limit : null],
         ], warnings: ['Incomplete archives report metadata but cannot support full fact diffs.'], truncated: $truncated);
     }
+
+    /** Architectural changes between two scans: added, removed, changed, and moved facts. */
 
     public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 25): ResultEnvelope
     {
@@ -244,7 +258,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         );
     }
 
-    /** @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies */
+    /**
+     * Budget evaluation against a baseline, optionally as SARIF for CI annotation.
+     *
+     * @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies
+     */
     public function qualityGate(string $projectId, string $baselineSnapshot, array $budgets, array $policies = [], bool $sarif = false, bool $proposeBaseline = false): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -335,6 +353,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             warnings: ['Baseline proposals are never applied automatically and require review.'],
         );
     }
+
+    /** How metrics moved across recent snapshots, plus release-note material. */
 
     public function architectureTrends(string $projectId, int $limit = 10, ?string $releaseFrom = null): ResultEnvelope
     {
@@ -430,7 +450,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         ];
     }
 
-    /** @return array{metadata: array<string, mixed>, facts: array<string, list<array<string, mixed>>>} */
+    /**
+     * The stored fact set for a snapshot, decoded for comparison.
+     *
+     * @return array{metadata: array<string, mixed>, facts: array<string, list<array<string, mixed>>>}
+     */
     private function snapshotFacts(string $projectId, string $identifier, string $activeScanId): array
     {
         $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
@@ -482,7 +506,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         return ['metadata' => $resolved['metadata'], 'load' => $load];
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * Rows of the current active graph, in the shape snapshot comparison expects.
+     *
+     * @return list<array<string, mixed>>
+     */
     private function activeSnapshotRows(string $projectId, string $scanId, string $table): array
     {
         $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
@@ -495,6 +523,8 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         return $rows;
     }
     /**
+     * Compare two fact sets into added, removed, and changed records.
+     *
      * @param list<array<string, mixed>> $beforeRows
      * @param list<array<string, mixed>> $afterRows
      * @return array{added: list<array<string, mixed>>, removed: list<array<string, mixed>>, changed: list<array<string, mixed>>}
@@ -530,7 +560,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         }
         return ['added' => $added, 'removed' => $removed, 'changed' => $changed];
     }
-    /** @param list<array<string, mixed>> $beforeFiles @param list<array<string, mixed>> $afterFiles @return array<string, mixed> */
+    /**
+     * One change entry, carrying enough identity to be actionable rather than just a count.
+     *
+     * @param list<array<string, mixed>> $beforeFiles @param list<array<string, mixed>> $afterFiles @return array<string, mixed>
+     */
     private function snapshotChangeRecord(string $table, string $kind, array $change, array $beforeFiles, array $afterFiles): array
     {
         $summarize = function (?array $row, array $files) use ($table): ?array {
@@ -575,7 +609,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         }
         return $record;
     }
-    /** @param list<array<string, mixed>> $removed @param list<array<string, mixed>> $added @return list<array<string, mixed>> */
+    /**
+     * Pairs that look like a rename rather than a delete plus an add, so a move is not double-counted.
+     *
+     * @param list<array<string, mixed>> $removed @param list<array<string, mixed>> $added @return list<array<string, mixed>>
+     */
     private function renameCandidates(array $removed, array $added): array
     {
         $addedBySignature = [];
@@ -595,7 +633,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         usort($candidates, static fn(array $left, array $right): int => [$left['from_id'], $left['to_id']] <=> [$right['from_id'], $right['to_id']]);
         return $candidates;
     }
-    /** @param array<string, list<array<string, mixed>>> $facts @return array<string, int> */
+    /**
+     * The metrics the quality gate compares: cycles, violations, diagnostics, hub degree.
+     *
+     * @param array<string, list<array<string, mixed>>> $facts @return array<string, int>
+     */
     private function snapshotQualityMetrics(array $facts): array
     {
         $nodes = array_fill_keys(array_column($facts['nodes'] ?? [], 'id'), true);
@@ -647,7 +689,11 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         return ['cycles' => $cycles, 'max_degree' => $degree === [] ? 0 : max($degree), 'error_diagnostics' => $errors,
             'warning_diagnostics' => $warnings, 'unreferenced_candidates' => $unreferenced];
     }
-    /** @param array<string, list<array<string, mixed>>> $before @param array<string, list<array<string, mixed>>> $after */
+    /**
+     * Additions and removals in the public API surface, the changes most likely to break a consumer.
+     *
+     * @param array<string, list<array<string, mixed>>> $before @param array<string, list<array<string, mixed>>> $after
+     */
     private function publicSurfaceChanges(array $before, array $after): int
     {
         $surface = static function (array $facts): array {

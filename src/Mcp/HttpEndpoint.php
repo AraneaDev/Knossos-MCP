@@ -11,6 +11,17 @@ use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Streamable HTTP transport for the MCP endpoint.
+ *
+ * Deliberately constrained: one POST path, no SSE streaming, no server-initiated
+ * requests. Origin, Host, and bearer checks run before anything reads the body,
+ * and internal failures are reduced to a generic error so a SQLSTATE never
+ * reaches a client. Which protocol revision applies is decided per request, so
+ * the handshake-era session machinery here serves only clients that still need
+ * it. stdio remains the recommended transport; docs/operations/http-threat-model.md
+ * records what this profile does and does not defend against.
+ */
 final readonly class HttpEndpoint
 {
     /** Mirrored headers disagree with the request body, or a required one is absent. */
@@ -328,7 +339,11 @@ final readonly class HttpEndpoint
         return $this->json(500, ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32603, 'message' => 'Internal error']], $headers);
     }
 
-    /** @param array<string, mixed> $payload @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string} */
+    /**
+     * A JSON response, downgraded to an error when it exceeds the byte cap.
+     *
+     * @param array<string, mixed> $payload @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string}
+     */
     private function json(int $status, array $payload, array $headers): array
     {
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -339,7 +354,11 @@ final readonly class HttpEndpoint
         return ['status' => $status, 'headers' => $headers + ['Content-Type' => 'application/json'], 'body' => $encoded];
     }
 
-    /** @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string} */
+    /**
+     * A non-JSON-RPC problem response, used for transport-level refusals.
+     *
+     * @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string}
+     */
     private function problem(int $status, string $message, array $headers): array
     {
         return $this->json($status, ['error' => $message], $headers);

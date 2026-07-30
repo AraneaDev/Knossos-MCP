@@ -9,13 +9,16 @@ use Knossos\Bundle\GraphBundleService;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 
+/** `export-bundle` and `import-bundle`: move a graph between databases. */
 final class BundleCommand implements CliCommand
 {
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return in_array($command, ['export-bundle', 'import-bundle'], true);
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return $command === 'export-bundle'
@@ -23,6 +26,7 @@ final class BundleCommand implements CliCommand
             : ['db', 'json', 'name'];
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return $command === 'export-bundle'
@@ -30,7 +34,11 @@ final class BundleCommand implements CliCommand
             : $this->import($positionals, $options, $context);
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Write a project's graph to a bundle file, refusing to overwrite one.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     private function export(array $positionals, array $options, CliCommandContext $context): int
     {
         $projectId = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos export-bundle <project-id> --output=FILE');
@@ -62,7 +70,11 @@ final class BundleCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Read a bundle file and import it as a new project.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     private function import(array $positionals, array $options, CliCommandContext $context): int
     {
         $input = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos import-bundle <file> [--name=NAME]');

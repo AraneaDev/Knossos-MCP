@@ -6,9 +6,19 @@ namespace Knossos\Cli;
 
 use InvalidArgumentException;
 
+/**
+ * Loads file arguments — policies, budgets, bundles — with their limits enforced.
+ *
+ * Centralised so every command applies the same size caps and the same "missing or
+ * malformed" diagnostics, rather than each inventing its own.
+ */
 final class CliInputLoader
 {
-    /** @return list<array<string, mixed>> */
+    /**
+     * Load and validate a policy file, within its size cap.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function policies(string $path): array
     {
         if (!is_file($path) || !is_readable($path)) {
@@ -29,7 +39,11 @@ final class CliInputLoader
         return $decoded;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Load a JSON object argument, erroring clearly on a malformed file.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonObject(string $path): array
     {
         if (!is_file($path) || !is_readable($path) || filesize($path) > 1_000_000) {
@@ -42,6 +56,7 @@ final class CliInputLoader
         }
         return $decoded;
     }
+    /** Load a graph bundle, enforcing the size cap before decoding. */
 
     public function bundle(string $path): string
     {

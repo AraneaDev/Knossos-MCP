@@ -6,9 +6,17 @@ namespace Knossos\Scanner\Protocol;
 
 use InvalidArgumentException;
 
+/**
+ * Normalises and validates a path as project-relative.
+ *
+ * Every fact's evidence is a relative path, so this is the boundary that keeps an
+ * absolute path or a `..` escape out of the graph — both would leak the host
+ * layout into results that are meant to be portable between machines.
+ */
 final class RelativePath
 {
     private function __construct() {}
+    /** Reject an absolute path or a parent traversal, keeping host layout out of the graph. */
 
     public static function assertValid(string $path, string $field = 'path'): void
     {

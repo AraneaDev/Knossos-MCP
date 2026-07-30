@@ -7,6 +7,13 @@ namespace Knossos\Scan;
 use Knossos\Scanner\Worker\WorkerException;
 use Throwable;
 
+/**
+ * Runs each language's worker over the files it claims.
+ *
+ * A worker that fails or times out degrades to a diagnostic rather than failing
+ * the scan: a PHP graph is still worth having when the TypeScript worker died,
+ * and the caller is told the answer is partial.
+ */
 final readonly class LanguageScanRunner
 {
     /** @param list<LanguageDescriptor> $descriptors */
@@ -15,6 +22,7 @@ final readonly class LanguageScanRunner
         private LanguageWorkerPool $pool,
         private ContributionCacheService $cache,
     ) {}
+    /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
 
     public function run(ScanPlan $plan, CancellationToken $cancellation): LanguageScanResult
     {
@@ -92,6 +100,7 @@ final readonly class LanguageScanRunner
 
         return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages);
     }
+    /** Milliseconds since a hrtime() mark, for the stage timings. */
 
     private static function elapsedMilliseconds(int $startedAt): float
     {

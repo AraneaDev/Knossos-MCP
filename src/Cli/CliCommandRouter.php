@@ -14,6 +14,12 @@ use Knossos\Cli\Command\ServeCommand;
 use Knossos\Cli\Command\WatchCommand;
 use Knossos\Runtime\RuntimeFactory;
 
+/**
+ * Picks the command for an invocation and validates its options first.
+ *
+ * An unrecognised option is an error, never a no-op: a mistyped flag that appears
+ * to work is how a CI job silently stops checking what it was meant to check.
+ */
 final class CliCommandRouter
 {
     /** @var list<CliCommand> */
@@ -36,7 +42,11 @@ final class CliCommandRouter
         ];
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Pick the command for an invocation, validating its options before it runs.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     public function route(string $command, array $positionals, array $options): int
     {
         // Validate and resolve the command BEFORE any database work, so a

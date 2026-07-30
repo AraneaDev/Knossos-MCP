@@ -19,6 +19,284 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $reflection->isReadOnly());
     }
 
+    /**
+     * The pattern-normalisation steps each have an observable effect, and mutation
+     * testing showed none of them were pinned: trim(), the anchored-detection
+     * trim, and the `continue` that skips a blank pattern all survived being
+     * removed or altered. IgnoreMatcher decides what gets scanned at all, so a
+     * silent change here distorts every graph the project produces.
+     *
+     * Note the directory names: `dist` and `build` are built-in exclusions and
+     * cannot be negated, so user-pattern behaviour has to be exercised through
+     * names the built-in list does not already cover.
+     */
+    public function testSurroundingWhitespaceInAPatternIsIgnored(): void
+    {
+        // A hand-edited knossos.json routinely has a stray space. Without the trim
+        // the pattern becomes " out", which matches nothing, and the directory is
+        // silently scanned.
+        $padded = new IgnoreMatcher(['  out  ']);
+
+        assertSame(true, $padded->matches('out/x.js'));
+        assertSame(true, $padded->matches('nested/out/x.js'));
+        assertSame(false, $padded->matches('src/x.php'));
+    }
+
+    public function testATrailingSlashDoesNotAnchorAPattern(): void
+    {
+        // Anchored detection asks whether a separator appears *inside* the pattern,
+        // so a trailing slash must be stripped before the check. Reading "logs/" as
+        // anchored would stop it matching a nested directory of the same name.
+        $matcher = new IgnoreMatcher(['logs/']);
+
+        assertSame(true, $matcher->matches('logs/a.log'));
+        assertSame(true, $matcher->matches('deep/logs/a.log'));
+    }
+
+    public function testALeadingSlashAnchorsToTheProjectRoot(): void
+    {
+        $matcher = new IgnoreMatcher(['/logs']);
+
+        assertSame(true, $matcher->matches('logs/a.log'));
+        assertSame(false, $matcher->matches('deep/logs/a.log'));
+    }
+
+    public function testAnInnerSlashAnchorsToTheProjectRoot(): void
+    {
+        $matcher = new IgnoreMatcher(['src/generated']);
+
+        assertSame(true, $matcher->matches('src/generated/api.php'));
+        assertSame(false, $matcher->matches('lib/src/generated/api.php'));
+    }
+
+    public function testABlankPatternIsSkippedWithoutAbandoningTheRest(): void
+    {
+        // Ignore lists contain blank lines. Breaking out of the loop instead of
+        // continuing would silently drop every pattern after the first blank one —
+        // which surfaces as "why is my build output suddenly in the graph".
+        $matcher = new IgnoreMatcher(['', 'out', '   ', 'logs']);
+
+        assertSame(true, $matcher->matches('out/b.js'));
+        assertSame(true, $matcher->matches('logs/a.log'));
+        assertSame(false, $matcher->matches('src/app.php'));
+    }
+
+    public function testALaterNegationReIncludesAPreviouslyIgnoredPath(): void
+    {
+        // Last match wins, so pattern order is behaviour rather than preference.
+        $matcher = new IgnoreMatcher(['out', '!out/keep.js']);
+
+        assertSame(false, $matcher->matches('out/keep.js'));
+        assertSame(true, $matcher->matches('out/other.js'));
+    }
+
+    public function testAPaddedNegationIsStillANegation(): void
+    {
+        // Regression: the negation marker used to be read from the untrimmed
+        // pattern, so one leading space turned "!out/keep.js" into a literal
+        // pattern matching nothing — silently discarding the re-include while the
+        // trim that followed made the same whitespace irrelevant everywhere else.
+        assertSame(false, (new IgnoreMatcher(['out', ' !out/keep.js ']))->matches('out/keep.js'));
+        assertSame(false, (new IgnoreMatcher(['out', '! out/keep.js']))->matches('out/keep.js'));
+        // The non-negated sibling is unaffected, so the fix did not turn every
+        // pattern into a negation.
+        assertSame(true, (new IgnoreMatcher(['out', ' !out/keep.js ']))->matches('out/other.js'));
+    }
+
+    /**
+     * The glob-to-regex translator was the weakest part of this class under
+     * mutation testing: `**` spanning, the preg_quote of literal characters, and
+     * the character-class scanner were all unexercised. Every expectation below
+     * was probed against the implementation first, so these pin current behaviour
+     * rather than an assumption about it.
+     */
+    public function testDoubleStarSpansAnyNumberOfDirectorySegments(): void
+    {
+        $matcher = new IgnoreMatcher(['**/tmp']);
+
+        assertSame(true, $matcher->matches('tmp/a'));
+        assertSame(true, $matcher->matches('x/tmp/a'));
+        assertSame(true, $matcher->matches('x/y/tmp/a'));
+    }
+
+    public function testATrailingDoubleStarMatchesTheDirectoryContentsOnly(): void
+    {
+        $matcher = new IgnoreMatcher(['logs/**']);
+
+        assertSame(true, $matcher->matches('logs/a.log'));
+        assertSame(true, $matcher->matches('logs/x/y.log'));
+        // Not a prefix match: a sibling whose name merely starts the same is kept.
+        assertSame(false, $matcher->matches('logsx/a'));
+    }
+
+    public function testAnInnerDoubleStarMatchesZeroOrMoreSegments(): void
+    {
+        $matcher = new IgnoreMatcher(['a/**/b']);
+
+        assertSame(true, $matcher->matches('a/b/f'));
+        assertSame(true, $matcher->matches('a/x/b/f'));
+        assertSame(true, $matcher->matches('a/x/y/b/f'));
+    }
+
+    public function testASingleStarStopsAtASegmentBoundaryForAnAnchoredPattern(): void
+    {
+        // Unanchored, so it matches a basename at any depth; the point is that `*`
+        // itself does not cross a separator.
+        $matcher = new IgnoreMatcher(['*.log']);
+
+        assertSame(true, $matcher->matches('a.log'));
+        assertSame(true, $matcher->matches('d/a.log'));
+        assertSame(false, $matcher->matches('a.txt'));
+    }
+
+    public function testACharacterClassMatchesAnyMemberAndNothingElse(): void
+    {
+        $matcher = new IgnoreMatcher(['file.[co]']);
+
+        assertSame(true, $matcher->matches('file.c'));
+        assertSame(true, $matcher->matches('file.o'));
+        assertSame(false, $matcher->matches('file.z'));
+    }
+
+    public function testANegatedCharacterClassExcludesItsMembers(): void
+    {
+        $matcher = new IgnoreMatcher(['f[!o]o.txt']);
+
+        assertSame(true, $matcher->matches('fao.txt'));
+        assertSame(false, $matcher->matches('foo.txt'));
+    }
+
+    public function testAnUnterminatedCharacterClassIsTreatedLiterally(): void
+    {
+        // A malformed pattern must not become a regex that matches everything, nor
+        // throw: it degrades to matching the literal text the user typed.
+        $matcher = new IgnoreMatcher(['[abc']);
+
+        assertSame(true, $matcher->matches('[abc'));
+        assertSame(false, $matcher->matches('a'));
+    }
+
+    public function testRegexMetacharactersInAPatternAreLiteral(): void
+    {
+        // Without preg_quote, "." would match any character and "+" would repeat
+        // the previous one, so a pattern would silently ignore far more than the
+        // user named.
+        $dot = new IgnoreMatcher(['v1.2']);
+        assertSame(true, $dot->matches('v1.2'));
+        assertSame(false, $dot->matches('v1x2'));
+
+        $plus = new IgnoreMatcher(['a+b']);
+        assertSame(true, $plus->matches('a+b'));
+        assertSame(false, $plus->matches('aab'));
+    }
+
+
+    /**
+     * Boundary conditions in the pattern scanner: a wildcard or bracket sitting at
+     * the very end of the pattern, where the lookahead index reaches the string
+     * length. Mutation testing left every one of these index comparisons alive,
+     * which is precisely where an off-by-one in a path matcher hides — it would
+     * quietly include or exclude a whole directory.
+     */
+    public function testATrailingWildcardMatchesWithNothingAfterIt(): void
+    {
+        $bare = new IgnoreMatcher(['*']);
+        assertSame(true, $bare->matches('a'));
+        assertSame(true, $bare->matches('a/b'));
+
+        // The lookahead for a second '*' must not read past the end.
+        $doubled = new IgnoreMatcher(['**']);
+        assertSame(true, $doubled->matches('a'));
+        assertSame(true, $doubled->matches('a/b'));
+    }
+
+    public function testAWildcardAtTheEndOfALiteralPrefixMatchesTheBareStem(): void
+    {
+        $matcher = new IgnoreMatcher(['a*']);
+
+        assertSame(true, $matcher->matches('ab'));
+        // '*' matches zero characters, so the stem alone matches.
+        assertSame(true, $matcher->matches('a'));
+        assertSame(false, $matcher->matches('ba'));
+    }
+
+    public function testADoubleStarAtTheEndOfALiteralPrefixSpansSegments(): void
+    {
+        $matcher = new IgnoreMatcher(['a**']);
+
+        assertSame(true, $matcher->matches('ab'));
+        assertSame(true, $matcher->matches('a/b'));
+    }
+
+    public function testAnAnchoredTrailingDoubleStarKeepsItsLiteralPrefix(): void
+    {
+        // Anchored deliberately: unanchored patterns fall back to matching a
+        // basename at any depth, which masks whether the trailing '**' was
+        // translated as a segment-spanning wildcard and whether the literal prefix
+        // survived into the regex at all. Both mutations were invisible until the
+        // pattern was anchored.
+        $matcher = new IgnoreMatcher(['x/a**']);
+
+        assertSame(true, $matcher->matches('x/ab'));
+        assertSame(true, $matcher->matches('x/a/b'));
+        // The prefix still constrains: dropping it would ignore the whole tree.
+        assertSame(false, $matcher->matches('x/b/c'));
+        assertSame(false, $matcher->matches('y/a/b'));
+    }
+
+    public function testABracketAtTheEndOfAPatternIsLiteral(): void
+    {
+        // The class scanner starts looking one past the '[' and must cope with that
+        // index already being the end of the string.
+        $matcher = new IgnoreMatcher(['a[']);
+
+        assertSame(true, $matcher->matches('a['));
+        assertSame(false, $matcher->matches('a'));
+    }
+
+    public function testAClassWhoseFirstMemberIsTheClosingBracket(): void
+    {
+        // "[]]" is a class containing ']': the scanner has to skip a ']' in first
+        // position rather than treating it as the terminator.
+        $matcher = new IgnoreMatcher(['[]]']);
+
+        assertSame(true, $matcher->matches(']'));
+        assertSame(false, $matcher->matches('a'));
+    }
+
+    public function testANegationMarkerWithNoMembersIsNotAClass(): void
+    {
+        // "[!]" has no terminator after the '!', so it degrades to a literal rather
+        // than producing an empty — and therefore always-failing — character class.
+        $matcher = new IgnoreMatcher(['[!]']);
+
+        assertSame(true, $matcher->matches('[!]'));
+        assertSame(false, $matcher->matches('a'));
+    }
+
+    public function testACharacterRangeInsideAClassIsHonoured(): void
+    {
+        $matcher = new IgnoreMatcher(['[a-c]x']);
+
+        assertSame(true, $matcher->matches('ax'));
+        assertSame(true, $matcher->matches('bx'));
+        assertSame(false, $matcher->matches('dx'));
+    }
+
+
+    public function testAWindowsStylePatternIsNormalisedToForwardSlashes(): void
+    {
+        // knossos.json is edited on Windows too, and a pattern written with
+        // backslashes must mean the same thing. Without the normalisation the
+        // pattern becomes a literal that matches nothing, so the directory is
+        // silently scanned — the failure is invisible rather than loud.
+        $matcher = new IgnoreMatcher(['src\\generated']);
+
+        assertSame(true, $matcher->matches('src/generated/api.php'));
+        // Still anchored: the inner separator survives normalisation.
+        assertSame(false, $matcher->matches('lib/src/generated/api.php'));
+    }
+
     public function testMatchesPathInsideVendorSegment(): void
     {
         $matcher = new IgnoreMatcher([]);

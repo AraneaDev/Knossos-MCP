@@ -9,11 +9,24 @@ use Knossos\Scanner\Worker\ProcessScannerClient;
 use PDO;
 use Throwable;
 
+/**
+ * Checks that this installation can actually scan.
+ *
+ * Verifies the runtimes, required extensions, database integrity and migrations,
+ * data-directory writability, and starts each scanner worker to confirm it
+ * answers on the expected protocol. Every check is reported rather than thrown,
+ * so one failure does not hide the others — the usual reason to run this is that
+ * something already went wrong and the cause is not obvious.
+ */
 final readonly class DoctorService
 {
     public function __construct(private PDO $pdo, private string $installationRoot, private string $databasePath) {}
 
-    /** @return array{ok: bool, checks: list<array{name: string, status: string, detail: string}>} */
+    /**
+     * Run every check, reporting each rather than stopping at the first failure.
+     *
+     * @return array{ok: bool, checks: list<array{name: string, status: string, detail: string}>}
+     */
     public function run(): array
     {
         $checks = [];
@@ -66,7 +79,11 @@ final readonly class DoctorService
         return ['ok' => count(array_filter($checks, static fn(array $check): bool => $check['status'] === 'error')) === 0, 'checks' => $checks];
     }
 
-    /** @param list<array{name: string, status: string, detail: string}> $checks */
+    /**
+     * Record one check's outcome, converting a throw into a reported error.
+     *
+     * @param list<array{name: string, status: string, detail: string}> $checks
+     */
     private function check(array &$checks, string $name, callable $operation): void
     {
         try {
@@ -76,7 +93,11 @@ final readonly class DoctorService
         }
     }
 
-    /** @param list<array{name: string, status: string, detail: string}> $checks @param non-empty-list<string> $command */
+    /**
+     * Start a language worker and confirm its identity and protocol version.
+     *
+     * @param list<array{name: string, status: string, detail: string}> $checks @param non-empty-list<string> $command
+     */
     private function worker(array &$checks, string $name, array $command, string $expectedId): void
     {
         $this->check($checks, $name, static function () use ($command, $expectedId): string {

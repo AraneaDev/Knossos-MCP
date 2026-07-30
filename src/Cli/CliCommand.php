@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 namespace Knossos\Cli;
 
+/**
+ * Contract for one CLI command.
+ *
+ * Declaring accepted options separately from running is what lets the router
+ * reject an unknown flag before the command executes, rather than silently
+ * ignoring it.
+ */
 interface CliCommand
 {
     /** Reports whether this handler owns the requested CLI command name. */

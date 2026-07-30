@@ -9,6 +9,13 @@ use Knossos\Runtime\RuntimeFactory;
 use Knossos\Scan\CancellationToken;
 use PDO;
 
+/**
+ * Shared, lazily-built dependencies for one CLI invocation.
+ *
+ * The database and maintenance service are created on first use so commands that
+ * need neither — `version`, `help` — never open the graph, and so a command that
+ * uses both shares one connection rather than opening two.
+ */
 final class CliCommandContext
 {
     private ?PDO $pdo = null;
@@ -21,11 +28,13 @@ final class CliCommandContext
         private readonly ?string $databasePath,
     ) {}
 
+    /** The graph connection, opened and migrated on first call. */
     public function database(): PDO
     {
         return $this->pdo ??= $this->runtime->database($this->databasePath);
     }
 
+    /** Maintenance operations bound to this invocation's database path. */
     public function maintenance(): DatabaseMaintenanceService
     {
         return $this->maintenance ??= new DatabaseMaintenanceService(
@@ -34,16 +43,27 @@ final class CliCommandContext
         );
     }
 
+    /** Where Knossos itself is installed, which is where the packaged scanner workers live. */
     public function installationRoot(): string
     {
         return $this->runtime->installationRoot();
     }
 
+    /** The effective database path: `--db` when given, otherwise the runtime default. */
     public function databasePath(): string
     {
         return $this->databasePath ?? $this->runtime->defaultDatabasePath();
     }
 
+    /**
+     * A token wired to interrupt signals, so Ctrl-C stops a scan cleanly.
+     *
+     * Degrades to an un-signalled token where pcntl is unavailable rather than
+     * refusing to run.
+     *
+     * @param bool $handleTermination also trap SIGTERM, for long-running commands a
+     *        supervisor may stop
+     */
     public function cancellationToken(bool $handleTermination = false): CancellationToken
     {
         $cancellation = new CancellationToken();
@@ -57,7 +77,11 @@ final class CliCommandContext
         return $cancellation;
     }
 
-    /** @param array<string, mixed> $structured */
+    /**
+     * Print a result as JSON or text, per the --json flag.
+     *
+     * @param array<string, mixed> $structured
+     */
     public function output(array $structured, bool $json, string $text): void
     {
         echo ($json ? json_encode($structured, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : $text) . PHP_EOL;

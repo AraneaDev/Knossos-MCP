@@ -43,6 +43,7 @@ php tools/repository-check.php
 php tools/generate-reference.php --check
 php tools/documentation-check.php
 php tools/maintainability-report.php
+php tools/docstring-report.php
 php tools/api-documentation-check.php
 if command -v pre-commit >/dev/null 2>&1; then
     pre-commit validate-config .pre-commit-config.yaml
@@ -53,7 +54,7 @@ fi
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark \
-        tools/mcp-serve tools/release-lifecycle tools/supply-chain
+        tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1

@@ -6,6 +6,13 @@ namespace Knossos\Discovery;
 
 use InvalidArgumentException;
 
+/**
+ * Limits and ignore rules for one discovery pass.
+ *
+ * The caps are a safety boundary, not tuning: discovery walks whatever tree it is
+ * pointed at, and an unbounded walk of a huge or pathological directory is how a
+ * local-first server becomes unusable.
+ */
 final readonly class DiscoveryConfig
 {
     /**

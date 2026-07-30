@@ -10,6 +10,14 @@ use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer};
 use Knossos\Store\StableId;
 use PDO;
 
+/**
+ * Turns a scan request into a plan.
+ *
+ * Resolves project configuration, discovers files, decides full versus
+ * incremental, and computes the analyzer hashes reuse is keyed on. Allowed roots
+ * are resolved here at call time, so a project granted after the server started is
+ * scannable without a restart.
+ */
 final readonly class ScanPlanner
 {
     private readonly AllowedRoots $roots;
@@ -20,7 +28,11 @@ final readonly class ScanPlanner
         $this->roots = AllowedRoots::of($allowedRoots);
     }
 
-    /** @param list<array<string, mixed>>|null $explicitBoundaries */
+    /**
+     * Resolve configuration, discover files, and decide the scan mode and limits.
+     *
+     * @param list<array<string, mixed>>|null $explicitBoundaries
+     */
     public function prepare(
         string $root,
         ?int $maxFiles,
@@ -87,6 +99,7 @@ final readonly class ScanPlanner
             self::elapsedMilliseconds($started),
         );
     }
+    /** Complete the plan once the analyzer set is known. */
 
     public function finalize(ScanPreparation $preparation): ScanPlan
     {
@@ -108,7 +121,11 @@ final readonly class ScanPlanner
         return new ScanPlan($preparation, $projectId, $effectiveMode, $cache, count(array_diff_key($old, $current)));
     }
 
-    /** @param list<object> $units @param list<string> $packages */
+    /**
+     * Whether a Composer dependency is present, used to detect frameworks worth enriching.
+     *
+     * @param list<object> $units @param list<string> $packages
+     */
     private function hasComposerPackage(array $units, array $packages): bool
     {
         foreach ($units as $unit) {
@@ -125,7 +142,11 @@ final readonly class ScanPlanner
         return false;
     }
 
-    /** @param list<object> $units @param list<string> $kinds */
+    /**
+     * Identity of the analyzer configuration, so a change invalidates incremental reuse.
+     *
+     * @param list<object> $units @param list<string> $kinds
+     */
     private function configurationHash(array $units, array $kinds, string $version): string
     {
         $parts = [$version];
@@ -137,6 +158,7 @@ final readonly class ScanPlanner
         sort($parts, SORT_STRING);
         return hash('sha256', implode("\n", $parts));
     }
+    /** Milliseconds since a hrtime() mark, for the stage timings. */
 
     private static function elapsedMilliseconds(int $startedAt): float
     {

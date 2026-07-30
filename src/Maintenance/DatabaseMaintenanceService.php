@@ -13,9 +13,18 @@ use PDO;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Housekeeping on the derived graph database.
+ *
+ * Integrity check, WAL checkpoint, optimize, atomic backup, and the destructive
+ * project and stale-scan removals. The destructive operations preview by default
+ * and act only when explicitly told to, because the caller is often an agent and
+ * a mistaken deletion is not recoverable from inside the session.
+ */
 final readonly class DatabaseMaintenanceService
 {
     public function __construct(private PDO $pdo, private string $databasePath) {}
+    /** Delete a project and its graph, previewing the row counts unless executing. */
 
     public function removeProject(string $projectId, bool $execute = false): ResultEnvelope
     {
@@ -48,6 +57,7 @@ final readonly class DatabaseMaintenanceService
             'executed' => true, 'project' => ['id' => $projectId, 'name' => $project['name']], 'removed' => $counts,
         ]);
     }
+    /** Drop failed, cancelled, or abandoned scan records older than the cutoff. */
 
     public function cleanupStaleScans(string $projectId, int $olderThanHours = 24, bool $execute = false): ResultEnvelope
     {
@@ -111,6 +121,7 @@ final readonly class DatabaseMaintenanceService
             truncated: $truncated,
         );
     }
+    /** Run one maintenance action, previewing unless explicitly told to execute. */
 
     public function maintain(string $action, bool $execute = false, ?string $backupName = null): ResultEnvelope
     {
@@ -152,7 +163,11 @@ final readonly class DatabaseMaintenanceService
         return new ResultEnvelope('database', '', sprintf('Database %s completed.', $action), $data);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The project row, so a removal reports what it is about to delete.
+     *
+     * @return array<string, mixed>
+     */
     private function project(string $projectId): array
     {
         $statement = $this->pdo->prepare('SELECT id, name, active_scan_id FROM projects WHERE id = :project');
@@ -164,7 +179,11 @@ final readonly class DatabaseMaintenanceService
         return $project;
     }
 
-    /** @return array<string, int> */
+    /**
+     * Row counts per table for a project, which is what makes a removal preview meaningful.
+     *
+     * @return array<string, int>
+     */
     private function projectCounts(string $projectId): array
     {
         $counts = [];
@@ -175,6 +194,7 @@ final readonly class DatabaseMaintenanceService
         }
         return $counts;
     }
+    /** How many scans still reference a project, so a removal cannot orphan history. */
 
     private function scanReferenceCount(string $scanId): int
     {
@@ -187,7 +207,11 @@ final readonly class DatabaseMaintenanceService
         return $count;
     }
 
-    /** @return list<ProjectWriterLease> */
+    /**
+     * Take every writer lease before a destructive change, so no scan is mid-write.
+     *
+     * @return list<ProjectWriterLease>
+     */
     private function acquireAllProjectLeases(): array
     {
         $ids = $this->pdo->query('SELECT id FROM projects ORDER BY id LIMIT 1001')->fetchAll(PDO::FETCH_COLUMN);
@@ -208,6 +232,7 @@ final readonly class DatabaseMaintenanceService
         }
         return $leases;
     }
+    /** Resolve and validate the backup path, refusing to overwrite an existing file. */
 
     private function backupTarget(?string $backupName): string
     {
@@ -221,7 +246,11 @@ final readonly class DatabaseMaintenanceService
         return dirname($this->databasePath) . '/backups/' . $backupName;
     }
 
-    /** @return array{target: string, bytes: int} */
+    /**
+     * Copy the database atomically via SQLite's backup API rather than a file copy, which would capture a torn WAL.
+     *
+     * @return array{target: string, bytes: int}
+     */
     private function backup(?string $backupName): array
     {
         $target = $this->backupTarget($backupName);

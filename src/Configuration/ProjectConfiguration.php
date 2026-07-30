@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Configuration;
 
+/** A project's resolved `knossos.json` settings: limits, ignores, boundaries, frameworks. */
 final readonly class ProjectConfiguration
 {
     /**

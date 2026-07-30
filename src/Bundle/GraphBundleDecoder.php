@@ -6,6 +6,13 @@ namespace Knossos\Bundle;
 
 use InvalidArgumentException;
 
+/**
+ * Decodes and validates a graph bundle before anything is imported.
+ *
+ * A bundle is untrusted input that arrived from another machine: the checksum,
+ * schema version, and structure are all checked up front, so a malformed bundle
+ * fails before it can half-populate a database.
+ */
 final class GraphBundleDecoder
 {
     public const FORMAT = 'knossos.graph.bundle';
@@ -23,7 +30,11 @@ final class GraphBundleDecoder
      */
     public const MAX_STRUCTURAL_TOKENS = 2_000_000;
 
-    /** @return array{manifest: array<string, mixed>, payload: array<string, mixed>, fact_count: int, checksum: string} */
+    /**
+     * Decompress, decode, and validate a bundle before any of it is trusted.
+     *
+     * @return array{manifest: array<string, mixed>, payload: array<string, mixed>, fact_count: int, checksum: string}
+     */
     public function decodeAndValidate(string $compressed): array
     {
         if ($compressed === '' || strlen($compressed) > self::MAX_COMPRESSED_BYTES) {
@@ -79,7 +90,11 @@ final class GraphBundleDecoder
             + substr_count($json, ':');
     }
 
-    /** @param array<string, mixed> $payload */
+    /**
+     * Check every table's shape, so a malformed bundle fails before it half-populates a database.
+     *
+     * @param array<string, mixed> $payload
+     */
     private function validateTables(array $payload): int
     {
         $factCount = 0;
@@ -92,7 +107,11 @@ final class GraphBundleDecoder
         return $factCount;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * A required object field from untrusted bundle input.
+     *
+     * @return array<string, mixed>
+     */
     private function object(mixed $value, string $name): array
     {
         if (!is_array($value) || array_is_list($value)) {
@@ -101,7 +120,11 @@ final class GraphBundleDecoder
         return $value;
     }
 
-    /** @param array<string, mixed> $value @param list<string> $allowed */
+    /**
+     * Reject unrecognised keys, so a bundle from a newer version fails loudly rather than silently losing data.
+     *
+     * @param array<string, mixed> $value @param list<string> $allowed
+     */
     private function knownKeys(array $value, array $allowed, string $scope): void
     {
         $unknown = array_diff(array_keys($value), $allowed);
@@ -109,11 +132,13 @@ final class GraphBundleDecoder
             throw new InvalidArgumentException('Bundle ' . $scope . ' contains unknown keys: ' . implode(', ', $unknown) . '.');
         }
     }
+    /** Encode deterministically, so the same graph always yields the same checksum. */
 
     public static function encodeCanonical(mixed $value): string
     {
         return json_encode(self::canonical($value), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
+    /** Order keys and rows canonically, which is what makes the checksum reproducible. */
 
     private static function canonical(mixed $value): mixed
     {

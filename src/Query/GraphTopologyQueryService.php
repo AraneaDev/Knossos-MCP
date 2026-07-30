@@ -7,8 +7,17 @@ namespace Knossos\Query;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Whole-graph structural questions: summaries, flows, cycles, hubs, dead code.
+ *
+ * Every traversal here is bounded by node, edge, and time limits, because these
+ * are the queries that would otherwise walk a large graph without end. Dead-code
+ * answers report absence of evidence rather than proven absence — nothing static
+ * analysis sees can rule out reflection.
+ */
 final readonly class GraphTopologyQueryService extends AbstractArchitectureQueryService
 {
+    /** Node, relationship, role, and language counts: the orientation query for an unfamiliar codebase. */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
         self::assertLimit($limit);
@@ -42,8 +51,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         );
     }
 
-    /** @param list<string> $edgeKinds */
-    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000, bool $includeSelfLoops = false): ResultEnvelope
+    /**
+     * Strongly connected components, bounded by node, edge, and time limits.
+     *
+     * @param list<string> $edgeKinds
+     */
+    public function dependencyCycles(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeSelfLoops = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -188,10 +201,20 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
 
         $truncationReasons = array_values(array_unique($truncationReasons));
+        // A bounded search must not read as an exhaustive one: "Found 0
+        // dependency cycle components" is the same sentence a genuinely acyclic
+        // project gets, and a cycle living beyond the edge cap is invisible in
+        // it. Naming the bound in the summary is what lets a caller tell the two
+        // apart without reading bounds.truncation_reasons.
+        $summary = sprintf('Found %d dependency cycle component%s.', count($cycles), count($cycles) === 1 ? '' : 's');
+        if ($truncationReasons !== []) {
+            $summary .= sprintf(' The search was truncated (%s), so cycles beyond that bound are not reported.', implode(', ', $truncationReasons));
+        }
+
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Found %d dependency cycle component%s.', count($cycles), count($cycles) === 1 ? '' : 's'),
+            $summary,
             [
                 'cycles' => $cycles,
                 'bounds' => [
@@ -206,8 +229,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         );
     }
 
-    /** @param list<string> $edgeKinds */
-    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 20_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false): ResultEnvelope
+    /**
+     * Hubs, hotspots, and unreferenced-code candidates, ranked for where to look first.
+     *
+     * @param list<string> $edgeKinds
+     */
+    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -482,7 +509,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         );
     }
 
-    /** @param list<string> $edgeKinds */
+    /**
+     * Paths by which one component can reach another, with the edges that justify each hop.
+     *
+     * @param list<string> $edgeKinds
+     */
     public function explainFlow(string $projectId, string $from, string $to, int $maxDepth = 6, int $maxPaths = 5, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -617,7 +648,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         );
     }
 
-    /** @param list<string> $edgeKinds */
+    /**
+     * Conservative static blast radius of changing a symbol; over-reports by design and says so.
+     *
+     * @param list<string> $edgeKinds
+     */
     public function impactAnalysis(string $projectId, string $symbol, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000, ?int $deadline = null): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -765,6 +800,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         );
     }
 
+    /** How the project is partitioned, and whether each boundary was declared or inferred. */
+
     public function listBoundaries(string $projectId, ?string $source = null, int $limit = 50, int $offset = 0): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -857,7 +894,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return $set;
     }
 
-    /** @param list<string> $edgeKinds @return list<array<string, mixed>> */
+    /**
+     * Edge kinds that count as control or data flow for reachability.
+     *
+     * @param list<string> $edgeKinds @return list<array<string, mixed>>
+     */
     private function flowEdges(string $projectId, string $sourceId, array $edgeKinds, int $minimumConfidence, bool &$truncated = false): array
     {
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
@@ -877,7 +918,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return $rows;
     }
-    /** @param list<string> $edgeKinds @return list<array<string, mixed>> */
+    /**
+     * Edge kinds that count as a dependency for impact, a wider set than flow.
+     *
+     * @param list<string> $edgeKinds @return list<array<string, mixed>>
+     */
     private function impactEdges(string $projectId, string $targetId, array $edgeKinds, int $minimumConfidence, bool &$truncated = false): array
     {
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
@@ -897,7 +942,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return $rows;
     }
-    /** @param array<string, mixed> $edge @return array<string, mixed> */
+    /**
+     * One breadth-first step outward, carrying the weakest confidence seen along the path.
+     *
+     * @param array<string, mixed> $edge @return array<string, mixed>
+     */
     private function impactHop(array $edge): array
     {
         return [
@@ -910,7 +959,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             ],
         ];
     }
-    /** @param array<string, mixed> $record */
+    /**
+     * Whether a node is reachable from outside: a route, command, or listener.
+     *
+     * @param array<string, mixed> $record
+     */
     private function isEntryPoint(array $record): bool
     {
         if (in_array($record['node']['kind'], ['route', 'command'], true)) {
@@ -980,7 +1033,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return $ownerId !== null && ($metrics[$ownerId]['in_degree'] ?? 0) > 0;
     }
 
-    /** @param array<string, mixed> $node @param list<array<string, mixed>> $roles */
+    /**
+     * Whether nothing references a node. Absence of evidence, not proof: reflection is invisible here.
+     *
+     * @param array<string, mixed> $node @param list<array<string, mixed>> $roles
+     */
     private function isDeadCodeCandidate(array $node, array $roles): bool
     {
         if (!in_array($node['kind'], ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'], true)) {
@@ -1249,6 +1306,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return $referenced;
     }
+    /** Components annotated as false positives, excluded from candidates thereafter. */
     private function deadCodeSuppressions(string $projectId): array
     {
         $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
@@ -1265,7 +1323,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return array_values(array_filter($list, 'is_string'));
     }
 
-    /** @return array<string, array{kind: string, value: string}> keyed by canonical name; false_positive wins over confirmed_dead */
+    /**
+     * Durable agent judgements recorded against a component.
+     *
+     * @return array<string, array{kind: string, value: string}> keyed by canonical name; false_positive wins over confirmed_dead
+     */
     private function componentAnnotations(string $projectId): array
     {
         $statement = $this->pdo->prepare(
@@ -1280,7 +1342,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return $byName;
     }
 
-    /** @param list<string> $suppressions */
+    /**
+     * Whether an annotation excludes this component from dead-code reporting.
+     *
+     * @param list<string> $suppressions
+     */
     private static function isSuppressed(string $canonicalName, array $suppressions): bool
     {
         foreach ($suppressions as $pattern) {
@@ -1295,7 +1361,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return false;
     }
 
-    /** @param list<array<string, mixed>> $roles */
+    /**
+     * Whether a framework convention explains the node, which usually means a framework calls it.
+     *
+     * @param list<array<string, mixed>> $roles
+     */
     private function hasFrameworkRole(array $roles): bool
     {
         foreach ($roles as $role) {
@@ -1306,7 +1376,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return false;
     }
 
-    /** @param list<array<string, mixed>> $roles */
+    /**
+     * Whether the node carries a given classified role.
+     *
+     * @param list<array<string, mixed>> $roles
+     */
     private static function hasRole(array $roles, string $role): bool
     {
         foreach ($roles as $entry) {
@@ -1316,7 +1390,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return false;
     }
-    /** @param list<array<string, mixed>> $nodes @param list<array<string, mixed>> $edges @return array<string, mixed> */
+    /**
+     * The evidence path for a node, or null when it has none.
+     *
+     * @param list<array<string, mixed>> $nodes @param list<array<string, mixed>> $edges @return array<string, mixed>
+     */
     private function path(array $nodes, array $edges): array
     {
         $rank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
@@ -1347,7 +1425,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             'signature' => implode('>', array_column($nodes, 'id')),
         ];
     }
-    /** @return list<array{kind: string, count: int}> */
+    /**
+     * Result tallies grouped by distance and confidence, so a caller can weigh the answer.
+     *
+     * @return list<array{kind: string, count: int}>
+     */
     private function counts(string $table, string $projectId, int $limit, string $column = 'kind'): array
     {
         $statement = $this->pdo->prepare(sprintf(
@@ -1361,22 +1443,32 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
 
         return array_map(static fn(array $row): array => ['kind' => $row['kind'], 'count' => (int) $row['count']], $statement->fetchAll());
     }
+    /** One scalar column from a prepared query. */
     private function scalar(string $sql, string $projectId): int
     {
         $statement = $this->pdo->prepare($sql);
         $statement->execute(['project' => $projectId]);
         return (int) $statement->fetchColumn();
     }
-    /** @param array<string, list<string>> $adjacency */
+    /**
+     * Whether a node depends on itself, reported separately since that is rarely what a caller means by a cycle.
+     *
+     * @param array<string, list<string>> $adjacency
+     */
     private function hasSelfLoop(string $nodeId, array $adjacency): bool
     {
         return in_array($nodeId, $adjacency[$nodeId] ?? [], true);
     }
+    /** Count of distinct values, used for the graph-size figures. */
     private function distinctCount(string $table, string $projectId, string $column = 'kind'): int
     {
         return $this->scalar(sprintf('SELECT COUNT(DISTINCT %s) FROM %s WHERE project_id = :project', $column, $table), $projectId);
     }
-    /** @return list<array<string, mixed>> */
+    /**
+     * A bounded sample of a boundary's members, since listing every one is unhelpful.
+     *
+     * @return list<array<string, mixed>>
+     */
     private function boundaryMemberSample(string $boundaryId, int $limit): array
     {
         $statement = $this->pdo->prepare(

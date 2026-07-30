@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -29,6 +30,8 @@ EXCLUDED = {
     "build",
     "dist",
 }
+# Bytes read when probing an extensionless file's shebang; one short line is enough.
+SHEBANG_PROBE_BYTES = 256
 
 
 def write(message: dict[str, Any]) -> None:
@@ -45,18 +48,49 @@ def safe_root(value: Any) -> Path:
     return root
 
 
-def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
+def names_python_in_shebang(absolute: Path) -> bool:
+    """Whether an extensionless script's first line names Python as its interpreter.
+
+    Discovery classifies an extensionless script by its shebang and routes it
+    here, so gating on the suffix alone rejected exactly the files discovery had
+    just resolved. Mirrors the discoverer's rule: match both `#!/usr/bin/python`
+    and `#!/usr/bin/env python`, tolerate a version suffix such as `python3.12`,
+    and anchor to a word boundary so a path merely containing an interpreter name
+    is not matched. Only the first line is read, and only for a suffixless file.
+    """
+    if absolute.suffix:
+        return False
+    try:
+        with absolute.open("rb") as handle:
+            first = handle.readline(SHEBANG_PROBE_BYTES).decode("utf-8", "replace")
+    except OSError:
+        return False
+    return first.startswith("#!") and re.search(r"\b(python)[0-9.]*\b", first, re.IGNORECASE) is not None
+
+
+def assert_scannable_path(value: Any) -> PurePosixPath:
+    """Reject a path of the wrong shape, which can name no file at all.
+
+    Kept separate from reading the file: a malformed path cannot be attributed to
+    any file, so it fails the request, while a well-formed path that simply
+    cannot be scanned costs only that file.
+    """
     if not isinstance(value, str) or not value or "\0" in value or "\\" in value:
         raise ValueError("Python input must be a normalized project-relative path.")
     relative = PurePosixPath(value)
     if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
         raise ValueError("Python input path is unsafe.")
+    return relative
+
+
+def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
+    relative = assert_scannable_path(value)
     absolute = (root / Path(*relative.parts)).resolve(strict=True)
     try:
         absolute.relative_to(root)
     except ValueError as error:
         raise ValueError("Python input path escapes the project root.") from error
-    if not absolute.is_file() or absolute.suffix.lower() not in {".py", ".pyi"}:
+    if not absolute.is_file() or not (absolute.suffix.lower() in {".py", ".pyi"} or names_python_in_shebang(absolute)):
         raise ValueError("Unsupported Python input.")
     if absolute.stat().st_size > max_bytes:
         raise ValueError("Python input exceeds the configured byte limit.")
@@ -694,10 +728,26 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     if not isinstance(files, list) or len(files) > max_files:
         raise ValueError("Python scan files must be a bounded list.")
 
-    # Validate every path and byte cap up front so an unsafe or oversized input
-    # aborts the request before any partial contribution is streamed.
-    resolved = [safe_file(root, value, max_bytes) for value in files]
+    # A path this worker refuses, a file deleted between discovery and scan, or
+    # one over the byte cap is reported per file rather than raised: aborting the
+    # request would discard the facts every other file in the batch contributes,
+    # so a single unscannable file produced no graph at all. A request that
+    # cannot be interpreted — checked above — is still fatal, because that means
+    # the caller is broken rather than the tree.
+    resolved: list[tuple[Path, str]] = []
+    rejected: list[tuple[str, str]] = []
+    for value in files:
+        # A malformed path stays fatal: it names no file, so there is nothing to
+        # attribute a diagnostic to, and echoing it into a contribution would
+        # emit an owner key the graph rejects anyway.
+        requested = assert_scannable_path(value)
+        try:
+            resolved.append(safe_file(root, value, max_bytes))
+        except (ValueError, OSError) as error:
+            rejected.append((requested.as_posix(), str(error)))
     resolved.sort(key=lambda item: item[1])
+    for skipped, message in sorted(rejected):
+        emit(_unscannable_contribution(skipped, message))
 
     index = ProjectModuleIndex(root, max_bytes)
     for absolute, relative in resolved:
@@ -726,7 +776,7 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
         finally:
             del tree  # drop the parsed tree before the next file to bound memory
         emit(contribution)
-    return {"files_scanned": len(resolved), "parser": "python.ast"}
+    return {"files_scanned": len(resolved) + len(rejected), "parser": "python.ast"}
 
 
 def line_of(error: BaseException) -> int:
@@ -746,6 +796,24 @@ def _diagnostic_contribution(
                 "code": code,
                 "message": str(error),
                 "evidence": {"path": relative, "start_line": line, "end_line": line},
+            }
+        ],
+    }
+
+
+def _unscannable_contribution(relative: str, message: str) -> dict[str, Any]:
+    """Build a contribution that carries nothing but the reason one file was skipped."""
+
+    return {
+        "owner_key": f"knossos.python:file:{relative}",
+        "nodes": [],
+        "edges": [],
+        "diagnostics": [
+            {
+                "severity": "error",
+                "code": "PY_UNSCANNABLE_FILE",
+                "message": message,
+                "evidence": {"path": relative, "start_line": 1, "end_line": 1},
             }
         ],
     }

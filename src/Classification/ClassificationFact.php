@@ -9,6 +9,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\Origin;
 
+/** One role assigned to a node, carrying the rule that assigned it and how confident it was. */
 final readonly class ClassificationFact
 {
     /** @param array<string, mixed> $attributes */

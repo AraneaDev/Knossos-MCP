@@ -245,16 +245,17 @@ final class PhpScannerTest extends KnossosTestCase
         );
         assertSame('WORKER_RPC_ERROR', $error->diagnosticCode);
 
+        // A file over the byte cap is well-formed, so it costs only itself: the
+        // request succeeds and the file arrives as a diagnostic-only contribution.
         $limited = $this->phpWorkerClient();
-        $error = captureThrows(
-            fn() => iterator_to_array($limited->scan([
-                'root' => $root,
-                'files' => ['src/Architecture.php'],
-                'limits' => ['max_file_bytes' => 1],
-            ])),
-            WorkerException::class,
-        );
-        assertSame('WORKER_RPC_ERROR', $error->diagnosticCode);
+        $contributions = iterator_to_array($limited->scan([
+            'root' => $root,
+            'files' => ['src/Architecture.php'],
+            'limits' => ['max_file_bytes' => 1],
+        ]));
+        assertSame(1, count($contributions));
+        assertSame([], $contributions[0]->nodes);
+        assertSame('PHP_UNSCANNABLE_FILE', $contributions[0]->diagnostics[0]->code);
     }
 
     #[Group('php-scanner')]
@@ -273,13 +274,17 @@ final class PhpScannerTest extends KnossosTestCase
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => [1]]],
             ['method' => 'discover', 'params' => []],
             ['method' => 'discover', 'params' => ['root' => $root . '/missing']],
-            ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['src/Architecture.php'], 'limits' => ['max_file_bytes' => 1]]],
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['src//Architecture.php']]],
-            ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['src/Missing.php']]],
+            ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['../composer.json']]],
+            ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['/etc/passwd']]],
+            ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['']]],
         ];
         foreach ($invalidRequests as $request) {
             assertThrows(fn() => $handle->invoke($server, $request), \KnossosPhpScanner\WorkerInputException::class);
         }
+        // The other half of the contract — a well-formed path the worker cannot
+        // scan is reported against that file and the request still succeeds — is
+        // covered end to end over the real protocol by UnscannableFileTest.
         assertSame(null, $handle->invoke($server, ['method' => 'cancel', 'params' => []]));
     }
 

@@ -7,11 +7,19 @@ namespace Knossos\Bundle;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Writes a decoded bundle into the local database as a new project.
+ *
+ * Transactional: a failure part-way leaves no project rather than a partial graph
+ * that would answer queries confidently and wrongly.
+ */
 final readonly class PortableGraphImporter
 {
     public function __construct(private PDO $pdo) {}
 
     /**
+     * Write a decoded bundle as a new project, in one transaction.
+     *
      * @param array<string, mixed> $payload
      * @param array<string, mixed> $manifest
      * @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
@@ -33,14 +41,22 @@ final readonly class PortableGraphImporter
         $statement->execute(['scan' => $scanId, 'project' => $projectId]);
     }
 
-    /** @param array<string, mixed> $manifest @param array<string, mixed> $scan */
+    /**
+     * Create the project and its synthetic scan, which the imported rows hang off.
+     *
+     * @param array<string, mixed> $manifest @param array<string, mixed> $scan
+     */
     private function insertProjectAndScan(array $manifest, array $scan, string $projectId, string $scanId, string $checksum, string $projectName, string $finishedAt): void
     {
         $this->insert('projects', ['id' => $projectId, 'name' => $projectName, 'root_realpath' => 'bundle://' . substr($checksum, 0, 32), 'config_json' => GraphBundleDecoder::encodeCanonical(['imported' => true, 'redaction' => $manifest['redaction'] ?? 'unknown']), 'active_scan_id' => null, 'created_at' => $finishedAt, 'updated_at' => $finishedAt]);
         $this->insert('scans', ['id' => $scanId, 'project_id' => $projectId, 'mode' => 'full', 'status' => 'complete', 'scanner_set_hash' => $this->hexHash($scan['scanner_set_hash'] ?? null, hash('sha256', 'bundle')), 'started_at' => $finishedAt, 'finished_at' => $finishedAt]);
     }
 
-    /** @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps */
+    /**
+     * Insert file rows, remapping bundle ids onto this database.
+     *
+     * @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
+     */
     private function insertFiles(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
@@ -49,7 +65,11 @@ final readonly class PortableGraphImporter
         }
     }
 
-    /** @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps */
+    /**
+     * Insert node rows under the new project and scan ids.
+     *
+     * @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
+     */
     private function insertNodes(array $rows, array $maps, string $projectId, string $scanId): void
     {
         $parents = [];
@@ -97,7 +117,11 @@ final readonly class PortableGraphImporter
         }
     }
 
-    /** @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps */
+    /**
+     * Insert edge rows, requiring both endpoints to have been remapped.
+     *
+     * @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
+     */
     private function insertEdges(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
@@ -106,7 +130,11 @@ final readonly class PortableGraphImporter
         }
     }
 
-    /** @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps */
+    /**
+     * Insert boundary definitions.
+     *
+     * @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
+     */
     private function insertBoundaries(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
@@ -116,7 +144,11 @@ final readonly class PortableGraphImporter
         }
     }
 
-    /** @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps */
+    /**
+     * Attach nodes to boundaries, skipping any whose node did not survive remapping.
+     *
+     * @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
+     */
     private function insertMemberships(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
@@ -125,7 +157,11 @@ final readonly class PortableGraphImporter
         }
     }
 
-    /** @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps */
+    /**
+     * Insert role classifications with their originating rule preserved.
+     *
+     * @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
+     */
     private function insertClassifications(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
@@ -134,7 +170,11 @@ final readonly class PortableGraphImporter
         }
     }
 
-    /** @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps */
+    /**
+     * Insert the scan diagnostics the bundle carried.
+     *
+     * @param list<mixed> $rows @param array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} $maps
+     */
     private function insertDiagnostics(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
@@ -144,7 +184,11 @@ final readonly class PortableGraphImporter
         }
     }
 
-    /** @param array<string, mixed> $values */
+    /**
+     * Execute one prepared insert, letting a constraint violation abort the import.
+     *
+     * @param array<string, mixed> $values
+     */
     private function insert(string $table, array $values): void
     {
         $columns = array_keys($values);
@@ -152,7 +196,11 @@ final readonly class PortableGraphImporter
         $statement->execute($values);
     }
 
-    /** @param array<string, string> $map */
+    /**
+     * A remapped id that must exist; a missing one means the bundle is inconsistent.
+     *
+     * @param array<string, string> $map
+     */
     private function mappedRequired(array $map, mixed $old): string
     {
         if (!is_string($old) || !isset($map[$old])) {
@@ -161,13 +209,21 @@ final readonly class PortableGraphImporter
         return $map[$old];
     }
 
-    /** @param array<string, string> $map */
+    /**
+     * A remapped id that may legitimately be absent, such as an edge's file.
+     *
+     * @param array<string, string> $map
+     */
     private function mappedNullable(array $map, mixed $old): ?string
     {
         return $old === null ? null : $this->mappedRequired($map, $old);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * A required object field, rejecting a scalar.
+     *
+     * @return array<string, mixed>
+     */
     private function object(mixed $value, string $name): array
     {
         if (!is_array($value) || array_is_list($value)) {
@@ -175,6 +231,7 @@ final readonly class PortableGraphImporter
         }
         return $value;
     }
+    /** A required string field from untrusted bundle data. */
 
     private function text(mixed $value): string
     {
@@ -210,6 +267,7 @@ final readonly class PortableGraphImporter
             default => $scanner !== '' ? $scanner : 'unknown',
         };
     }
+    /** A path field, validated as project-relative so a bundle cannot carry an absolute path in. */
 
     private function relativePath(mixed $value): string
     {
@@ -219,6 +277,7 @@ final readonly class PortableGraphImporter
         }
         return $path;
     }
+    /** An integer field that must not be negative, such as a line number or size. */
 
     private function nonNegative(mixed $value): int
     {
@@ -276,11 +335,13 @@ final readonly class PortableGraphImporter
         }
         return $value;
     }
+    /** A confidence field, rejecting a value outside the enum rather than defaulting it. */
 
     private function confidence(mixed $value): string
     {
         return in_array($value, ['certain', 'probable', 'possible'], true) ? $value : throw new InvalidArgumentException('Bundle confidence is invalid.');
     }
+    /** Re-encode an attributes object for storage, rejecting anything unencodable. */
 
     private function jsonObject(mixed $value): string
     {

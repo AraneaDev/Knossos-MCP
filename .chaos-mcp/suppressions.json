@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "entries": {
+    "src/Mcp/Protocol/ProtocolNegotiator.php": [
+      {
+        "line": 79,
+        "mutator": "ReturnRemoval",
+        "reason": "Equivalent: with the early return gone, $params['_meta'] ?? null yields null for a non-array $params (verified: string offset under ?? does not throw), is_array(null) is false, and the next guard returns the same null. Defensive clarity, not behaviour.",
+        "addedAt": 1785403974039
+      },
+      {
+        "line": 83,
+        "mutator": "ReturnRemoval",
+        "reason": "Equivalent: with the early return gone, $meta[KEY] ?? null yields null for a non-array $meta and is_string(null) is false, so the function returns the same null.",
+        "addedAt": 1785403974039
+      }
+    ],
+    "src/Discovery/AllowedRoots.php": [
+      {
+        "line": 141,
+        "mutator": "ReturnRemoval",
+        "reason": "Equivalent: the unchanged-contents fast path only avoids re-parsing. With the return gone, parse() runs again on identical bytes and returns the same value; parse() is static and pure, so no observable difference exists to assert.",
+        "addedAt": 1785404030390
+      },
+      {
+        "line": 152,
+        "mutator": "IncrementInteger",
+        "reason": "Equivalent: json_decode depth 8 vs 9 is unobservable through this API. The roots file is at most 3 levels deep, and any structure deep enough for the limit to differ cannot yield a valid roots entry, so both depths produce an empty grant.",
+        "addedAt": 1785404030390
+      },
+      {
+        "line": 152,
+        "mutator": "DecrementInteger",
+        "reason": "Equivalent: json_decode depth 8 vs 7 is unobservable here for the same reason — a structure nested deeply enough to hit the lower limit yields no valid roots either way. The depth arg is hardening against a hostile file, not a behavioural parameter.",
+        "addedAt": 1785404030390
+      }
+    ],
+    "src/Discovery/IgnoreMatcher.php": [
+      {
+        "line": 131,
+        "mutator": "IncrementInteger",
+        "reason": "Unreachable: differs only when the '/' after '**' is the final character, but trim($pattern, '/') strips a trailing slash before translation, so no surviving pattern can reach that boundary.",
+        "addedAt": 1785406210218
+      }
+    ]
+  }
+}

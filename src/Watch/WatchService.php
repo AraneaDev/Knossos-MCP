@@ -12,6 +12,14 @@ use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 use Throwable;
 
+/**
+ * Rescans a project as its files change.
+ *
+ * Polls a content fingerprint rather than using filesystem notifications, so
+ * behaviour is identical across platforms and inside containers where inotify is
+ * unreliable. Bursts are debounced and coalesced into one rescan, and repeated
+ * failures back off exponentially so a persistently broken tree does not spin.
+ */
 final readonly class WatchService
 {
     private const MAX_BACKOFF_MS = 30_000;
@@ -25,6 +33,8 @@ final readonly class WatchService
     }
 
     /**
+     * Watch a root and rescan on change, until cancelled or a terminal failure.
+     *
      * @param callable(array<string, mixed>): void|null $observer
      */
     public function run(
@@ -167,7 +177,11 @@ final readonly class WatchService
         return $backoffMs * 1_000_000;
     }
 
-    /** @return array<string, string> */
+    /**
+     * A content fingerprint of the tree, which is what change detection compares.
+     *
+     * @return array<string, string>
+     */
     private function fingerprint(string $root): array
     {
         $allowedRoots = $this->roots->current();
@@ -189,7 +203,11 @@ final readonly class WatchService
         return $result;
     }
 
-    /** @param array<string, string> $before @param array<string, string> $after @return array<string, string> */
+    /**
+     * The differences between two fingerprints.
+     *
+     * @param array<string, string> $before @param array<string, string> $after @return array<string, string>
+     */
     private function changes(array $before, array $after): array
     {
         $changes = [];

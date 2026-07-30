@@ -6,6 +6,13 @@ namespace Knossos\Store;
 
 use Knossos\Reconciliation\ContributionCacheEntry;
 
+/**
+ * Persistence contract for the architecture graph.
+ *
+ * Exists so the scan pipeline and reconciler depend on graph operations rather
+ * than on SQLite, and so tests can substitute a double for failure paths a real
+ * database will not produce on demand.
+ */
 interface GraphRepository
 {
     /**

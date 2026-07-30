@@ -9,9 +9,17 @@ use PDO;
 use PDOException;
 use Throwable;
 
+/**
+ * Grants one writer per project at a time.
+ *
+ * Two concurrent scans of the same project would interleave their reconciliation
+ * and leave a graph that matches neither. Leases carry an expiry so a crashed
+ * scanner's lock is reclaimable rather than permanent.
+ */
 final readonly class ProjectWriterLock
 {
     public function __construct(private PDO $pdo, private int $leaseSeconds = 3600, private ?Closure $clock = null) {}
+    /** Take the project's write lease, or report that another scan holds it. */
 
     public function acquire(string $projectId): ProjectWriterLease
     {

@@ -17,7 +17,11 @@ use Knossos\Query\ResultEnvelope;
  */
 final readonly class NextStepPlanner
 {
-    /** @return list<array{tool: string, args: array<string, mixed>, why: string}> */
+    /**
+     * Suggest the calls that usually follow this result, so an agent is not left guessing.
+     *
+     * @return list<array{tool: string, args: array<string, mixed>, why: string}>
+     */
     public function plan(string $toolName, ResultEnvelope $envelope): array
     {
         $data = $envelope->data;
@@ -32,6 +36,8 @@ final readonly class NextStepPlanner
     }
 
     /**
+     * After a component search: inspect the match, or disambiguate when several matched.
+     *
      * @param array<string, mixed> $data
      * @return list<array{tool: string, args: array<string, mixed>, why: string}>
      */
@@ -55,6 +61,8 @@ final readonly class NextStepPlanner
     }
 
     /**
+     * After inspecting a component: trace its usages or its blast radius.
+     *
      * @param array<string, mixed> $data
      * @return list<array{tool: string, args: array<string, mixed>, why: string}>
      */
@@ -81,6 +89,8 @@ final readonly class NextStepPlanner
     }
 
     /**
+     * After an impact query: narrow to the tests that exercise the affected set.
+     *
      * @param array<string, mixed> $data
      * @return list<array{tool: string, args: array<string, mixed>, why: string}>
      */
@@ -106,6 +116,8 @@ final readonly class NextStepPlanner
     }
 
     /**
+     * After a health report: inspect the top hotspot rather than the whole list.
+     *
      * @param array<string, mixed> $data
      * @return list<array{tool: string, args: array<string, mixed>, why: string}>
      */
@@ -128,7 +140,11 @@ final readonly class NextStepPlanner
         ]];
     }
 
-    /** @param array<string, mixed> $data */
+    /**
+     * Whether a component is central enough that inspecting it is the useful next step.
+     *
+     * @param array<string, mixed> $data
+     */
     private function isHub(array $data): bool
     {
         if (($data['is_hub'] ?? false) === true) {

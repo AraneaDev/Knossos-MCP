@@ -1,0 +1,100 @@
+#!/bin/sh
+set -eu
+
+# Mutation testing scoped to what changed, for running by hand on a change.
+#
+# A full-source run mutates ~12,000 mutants and takes over two hours, so it is
+# weekly (.github/workflows/mutation.yml) and gates the aggregate floor in
+# infection.json5. That is the wrong shape for checking one change: almost all
+# of that work re-tests code the change never touched. This narrows it to the
+# lines in front of you, which is a minute or two.
+#
+# Deliberately NOT wired into any CI workflow or tools/quality profile. Even
+# scoped, it costs ~50s of fixed initial-suite time before any mutant runs, and
+# a per-pull-request mutation gate is a tax on every change for a signal that is
+# only occasionally worth acting on. Run it when you want it.
+#
+# Two flags do the narrowing:
+#
+#   --git-diff-base --git-diff-lines
+#       Mutate only added and modified *lines*, not whole files. Touching one
+#       method in a large class mutates that method. --git-diff-filter is NOT
+#       passed alongside it: Infection rejects the pair as mutually exclusive
+#       ("Please use only one of them"), and --git-diff-lines already restricts
+#       the run to added and modified lines.
+#   --only-covering-test-cases
+#       Per mutant, run the covering test *cases* rather than every test in a
+#       covering file.
+#
+# Deliberately NOT used: --map-source-class-to-test. It would skip the full
+# suite during the initial coverage run, which is the single largest fixed cost
+# here (~50s), but it infers the test class from the source class name, and this
+# repository's tests are grouped by behaviour rather than mirrored per class.
+# Measured: mutating src/Mcp/Protocol/Profile20260728.php made it filter the
+# initial run to "Profile20260728Test", which does not exist -- PHPUnit reported
+# "No tests executed!" and Infection aborted. A run that fails for a reason
+# unrelated to the change teaches nothing; paying the 50s is the honest trade.
+#
+# The default floor here is higher than the aggregate one. A change's own lines
+# should be well tested even while the tree's historic average is lower; holding
+# new work to the legacy average is how an average stays put.
+#
+# Two ways in, because the two places this runs do not have the same tools:
+#
+#   Locally, git is present, so the changed *lines* are scoped by Infection
+#   itself and the run is as narrow as it gets.
+#
+#   Inside the pinned quality image there is no git and no .git directory (both
+#   are deliberately absent: .git is in .dockerignore and git is a builder-stage
+#   dependency only). There the caller computes the file list wherever git *does*
+#   exist and passes it in through KNOSSOS_MUTATION_FILES, which scopes to whole
+#   files rather than lines -- a larger set than the git path produces, still a
+#   small fraction of the ~12,000-mutant full run.
+#
+# Environment over an argument on purpose: the list can be long enough to matter
+# for a command line, and an empty variable is unambiguously "nothing changed".
+#
+# Usage: tools/mutation-diff [base-ref] [min-msi]
+#        KNOSSOS_MUTATION_FILES=src/A.php,src/B.php tools/mutation-diff '' [min-msi]
+
+base="${1:-origin/main}"
+min_msi="${2:-85}"
+
+# pcov is compiled into the quality image but off by default, so Infection's
+# initial run would otherwise abort with no coverage driver.
+infection="php -d pcov.enabled=1 vendor/bin/infection"
+
+common_options="--no-interaction --no-progress --threads=4 \
+    --only-covering-test-cases \
+    --ignore-msi-with-no-mutations --min-msi=$min_msi \
+    --logger-text=coverage/infection/diff.log"
+
+if [ -n "${KNOSSOS_MUTATION_FILES-}" ]; then
+    echo "mutation-diff: mutating caller-supplied files (min-msi ${min_msi}%)"
+    echo "$KNOSSOS_MUTATION_FILES" | tr ',' '\n' | sed 's/^/  /'
+    # shellcheck disable=SC2086  # deliberate word splitting of the option list
+    exec $infection $common_options --filter="$KNOSSOS_MUTATION_FILES"
+fi
+
+if ! command -v git >/dev/null 2>&1; then
+    echo "mutation-diff: no git available and KNOSSOS_MUTATION_FILES is unset; nothing to scope the run to." >&2
+    exit 64
+fi
+
+if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+    echo "mutation-diff: base ref '$base' does not exist" >&2
+    exit 64
+fi
+
+# Nothing changed under src/ means nothing to mutate. Exit 0 rather than letting
+# Infection fail on an empty mutant set: "no mutants" is a pass, not a problem.
+if [ -z "$(git diff --name-only --diff-filter=AM "$base"...HEAD -- src | head -1)" ]; then
+    echo "mutation-diff: no added or modified files under src/ versus $base; nothing to mutate."
+    exit 0
+fi
+
+echo "mutation-diff: mutating lines changed since $base (min-msi ${min_msi}%)"
+# shellcheck disable=SC2086  # deliberate word splitting of the option list
+exec $infection $common_options \
+    --git-diff-base="$base" \
+    --git-diff-lines

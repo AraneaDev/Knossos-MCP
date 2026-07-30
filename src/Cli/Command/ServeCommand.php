@@ -10,18 +10,22 @@ use Knossos\Cli\CliCommandContext;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Mcp\McpServerAssembly;
 
+/** `serve`: run the MCP stdio server over the roots this installation may read. */
 final class ServeCommand implements CliCommand
 {
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return $command === 'serve';
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return ['db', 'allow-root'];
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $allowedRoots = self::resolveRoots($options, $context->databasePath());

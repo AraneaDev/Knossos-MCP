@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Infers roles from Laravel base classes and framework contracts a class extends or implements. */
 final readonly class LaravelRoleRule implements ClassificationRule
 {
     private const BASE_ROLES = [
@@ -25,11 +26,13 @@ final readonly class LaravelRoleRule implements ClassificationRule
         'Illuminate\\Contracts\\Events\\Dispatcher' => 'laravel.event_dispatcher',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'laravel.explicit.types.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         if ($node->kind !== 'class') {

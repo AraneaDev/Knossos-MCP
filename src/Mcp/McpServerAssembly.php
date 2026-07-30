@@ -26,6 +26,12 @@ final readonly class McpServerAssembly
     public ArchitectureQueryService $queries;
     public ToolService $tools;
 
+    /**
+     * @param string $installationRoot where the packaged scanner workers live
+     * @param string $databasePath the graph database, also used to site the roots file
+     * @param DatabaseMaintenanceService|null $maintenance pass an existing service to share
+     *        one instance with a CLI context; omitted, one is built for $databasePath
+     */
     public function __construct(
         PDO $pdo,
         string $installationRoot,
@@ -47,16 +53,19 @@ final readonly class McpServerAssembly
         );
     }
 
+    /** Per-project orientation resources, reading through the same query facade as the tools. */
     public function resources(): ResourceService
     {
         return new ResourceService($this->queries);
     }
 
+    /** The canned prompt catalogue. Pure data, so a fresh instance costs nothing. */
     public function prompts(): PromptService
     {
         return new PromptService();
     }
 
+    /** A stdio server over this assembly's tools, resources, and prompts. */
     public function stdioServer(): StdioServer
     {
         return new StdioServer($this->tools, resources: $this->resources(), prompts: $this->prompts());

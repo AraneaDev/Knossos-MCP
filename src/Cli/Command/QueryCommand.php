@@ -12,6 +12,13 @@ use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
 
+/**
+ * Every read-only query as a CLI command.
+ *
+ * One command class for all of them because they share option parsing, envelope
+ * rendering, and the `--json` contract; splitting them would duplicate that three
+ * dozen times.
+ */
 final class QueryCommand implements CliCommand
 {
     private const COMMANDS = [
@@ -22,11 +29,13 @@ final class QueryCommand implements CliCommand
         'search-architecture', 'annotate-component', 'list-annotations',
     ];
 
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return in_array($command, self::COMMANDS, true);
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return match ($command) {
@@ -55,6 +64,7 @@ final class QueryCommand implements CliCommand
         };
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return match ($command) {
@@ -88,7 +98,11 @@ final class QueryCommand implements CliCommand
         };
     }
 
-    /** @param array<string, list<string>> $options */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::listProjects()}.
+     *
+     * @param array<string, list<string>> $options
+     */
     private function listProjects(array $options, CliCommandContext $context): int
     {
         $result = $this->queries($context)->listProjects(
@@ -113,7 +127,11 @@ final class QueryCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::listSnapshots()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function listSnapshots(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-snapshots <project-id> [--limit=N] [--offset=N]');
@@ -121,7 +139,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::snapshotDiff()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function snapshotDiff(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos snapshot-diff <project-id> <from-snapshot> [to-snapshot]');
@@ -130,7 +152,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::qualityGate()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function qualityGate(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos quality-gate <project-id> <baseline-snapshot> --budgets=FILE');
@@ -142,7 +168,11 @@ final class QueryCommand implements CliCommand
         return $result->data['passed'] ? 0 : 1;
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::architectureTrends()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function architectureTrends(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-trends <project-id> [options]');
@@ -151,7 +181,11 @@ final class QueryCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::findComponent()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function findComponent(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos find-component <project-id> <name> [--limit=N] [--json]');
@@ -159,7 +193,11 @@ final class QueryCommand implements CliCommand
         return $this->result($this->queries($c)->findComponent($project, $name, $c->options->integer($o, 'limit', 20, 1, 100)), $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::inspectComponent()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function inspectComponent(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos inspect-component <project-id> <component> [options]');
@@ -168,7 +206,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::listUsages()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function listUsages(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-usages <project-id> <symbol> [--edge-kind=K]... [--min-confidence=L] [--limit=N] [--json]');
@@ -177,7 +219,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::architectureSummary()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function architectureSummary(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-summary <project-id> [--json]');
@@ -186,7 +232,11 @@ final class QueryCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::explainFlow()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function explainFlow(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos explain-flow <project-id> <from> <to> [options]');
@@ -196,7 +246,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::impactAnalysis()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function impactAnalysis(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos impact-analysis <project-id> <symbol> [options]');
@@ -205,7 +259,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::dependencyCycles()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function dependencyCycles(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos dependency-cycles <project-id> [options]');
@@ -213,7 +271,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::architectureHealth()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function architectureHealth(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-health <project-id> [options]');
@@ -221,7 +283,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::checkArchitecture()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function checkArchitecture(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos check-architecture <project-id> --policies=FILE [options]');
@@ -234,7 +300,11 @@ final class QueryCommand implements CliCommand
         return ($result->data['bounds']['violation_count'] ?? count($result->data['violations'])) > 0 ? 1 : 0;
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::suggestLocation()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function suggestLocation(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos suggest-location <project-id> <feature-description> [options]');
@@ -243,7 +313,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the Git-weighted blast radius.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function changeImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos change-impact <project-id> <symbol> [options]');
@@ -253,7 +327,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the impact of a changed file set.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function changedFilesImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos changed-files-impact <project-id> [files...] [options]');
@@ -262,7 +340,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the tests exercising a change.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function testImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos test-impact <project-id> [files...] [options]');
@@ -271,7 +353,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the one-call architectural review.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function reviewDiff(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos review-diff <project-id> [FILE...] [options]');
@@ -293,7 +379,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::architectureContext()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function architectureContext(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-context <project-id> [files...] --task=TEXT [options]');
@@ -301,7 +391,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::exportDiagram()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function exportDiagram(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-diagram <project-id> [options]');
@@ -310,7 +404,11 @@ final class QueryCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::exportAgentBrief()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function exportAgentBrief(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos export-agent-brief <project-id> [--max-chars=N] [--out=FILE] [--json]');
@@ -323,7 +421,11 @@ final class QueryCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::listBoundaries()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function listBoundaries(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-boundaries <project-id> [options]');
@@ -331,7 +433,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::searchArchitecture()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function searchArchitecture(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos search-architecture <project-id> <query> [options]');
@@ -340,7 +446,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::fileMetrics()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function fileMetrics(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos file-metrics <project-id> [--path=SUBSTR] [--language=LANG] [--sort-by=path|line_count] [--order=asc|desc] [--limit=N] [--offset=N]');
@@ -356,7 +466,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::annotateComponent()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function annotateComponent(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos annotate-component <project-id> <component> <kind> [value] [--remove] [--execute] [--json]');
@@ -366,20 +480,29 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders {@see \Knossos\Query\ArchitectureQueryService::listAnnotations()}.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function listAnnotations(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos list-annotations <project-id> [--component=NAME] [--kind=KIND] [--limit=N] [--offset=N] [--json]');
         $result = $this->queries($c)->listAnnotations($project, $c->options->single($o, 'component'), $c->options->single($o, 'kind'), $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
     }
+    /** The query facade for this invocation. */
 
     private function queries(CliCommandContext $context): ArchitectureQueryService
     {
         return new ArchitectureQueryService($context->database());
     }
 
-    /** @param array<string, list<string>> $options */
+    /**
+     * Render a result envelope as JSON or text, per the --json flag.
+     *
+     * @param array<string, list<string>> $options
+     */
     private function result(ResultEnvelope $result, array $options, CliCommandContext $context): int
     {
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);

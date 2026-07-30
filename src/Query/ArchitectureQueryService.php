@@ -9,6 +9,15 @@ use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
 use PDO;
 
+/**
+ * Facade over the specialised query services.
+ *
+ * Exists so callers — the MCP tools, the CLI commands — depend on one seam
+ * rather than on a dozen services, and so the split between those services can
+ * change without touching them. Almost every method here is a one-line
+ * delegation; the behaviour, limits, and result shape are documented on the
+ * delegate named in each `@see`.
+ */
 final readonly class ArchitectureQueryService
 {
     private PDO $pdo;
@@ -62,6 +71,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @return array<string, mixed>|null */
+    /** {@see StalenessProbe::probe()} */
     public function staleness(string $projectId): ?array
     {
         return $this->stalenessProbe->probe($projectId);
@@ -76,22 +86,26 @@ final readonly class ArchitectureQueryService
         return is_string($root) && $root !== '' ? $root : null;
     }
 
+    /** {@see ProjectCatalogQueryService::listProjects()} */
     public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
     {
         return $this->catalogQueries->listProjects($limit, $offset, $includeRoots);
     }
 
+    /** {@see ProjectCatalogQueryService::listSnapshots()} */
     public function listSnapshots(string $projectId, int $limit = 20, int $offset = 0): ResultEnvelope
     {
         return $this->catalogQueries->listSnapshots($projectId, $limit, $offset);
     }
 
+    /** {@see ProjectCatalogQueryService::snapshotDiff()} */
     public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 25): ResultEnvelope
     {
         return $this->catalogQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
     }
 
     /** @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies */
+    /** {@see ProjectCatalogQueryService::qualityGate()} */
     public function qualityGate(
         string $projectId,
         string $baselineSnapshot,
@@ -103,16 +117,19 @@ final readonly class ArchitectureQueryService
         return $this->catalogQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies, $sarif, $proposeBaseline);
     }
 
+    /** {@see ProjectCatalogQueryService::architectureTrends()} */
     public function architectureTrends(string $projectId, int $limit = 10, ?string $releaseFrom = null): ResultEnvelope
     {
         return $this->catalogQueries->architectureTrends($projectId, $limit, $releaseFrom);
     }
 
+    /** {@see ComponentQueryService::findComponent()} */
     public function findComponent(string $projectId, string $name, int $limit = 20): ResultEnvelope
     {
         return $this->componentQueries->findComponent($projectId, $name, $limit);
     }
 
+    /** {@see ComponentQueryService::inspectComponent()} */
     public function inspectComponent(
         string $projectId,
         string $component,
@@ -124,16 +141,19 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see ComponentQueryService::listUsages()} */
     public function listUsages(string $projectId, string $symbol, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 100): ResultEnvelope
     {
         return $this->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
     }
 
+    /** {@see GraphTopologyQueryService::architectureSummary()} */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
         return $this->topologyQueries->architectureSummary($projectId, $limit);
     }
 
+    /** {@see FileMetricsQueryService::fileMetrics()} */
     public function fileMetrics(
         string $projectId,
         ?string $pathContains = null,
@@ -147,13 +167,14 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::dependencyCycles()} */
     public function dependencyCycles(
         string $projectId,
         array $edgeKinds = [],
         string $minConfidence = 'possible',
         int $limit = 20,
         int $maxNodes = 10_000,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
         bool $includeSelfLoops = false,
     ): ResultEnvelope {
@@ -161,13 +182,14 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::architectureHealth()} */
     public function architectureHealth(
         string $projectId,
         array $edgeKinds = [],
         string $minConfidence = 'possible',
         int $limit = 20,
         int $maxNodes = 10_000,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
         bool $includeExternal = false,
         bool $includeTests = false,
@@ -176,23 +198,25 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<array<string, mixed>> $policies */
+    /** {@see ArchitecturePolicyQueryService::checkArchitecture()} */
     public function checkArchitecture(
         string $projectId,
         array $policies,
         string $minConfidence = 'possible',
         int $limit = 100,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
     ): ResultEnvelope {
         return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs);
     }
 
+    /** {@see ArchitecturePolicyQueryService::suggestLocation()} */
     public function suggestLocation(
         string $projectId,
         string $featureDescription,
         int $limit = 5,
         int $maxMembers = 20_000,
-        int $maxEdges = 20_000,
+        int $maxEdges = 100_000,
         int $timeoutMs = 1000,
         string $rankingMode = 'deterministic',
     ): ResultEnvelope {
@@ -200,6 +224,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see ChangeImpactQueryService::changeImpact()} */
     public function changeImpact(
         string $projectId,
         string $symbol,
@@ -215,6 +240,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $files @param list<string> $edgeKinds */
+    /** {@see ChangeImpactQueryService::changedFilesImpact()} */
     public function changedFilesImpact(
         string $projectId,
         array $files = [],
@@ -230,6 +256,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $files @param list<string> $edgeKinds */
+    /** {@see ChangeImpactQueryService::testImpact()} */
     public function testImpact(
         string $projectId,
         array $files = [],
@@ -249,6 +276,7 @@ final readonly class ArchitectureQueryService
      * @param list<array<string, mixed>>|null $policies
      * @param array<string, int>|null $budgets
      */
+    /** {@see ReviewDiffService::reviewDiff()} */
     public function reviewDiff(
         string $projectId,
         ?string $baseRef = null,
@@ -265,6 +293,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $files */
+    /** {@see ArchitectureContextService::architectureContext()} */
     public function architectureContext(
         string $projectId,
         string $taskDescription = '',
@@ -277,6 +306,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see DiagramExportService::exportDiagram()} */
     public function exportDiagram(
         string $projectId,
         string $format = 'mermaid',
@@ -291,6 +321,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::explainFlow()} */
     public function explainFlow(
         string $projectId,
         string $from,
@@ -305,6 +336,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::impactAnalysis()} */
     public function impactAnalysis(
         string $projectId,
         string $symbol,
@@ -317,17 +349,20 @@ final readonly class ArchitectureQueryService
         return $this->topologyQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
+    /** {@see GraphTopologyQueryService::listBoundaries()} */
     public function listBoundaries(string $projectId, ?string $source = null, int $limit = 50, int $offset = 0): ResultEnvelope
     {
         return $this->topologyQueries->listBoundaries($projectId, $source, $limit, $offset);
     }
 
+    /** {@see AgentBriefService::exportAgentBrief()} */
     public function exportAgentBrief(string $projectId, int $maxChars = 4000): ResultEnvelope
     {
         return $this->briefQueries->exportAgentBrief($projectId, $maxChars);
     }
 
     /** @param list<string> $kinds @param list<string> $roles @param list<string> $boundaryIds @param list<string> $confidences */
+    /** {@see ComponentQueryService::searchArchitecture()} */
     public function searchArchitecture(
         string $projectId,
         string $query,
@@ -341,11 +376,13 @@ final readonly class ArchitectureQueryService
         return $this->componentQueries->searchArchitecture($projectId, $query, $kinds, $roles, $boundaryIds, $confidences, $limit, $offset);
     }
 
+    /** {@see AnnotationService::annotateComponent()} */
     public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope
     {
         return $this->annotationQueries->annotateComponent($projectId, $component, $kind, $value, $remove, $execute);
     }
 
+    /** {@see AnnotationService::listAnnotations()} */
     public function listAnnotations(string $projectId, ?string $component = null, ?string $kind = null, int $limit = 100, int $offset = 0): ResultEnvelope
     {
         return $this->annotationQueries->listAnnotations($projectId, $component, $kind, $limit, $offset);

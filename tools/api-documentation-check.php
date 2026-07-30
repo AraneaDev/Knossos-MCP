@@ -3,6 +3,9 @@
 declare(strict_types=1);
 
 $root = dirname(__DIR__);
+// Shared with tools/docstring-report.php on purpose: both gates answer "is this
+// documented", and they used to disagree.
+require __DIR__ . '/lib/docblocks.php';
 $failures = [];
 $checked = [];
 // Recursive, not glob('/src/*/*.php'): that pattern matches exactly one
@@ -16,17 +19,29 @@ $sourceFiles = new RegexIterator(
 foreach ($sourceFiles as $file) {
     $path = $file->getPathname();
     $source = (string) file_get_contents($path);
-    // Anchored to a declaration, not to the word: matching `interface` anywhere
-    // let prose ("every interface and enum") pull a plain class into the gate
-    // and name its contracts after the following word.
-    if (preg_match('/^\s*interface\s+(\w+)/m', $source, $interfaceMatch) !== 1) {
+    // Tokenised, so the interface is found by declaration rather than by the word
+    // appearing in prose ("every interface and enum"), which used to pull a plain
+    // class into the gate and name its contracts after the following word.
+    $interface = null;
+    foreach (declaredTypes($source) as $type) {
+        if ($type['kind'] === 'interface') {
+            $interface = $type['name'];
+            break;
+        }
+    }
+    if ($interface === null) {
         continue;
     }
-    $interface = $interfaceMatch[1];
-    preg_match_all('/public function\s+(\w+)\s*\(/', $source, $methods);
-    foreach ($methods[1] as $method) {
-        $pattern = '/\/\*\*(.*?)\*\/\s*public function\s+' . preg_quote($method, '/') . '\s*\(/s';
-        if (preg_match($pattern, $source, $documentation) !== 1 || !hasSummary($documentation[1])) {
+    foreach (declaredFunctions($source) as $function) {
+        if ($function['visibility'] !== 'public') {
+            continue;
+        }
+        $method = $function['name'];
+        // documented is computed from the docblock *immediately* preceding the
+        // declaration. The previous regex could start at an earlier docblock and
+        // swallow everything between, so an annotation-only method borrowed the
+        // interface's class summary and passed.
+        if (!$function['documented']) {
             $failures[] = $interface . '::' . $method . ' requires a descriptive docblock summary';
         }
         $checked[] = 'php:' . $interface . '::' . $method;
@@ -71,6 +86,7 @@ if ($failures !== []) {
     exit(1);
 }
 printf("API documentation passed: %d PHP/JavaScript/Python contracts.\n", count($checked));
+/** Whether a docblock says anything beyond annotations. Mirrored in tools/docstring-report.php, deliberately: two gates disagreeing about what counts as documented would make both untrustworthy. */
 
 function hasSummary(string $documentation): bool
 {

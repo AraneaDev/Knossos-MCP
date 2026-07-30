@@ -12,6 +12,14 @@ use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
 use Knossos\Scan\CancellationToken;
 use Throwable;
 
+/**
+ * JSON-RPC over stdio: the recommended MCP transport.
+ *
+ * Stdout carries protocol frames only — diagnostics go to stderr, because one
+ * stray write corrupts the stream. Frames are size-capped, cancellation is polled
+ * without blocking on input, and which protocol revision governs a message is
+ * decided per message so both supported revisions share one dispatcher.
+ */
 final class StdioServer
 {
     /**
@@ -35,6 +43,10 @@ final class StdioServer
     private ?ProtocolProfile $profile = null;
     /** @var resource|null */
     private $input = null;
+    /** The stream lifecycle notes go to; null when handle() is driven directly. @var resource|null */
+    private $notes = null;
+    /** The revision last written to the log, so one connection logs one line. */
+    private ?string $notedProtocol = null;
     /** @var list<string> */
     private array $pendingLines = [];
     private string $inputBuffer = '';
@@ -54,10 +66,15 @@ final class StdioServer
         $this->negotiator = new ProtocolNegotiator();
     }
 
-    /** @param resource $input @param resource $output @param resource $errors */
+    /**
+     * The read loop: frame in, response out, until stdin closes.
+     *
+     * @param resource $input @param resource $output @param resource $errors
+     */
     public function run($input, $output, $errors): int
     {
         $this->input = $input;
+        $this->notes = $errors;
         stream_set_read_buffer($input, 0);
         while (($line = $this->nextLine($input, $output)) !== false) {
             if (strlen($line) > $this->maxLineBytes || !str_ends_with($line, "\n")) {
@@ -86,7 +103,11 @@ final class StdioServer
         return 0;
     }
 
-    /** @param array<string, mixed> $message @return array<string, mixed>|null */
+    /**
+     * Handle one JSON-RPC message, selecting the protocol revision and decorating the result.
+     *
+     * @param array<string, mixed> $message @return array<string, mixed>|null
+     */
     public function handle(array $message): ?array
     {
         $id = $message['id'] ?? null;
@@ -138,6 +159,7 @@ final class StdioServer
             return $this->error($id, $unsupported->getCode(), $unsupported->getMessage(), $unsupported->data());
         }
         $this->profile = $profile;
+        $this->noteProtocol($message, $profile);
 
         $response = $this->dispatchMethod($method, $id, $params, $profile);
         // Envelope rules are the one thing that varies per revision, so they are
@@ -150,6 +172,8 @@ final class StdioServer
     }
 
     /**
+     * Route a validated request to its method handler.
+     *
      * @param array<string, mixed> $params
      * @return array<string, mixed>|null
      */
@@ -267,13 +291,21 @@ final class StdioServer
         return $this->error($id, -32601, 'Method not found');
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * A JSON-RPC success frame.
+     *
+     * @return array<string, mixed>
+     */
     private function success(mixed $id, mixed $result): array
     {
         return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result];
     }
 
-    /** @param array<string, mixed>|null $data @return array<string, mixed> */
+    /**
+     * A JSON-RPC error frame, optionally carrying structured data such as the supported revisions.
+     *
+     * @param array<string, mixed>|null $data @return array<string, mixed>
+     */
     private function error(mixed $id, int $code, string $message, ?array $data = null): array
     {
         $error = ['code' => $code, 'message' => $message];
@@ -305,7 +337,11 @@ final class StdioServer
         ];
     }
 
-    /** @return array<string, string> */
+    /**
+     * This server's identity, shared by the handshake and server/discover.
+     *
+     * @return array<string, string>
+     */
     private static function serverInfo(): array
     {
         return [
@@ -325,7 +361,71 @@ final class StdioServer
         ]);
     }
 
-    /** @param resource $output @param array<string, mixed> $message */
+    /**
+     * Record the negotiated revision once per connection, on the lifecycle log.
+     *
+     * Which revision a host actually speaks was previously invisible: the wrapper
+     * logs start, signals, and exit, but nothing about the handshake, so answering
+     * "has the client moved to 2026-07-28 yet?" meant grepping the host's own
+     * binary for its protocol constant. That is the question that decides when the
+     * legacy profile can be dropped, so it belongs in the log.
+     *
+     * Written to stderr because tools/mcp-serve already appends the server's
+     * stderr to .knossos/mcp-serve.log; stdout carries protocol traffic and must
+     * stay clean. Logged on change rather than on `initialize`, since the
+     * 2026-07-28 revision replaced the handshake with server/discover and a
+     * modern client may never send an initialize at all.
+     *
+     * @param array<string, mixed> $message
+     */
+    private function noteProtocol(array $message, ProtocolProfile $profile): void
+    {
+        if ($this->notes === null || $profile->version() === $this->notedProtocol) {
+            return;
+        }
+        $this->notedProtocol = $profile->version();
+        $client = $message['params']['clientInfo'] ?? null;
+        // Two declaration sites, because the revisions disagree about where a
+        // version goes: 2026-07-28 puts it in `params._meta`, which is what the
+        // negotiator reads, while a 2025-11-25 client declares it as
+        // `initialize`'s protocolVersion. Reading only the first would log
+        // `requested=none` for every legacy client -- exactly the population this
+        // line exists to count.
+        $declared = $message['params']['protocolVersion'] ?? null;
+        $requested = ProtocolNegotiator::requestedVersion($message)
+            ?? (is_string($declared) ? $declared : null);
+        fwrite($this->notes, sprintf(
+            "%s protocol requested=%s selected=%s client=%s\n",
+            gmdate('Y-m-d\TH:i:s\Z'),
+            self::logSafe($requested ?? 'none'),
+            $profile->version(),
+            is_array($client)
+                ? self::logSafe((string) ($client['name'] ?? 'unknown')) . '/' . self::logSafe((string) ($client['version'] ?? '?'))
+                : 'unknown',
+        ));
+    }
+
+    /**
+     * Reduce a client-supplied string to something that cannot forge a log line.
+     *
+     * Everything in this line except the timestamp and the selected revision comes
+     * from the peer, and the log is line-oriented, so an unfiltered name could
+     * inject whole entries — including a plausible-looking one claiming a revision
+     * the client never requested. Kept to printable non-space characters and a
+     * short cap, which is all a version string or client identifier needs.
+     */
+    private static function logSafe(string $value): string
+    {
+        $safe = preg_replace('/[^\x21-\x7E]/', '_', $value) ?? '';
+
+        return $safe === '' ? 'unknown' : substr($safe, 0, 64);
+    }
+
+    /**
+     * Write one frame, replacing it with an error if it exceeds the byte cap.
+     *
+     * @param resource $output @param array<string, mixed> $message
+     */
     private function write($output, array $message): void
     {
         $encoded = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -339,7 +439,11 @@ final class StdioServer
         fflush($output);
     }
 
-    /** @param resource $input @param resource $output */
+    /**
+     * The next complete frame, waking periodically so an idle transport can be kept warm.
+     *
+     * @param resource $input @param resource $output
+     */
     private function nextLine($input, $output): string|false
     {
         if ($this->pendingLines !== []) {
@@ -439,6 +543,7 @@ final class StdioServer
             'method' => 'ping',
         ]);
     }
+    /** Check for a cancellation notification without blocking the running request. */
 
     private function pollCancellation(mixed $requestId): bool
     {

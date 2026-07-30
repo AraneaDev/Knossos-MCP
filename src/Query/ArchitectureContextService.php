@@ -8,6 +8,14 @@ use Closure;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Assembles a bounded evidence bundle for one coding task.
+ *
+ * Built for a caller with a context budget: it selects what is relevant to the
+ * task and stops at a byte ceiling, reporting what it omitted rather than
+ * truncating quietly. Optionally includes short source excerpts, read through the
+ * same root guard as scanning.
+ */
 final readonly class ArchitectureContextService extends AbstractArchitectureQueryService
 {
     public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ChangeImpactQueryService $changeQueries, private ComponentQueryService $componentQueries, private ArchitecturePolicyQueryService $policyQueries)
@@ -15,7 +23,11 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
         parent::__construct($pdo, $clock);
     }
 
-    /** @param list<string> $files */
+    /**
+     * A bounded, task-shaped evidence bundle for one coding task.
+     *
+     * @param list<string> $files
+     */
     public function architectureContext(string $projectId, string $taskDescription = '', array $files = [], int $maxChars = 30_000, int $timeoutMs = 1500, bool $includeSource = false): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -78,17 +90,47 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
             }
             $dossiers[] = $dossier;
         }
-        $sections = [
-            'summary' => $this->fitContextSection($summary->jsonSerialize(), $allocations['summary']),
-            'locations' => $locations === null ? ['status' => 'not_requested'] : $this->fitContextSection($locations->jsonSerialize(), $allocations['locations']),
-            'change_impact' => $change === null ? ['status' => 'not_requested'] : $this->fitContextSection($change->jsonSerialize(), $allocations['change_impact']),
-            'dossiers' => $this->fitContextSection(['items' => $dossiers], $allocations['dossiers']),
+        $payloads = [
+            'summary' => $summary->jsonSerialize(),
+            'locations' => $locations?->jsonSerialize(),
+            'change_impact' => $change?->jsonSerialize(),
+            'dossiers' => ['items' => $dossiers],
         ];
+        $sections = [];
+        foreach ($payloads as $name => $payload) {
+            $sections[$name] = $payload === null
+                ? ['status' => 'not_requested']
+                : $this->fitContextSection($payload, $allocations[$name]);
+        }
         $context = [
             'task_description' => $taskDescription === '' ? null : $taskDescription,
             'files' => $files,
             'sections' => $sections,
         ];
+        // A section is fitted against its own share first, so the proportions
+        // hold whenever everything fits. What the fixed shares got wrong was the
+        // case where they do not: a section over its slice was dropped whole
+        // while the budget its neighbours left unspent went nowhere, so a caller
+        // asking for 12,000 characters could be handed 2,481 with three of four
+        // sections empty. Anything still dropped is offered the remainder, most
+        // task-specific section first. The remainder is measured against the
+        // whole context, not just the sections, so reclaiming can never overrun
+        // the total and force the backstop below to drop a section that fitted.
+        foreach (['change_impact', 'locations', 'dossiers'] as $name) {
+            if (($context['sections'][$name]['status'] ?? null) !== 'truncated') {
+                continue;
+            }
+            $spare = $maxChars - self::encodedLength($context);
+            if ($spare <= $allocations[$name]) {
+                continue;
+            }
+            $reclaimed = $this->fitContextSection($payloads[$name], $spare);
+            $candidate = $context;
+            $candidate['sections'][$name] = $reclaimed;
+            if (self::encodedLength($candidate) <= $maxChars) {
+                $context = $candidate;
+            }
+        }
         $encoded = json_encode($context, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         foreach (['dossiers', 'locations', 'change_impact'] as $sectionName) {
             if (strlen($encoded) <= $maxChars) {
@@ -124,7 +166,22 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
         );
     }
 
-    /** @param array<string, mixed> $section @return array<string, mixed> */
+    /**
+     * Serialized size of the context assembled so far, which is what the
+     * remaining budget is measured against.
+     *
+     * @param array<string, mixed> $context
+     */
+    private static function encodedLength(array $context): int
+    {
+        return strlen(json_encode($context, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES));
+    }
+
+    /**
+     * Fit one section inside the remaining byte budget, reporting what it dropped.
+     *
+     * @param array<string, mixed> $section @return array<string, mixed>
+     */
     private function fitContextSection(array $section, int $budget): array
     {
         $encoded = json_encode($section, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);

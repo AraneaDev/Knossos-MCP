@@ -160,6 +160,48 @@ final class Protocol20260728Test extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testTheHandshakeRevisionCanAlsoBeSelectedThroughMeta(): void
+    {
+        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+
+        // A client may name the older revision in `_meta` without ever sending
+        // `initialize`. Nothing exercised that arm before, so removing it entirely
+        // went unnoticed.
+        $error = $server->handle($this->request(1, 'tools/list', version: '2025-11-25'))['error'];
+
+        // -32003, not -32022: the arm resolved to the handshake profile, which then
+        // enforced *its own* requirement. Removing the arm would reject the revision
+        // outright with -32022, so the distinction is what pins the arm down.
+        assertSame(-32003, $error['code']);
+    }
+
+    #[Group('mcp')]
+    public function testDecorationPreservesMetaTheResultAlreadyCarried(): void
+    {
+        $profile = new Profile20260728();
+
+        // Overwriting rather than merging would silently drop a progress token or
+        // trace context a caller put in `_meta`.
+        $decorated = $profile->decorate(['_meta' => ['caller/token' => 'abc'], 'ok' => true], 'tools/list');
+
+        assertSame('abc', $decorated['_meta']['caller/token']);
+        assertSame(
+            ['name' => 'knossos', 'version' => Application::VERSION],
+            $decorated['_meta']['io.modelcontextprotocol/serverInfo'],
+        );
+    }
+
+    #[Group('mcp')]
+    public function testARequestWithNonArrayParamsDeclaresNoRevision(): void
+    {
+        // requestedVersion() has to tolerate a malformed frame rather than reading
+        // `_meta` off a non-array; the negotiator then falls back to the default.
+        assertSame(null, ProtocolNegotiator::requestedVersion(['jsonrpc' => '2.0', 'params' => 'nonsense']));
+        assertSame(null, ProtocolNegotiator::requestedVersion(['jsonrpc' => '2.0']));
+        assertSame(null, ProtocolNegotiator::requestedVersion(['jsonrpc' => '2.0', 'params' => ['_meta' => 'nonsense']]));
+    }
+
+    #[Group('mcp')]
     public function testEachProfileNamesItsOwnRevision(): void
     {
         assertSame('2025-11-25', (new Profile20251125())->version());
@@ -426,4 +468,156 @@ final class Protocol20260728Test extends KnossosTestCase
 
         return [$endpoint, $headers];
     }
+
+    /**
+     * The lifecycle log must record which revision the client actually spoke.
+     *
+     * This is the signal that decides when Profile20251125 can be deleted, and it
+     * was previously unobtainable: the wrapper logs start, signals, and exit but
+     * nothing about the handshake, so the only way to answer "has the host moved
+     * yet?" was to grep the client's own binary for its protocol constant.
+     */
+    #[Group('protocol')]
+    public function testTheNegotiatedRevisionIsRecordedOncePerConnection(): void
+    {
+        $stateless = ['_meta' => [ProtocolNegotiator::VERSION_META_KEY => self::VERSION]];
+        $notes = $this->runFrames([
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list', 'params' => $stateless],
+            // A second request on the same connection and the same revision must
+            // not add a line: one connection, one entry, or the log becomes noise
+            // that nobody reads.
+            ['jsonrpc' => '2.0', 'id' => 2, 'method' => 'prompts/list', 'params' => $stateless],
+        ]);
+
+        assertSame(1, substr_count($notes, ' protocol '));
+        assertContains('requested=' . self::VERSION . ' selected=' . self::VERSION, $notes);
+        // No handshake means no clientInfo to name, and inventing one would be
+        // worse than saying so.
+        assertContains('client=unknown', $notes);
+    }
+
+    /**
+     * An initialize is a handshake-era client whatever version it names.
+     *
+     * The revision that removed the handshake cannot be spoken by a message the
+     * revision does not contain, so the pin is right — but it makes requested and
+     * selected disagree, and a log that hid that would be misleading rather than
+     * quiet.
+     */
+    #[Group('protocol')]
+    public function testAMismatchBetweenRequestedAndSelectedIsVisibleInTheLog(): void
+    {
+        $notes = $this->runFrames([
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+                'protocolVersion' => self::VERSION,
+                'capabilities' => [],
+                'clientInfo' => ['name' => 'probe', 'version' => '9.9'],
+            ]],
+        ]);
+
+        assertContains('requested=' . self::VERSION . ' selected=2025-11-25', $notes);
+        assertContains('client=probe/9.9', $notes);
+    }
+
+    #[Group('protocol')]
+    public function testALegacyClientIsRecordedAsSuch(): void
+    {
+        $notes = $this->runFrames([
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+                'protocolVersion' => '2025-11-25',
+                'capabilities' => [],
+                'clientInfo' => ['name' => 'legacy', 'version' => '1'],
+            ]],
+        ]);
+
+        assertContains('requested=2025-11-25 selected=2025-11-25', $notes);
+    }
+
+    #[Group('protocol')]
+    public function testAClientCannotForgeALogEntryThroughItsOwnName(): void
+    {
+        // Everything on that line except the timestamp and the selected revision
+        // is peer-supplied, and the log is line-oriented, so an unfiltered name
+        // could inject a whole entry claiming a revision nobody requested.
+        $notes = $this->runFrames([
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+                'protocolVersion' => self::VERSION,
+                'capabilities' => [],
+                'clientInfo' => [
+                    'name' => "evil\n2026-01-01T00:00:00Z protocol requested=forged selected=forged client=x",
+                    'version' => '1',
+                ],
+            ]],
+        ]);
+
+        // The property that matters is that no *second entry* exists: the log is
+        // line-oriented, so a name carrying a newline is the whole attack. The
+        // injected text surviving inside one mangled field is harmless.
+        assertSame(1, substr_count($notes, "\n"));
+        assertSame(1, substr_count($notes, ' protocol '));
+        assertSame(false, str_contains($notes, "\nevil"));
+    }
+
+    /**
+     * When a message declares a version twice, the log reports the one that decided.
+     *
+     * Only `_meta` drives negotiation, so a log that preferred `protocolVersion`
+     * would explain the selection with a field the negotiator never read — the
+     * one situation where this line would actively mislead.
+     */
+    #[Group('protocol')]
+    public function testTheMetaDeclarationWinsOverTheHandshakeFieldInTheLog(): void
+    {
+        $notes = $this->runFrames([
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'tools/list', 'params' => [
+                '_meta' => [ProtocolNegotiator::VERSION_META_KEY => self::VERSION],
+                'protocolVersion' => '2025-11-25',
+            ]],
+        ]);
+
+        assertContains('requested=' . self::VERSION . ' selected=' . self::VERSION, $notes);
+    }
+
+    /**
+     * A peer cannot make the log line arbitrarily long.
+     *
+     * The name is client-supplied and unbounded on the wire, so without the cap a
+     * connection could write a megabyte into .knossos/mcp-serve.log per handshake.
+     */
+    #[Group('protocol')]
+    public function testAnOverlongClientNameIsTruncated(): void
+    {
+        $notes = $this->runFrames([
+            ['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => [
+                'protocolVersion' => '2025-11-25',
+                'capabilities' => [],
+                'clientInfo' => ['name' => str_repeat('n', 500), 'version' => str_repeat('9', 500)],
+            ]],
+        ]);
+
+        assertSame(1, preg_match('/client=(n{1,200})\/(9{1,200})$/', trim($notes), $matched));
+        assertSame(64, strlen($matched[1]));
+        assertSame(64, strlen($matched[2]));
+    }
+
+    /**
+     * Drive a real read loop over the given frames and return what it wrote to stderr.
+     *
+     * @param list<array<string, mixed>> $frames
+     */
+    private function runFrames(array $frames): string
+    {
+        $input = fopen('php://temp', 'r+');
+        $output = fopen('php://temp', 'r+');
+        $errors = fopen('php://temp', 'r+');
+        foreach ($frames as $frame) {
+            fwrite($input, json_encode($frame, JSON_THROW_ON_ERROR) . "\n");
+        }
+        rewind($input);
+        (new StdioServer($this->tools()))->run($input, $output, $errors);
+        rewind($errors);
+
+        return (string) stream_get_contents($errors);
+    }
+
 }

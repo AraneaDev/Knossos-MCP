@@ -277,4 +277,137 @@ final class HttpTest extends KnossosTestCase
             }
         }
     }
+
+    /**
+     * Header handling that mutation testing found unasserted, all of it
+     * security-relevant: the no-store directive, and the normalisation that makes
+     * the Host allow-list a real check rather than a case-sensitive one.
+     */
+    #[Group('http')]
+    public function testEveryResponseCarriesTheCachingAndSniffingDirectives(): void
+    {
+        [$endpoint, $headers] = $this->modernEndpoint();
+
+        // no-store matters because a response can name the user's projects, and
+        // nosniff because an error body is JSON that must not be sniffed as HTML.
+        $refused = $endpoint->handle('POST', ['Host' => 'evil.test'] + $headers, '{}');
+        assertSame('no-store', $refused['headers']['Cache-Control']);
+        assertSame('nosniff', $refused['headers']['X-Content-Type-Options']);
+
+        $served = $endpoint->handle('POST', $headers + ['Mcp-Method' => 'tools/list'], self::modernBody('tools/list'));
+        assertSame('no-store', $served['headers']['Cache-Control']);
+        assertSame('nosniff', $served['headers']['X-Content-Type-Options']);
+    }
+
+    #[Group('http')]
+    public function testTheHostAllowListIsCaseInsensitiveAndTolerantOfPadding(): void
+    {
+        [$endpoint, $headers] = $this->modernEndpoint();
+        $body = self::modernBody('tools/list');
+
+        // A proxy may forward the Host with different casing or surrounding
+        // whitespace. Without normalisation those are rejected as unknown hosts,
+        // which reads to an operator as a misconfigured allow-list.
+        foreach (['127.0.0.1:8080', '127.0.0.1:8080  ', ' 127.0.0.1:8080'] as $host) {
+            $response = $endpoint->handle('POST', ['Host' => $host] + $headers + ['Mcp-Method' => 'tools/list'], $body);
+            assertSame(200, $response['status']);
+        }
+        // Still a real allow-list: a different host is refused.
+        assertSame(421, $endpoint->handle('POST', ['Host' => 'other.test'] + $headers, $body)['status']);
+    }
+
+    /** A modern-revision request body for one method. */
+    private static function modernBody(string $method): string
+    {
+        return json_encode([
+            'jsonrpc' => '2.0', 'id' => 1, 'method' => $method,
+            'params' => ['_meta' => ['io.modelcontextprotocol/protocolVersion' => '2026-07-28']],
+        ], JSON_THROW_ON_ERROR);
+    }
+
+    /** @return array{0: HttpEndpoint, 1: array<string, string>} */
+    private function modernEndpoint(): array
+    {
+        $pdo = SqliteConnection::open(':memory:');
+        (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+        $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $endpoint = new HttpEndpoint($tools, new HttpSessionStore($pdo), ['127.0.0.1:8080'], ['http://127.0.0.1:8080'], 'secret');
+        $headers = [
+            'Host' => '127.0.0.1:8080', 'Origin' => 'http://127.0.0.1:8080',
+            'Authorization' => 'Bearer secret', 'Content-Type' => 'application/json',
+            'Accept' => 'application/json, text/event-stream',
+            'MCP-Protocol-Version' => '2026-07-28',
+        ];
+
+        return [$endpoint, $headers];
+    }
+
+
+    /**
+     * The request cap admits a body of exactly its size.
+     *
+     * Same shape as the stdio caps: the existing oversized-body test passes under
+     * both `>` and `>=`, so the mutant that shifts the effective limit by one byte
+     * survived. Pinning the accepted side is what makes the limit a limit.
+     */
+    #[Group('http')]
+    public function testARequestBodyOfExactlyTheCapIsAcceptedAndOneMoreByteIsRejected(): void
+    {
+        [, $headers] = $this->modernEndpoint();
+        // The 2026-07-28 profile mirrors the RPC method into a header.
+        $headers['Mcp-Method'] = 'initialize';
+        $body = self::initializeBodyOfExactly(512);
+        assertSame(512, strlen($body));
+
+        $capped = $this->cappedEndpoint(512);
+        $atCap = $capped->handle('POST', $headers, $body, '127.0.0.1');
+        assertSame(200, $atCap['status']);
+
+        $overCap = $this->cappedEndpoint(511)->handle('POST', $headers, $body, '127.0.0.1');
+        assertSame(413, $overCap['status']);
+        assertContains('byte limit', $overCap['body']);
+    }
+
+    private function cappedEndpoint(int $maxRequestBytes): HttpEndpoint
+    {
+        $pdo = SqliteConnection::open(':memory:');
+        (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+
+        return new HttpEndpoint(
+            $tools,
+            new HttpSessionStore($pdo),
+            ['127.0.0.1:8080'],
+            ['http://127.0.0.1:8080'],
+            'secret',
+            maxRequestBytes: $maxRequestBytes,
+        );
+    }
+
+    /** A valid initialize body padded to exactly $bytes, the padding carried in clientInfo.name. */
+    private static function initializeBodyOfExactly(int $bytes): string
+    {
+        $build = static fn(string $name): string => json_encode([
+            'jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize',
+            'params' => ['protocolVersion' => '2026-07-28', 'capabilities' => [], 'clientInfo' => ['name' => $name, 'version' => '1']],
+        ], JSON_THROW_ON_ERROR);
+        $padding = $bytes - strlen($build(''));
+        if ($padding < 0) {
+            self::fail('A valid initialize body does not fit in ' . $bytes . ' bytes.');
+        }
+
+        return $build(str_repeat('p', $padding));
+    }
+
 }

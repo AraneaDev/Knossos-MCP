@@ -36,11 +36,13 @@ final readonly class ManifestEntryPointRule implements ClassificationRule
         $this->entryPoints = array_fill_keys($entryPoints, true);
     }
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'core.manifest.entrypoints.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         // Every declaration inside an entry-point file is reached the same way

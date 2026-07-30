@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+/** One file discovery selected, with the fingerprint incremental reuse is keyed on. */
 final readonly class DiscoveredFile
 {
     public function __construct(

@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Infers roles from Laravel's conventional directory layout — app/Http/Controllers and friends. */
 final readonly class LaravelPathRoleRule implements ClassificationRule
 {
     private const PATH_ROLES = [
@@ -23,11 +24,13 @@ final readonly class LaravelPathRoleRule implements ClassificationRule
         '/Repositories/' => 'laravel.repository',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'laravel.paths.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         if ($node->kind !== 'class') {

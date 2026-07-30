@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\RelativePath;
 use RuntimeException;
 use Throwable;
 
+/** Reads the working-tree diff by running `git`, under the same deadline and output caps. */
 final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProvider
 {
     private GitProcessRunnerInterface $runner;
@@ -17,6 +18,7 @@ final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProv
         $this->runner = $runner ?? new GitProcessRunner($maxOutputBytes, $maxErrorBytes);
     }
 
+    /** {@inheritDoc} */
     public function changes(string $projectRoot, ?string $baseRef, int $maxFiles, int $timeoutMs): array
     {
         if ($maxFiles < 1 || $maxFiles > 1000) {

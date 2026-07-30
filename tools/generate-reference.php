@@ -123,6 +123,7 @@ if ($stale !== []) {
 }
 echo $check ? "Generated reference is current.\n" : "Generated CLI and MCP reference.\n";
 
+/** First sentence of a docblock, used as the reference table's description. */
 function documentationSummary(string $documentation): string
 {
     foreach (preg_split('/\R/', $documentation) ?: [] as $line) {
@@ -134,6 +135,7 @@ function documentationSummary(string $documentation): string
     return 'Missing documentation';
 }
 
+/** Render a reflected type as it should appear in generated documentation. */
 function reflectionType(?ReflectionType $type): string
 {
     if ($type instanceof ReflectionNamedType) {

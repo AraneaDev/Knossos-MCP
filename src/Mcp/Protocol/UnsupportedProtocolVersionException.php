@@ -23,7 +23,11 @@ final class UnsupportedProtocolVersionException extends RuntimeException
         parent::__construct(sprintf('Unsupported protocol version: %s', $requested), self::CODE);
     }
 
-    /** @return array{supported: list<string>, requested: string} */
+    /**
+     * The error payload, carrying the supported set so a client can retry on common ground.
+     *
+     * @return array{supported: list<string>, requested: string}
+     */
     public function data(): array
     {
         return ['supported' => $this->supported, 'requested' => $this->requested];

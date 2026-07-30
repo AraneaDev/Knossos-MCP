@@ -8,6 +8,13 @@ use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
 
+/**
+ * Records the array-shaped registries on service providers: `$listen` and `$policies`.
+ *
+ * The mapping from event to listener, or model to policy, lives only in that array
+ * literal; nothing in the code references the listener, so these edges are the only
+ * static evidence the wiring exists.
+ */
 final readonly class LaravelProviderMapFactCollector
 {
     public function __construct(
@@ -15,6 +22,7 @@ final readonly class LaravelProviderMapFactCollector
         private LaravelTraversalContext $context,
     ) {}
 
+    /** Read `$listen`/`$policies` defaults and emit one edge per `::class => ::class` pair. */
     public function enterNode(Node $node): void
     {
         if (!$node instanceof Stmt\Property) {

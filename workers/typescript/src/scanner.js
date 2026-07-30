@@ -16,6 +16,14 @@ const SOURCE_EXTENSIONS = new Set([
     ".mjs",
     ".cjs",
 ]);
+// Bytes read when probing an extensionless file's shebang; one short line is enough.
+const SHEBANG_PROBE_BYTES = 256;
+// TypeScript silently drops a root file whose name carries no recognised
+// extension, so an extensionless shebang script is offered to the program under
+// a synthetic name ending in `.js` and mapped back to its real path on the way
+// out. The suffix is deliberately unusual: a real file that collided with it
+// would be reported under the wrong path.
+const SHEBANG_ALIAS_SUFFIX = ".knossos-shebang.js";
 const EXCLUDED_DIRECTORIES = new Set([
     ".git",
     ".knossos",
@@ -86,11 +94,19 @@ export class TypeScriptScanner {
      */
     scan(params, emit) {
         const root = validateRoot(params.root);
-        const requested = validateRequestedFiles(
+        const { accepted: requested, rejected } = validateRequestedFiles(
             root,
             params.files,
             params.limits,
         );
+        // Emitted before anything else so a file this worker cannot read still
+        // gets its own contribution: raising it to the request would discard the
+        // facts every other file in the batch contributes.
+        for (const rejection of rejected) {
+            emit(
+                unscannableContribution(rejection.relative, rejection.message),
+            );
+        }
         const requestedSet = new Set(requested.map((file) => normalize(file)));
         const configPaths = configFilesForScan(root, params.config_files);
         const maxFileBytes = maxFileBytesFrom(params.limits);
@@ -131,9 +147,14 @@ export class TypeScriptScanner {
             };
             const parsed = {
                 options,
-                fileNames: remaining.map((relative) =>
-                    path.join(root, relative),
-                ),
+                // An extensionless script only ever reaches the fallback program:
+                // no tsconfig `include` can name a file with no extension.
+                fileNames: remaining.map((relative) => {
+                    const absolute = path.join(root, relative);
+                    return path.extname(absolute) === ""
+                        ? shebangAliasPath(absolute)
+                        : absolute;
+                }),
                 projectReferences: undefined,
             };
             const key = `${root}\0<fallback>`;
@@ -152,7 +173,7 @@ export class TypeScriptScanner {
         }
 
         return {
-            files_scanned: emitted.size,
+            files_scanned: emitted.size + rejected.length,
             programs,
             programs_reused: programsReused,
         };
@@ -774,6 +795,21 @@ function createRestrictedProgram(
         // one giant generated file (e.g. a multi-MB bundled `.d.ts`) is never
         // fully parsed, bounding peak memory.
         if (exceedsByteCap(fileName, maxFileBytes)) return undefined;
+        if (fileName.endsWith(SHEBANG_ALIAS_SUFFIX)) {
+            // ts.sys.readFile yields undefined rather than throwing when the
+            // file has gone, which is the same "skip this input" signal the
+            // guards above use.
+            const text = ts.sys.readFile(shebangSourcePath(fileName));
+            return text === undefined
+                ? undefined
+                : ts.createSourceFile(
+                      fileName,
+                      text,
+                      languageVersion,
+                      true,
+                      ts.ScriptKind.JS,
+                  );
+        }
         return getSourceFile(
             fileName,
             languageVersion,
@@ -782,10 +818,13 @@ function createRestrictedProgram(
         );
     };
     host.fileExists = (file) =>
-        allowedCompilerPath(root, file) && ts.sys.fileExists(file);
+        allowedCompilerPath(root, file) &&
+        (file.endsWith(SHEBANG_ALIAS_SUFFIX)
+            ? ts.sys.fileExists(shebangSourcePath(file))
+            : ts.sys.fileExists(file));
     host.readFile = (file) =>
         allowedCompilerPath(root, file) && !exceedsByteCap(file, maxFileBytes)
-            ? ts.sys.readFile(file)
+            ? ts.sys.readFile(shebangSourcePath(file))
             : undefined;
     return ts.createProgram({
         rootNames: parsed.fileNames,
@@ -1104,7 +1143,7 @@ function maxFileBytesFrom(limits) {
 // Default-library declaration files are exempt: skipping one would break type
 // resolution for every file. Only project sources under the root are capped.
 function exceedsByteCap(fileName, maxFileBytes) {
-    const normalized = normalize(path.resolve(fileName));
+    const normalized = shebangSourcePath(normalize(path.resolve(fileName)));
     const defaultLib = normalize(path.dirname(ts.getDefaultLibFilePath({})));
     if (contains(defaultLib, normalized)) return false;
     try {
@@ -1130,15 +1169,81 @@ function validateRequestedFiles(root, files, limits = {}) {
     if (maxFiles < 1 || maxFileBytes < 1 || files.length > maxFiles)
         throw new Error("TypeScript scan limits are invalid or exceeded.");
 
-    return files.map((relative) => {
-        const absolute = validatedInside(root, relative);
-        if (!SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()))
-            throw new Error(`Unsupported TypeScript input: ${relative}`);
-        const stat = fs.statSync(absolute);
-        if (!stat.isFile() || stat.size > maxFileBytes)
-            throw new Error(`TypeScript input exceeds limits: ${relative}`);
-        return normalize(path.relative(root, absolute));
-    });
+    // A path this worker refuses, or a file that vanished between discovery and
+    // scan, is reported per file rather than raised: only a request that cannot
+    // be interpreted at all (checked above) is fatal.
+    const accepted = [];
+    const rejected = [];
+    for (const relative of files) {
+        // A malformed path stays fatal: it names no file, so there is nothing to
+        // attribute a diagnostic to, and echoing it into a contribution would
+        // emit an owner key the graph rejects anyway.
+        assertScannablePath(relative);
+        try {
+            const absolute = validatedInside(root, relative);
+            if (
+                !SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()) &&
+                !namesJavaScriptInShebang(absolute)
+            )
+                throw new Error(`Unsupported TypeScript input: ${relative}`);
+            const stat = fs.statSync(absolute);
+            if (!stat.isFile() || stat.size > maxFileBytes)
+                throw new Error(`TypeScript input exceeds limits: ${relative}`);
+            accepted.push(normalize(path.relative(root, absolute)));
+        } catch (error) {
+            rejected.push({
+                relative: normalize(relative),
+                message: error instanceof Error ? error.message : String(error),
+            });
+        }
+    }
+
+    return { accepted, rejected };
+}
+
+// A contribution that carries nothing but the reason one file was skipped.
+function unscannableContribution(relative, message) {
+    return {
+        owner_key: `knossos.typescript:file:${relative}`,
+        nodes: [],
+        edges: [],
+        diagnostics: [
+            {
+                severity: "error",
+                code: "TS_UNSCANNABLE_FILE",
+                message,
+                evidence: { path: relative, start_line: 1, end_line: 1 },
+            },
+        ],
+    };
+}
+
+// Discovery classifies an extensionless script by its shebang and routes it
+// here, so gating on the extension alone rejected exactly the files discovery
+// had just resolved. Mirrors the discoverer's rule: match `#!/usr/bin/node` and
+// `#!/usr/bin/env node`, tolerate a version suffix, and anchor to a word
+// boundary so a path merely containing an interpreter name is not matched. Only
+// the first line is read, and only for a file that has no known extension.
+function namesJavaScriptInShebang(absolute) {
+    if (path.extname(absolute) !== "") return false;
+    let first;
+    try {
+        const handle = fs.openSync(absolute, "r");
+        try {
+            const buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
+            const read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
+            first = buffer.toString("utf8", 0, read).split("\n", 1)[0];
+        } finally {
+            fs.closeSync(handle);
+        }
+    } catch {
+        return false;
+    }
+
+    return (
+        first.startsWith("#!") &&
+        /\b(node|nodejs|bun|deno)[0-9.]*\b/i.test(first)
+    );
 }
 
 function validateRoot(input) {
@@ -1150,7 +1255,10 @@ function validateRoot(input) {
     return root;
 }
 
-function validatedInside(root, relative) {
+// Kept separate from reading the file: a path of the wrong shape cannot be
+// attributed to any file, so it fails the request, while a well-formed path that
+// simply cannot be scanned costs only that file.
+function assertScannablePath(relative) {
     if (
         typeof relative !== "string" ||
         relative.length === 0 ||
@@ -1166,6 +1274,10 @@ function validatedInside(root, relative) {
         )
     )
         throw new Error("Project-relative path is invalid.");
+}
+
+function validatedInside(root, relative) {
+    assertScannablePath(relative);
     const real = normalize(fs.realpathSync(path.join(root, relative)));
     if (!contains(root, real))
         throw new Error("Project-relative path escapes the root.");
@@ -1173,7 +1285,7 @@ function validatedInside(root, relative) {
 }
 
 function allowedCompilerPath(root, candidate) {
-    const normalized = normalize(path.resolve(candidate));
+    const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
     const defaultLib = normalize(path.dirname(ts.getDefaultLibFilePath({})));
     if (contains(defaultLib, normalized)) return true;
     if (!contains(root, normalized)) return false;
@@ -1185,9 +1297,23 @@ function allowedCompilerPath(root, candidate) {
 }
 
 function relativeInside(root, candidate) {
-    const normalized = normalize(path.resolve(candidate));
+    const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
     if (!contains(root, normalized)) return null;
     return normalize(path.relative(root, normalized));
+}
+
+// The single chokepoint every relative path passes through, so un-aliasing here
+// keeps canonical names, evidence paths, and the emitted owner keys pointed at
+// the file that actually exists on disk.
+function shebangSourcePath(candidate) {
+    return candidate.endsWith(SHEBANG_ALIAS_SUFFIX)
+        ? candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length)
+        : candidate;
+}
+
+// The name an extensionless script is offered to the program under.
+function shebangAliasPath(candidate) {
+    return `${candidate}${SHEBANG_ALIAS_SUFFIX}`;
 }
 
 function contains(root, candidate) {

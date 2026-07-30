@@ -12,7 +12,11 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
 {
     public function __construct(private int $maxOutputBytes = 2_000_000, private int $maxErrorBytes = 65_536) {}
 
-    /** @param non-empty-list<string> $command */
+    /**
+     * Run a git command under a deadline with bounded, non-blocking reads.
+     *
+     * @param non-empty-list<string> $command
+     */
     public function run(array $command, int $timeoutMs, string $operation): string
     {
         $pipes = [];

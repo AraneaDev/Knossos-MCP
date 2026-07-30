@@ -7,6 +7,13 @@ namespace Knossos\Scanner;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
 
+/**
+ * Contract for talking to a language scanner.
+ *
+ * Abstracted so the scan pipeline does not care that workers are separate
+ * processes, and so tests can exercise protocol failures that a real worker will
+ * not produce on request.
+ */
 interface ScannerClient
 {
     /** Negotiate the worker contract before any project input is sent. */

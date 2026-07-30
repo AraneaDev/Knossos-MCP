@@ -9,6 +9,14 @@ use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResu
 use Knossos\Store\SqliteGraphRepository;
 use PDO;
 
+/**
+ * Runs a scan end to end: plan, discover, analyse, reconcile, report.
+ *
+ * Holds the worker pool for the scan's duration and shuts it down on the way out,
+ * including when a scan fails or is cancelled. Nothing here loads or executes the
+ * analysed project — the pipeline parses, and that is what makes scanning an
+ * untrusted repository safe.
+ */
 final class ProjectScanService implements ProjectScanner
 {
     private readonly ScanPlanner $planner;
@@ -33,13 +41,18 @@ final class ProjectScanService implements ProjectScanner
         $this->analysisPipeline = new ScanAnalysisPipeline();
         $this->resultFactory = new ScanResultFactory();
     }
+    /** Shut the worker pool down, including when a scan failed or was cancelled. */
 
     public function __destruct()
     {
         $this->workerPool->shutdown();
     }
 
-    /** @param list<array<string, mixed>>|null $explicitBoundaries */
+    /**
+     * Run a scan end to end and return its result envelope.
+     *
+     * @param list<array<string, mixed>>|null $explicitBoundaries
+     */
     public function scan(
         string $root,
         ?string $name = null,
@@ -140,13 +153,18 @@ final class ProjectScanService implements ProjectScanner
             }
         }
     }
+    /** Milliseconds since a hrtime() mark, for the stage timings. */
 
     private static function elapsedMilliseconds(int $startedAt): float
     {
         return round((hrtime(true) - $startedAt) / 1_000_000, 3);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The project's stored configuration, needed to honour snapshot retention on completion.
+     *
+     * @return array<string, mixed>
+     */
     private function projectConfig(ScanPreparation $preparation): array
     {
         return [
@@ -205,7 +223,11 @@ final class ProjectScanService implements ProjectScanner
         return $this->currentGraphCounts($plan->projectId, (string) $row['active_scan_id']);
     }
 
-    /** @param list<\Knossos\Discovery\DiscoveredFile> $files */
+    /**
+     * Update stored mtimes for files whose content was unchanged, so the next scan can still reuse them.
+     *
+     * @param list<\Knossos\Discovery\DiscoveredFile> $files
+     */
     private function refreshFileMtimes(string $projectId, array $files): void
     {
         (new SqliteGraphRepository($this->pdo))->transaction(function () use ($projectId, $files): void {
@@ -218,6 +240,7 @@ final class ProjectScanService implements ProjectScanner
             }
         });
     }
+    /** Node and edge counts before reconciliation, for the scan report's delta. */
 
     private function currentGraphCounts(string $projectId, string $activeScanId): ReconciliationResult
     {

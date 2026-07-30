@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+/** The files discovery selected, the project units it found, and what it could not read. */
 final readonly class DiscoveryResult
 {
     /**

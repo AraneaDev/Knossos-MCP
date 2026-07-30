@@ -35,6 +35,8 @@ final class ComponentLegend
     }
 
     /**
+     * Recurse through a result, replacing node objects with legend keys.
+     *
      * @param array<string, mixed> $value
      * @param array<string, array<string, mixed>> $legend
      * @param array<string, string>|null $idToName
@@ -58,7 +60,11 @@ final class ComponentLegend
         return $value;
     }
 
-    /** @param array<string, mixed> $item */
+    /**
+     * Whether a value is a node object worth hoisting into the legend.
+     *
+     * @param array<string, mixed> $item
+     */
     private static function isNodeDescriptor(array $item): bool
     {
         if (!isset($item['id'], $item['kind']) || !is_string($item['id']) || !is_string($item['kind'])
@@ -73,7 +79,11 @@ final class ComponentLegend
         return true;
     }
 
-    /** @param array<string, mixed> $item */
+    /**
+     * Whether a value is an edge object, which is shortened to its kind instead.
+     *
+     * @param array<string, mixed> $item
+     */
     private static function isEdge(array $item): bool
     {
         return isset($item['kind']) && is_string($item['kind'])
@@ -83,6 +93,8 @@ final class ComponentLegend
     }
 
     /**
+     * Record a node descriptor once, so repeated components collapse to a name reference.
+     *
      * @param array<string, mixed> $node
      * @param array<string, array<string, mixed>> $legend
      * @param array<string, string>|null $idToName
@@ -123,6 +135,8 @@ final class ComponentLegend
     }
 
     /**
+     * Role names for a node, flattened for the legend entry.
+     *
      * @param mixed $roles
      * @return list<string>
      */

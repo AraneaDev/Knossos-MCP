@@ -8,8 +8,17 @@ use DirectoryIterator;
 use Knossos\Scan\CancellationToken;
 use Throwable;
 
+/**
+ * Walks a project tree and selects the files worth analysing.
+ *
+ * Enforces the allow-list, applies ignore rules, and stops at the configured
+ * caps. Unreadable entries become diagnostics rather than exceptions, so one
+ * permission problem does not deny a graph of everything else.
+ */
 final readonly class ProjectDiscoverer
 {
+    /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
+    private const SHEBANG_PROBE_BYTES = 256;
     private RootGuard $rootGuard;
     private IgnoreMatcher $ignoreMatcher;
 
@@ -18,6 +27,7 @@ final readonly class ProjectDiscoverer
         $this->rootGuard = new RootGuard($config->allowedRoots);
         $this->ignoreMatcher = new IgnoreMatcher($config->ignorePatterns);
     }
+    /** Walk the tree and select the files worth analysing, within the configured caps. */
 
     public function discover(string $requestedRoot, ?CancellationToken $cancellation = null): DiscoveryResult
     {
@@ -89,7 +99,7 @@ final readonly class ProjectDiscoverer
                         continue;
                     }
 
-                    $language = self::languageFor($relative);
+                    $language = self::languageFor($relative, $absolute);
                     $unitKind = self::unitKindFor($relative);
                     if ($language === null && $unitKind === null) {
                         continue;
@@ -182,6 +192,8 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * Read one project manifest, recording a diagnostic rather than failing when it is unreadable.
+     *
      * @param list<DiscoveryDiagnostic> $diagnostics
      */
     private function readUnit(
@@ -340,7 +352,11 @@ final readonly class ProjectDiscoverer
         return $directory === '' ? $token : $directory . '/' . $token;
     }
 
-    /** @param array<string, mixed> $composer @return array<string, string|list<string>> */
+    /**
+     * PSR-4 roots from composer.json, which is how a namespace maps to a directory.
+     *
+     * @param array<string, mixed> $composer @return array<string, string|list<string>>
+     */
     private static function composerPsr4(array $composer): array
     {
         $mappings = [];
@@ -364,7 +380,11 @@ final readonly class ProjectDiscoverer
         return $mappings;
     }
 
-    /** @param array<string, mixed> $composer @return array<string, string> */
+    /**
+     * Declared Composer dependencies, used to detect which frameworks to enrich.
+     *
+     * @param array<string, mixed> $composer @return array<string, string>
+     */
     private static function composerRequirements(array $composer): array
     {
         $requirements = [];
@@ -379,7 +399,11 @@ final readonly class ProjectDiscoverer
         return $requirements;
     }
 
-    /** @return list<string> */
+    /**
+     * Workspace globs from package.json, so a monorepo's packages are discovered.
+     *
+     * @return list<string>
+     */
     private static function workspaces(mixed $workspaces): array
     {
         if (is_array($workspaces) && isset($workspaces['packages'])) {
@@ -392,7 +416,11 @@ final readonly class ProjectDiscoverer
         return array_values(array_filter($workspaces, 'is_string'));
     }
 
-    /** @param array<string, mixed> $config @return array<string, mixed> */
+    /**
+     * tsconfig details the TypeScript worker needs to build a program.
+     *
+     * @param array<string, mixed> $config @return array<string, mixed>
+     */
     private static function typescriptMetadata(array $config): array
     {
         $compiler = is_array($config['compilerOptions'] ?? null) ? $config['compilerOptions'] : [];
@@ -414,17 +442,68 @@ final readonly class ProjectDiscoverer
         ];
     }
 
-    private static function languageFor(string $relativePath): ?string
+    /**
+     * The language a file belongs to, or null when it is not source.
+     *
+     * Extension first, then a shebang for extensionless files. Executable entry
+     * points routinely have no extension — `artisan`, `bin/console`, this project's
+     * own `workers/php/bin/worker` — and skipping them makes whatever they invoke
+     * look unreferenced, so dead-code detection reports a live entry point as a
+     * deletion candidate.
+     *
+     * @param string|null $absolutePath needed only to read a shebang; omit and
+     *        extensionless files are simply not classified
+     */
+    private static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
     {
         $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
-        return match ($extension) {
+        $byExtension = match ($extension) {
             'php' => 'php',
             'ts', 'tsx', 'mts', 'cts' => 'typescript',
             'js', 'jsx', 'mjs', 'cjs' => 'javascript',
             'py', 'pyi' => 'python',
             default => null,
         };
+        if ($byExtension !== null || $extension !== '' || $absolutePath === null) {
+            return $byExtension;
+        }
+
+        return self::languageFromShebang($absolutePath);
     }
+
+    /**
+     * The language named by a script's shebang, or null.
+     *
+     * Only the first line is read, and only for a file with no extension, so the
+     * cost is one bounded read of the handful of extensionless files in a tree
+     * (LICENSE, Dockerfile, Makefile) rather than of every file.
+     */
+    private static function languageFromShebang(string $absolutePath): ?string
+    {
+        $handle = @fopen($absolutePath, 'rb');
+        if (!is_resource($handle)) {
+            return null;
+        }
+        try {
+            $first = (string) fgets($handle, self::SHEBANG_PROBE_BYTES);
+        } finally {
+            fclose($handle);
+        }
+        if (!str_starts_with($first, '#!')) {
+            return null;
+        }
+
+        // Matches both `#!/usr/bin/php` and `#!/usr/bin/env php`, and tolerates a
+        // version suffix such as `php8.3`. Anchored to a word boundary so a path
+        // like /opt/phpstorm/bin/foo cannot be read as a PHP script.
+        return match (true) {
+            preg_match('#\b(php)[0-9.]*\b#i', $first) === 1 => 'php',
+            preg_match('#\b(node|nodejs|bun|deno)[0-9.]*\b#i', $first) === 1 => 'javascript',
+            preg_match('#\b(python)[0-9.]*\b#i', $first) === 1 => 'python',
+            default => null,
+        };
+    }
+    /** Which manifest kind a filename is, or null when it is not one. */
 
     private static function unitKindFor(string $relativePath): ?string
     {
@@ -447,6 +526,7 @@ final readonly class ProjectDiscoverer
 
         return null;
     }
+    /** A path expressed relative to the project root, which is the only form facts carry. */
 
     private function relative(string $root, string $path): string
     {

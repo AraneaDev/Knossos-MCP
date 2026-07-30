@@ -264,6 +264,44 @@ final class AuditBatch2Test extends KnossosTestCase
         assertSame(false, $result->truncated);
     }
 
+    /**
+     * A section may only be dropped if the budget genuinely could not hold it.
+     *
+     * Each section was fitted against a fixed fraction of max_chars and dropped
+     * whole when it overran, so budget left unspent by the other sections was
+     * never offered to it. On a real repository this returned 2,481 characters
+     * of a 12,000 budget with three of four sections empty — the caller paid for
+     * context it was never given.
+     */
+    #[Group('query')]
+    public function testArchitectureContextSpendsBudgetOtherSectionsLeftUnused(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $query = new ArchitectureQueryService($pdo);
+
+        foreach ([4000, 12_000, 30_000] as $maxChars) {
+            $result = $query->architectureContext(
+                $ids['project'],
+                'checkout billing invoice',
+                ['src/Checkout.php'],
+                maxChars: $maxChars,
+            );
+            $budget = $result->data['budget'];
+            $spare = $budget['max_chars'] - $budget['actual_chars'];
+            foreach ($result->data['context']['sections'] as $name => $section) {
+                if (($section['status'] ?? null) !== 'truncated') {
+                    continue;
+                }
+                assertSame(
+                    true,
+                    $section['original_chars'] > $spare,
+                    sprintf('%s was dropped at %d chars with %d to spare', $name, $maxChars, $spare),
+                );
+            }
+        }
+    }
+
     #[Group('query')]
     public function testChangedFilesImpactLoneBaseRefYieldsSpecificMessage(): void
     {

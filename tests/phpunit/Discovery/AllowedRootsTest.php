@@ -185,6 +185,56 @@ final class AllowedRootsTest extends KnossosTestCase
     }
 
     #[Group('discovery')]
+    public function testTheContainerHintTracksContainerDetection(): void
+    {
+        $granted = $this->makeTempDir();
+        $outside = $this->makeTempDir();
+        $guard = new RootGuard(new AllowedRoots([$granted]));
+        $hint = 'runs in a container';
+
+        $previous = getenv('KNOSSOS_CONTAINER');
+        try {
+            // Env var set: containerised everywhere, so this half is deterministic.
+            putenv('KNOSSOS_CONTAINER=1');
+            $contained = captureThrows(static fn() => $guard->resolve($outside), DiscoveryException::class);
+            $this->assertStringContainsString($hint, $contained->getMessage());
+            // Appended, not substituted: a containerised caller needs the refused path
+            // and the roots in force just as much as the host caveat.
+            $this->assertStringContainsString($outside, $contained->getMessage());
+            $this->assertStringContainsString('Configured roots: ' . $granted, $contained->getMessage());
+
+            // Env var unset: detection falls back to /.dockerenv, which is present in
+            // the quality container and absent on a developer host. Asserting a fixed
+            // answer here would pass locally and fail in CI — as the first version of
+            // this test did — so it is asserted against the filesystem signal itself.
+            putenv('KNOSSOS_CONTAINER');
+            $bare = captureThrows(static fn() => $guard->resolve($outside), DiscoveryException::class);
+            is_file('/.dockerenv')
+                ? $this->assertStringContainsString($hint, $bare->getMessage())
+                : $this->assertStringNotContainsString($hint, $bare->getMessage());
+        } finally {
+            $previous === false ? putenv('KNOSSOS_CONTAINER') : putenv('KNOSSOS_CONTAINER=' . $previous);
+        }
+    }
+
+    #[Group('discovery')]
+    public function testContainerDetectionUsesEitherSignalIndependently(): void
+    {
+        $previous = getenv('KNOSSOS_CONTAINER');
+        try {
+            // Either signal alone suffices; requiring both would miss a container
+            // without the marker file, which is the common case off Docker.
+            putenv('KNOSSOS_CONTAINER=1');
+            assertSame(true, RootGuard::containerised());
+
+            putenv('KNOSSOS_CONTAINER');
+            assertSame(is_file('/.dockerenv'), RootGuard::containerised());
+        } finally {
+            $previous === false ? putenv('KNOSSOS_CONTAINER') : putenv('KNOSSOS_CONTAINER=' . $previous);
+        }
+    }
+
+    #[Group('discovery')]
     public function testGuardHonoursAGrantAddedAfterItWasConstructed(): void
     {
         $target = $this->makeTempDir();

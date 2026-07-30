@@ -4,8 +4,15 @@ declare(strict_types=1);
 
 namespace Knossos\Cli;
 
+/**
+ * The canonical `knossos help` text.
+ *
+ * Also the source of docs/reference/cli.md, which is generated from it and checked
+ * in CI — so this text and the published reference cannot drift apart.
+ */
 final class CliHelpRenderer
 {
+    /** Print the canonical help text, which is also the source of the generated CLI reference. */
     public function render(): void
     {
         fwrite(STDOUT, <<<'TEXT'

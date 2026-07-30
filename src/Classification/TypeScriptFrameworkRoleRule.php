@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Infers roles from TypeScript framework conventions such as Angular and Express handlers. */
 final readonly class TypeScriptFrameworkRoleRule implements ClassificationRule
 {
     private const ROLES = [
@@ -22,11 +23,13 @@ final readonly class TypeScriptFrameworkRoleRule implements ClassificationRule
         'vue.composable',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'typescript.application.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         $roles = $node->attributes['typescript_framework_roles'] ?? [];

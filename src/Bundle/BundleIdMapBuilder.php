@@ -6,9 +6,20 @@ namespace Knossos\Bundle;
 
 use InvalidArgumentException;
 
+/**
+ * Remaps a bundle's ids onto the importing database.
+ *
+ * Ids are content-addressed but project-scoped, so importing under a new project
+ * id has to rewrite every reference consistently — a missed one would produce
+ * edges pointing at nodes that do not exist.
+ */
 final class BundleIdMapBuilder
 {
-    /** @param array<string, mixed> $payload @return array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} */
+    /**
+     * Build the bundle-to-local id map for an import.
+     *
+     * @param array<string, mixed> $payload @return array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>}
+     */
     public function build(string $projectId, array $payload): array
     {
         $maps = ['files' => [], 'nodes' => [], 'boundaries' => []];
@@ -26,6 +37,7 @@ final class BundleIdMapBuilder
         }
         return $maps;
     }
+    /** The local id for a bundle id, or null when it was not mapped. */
 
     public static function mappedId(string $projectId, string $kind, string $old): string
     {

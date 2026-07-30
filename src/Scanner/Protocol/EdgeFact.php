@@ -7,6 +7,13 @@ namespace Knossos\Scanner\Protocol;
 use InvalidArgumentException;
 use JsonSerializable;
 
+/**
+ * One relationship a scanner found, with the evidence that justifies it.
+ *
+ * Endpoints are canonical names rather than ids, because a worker analyses one
+ * file and cannot know what the rest of the graph will contain; resolution to ids
+ * happens during reconciliation.
+ */
 final readonly class EdgeFact implements JsonSerializable
 {
     /** @param array<string, scalar|null|array<mixed>> $attributes */
@@ -24,7 +31,11 @@ final readonly class EdgeFact implements JsonSerializable
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The wire shape of the edge fact.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         return [
