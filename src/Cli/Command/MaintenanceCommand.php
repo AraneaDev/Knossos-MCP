@@ -40,7 +40,11 @@ final class MaintenanceCommand implements CliCommand
         };
     }
 
-    /** @param array<string, list<string>> $options */
+    /**
+     * Run the runtime health checks and render them.
+     *
+     * @param array<string, list<string>> $options
+     */
     private function doctor(array $options, CliCommandContext $context): int
     {
         $report = (new DoctorService($context->database(), $context->installationRoot(), $context->databasePath()))->run();
@@ -52,7 +56,11 @@ final class MaintenanceCommand implements CliCommand
         return $report['ok'] ? 0 : 1;
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Delete a project and its graph, previewing unless --execute.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     private function removeProject(array $positionals, array $options, CliCommandContext $context): int
     {
         $projectId = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos remove-project <project-id> [--execute] [--json]');
@@ -61,7 +69,11 @@ final class MaintenanceCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Drop stale scan records, previewing unless --execute.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     private function cleanup(array $positionals, array $options, CliCommandContext $context): int
     {
         $projectId = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos cleanup-stale-scans <project-id> [--older-than-hours=N] [--execute]');
@@ -74,7 +86,11 @@ final class MaintenanceCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Run one database maintenance action.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     private function maintain(array $positionals, array $options, CliCommandContext $context): int
     {
         $action = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos maintain-database <integrity|checkpoint|optimize|backup> [options]');

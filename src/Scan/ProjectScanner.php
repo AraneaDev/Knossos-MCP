@@ -12,7 +12,11 @@ use Knossos\Query\ResultEnvelope;
  */
 interface ProjectScanner
 {
-    /** @param list<array<string, mixed>>|null $explicitBoundaries */
+    /**
+     * Build or refresh a project's graph and return the result envelope.
+     *
+     * @param list<array<string, mixed>>|null $explicitBoundaries
+     */
     public function scan(
         string $root,
         ?string $name = null,

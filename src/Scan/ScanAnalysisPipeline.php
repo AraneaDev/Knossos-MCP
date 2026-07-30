@@ -29,7 +29,11 @@ use Knossos\Scanner\Protocol\Confidence;
  */
 final readonly class ScanAnalysisPipeline
 {
-    /** @param list<object> $contributions */
+    /**
+     * Derive roles and boundaries once the whole graph is present.
+     *
+     * @param list<object> $contributions
+     */
     public function analyze(ScanPlan $plan, array $contributions): ScanAnalysis
     {
         $rules = [

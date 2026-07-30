@@ -23,7 +23,11 @@ final readonly class StalenessProbe
         $this->wallClock = $wallClock ?? static fn(): int => time();
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * How far a project's graph has drifted from its source, or null when it has none.
+     *
+     * @return array<string, mixed>|null
+     */
     public function probe(string $projectId): ?array
     {
         if ($projectId === '' || $projectId === 'catalog') {
@@ -67,7 +71,11 @@ final readonly class StalenessProbe
         return $result;
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The shape returned when a project has no graph at all, which requires a scan rather than a refresh.
+     *
+     * @return array<string, mixed>
+     */
     private function missing(): array
     {
         return [
@@ -78,7 +86,11 @@ final readonly class StalenessProbe
         ];
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * The project row backing the probe.
+     *
+     * @return array<string, mixed>|null
+     */
     private function fetchProject(string $projectId): ?array
     {
         $statement = $this->pdo->prepare('SELECT active_scan_id, root_realpath FROM projects WHERE id = :id');
@@ -86,6 +98,7 @@ final readonly class StalenessProbe
         $row = $statement->fetch();
         return $row === false ? null : $row;
     }
+    /** When the active scan finished, the reference point for every age calculation. */
 
     private function activeFinishedAt(string $scanId): ?string
     {
@@ -97,6 +110,7 @@ final readonly class StalenessProbe
         }
         return $row['finished_at'];
     }
+    /** Seconds since the graph was built, which is what makes staleness legible. */
 
     private function age(?string $finishedAt): ?int
     {
@@ -109,6 +123,7 @@ final readonly class StalenessProbe
         }
         return max(0, ($this->wallClock)() - $then);
     }
+    /** Whether a later scan attempt exists, so a failed rescan is distinguishable from never trying. */
 
     private function hasNewerAttempt(string $projectId, string $activeScanId): bool
     {
@@ -123,6 +138,7 @@ final readonly class StalenessProbe
         return $latest['id'] !== $activeScanId
             && in_array($latest['status'], ['running', 'failed', 'cancelled'], true);
     }
+    /** How many files changed since the scan, the strongest signal that an answer is out of date. */
 
     private function changedFilesSince(string $projectId, string $activeScanId, string $root): ?int
     {

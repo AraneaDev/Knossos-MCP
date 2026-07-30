@@ -59,6 +59,7 @@ final class CliErrorRenderer
             default => 'KNOSSOS_RUNTIME_ERROR',
         };
     }
+    /** Render a failure as a stable diagnostic code plus a human message. */
 
     public function render(Throwable $error): int
     {

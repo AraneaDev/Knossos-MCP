@@ -105,7 +105,11 @@ final class StableId
         return self::make('boundary', [$projectId, $name, $source]);
     }
 
-    /** @param list<string> $parts */
+    /**
+     * Hash the identity parts into a prefixed id, rejecting an empty part.
+     *
+     * @param list<string> $parts
+     */
     private static function make(string $prefix, array $parts): string
     {
         foreach ($parts as $part) {

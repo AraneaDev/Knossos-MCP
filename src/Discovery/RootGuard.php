@@ -23,6 +23,7 @@ final readonly class RootGuard
     {
         $this->roots = AllowedRoots::of($allowedRoots);
     }
+    /** Canonicalise a requested root and confirm it lies inside an allowed one. */
 
     public function resolve(string $requestedRoot): string
     {
@@ -80,6 +81,7 @@ final readonly class RootGuard
     {
         return is_file('/.dockerenv') || getenv('KNOSSOS_CONTAINER') !== false;
     }
+    /** Whether a canonical candidate lies within a canonical root, on segment boundaries. */
 
     public static function contains(string $root, string $candidate): bool
     {
@@ -88,6 +90,7 @@ final readonly class RootGuard
 
         return $candidate === $root || str_starts_with($candidate, $root . '/');
     }
+    /** Normalise separators so comparison is platform-independent. */
 
     private static function normalize(string $path): string
     {

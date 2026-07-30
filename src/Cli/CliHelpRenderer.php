@@ -12,6 +12,7 @@ namespace Knossos\Cli;
  */
 final class CliHelpRenderer
 {
+    /** Print the canonical help text, which is also the source of the generated CLI reference. */
     public function render(): void
     {
         fwrite(STDOUT, <<<'TEXT'

@@ -77,7 +77,11 @@ final class CliCommandContext
         return $cancellation;
     }
 
-    /** @param array<string, mixed> $structured */
+    /**
+     * Print a result as JSON or text, per the --json flag.
+     *
+     * @param array<string, mixed> $structured
+     */
     public function output(array $structured, bool $json, string $text): void
     {
         echo ($json ? json_encode($structured, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE) : $text) . PHP_EOL;

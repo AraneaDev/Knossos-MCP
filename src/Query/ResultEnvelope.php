@@ -38,6 +38,8 @@ final readonly class ResultEnvelope implements JsonSerializable
     ) {}
 
     /**
+     * A copy carrying staleness, next steps, or meta.
+     *
      * @param array<string, mixed>|null $staleness
      * @param list<array<string, mixed>>|null $nextSteps
      * @param array<string, mixed>|null $meta
@@ -58,7 +60,11 @@ final readonly class ResultEnvelope implements JsonSerializable
         );
     }
 
-    /** @param list<string> $warnings */
+    /**
+     * A copy with warnings appended, never replaced, so earlier qualifications survive.
+     *
+     * @param list<string> $warnings
+     */
     public function withWarnings(array $warnings): self
     {
         return new self(
@@ -75,7 +81,11 @@ final readonly class ResultEnvelope implements JsonSerializable
         );
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The wire shape, omitting empty optional fields to keep results small.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         $out = [

@@ -1332,7 +1332,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return $byName;
     }
 
-    /** @param list<string> $suppressions */
+    /**
+     * Whether an annotation excludes this component from dead-code reporting.
+     *
+     * @param list<string> $suppressions
+     */
     private static function isSuppressed(string $canonicalName, array $suppressions): bool
     {
         foreach ($suppressions as $pattern) {
@@ -1347,7 +1351,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return false;
     }
 
-    /** @param list<array<string, mixed>> $roles */
+    /**
+     * Whether a framework convention explains the node, which usually means a framework calls it.
+     *
+     * @param list<array<string, mixed>> $roles
+     */
     private function hasFrameworkRole(array $roles): bool
     {
         foreach ($roles as $role) {
@@ -1358,7 +1366,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return false;
     }
 
-    /** @param list<array<string, mixed>> $roles */
+    /**
+     * Whether the node carries a given classified role.
+     *
+     * @param list<array<string, mixed>> $roles
+     */
     private static function hasRole(array $roles, string $role): bool
     {
         foreach ($roles as $entry) {
@@ -1368,7 +1380,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return false;
     }
-    /** @param list<array<string, mixed>> $nodes @param list<array<string, mixed>> $edges @return array<string, mixed> */
+    /**
+     * The evidence path for a node, or null when it has none.
+     *
+     * @param list<array<string, mixed>> $nodes @param list<array<string, mixed>> $edges @return array<string, mixed>
+     */
     private function path(array $nodes, array $edges): array
     {
         $rank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
@@ -1424,7 +1440,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $statement->execute(['project' => $projectId]);
         return (int) $statement->fetchColumn();
     }
-    /** @param array<string, list<string>> $adjacency */
+    /**
+     * Whether a node depends on itself, reported separately since that is rarely what a caller means by a cycle.
+     *
+     * @param array<string, list<string>> $adjacency
+     */
     private function hasSelfLoop(string $nodeId, array $adjacency): bool
     {
         return in_array($nodeId, $adjacency[$nodeId] ?? [], true);

@@ -27,6 +27,7 @@ final readonly class ProjectDiscoverer
         $this->rootGuard = new RootGuard($config->allowedRoots);
         $this->ignoreMatcher = new IgnoreMatcher($config->ignorePatterns);
     }
+    /** Walk the tree and select the files worth analysing, within the configured caps. */
 
     public function discover(string $requestedRoot, ?CancellationToken $cancellation = null): DiscoveryResult
     {
@@ -191,6 +192,8 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * Read one project manifest, recording a diagnostic rather than failing when it is unreadable.
+     *
      * @param list<DiscoveryDiagnostic> $diagnostics
      */
     private function readUnit(
@@ -349,7 +352,11 @@ final readonly class ProjectDiscoverer
         return $directory === '' ? $token : $directory . '/' . $token;
     }
 
-    /** @param array<string, mixed> $composer @return array<string, string|list<string>> */
+    /**
+     * PSR-4 roots from composer.json, which is how a namespace maps to a directory.
+     *
+     * @param array<string, mixed> $composer @return array<string, string|list<string>>
+     */
     private static function composerPsr4(array $composer): array
     {
         $mappings = [];
@@ -373,7 +380,11 @@ final readonly class ProjectDiscoverer
         return $mappings;
     }
 
-    /** @param array<string, mixed> $composer @return array<string, string> */
+    /**
+     * Declared Composer dependencies, used to detect which frameworks to enrich.
+     *
+     * @param array<string, mixed> $composer @return array<string, string>
+     */
     private static function composerRequirements(array $composer): array
     {
         $requirements = [];
@@ -388,7 +399,11 @@ final readonly class ProjectDiscoverer
         return $requirements;
     }
 
-    /** @return list<string> */
+    /**
+     * Workspace globs from package.json, so a monorepo's packages are discovered.
+     *
+     * @return list<string>
+     */
     private static function workspaces(mixed $workspaces): array
     {
         if (is_array($workspaces) && isset($workspaces['packages'])) {
@@ -401,7 +416,11 @@ final readonly class ProjectDiscoverer
         return array_values(array_filter($workspaces, 'is_string'));
     }
 
-    /** @param array<string, mixed> $config @return array<string, mixed> */
+    /**
+     * tsconfig details the TypeScript worker needs to build a program.
+     *
+     * @param array<string, mixed> $config @return array<string, mixed>
+     */
     private static function typescriptMetadata(array $config): array
     {
         $compiler = is_array($config['compilerOptions'] ?? null) ? $config['compilerOptions'] : [];
@@ -484,6 +503,7 @@ final readonly class ProjectDiscoverer
             default => null,
         };
     }
+    /** Which manifest kind a filename is, or null when it is not one. */
 
     private static function unitKindFor(string $relativePath): ?string
     {
@@ -506,6 +526,7 @@ final readonly class ProjectDiscoverer
 
         return null;
     }
+    /** A path expressed relative to the project root, which is the only form facts carry. */
 
     private function relative(string $root, string $path): string
     {

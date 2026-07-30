@@ -24,6 +24,7 @@ final class ProjectWriterLease
         private readonly string $token,
         private readonly ?Closure $clock = null,
     ) {}
+    /** Release on destruction, so a crashed scan cannot leave a lease no one can take. */
 
     public function __destruct()
     {
@@ -48,7 +49,11 @@ final class ProjectWriterLease
         return $statement->rowCount() > 0;
     }
 
-    /** @return int the number of lock rows deleted (0 means the lease was already gone). */
+    /**
+     * Release the lease, tolerating one already gone so shutdown is idempotent.
+     *
+     * @return int the number of lock rows deleted (0 means the lease was already gone).
+     */
     public function release(): int
     {
         if ($this->released) {

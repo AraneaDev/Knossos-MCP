@@ -20,7 +20,11 @@ final readonly class LanguageDescriptor
         public string $stage,
     ) {}
 
-    /** @return list<self> */
+    /**
+     * The packaged worker descriptors for every supported language.
+     *
+     * @return list<self>
+     */
     public static function defaults(string $installationRoot): array
     {
         return [

@@ -72,6 +72,7 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
             ),
         ];
     }
+    /** Whether a path is tooling configuration rather than application code. */
 
     private function isToolConfigPath(string $path): bool
     {

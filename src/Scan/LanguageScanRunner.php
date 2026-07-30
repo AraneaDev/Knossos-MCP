@@ -22,6 +22,7 @@ final readonly class LanguageScanRunner
         private LanguageWorkerPool $pool,
         private ContributionCacheService $cache,
     ) {}
+    /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
 
     public function run(ScanPlan $plan, CancellationToken $cancellation): LanguageScanResult
     {
@@ -99,6 +100,7 @@ final readonly class LanguageScanRunner
 
         return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages);
     }
+    /** Milliseconds since a hrtime() mark, for the stage timings. */
 
     private static function elapsedMilliseconds(int $startedAt): float
     {

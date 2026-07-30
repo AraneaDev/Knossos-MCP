@@ -116,6 +116,8 @@ final class SqliteGraphRepository implements GraphRepository
     }
 
     /**
+     * The project row, or null when the id is unknown.
+     *
      * @return array<string, mixed>|null the raw row, or null when the id is unknown
      */
     public function findProject(string $id): ?array

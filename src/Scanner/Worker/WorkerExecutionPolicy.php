@@ -24,13 +24,18 @@ final readonly class WorkerExecutionPolicy
             ));
         }
     }
+    /** The resource caps applied to a worker process. */
 
     public function limits(): WorkerLimits
     {
         return new WorkerLimits(requestTimeoutMs: $this->requestTimeoutMs);
     }
 
-    /** @return array<string, int> */
+    /**
+     * The policy as reported in the scan result, so a timeout is explicable after the fact.
+     *
+     * @return array<string, int>
+     */
     public function metadata(): array
     {
         $limits = $this->limits();

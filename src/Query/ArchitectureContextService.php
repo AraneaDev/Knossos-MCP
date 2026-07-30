@@ -23,7 +23,11 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
         parent::__construct($pdo, $clock);
     }
 
-    /** @param list<string> $files */
+    /**
+     * A bounded, task-shaped evidence bundle for one coding task.
+     *
+     * @param list<string> $files
+     */
     public function architectureContext(string $projectId, string $taskDescription = '', array $files = [], int $maxChars = 30_000, int $timeoutMs = 1500, bool $includeSource = false): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -132,7 +136,11 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
         );
     }
 
-    /** @param array<string, mixed> $section @return array<string, mixed> */
+    /**
+     * Fit one section inside the remaining byte budget, reporting what it dropped.
+     *
+     * @param array<string, mixed> $section @return array<string, mixed>
+     */
     private function fitContextSection(array $section, int $budget): array
     {
         $encoded = json_encode($section, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);

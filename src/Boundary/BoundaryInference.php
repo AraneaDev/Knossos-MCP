@@ -23,6 +23,8 @@ final class BoundaryInference
     private const PATH_SEGMENT = '/^[A-Za-z0-9_.@-]+$/';
 
     /**
+     * Infer boundaries from directory structure when the project declares none.
+     *
      * @param list<ProjectUnit> $units
      * @param list<ScanContribution> $contributions
      * @param list<array<string, mixed>> $explicit
@@ -147,7 +149,11 @@ final class BoundaryInference
         return $facts;
     }
 
-    /** @param array{type: string, value: string} $matcher */
+    /**
+     * Whether a node belongs to an inferred boundary.
+     *
+     * @param array{type: string, value: string} $matcher
+     */
     private function matches(NodeFact $node, array $matcher): bool
     {
         return $matcher['type'] === 'path_prefix'
@@ -166,6 +172,7 @@ final class BoundaryInference
 
         return $namespace === '' ? '' : $namespace . '\\';
     }
+    /** The path prefix defining an inferred boundary's membership. */
 
     private function pathPrefix(string $prefix): string
     {

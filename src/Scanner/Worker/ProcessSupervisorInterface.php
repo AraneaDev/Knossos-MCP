@@ -18,13 +18,25 @@ interface ProcessSupervisorInterface
     /** Whether the process is still alive, as of the last status refresh. */
     public function isRunning(): bool;
 
-    /** @return resource */
+    /**
+     * The process's standard input, for writing requests.
+     *
+     * @return resource
+     */
     public function stdin();
 
-    /** @return resource */
+    /**
+     * The process's standard output, carrying protocol frames only.
+     *
+     * @return resource
+     */
     public function stdout();
 
-    /** @return resource */
+    /**
+     * The process's standard error, drained so a chatty worker cannot block on a full pipe.
+     *
+     * @return resource
+     */
     public function stderr();
 
     /**

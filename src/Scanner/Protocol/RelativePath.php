@@ -16,6 +16,7 @@ use InvalidArgumentException;
 final class RelativePath
 {
     private function __construct() {}
+    /** Reject an absolute path or a parent traversal, keeping host layout out of the graph. */
 
     public static function assertValid(string $path, string $field = 'path'): void
     {

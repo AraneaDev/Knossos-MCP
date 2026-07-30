@@ -26,7 +26,11 @@ final readonly class ClassificationEngine
         }
     }
 
-    /** @param list<ScanContribution> $contributions @return list<ClassificationFact> */
+    /**
+     * Apply every rule to a node, collecting facts rather than resolving disagreements.
+     *
+     * @param list<ScanContribution> $contributions @return list<ClassificationFact>
+     */
     public function classify(array $contributions): array
     {
         $facts = [];

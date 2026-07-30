@@ -37,6 +37,8 @@ final class ProtocolNegotiator
     }
 
     /**
+     * The profile governing one message, pinning a handshake client to its revision.
+     *
      * @param array<string, mixed> $message
      * @throws UnsupportedProtocolVersionException when the client names a revision this server does not implement
      */

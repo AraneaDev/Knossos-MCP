@@ -36,7 +36,11 @@ final readonly class ScanContribution implements JsonSerializable
         self::assertInstances($diagnostics, Diagnostic::class, 'diagnostics');
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The wire shape of the contribution.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         return [
@@ -47,7 +51,11 @@ final readonly class ScanContribution implements JsonSerializable
         ];
     }
 
-    /** @param list<mixed> $values @param class-string $expected */
+    /**
+     * Reject a list containing anything but the expected fact type.
+     *
+     * @param list<mixed> $values @param class-string $expected
+     */
     private static function assertInstances(array $values, string $expected, string $field): void
     {
         if (!array_is_list($values)) {

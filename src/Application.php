@@ -36,7 +36,11 @@ final class Application
         $this->errorStream = $errorStream;
     }
 
-    /** @param list<string> $arguments */
+    /**
+     * Parse argv, route to a command, and turn any failure into a diagnostic code and exit status.
+     *
+     * @param list<string> $arguments
+     */
     public function run(array $arguments): int
     {
         $command = array_shift($arguments) ?? 'help';

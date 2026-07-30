@@ -14,6 +14,7 @@ use InvalidArgumentException;
 final readonly class AnnotationService extends AbstractArchitectureQueryService
 {
     public const KINDS = ['intended_boundary', 'confirmed_dead', 'false_positive', 'note'];
+    /** Record or remove a durable annotation, previewing unless executing. */
 
     public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope
     {
@@ -73,6 +74,7 @@ final readonly class AnnotationService extends AbstractArchitectureQueryService
             $warnings,
         );
     }
+    /** Annotations recorded for a project, optionally filtered. */
 
     public function listAnnotations(string $projectId, ?string $component = null, ?string $kind = null, int $limit = 100, int $offset = 0): ResultEnvelope
     {
@@ -117,7 +119,11 @@ final readonly class AnnotationService extends AbstractArchitectureQueryService
         );
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * The stored annotation rows behind a listing.
+     *
+     * @return array<string, mixed>|null
+     */
     private function fetch(string $projectId, string $canonical, string $kind): ?array
     {
         $statement = $this->pdo->prepare(

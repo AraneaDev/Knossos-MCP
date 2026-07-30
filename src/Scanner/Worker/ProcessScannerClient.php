@@ -28,6 +28,7 @@ final class ProcessScannerClient implements ScannerClient
         $process = new WorkerProcessSupervisor($command, $environment);
         $this->session = new ScannerProtocolSession($process, new NdjsonRpcChannel($process, $limits));
     }
+    /** Shut the worker down, so an abandoned client leaves no orphaned process. */
 
     public function __destruct()
     {
@@ -40,7 +41,11 @@ final class ProcessScannerClient implements ScannerClient
         return $this->session->initialize();
     }
 
-    /** @param list<string> $required */
+    /**
+     * Refuse a worker lacking a capability this scan needs.
+     *
+     * @param list<string> $required
+     */
     public function requireCapabilities(array $required): ScannerManifest
     {
         return $this->session->requireCapabilities($required);
@@ -69,13 +74,18 @@ final class ProcessScannerClient implements ScannerClient
     {
         $this->session->shutdown();
     }
+    /** Whatever the worker wrote to stderr, surfaced in diagnostics. */
 
     public function stderr(): string
     {
         return $this->session->stderr();
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The most recent scan reply, retained for diagnostics after a failure.
+     *
+     * @return array<string, mixed>
+     */
     public function lastScanResult(): array
     {
         return $this->session->lastScanResult();

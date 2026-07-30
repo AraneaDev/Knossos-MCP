@@ -18,6 +18,7 @@ use PDO;
 final class SqliteConnection
 {
     private function __construct() {}
+    /** Open SQLite with WAL, enforced foreign keys, and exceptions on error. */
 
     public static function open(string $path): PDO
     {

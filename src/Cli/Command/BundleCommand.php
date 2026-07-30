@@ -34,7 +34,11 @@ final class BundleCommand implements CliCommand
             : $this->import($positionals, $options, $context);
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Write a project's graph to a bundle file, refusing to overwrite one.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     private function export(array $positionals, array $options, CliCommandContext $context): int
     {
         $projectId = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos export-bundle <project-id> --output=FILE');
@@ -66,7 +70,11 @@ final class BundleCommand implements CliCommand
         return 0;
     }
 
-    /** @param list<string> $positionals @param array<string, list<string>> $options */
+    /**
+     * Read a bundle file and import it as a new project.
+     *
+     * @param list<string> $positionals @param array<string, list<string>> $options
+     */
     private function import(array $positionals, array $options, CliCommandContext $context): int
     {
         $input = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos import-bundle <file> [--name=NAME]');

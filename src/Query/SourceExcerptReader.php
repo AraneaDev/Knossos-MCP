@@ -17,7 +17,11 @@ final readonly class SourceExcerptReader
     private const MAX_LINES = 40;
     private const MAX_FILE_BYTES = 2_000_000;
 
-    /** @return array<string, mixed> */
+    /**
+     * A bounded source excerpt, read through the same root guard as scanning.
+     *
+     * @return array<string, mixed>
+     */
     public function read(string $root, ?string $relativePath, ?int $startLine, ?int $endLine): array
     {
         if ($relativePath === null || $startLine === null || $startLine < 1) {

@@ -48,7 +48,11 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         return $this->parse($output, $maxCommits);
     }
 
-    /** @return array{files: array<string, array{commit_count: int, authors: list<string>, last_changed_at: string}>, commits_examined: int, truncated: bool} */
+    /**
+     * Parse git log output into commit records.
+     *
+     * @return array{files: array<string, array{commit_count: int, authors: list<string>, last_changed_at: string}>, commits_examined: int, truncated: bool}
+     */
     private function parse(string $output, int $maxCommits): array
     {
         $commits = [];

@@ -16,6 +16,7 @@ use PDO;
  */
 final readonly class ComponentQueryService extends AbstractArchitectureQueryService
 {
+    /** Find components by name, reporting an ambiguous match rather than guessing. */
     public function findComponent(string $projectId, string $name, int $limit = 20): ResultEnvelope
     {
         if (trim($name) === '') {
@@ -70,6 +71,7 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
             $truncated,
         );
     }
+    /** One component in detail: its members, relationships, and evidence. */
 
     public function inspectComponent(string $projectId, string $component, int $maxRelationships = 25, int $maxChildren = 25, string $minConfidence = 'possible'): ResultEnvelope
     {
@@ -253,7 +255,11 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         );
     }
 
-    /** @param list<string> $kinds @param list<string> $roles @param list<string> $boundaryIds @param list<string> $confidences */
+    /**
+     * Search components by name, kind, role, or boundary.
+     *
+     * @param list<string> $kinds @param list<string> $roles @param list<string> $boundaryIds @param list<string> $confidences
+     */
     public function searchArchitecture(string $projectId, string $query, array $kinds = [], array $roles = [], array $boundaryIds = [], array $confidences = [], int $limit = 20, int $offset = 0): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -342,7 +348,11 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         );
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * Durable annotations recorded against a component.
+     *
+     * @return list<array<string, mixed>>
+     */
     private function annotationsFor(string $projectId, string $canonicalName): array
     {
         $statement = $this->pdo->prepare(
@@ -353,7 +363,11 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         return $statement->fetchAll();
     }
 
-    /** @param list<string> $values @param array<string, string> $params */
+    /**
+     * Build the SQL filter for the optional search facets.
+     *
+     * @param list<string> $values @param array<string, string> $params
+     */
     private function filterClause(string $column, string $prefix, array $values, array &$params): string
     {
         if ($values === []) {

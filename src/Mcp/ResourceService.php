@@ -48,7 +48,11 @@ final readonly class ResourceService
         return $resources;
     }
 
-    /** @return array<string, mixed>|null null when the URI is unknown or the project is unscanned */
+    /**
+     * One resource's contents, or null when the URI is unknown or the project unscanned.
+     *
+     * @return array<string, mixed>|null null when the URI is unknown or the project is unscanned
+     */
     public function read(string $uri): ?array
     {
         if (preg_match(self::URI_PATTERN, $uri, $matches) !== 1) {
@@ -67,7 +71,11 @@ final readonly class ResourceService
         return ['contents' => [['uri' => $uri, 'mimeType' => $mimeType, 'text' => $text]]];
     }
 
-    /** @param array<string, mixed> $value */
+    /**
+     * Encode a resource payload for the wire.
+     *
+     * @param array<string, mixed> $value
+     */
     private function json(array $value): string
     {
         return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);

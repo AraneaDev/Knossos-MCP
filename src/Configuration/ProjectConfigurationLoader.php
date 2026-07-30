@@ -23,7 +23,11 @@ final class ProjectConfigurationLoader
 
     private function __construct() {}
 
-    /** @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots */
+    /**
+     * Resolve the root through the allow-list, then read and validate its configuration.
+     *
+     * @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots
+     */
     public static function load(string $requestedRoot, \Knossos\Discovery\AllowedRoots|array $allowedRoots): ProjectConfiguration
     {
         $root = (new RootGuard($allowedRoots))->resolve($requestedRoot);
@@ -126,7 +130,11 @@ final class ProjectConfigurationLoader
         return new ProjectConfiguration(basename($path), $ignores, $maxFiles, $maxBytes, $workerTimeoutMs, $boundaries, array_values(array_unique($frameworks)), $retention, $policies, $typedBudgets, $suppressions);
     }
 
-    /** @param array<string, mixed> $data @param list<string> $allowed */
+    /**
+     * Reject unrecognised configuration keys, so a typo is reported rather than ignored.
+     *
+     * @param array<string, mixed> $data @param list<string> $allowed
+     */
     private static function knownKeys(array $data, array $allowed, string $scope): void
     {
         $unknown = array_values(array_diff(array_keys($data), $allowed));
@@ -135,7 +143,11 @@ final class ProjectConfigurationLoader
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * A configuration value required to be an object.
+     *
+     * @return array<string, mixed>
+     */
     private static function object(mixed $value, string $field): array
     {
         if (!is_array($value) || ($value !== [] && array_is_list($value))) {
@@ -144,7 +156,11 @@ final class ProjectConfigurationLoader
         return $value;
     }
 
-    /** @return list<string> */
+    /**
+     * A configuration value required to be a list of strings.
+     *
+     * @return list<string>
+     */
     private static function stringList(mixed $value, string $field, int $limit): array
     {
         if (!is_array($value) || !array_is_list($value) || count($value) > $limit) {
@@ -158,7 +174,11 @@ final class ProjectConfigurationLoader
         return $value;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * A configuration value required to be a list of objects, such as boundary definitions.
+     *
+     * @return list<array<string, mixed>>
+     */
     private static function objectList(mixed $value, string $field, int $limit): array
     {
         if (!is_array($value) || !array_is_list($value) || count($value) > $limit) {
@@ -172,7 +192,11 @@ final class ProjectConfigurationLoader
         return $value;
     }
 
-    /** @param array<string, mixed> $data */
+    /**
+     * An optional integer setting, validated within bounds when present.
+     *
+     * @param array<string, mixed> $data
+     */
     private static function optionalInteger(array $data, string $key, int $minimum, int $maximum): ?int
     {
         if (!array_key_exists($key, $data)) {

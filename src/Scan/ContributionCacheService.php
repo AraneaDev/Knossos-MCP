@@ -21,6 +21,8 @@ use Throwable;
 final readonly class ContributionCacheService
 {
     /**
+     * Split the discovered files into reusable and must-scan sets.
+     *
      * @param list<object> $files
      * @param array<string, array<string, mixed>> $cache
      */
@@ -62,6 +64,8 @@ final readonly class ContributionCacheService
     }
 
     /**
+     * Cache entries for the files this scan analysed.
+     *
      * @param list<ScanContribution> $scanned
      * @param list<object> $files
      * @return array{contributions: list<ScanContribution>, cache_entries: list<ContributionCacheEntry>}
@@ -111,6 +115,7 @@ final readonly class ContributionCacheService
 
         return $fingerprint->contentHash === $file->contentHash;
     }
+    /** One cache entry for a scanned file. */
 
     private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
     {

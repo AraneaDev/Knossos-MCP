@@ -15,6 +15,7 @@ use PDO;
 final readonly class FileMetricsQueryService extends AbstractArchitectureQueryService
 {
     private const SORT_COLUMNS = ['path' => 'relative_path', 'line_count' => 'line_count'];
+    /** Files ranked by size or path, for spotting refactor targets. */
 
     public function fileMetrics(
         string $projectId,
@@ -92,13 +93,18 @@ final readonly class FileMetricsQueryService extends AbstractArchitectureQuerySe
         );
     }
 
-    /** @param array<string, mixed> $parameters */
+    /**
+     * Total matching files, so a truncated page reports the whole.
+     *
+     * @param array<string, mixed> $parameters
+     */
     private function countFiles(string $where, array $parameters): int
     {
         $statement = $this->pdo->prepare(sprintf('SELECT COUNT(*) FROM files WHERE %s', $where));
         $statement->execute($parameters);
         return (int) $statement->fetchColumn();
     }
+    /** Escape a filter so user input cannot inject LIKE wildcards. */
 
     private static function escapeLike(string $value): string
     {

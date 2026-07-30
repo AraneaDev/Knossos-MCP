@@ -31,7 +31,11 @@ final readonly class NodeFact implements JsonSerializable
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The wire shape of the node fact.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         return [

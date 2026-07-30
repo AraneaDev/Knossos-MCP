@@ -43,6 +43,7 @@ final readonly class IgnoreMatcher
 
     /** @param list<string> $patterns */
     public function __construct(private array $patterns) {}
+    /** Whether a path is ignored, applying built-in exclusions then the user patterns. */
 
     public function matches(string $relativePath): bool
     {
@@ -90,7 +91,11 @@ final readonly class IgnoreMatcher
         return $ignored;
     }
 
-    /** @param list<string> $segments */
+    /**
+     * Whether one normalised pattern matches, honouring anchoring and descendants.
+     *
+     * @param list<string> $segments
+     */
     private function patternMatches(string $pattern, bool $anchored, string $path, array $segments): bool
     {
         // Trailing '/**' ignores the directory itself and everything under it, so
@@ -157,6 +162,7 @@ final readonly class IgnoreMatcher
 
         return $out;
     }
+    /** The index closing a bracket class, or null when it is unterminated. */
 
     private static function characterClassEnd(string $pattern, int $start, int $length): ?int
     {

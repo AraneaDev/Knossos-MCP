@@ -74,7 +74,11 @@ final readonly class HttpSessionStore
         return ($this->row($id)['initialized'] ?? 0) === 1;
     }
 
-    /** @return self::INITIALIZED|self::ALREADY_INITIALIZED|self::UNKNOWN_OR_EXPIRED */
+    /**
+     * Complete the handshake once, reporting a repeat rather than silently accepting it.
+     *
+     * @return self::INITIALIZED|self::ALREADY_INITIALIZED|self::UNKNOWN_OR_EXPIRED
+     */
     public function markInitialized(string $id): string
     {
         if (!preg_match('/^[a-f0-9]{64}$/', $id)) {
@@ -114,7 +118,11 @@ final readonly class HttpSessionStore
         $this->pdo->prepare('DELETE FROM http_sessions WHERE id = :id')->execute(['id' => hash('sha256', $id)]);
     }
 
-    /** @return array{initialized: int}|null */
+    /**
+     * The stored session row, looked up by hash.
+     *
+     * @return array{initialized: int}|null
+     */
     private function row(string $id): ?array
     {
         if (!preg_match('/^[a-f0-9]{64}$/', $id)) {

@@ -34,6 +34,8 @@ final readonly class PromptService
     }
 
     /**
+     * One prompt's messages, or null when the name is unknown.
+     *
      * @param array<string, string> $arguments
      * @return array<string, mixed>|null
      */
@@ -52,11 +54,16 @@ final readonly class PromptService
         };
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Wrap text as a user message, the only role these prompts use.
+     *
+     * @return array<string, mixed>
+     */
     private static function user(string $text): array
     {
         return ['role' => 'user', 'content' => ['type' => 'text', 'text' => $text]];
     }
+    /** The orientation workflow: scan, survey, then report with cited evidence. */
 
     private static function orientText(?string $path): string
     {
@@ -74,6 +81,7 @@ final readonly class PromptService
             Then report: the major modules and boundaries, the main entry points, the most depended-on components, and anything architecture_health flags. Cite the evidence paths the tools return.
             TEXT;
     }
+    /** The change-review workflow, which is one review_diff call rather than several queries. */
 
     private static function reviewDiffText(?string $baseRef): string
     {

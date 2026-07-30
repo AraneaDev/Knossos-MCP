@@ -19,6 +19,7 @@ use Throwable;
 final readonly class ProjectWriterLock
 {
     public function __construct(private PDO $pdo, private int $leaseSeconds = 3600, private ?Closure $clock = null) {}
+    /** Take the project's write lease, or report that another scan holds it. */
 
     public function acquire(string $projectId): ProjectWriterLease
     {

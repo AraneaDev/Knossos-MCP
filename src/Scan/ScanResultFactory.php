@@ -15,7 +15,11 @@ use Knossos\Reconciliation\ReconciliationResult;
  */
 final readonly class ScanResultFactory
 {
-    /** @param array<string, float> $stageMilliseconds */
+    /**
+     * Build the scan's result envelope from its counts, timings, and diagnostics.
+     *
+     * @param array<string, float> $stageMilliseconds
+     */
     public function create(
         ScanPlan $plan,
         LanguageScanResult $language,

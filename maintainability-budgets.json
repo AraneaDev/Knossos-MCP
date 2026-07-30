@@ -4,10 +4,10 @@
   "max_php_function_lines": 275,
   "max_dependency_fanout": 9,
   "min_docstring_coverage": {
-    "src": 63.0,
+    "src": 100.0,
     "workers-php": 100.0,
     "tools": 100.0,
-    "overall": 68.0
+    "overall": 100.0
   },
   "min_type_docblock_coverage": 100.0
 }

@@ -19,6 +19,7 @@ use Throwable;
 final readonly class GraphBundleService
 {
     public function __construct(private PDO $pdo) {}
+    /** Serialise a project's graph into a portable bundle at the requested redaction level. */
 
     public function export(string $projectId, string $redaction = 'none'): string
     {
@@ -46,6 +47,7 @@ final readonly class GraphBundleService
             throw $error;
         }
     }
+    /** Read the graph tables and encode them canonically for checksumming. */
 
     private function readAndEncode(string $projectId, string $redaction): string
     {
@@ -116,6 +118,7 @@ final readonly class GraphBundleService
         }
         return $compressed;
     }
+    /** Validate a bundle and write it as a new project. */
 
     public function import(string $compressed, ?string $name = null): ResultEnvelope
     {
@@ -150,7 +153,11 @@ final readonly class GraphBundleService
         return new ResultEnvelope($projectId, $scanId, sprintf('Imported %d portable graph facts.', $factCount), ['fact_count' => $factCount, 'redaction' => $manifest['redaction'] ?? 'unknown', 'root_imported' => false]);
     }
 
-    /** @param array<string, mixed> $params @return array<string, mixed>|null */
+    /**
+     * A single expected row, erroring when the graph is not in the shape export assumes.
+     *
+     * @param array<string, mixed> $params @return array<string, mixed>|null
+     */
     private function one(string $sql, array $params): ?array
     {
         $statement = $this->pdo->prepare($sql);
@@ -159,7 +166,11 @@ final readonly class GraphBundleService
         return $row === false ? null : $row;
     }
 
-    /** @param array<string, mixed> $extra @return list<array<string, mixed>> */
+    /**
+     * Every row of a table, for inclusion in the bundle.
+     *
+     * @param array<string, mixed> $extra @return list<array<string, mixed>>
+     */
     private function all(string $sql, string $projectId, array $extra = []): array
     {
         $statement = $this->pdo->prepare($sql);

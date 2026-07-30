@@ -31,7 +31,11 @@ final readonly class EdgeFact implements JsonSerializable
         }
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The wire shape of the edge fact.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         return [

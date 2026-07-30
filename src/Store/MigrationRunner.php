@@ -22,7 +22,11 @@ final readonly class MigrationRunner
         private string $migrationDirectory,
     ) {}
 
-    /** @return list<string> versions applied by this invocation */
+    /**
+     * Apply any migrations this database has not yet recorded.
+     *
+     * @return list<string> versions applied by this invocation
+     */
     public function migrate(): array
     {
         if (!is_dir($this->migrationDirectory)) {
@@ -136,6 +140,7 @@ final readonly class MigrationRunner
 
         return $applied;
     }
+    /** Record an applied migration, which is what makes re-running a no-op. */
 
     private function recordVersion(string $version, string $checksum): void
     {

@@ -12,11 +12,12 @@ use RuntimeException;
  * Guards the docstring gate itself.
  *
  * A quality gate that cannot fail is worse than no gate: it reports green while
- * checking nothing, and this repository has already shipped three of those — a
+ * checking nothing, and this repository has already shipped five of those — a
  * coverage run that skipped seven tests as root, an API check blind to interfaces
- * nested two directories deep, and a suite whose deliberate 500 printed a raw
- * SQLSTATE. So these tests assert the measurement is *discriminating*, not merely
- * that the tool exits zero.
+ * nested two directories deep, that same check accepting a summary borrowed from a
+ * different docblock, a suite whose deliberate 500 printed a raw SQLSTATE, and a
+ * dead-code report blind to extensionless entry points. So these tests assert the
+ * measurement is *discriminating*, not merely that the tool exits zero.
  */
 final class DocstringCoverageTest extends KnossosTestCase
 {
@@ -135,13 +136,16 @@ final class DocstringCoverageTest extends KnossosTestCase
     private function measure(string $path): array
     {
         $root = self::repositoryRoot();
+        // Exercises the shared library both gates require, so this measures the
+        // logic actually in force rather than a copy of it.
         $script = sprintf(
-            '$code = file_get_contents(%s); eval(substr($code, strpos($code, "function declaredFunctions")));'
+            'require %s;'
             . ' $out = ["documented" => [], "undocumented" => []];'
             . ' foreach (declaredFunctions(file_get_contents(%s)) as $f) {'
+            . ' if ($f["name"] === "__construct") { continue; }'
             . ' $out[$f["documented"] ? "documented" : "undocumented"][] = $f["name"]; }'
             . ' echo json_encode($out);',
-            var_export($root . '/tools/docstring-report.php', true),
+            var_export($root . '/tools/lib/docblocks.php', true),
             var_export($path, true),
         );
         [$exit, $output, $errors] = $this->runFixtureCommandOutput([PHP_BINARY, '-r', $script]);
@@ -174,4 +178,48 @@ final class DocstringCoverageTest extends KnossosTestCase
         }
         $this->fixtures = [];
     }
+
+    #[Group('documentation')]
+    public function testASummaryIsNeverBorrowedFromAnEarlierDocblock(): void
+    {
+        // The defect this pins: the API gate matched a regex with /s and a lazy
+        // `.*?`, which could begin at the *interface's* class docblock, swallow
+        // everything between, and end at the delimiter before the method. A method
+        // carrying only `@param` therefore inherited the class summary and passed,
+        // so "API documentation passed: N contracts" was partly hollow — the fifth
+        // green-signal-that-checked-nothing found in this repository.
+        $fixture = $this->makeFixtureFile(<<<'PHP'
+            <?php
+            /** The interface itself is documented. */
+            interface Borrower
+            {
+                /** @param int $n */
+                public function annotationOnly(int $n): void;
+
+                /** Genuinely documented. */
+                public function documented(): void;
+            }
+            PHP);
+
+        $measured = $this->measure($fixture);
+
+        assertSame(['documented'], $measured['documented']);
+        assertSame(['annotationOnly'], $measured['undocumented']);
+    }
+
+    #[Group('documentation')]
+    public function testBothGatesShareOneDefinitionOfDocumented(): void
+    {
+        $root = self::repositoryRoot();
+        // Not a style preference: two gates disagreeing about what counts as
+        // documented is what let the borrowed-summary defect survive. They now
+        // require the same file, so drift needs a deliberate edit.
+        foreach (['tools/api-documentation-check.php', 'tools/docstring-report.php'] as $gate) {
+            $source = (string) file_get_contents($root . '/' . $gate);
+            assertContains("require __DIR__ . '/lib/docblocks.php'", $source);
+            // And neither redefines the shared rule locally.
+            assertSame(false, str_contains($source, 'function docblockHasSummary'));
+        }
+    }
+
 }

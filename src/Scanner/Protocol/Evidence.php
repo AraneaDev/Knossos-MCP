@@ -27,7 +27,11 @@ final readonly class Evidence implements JsonSerializable
         }
     }
 
-    /** @return array{path: string, start_line: int, end_line: int} */
+    /**
+     * The wire shape of the evidence block.
+     *
+     * @return array{path: string, start_line: int, end_line: int}
+     */
     public function jsonSerialize(): array
     {
         return [

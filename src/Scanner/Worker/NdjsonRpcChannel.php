@@ -50,6 +50,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     }
 
     /**
+     * Write one request frame to the worker.
+     *
      * @param array<string, mixed> $message
      * @param callable(): bool|null $cancelled
      */
@@ -115,7 +117,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         @fflush($stdin);
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Read one reply within the deadline, without blocking indefinitely on a silent worker.
+     *
+     * @return array<string, mixed>
+     */
     public function readMessage(int $deadline, ?callable $cancelled = null): array
     {
         $stdout = $this->process->stdout();
@@ -219,7 +225,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->appendStdout($chunk);
     }
 
-    /** @return array<string, mixed>|null */
+    /**
+     * Take a complete frame from the buffer, leaving any partial remainder.
+     *
+     * @return array<string, mixed>|null
+     */
     private function extractMessage(): ?array
     {
         $newline = strpos($this->stdoutBuffer, "\n");
@@ -243,6 +253,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
 
         return $message;
     }
+    /** Buffer stdout, enforcing the byte cap so a flooding worker cannot exhaust memory. */
 
     private function appendStdout(string $chunk): void
     {
@@ -252,6 +263,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
         }
     }
+    /** Buffer stderr under its own cap, so diagnostics survive without competing with frames. */
 
     private function appendStderr(string $chunk): void
     {
@@ -261,6 +273,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
         $this->stderrBuffer .= $chunk;
     }
+    /** Attach the captured stderr to an error, which is usually the only clue to why a worker failed. */
 
     private function withStderr(string $message): string
     {

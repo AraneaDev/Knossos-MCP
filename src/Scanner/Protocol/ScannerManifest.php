@@ -45,7 +45,11 @@ final readonly class ScannerManifest implements JsonSerializable
         self::assertNonEmptyStrings($capabilities, 'capabilities');
     }
 
-    /** @param array<string, mixed> $data */
+    /**
+     * Validate a worker's self-description from untrusted output.
+     *
+     * @param array<string, mixed> $data
+     */
     public static function fromArray(array $data): self
     {
         foreach (['id', 'version', 'protocol_version', 'output_schema_version'] as $field) {
@@ -78,7 +82,11 @@ final readonly class ScannerManifest implements JsonSerializable
         );
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The wire shape of the manifest.
+     *
+     * @return array<string, mixed>
+     */
     public function jsonSerialize(): array
     {
         return [
@@ -92,7 +100,11 @@ final readonly class ScannerManifest implements JsonSerializable
         ];
     }
 
-    /** @param list<mixed> $values */
+    /**
+     * Reject blank entries in a declared list, which would otherwise become a meaningless capability.
+     *
+     * @param list<mixed> $values
+     */
     private static function assertNonEmptyStrings(array $values, string $field): void
     {
         foreach ($values as $value) {

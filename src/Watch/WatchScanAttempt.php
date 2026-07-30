@@ -46,6 +46,7 @@ final readonly class WatchScanAttempt
         public ?ResultEnvelope $result,
         public ?string $errorMessage,
     ) {}
+    /** Attempt one rescan and classify the outcome as success, cancelled, retryable, or terminal. */
 
     public static function run(
         ProjectScanner $scanner,

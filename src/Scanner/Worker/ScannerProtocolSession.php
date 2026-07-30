@@ -89,14 +89,22 @@ final class ScannerProtocolSession
         return $manifest;
     }
 
-    /** @param array<string, mixed> $project @return array<string, mixed> */
+    /**
+     * Ask the worker which of the offered files it claims.
+     *
+     * @param array<string, mixed> $project @return array<string, mixed>
+     */
     public function discover(array $project): array
     {
         $this->initialize();
         return $this->request(Protocol::METHOD_DISCOVER, $project);
     }
 
-    /** @param array<string, mixed> $request @return iterable<ScanContribution> */
+    /**
+     * Send a scan request and decode the contribution it returns.
+     *
+     * @param array<string, mixed> $request @return iterable<ScanContribution>
+     */
     public function scan(array $request, ?callable $cancelled = null): iterable
     {
         $this->initialize();
@@ -233,7 +241,11 @@ final class ScannerProtocolSession
         return $this->channel->stderr();
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The most recent scan reply, retained for diagnostics.
+     *
+     * @return array<string, mixed>
+     */
     public function lastScanResult(): array
     {
         return $this->lastScanResult;

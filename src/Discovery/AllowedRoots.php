@@ -76,6 +76,7 @@ final class AllowedRoots
 
         return array_values($roots);
     }
+    /** The roots file this instance reads, or null when it was built from a fixed list. */
 
     public function configPath(): ?string
     {
@@ -145,7 +146,11 @@ final class AllowedRoots
         return $this->fileRoots = self::parse($contents);
     }
 
-    /** @return list<string> */
+    /**
+     * Parse roots-file contents, tolerating either shape and dropping blanks.
+     *
+     * @return list<string>
+     */
     private static function parse(string $contents): array
     {
         try {

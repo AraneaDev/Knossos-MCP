@@ -26,6 +26,7 @@ final readonly class ResultEnricher
         private StalenessProbe $probe,
         private NextStepPlanner $planner,
     ) {}
+    /** Trim, budget, and annotate a result for an agent rather than a human. */
 
     public function enrich(ResultEnvelope $envelope, string $toolName, string $verbosity, ?int $maxChars = null): ResultEnvelope
     {
@@ -194,6 +195,7 @@ final readonly class ResultEnricher
         }
         return implode('.', $path);
     }
+    /** Trim evidence to a preview, which is the default because full evidence rarely fits a context budget. */
 
     private function compact(ResultEnvelope $envelope): ResultEnvelope
     {

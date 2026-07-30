@@ -24,7 +24,11 @@ final class ContributionDecoder
 {
     private function __construct() {}
 
-    /** @param array<string, mixed> $data */
+    /**
+     * Validate a worker's reply into a contribution, rejecting anything malformed.
+     *
+     * @param array<string, mixed> $data
+     */
     public static function decode(array $data): ScanContribution
     {
         try {
@@ -46,7 +50,11 @@ final class ContributionDecoder
         }
     }
 
-    /** @param mixed $value */
+    /**
+     * Validate one node fact from untrusted worker output.
+     *
+     * @param mixed $value
+     */
     private static function node(mixed $value): NodeFact
     {
         $data = self::object($value, 'node');
@@ -63,7 +71,11 @@ final class ContributionDecoder
         );
     }
 
-    /** @param mixed $value */
+    /**
+     * Validate one edge fact, including its confidence and origin enums.
+     *
+     * @param mixed $value
+     */
     private static function edge(mixed $value): EdgeFact
     {
         $data = self::object($value, 'edge');
@@ -79,7 +91,11 @@ final class ContributionDecoder
         );
     }
 
-    /** @param mixed $value */
+    /**
+     * Validate one diagnostic entry.
+     *
+     * @param mixed $value
+     */
     private static function diagnostic(mixed $value): Diagnostic
     {
         $data = self::object($value, 'diagnostic');
@@ -91,6 +107,7 @@ final class ContributionDecoder
             isset($data['evidence']) ? self::evidence($data['evidence']) : null,
         );
     }
+    /** Validate an evidence block, requiring a project-relative path. */
 
     private static function evidence(mixed $value): Evidence
     {
@@ -104,7 +121,11 @@ final class ContributionDecoder
         return new Evidence(self::string($data, 'path'), $start, $end);
     }
 
-    /** @param array<string, mixed> $data @return array<string, mixed> */
+    /**
+     * Validate an attributes object, rejecting a scalar where a map is required.
+     *
+     * @param array<string, mixed> $data @return array<string, mixed>
+     */
     private static function attributes(array $data): array
     {
         $attributes = $data['attributes'] ?? [];
@@ -115,7 +136,11 @@ final class ContributionDecoder
         return $attributes;
     }
 
-    /** @param mixed $value @return array<string, mixed> */
+    /**
+     * A required object field from untrusted input.
+     *
+     * @param mixed $value @return array<string, mixed>
+     */
     private static function object(mixed $value, string $field): array
     {
         if (!is_array($value) || array_is_list($value)) {
@@ -125,7 +150,11 @@ final class ContributionDecoder
         return $value;
     }
 
-    /** @param array<string, mixed> $data */
+    /**
+     * A required string field from untrusted input.
+     *
+     * @param array<string, mixed> $data
+     */
     private static function string(array $data, string $field): string
     {
         if (!isset($data[$field]) || !is_string($data[$field]) || $data[$field] === '') {

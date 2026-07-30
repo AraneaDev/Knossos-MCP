@@ -24,7 +24,11 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         parent::__construct($pdo, $clock);
     }
 
-    /** @param list<array<string, mixed>> $policies */
+    /**
+     * Evaluate declared policies, returning each violation with the edge that breaches it.
+     *
+     * @param list<array<string, mixed>> $policies
+     */
     public function checkArchitecture(string $projectId, array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = 20_000, int $timeoutMs = 1000): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -188,6 +192,7 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             $truncated,
         );
     }
+    /** Rank where a described feature would fit the existing structure. */
 
     public function suggestLocation(string $projectId, string $featureDescription, int $limit = 5, int $maxMembers = 20_000, int $maxEdges = 20_000, int $timeoutMs = 1000, string $rankingMode = 'deterministic'): ResultEnvelope
     {
@@ -465,7 +470,11 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         );
     }
 
-    /** @param array<string, mixed> $policy @return list<string> */
+    /**
+     * Validate and normalise the policy definitions.
+     *
+     * @param array<string, mixed> $policy @return list<string>
+     */
     private function policyList(array $policy, string $key): array
     {
         if (!array_key_exists($key, $policy)) {
@@ -482,7 +491,11 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
         }
         return array_values(array_unique($values));
     }
-    /** @return list<string> */
+    /**
+     * Tokenise a feature description into the terms ranking scores against.
+     *
+     * @return list<string>
+     */
     private function featureTokens(string $description): array
     {
         $parts = preg_split('/[^\pL\pN]+/u', strtolower($description), -1, PREG_SPLIT_NO_EMPTY);

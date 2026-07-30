@@ -27,6 +27,9 @@ declare(strict_types=1);
  * still belong in a constructor `@param`; that is simply not what this counts.
  */
 $root = dirname(__DIR__);
+// Shared with tools/api-documentation-check.php: one definition of "documented",
+// so the two gates cannot drift apart again.
+require __DIR__ . '/lib/docblocks.php';
 $reportPath = $root . '/coverage/quality/docstring-coverage.json';
 
 /** Areas measured independently, so a well-documented one cannot mask a bare one. */
@@ -67,6 +70,10 @@ foreach (AREAS as $label => $relative) {
             $undocumentedTypes[] = sprintf('%s:%d %s', str_replace($root . '/', '', $file->getPathname()), $type['line'], $type['name']);
         }
         foreach (declaredFunctions($source) as $function) {
+            // Constructors are covered by the type metric instead; see the header.
+            if ($function['name'] === '__construct') {
+                continue;
+            }
             ++$total;
             if ($function['documented']) {
                 ++$documented;
@@ -162,150 +169,4 @@ printf(
 if ($failures !== []) {
     fwrite(STDERR, implode(PHP_EOL, $failures) . PHP_EOL);
     exit(1);
-}
-
-/**
- * Every named function and method in a file, and whether it is documented.
- *
- * Tokenised rather than matched with a regex: `function` appears inside strings,
- * heredocs, and comments throughout this codebase, and a gate that miscounts is
- * worse than no gate.
- *
- * @return list<array{name: string, line: int, documented: bool}>
- */
-function declaredFunctions(string $source): array
-{
-    $tokens = token_get_all($source);
-    $functions = [];
-    foreach ($tokens as $index => $token) {
-        if (!is_array($token) || $token[0] !== T_FUNCTION) {
-            continue;
-        }
-        // Anonymous functions have no name to document: the next significant
-        // token is `(` for a closure, or T_FN handles arrow functions already.
-        $name = null;
-        for ($offset = $index + 1; isset($tokens[$offset]); ++$offset) {
-            $next = $tokens[$offset];
-            if (is_array($next) && in_array($next[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)) {
-                continue;
-            }
-            if (is_array($next) && $next[0] === T_STRING) {
-                $name = $next[1];
-            }
-            break;
-        }
-        // Constructors are measured through their type's docblock instead; see
-        // the file header.
-        if ($name === null || $name === '__construct') {
-            continue;
-        }
-        $functions[] = ['name' => $name, 'line' => $token[2], 'documented' => hasDocBlock($tokens, $index)];
-    }
-
-    return $functions;
-}
-
-/**
- * Every class, interface, trait, and enum in a file, and whether it is documented.
- *
- * A type without a docblock never states why it exists, which is the one thing a
- * reader cannot recover from the code itself.
- *
- * @return list<array{name: string, line: int, documented: bool}>
- */
-function declaredTypes(string $source): array
-{
-    $tokens = token_get_all($source);
-    $kinds = [T_CLASS, T_INTERFACE, T_TRAIT];
-    if (defined('T_ENUM')) {
-        $kinds[] = T_ENUM;
-    }
-    $types = [];
-    foreach ($tokens as $index => $token) {
-        if (!is_array($token) || !in_array($token[0], $kinds, true)) {
-            continue;
-        }
-        // `Foo::class` and anonymous classes both produce T_CLASS with no name
-        // following, so require a T_STRING next.
-        $name = null;
-        for ($offset = $index + 1; isset($tokens[$offset]); ++$offset) {
-            $next = $tokens[$offset];
-            if (is_array($next) && $next[0] === T_WHITESPACE) {
-                continue;
-            }
-            if (is_array($next) && $next[0] === T_STRING) {
-                $name = $next[1];
-            }
-            break;
-        }
-        if ($name === null) {
-            continue;
-        }
-        $types[] = ['name' => $name, 'line' => $token[2], 'documented' => hasDocBlock($tokens, $index)];
-    }
-
-    return $types;
-}
-
-/**
- * Whether a docblock with a summary immediately precedes the declaration.
- *
- * Scans back over whitespace, comments, visibility and other modifiers, and any
- * attribute groups, because all of those legitimately sit between a docblock and
- * the `function` keyword.
- *
- * @param list<array{0: int, 1: string, 2: int}|string> $tokens
- */
-function hasDocBlock(array $tokens, int $functionIndex): bool
-{
-    $skippable = [T_WHITESPACE, T_COMMENT, T_PUBLIC, T_PRIVATE, T_PROTECTED, T_STATIC, T_ABSTRACT, T_FINAL];
-    if (defined('T_READONLY')) {
-        $skippable[] = T_READONLY;
-    }
-    for ($offset = $functionIndex - 1; $offset >= 0; --$offset) {
-        $token = $tokens[$offset];
-        if ($token === ']') {
-            // An attribute group sits between the docblock and the declaration;
-            // walk back over it rather than treating it as a wall.
-            $depth = 1;
-            while (--$offset >= 0 && $depth > 0) {
-                $inner = $tokens[$offset];
-                if ($inner === ']') {
-                    ++$depth;
-                } elseif ($inner === '[' || (is_array($inner) && $inner[0] === T_ATTRIBUTE)) {
-                    --$depth;
-                }
-            }
-            continue;
-        }
-        if (!is_array($token)) {
-            return false;
-        }
-        if ($token[0] === T_DOC_COMMENT) {
-            return hasSummaryText($token[1]);
-        }
-        if (!in_array($token[0], $skippable, true)) {
-            return false;
-        }
-    }
-
-    return false;
-}
-
-/**
- * Whether a docblock says anything beyond annotations.
- *
- * Mirrors the rule in api-documentation-check.php on purpose: two gates
- * disagreeing about what counts as documented would make both untrustworthy.
- */
-function hasSummaryText(string $documentation): bool
-{
-    foreach (preg_split('/\R/', $documentation) ?: [] as $line) {
-        $line = trim($line, " \t*/");
-        if ($line !== '' && !str_starts_with($line, '@')) {
-            return true;
-        }
-    }
-
-    return false;
 }

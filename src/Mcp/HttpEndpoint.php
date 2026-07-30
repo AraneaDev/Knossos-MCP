@@ -339,7 +339,11 @@ final readonly class HttpEndpoint
         return $this->json(500, ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32603, 'message' => 'Internal error']], $headers);
     }
 
-    /** @param array<string, mixed> $payload @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string} */
+    /**
+     * A JSON response, downgraded to an error when it exceeds the byte cap.
+     *
+     * @param array<string, mixed> $payload @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string}
+     */
     private function json(int $status, array $payload, array $headers): array
     {
         $encoded = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -350,7 +354,11 @@ final readonly class HttpEndpoint
         return ['status' => $status, 'headers' => $headers + ['Content-Type' => 'application/json'], 'body' => $encoded];
     }
 
-    /** @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string} */
+    /**
+     * A non-JSON-RPC problem response, used for transport-level refusals.
+     *
+     * @param array<string, string> $headers @return array{status: int, headers: array<string, string>, body: string}
+     */
     private function problem(int $status, string $message, array $headers): array
     {
         return $this->json($status, ['error' => $message], $headers);

@@ -51,7 +51,11 @@ final readonly class FullScanRequest
         self::assertListOf($contributionCache, ContributionCacheEntry::class, 'contributionCache');
     }
 
-    /** @param list<mixed> $values @param class-string $class */
+    /**
+     * Reject a heterogeneous list, so reconciliation cannot receive facts of the wrong type.
+     *
+     * @param list<mixed> $values @param class-string $class
+     */
     private static function assertListOf(array $values, string $class, string $field): void
     {
         if (!array_is_list($values)) {

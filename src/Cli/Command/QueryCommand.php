@@ -313,7 +313,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the Git-weighted blast radius.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function changeImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos change-impact <project-id> <symbol> [options]');
@@ -323,7 +327,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the impact of a changed file set.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function changedFilesImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos changed-files-impact <project-id> [files...] [options]');
@@ -332,7 +340,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the tests exercising a change.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function testImpact(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos test-impact <project-id> [files...] [options]');
@@ -341,7 +353,11 @@ final class QueryCommand implements CliCommand
         return $this->result($result, $o, $c);
     }
 
-    /** @param list<string> $p @param array<string, list<string>> $o */
+    /**
+     * Parses the CLI arguments and renders the one-call architectural review.
+     *
+     * @param list<string> $p @param array<string, list<string>> $o
+     */
     private function reviewDiff(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos review-diff <project-id> [FILE...] [options]');
@@ -475,13 +491,18 @@ final class QueryCommand implements CliCommand
         $result = $this->queries($c)->listAnnotations($project, $c->options->single($o, 'component'), $c->options->single($o, 'kind'), $c->options->integer($o, 'limit', 100, 1, 100), $c->options->integer($o, 'offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
     }
+    /** The query facade for this invocation. */
 
     private function queries(CliCommandContext $context): ArchitectureQueryService
     {
         return new ArchitectureQueryService($context->database());
     }
 
-    /** @param array<string, list<string>> $options */
+    /**
+     * Render a result envelope as JSON or text, per the --json flag.
+     *
+     * @param array<string, list<string>> $options
+     */
     private function result(ResultEnvelope $result, array $options, CliCommandContext $context): int
     {
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary);

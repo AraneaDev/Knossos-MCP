@@ -27,7 +27,11 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         parent::__construct($pdo, $clock);
     }
 
-    /** @param list<string> $edgeKinds */
+    /**
+     * Static blast radius weighted by recent Git churn.
+     *
+     * @param list<string> $edgeKinds
+     */
     public function changeImpact(string $projectId, string $symbol, int $sinceDays = 90, int $maxCommits = 500, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
     {
         if ($sinceDays < 1 || $sinceDays > 3650) {
@@ -113,7 +117,11 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         );
     }
 
-    /** @param list<string> $files @param list<string> $edgeKinds */
+    /**
+     * What a changed file set touches, directly and transitively.
+     *
+     * @param list<string> $files @param list<string> $edgeKinds
+     */
     public function changedFilesImpact(string $projectId, array $files = [], bool $workingTree = false, ?string $baseRef = null, int $maxDepth = 4, int $limit = 100, array $edgeKinds = [], string $minConfidence = 'possible', int $timeoutMs = 1000): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -286,7 +294,11 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         );
     }
 
-    /** @param list<string> $nodeIds @return array<string, string> */
+    /**
+     * Evidence paths for a node set, used to map files back to components.
+     *
+     * @param list<string> $nodeIds @return array<string, string>
+     */
     private function nodePaths(array $nodeIds): array
     {
         $paths = [];

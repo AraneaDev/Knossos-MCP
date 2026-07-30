@@ -33,6 +33,8 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
     }
 
     /**
+     * One-call review: impact, policy violations, gate delta, and cycles.
+     *
      * @param list<string> $files
      * @param list<array<string, mixed>>|null $policies
      * @param array<string, int>|null $budgets
@@ -167,6 +169,8 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
     }
 
     /**
+     * Fill policies and budgets from the project configuration when not supplied.
+     *
      * @param array<string, mixed> $project
      * @param list<array<string, mixed>>|null $policies
      * @param array<string, int>|null $budgets
@@ -190,6 +194,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         }
         return [$policies, $budgets, $reason];
     }
+    /** The most recent retained snapshot, used as the gate baseline. */
 
     private function latestNonActiveSnapshot(string $projectId, string $activeScanId): ?string
     {

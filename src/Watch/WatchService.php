@@ -33,6 +33,8 @@ final readonly class WatchService
     }
 
     /**
+     * Watch a root and rescan on change, until cancelled or a terminal failure.
+     *
      * @param callable(array<string, mixed>): void|null $observer
      */
     public function run(
@@ -175,7 +177,11 @@ final readonly class WatchService
         return $backoffMs * 1_000_000;
     }
 
-    /** @return array<string, string> */
+    /**
+     * A content fingerprint of the tree, which is what change detection compares.
+     *
+     * @return array<string, string>
+     */
     private function fingerprint(string $root): array
     {
         $allowedRoots = $this->roots->current();
@@ -197,7 +203,11 @@ final readonly class WatchService
         return $result;
     }
 
-    /** @param array<string, string> $before @param array<string, string> $after @return array<string, string> */
+    /**
+     * The differences between two fingerprints.
+     *
+     * @param array<string, string> $before @param array<string, string> $after @return array<string, string>
+     */
     private function changes(array $before, array $after): array
     {
         $changes = [];

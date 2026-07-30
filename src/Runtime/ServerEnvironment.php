@@ -28,7 +28,11 @@ final readonly class ServerEnvironment
         private PDO $pdo,
     ) {}
 
-    /** @return array<string, mixed> */
+    /**
+     * Everything an agent needs to know about this server's reach and identity.
+     *
+     * @return array<string, mixed>
+     */
     public function describe(): array
     {
         $roots = $this->roots->describe();
@@ -51,6 +55,7 @@ final readonly class ServerEnvironment
             )),
         ];
     }
+    /** The runtime health checker, built against this environment's database. */
 
     public function doctor(): DoctorService
     {

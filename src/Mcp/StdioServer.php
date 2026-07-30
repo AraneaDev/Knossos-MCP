@@ -62,7 +62,11 @@ final class StdioServer
         $this->negotiator = new ProtocolNegotiator();
     }
 
-    /** @param resource $input @param resource $output @param resource $errors */
+    /**
+     * The read loop: frame in, response out, until stdin closes.
+     *
+     * @param resource $input @param resource $output @param resource $errors
+     */
     public function run($input, $output, $errors): int
     {
         $this->input = $input;
@@ -94,7 +98,11 @@ final class StdioServer
         return 0;
     }
 
-    /** @param array<string, mixed> $message @return array<string, mixed>|null */
+    /**
+     * Handle one JSON-RPC message, selecting the protocol revision and decorating the result.
+     *
+     * @param array<string, mixed> $message @return array<string, mixed>|null
+     */
     public function handle(array $message): ?array
     {
         $id = $message['id'] ?? null;
@@ -158,6 +166,8 @@ final class StdioServer
     }
 
     /**
+     * Route a validated request to its method handler.
+     *
      * @param array<string, mixed> $params
      * @return array<string, mixed>|null
      */
@@ -275,13 +285,21 @@ final class StdioServer
         return $this->error($id, -32601, 'Method not found');
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * A JSON-RPC success frame.
+     *
+     * @return array<string, mixed>
+     */
     private function success(mixed $id, mixed $result): array
     {
         return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result];
     }
 
-    /** @param array<string, mixed>|null $data @return array<string, mixed> */
+    /**
+     * A JSON-RPC error frame, optionally carrying structured data such as the supported revisions.
+     *
+     * @param array<string, mixed>|null $data @return array<string, mixed>
+     */
     private function error(mixed $id, int $code, string $message, ?array $data = null): array
     {
         $error = ['code' => $code, 'message' => $message];
@@ -313,7 +331,11 @@ final class StdioServer
         ];
     }
 
-    /** @return array<string, string> */
+    /**
+     * This server's identity, shared by the handshake and server/discover.
+     *
+     * @return array<string, string>
+     */
     private static function serverInfo(): array
     {
         return [
@@ -333,7 +355,11 @@ final class StdioServer
         ]);
     }
 
-    /** @param resource $output @param array<string, mixed> $message */
+    /**
+     * Write one frame, replacing it with an error if it exceeds the byte cap.
+     *
+     * @param resource $output @param array<string, mixed> $message
+     */
     private function write($output, array $message): void
     {
         $encoded = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -347,7 +373,11 @@ final class StdioServer
         fflush($output);
     }
 
-    /** @param resource $input @param resource $output */
+    /**
+     * The next complete frame, waking periodically so an idle transport can be kept warm.
+     *
+     * @param resource $input @param resource $output
+     */
     private function nextLine($input, $output): string|false
     {
         if ($this->pendingLines !== []) {
@@ -447,6 +477,7 @@ final class StdioServer
             'method' => 'ping',
         ]);
     }
+    /** Check for a cancellation notification without blocking the running request. */
 
     private function pollCancellation(mixed $requestId): bool
     {

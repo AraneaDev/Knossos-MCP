@@ -58,6 +58,7 @@ final readonly class TestModuleRule implements ClassificationRule
             ),
         ];
     }
+    /** Whether a path looks like test code, which excludes it from hub and hotspot ranking. */
 
     private function isTestPath(string $path): bool
     {

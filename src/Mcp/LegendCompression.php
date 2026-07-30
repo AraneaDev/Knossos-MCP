@@ -17,6 +17,8 @@ trait LegendCompression
     private function __construct() {}
 
     /**
+     * Hoist repeated objects into legends, which is most of the payload saving for an agent.
+     *
      * @param array<string, mixed> $data
      * @return array{0: array<string, mixed>, 1: array<string, mixed>}
      */
