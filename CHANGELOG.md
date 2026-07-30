@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.8.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.7.0...v0.8.0) (2026-07-30)
+
+
+### Features
+
+* **discovery:** resolve allowed roots per request so one install serves any project ([2e1f9cf](https://github.com/AraneaDev/Knossos-MCP/commit/2e1f9cf5ca72b9efaa77d137a68ebc429182f0d3))
+* **mcp:** serve protocol revision 2026-07-28 alongside 2025-11-25 ([5bda580](https://github.com/AraneaDev/Knossos-MCP/commit/5bda5808bf5f67f5456ea94501a23a70685e8f6a))
+* **mcp:** support protocol 2026-07-28 and serve any project from one install ([0886ed1](https://github.com/AraneaDev/Knossos-MCP/commit/0886ed10d36855ece88ae129485d48a213b7d4f3))
+
+
+### Bug Fixes
+
+* **discovery:** detect narrowed roots by content, and preserve a "/" grant ([0dde7d3](https://github.com/AraneaDev/Knossos-MCP/commit/0dde7d3b089ecdad23d5e0a2e5c5d61532f82134))
+* **discovery:** one grant per directory, and safe JSON on non-UTF-8 paths ([9392f2b](https://github.com/AraneaDev/Knossos-MCP/commit/9392f2b28758fffe5795e5d368c22e7c4eaca88a))
+* **quality:** check every interface contract, not only those one level deep ([156286d](https://github.com/AraneaDev/Knossos-MCP/commit/156286db8469d11cf4693be51ffd1396619f5284))
+* **quality:** run the covered suite unprivileged, and stop the deliberate 500 printing a SQLSTATE ([f32716c](https://github.com/AraneaDev/Knossos-MCP/commit/f32716c1eaa504d12d1ace80f76959df52bae48b))
+* **tests:** declare nullable test-helper parameters explicitly ([3451996](https://github.com/AraneaDev/Knossos-MCP/commit/3451996d44ba3ff5a64523903829cf0b066222fb))
+
 ## [0.7.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.6.0...v0.7.0) (2026-07-27)
 
 
