@@ -43,6 +43,10 @@ final class StdioServer
     private ?ProtocolProfile $profile = null;
     /** @var resource|null */
     private $input = null;
+    /** The stream lifecycle notes go to; null when handle() is driven directly. @var resource|null */
+    private $notes = null;
+    /** The revision last written to the log, so one connection logs one line. */
+    private ?string $notedProtocol = null;
     /** @var list<string> */
     private array $pendingLines = [];
     private string $inputBuffer = '';
@@ -70,6 +74,7 @@ final class StdioServer
     public function run($input, $output, $errors): int
     {
         $this->input = $input;
+        $this->notes = $errors;
         stream_set_read_buffer($input, 0);
         while (($line = $this->nextLine($input, $output)) !== false) {
             if (strlen($line) > $this->maxLineBytes || !str_ends_with($line, "\n")) {
@@ -154,6 +159,7 @@ final class StdioServer
             return $this->error($id, $unsupported->getCode(), $unsupported->getMessage(), $unsupported->data());
         }
         $this->profile = $profile;
+        $this->noteProtocol($message, $profile);
 
         $response = $this->dispatchMethod($method, $id, $params, $profile);
         // Envelope rules are the one thing that varies per revision, so they are
@@ -353,6 +359,66 @@ final class StdioServer
             'structuredContent' => ['error' => ['code' => $code, 'message' => $message]],
             'isError' => true,
         ]);
+    }
+
+    /**
+     * Record the negotiated revision once per connection, on the lifecycle log.
+     *
+     * Which revision a host actually speaks was previously invisible: the wrapper
+     * logs start, signals, and exit, but nothing about the handshake, so answering
+     * "has the client moved to 2026-07-28 yet?" meant grepping the host's own
+     * binary for its protocol constant. That is the question that decides when the
+     * legacy profile can be dropped, so it belongs in the log.
+     *
+     * Written to stderr because tools/mcp-serve already appends the server's
+     * stderr to .knossos/mcp-serve.log; stdout carries protocol traffic and must
+     * stay clean. Logged on change rather than on `initialize`, since the
+     * 2026-07-28 revision replaced the handshake with server/discover and a
+     * modern client may never send an initialize at all.
+     *
+     * @param array<string, mixed> $message
+     */
+    private function noteProtocol(array $message, ProtocolProfile $profile): void
+    {
+        if ($this->notes === null || $profile->version() === $this->notedProtocol) {
+            return;
+        }
+        $this->notedProtocol = $profile->version();
+        $client = $message['params']['clientInfo'] ?? null;
+        // Two declaration sites, because the revisions disagree about where a
+        // version goes: 2026-07-28 puts it in `params._meta`, which is what the
+        // negotiator reads, while a 2025-11-25 client declares it as
+        // `initialize`'s protocolVersion. Reading only the first would log
+        // `requested=none` for every legacy client -- exactly the population this
+        // line exists to count.
+        $declared = $message['params']['protocolVersion'] ?? null;
+        $requested = ProtocolNegotiator::requestedVersion($message)
+            ?? (is_string($declared) ? $declared : null);
+        fwrite($this->notes, sprintf(
+            "%s protocol requested=%s selected=%s client=%s\n",
+            gmdate('Y-m-d\TH:i:s\Z'),
+            self::logSafe($requested ?? 'none'),
+            $profile->version(),
+            is_array($client)
+                ? self::logSafe((string) ($client['name'] ?? 'unknown')) . '/' . self::logSafe((string) ($client['version'] ?? '?'))
+                : 'unknown',
+        ));
+    }
+
+    /**
+     * Reduce a client-supplied string to something that cannot forge a log line.
+     *
+     * Everything in this line except the timestamp and the selected revision comes
+     * from the peer, and the log is line-oriented, so an unfiltered name could
+     * inject whole entries — including a plausible-looking one claiming a revision
+     * the client never requested. Kept to printable non-space characters and a
+     * short cap, which is all a version string or client identifier needs.
+     */
+    private static function logSafe(string $value): string
+    {
+        $safe = preg_replace('/[^\x21-\x7E]/', '_', $value) ?? '';
+
+        return $safe === '' ? 'unknown' : substr($safe, 0, 64);
     }
 
     /**

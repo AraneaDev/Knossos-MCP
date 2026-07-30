@@ -344,7 +344,20 @@ final class QueryTest extends KnossosTestCase
             fclose($pipes[2]);
             assertSame(0, proc_close($process));
             $process = null;
-            assertSame('', $stderr);
+            // Not simply "stderr is empty" any more: the server writes one
+            // protocol note per connection there, because tools/mcp-serve appends
+            // stderr to .knossos/mcp-serve.log and stdout must carry protocol
+            // traffic only. Asserting the exact shape of every line keeps what the
+            // empty-stderr check was really for — a stray warning, deprecation, or
+            // uncaught notice still fails this.
+            assertSame(
+                [],
+                array_values(array_filter(
+                    explode("\n", trim((string) $stderr)),
+                    static fn(string $line): bool => $line !== ''
+                        && preg_match('/^\S+Z protocol requested=\S+ selected=\S+ client=\S+$/', $line) !== 1,
+                )),
+            );
 
             $lines = array_values(array_filter(explode("\n", trim($stdout))));
             // The final request (id 8) was pre-cancelled via notifications/cancelled,
