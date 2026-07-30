@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.8.0...v0.9.0) (2026-07-30)
+
+
+### Features
+
+* **quality:** enforce docstring coverage, and fix what running Knossos over Knossos found ([#26](https://github.com/AraneaDev/Knossos-MCP/issues/26)) ([4e7027a](https://github.com/AraneaDev/Knossos-MCP/commit/4e7027aa5b252333238f786c344cb09570c16d2e))
+
 ## [0.8.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.7.0...v0.8.0) (2026-07-30)
 
 
