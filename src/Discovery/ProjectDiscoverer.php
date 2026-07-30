@@ -17,6 +17,8 @@ use Throwable;
  */
 final readonly class ProjectDiscoverer
 {
+    /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
+    private const SHEBANG_PROBE_BYTES = 256;
     private RootGuard $rootGuard;
     private IgnoreMatcher $ignoreMatcher;
 
@@ -96,7 +98,7 @@ final readonly class ProjectDiscoverer
                         continue;
                     }
 
-                    $language = self::languageFor($relative);
+                    $language = self::languageFor($relative, $absolute);
                     $unitKind = self::unitKindFor($relative);
                     if ($language === null && $unitKind === null) {
                         continue;
@@ -421,14 +423,64 @@ final readonly class ProjectDiscoverer
         ];
     }
 
-    private static function languageFor(string $relativePath): ?string
+    /**
+     * The language a file belongs to, or null when it is not source.
+     *
+     * Extension first, then a shebang for extensionless files. Executable entry
+     * points routinely have no extension — `artisan`, `bin/console`, this project's
+     * own `workers/php/bin/worker` — and skipping them makes whatever they invoke
+     * look unreferenced, so dead-code detection reports a live entry point as a
+     * deletion candidate.
+     *
+     * @param string|null $absolutePath needed only to read a shebang; omit and
+     *        extensionless files are simply not classified
+     */
+    private static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
     {
         $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
-        return match ($extension) {
+        $byExtension = match ($extension) {
             'php' => 'php',
             'ts', 'tsx', 'mts', 'cts' => 'typescript',
             'js', 'jsx', 'mjs', 'cjs' => 'javascript',
             'py', 'pyi' => 'python',
+            default => null,
+        };
+        if ($byExtension !== null || $extension !== '' || $absolutePath === null) {
+            return $byExtension;
+        }
+
+        return self::languageFromShebang($absolutePath);
+    }
+
+    /**
+     * The language named by a script's shebang, or null.
+     *
+     * Only the first line is read, and only for a file with no extension, so the
+     * cost is one bounded read of the handful of extensionless files in a tree
+     * (LICENSE, Dockerfile, Makefile) rather than of every file.
+     */
+    private static function languageFromShebang(string $absolutePath): ?string
+    {
+        $handle = @fopen($absolutePath, 'rb');
+        if (!is_resource($handle)) {
+            return null;
+        }
+        try {
+            $first = (string) fgets($handle, self::SHEBANG_PROBE_BYTES);
+        } finally {
+            fclose($handle);
+        }
+        if (!str_starts_with($first, '#!')) {
+            return null;
+        }
+
+        // Matches both `#!/usr/bin/php` and `#!/usr/bin/env php`, and tolerates a
+        // version suffix such as `php8.3`. Anchored to a word boundary so a path
+        // like /opt/phpstorm/bin/foo cannot be read as a PHP script.
+        return match (true) {
+            preg_match('#\b(php)[0-9.]*\b#i', $first) === 1 => 'php',
+            preg_match('#\b(node|nodejs|bun|deno)[0-9.]*\b#i', $first) === 1 => 'javascript',
+            preg_match('#\b(python)[0-9.]*\b#i', $first) === 1 => 'python',
             default => null,
         };
     }

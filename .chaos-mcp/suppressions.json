@@ -34,6 +34,14 @@
         "reason": "Equivalent: json_decode depth 8 vs 7 is unobservable here for the same reason — a structure nested deeply enough to hit the lower limit yields no valid roots either way. The depth arg is hardening against a hostile file, not a behavioural parameter.",
         "addedAt": 1785404030390
       }
+    ],
+    "src/Discovery/IgnoreMatcher.php": [
+      {
+        "line": 131,
+        "mutator": "IncrementInteger",
+        "reason": "Unreachable: differs only when the '/' after '**' is the final character, but trim($pattern, '/') strips a trailing slash before translation, so no surviving pattern can reach that boundary.",
+        "addedAt": 1785406210218
+      }
     ]
   }
 }

@@ -66,12 +66,16 @@ final readonly class IgnoreMatcher
         // absolute and cannot be negated.
         $ignored = false;
         foreach ($this->patterns as $pattern) {
-            $normalized = str_replace('\\', '/', $pattern);
+            // Trim before reading the negation marker, not after. Testing the raw
+            // pattern meant a single leading space turned "!keep.js" into a literal
+            // pattern matching nothing, silently discarding the re-include while the
+            // trim two lines later made the same whitespace irrelevant everywhere
+            // else. Whitespace is either significant here or it is not.
+            $normalized = trim(str_replace('\\', '/', $pattern));
             $negated = str_starts_with($normalized, '!');
             if ($negated) {
-                $normalized = substr($normalized, 1);
+                $normalized = trim(substr($normalized, 1));
             }
-            $normalized = trim($normalized);
             $anchored = str_starts_with($normalized, '/') || str_contains(trim($normalized, '/'), '/');
             $normalized = trim($normalized, '/');
             if ($normalized === '') {
