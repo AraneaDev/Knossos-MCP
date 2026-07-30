@@ -7,6 +7,13 @@ namespace Knossos\Query;
 use Closure;
 use PDO;
 
+/**
+ * Reports how far a project's graph has drifted from its source.
+ *
+ * Attached to query results so an answer from an out-of-date graph is visibly
+ * qualified rather than silently wrong, and so tools can offer to rescan before
+ * answering.
+ */
 final readonly class StalenessProbe
 {
     private Closure $wallClock;

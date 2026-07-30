@@ -31,25 +31,41 @@ final class LaravelFactStore
     /** @param string $relativePath the file these facts came from, used as their evidence path */
     public function __construct(private readonly string $relativePath) {}
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The node facts collected so far.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function nodes(): array
     {
         return array_values($this->nodes);
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The edge facts collected so far.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function edges(): array
     {
         return array_values($this->edges);
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * What the analysis could not resolve, reported with the scan.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function diagnostics(): array
     {
         return $this->diagnostics;
     }
 
-    /** @param array<string, mixed> $attributes */
+    /**
+     * Record a node fact, defaulting to framework-convention origin since that is what these collectors observe.
+     *
+     * @param array<string, mixed> $attributes
+     */
     public function addNode(string $id, string $kind, string $canonical, string $display, Node $at, array $attributes, string $origin = 'framework_convention', string $confidence = 'certain'): void
     {
         $this->nodes[$id] ??= [
@@ -64,7 +80,11 @@ final class LaravelFactStore
         ];
     }
 
-    /** @param array<string, mixed> $attributes */
+    /**
+     * Record an edge fact with its evidence location.
+     *
+     * @param array<string, mixed> $attributes
+     */
     public function addEdge(string $kind, string $source, string $target, Node $at, array $attributes = []): void
     {
         $key = implode("\0", [$kind, $source, $target, (string) $at->getStartLine(), json_encode($attributes)]);
@@ -98,7 +118,11 @@ final class LaravelFactStore
             ? self::name($node->class) : null;
     }
 
-    /** @return list<string> */
+    /**
+     * Class names from a `::class` argument or an array of them, skipping computed elements.
+     *
+     * @return list<string>
+     */
     public static function classArguments(?Node $node): array
     {
         if ($node instanceof Expr\Array_) {
@@ -140,12 +164,14 @@ final class LaravelFactStore
         }
         return $result;
     }
+    /** A resolved name node as a fully-qualified string. */
 
     public static function name(Name $name): string
     {
         $resolved = $name->getAttribute('resolvedName');
         return ($resolved instanceof Name ? $resolved : $name)->toString();
     }
+    /** A class name in the canonical form the graph uses for an external reference. */
 
     public static function classReference(string $name): string
     {

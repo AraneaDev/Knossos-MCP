@@ -7,6 +7,12 @@ namespace Knossos\Query;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Renders a slice of the graph as Mermaid or PlantUML source.
+ *
+ * Node and edge caps are the point: a diagram of a whole real codebase is
+ * unreadable, so the slice is bounded and the omission reported.
+ */
 final readonly class DiagramExportService extends AbstractArchitectureQueryService
 {
     /** @param list<string> $edgeKinds */

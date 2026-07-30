@@ -11,6 +11,13 @@ use Knossos\Scanner\Protocol\{ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\ContributionDecoder;
 use Throwable;
 
+/**
+ * Decides which files an incremental scan can reuse instead of re-analysing.
+ *
+ * Reuse is keyed on the file's fingerprint *and* the analyzer configuration hash,
+ * so changing analyzer behaviour invalidates the cache rather than silently
+ * serving facts the current code would no longer produce.
+ */
 final readonly class ContributionCacheService
 {
     /**

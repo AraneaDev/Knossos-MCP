@@ -12,6 +12,14 @@ use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
 use Knossos\Scan\CancellationToken;
 use Throwable;
 
+/**
+ * JSON-RPC over stdio: the recommended MCP transport.
+ *
+ * Stdout carries protocol frames only — diagnostics go to stderr, because one
+ * stray write corrupts the stream. Frames are size-capped, cancellation is polled
+ * without blocking on input, and which protocol revision governs a message is
+ * decided per message so both supported revisions share one dispatcher.
+ */
 final class StdioServer
 {
     /**

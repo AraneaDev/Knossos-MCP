@@ -7,6 +7,15 @@ namespace Knossos\Mcp;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
 
+/**
+ * Prepares a query result for an agent rather than a human.
+ *
+ * Three jobs, all about the caller's context budget and next move: trim evidence
+ * to a preview unless full verbosity was asked for, enforce the byte budget by
+ * dropping list tails and *reporting* what was dropped, and attach staleness plus
+ * suggested next steps so a caller can tell an incomplete answer from a complete
+ * one. Silent truncation is the failure mode this exists to prevent.
+ */
 final readonly class ResultEnricher
 {
     private const COMPACT_EVIDENCE = 3;

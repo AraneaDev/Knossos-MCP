@@ -6,6 +6,13 @@ namespace Knossos\Discovery;
 
 use JsonException;
 
+/**
+ * Reads the project's JSON configuration, tolerating JSONC.
+ *
+ * Comments and trailing commas are accepted because `knossos.jsonc` is
+ * hand-edited, and rejecting a trailing comma would be a hostile way to report a
+ * configuration problem.
+ */
 final class JsonConfig
 {
     private function __construct() {}

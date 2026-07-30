@@ -6,6 +6,7 @@ namespace Knossos\Boundary;
 
 use InvalidArgumentException;
 
+/** One boundary and the nodes that belong to it, with whether it was declared or inferred. */
 final readonly class BoundaryFact
 {
     /**

@@ -7,6 +7,12 @@ namespace Knossos\Scanner\Protocol;
 use InvalidArgumentException;
 use JsonSerializable;
 
+/**
+ * Where a fact can be checked: a file and an optional line span.
+ *
+ * The reason Knossos's answers are auditable rather than assertions — every node
+ * and edge carries one of these back to the source that justifies it.
+ */
 final readonly class Evidence implements JsonSerializable
 {
     public function __construct(

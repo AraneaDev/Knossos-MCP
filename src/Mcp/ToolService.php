@@ -12,6 +12,15 @@ use Knossos\Runtime\ServerEnvironment;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
 
+/**
+ * The MCP tool surface: schemas, validation, and dispatch.
+ *
+ * Definitions are declared as data so the same source produces the advertised
+ * schemas, the argument validation, and the generated reference — three things
+ * that drift apart when maintained separately. Arguments are rejected rather than
+ * coerced, and unknown keys are an error, because a silently ignored parameter
+ * reads to a caller as a parameter that had no effect.
+ */
 final readonly class ToolService
 {
     public function __construct(

@@ -10,6 +10,7 @@ use Knossos\Cli\CliCommandContext;
 use Knossos\Discovery\AllowedRoots;
 use Knossos\Mcp\McpServerAssembly;
 
+/** `serve`: run the MCP stdio server over the roots this installation may read. */
 final class ServeCommand implements CliCommand
 {
     /** {@inheritDoc} */

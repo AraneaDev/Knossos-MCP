@@ -6,6 +6,13 @@ namespace Knossos\Scanner\Worker;
 
 use JsonException;
 
+/**
+ * Newline-delimited JSON-RPC over a worker's pipes.
+ *
+ * Reads are non-blocking with a deadline and a size cap, because a worker that
+ * floods stdout or stops answering must not hang the scan. stderr is drained
+ * alongside so a chatty worker cannot deadlock on a full pipe.
+ */
 final class NdjsonRpcChannel implements RpcChannelInterface
 {
     private string $stdoutBuffer = '';

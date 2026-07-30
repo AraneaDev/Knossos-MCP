@@ -9,6 +9,14 @@ use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResu
 use Knossos\Store\SqliteGraphRepository;
 use PDO;
 
+/**
+ * Runs a scan end to end: plan, discover, analyse, reconcile, report.
+ *
+ * Holds the worker pool for the scan's duration and shuts it down on the way out,
+ * including when a scan fails or is cancelled. Nothing here loads or executes the
+ * analysed project — the pipeline parses, and that is what makes scanning an
+ * untrusted repository safe.
+ */
 final class ProjectScanService implements ProjectScanner
 {
     private readonly ScanPlanner $planner;

@@ -10,6 +10,12 @@ use Knossos\Cli\CliHelpRenderer;
 use Knossos\Cli\CliOptionParser;
 use Throwable;
 
+/**
+ * CLI entry point: parses argv, routes to a command, renders errors.
+ *
+ * Every failure leaves through here as a stable diagnostic code and a non-zero
+ * exit, because the CLI is consumed by CI as well as by people.
+ */
 final class Application
 {
     public const VERSION = '0.7.0'; // x-release-please-version

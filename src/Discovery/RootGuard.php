@@ -4,6 +4,16 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+/**
+ * The filesystem boundary: resolves a requested path or refuses it.
+ *
+ * The only thing standing between the server and the rest of the disk, so it
+ * canonicalises with realpath before comparing — a `..` traversal or a symlink
+ * would otherwise pass a naive prefix check. A stale entry in the allow-list is
+ * skipped rather than vetoing every later root, and a rejection explains which
+ * roots are in force and where to add another, because a caller told only "no" can
+ * do nothing but guess.
+ */
 final readonly class RootGuard
 {
     private AllowedRoots $roots;

@@ -8,6 +8,12 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/**
+ * Infers a role from a naming suffix: Controller, Repository, Service.
+ *
+ * The weakest signal here, so its facts are recorded at lower confidence — a class
+ * called `UserService` usually is one, but the name proves nothing.
+ */
 final readonly class NameSuffixRule implements ClassificationRule
 {
     /** @param array<string, string> $suffixRoles @param list<string> $eligibleKinds */

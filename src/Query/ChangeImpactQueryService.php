@@ -12,6 +12,14 @@ use Knossos\Scanner\Protocol\RelativePath;
 use PDO;
 use Throwable;
 
+/**
+ * Answers what a change can affect, from the graph and from Git.
+ *
+ * Impact is a conservative static blast radius, deliberately over- rather than
+ * under-inclusive, and every answer says so: a dependant listed here may not
+ * actually break. Git churn weights the result so the components that also change
+ * often surface first.
+ */
 final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryService
 {
     public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ?GitHistoryProvider $gitHistory = null, private ?GitWorkingTreeProvider $gitWorkingTree = null)

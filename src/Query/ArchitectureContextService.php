@@ -8,6 +8,14 @@ use Closure;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Assembles a bounded evidence bundle for one coding task.
+ *
+ * Built for a caller with a context budget: it selects what is relevant to the
+ * task and stops at a byte ceiling, reporting what it omitted rather than
+ * truncating quietly. Optionally includes short source excerpts, read through the
+ * same root guard as scanning.
+ */
 final readonly class ArchitectureContextService extends AbstractArchitectureQueryService
 {
     public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ChangeImpactQueryService $changeQueries, private ComponentQueryService $componentQueries, private ArchitecturePolicyQueryService $policyQueries)

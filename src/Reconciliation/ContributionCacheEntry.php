@@ -7,6 +7,7 @@ namespace Knossos\Reconciliation;
 use InvalidArgumentException;
 use Knossos\Scanner\Protocol\ScanContribution;
 
+/** One file's cached contribution, keyed by fingerprint and analyzer hash so stale reuse is impossible. */
 final readonly class ContributionCacheEntry
 {
     public function __construct(

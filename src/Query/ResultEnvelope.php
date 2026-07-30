@@ -6,6 +6,14 @@ namespace Knossos\Query;
 
 use JsonSerializable;
 
+/**
+ * The uniform shape every query returns.
+ *
+ * Carries the answer alongside what qualifies it: evidence, warnings, staleness,
+ * whether it was truncated, and suggested next steps. One shape for every tool
+ * means a caller can handle qualification generically instead of learning it per
+ * tool — and a query cannot quietly omit that its answer is partial.
+ */
 final readonly class ResultEnvelope implements JsonSerializable
 {
     /**

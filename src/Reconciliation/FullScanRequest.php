@@ -11,6 +11,7 @@ use Knossos\Discovery\DiscoveryResult;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
 
+/** Everything reconciliation needs to replace a project's graph in one transaction. */
 final readonly class FullScanRequest
 {
     /**

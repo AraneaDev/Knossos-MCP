@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Honours a role the project declared in configuration, which outranks every inferred rule. */
 final readonly class ExplicitRoleRule implements ClassificationRule
 {
     /** @param array<string, list<string>> $rolesByCanonicalName */

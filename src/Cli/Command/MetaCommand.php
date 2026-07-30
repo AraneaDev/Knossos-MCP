@@ -8,6 +8,7 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Cli\CliHelpRenderer;
 
+/** `version` and `help`, the two commands that must work before anything is configured. */
 final readonly class MetaCommand implements CliCommand
 {
     public function __construct(private CliHelpRenderer $help, private string $version) {}

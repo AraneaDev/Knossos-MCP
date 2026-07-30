@@ -13,6 +13,13 @@ use Knossos\Scanner\Protocol\Origin;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Throwable;
 
+/**
+ * Validates a worker's reply before it becomes graph facts.
+ *
+ * Workers are untrusted — they run third-party parsers over arbitrary code — so
+ * every field, enum, and limit is checked here. This is the boundary that keeps a
+ * malformed contribution out of the database.
+ */
 final class ContributionDecoder
 {
     private function __construct() {}

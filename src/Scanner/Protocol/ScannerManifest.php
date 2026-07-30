@@ -7,6 +7,13 @@ namespace Knossos\Scanner\Protocol;
 use InvalidArgumentException;
 use JsonSerializable;
 
+/**
+ * What a worker says about itself when it starts: id, version, protocol.
+ *
+ * Checked before any work is sent. The id also namespaces the facts the worker
+ * owns, so an unexpected identity is refused rather than silently attributed to
+ * whichever scanner was expected.
+ */
 final readonly class ScannerManifest implements JsonSerializable
 {
     /**

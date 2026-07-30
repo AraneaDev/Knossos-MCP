@@ -71,6 +71,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @return array<string, mixed>|null */
+    /** {@see StalenessProbe::probe()} */
     public function staleness(string $projectId): ?array
     {
         return $this->stalenessProbe->probe($projectId);
@@ -104,6 +105,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param array<string, mixed> $budgets @param list<array<string, mixed>> $policies */
+    /** {@see ProjectCatalogQueryService::qualityGate()} */
     public function qualityGate(
         string $projectId,
         string $baselineSnapshot,
@@ -139,6 +141,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see ComponentQueryService::listUsages()} */
     public function listUsages(string $projectId, string $symbol, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 100): ResultEnvelope
     {
         return $this->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
@@ -164,6 +167,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::dependencyCycles()} */
     public function dependencyCycles(
         string $projectId,
         array $edgeKinds = [],
@@ -178,6 +182,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::architectureHealth()} */
     public function architectureHealth(
         string $projectId,
         array $edgeKinds = [],
@@ -193,6 +198,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<array<string, mixed>> $policies */
+    /** {@see ArchitecturePolicyQueryService::checkArchitecture()} */
     public function checkArchitecture(
         string $projectId,
         array $policies,
@@ -218,6 +224,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see ChangeImpactQueryService::changeImpact()} */
     public function changeImpact(
         string $projectId,
         string $symbol,
@@ -233,6 +240,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $files @param list<string> $edgeKinds */
+    /** {@see ChangeImpactQueryService::changedFilesImpact()} */
     public function changedFilesImpact(
         string $projectId,
         array $files = [],
@@ -248,6 +256,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $files @param list<string> $edgeKinds */
+    /** {@see ChangeImpactQueryService::testImpact()} */
     public function testImpact(
         string $projectId,
         array $files = [],
@@ -267,6 +276,7 @@ final readonly class ArchitectureQueryService
      * @param list<array<string, mixed>>|null $policies
      * @param array<string, int>|null $budgets
      */
+    /** {@see ReviewDiffService::reviewDiff()} */
     public function reviewDiff(
         string $projectId,
         ?string $baseRef = null,
@@ -283,6 +293,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $files */
+    /** {@see ArchitectureContextService::architectureContext()} */
     public function architectureContext(
         string $projectId,
         string $taskDescription = '',
@@ -295,6 +306,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see DiagramExportService::exportDiagram()} */
     public function exportDiagram(
         string $projectId,
         string $format = 'mermaid',
@@ -309,6 +321,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::explainFlow()} */
     public function explainFlow(
         string $projectId,
         string $from,
@@ -323,6 +336,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $edgeKinds */
+    /** {@see GraphTopologyQueryService::impactAnalysis()} */
     public function impactAnalysis(
         string $projectId,
         string $symbol,
@@ -348,6 +362,7 @@ final readonly class ArchitectureQueryService
     }
 
     /** @param list<string> $kinds @param list<string> $roles @param list<string> $boundaryIds @param list<string> $confidences */
+    /** {@see ComponentQueryService::searchArchitecture()} */
     public function searchArchitecture(
         string $projectId,
         string $query,

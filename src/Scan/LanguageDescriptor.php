@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+/**
+ * How to launch one language's scanner worker, and what it claims to handle.
+ *
+ * Keeps the command, memory cap, and expected worker id in one place so adding a
+ * language is a descriptor rather than a change to the runner.
+ */
 final readonly class LanguageDescriptor
 {
     /** @param list<string> $languages @param list<string> $command */

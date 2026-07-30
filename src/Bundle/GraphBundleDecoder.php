@@ -6,6 +6,13 @@ namespace Knossos\Bundle;
 
 use InvalidArgumentException;
 
+/**
+ * Decodes and validates a graph bundle before anything is imported.
+ *
+ * A bundle is untrusted input that arrived from another machine: the checksum,
+ * schema version, and structure are all checked up front, so a malformed bundle
+ * fails before it can half-populate a database.
+ */
 final class GraphBundleDecoder
 {
     public const FORMAT = 'knossos.graph.bundle';

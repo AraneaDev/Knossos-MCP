@@ -6,6 +6,13 @@ namespace Knossos\Bundle;
 
 use InvalidArgumentException;
 
+/**
+ * Remaps a bundle's ids onto the importing database.
+ *
+ * Ids are content-addressed but project-scoped, so importing under a new project
+ * id has to rewrite every reference consistently — a missed one would produce
+ * edges pointing at nodes that do not exist.
+ */
 final class BundleIdMapBuilder
 {
     /** @param array<string, mixed> $payload @return array{files: array<string, string>, nodes: array<string, string>, boundaries: array<string, string>} */

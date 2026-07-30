@@ -7,6 +7,13 @@ namespace Knossos\Scanner\Protocol;
 use InvalidArgumentException;
 use JsonSerializable;
 
+/**
+ * Everything one worker produced for one unit of work.
+ *
+ * Facts are returned as a batch rather than streamed so a contribution either
+ * applies whole or not at all, which is what lets reconciliation replace one
+ * scanner's facts without disturbing another's.
+ */
 final readonly class ScanContribution implements JsonSerializable
 {
     /**

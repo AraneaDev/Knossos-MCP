@@ -10,6 +10,7 @@ use Knossos\Cli\CliCommandContext;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Watch\WatchService;
 
+/** `watch`: rescan a project as it changes, until interrupted. */
 final class WatchCommand implements CliCommand
 {
     /** {@inheritDoc} */

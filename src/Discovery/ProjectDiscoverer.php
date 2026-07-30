@@ -8,6 +8,13 @@ use DirectoryIterator;
 use Knossos\Scan\CancellationToken;
 use Throwable;
 
+/**
+ * Walks a project tree and selects the files worth analysing.
+ *
+ * Enforces the allow-list, applies ignore rules, and stops at the configured
+ * caps. Unreadable entries become diagnostics rather than exceptions, so one
+ * permission problem does not deny a graph of everything else.
+ */
 final readonly class ProjectDiscoverer
 {
     private RootGuard $rootGuard;

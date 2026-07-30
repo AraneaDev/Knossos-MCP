@@ -8,6 +8,12 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\Origin;
 
+/**
+ * Builds protocol fixtures for scanner conformance tests.
+ *
+ * Part of the SDK surface: a third-party scanner can use it to check its output
+ * against the protocol before wiring it in.
+ */
 final class FixtureBuilder
 {
     private function __construct() {}

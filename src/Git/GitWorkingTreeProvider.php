@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Git;
 
+/** Contract for reading uncommitted changes, so review can run against a dirty tree. */
 interface GitWorkingTreeProvider
 {
     /**

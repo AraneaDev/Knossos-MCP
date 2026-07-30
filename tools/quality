@@ -43,6 +43,7 @@ php tools/repository-check.php
 php tools/generate-reference.php --check
 php tools/documentation-check.php
 php tools/maintainability-report.php
+php tools/docstring-report.php
 php tools/api-documentation-check.php
 if command -v pre-commit >/dev/null 2>&1; then
     pre-commit validate-config .pre-commit-config.yaml

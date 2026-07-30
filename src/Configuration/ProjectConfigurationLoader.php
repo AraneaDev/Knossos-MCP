@@ -9,6 +9,13 @@ use Knossos\Discovery\JsonConfig;
 use Knossos\Discovery\RootGuard;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 
+/**
+ * Loads and validates a project's configuration.
+ *
+ * Resolves the root through the allow-list first, so configuration is only ever
+ * read from a tree this installation is permitted to read. Accepts `knossos.json`
+ * or `knossos.jsonc` but refuses both at once rather than picking one silently.
+ */
 final class ProjectConfigurationLoader
 {
     private const ROOT_KEYS = ['$schema', 'version', 'ignores', 'limits', 'boundaries', 'frameworks', 'snapshot_retention', 'policies', 'quality_budgets', 'dead_code_suppressions'];

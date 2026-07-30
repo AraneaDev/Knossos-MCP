@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Reconciliation;
 
+/** What reconciliation wrote: node, edge, and diagnostic counts for the scan report. */
 final readonly class ReconciliationResult
 {
     public function __construct(

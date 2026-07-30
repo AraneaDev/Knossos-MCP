@@ -8,6 +8,13 @@ use Knossos\Scanner\Protocol\RelativePath;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Reads history by running `git`, under a deadline and with bounded output.
+ *
+ * Shells out rather than linking a Git library: the binary is already required, and
+ * its output is a stable contract. The deadline matters because a huge or
+ * pathological history would otherwise hang a query.
+ */
 final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
 {
     private GitProcessRunnerInterface $runner;

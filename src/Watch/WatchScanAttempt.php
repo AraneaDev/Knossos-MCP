@@ -80,21 +80,25 @@ final readonly class WatchScanAttempt
         }
     }
 
+    /** The scan completed and the graph was updated. */
     public function isSuccess(): bool
     {
         return $this->outcome === self::SUCCESS;
     }
 
+    /** Stopped because cancellation was requested, so watching should end quietly. */
     public function isCancelled(): bool
     {
         return $this->outcome === self::CANCELLED;
     }
 
+    /** Transient — another writer held the lease, say — so the next poll should try again. */
     public function isRetryable(): bool
     {
         return $this->outcome === self::RETRYABLE;
     }
 
+    /** Failed in a way repeating will not fix; watching stops rather than spinning. */
     public function isTerminal(): bool
     {
         return $this->outcome === self::TERMINAL;

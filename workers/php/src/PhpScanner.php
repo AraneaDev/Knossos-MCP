@@ -11,6 +11,13 @@ use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\Parser;
 use PhpParser\ParserFactory;
 
+/**
+ * The PHP language scanner: parses files and emits contributions.
+ *
+ * Parses only — it never includes or executes the analysed code, which is what
+ * makes scanning an untrusted repository safe. A file it cannot parse becomes a
+ * diagnostic rather than failing the scan.
+ */
 final readonly class PhpScanner
 {
     /**

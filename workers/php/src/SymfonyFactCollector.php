@@ -12,6 +12,13 @@ use PhpParser\Node\Scalar;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeVisitorAbstract;
 
+/**
+ * Collects Symfony-specific facts from attributes and base classes.
+ *
+ * Routes, services, subscribers, and autowired dependencies: the wiring Symfony
+ * declares through attributes rather than through code the graph would otherwise
+ * see.
+ */
 final class SymfonyFactCollector extends NodeVisitorAbstract
 {
     /** @var array<string, array<string, mixed>> */

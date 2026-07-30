@@ -9,6 +9,15 @@ use Knossos\Scanner\Worker\ProcessScannerClient;
 use PDO;
 use Throwable;
 
+/**
+ * Checks that this installation can actually scan.
+ *
+ * Verifies the runtimes, required extensions, database integrity and migrations,
+ * data-directory writability, and starts each scanner worker to confirm it
+ * answers on the expected protocol. Every check is reported rather than thrown,
+ * so one failure does not hide the others — the usual reason to run this is that
+ * something already went wrong and the cause is not obvious.
+ */
 final readonly class DoctorService
 {
     public function __construct(private PDO $pdo, private string $installationRoot, private string $databasePath) {}

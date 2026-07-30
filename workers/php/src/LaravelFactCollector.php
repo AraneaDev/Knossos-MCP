@@ -7,6 +7,13 @@ namespace KnossosPhpScanner;
 use PhpParser\Node;
 use PhpParser\NodeVisitorAbstract;
 
+/**
+ * Collects Laravel-specific facts a plain AST pass would miss.
+ *
+ * Routes, container bindings, dispatches, and provider registries — all of which
+ * connect components through framework indirection rather than direct references,
+ * so without them the graph shows handlers nothing appears to call.
+ */
 final class LaravelFactCollector extends NodeVisitorAbstract
 {
     private readonly LaravelFactStore $facts;

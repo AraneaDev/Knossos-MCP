@@ -9,6 +9,13 @@ use Knossos\Query\ResultEnvelope;
 use PDO;
 use Throwable;
 
+/**
+ * Exports and imports a project's graph as a portable bundle.
+ *
+ * Lets a graph be produced once — in CI, say — and consumed elsewhere without a
+ * rescan. Redaction levels exist because paths are host-specific and sometimes
+ * sensitive, and a bundle travels further than the machine that made it.
+ */
 final readonly class GraphBundleService
 {
     public function __construct(private PDO $pdo) {}

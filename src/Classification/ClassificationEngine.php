@@ -7,6 +7,13 @@ namespace Knossos\Classification;
 use InvalidArgumentException;
 use Knossos\Scanner\Protocol\ScanContribution;
 
+/**
+ * Applies the role rules to a scanned graph.
+ *
+ * Rules only ever add facts, never mutate nodes, so two rules assigning different
+ * roles produce two attributable facts rather than a last-writer-wins result — the
+ * caller sees the disagreement instead of one arbitrary answer.
+ */
 final readonly class ClassificationEngine
 {
     /** @param list<ClassificationRule> $rules */

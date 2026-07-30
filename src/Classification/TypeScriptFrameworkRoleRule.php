@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Infers roles from TypeScript framework conventions such as Angular and Express handlers. */
 final readonly class TypeScriptFrameworkRoleRule implements ClassificationRule
 {
     private const ROLES = [

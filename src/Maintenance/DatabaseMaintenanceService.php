@@ -13,6 +13,14 @@ use PDO;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Housekeeping on the derived graph database.
+ *
+ * Integrity check, WAL checkpoint, optimize, atomic backup, and the destructive
+ * project and stale-scan removals. The destructive operations preview by default
+ * and act only when explicitly told to, because the caller is often an agent and
+ * a mistaken deletion is not recoverable from inside the session.
+ */
 final readonly class DatabaseMaintenanceService
 {
     public function __construct(private PDO $pdo, private string $databasePath) {}

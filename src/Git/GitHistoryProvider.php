@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace Knossos\Git;
 
+/**
+ * Contract for reading commit history.
+ *
+ * Abstracted so change-impact still answers on a tree that is not a Git checkout,
+ * and so tests need no fixture repository.
+ */
 interface GitHistoryProvider
 {
     /**

@@ -9,6 +9,7 @@ use Knossos\Bundle\GraphBundleService;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 
+/** `export-bundle` and `import-bundle`: move a graph between databases. */
 final class BundleCommand implements CliCommand
 {
     /** {@inheritDoc} */

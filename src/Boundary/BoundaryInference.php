@@ -9,6 +9,13 @@ use Knossos\Discovery\ProjectUnit;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\ScanContribution;
 
+/**
+ * Infers boundaries from directory structure when none are declared.
+ *
+ * A first approximation so policy checks and diagrams have something to work with
+ * on an unconfigured project; inferred boundaries are labelled as such, so they are
+ * never mistaken for an intentional architecture.
+ */
 final class BoundaryInference
 {
     private const SYNTHETIC_NODE_KINDS = ['route', 'endpoint'];

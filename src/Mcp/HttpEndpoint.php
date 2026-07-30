@@ -11,6 +11,17 @@ use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
 use RuntimeException;
 use Throwable;
 
+/**
+ * Streamable HTTP transport for the MCP endpoint.
+ *
+ * Deliberately constrained: one POST path, no SSE streaming, no server-initiated
+ * requests. Origin, Host, and bearer checks run before anything reads the body,
+ * and internal failures are reduced to a generic error so a SQLSTATE never
+ * reaches a client. Which protocol revision applies is decided per request, so
+ * the handshake-era session machinery here serves only clients that still need
+ * it. stdio remains the recommended transport; docs/operations/http-threat-model.md
+ * records what this profile does and does not defend against.
+ */
 final readonly class HttpEndpoint
 {
     /** Mirrored headers disagree with the request body, or a required one is absent. */

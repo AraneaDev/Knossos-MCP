@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Infers roles from NestJS decorators, which is where that framework declares them. */
 final readonly class NestJsRoleRule implements ClassificationRule
 {
     /** {@inheritDoc} */

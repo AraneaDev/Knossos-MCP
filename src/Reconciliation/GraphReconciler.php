@@ -14,6 +14,14 @@ use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Store\GraphRepository;
 use Knossos\Store\StableId;
 
+/**
+ * Merges scanner contributions into the persisted graph.
+ *
+ * The hard part is identity: facts arrive per file with canonical names, and have
+ * to become stable ids, resolved edges, and per-scanner ownership so one language's
+ * facts can be replaced without disturbing another's. Runs in one transaction — a
+ * partially reconciled graph would answer queries confidently and wrongly.
+ */
 final readonly class GraphReconciler
 {
     /**

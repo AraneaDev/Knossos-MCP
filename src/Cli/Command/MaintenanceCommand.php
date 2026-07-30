@@ -9,6 +9,7 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Runtime\DoctorService;
 
+/** Database upkeep and the destructive removals, each previewing unless `--execute` is given. */
 final class MaintenanceCommand implements CliCommand
 {
     /** {@inheritDoc} */

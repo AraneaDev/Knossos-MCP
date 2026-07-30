@@ -9,6 +9,7 @@ use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
 use Knossos\Scan\ProjectScanService;
 
+/** `scan`: build or refresh a project's graph, honouring interrupt signals. */
 final class ScanCommand implements CliCommand
 {
     /** {@inheritDoc} */

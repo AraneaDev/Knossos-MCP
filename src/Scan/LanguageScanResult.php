@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+/** One language's contributions and diagnostics from a scan. */
 final readonly class LanguageScanResult
 {
     /** @param list<object> $manifests @param list<object> $contributions @param list<object> $cacheEntries @param array<string, mixed> $scannerMetadata @param array<string, float> $stageMilliseconds */

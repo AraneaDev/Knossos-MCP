@@ -9,6 +9,13 @@ use Knossos\Store\SqliteConnection;
 use PDO;
 use RuntimeException;
 
+/**
+ * Locates and opens the runtime's shared resources.
+ *
+ * One place that knows where the graph database lives and where the packaged
+ * workers are, so the CLI, the stdio server, and the HTTP router cannot disagree
+ * about either.
+ */
 final class RuntimeFactory
 {
     /** @param string $installationRoot the Knossos install, holding migrations and the workers */

@@ -20,6 +20,13 @@ use Knossos\Classification\{
 };
 use Knossos\Scanner\Protocol\Confidence;
 
+/**
+ * Derives roles and boundaries from facts the workers reported.
+ *
+ * Runs after reconciliation because it reasons over the whole graph — a role rule
+ * may depend on a class's inheritance, which is only known once every file's facts
+ * are present.
+ */
 final readonly class ScanAnalysisPipeline
 {
     /** @param list<object> $contributions */

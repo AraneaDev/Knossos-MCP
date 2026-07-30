@@ -7,6 +7,12 @@ namespace Knossos\Scanner\Protocol;
 use InvalidArgumentException;
 use JsonSerializable;
 
+/**
+ * One component a scanner found: a class, method, function, route, and so on.
+ *
+ * A wire DTO rather than a graph row: workers are untrusted, so a fact is
+ * validated on arrival and only then persisted.
+ */
 final readonly class NodeFact implements JsonSerializable
 {
     /** @param array<string, scalar|null|array<mixed>> $attributes */

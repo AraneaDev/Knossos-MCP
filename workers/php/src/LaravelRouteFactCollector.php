@@ -9,6 +9,13 @@ use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
 
+/**
+ * Records routes declared through the Route facade, including nested groups.
+ *
+ * Group prefixes and middleware have to be composed as the traversal descends,
+ * since the registered URI exists only as the concatenation of its enclosing
+ * groups.
+ */
 final class LaravelRouteFactCollector
 {
     private const ROUTE_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'view', 'redirect'];

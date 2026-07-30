@@ -7,6 +7,13 @@ namespace Knossos\Scan;
 use Closure;
 use PDO;
 
+/**
+ * A held write lease on one project, released on destruction.
+ *
+ * Tied to object lifetime deliberately: a scan that dies mid-write would
+ * otherwise leave a lease no later scan could take, and the failure mode of a
+ * forgotten explicit release is a project that can never be scanned again.
+ */
 final class ProjectWriterLease
 {
     private bool $released = false;

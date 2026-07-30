@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+/**
+ * Decides which paths discovery skips.
+ *
+ * Dependency and build directories are excluded by default — scanning
+ * `node_modules` produces a graph about someone else's code — on top of whatever
+ * the project's own configuration adds.
+ */
 final readonly class IgnoreMatcher
 {
     private const EXCLUDED_SEGMENTS = [

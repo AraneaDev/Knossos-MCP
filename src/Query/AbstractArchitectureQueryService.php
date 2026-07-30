@@ -8,6 +8,14 @@ use Closure;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Shared foundation for the query services.
+ *
+ * Holds the edge-kind sets that decide what "reachable" and "impacted" mean, plus
+ * the confidence filtering and traversal limits every graph walk needs. Those sets
+ * live here rather than per service so two queries cannot quietly disagree about
+ * which relationships count as a dependency.
+ */
 abstract readonly class AbstractArchitectureQueryService
 {
     protected const FLOW_EDGE_KINDS = [

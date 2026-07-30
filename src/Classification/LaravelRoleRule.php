@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Infers roles from Laravel base classes and framework contracts a class extends or implements. */
 final readonly class LaravelRoleRule implements ClassificationRule
 {
     private const BASE_ROLES = [

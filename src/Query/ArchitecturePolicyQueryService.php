@@ -9,6 +9,14 @@ use InvalidArgumentException;
 use PDO;
 use Throwable;
 
+/**
+ * Evaluates declared architecture policies and budgets against the graph.
+ *
+ * Answers whether a relationship crosses a boundary it should not, and whether a
+ * change breaches a budget relative to a baseline snapshot. Violations carry the
+ * offending edge and its evidence, because a policy failure a developer cannot
+ * locate is a failure they will disable.
+ */
 final readonly class ArchitecturePolicyQueryService extends AbstractArchitectureQueryService
 {
     public function __construct(PDO $pdo, ?Closure $clock, private ?SemanticRanker $semanticRanker = null)

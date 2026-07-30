@@ -6,6 +6,12 @@ namespace Knossos\Cli;
 
 use InvalidArgumentException;
 
+/**
+ * Loads file arguments — policies, budgets, bundles — with their limits enforced.
+ *
+ * Centralised so every command applies the same size caps and the same "missing or
+ * malformed" diagnostics, rather than each inventing its own.
+ */
 final class CliInputLoader
 {
     /** @return list<array<string, mixed>> */

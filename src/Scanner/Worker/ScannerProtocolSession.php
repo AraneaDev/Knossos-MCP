@@ -9,6 +9,13 @@ use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
 use Throwable;
 
+/**
+ * Enforces the worker protocol's lifecycle and version agreement.
+ *
+ * Rejects a worker whose protocol version differs rather than half-understanding
+ * it, and keeps request/response ordering so a late reply is never matched to the
+ * wrong request.
+ */
 final class ScannerProtocolSession
 {
     private int $nextId = 1;
@@ -20,6 +27,8 @@ final class ScannerProtocolSession
         private readonly ProcessSupervisorInterface $process,
         private readonly RpcChannelInterface $channel,
     ) {}
+
+    /** Handshake with the worker and verify its identity and protocol version. */
 
     public function initialize(): ScannerManifest
     {
@@ -61,7 +70,11 @@ final class ScannerProtocolSession
         return $this->manifest = $manifest;
     }
 
-    /** @param list<string> $required */
+    /**
+     * Refuse a worker that does not declare the capabilities this scan needs.
+     *
+     * @param list<string> $required
+     */
     public function requireCapabilities(array $required): ScannerManifest
     {
         $manifest = $this->initialize();
@@ -157,6 +170,8 @@ final class ScannerProtocolSession
         ]);
     }
 
+    /** Discard a cancelled scan's pending reply so the channel is reusable rather than desynchronised. */
+
     private function drainAbandonedScan(int $id): void
     {
         if (!$this->process->isRunning()) {
@@ -186,6 +201,8 @@ final class ScannerProtocolSession
         }
     }
 
+    /** Ask the worker to exit cleanly, then release the channel. */
+
     public function shutdown(): void
     {
         if (!$this->process->isRunning()) {
@@ -201,11 +218,15 @@ final class ScannerProtocolSession
         }
     }
 
+    /** Release the channel without expecting a reply, for a worker already gone. */
+
     public function close(bool $terminate): void
     {
         $this->process->close($terminate);
         $this->manifest = null;
     }
+
+    /** Whatever the worker wrote to stderr, surfaced in diagnostics rather than discarded. */
 
     public function stderr(): string
     {
@@ -218,7 +239,11 @@ final class ScannerProtocolSession
         return $this->lastScanResult;
     }
 
-    /** @param array<string, mixed> $params @return array<string, mixed> */
+    /**
+     * Send one request and read its reply, under the deadline and size caps.
+     *
+     * @param array<string, mixed> $params @return array<string, mixed>
+     */
     private function request(string $method, array $params): array
     {
         $id = $this->nextId++;
@@ -251,7 +276,11 @@ final class ScannerProtocolSession
         }
     }
 
-    /** @param array<string, mixed> $message */
+    /**
+     * Validate a reply into a contribution, rejecting anything malformed.
+     *
+     * @param array<string, mixed> $message
+     */
     private function decodeContribution(array $message): ?ScanContribution
     {
         if (($message['method'] ?? null) !== 'scan/contribution') {
@@ -264,7 +293,11 @@ final class ScannerProtocolSession
         return ContributionDecoder::decode($params);
     }
 
-    /** @param array<string, mixed> $message */
+    /**
+     * Reject a reply whose id does not match the request, so a late answer is never mismatched.
+     *
+     * @param array<string, mixed> $message
+     */
     private function assertResponseId(array $message, int $expected): void
     {
         if (($message['id'] ?? null) !== $expected) {
@@ -272,7 +305,11 @@ final class ScannerProtocolSession
         }
     }
 
-    /** @param array<string, mixed> $message */
+    /**
+     * Turn a protocol error reply into a WorkerException with a stable diagnostic code.
+     *
+     * @param array<string, mixed> $message
+     */
     private function throwRpcError(array $message): void
     {
         if (!isset($message['error'])) {

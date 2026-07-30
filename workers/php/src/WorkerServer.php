@@ -6,6 +6,12 @@ namespace KnossosPhpScanner;
 
 use Throwable;
 
+/**
+ * The worker's protocol loop: reads requests, dispatches, replies.
+ *
+ * Stdout carries protocol frames only, so anything diagnostic goes to stderr — a
+ * stray write would corrupt the stream the host is parsing.
+ */
 final class WorkerServer
 {
     public const VERSION = '0.2.0';

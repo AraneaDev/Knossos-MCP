@@ -7,6 +7,14 @@ namespace Knossos\Store;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Opens SQLite with the settings the rest of the store assumes.
+ *
+ * WAL so a scan's writes do not block concurrent reads, enforced foreign keys so
+ * a partial graph cannot survive, and exceptions rather than silent false
+ * returns. Centralised because a connection opened without these behaves subtly
+ * differently, and the difference only shows up under concurrency.
+ */
 final class SqliteConnection
 {
     private function __construct() {}

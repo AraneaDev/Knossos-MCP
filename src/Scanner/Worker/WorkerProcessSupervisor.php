@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace Knossos\Scanner\Worker;
 
+/**
+ * Owns a worker's OS process and pipes.
+ *
+ * Termination is deliberate: a worker that ignores a graceful stop is signalled,
+ * because a scan must not leave orphaned analysers holding memory after it exits.
+ */
 final class WorkerProcessSupervisor implements ProcessSupervisorInterface
 {
     /** @var resource|null */

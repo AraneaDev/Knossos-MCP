@@ -7,6 +7,12 @@ namespace Knossos\Bundle;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Writes a decoded bundle into the local database as a new project.
+ *
+ * Transactional: a failure part-way leaves no project rather than a partial graph
+ * that would answer queries confidently and wrongly.
+ */
 final readonly class PortableGraphImporter
 {
     public function __construct(private PDO $pdo) {}

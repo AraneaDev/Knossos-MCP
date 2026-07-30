@@ -6,6 +6,12 @@ namespace Knossos\Cli;
 
 use InvalidArgumentException;
 
+/**
+ * Parses `--flag` and `--key=value` arguments against a command's allow-list.
+ *
+ * Repeatable options collect rather than overwrite, so `--allow-root` can be given
+ * more than once; an empty value is rejected rather than treated as absent.
+ */
 final class CliOptionParser
 {
     /** @param list<string> $arguments @return array{0: list<string>, 1: array<string, list<string>>} */

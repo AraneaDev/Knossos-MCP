@@ -10,6 +10,14 @@ use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer};
 use Knossos\Store\StableId;
 use PDO;
 
+/**
+ * Turns a scan request into a plan.
+ *
+ * Resolves project configuration, discovers files, decides full versus
+ * incremental, and computes the analyzer hashes reuse is keyed on. Allowed roots
+ * are resolved here at call time, so a project granted after the server started is
+ * scannable without a restart.
+ */
 final readonly class ScanPlanner
 {
     private readonly AllowedRoots $roots;

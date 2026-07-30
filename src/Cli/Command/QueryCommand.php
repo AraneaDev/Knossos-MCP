@@ -12,6 +12,13 @@ use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
 
+/**
+ * Every read-only query as a CLI command.
+ *
+ * One command class for all of them because they share option parsing, envelope
+ * rendering, and the `--json` contract; splitting them would duplicate that three
+ * dozen times.
+ */
 final class QueryCommand implements CliCommand
 {
     private const COMMANDS = [

@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\RelativePath;
 use RuntimeException;
 use Throwable;
 
+/** Reads the working-tree diff by running `git`, under the same deadline and output caps. */
 final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProvider
 {
     private GitProcessRunnerInterface $runner;

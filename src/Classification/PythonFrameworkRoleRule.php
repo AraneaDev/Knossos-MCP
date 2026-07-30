@@ -8,6 +8,7 @@ use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Protocol\Origin;
 
+/** Infers roles from Django and FastAPI conventions and base classes. */
 final readonly class PythonFrameworkRoleRule implements ClassificationRule
 {
     private const ROLES = [

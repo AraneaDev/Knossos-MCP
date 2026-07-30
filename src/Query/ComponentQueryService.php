@@ -7,6 +7,13 @@ namespace Knossos\Query;
 use InvalidArgumentException;
 use PDO;
 
+/**
+ * Finds and inspects individual components.
+ *
+ * Name lookup is deliberately fuzzy — a caller rarely knows the fully-qualified
+ * name — while an ambiguous match is reported as ambiguous rather than resolved to
+ * a guess.
+ */
 final readonly class ComponentQueryService extends AbstractArchitectureQueryService
 {
     public function findComponent(string $projectId, string $name, int $limit = 20): ResultEnvelope

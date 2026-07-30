@@ -10,6 +10,15 @@ use PDO;
 use PDOStatement;
 use Throwable;
 
+/**
+ * SQLite implementation of the graph store.
+ *
+ * Writes go through BEGIN IMMEDIATE rather than PDO's deferred transaction,
+ * because a read-then-write upgrade under WAL can hit a non-retryable
+ * SQLITE_BUSY; nesting is handled with savepoints so a reconciler already inside
+ * a transaction can call these methods safely. Prepared statements are cached,
+ * since a scan replays the same handful of inserts thousands of times.
+ */
 final class SqliteGraphRepository implements GraphRepository
 {
     /** @var array<string, PDOStatement> */

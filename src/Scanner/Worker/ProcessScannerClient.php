@@ -7,6 +7,7 @@ namespace Knossos\Scanner\Worker;
 use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\ScannerClient;
 
+/** Drives a scanner running as a child process: initialize, discover, scan, shutdown. */
 final class ProcessScannerClient implements ScannerClient
 {
     private readonly ScannerProtocolSession $session;

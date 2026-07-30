@@ -11,6 +11,14 @@ use PhpParser\Node\Name;
 use PhpParser\Node\Stmt;
 use PhpParser\NodeVisitorAbstract;
 
+/**
+ * Collects the language-level facts for one PHP file.
+ *
+ * Declarations, inheritance, signature types, calls, and instantiations, with light
+ * variable-type tracking so `$x = new Foo; $x->bar()` resolves to Foo rather than
+ * being dropped. Anything not provable from syntax is recorded at lower confidence
+ * or not at all.
+ */
 final class FactCollector extends NodeVisitorAbstract
 {
     use ResolvesDeclarationName;
@@ -31,6 +39,7 @@ final class FactCollector extends NodeVisitorAbstract
     private array $callables = [];
 
     public function __construct(private readonly string $relativePath) {}
+    /** Collect whatever facts this node declares as the traversal enters it. */
 
     public function enterNode(Node $node): ?int
     {
@@ -64,6 +73,7 @@ final class FactCollector extends NodeVisitorAbstract
 
         return null;
     }
+    /** Unwind scope on the way out, keeping enclosing-class attribution correct. */
 
     public function leaveNode(Node $node): ?int
     {
@@ -76,19 +86,31 @@ final class FactCollector extends NodeVisitorAbstract
         return null;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The node facts collected from this file.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function nodes(): array
     {
         return $this->nodes;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The edge facts collected from this file.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function edges(): array
     {
         return $this->edges;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * What could not be analysed, reported rather than thrown.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function diagnostics(): array
     {
         return $this->diagnostics;

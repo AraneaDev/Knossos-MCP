@@ -12,6 +12,14 @@ use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 use Throwable;
 
+/**
+ * Rescans a project as its files change.
+ *
+ * Polls a content fingerprint rather than using filesystem notifications, so
+ * behaviour is identical across platforms and inside containers where inotify is
+ * unreliable. Bursts are debounced and coalesced into one rescan, and repeated
+ * failures back off exponentially so a persistently broken tree does not spin.
+ */
 final readonly class WatchService
 {
     private const MAX_BACKOFF_MS = 30_000;

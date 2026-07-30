@@ -6,6 +6,7 @@ namespace Knossos\Scanner\Worker;
 
 use InvalidArgumentException;
 
+/** Resource caps applied to a worker process, so an analyser cannot exhaust the host. */
 final readonly class WorkerLimits
 {
     public function __construct(
