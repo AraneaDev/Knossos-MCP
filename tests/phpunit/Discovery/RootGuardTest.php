@@ -92,7 +92,11 @@ final class RootGuardTest extends TestCase
             DiscoveryException::class,
         );
 
-        assertSame('Project root is outside the configured allowed roots.', $error->getMessage());
+        // The rejection must name the rejected path and the roots in force. A
+        // bare "outside the allowed roots" leaves a caller with nothing to act
+        // on, which is how agents end up guessing at paths.
+        $this->assertStringContainsString('Project root is outside the configured allowed roots: ' . $outside, $error->getMessage());
+        $this->assertStringContainsString('Configured roots: ' . $allowed, $error->getMessage());
     }
 
     public function testResolveSkipsNonExistentAllowedRootAndFallsThroughToOutsideError(): void
@@ -110,7 +114,7 @@ final class RootGuardTest extends TestCase
             DiscoveryException::class,
         );
 
-        $this->assertStringStartsWith('Project root is outside the configured allowed roots.', $error->getMessage());
+        $this->assertStringStartsWith('Project root is outside the configured allowed roots:', $error->getMessage());
     }
 
     public function testResolveSkipsNonExistentAllowedRootAndMatchesLaterValidRoot(): void

@@ -180,12 +180,53 @@ final class HttpTest extends KnossosTestCase
         $session = $init['headers']['Mcp-Session-Id'];
         $sessionHeaders = $authHeaders + ['Mcp-Session-Id' => $session];
         $backstop->handle('POST', $sessionHeaders, json_encode(['jsonrpc' => '2.0', 'method' => 'notifications/initialized'], JSON_THROW_ON_ERROR));
-        $failure = $backstop->handle('POST', $sessionHeaders, json_encode(['jsonrpc' => '2.0', 'id' => 5, 'method' => 'resources/list', 'params' => []], JSON_THROW_ON_ERROR));
+        // The endpoint logs the suppressed detail for the operator, which is the
+        // point: the response must stay generic while the cause stays
+        // diagnosable. PHPUnit captures error_log() and reprints it, so without
+        // redirecting it this deliberate failure prints a SQLSTATE mid-run that
+        // reads like a broken test. Redirect for this call only, so a *real*
+        // unexpected error elsewhere in the suite still surfaces.
+        $failure = self::withErrorLogRedirected(
+            static fn(): array => $backstop->handle('POST', $sessionHeaders, json_encode(['jsonrpc' => '2.0', 'id' => 5, 'method' => 'resources/list', 'params' => []], JSON_THROW_ON_ERROR)),
+        );
         assertSame(500, $failure['status']);
         $payload = json_decode($failure['body'], true, 512, JSON_THROW_ON_ERROR);
         assertSame(-32603, $payload['error']['code']);
         assertSame('Internal error', $payload['error']['message']);
         assertSame(false, str_contains($failure['body'], 'no such table'));
+        // The detail the response withheld is still recorded for the operator.
+        assertContains('no such table', self::$lastErrorLog);
+    }
+
+    /** The error_log() output captured by the most recent {@see withErrorLogRedirected()} call. */
+    private static string $lastErrorLog = '';
+
+    /**
+     * Run $operation with error_log() pointed at a temporary file.
+     *
+     * Scoped to one call rather than the whole suite: PHPUnit surfacing
+     * unexpected error_log() output is a feature worth keeping, so only the
+     * deliberately-provoked failures opt out of it.
+     *
+     * @template T
+     * @param callable(): T $operation
+     * @return T
+     */
+    private static function withErrorLogRedirected(callable $operation): mixed
+    {
+        $capture = tempnam(sys_get_temp_dir(), 'knossos-errorlog-');
+        if ($capture === false) {
+            throw new RuntimeException('Unable to allocate an error-log capture file.');
+        }
+        $previous = ini_get('error_log');
+        ini_set('error_log', $capture);
+        try {
+            return $operation();
+        } finally {
+            $previous === false ? ini_restore('error_log') : ini_set('error_log', $previous);
+            self::$lastErrorLog = (string) @file_get_contents($capture);
+            @unlink($capture);
+        }
     }
 
     #[Group('http')]

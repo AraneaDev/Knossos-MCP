@@ -171,7 +171,7 @@ final class ScannerProtocolSessionTest extends TestCase
 
     // ── initialize() ───────────────────────────────────────────────────────
 
-    private function makeManifestResult(string $protocolVersion = null, string $schemaVersion = null): array
+    private function makeManifestResult(?string $protocolVersion = null, ?string $schemaVersion = null): array
     {
         return [
             'id' => 'php-scanner',

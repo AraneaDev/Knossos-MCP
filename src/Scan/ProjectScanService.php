@@ -17,11 +17,11 @@ final class ProjectScanService implements ProjectScanner
     private readonly ScanAnalysisPipeline $analysisPipeline;
     private readonly ScanResultFactory $resultFactory;
 
-    /** @param list<string> $allowedRoots */
+    /** @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots */
     public function __construct(
         private PDO $pdo,
         string $installationRoot,
-        array $allowedRoots,
+        \Knossos\Discovery\AllowedRoots|array $allowedRoots,
     ) {
         $this->planner = new ScanPlanner($pdo, $allowedRoots);
         $this->workerPool = new LanguageWorkerPool();

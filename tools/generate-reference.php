@@ -19,6 +19,10 @@ $tools = new ToolService(
     new ArchitectureQueryService($pdo),
     new DatabaseMaintenanceService($pdo, ':memory:'),
     new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+    // Wired so the reference documents the full surface. A ToolService without
+    // an environment hides server_info and diagnose_runtime, which every real
+    // server binary does offer.
+    new \Knossos\Runtime\ServerEnvironment(new \Knossos\Discovery\AllowedRoots([$root]), ':memory:', $root, $pdo),
 );
 
 $process = proc_open([PHP_BINARY, $root . '/bin/knossos', 'help'], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, $root);

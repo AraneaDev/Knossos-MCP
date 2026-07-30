@@ -16,8 +16,8 @@ final class ProjectConfigurationLoader
 
     private function __construct() {}
 
-    /** @param list<string> $allowedRoots */
-    public static function load(string $requestedRoot, array $allowedRoots): ProjectConfiguration
+    /** @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots */
+    public static function load(string $requestedRoot, \Knossos\Discovery\AllowedRoots|array $allowedRoots): ProjectConfiguration
     {
         $root = (new RootGuard($allowedRoots))->resolve($requestedRoot);
         $json = $root . '/knossos.json';

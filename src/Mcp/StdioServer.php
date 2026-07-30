@@ -6,18 +6,33 @@ namespace Knossos\Mcp;
 
 use JsonException;
 use Knossos\Application;
+use Knossos\Mcp\Protocol\ProtocolNegotiator;
+use Knossos\Mcp\Protocol\ProtocolProfile;
+use Knossos\Mcp\Protocol\UnsupportedProtocolVersionException;
 use Knossos\Scan\CancellationToken;
 use Throwable;
 
 final class StdioServer
 {
+    /**
+     * The revision reported by the `initialize` handshake.
+     *
+     * Handshake-era clients are by definition `2025-11-25` clients; newer
+     * revisions removed `initialize` and announce themselves per request. The
+     * full supported set lives in {@see ProtocolNegotiator::SUPPORTED} and is
+     * advertised through `server/discover`.
+     */
     public const PROTOCOL_VERSION = '2025-11-25';
+    private const INSTRUCTIONS = 'Call scan_project first, then query its returned project_id.';
     /** Ceiling on lines parked during cancellation polling, so a flood cannot grow memory without bound. */
     private const MAX_PENDING_LINES = 1024;
     /** Idle seconds before the server pings the client to keep the stdio transport warm. */
     private const KEEPALIVE_INTERVAL_SECONDS = 25.0;
     private bool $initialized = false;
     private int $keepaliveSequence = 0;
+    private readonly ProtocolNegotiator $negotiator;
+    /** The revision governing the most recent request; null until one arrives. */
+    private ?ProtocolProfile $profile = null;
     /** @var resource|null */
     private $input = null;
     /** @var list<string> */
@@ -35,7 +50,9 @@ final class StdioServer
         // Seam for tests: report readability without a real timed stream_select.
         // Production leaves this null and polls the input stream directly.
         private readonly ?\Closure $readinessWaiter = null,
-    ) {}
+    ) {
+        $this->negotiator = new ProtocolNegotiator();
+    }
 
     /** @param resource $input @param resource $output @param resource $errors */
     public function run($input, $output, $errors): int
@@ -115,6 +132,37 @@ final class StdioServer
             return $this->error($id, -32602, 'Params must be an object.');
         }
 
+        try {
+            $profile = $this->negotiator->select($message);
+        } catch (UnsupportedProtocolVersionException $unsupported) {
+            return $this->error($id, $unsupported->getCode(), $unsupported->getMessage(), $unsupported->data());
+        }
+        $this->profile = $profile;
+
+        $response = $this->dispatchMethod($method, $id, $params, $profile);
+        // Envelope rules are the one thing that varies per revision, so they are
+        // applied once here rather than at every success() call site.
+        if ($response !== null && isset($response['result']) && is_array($response['result'])) {
+            $response['result'] = $profile->decorate($response['result'], $method);
+        }
+
+        return $response;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     * @return array<string, mixed>|null
+     */
+    private function dispatchMethod(string $method, mixed $id, array $params, ProtocolProfile $profile): ?array
+    {
+        if ($method === 'server/discover') {
+            return $this->success($id, [
+                'protocolVersions' => ProtocolNegotiator::supported(),
+                'capabilities' => $this->capabilities(true),
+                'serverInfo' => self::serverInfo(),
+                'instructions' => self::INSTRUCTIONS,
+            ]);
+        }
         if ($method === 'initialize') {
             $requested = $params['protocolVersion'] ?? null;
             if (!is_string($requested)) {
@@ -122,25 +170,18 @@ final class StdioServer
             }
             return $this->success($id, [
                 'protocolVersion' => self::PROTOCOL_VERSION,
-                'capabilities' => [
-                    'tools' => ['listChanged' => false],
-                    ...($this->resources === null ? [] : ['resources' => ['subscribe' => false, 'listChanged' => false]]),
-                    ...($this->prompts === null ? [] : ['prompts' => ['listChanged' => false]]),
-                ],
-                'serverInfo' => [
-                    'name' => 'knossos', 'title' => 'Knossos Architecture Intelligence',
-                    'version' => Application::VERSION,
-                    'description' => 'Evidence-backed architecture graph for PHP and TypeScript projects.',
-                ],
-                'instructions' => 'Call scan_project first, then query its returned project_id.',
+                'capabilities' => $this->capabilities(false),
+                'serverInfo' => self::serverInfo(),
+                'instructions' => self::INSTRUCTIONS,
             ]);
         }
         if ($method === 'ping') {
             return $this->success($id, (object) []);
         }
-        if (!$this->initialized) {
-            // Distinct from -32002 (used below for a missing resource) so a
-            // client can tell "not initialized yet" from "no such resource".
+        if ($profile->requiresHandshake() && !$this->initialized) {
+            // Distinct from the resource-not-found code so a client can tell
+            // "not initialized yet" from "no such resource". Unreachable for
+            // revisions that removed the handshake.
             return $this->error($id, -32003, 'Server has not received notifications/initialized.');
         }
         if ($method === 'tools/list') {
@@ -204,7 +245,7 @@ final class StdioServer
             }
             $result = $this->resources->read($uri);
             return $result === null
-                ? $this->error($id, -32002, 'Resource not found: ' . $uri)
+                ? $this->error($id, $profile->resourceNotFoundCode(), 'Resource not found: ' . $uri)
                 : $this->success($id, $result);
         }
 
@@ -232,10 +273,46 @@ final class StdioServer
         return ['jsonrpc' => '2.0', 'id' => $id, 'result' => $result];
     }
 
-    /** @return array<string, mixed> */
-    private function error(mixed $id, int $code, string $message): array
+    /** @param array<string, mixed>|null $data @return array<string, mixed> */
+    private function error(mixed $id, int $code, string $message, ?array $data = null): array
     {
-        return ['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => $code, 'message' => $message]];
+        $error = ['code' => $code, 'message' => $message];
+        if ($data !== null) {
+            $error['data'] = $data;
+        }
+
+        return ['jsonrpc' => '2.0', 'id' => $id, 'error' => $error];
+    }
+
+    /**
+     * Server capabilities, shared by `initialize` and `server/discover`.
+     *
+     * `extensions` is declared empty for `server/discover`: Knossos implements
+     * no optional extension yet, but the field's presence is how a client learns
+     * that — its absence would be indistinguishable from a server too old to
+     * report any. It is withheld from `initialize`, whose revision predates the
+     * field, so handshake-era responses stay byte-identical.
+     *
+     * @return array<string, mixed>
+     */
+    private function capabilities(bool $withExtensions): array
+    {
+        return [
+            'tools' => ['listChanged' => false],
+            ...($this->resources === null ? [] : ['resources' => ['subscribe' => false, 'listChanged' => false]]),
+            ...($this->prompts === null ? [] : ['prompts' => ['listChanged' => false]]),
+            ...($withExtensions ? ['extensions' => (object) []] : []),
+        ];
+    }
+
+    /** @return array<string, string> */
+    private static function serverInfo(): array
+    {
+        return [
+            'name' => 'knossos', 'title' => 'Knossos Architecture Intelligence',
+            'version' => Application::VERSION,
+            'description' => 'Evidence-backed architecture graph for PHP and TypeScript projects.',
+        ];
     }
 
     /** A tools/call failure that ran the tool: reported as an isError result, not a JSON-RPC error. @return array<string, mixed> */
@@ -278,8 +355,16 @@ final class StdioServer
             // Wait for input, but wake on the keepalive interval so an idle
             // connection is pinged instead of sitting silent until the host
             // decides the server is dead and closes the transport.
+            //
+            // Only revisions that still define `ping` are pinged. A client that
+            // has not identified itself yet is: pinging is harmless (an
+            // unrecognised request draws -32601, which handle() discards), while
+            // staying silent towards a handshake-era client would resurrect the
+            // idle-disconnect this keepalive exists to prevent.
             if ($this->awaitReadable($input) === 0) {
-                $this->sendKeepalive($output);
+                if ($this->profile?->emitsKeepalive() ?? true) {
+                    $this->sendKeepalive($output);
+                }
                 continue;
             }
             $chunk = fread($input, 8192);

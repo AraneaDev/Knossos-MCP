@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
+use Knossos\Runtime\ServerEnvironment;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
 
@@ -18,22 +19,51 @@ final readonly class ToolService
         private ArchitectureQueryService $queries,
         private DatabaseMaintenanceService $maintenance,
         private ResultEnricher $enricher,
+        // Optional so the many fixtures that build a ToolService directly need
+        // no runtime wiring; the server binaries always supply one.
+        private ?ServerEnvironment $environment = null,
     ) {}
 
     /** @return list<array<string, mixed>> */
     public function definitions(): array
     {
-        return self::allDefinitions();
+        return self::allDefinitions($this->environment !== null);
     }
 
     /** @return list<array<string, mixed>> */
-    private static function allDefinitions(): array
+    private static function allDefinitions(bool $withEnvironment = true): array
     {
         return [
+            // Advertised only when the server can actually answer them, so the
+            // tool list never promises something this wiring cannot do.
+            ...($withEnvironment ? self::environmentDefinitions() : []),
             ...self::projectDefinitions(),
             ...self::componentDefinitions(),
             ...self::analysisDefinitions(),
             ...self::maintenanceDefinitions(),
+        ];
+    }
+
+    /**
+     * Self-description: where the server may read, and whether it is healthy.
+     *
+     * @return list<array<string, mixed>>
+     */
+    private static function environmentDefinitions(): array
+    {
+        return [
+            [
+                'name' => 'server_info', 'title' => 'Server info',
+                'description' => 'Where this server may read and what it is. Call this first in an unfamiliar setup, or whenever a path is rejected: it returns the allowed roots, the roots file to extend to add a project, the data directory, and whether the server runs in a container (where host paths are not its paths).',
+                'inputSchema' => ['type' => 'object', 'properties' => (object) [], 'additionalProperties' => false],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
+            [
+                'name' => 'diagnose_runtime', 'title' => 'Diagnose runtime',
+                'description' => 'Check the runtimes, scanner workers, protocol, database, and migrations. Use when a scan fails for no obvious reason. Slower than server_info because it starts each language worker.',
+                'inputSchema' => ['type' => 'object', 'properties' => (object) [], 'additionalProperties' => false],
+                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            ],
         ];
     }
 
@@ -857,6 +887,8 @@ final readonly class ToolService
     private function dispatch(string $name, array $arguments, ?CancellationToken $cancellation): ResultEnvelope
     {
         return match ($name) {
+            'server_info' => $this->serverInfo($arguments),
+            'diagnose_runtime' => $this->diagnoseRuntime($arguments),
             'list_projects' => $this->projects($arguments),
             'scan_project' => $this->scan($arguments, $cancellation),
             'list_snapshots' => $this->snapshots($arguments),
@@ -890,6 +922,66 @@ final readonly class ToolService
             'maintain_database' => $this->maintainDatabase($arguments),
             default => throw new InvalidArgumentException(sprintf('Unknown tool: %s', $name)),
         };
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function serverInfo(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, [], []);
+        $environment = $this->requireEnvironment('server_info');
+        $info = $environment->describe();
+        /** @var list<array{path: string, source: string, exists: bool}> $roots */
+        $roots = $info['allowed_roots'];
+        /** @var list<string> $unreachable */
+        $unreachable = $info['unreachable_roots'];
+
+        $warnings = [];
+        if ($roots === []) {
+            $warnings[] = sprintf(
+                'No roots are configured, so no project can be scanned. Create %s containing {"roots": ["/absolute/path"]}; it is re-read per request.',
+                (string) ($info['roots_file'] ?? '<no roots file configured>'),
+            );
+        }
+        if ($unreachable !== []) {
+            // Almost always a host path handed to a containerised server, or a
+            // root configured on another machine. Both look fine until a scan.
+            $warnings[] = 'These configured roots do not exist on this server: ' . implode(', ', $unreachable);
+        }
+
+        return new ResultEnvelope(
+            'server',
+            '',
+            sprintf('Knossos %s with %d allowed root(s).', (string) $info['version'], count($roots)),
+            $info,
+            warnings: $warnings,
+        );
+    }
+
+    /** @param array<string, mixed> $arguments */
+    private function diagnoseRuntime(array $arguments): ResultEnvelope
+    {
+        self::keys($arguments, [], []);
+        $result = $this->requireEnvironment('diagnose_runtime')->doctor()->run();
+        $failed = array_values(array_filter($result['checks'], static fn(array $check): bool => $check['status'] !== 'ok'));
+
+        return new ResultEnvelope(
+            'server',
+            '',
+            $result['ok']
+                ? sprintf('All %d runtime checks passed.', count($result['checks']))
+                : sprintf('%d of %d runtime checks failed.', count($failed), count($result['checks'])),
+            $result,
+            warnings: array_map(static fn(array $check): string => $check['name'] . ': ' . $check['detail'], $failed),
+        );
+    }
+
+    private function requireEnvironment(string $tool): ServerEnvironment
+    {
+        // Unreachable through a server binary, which always wires an
+        // environment; reachable only if a caller builds a ToolService by hand.
+        return $this->environment ?? throw new InvalidArgumentException(
+            sprintf('%s is unavailable: this server was built without runtime environment wiring.', $tool),
+        );
     }
 
     /** @param array<string, mixed> $arguments */
