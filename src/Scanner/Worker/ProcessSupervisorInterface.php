@@ -12,8 +12,10 @@ namespace Knossos\Scanner\Worker;
  */
 interface ProcessSupervisorInterface
 {
+    /** Spawn the process. Throws rather than returning a half-started supervisor. */
     public function start(): void;
 
+    /** Whether the process is still alive, as of the last status refresh. */
     public function isRunning(): bool;
 
     /** @return resource */
@@ -39,5 +41,11 @@ interface ProcessSupervisorInterface
      */
     public function status(): array;
 
+    /**
+     * Release the process and its pipes.
+     *
+     * @param bool $terminate true to signal the process rather than waiting for it
+     *                        to exit on its own — used when a deadline has passed.
+     */
     public function close(bool $terminate): void;
 }

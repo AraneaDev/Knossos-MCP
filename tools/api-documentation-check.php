@@ -5,7 +5,16 @@ declare(strict_types=1);
 $root = dirname(__DIR__);
 $failures = [];
 $checked = [];
-foreach (glob($root . '/src/*/*.php') ?: [] as $path) {
+// Recursive, not glob('/src/*/*.php'): that pattern matches exactly one
+// directory deep, so interfaces nested deeper (Mcp/Protocol/ProtocolProfile,
+// Scanner/Worker/*Interface) were silently skipped while the gate still
+// reported a contract count that read as complete.
+$sourceFiles = new RegexIterator(
+    new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root . '/src', FilesystemIterator::SKIP_DOTS)),
+    '/\\.php$/',
+);
+foreach ($sourceFiles as $file) {
+    $path = $file->getPathname();
     $source = (string) file_get_contents($path);
     // Anchored to a declaration, not to the word: matching `interface` anywhere
     // let prose ("every interface and enum") pull a plain class into the gate

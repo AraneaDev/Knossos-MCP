@@ -52,9 +52,20 @@ final class DocumentationTest extends KnossosTestCase
             throw new RuntimeException($errors);
         }
 
+        // Discovery must span the same files as tools/api-documentation-check.php,
+        // which recurses. A one-level glob here would report every interface
+        // nested deeper (Mcp/Protocol, Scanner/Worker) as an unknown contract
+        // purely because this side could not see it.
         $declared = [];
-        foreach (glob($root . '/src/*/*.php') ?: [] as $path) {
-            if (preg_match('/^\s*interface\s+(\w+)/m', (string) file_get_contents($path), $match) === 1) {
+        /** @var iterable<\SplFileInfo> $files */
+        $files = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root . '/src', \FilesystemIterator::SKIP_DOTS),
+        );
+        foreach ($files as $file) {
+            if (!$file->isFile() || $file->getExtension() !== 'php') {
+                continue;
+            }
+            if (preg_match('/^\s*interface\s+(\w+)/m', (string) file_get_contents($file->getPathname()), $match) === 1) {
                 $declared[$match[1]] = true;
             }
         }
