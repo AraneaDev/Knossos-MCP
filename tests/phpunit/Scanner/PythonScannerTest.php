@@ -79,11 +79,14 @@ final class PythonScannerTest extends KnossosTestCase
             WorkerException::class,
         );
         assertSame('WORKER_RPC_ERROR', $error->diagnosticCode);
-        $error = captureThrows(
-            fn() => iterator_to_array($client->scan(['root' => $root, 'files' => ['shop/service.py'], 'limits' => ['max_file_bytes' => 1]])),
-            WorkerException::class,
-        );
-        assertSame('WORKER_RPC_ERROR', $error->diagnosticCode);
+        // A file over the byte cap is well-formed, so it costs only itself: the
+        // request succeeds and the file arrives as a diagnostic-only contribution.
+        $contributions = iterator_to_array($client->scan(
+            ['root' => $root, 'files' => ['shop/service.py'], 'limits' => ['max_file_bytes' => 1]],
+        ));
+        assertSame(1, count($contributions));
+        assertSame([], $contributions[0]->nodes);
+        assertSame('PY_UNSCANNABLE_FILE', $contributions[0]->diagnostics[0]->code);
     }
 
     #[Group('python-scanner')]
@@ -166,7 +169,11 @@ final class PythonScannerTest extends KnossosTestCase
             ];
             $responses = $this->runPythonWorkerProtocol($messages);
             $errors = array_values(array_filter($responses, fn(array $frame): bool => isset($frame['error'])));
-            assertSame(10, count($errors));
+            // Nine, not ten: `notes.txt` (id 8) names a real file of a kind this
+            // worker does not scan, so it is reported against that file rather
+            // than failing the request. Malformed paths — `bad\path.py` (id 7) —
+            // are still request-level errors.
+            assertSame(9, count($errors));
             assertSame(-32602, $errors[0]['error']['code']);
             assertSame('bye', array_values(array_filter(
                 $responses,
@@ -176,7 +183,14 @@ final class PythonScannerTest extends KnossosTestCase
                 $responses,
                 fn(array $frame): bool => ($frame['method'] ?? null) === 'scan/contribution',
             ));
-            assertSame(2, count($contributions));
+            // Three: the two scanned files, plus the diagnostic-only contribution
+            // that reports why `notes.txt` was skipped.
+            assertSame(3, count($contributions));
+            $skipped = array_values(array_filter(
+                $contributions,
+                fn(array $frame): bool => $frame['params']['owner_key'] === 'knossos.python:file:notes.txt',
+            ))[0];
+            assertSame('PY_UNSCANNABLE_FILE', $skipped['params']['diagnostics'][0]['code']);
             $edgeContribution = array_values(array_filter(
                 $contributions,
                 fn(array $frame): bool => $frame['params']['owner_key'] === 'knossos.python:file:edge.py',

@@ -142,10 +142,15 @@ def test_scan_is_deterministic_and_sorted(worker: ModuleType, project, scan_coll
     ]
 
 
-def test_oversized_file_aborts_request(worker: ModuleType, project, scan_collect) -> None:
-    root = project({"big.py": "x = 1\n" * 100})
-    with pytest.raises(ValueError):
-        scan_collect(root, ["big.py"], limits={"max_file_bytes": 5})
+def test_oversized_file_costs_only_itself(worker: ModuleType, project, scan_collect) -> None:
+    # The path is well-formed, so the request succeeds and the file arrives as a
+    # diagnostic-only contribution; aborting would discard every other file's facts.
+    root = project({"big.py": "x = 1\n" * 100, "small.py": "y = 2\n"})
+    contributions = scan_collect(root, ["big.py", "small.py"], limits={"max_file_bytes": 40})
+    by_owner = {c["owner_key"]: c for c in contributions}
+    assert _diag_codes(by_owner["knossos.python:file:big.py"]) == ["PY_UNSCANNABLE_FILE"]
+    assert by_owner["knossos.python:file:big.py"]["nodes"] == []
+    assert by_owner["knossos.python:file:small.py"]["nodes"] != []
 
 
 def test_unsafe_path_aborts_request(worker: ModuleType, project, scan_collect) -> None:
