@@ -348,4 +348,66 @@ final class HttpTest extends KnossosTestCase
         return [$endpoint, $headers];
     }
 
+
+    /**
+     * The request cap admits a body of exactly its size.
+     *
+     * Same shape as the stdio caps: the existing oversized-body test passes under
+     * both `>` and `>=`, so the mutant that shifts the effective limit by one byte
+     * survived. Pinning the accepted side is what makes the limit a limit.
+     */
+    #[Group('http')]
+    public function testARequestBodyOfExactlyTheCapIsAcceptedAndOneMoreByteIsRejected(): void
+    {
+        [, $headers] = $this->modernEndpoint();
+        // The 2026-07-28 profile mirrors the RPC method into a header.
+        $headers['Mcp-Method'] = 'initialize';
+        $body = self::initializeBodyOfExactly(512);
+        assertSame(512, strlen($body));
+
+        $capped = $this->cappedEndpoint(512);
+        $atCap = $capped->handle('POST', $headers, $body, '127.0.0.1');
+        assertSame(200, $atCap['status']);
+
+        $overCap = $this->cappedEndpoint(511)->handle('POST', $headers, $body, '127.0.0.1');
+        assertSame(413, $overCap['status']);
+        assertContains('byte limit', $overCap['body']);
+    }
+
+    private function cappedEndpoint(int $maxRequestBytes): HttpEndpoint
+    {
+        $pdo = SqliteConnection::open(':memory:');
+        (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [self::repositoryRoot() . '/tests/Fixtures/mixed']),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+
+        return new HttpEndpoint(
+            $tools,
+            new HttpSessionStore($pdo),
+            ['127.0.0.1:8080'],
+            ['http://127.0.0.1:8080'],
+            'secret',
+            maxRequestBytes: $maxRequestBytes,
+        );
+    }
+
+    /** A valid initialize body padded to exactly $bytes, the padding carried in clientInfo.name. */
+    private static function initializeBodyOfExactly(int $bytes): string
+    {
+        $build = static fn(string $name): string => json_encode([
+            'jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize',
+            'params' => ['protocolVersion' => '2026-07-28', 'capabilities' => [], 'clientInfo' => ['name' => $name, 'version' => '1']],
+        ], JSON_THROW_ON_ERROR);
+        $padding = $bytes - strlen($build(''));
+        if ($padding < 0) {
+            self::fail('A valid initialize body does not fit in ' . $bytes . ' bytes.');
+        }
+
+        return $build(str_repeat('p', $padding));
+    }
+
 }

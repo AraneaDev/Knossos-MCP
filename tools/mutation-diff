@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+
+# Mutation testing scoped to what changed, cheap enough to run on every pass.
+#
+# A full-source run mutates ~12,000 mutants and takes over two hours, so it is
+# weekly (.github/workflows/mutation.yml) and gates the aggregate floor in
+# infection.json5. That is the wrong shape for a per-change check: almost all of
+# that work re-tests code the change never touched.
+#
+# Three flags do the narrowing, and the second and third matter as much as the
+# first because a short run is dominated by fixed costs:
+#
+#   --git-diff-filter=AM --git-diff-base --git-diff-lines
+#       Mutate only added and modified *lines*, not whole files. Touching one
+#       method in a large class mutates that method.
+#   --map-source-class-to-test
+#       During the initial (coverage) run, execute only the test files covering
+#       the changed sources. Without it every short run still pays the full
+#       suite's ~40s up front, which dwarfs the mutation work itself.
+#   --only-covering-test-cases
+#       Per mutant, run the covering test *cases* rather than every test in a
+#       covering file.
+#
+# The floor here is deliberately higher than the aggregate one. A change's own
+# lines should be well tested even while the tree's historic average is lower;
+# holding new work to the legacy average is how an average stays put.
+#
+# Usage: tools/mutation-diff [base-ref] [min-msi]
+
+base="${1:-origin/main}"
+min_msi="${2:-85}"
+
+if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+    echo "mutation-diff: base ref '$base' does not exist" >&2
+    exit 64
+fi
+
+# Nothing changed under src/ means nothing to mutate. Exit 0 rather than letting
+# Infection fail on an empty mutant set: "no mutants" is a pass, not a problem.
+if [ -z "$(git diff --name-only --diff-filter=AM "$base"...HEAD -- src | head -1)" ]; then
+    echo "mutation-diff: no added or modified files under src/ versus $base; nothing to mutate."
+    exit 0
+fi
+
+echo "mutation-diff: mutating lines changed since $base (min-msi ${min_msi}%)"
+exec vendor/bin/infection \
+    --no-interaction \
+    --no-progress \
+    --threads=4 \
+    --git-diff-filter=AM \
+    --git-diff-base="$base" \
+    --git-diff-lines \
+    --map-source-class-to-test \
+    --only-covering-test-cases \
+    --ignore-msi-with-no-mutations \
+    --min-msi="$min_msi" \
+    --logger-text=coverage/infection/diff.log

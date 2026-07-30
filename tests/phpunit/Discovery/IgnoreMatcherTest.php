@@ -284,6 +284,19 @@ final class IgnoreMatcherTest extends TestCase
     }
 
 
+    public function testAWindowsStylePatternIsNormalisedToForwardSlashes(): void
+    {
+        // knossos.json is edited on Windows too, and a pattern written with
+        // backslashes must mean the same thing. Without the normalisation the
+        // pattern becomes a literal that matches nothing, so the directory is
+        // silently scanned — the failure is invisible rather than loud.
+        $matcher = new IgnoreMatcher(['src\\generated']);
+
+        assertSame(true, $matcher->matches('src/generated/api.php'));
+        // Still anchored: the inner separator survives normalisation.
+        assertSame(false, $matcher->matches('lib/src/generated/api.php'));
+    }
+
     public function testMatchesPathInsideVendorSegment(): void
     {
         $matcher = new IgnoreMatcher([]);
