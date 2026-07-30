@@ -17,6 +17,7 @@ final class WorkerServer
     public const VERSION = '0.2.0';
 
     public function __construct(private readonly PhpScanner $scanner = new PhpScanner()) {}
+    /** The protocol loop: read a request, dispatch it, write the reply. */
 
     public function run(): int
     {
@@ -43,7 +44,11 @@ final class WorkerServer
         return 0;
     }
 
-    /** @param array<string, mixed> $request */
+    /**
+     * Dispatch one request to its method handler.
+     *
+     * @param array<string, mixed> $request
+     */
     private function handle(array $request): void
     {
         $method = $request['method'] ?? null;
@@ -71,7 +76,11 @@ final class WorkerServer
         }
     }
 
-    /** @param array<string, mixed> $params @return array<string, mixed> */
+    /**
+     * Answer the handshake with this worker's identity and protocol version.
+     *
+     * @param array<string, mixed> $params @return array<string, mixed>
+     */
     private function initialize(array $params): array
     {
         return [
@@ -85,7 +94,11 @@ final class WorkerServer
         ];
     }
 
-    /** @param array<string, mixed> $params @return array<string, mixed> */
+    /**
+     * Report which of the offered files this scanner claims.
+     *
+     * @param array<string, mixed> $params @return array<string, mixed>
+     */
     private function discover(array $params): array
     {
         $root = $this->validatedRoot($params);
@@ -98,7 +111,11 @@ final class WorkerServer
         ];
     }
 
-    /** @param array<string, mixed> $params @return array<string, mixed> */
+    /**
+     * Analyse the requested files and return their contributions.
+     *
+     * @param array<string, mixed> $params @return array<string, mixed>
+     */
     private function scan(array $params): array
     {
         $root = $this->validatedRoot($params);
@@ -159,7 +176,11 @@ final class WorkerServer
         return ['files_scanned' => $count];
     }
 
-    /** @param array<string, mixed> $params */
+    /**
+     * The project root, rejected unless it is an existing directory.
+     *
+     * @param array<string, mixed> $params
+     */
     private function validatedRoot(array $params): string
     {
         $root = $params['root'] ?? null;
@@ -173,6 +194,7 @@ final class WorkerServer
 
         return str_replace('\\', '/', $real);
     }
+    /** A requested file, rejected unless it is inside the project root. */
 
     private function validatedFile(string $root, string $relativePath): string
     {
@@ -203,14 +225,22 @@ final class WorkerServer
         return $real;
     }
 
-    /** @return list<string> */
+    /**
+     * Composer manifests among the requested files, which drive PSR-4 resolution.
+     *
+     * @return list<string>
+     */
     private function relativeComposerFiles(string $root): array
     {
         $path = $root . '/composer.json';
         return is_file($path) ? ['composer.json'] : [];
     }
 
-    /** @param array<string, mixed> $message */
+    /**
+     * Write one protocol frame to stdout, which carries frames only.
+     *
+     * @param array<string, mixed> $message
+     */
     private function write(array $message): void
     {
         // A scanned identifier or string literal may legally carry raw bytes

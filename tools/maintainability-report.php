@@ -92,7 +92,11 @@ if ($failures !== []) {
     exit(1);
 }
 
-/** @return list<array{symbol: string, file: string, line: int, lines: int, complexity: int}> */
+/**
+ * Per-function complexity and length, the two budgets this report gates on.
+ *
+ * @return list<array{symbol: string, file: string, line: int, lines: int, complexity: int}>
+ */
 function phpFunctionMetrics(string $source, string $relative): array
 {
     $tokens = token_get_all($source);

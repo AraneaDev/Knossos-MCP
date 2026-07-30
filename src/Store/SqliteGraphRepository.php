@@ -337,6 +337,7 @@ final class SqliteGraphRepository implements GraphRepository
             $statement->execute(['project' => $projectId]);
         }
     }
+    /** Drop the oldest snapshots beyond the project's retention setting. */
 
     private function pruneSnapshotHistory(string $projectId, int $retention): void
     {
@@ -493,7 +494,11 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
-    /** @param list<array<string, mixed>> $nodes rows shaped as GraphReconciler node records */
+    /**
+     * Insert many nodes in one prepared batch, since a scan writes thousands.
+     *
+     * @param list<array<string, mixed>> $nodes rows shaped as GraphReconciler node records
+     */
     public function saveNodes(array $nodes, string $projectId, string $scanId): void
     {
         foreach (array_chunk($nodes, 60) as $chunk) { // 15 params/row keeps chunks under SQLite's 999-variable floor
@@ -509,7 +514,11 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
-    /** @param list<array<string, mixed>> $edges rows shaped as GraphReconciler edge records */
+    /**
+     * Insert many edges in one prepared batch.
+     *
+     * @param list<array<string, mixed>> $edges rows shaped as GraphReconciler edge records
+     */
     public function saveEdges(array $edges, string $projectId, string $scanId): void
     {
         foreach (array_chunk($edges, 70) as $chunk) { // 13 params/row
@@ -525,7 +534,11 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
-    /** @param list<array<string, mixed>> $files each: id, relative_path, content_hash, size, mtime, language, scanner_version, line_count */
+    /**
+     * Insert many file rows in one prepared batch.
+     *
+     * @param list<array<string, mixed>> $files each: id, relative_path, content_hash, size, mtime, language, scanner_version, line_count
+     */
     public function saveFiles(array $files, string $projectId, string $scanId): void
     {
         foreach (array_chunk($files, 90) as $chunk) { // 10 params/row
@@ -541,7 +554,11 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
-    /** @param list<array<string, mixed>> $classifications each shaped as a GraphReconciler classification record */
+    /**
+     * Insert many classifications in one prepared batch.
+     *
+     * @param list<array<string, mixed>> $classifications each shaped as a GraphReconciler classification record
+     */
     public function saveClassifications(array $classifications, string $projectId, string $scanId): void
     {
         foreach (array_chunk($classifications, 80) as $chunk) { // 12 params/row
@@ -555,7 +572,11 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
-    /** @param list<array<string, mixed>> $memberships each: boundary_id, node_id */
+    /**
+     * Insert many boundary memberships in one prepared batch.
+     *
+     * @param list<array<string, mixed>> $memberships each: boundary_id, node_id
+     */
     public function saveBoundaryMemberships(array $memberships, string $projectId, string $scanId): void
     {
         foreach (array_chunk($memberships, 240) as $chunk) { // 4 params/row
@@ -732,7 +753,11 @@ final class SqliteGraphRepository implements GraphRepository
         return $this->adjacent('target_id', $projectId, $nodeId, $kind, $limit);
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * Edges on one side of a node, shared by outgoing() and incoming().
+     *
+     * @return list<array<string, mixed>>
+     */
     private function adjacent(
         string $column,
         string $projectId,
@@ -758,6 +783,7 @@ final class SqliteGraphRepository implements GraphRepository
 
         return $statement->fetchAll();
     }
+    /** Reject a limit outside its bounds rather than clamping it silently. */
 
     private static function assertLimit(int $limit): void
     {
@@ -765,17 +791,23 @@ final class SqliteGraphRepository implements GraphRepository
             throw new InvalidArgumentException('Query limit must be between 1 and 1000.');
         }
     }
+    /** A cached prepared statement, since a scan replays the same inserts repeatedly. */
 
     private function prepare(string $sql): PDOStatement
     {
         return $this->statements[$sql] ??= $this->pdo->prepare($sql);
     }
 
-    /** @param array<string, mixed> $value */
+    /**
+     * Encode an attributes array for storage, throwing rather than storing malformed JSON.
+     *
+     * @param array<string, mixed> $value
+     */
     private static function json(array $value): string
     {
         return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
+    /** The current timestamp in the format the schema stores. */
 
     private static function now(): string
     {

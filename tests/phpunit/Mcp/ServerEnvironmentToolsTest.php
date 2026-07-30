@@ -77,6 +77,37 @@ final class ServerEnvironmentToolsTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testUnreachableRootsAreFilteredAndReturnedAsAList(): void
+    {
+        // Two roots with the unreachable one *second*, and a reachable one present.
+        // With a single unreachable root the filtered list is indistinguishable from
+        // the unfiltered one and from a key-preserving one, so mutation testing
+        // showed both the filter and the array_values reindex going unobserved.
+        $real = $this->makeTempDir();
+        $ghost = sys_get_temp_dir() . '/knossos-ghost-' . uniqid('', true);
+        $file = $this->makeTempDir() . '/roots.json';
+        file_put_contents($file, json_encode(['roots' => [$real, $ghost]], JSON_THROW_ON_ERROR));
+
+        $data = $this->tools(new AllowedRoots([], $file))->call('server_info', [])->data;
+
+        assertSame([$real, $ghost], array_column($data['allowed_roots'], 'path'));
+        // Only the missing one, and keyed 0..n so it serialises as a JSON array.
+        assertSame([$ghost], $data['unreachable_roots']);
+        assertSame([0], array_keys($data['unreachable_roots']));
+    }
+
+    #[Group('mcp')]
+    public function testServerInfoReportsWhereItsGraphLives(): void
+    {
+        // An agent that cannot see the database path cannot tell two installations
+        // apart, or explain why a project it scanned is missing from another session.
+        $data = $this->tools(new AllowedRoots([]))->call('server_info', [])->data;
+
+        assertSame($this->databasePath, $data['database_path']);
+        assertSame(dirname($this->databasePath), $data['data_directory']);
+    }
+
+    #[Group('mcp')]
     public function testEnvironmentToolsAreOnlyAdvertisedWhenTheServerCanAnswerThem(): void
     {
         $withNames = array_column($this->tools(new AllowedRoots([]))->definitions(), 'name');

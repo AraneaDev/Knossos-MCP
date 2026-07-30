@@ -186,7 +186,11 @@ final class FactCollector extends NodeVisitorAbstract
         $this->parametersAndReturn($node->params, $node->returnType, $constructor ? $class['id'] : $id, $constructor);
     }
 
-    /** @param list<Node\AttributeGroup> $groups @return list<string> */
+    /**
+     * Resolved attribute class names, so attribute-driven wiring is visible statically.
+     *
+     * @param list<Node\AttributeGroup> $groups @return list<string>
+     */
     private function attributeNames(array $groups): array
     {
         $names = [];
@@ -208,7 +212,11 @@ final class FactCollector extends NodeVisitorAbstract
         $this->parametersAndReturn($node->params, $node->returnType, $id, false);
     }
 
-    /** @param list<Node\Param> $params */
+    /**
+     * Emit edges for parameter and return types, which is most of what couples one class to another.
+     *
+     * @param list<Node\Param> $params
+     */
     private function parametersAndReturn(array $params, ?Node $returnType, string $source, bool $constructor): void
     {
         foreach ($params as $param) {
@@ -378,7 +386,11 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
-    /** @return list<string> */
+    /**
+     * Flatten a type declaration to class names, walking union, intersection, and nullable forms.
+     *
+     * @return list<string>
+     */
     private function typeNames(?Node $type): array
     {
         if ($type instanceof Name) {
@@ -421,7 +433,11 @@ final class FactCollector extends NodeVisitorAbstract
         return $name->toString();
     }
 
-    /** @param array<string, mixed> $attributes */
+    /**
+     * Record a node fact with its evidence location.
+     *
+     * @param array<string, mixed> $attributes
+     */
     private function addNode(
         string $localId,
         string $kind,
@@ -456,7 +472,11 @@ final class FactCollector extends NodeVisitorAbstract
         ];
     }
 
-    /** @return array{path: string, start_line: int, end_line: int} */
+    /**
+     * The file and line span a fact points back to, which is what makes it checkable.
+     *
+     * @return array{path: string, start_line: int, end_line: int}
+     */
     private function evidence(Node $node): array
     {
         $start = max(1, $node->getStartLine());
@@ -467,7 +487,11 @@ final class FactCollector extends NodeVisitorAbstract
         ];
     }
 
-    /** @return array{id: string, name: string, parent: ?string, properties: array<string, string>}|null */
+    /**
+     * The innermost enclosing class-like declaration, or null at file scope.
+     *
+     * @return array{id: string, name: string, parent: ?string, properties: array<string, string>}|null
+     */
     private function currentClass(): ?array
     {
         return $this->classes === [] ? null : $this->classes[array_key_last($this->classes)];
@@ -511,6 +535,7 @@ final class FactCollector extends NodeVisitorAbstract
             ? null
             : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['type'] ?? null);
     }
+    /** How far a tracked variable's type is inferred, so a guess is never recorded as proven. */
 
     private function variableConfidence(string $variable): string
     {
@@ -518,6 +543,7 @@ final class FactCollector extends NodeVisitorAbstract
             ? 'certain'
             : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['confidence'] ?? 'certain');
     }
+    /** Remember a property's declared type for resolving calls on `$this->x`. */
 
     private function setPropertyType(string $property, string $type): void
     {
@@ -525,6 +551,7 @@ final class FactCollector extends NodeVisitorAbstract
             $this->classes[array_key_last($this->classes)]['properties'][$property] = $type;
         }
     }
+    /** The tracked type for a property, or null when it was never declared. */
 
     private function propertyType(string $property): ?string
     {
@@ -532,6 +559,7 @@ final class FactCollector extends NodeVisitorAbstract
             ? null
             : ($this->classes[array_key_last($this->classes)]['properties'][$property] ?? null);
     }
+    /** Emit a reference edge to a named class, the weakest form of coupling recorded. */
 
     private static function reference(string $kind, string $canonicalName): string
     {

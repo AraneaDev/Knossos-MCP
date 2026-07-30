@@ -26,6 +26,7 @@ final class LaravelRouteFactCollector
     private array $groupNodes = [];
 
     public function __construct(private readonly LaravelFactStore $facts) {}
+    /** Track route group nesting and record any route registered at this node. */
 
     public function enterNode(Node $node): void
     {
@@ -37,6 +38,7 @@ final class LaravelRouteFactCollector
             $this->route($node);
         }
     }
+    /** Pop the group stack so a prefix does not leak into a sibling group. */
 
     public function leaveNode(Node $node): void
     {
@@ -45,6 +47,7 @@ final class LaravelRouteFactCollector
             array_pop($this->groups);
         }
     }
+    /** Record one route: its methods, composed URI, and the action it dispatches to. */
 
     private function route(Expr\MethodCall|Expr\StaticCall $node): void
     {
@@ -102,7 +105,11 @@ final class LaravelRouteFactCollector
         }
     }
 
-    /** @return array{0: string, 1: list<Node\Arg>, 2: array{middleware: list<string>, name: string}, 3: Node}|null */
+    /**
+     * The HTTP methods and URI a Route facade call declares.
+     *
+     * @return array{0: string, 1: list<Node\Arg>, 2: array{middleware: list<string>, name: string}, 3: Node}|null
+     */
     private function routeDescriptor(Expr\MethodCall|Expr\StaticCall $node): ?array
     {
         $modifiers = ['middleware' => [], 'name' => ''];
@@ -125,6 +132,7 @@ final class LaravelRouteFactCollector
         }
         return [$method, $cursor->args, $modifiers, $cursor];
     }
+    /** Whether this call opens a route group whose prefix and middleware apply to its children. */
 
     private function isGroupCall(Expr\MethodCall $node): bool
     {
@@ -138,7 +146,11 @@ final class LaravelRouteFactCollector
         return $cursor instanceof Expr\StaticCall && $cursor->class instanceof Name && $this->isRouteFacade($cursor->class);
     }
 
-    /** @return array{prefix: string, middleware: list<string>, name: string} */
+    /**
+     * The prefix and middleware a group contributes to the routes inside it.
+     *
+     * @return array{prefix: string, middleware: list<string>, name: string}
+     */
     private function groupModifiers(Expr\MethodCall $node): array
     {
         $result = ['prefix' => '', 'middleware' => [], 'name' => ''];
@@ -171,7 +183,11 @@ final class LaravelRouteFactCollector
         return $result;
     }
 
-    /** @return array{prefix: string, middleware: list<string>, name: string} */
+    /**
+     * Compose the enclosing groups, since a registered URI exists only as their concatenation.
+     *
+     * @return array{prefix: string, middleware: list<string>, name: string}
+     */
     private function combinedGroup(): array
     {
         $result = ['prefix' => '', 'middleware' => [], 'name' => ''];
@@ -183,7 +199,11 @@ final class LaravelRouteFactCollector
         return $result;
     }
 
-    /** @return array{reference?: string, label?: string} */
+    /**
+     * The controller or closure a route dispatches to, when it is statically known.
+     *
+     * @return array{reference?: string, label?: string}
+     */
     private function action(?Node $node): array
     {
         if ($node instanceof Expr\Array_ && count($node->items) >= 2) {
@@ -204,11 +224,13 @@ final class LaravelRouteFactCollector
         }
         return [];
     }
+    /** Whether a call targets the Route facade rather than an unrelated `Route` symbol. */
 
     private function isRouteFacade(Name $name): bool
     {
         return strtolower(basename(str_replace('\\', '/', LaravelFactStore::name($name)))) === 'route';
     }
+    /** Join a group prefix to a route path without doubling or dropping separators. */
 
     private function joinUri(string $prefix, string $uri): string
     {

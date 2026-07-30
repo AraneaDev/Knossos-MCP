@@ -55,19 +55,31 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return null;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The node facts collected from this file.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function nodes(): array
     {
         return array_values($this->nodes);
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The edge facts collected from this file.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function edges(): array
     {
         return array_values($this->edges);
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * What the Symfony analysis could not resolve.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function diagnostics(): array
     {
         return $this->diagnostics;
@@ -195,13 +207,21 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         }
     }
 
-    /** @param list<Node\AttributeGroup> $groups */
+    /**
+     * The first attribute matching a short name, or null when absent.
+     *
+     * @param list<Node\AttributeGroup> $groups
+     */
     private function attribute(array $groups, string $shortName): ?Node\Attribute
     {
         return $this->attributes($groups, $shortName)[0] ?? null;
     }
 
-    /** @param list<Node\AttributeGroup> $groups @return list<Node\Attribute> */
+    /**
+     * Every attribute matching a short name, for the repeatable ones such as #[Route].
+     *
+     * @param list<Node\AttributeGroup> $groups @return list<Node\Attribute>
+     */
     private function attributes(array $groups, string $shortName): array
     {
         $result = [];
@@ -233,7 +253,11 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return $value instanceof Scalar\String_ ? $value->value : null;
     }
 
-    /** @return list<string> */
+    /**
+     * An attribute argument's literal string list, ignoring computed elements.
+     *
+     * @return list<string>
+     */
     private function stringListArgument(Node\Attribute $attribute, string $name): array
     {
         $value = $this->argument($attribute, $name);
@@ -254,6 +278,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
     {
         return $parameter?->type instanceof Name ? $this->name($parameter->type) : null;
     }
+    /** The class named by a `::class` argument, or null when computed at runtime. */
 
     private function classArgument(?Node $node): ?string
     {
@@ -261,6 +286,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
             && $node->name instanceof Identifier && strtolower($node->name->toString()) === 'class'
             ? $this->name($node->class) : null;
     }
+    /** The canonical reference for a subscribed event, which may be a class or a string name. */
 
     private function eventReference(?Node $node): ?string
     {
@@ -277,39 +303,55 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return null;
     }
 
-    /** @param array<string, mixed> $attributes */
+    /**
+     * Record a node fact.
+     *
+     * @param array<string, mixed> $attributes
+     */
     private function node(string $id, string $kind, string $canonical, string $display, Node $at, array $attributes): array
     {
         return ['local_id' => $id, 'kind' => $kind, 'canonical_name' => $canonical, 'display_name' => $display, 'origin' => 'framework_convention', 'confidence' => 'certain', 'evidence' => $this->evidence($at), 'attributes' => (object) $attributes];
     }
 
-    /** @param array<string, mixed> $attributes */
+    /**
+     * Record an edge fact.
+     *
+     * @param array<string, mixed> $attributes
+     */
     private function edge(string $kind, string $source, string $target, Node $at, array $attributes = []): void
     {
         $key = implode("\0", [$kind, $source, $target, (string) $at->getStartLine(), json_encode($attributes)]);
         $this->edges[$key] = ['kind' => $kind, 'source' => $source, 'target' => $target, 'origin' => 'framework_convention', 'confidence' => 'certain', 'evidence' => $this->evidence($at), 'attributes' => (object) $attributes];
     }
+    /** Record something the Symfony analysis could not resolve. */
 
     private function diagnostic(string $code, string $message, Node $at): void
     {
         $this->diagnostics[] = ['severity' => 'warning', 'code' => $code, 'message' => $message, 'evidence' => $this->evidence($at)];
     }
 
-    /** @return array{name: string, route_prefix: string, message_handler: bool}|null */
+    /**
+     * The enclosing class, which Symfony facts are attributed to.
+     *
+     * @return array{name: string, route_prefix: string, message_handler: bool}|null
+     */
     private function currentClass(): ?array
     {
         return $this->classes === [] ? null : $this->classes[array_key_last($this->classes)];
     }
+    /** A class name in the canonical form the graph uses. */
 
     private function classReference(string $name): string
     {
         return 'php:class:' . ltrim($name, '\\');
     }
+    /** The trailing segment of a name, for matching attributes written unqualified. */
 
     private function shortName(Name $name): string
     {
         return basename(str_replace('\\', '/', $this->name($name)));
     }
+    /** A resolved name node as a fully-qualified string. */
 
     private function name(Name $name): string
     {
@@ -317,7 +359,11 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return ($resolved instanceof Name ? $resolved : $name)->toString();
     }
 
-    /** @return array{path: string, start_line: int, end_line: int} */
+    /**
+     * The file and line a fact points back to.
+     *
+     * @return array{path: string, start_line: int, end_line: int}
+     */
     private function evidence(Node $node): array
     {
         $start = max(1, $node->getStartLine());

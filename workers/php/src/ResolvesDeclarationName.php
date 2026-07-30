@@ -15,6 +15,7 @@ use PhpParser\Node\Stmt;
  */
 trait ResolvesDeclarationName
 {
+    /** The declaration's name, or a synthesised one for an anonymous class or closure. */
     private function declarationName(Stmt\ClassLike|Stmt\Function_ $node, string $relativePath): string
     {
         if (isset($node->namespacedName)) {

@@ -71,6 +71,7 @@ if ($failures !== []) {
     exit(1);
 }
 printf("API documentation passed: %d PHP/JavaScript/Python contracts.\n", count($checked));
+/** Whether a docblock says anything beyond annotations. Mirrored in tools/docstring-report.php, deliberately: two gates disagreeing about what counts as documented would make both untrustworthy. */
 
 function hasSummary(string $documentation): bool
 {

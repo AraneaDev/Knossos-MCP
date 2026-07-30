@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 const BENCHMARK_ROOT = __DIR__ . '/..';
 
-/** @return array{exit_code: int, stdout: string, stderr: string, seconds: float, peak_rss_bytes: int} */
+/**
+ * Run a command under a wall-clock and peak-RSS measurement, killing it past the timeout.
+ *
+ * @return array{exit_code: int, stdout: string, stderr: string, seconds: float, peak_rss_bytes: int}
+ */
 function runMeasured(array $command, float $timeoutSeconds): array
 {
     $pipes = [];
@@ -78,7 +82,11 @@ function processTreeRss(int $pid): int
     return $rss;
 }
 
-/** @param array<string, mixed> $run @return array<string, mixed> */
+/**
+ * Shape one run's measurements for the machine-readable report.
+ *
+ * @param array<string, mixed> $run @return array<string, mixed>
+ */
 function jsonObject(array $run): array
 {
     if ($run['exit_code'] !== 0) {

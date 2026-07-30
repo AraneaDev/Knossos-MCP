@@ -145,7 +145,11 @@ final class LaravelFactStore
         return $node instanceof Scalar\String_ ? $node->value : null;
     }
 
-    /** @return list<string> */
+    /**
+     * Literal string values from an array argument, skipping computed elements.
+     *
+     * @return list<string>
+     */
     public static function strings(?Node $node): array
     {
         $single = self::string($node);
@@ -178,7 +182,11 @@ final class LaravelFactStore
         return 'php:class:' . ltrim($name, '\\');
     }
 
-    /** @return array{path: string, start_line: int, end_line: int} */
+    /**
+     * The file and line a fact points back to.
+     *
+     * @return array{path: string, start_line: int, end_line: int}
+     */
     private function evidence(Node $node): array
     {
         $start = max(1, $node->getStartLine());

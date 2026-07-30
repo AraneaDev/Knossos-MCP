@@ -33,13 +33,21 @@ final readonly class ToolService
         private ?ServerEnvironment $environment = null,
     ) {}
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The advertised tool list, filtered to what this wiring can actually answer.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function definitions(): array
     {
         return self::allDefinitions($this->environment !== null);
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * Every tool definition, including those requiring runtime wiring; the superset argument validation uses.
+     *
+     * @return list<array<string, mixed>>
+     */
     private static function allDefinitions(bool $withEnvironment = true): array
     {
         return [
@@ -750,7 +758,11 @@ final readonly class ToolService
         ];
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * The file_metrics schema, kept separate because it shares no options with the graph queries.
+     *
+     * @return array<string, mixed>
+     */
     private static function fileMetricsDefinition(): array
     {
         return [
@@ -776,7 +788,11 @@ final readonly class ToolService
         ];
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validate a tool call, apply the shared read options, and dispatch it.
+     *
+     * @param array<string, mixed> $arguments
+     */
     public function call(string $name, array $arguments, ?CancellationToken $cancellation = null): ResultEnvelope
     {
         $schema = self::schemaFor($name);
@@ -892,7 +908,11 @@ final readonly class ToolService
         }
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Route a validated call to its handler.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function dispatch(string $name, array $arguments, ?CancellationToken $cancellation): ResultEnvelope
     {
         return match ($name) {
@@ -933,7 +953,11 @@ final readonly class ToolService
         };
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Report the roots this server may read, the file to extend, and whether it is containerised.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function serverInfo(array $arguments): ResultEnvelope
     {
         self::keys($arguments, [], []);
@@ -966,7 +990,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Run the runtime and worker checks, summarising failures as warnings.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function diagnoseRuntime(array $arguments): ResultEnvelope
     {
         self::keys($arguments, [], []);
@@ -983,6 +1011,7 @@ final readonly class ToolService
             warnings: array_map(static fn(array $check): string => $check['name'] . ': ' . $check['detail'], $failed),
         );
     }
+    /** The runtime environment, or a clear error when this server was built without one. */
 
     private function requireEnvironment(string $tool): ServerEnvironment
     {
@@ -993,7 +1022,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::annotateComponent()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function annotateComponent(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'component', 'kind'], ['value', 'remove', 'execute']);
@@ -1007,7 +1040,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see DatabaseMaintenanceService::removeProject()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function removeProject(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['execute']);
@@ -1017,7 +1054,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see DatabaseMaintenanceService::cleanupStaleScans()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function cleanupStaleScans(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['older_than_hours', 'execute']);
@@ -1028,7 +1069,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see DatabaseMaintenanceService::maintain()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function maintainDatabase(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['action'], ['execute', 'backup_name']);
@@ -1039,7 +1084,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listProjects()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function projects(array $arguments): ResultEnvelope
     {
         self::keys($arguments, [], ['limit', 'offset', 'include_roots']);
@@ -1050,7 +1099,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listSnapshots()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function snapshots(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['limit', 'offset']);
@@ -1061,7 +1114,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::snapshotDiff()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function snapshotDiff(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'from_snapshot'], ['to_snapshot', 'max_changes']);
@@ -1073,7 +1130,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::qualityGate()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function qualityGate(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'baseline_snapshot', 'budgets'], ['policies', 'sarif', 'propose_baseline']);
@@ -1094,7 +1155,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureTrends()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function architectureTrends(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['limit', 'release_from']);
@@ -1105,7 +1170,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ProjectScanService::scan()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function scan(array $arguments, ?CancellationToken $cancellation): ResultEnvelope
     {
         self::keys($arguments, ['path'], ['name', 'mode', 'max_files', 'max_file_bytes', 'worker_timeout_ms', 'snapshot_retention', 'boundaries']);
@@ -1127,7 +1196,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::findComponent()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function find(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'name'], ['limit']);
@@ -1138,7 +1211,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::inspectComponent()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function inspect(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'component'], ['max_relationships', 'max_children', 'min_confidence']);
@@ -1151,7 +1228,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listUsages()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function listUsages(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'symbol'], ['edge_kinds', 'min_confidence', 'limit']);
@@ -1164,7 +1245,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureSummary()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function summary(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['limit']);
@@ -1174,7 +1259,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::exportAgentBrief()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function exportAgentBrief(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['max_chars']);
@@ -1184,7 +1273,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::fileMetrics()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function fileMetrics(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['path_contains', 'language', 'sort_by', 'order', 'limit', 'offset']);
@@ -1199,7 +1292,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::explainFlow()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function flow(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'from', 'to'], ['max_depth', 'max_paths', 'edge_kinds', 'min_confidence', 'timeout_ms']);
@@ -1215,7 +1312,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::impactAnalysis()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function impact(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'symbol'], ['max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
@@ -1230,7 +1331,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::dependencyCycles()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function cycles(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['edge_kinds', 'min_confidence', 'limit', 'max_nodes', 'max_edges', 'timeout_ms', 'include_self_loops']);
@@ -1246,7 +1351,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureHealth()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function health(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['edge_kinds', 'min_confidence', 'limit', 'max_nodes', 'max_edges', 'timeout_ms', 'include_external', 'include_tests']);
@@ -1263,7 +1372,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::checkArchitecture()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function check(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'policies'], ['min_confidence', 'limit', 'max_edges', 'timeout_ms']);
@@ -1281,7 +1394,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::suggestLocation()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function suggest(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'feature_description'], ['limit', 'max_members', 'max_edges', 'timeout_ms', 'ranking_mode']);
@@ -1296,7 +1413,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::changeImpact()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function changeImpact(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'symbol'], ['since_days', 'max_commits', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
@@ -1313,7 +1434,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::changedFilesImpact()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function changedFilesImpact(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['files', 'working_tree', 'base_ref', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
@@ -1330,7 +1455,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::testImpact()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function testImpact(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['files', 'working_tree', 'base_ref', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
@@ -1347,7 +1476,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::reviewDiff()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function reviewDiff(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['base_ref', 'files', 'policies', 'budgets', 'baseline_snapshot', 'max_depth', 'limit', 'min_confidence', 'timeout_ms']);
@@ -1373,7 +1506,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::architectureContext()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function architectureContext(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['task_description', 'files', 'max_chars', 'timeout_ms', 'include_source']);
@@ -1387,7 +1524,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::exportDiagram()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function diagram(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['format', 'boundary', 'edge_kinds', 'min_confidence', 'direction', 'max_nodes', 'max_edges']);
@@ -1403,7 +1544,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listBoundaries()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function boundaries(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['source', 'limit', 'offset']);
@@ -1415,7 +1560,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::searchArchitecture()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function search(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id', 'query'], ['kinds', 'roles', 'boundary_ids', 'confidences', 'limit', 'offset']);
@@ -1431,7 +1580,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * Validates the tool arguments and forwards to {@see ArchitectureQueryService::listAnnotations()}.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private function listAnnotations(array $arguments): ResultEnvelope
     {
         self::keys($arguments, ['project_id'], ['component', 'kind', 'limit', 'offset']);
@@ -1444,7 +1597,11 @@ final readonly class ToolService
         );
     }
 
-    /** @param array<string, mixed> $arguments @param list<string> $required @param list<string> $optional */
+    /**
+     * Reject unknown or missing argument keys, so a mistyped parameter is an error rather than silently ignored.
+     *
+     * @param array<string, mixed> $arguments @param list<string> $required @param list<string> $optional
+     */
     private static function keys(array $arguments, array $required, array $optional): void
     {
         foreach ($required as $key) {
@@ -1458,7 +1615,11 @@ final readonly class ToolService
         }
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * A required string argument, rejecting an empty value rather than treating it as absent.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private static function string(array $arguments, string $key): string
     {
         $value = $arguments[$key] ?? null;
@@ -1468,7 +1629,11 @@ final readonly class ToolService
         return $value;
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * An integer argument within its declared bounds, rejecting anything outside them.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private static function integer(array $arguments, string $key, int $default, int $minimum, int $maximum): int
     {
         $value = $arguments[$key] ?? $default;
@@ -1478,7 +1643,11 @@ final readonly class ToolService
         return $value;
     }
 
-    /** @param array<string, mixed> $arguments */
+    /**
+     * A boolean argument, rejecting a truthy string rather than coercing it.
+     *
+     * @param array<string, mixed> $arguments
+     */
     private static function boolean(array $arguments, string $key, bool $default): bool
     {
         $value = $arguments[$key] ?? $default;
@@ -1488,7 +1657,11 @@ final readonly class ToolService
         return $value;
     }
 
-    /** @param array<string, mixed> $arguments @return list<string> */
+    /**
+     * A list-of-strings argument, rejecting a bare string so a caller cannot pass one by mistake.
+     *
+     * @param array<string, mixed> $arguments @return list<string>
+     */
     private static function strings(array $arguments, string $key, int $maximum = 20): array
     {
         $value = $arguments[$key] ?? [];
@@ -1503,7 +1676,11 @@ final readonly class ToolService
         return $value;
     }
 
-    /** @param array<string, mixed> $arguments @return list<array<string, mixed>> */
+    /**
+     * Boundary definitions from the scan arguments, validated into the shape the planner expects.
+     *
+     * @param array<string, mixed> $arguments @return list<array<string, mixed>>
+     */
     private static function boundariesArgument(array $arguments): array
     {
         $values = $arguments['boundaries'] ?? [];

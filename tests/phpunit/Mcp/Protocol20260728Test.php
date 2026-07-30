@@ -160,6 +160,48 @@ final class Protocol20260728Test extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testTheHandshakeRevisionCanAlsoBeSelectedThroughMeta(): void
+    {
+        $server = new StdioServer($this->tools(), resources: null, prompts: null);
+
+        // A client may name the older revision in `_meta` without ever sending
+        // `initialize`. Nothing exercised that arm before, so removing it entirely
+        // went unnoticed.
+        $error = $server->handle($this->request(1, 'tools/list', version: '2025-11-25'))['error'];
+
+        // -32003, not -32022: the arm resolved to the handshake profile, which then
+        // enforced *its own* requirement. Removing the arm would reject the revision
+        // outright with -32022, so the distinction is what pins the arm down.
+        assertSame(-32003, $error['code']);
+    }
+
+    #[Group('mcp')]
+    public function testDecorationPreservesMetaTheResultAlreadyCarried(): void
+    {
+        $profile = new Profile20260728();
+
+        // Overwriting rather than merging would silently drop a progress token or
+        // trace context a caller put in `_meta`.
+        $decorated = $profile->decorate(['_meta' => ['caller/token' => 'abc'], 'ok' => true], 'tools/list');
+
+        assertSame('abc', $decorated['_meta']['caller/token']);
+        assertSame(
+            ['name' => 'knossos', 'version' => Application::VERSION],
+            $decorated['_meta']['io.modelcontextprotocol/serverInfo'],
+        );
+    }
+
+    #[Group('mcp')]
+    public function testARequestWithNonArrayParamsDeclaresNoRevision(): void
+    {
+        // requestedVersion() has to tolerate a malformed frame rather than reading
+        // `_meta` off a non-array; the negotiator then falls back to the default.
+        assertSame(null, ProtocolNegotiator::requestedVersion(['jsonrpc' => '2.0', 'params' => 'nonsense']));
+        assertSame(null, ProtocolNegotiator::requestedVersion(['jsonrpc' => '2.0']));
+        assertSame(null, ProtocolNegotiator::requestedVersion(['jsonrpc' => '2.0', 'params' => ['_meta' => 'nonsense']]));
+    }
+
+    #[Group('mcp')]
     public function testEachProfileNamesItsOwnRevision(): void
     {
         assertSame('2025-11-25', (new Profile20251125())->version());

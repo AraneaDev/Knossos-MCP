@@ -37,7 +37,11 @@ final readonly class PhpScanner
         $this->parser = (new ParserFactory())->createForNewestSupportedVersion();
     }
 
-    /** @return array<string, mixed> */
+    /**
+     * Parse the requested files and return their contributions and diagnostics.
+     *
+     * @return array<string, mixed>
+     */
     public function scan(string $root, string $absolutePath, string $relativePath, bool $laravel = false, bool $symfony = false): array
     {
         $source = file_get_contents($absolutePath);

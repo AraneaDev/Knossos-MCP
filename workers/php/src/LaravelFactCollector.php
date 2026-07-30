@@ -55,19 +55,31 @@ final class LaravelFactCollector extends NodeVisitorAbstract
         return null;
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The node facts collected from this file.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function nodes(): array
     {
         return $this->facts->nodes();
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The edge facts collected from this file.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function edges(): array
     {
         return $this->facts->edges();
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * What the Laravel analysis could not resolve.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function diagnostics(): array
     {
         return $this->facts->diagnostics();

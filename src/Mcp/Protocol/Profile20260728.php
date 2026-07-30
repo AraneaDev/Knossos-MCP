@@ -79,8 +79,15 @@ final readonly class Profile20260728 implements ProtocolProfile
         return false;
     }
 
-    /** @return array<string, string> */
-    public static function serverInfo(): array
+    /**
+     * This server's identity, attached to every result's `_meta`.
+     *
+     * Private: only decorate() needs it. Mutation testing flagged the wider
+     * visibility as unobserved, which is the same thing said differently.
+     *
+     * @return array<string, string>
+     */
+    private static function serverInfo(): array
     {
         return ['name' => 'knossos', 'version' => Application::VERSION];
     }
