@@ -8,7 +8,27 @@ export KNOSSOS_PHP_COVERAGE_DIR=/opt/knossos/coverage/php
 export KNOSSOS_JS_COVERAGE_DIR=/opt/knossos/coverage/js/tmp
 export KNOSSOS_PYTHON_COVERAGE_DIR=/opt/knossos/coverage/python
 
-php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php vendor/bin/phpunit
+# Run the covered suite as the non-root `knossos` user for the same reason
+# tools/quality does: the permission-error tests (ProjectDiscoverer unreadable
+# directory/file/config, Doctor unwritable data dir, MigrationRunner unreadable
+# migration/directory) skip themselves when the process is root, because root
+# bypasses the very permission bits they assert on. Left as root, those branches
+# are not merely untested -- they are reported as *uncovered*, understating the
+# discovery-config, maintenance-runtime, and storage components.
+#
+# The coverage directory is a host bind mount owned by root, so hand it over
+# before dropping: pcov writes its per-process JSON there, as do the JS and
+# Python worker coverage sinks.
+if [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
+    chown -R knossos:knossos coverage
+    runuser -u knossos -- env HOME=/home/knossos \
+        KNOSSOS_PHP_COVERAGE_DIR="$KNOSSOS_PHP_COVERAGE_DIR" \
+        KNOSSOS_JS_COVERAGE_DIR="$KNOSSOS_JS_COVERAGE_DIR" \
+        KNOSSOS_PYTHON_COVERAGE_DIR="$KNOSSOS_PYTHON_COVERAGE_DIR" \
+        php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php vendor/bin/phpunit
+else
+    php -d pcov.directory=/opt/knossos -d auto_prepend_file=/opt/knossos/tools/pcov-prepend.php vendor/bin/phpunit
+fi
 php tools/pcov-report.php
 
 node_modules/.bin/c8 report \
