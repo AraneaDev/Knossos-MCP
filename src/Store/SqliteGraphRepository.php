@@ -23,6 +23,7 @@ final class SqliteGraphRepository implements GraphRepository
 
     public function __construct(private PDO $pdo) {}
 
+    /** {@inheritDoc} */
     public function transaction(callable $operation): mixed
     {
         if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
@@ -85,6 +86,7 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
+    /** Upsert by id: a rescan of the same root updates the name/config rather than creating a second project. */
     public function saveProject(string $id, string $name, string $rootRealpath, array $config = []): void
     {
         $now = self::now();
@@ -104,6 +106,9 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /**
+     * @return array<string, mixed>|null the raw row, or null when the id is unknown
+     */
     public function findProject(string $id): ?array
     {
         $statement = $this->pdo->prepare('SELECT * FROM projects WHERE id = :id');
@@ -113,6 +118,13 @@ final class SqliteGraphRepository implements GraphRepository
         return $project === false ? null : $project;
     }
 
+    /**
+     * Open a scan in `running` state.
+     *
+     * @param string $scannerSetHash identifies the analyzer set; a change invalidates
+     *        incremental reuse, because facts from a different analyzer are not comparable
+     * @throws InvalidArgumentException when $mode is neither full nor incremental
+     */
     public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void
     {
         if (!in_array($mode, ['full', 'incremental'], true)) {
@@ -133,6 +145,15 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /**
+     * Promote a running scan to the project's active snapshot and prune history.
+     *
+     * Transactional, and asserts exactly one running scan was updated: two writers
+     * racing to finish would otherwise leave the project pointing at a graph that
+     * only half-exists.
+     *
+     * @throws InvalidArgumentException when no running scan matches the project
+     */
     public function completeScan(string $projectId, string $scanId): void
     {
         $this->transaction(function () use ($projectId, $scanId): void {
@@ -165,6 +186,14 @@ final class SqliteGraphRepository implements GraphRepository
         });
     }
 
+    /**
+     * Record a terminal failed/cancelled scan for diagnostics.
+     *
+     * Silently skips a project that was never persisted: the failure may have been
+     * the persist itself, and there is nothing for the foreign key to reference.
+     *
+     * @throws InvalidArgumentException on an unknown mode or a non-terminal status
+     */
     public function recordFailedScan(string $id, string $projectId, string $mode, string $status): void
     {
         if (!in_array($mode, ['full', 'incremental'], true)) {
@@ -199,6 +228,15 @@ final class SqliteGraphRepository implements GraphRepository
         });
     }
 
+    /**
+     * Capture the current active graph as a retained snapshot, then prune to $retention.
+     *
+     * No-ops when retention is 0, when the project has no active scan, or when this
+     * scan is already snapshotted — the last case also avoids building and encoding a
+     * payload that INSERT OR IGNORE would discard.
+     *
+     * @throws InvalidArgumentException when $retention is outside 0..20
+     */
     public function archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void
     {
         if ($retention < 0 || $retention > 20) {
@@ -277,6 +315,12 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /**
+     * Delete a project's graph rows, leaving the project and its scan history.
+     *
+     * Tables are deleted child-first so foreign keys stay satisfied at every step
+     * rather than only at commit.
+     */
     public function clearProjectGraph(string $projectId): void
     {
         foreach (['diagnostics', 'boundary_memberships', 'boundaries', 'classifications', 'edges', 'nodes', 'files'] as $table) {
@@ -302,6 +346,7 @@ final class SqliteGraphRepository implements GraphRepository
         $deleteScans->execute(['project' => $projectId]);
     }
 
+    /** Record one discovered file and the fingerprint that lets the next scan decide whether to re-analyse it. */
     public function saveFile(
         string $id,
         string $projectId,
@@ -336,6 +381,13 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /**
+     * Persist one graph node.
+     *
+     * @param string $ownerKey the contributing scanner, so reconciliation can replace
+     *        one analyzer's facts without disturbing another's
+     * @param array<string, mixed> $attributes
+     */
     public function saveNode(
         string $id,
         string $projectId,
@@ -383,6 +435,13 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /**
+     * Persist one relationship.
+     *
+     * @param string $confidence how far the edge is inferred rather than proven; queries
+     *        filter on it, so a guess must never be recorded as certain
+     * @param array<string, mixed> $attributes
+     */
     public function saveEdge(
         string $id,
         string $projectId,
@@ -501,6 +560,7 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
+    /** Record a scanner-reported problem against a file, surfaced with the scan rather than thrown. */
     public function saveDiagnostic(
         string $id,
         string $projectId,
@@ -531,6 +591,11 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /**
+     * Look up nodes by canonical or display name.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function findNodesByName(string $projectId, string $name, int $limit = 20): array
     {
         self::assertLimit($limit);
@@ -547,6 +612,11 @@ final class SqliteGraphRepository implements GraphRepository
         return $statement->fetchAll();
     }
 
+    /**
+     * Record an inferred role for a node, attributed to the rule that inferred it.
+     *
+     * @param array<string, mixed> $attributes
+     */
     public function saveClassification(
         string $id,
         string $projectId,
@@ -573,6 +643,11 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /**
+     * Persist a boundary, declared or inferred.
+     *
+     * @param array<string, mixed> $matcher the path/name rules defining membership
+     */
     public function saveBoundary(string $id, string $projectId, string $name, array $matcher, string $source, string $scanId): void
     {
         $statement = $this->prepare(
@@ -585,6 +660,7 @@ final class SqliteGraphRepository implements GraphRepository
         ]);
     }
 
+    /** Attach a node to a boundary. Separate from the boundary itself so membership can be recomputed alone. */
     public function saveBoundaryMembership(string $boundaryId, string $projectId, string $nodeId, string $scanId): void
     {
         $statement = $this->prepare(
@@ -593,6 +669,14 @@ final class SqliteGraphRepository implements GraphRepository
         $statement->execute(['boundary' => $boundaryId, 'project' => $projectId, 'node' => $nodeId, 'scan' => $scanId]);
     }
 
+    /**
+     * Swap a project's incremental-reuse cache wholesale.
+     *
+     * Replaced rather than merged: a stale entry would let the next scan reuse facts
+     * for a file it should have re-analysed.
+     *
+     * @param list<ContributionCacheEntry> $entries
+     */
     public function replaceContributionCache(string $projectId, array $entries): void
     {
         $delete = $this->pdo->prepare('DELETE FROM contribution_cache WHERE project_id = :project');
@@ -619,11 +703,21 @@ final class SqliteGraphRepository implements GraphRepository
         }
     }
 
+    /**
+     * Edges leaving a node.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function outgoing(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
     {
         return $this->adjacent('source_id', $projectId, $nodeId, $kind, $limit);
     }
 
+    /**
+     * Edges arriving at a node.
+     *
+     * @return list<array<string, mixed>>
+     */
     public function incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
     {
         return $this->adjacent('target_id', $projectId, $nodeId, $kind, $limit);

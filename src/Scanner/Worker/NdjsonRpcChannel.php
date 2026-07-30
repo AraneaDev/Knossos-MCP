@@ -30,6 +30,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->maxRequestLineBytes = $maxRequestLineBytes ?? max($limits->maxLineBytes, $limits->maxOutputBytes);
     }
 
+    /** {@inheritDoc} */
     public function beginRequest(): int
     {
         $this->process->start();
@@ -185,6 +186,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
     }
 
+    /** {@inheritDoc} */
     public function stderr(): string
     {
         return $this->stderrBuffer;

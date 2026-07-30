@@ -17,6 +17,7 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         $this->runner = $runner ?? new GitProcessRunner($maxOutputBytes, $maxErrorBytes);
     }
 
+    /** {@inheritDoc} */
     public function history(string $projectRoot, int $sinceDays, int $maxCommits, int $timeoutMs): array
     {
         if ($sinceDays < 1 || $sinceDays > 3650) {

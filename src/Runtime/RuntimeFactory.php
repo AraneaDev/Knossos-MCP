@@ -11,8 +11,15 @@ use RuntimeException;
 
 final class RuntimeFactory
 {
+    /** @param string $installationRoot the Knossos install, holding migrations and the workers */
     public function __construct(private readonly string $installationRoot) {}
 
+    /**
+     * Open the graph database, creating its directory and applying migrations.
+     *
+     * @param string|null $path defaults to {@see defaultDatabasePath()}
+     * @throws \RuntimeException when the data directory cannot be created
+     */
     public function database(?string $path = null): PDO
     {
         $path ??= $this->defaultDatabasePath();
@@ -26,6 +33,12 @@ final class RuntimeFactory
         return $pdo;
     }
 
+    /**
+     * `KNOSSOS_DATA_DIR/knossos.sqlite`, else `<cwd>/.knossos/knossos.sqlite`.
+     *
+     * The working-directory fallback means a CLI run from another project addresses a
+     * different graph; set KNOSSOS_DATA_DIR to make one installation share one.
+     */
     public function defaultDatabasePath(): string
     {
         $directory = getenv('KNOSSOS_DATA_DIR');
@@ -40,6 +53,7 @@ final class RuntimeFactory
         return rtrim($directory, '/') . '/knossos.sqlite';
     }
 
+    /** Where Knossos is installed, used to locate migrations and the scanner workers. */
     public function installationRoot(): string
     {
         return $this->installationRoot;

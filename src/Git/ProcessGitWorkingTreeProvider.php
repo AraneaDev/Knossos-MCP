@@ -17,6 +17,7 @@ final readonly class ProcessGitWorkingTreeProvider implements GitWorkingTreeProv
         $this->runner = $runner ?? new GitProcessRunner($maxOutputBytes, $maxErrorBytes);
     }
 
+    /** {@inheritDoc} */
     public function changes(string $projectRoot, ?string $baseRef, int $maxFiles, int $timeoutMs): array
     {
         if ($maxFiles < 1 || $maxFiles > 1000) {

@@ -33,6 +33,7 @@ final class ProcessScannerClient implements ScannerClient
         $this->session->close(true);
     }
 
+    /** {@inheritDoc} */
     public function initialize(): ScannerManifest
     {
         return $this->session->initialize();
@@ -44,21 +45,25 @@ final class ProcessScannerClient implements ScannerClient
         return $this->session->requireCapabilities($required);
     }
 
+    /** {@inheritDoc} */
     public function discover(array $project): array
     {
         return $this->session->discover($project);
     }
 
+    /** {@inheritDoc} */
     public function scan(array $request, ?callable $cancelled = null): iterable
     {
         return $this->session->scan($request, $cancelled);
     }
 
+    /** {@inheritDoc} */
     public function cancel(string $requestId): void
     {
         $this->session->cancel($requestId);
     }
 
+    /** {@inheritDoc} */
     public function shutdown(): void
     {
         $this->session->shutdown();

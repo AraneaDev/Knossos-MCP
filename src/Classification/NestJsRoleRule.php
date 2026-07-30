@@ -10,11 +10,13 @@ use Knossos\Scanner\Protocol\Origin;
 
 final readonly class NestJsRoleRule implements ClassificationRule
 {
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'nestjs.decorators.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         $roles = $node->attributes['nestjs_roles'] ?? [];

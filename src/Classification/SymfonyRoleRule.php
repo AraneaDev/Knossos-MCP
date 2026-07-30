@@ -10,11 +10,13 @@ use Knossos\Scanner\Protocol\Origin;
 
 final readonly class SymfonyRoleRule implements ClassificationRule
 {
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'symfony.explicit.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         if (!in_array($node->kind, ['class', 'method'], true)) {

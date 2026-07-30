@@ -12,16 +12,19 @@ use Knossos\Watch\WatchService;
 
 final class WatchCommand implements CliCommand
 {
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return $command === 'watch';
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return ['db', 'json', 'poll-ms', 'debounce-ms', 'max-queue'];
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         $root = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos watch <path> [options]');

@@ -22,11 +22,13 @@ final class QueryCommand implements CliCommand
         'search-architecture', 'annotate-component', 'list-annotations',
     ];
 
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return in_array($command, self::COMMANDS, true);
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return match ($command) {
@@ -55,6 +57,7 @@ final class QueryCommand implements CliCommand
         };
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return match ($command) {

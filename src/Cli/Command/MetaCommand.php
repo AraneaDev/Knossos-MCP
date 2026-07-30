@@ -12,16 +12,19 @@ final readonly class MetaCommand implements CliCommand
 {
     public function __construct(private CliHelpRenderer $help, private string $version) {}
 
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return in_array($command, ['version', '--version', 'help', '--help', '-h'], true);
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return ['json'];
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         if (in_array($command, ['help', '--help', '-h'], true)) {

@@ -13,11 +13,13 @@ final readonly class ExplicitRoleRule implements ClassificationRule
     /** @param array<string, list<string>> $rolesByCanonicalName */
     public function __construct(private string $ruleId, private array $rolesByCanonicalName) {}
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return $this->ruleId;
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         $facts = [];

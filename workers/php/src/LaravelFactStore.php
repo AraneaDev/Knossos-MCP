@@ -10,6 +10,15 @@ use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
 use PhpParser\Node\Scalar;
 
+/**
+ * Accumulates the nodes, edges, and diagnostics one file's Laravel analysis found.
+ *
+ * Facts are collected rather than emitted as they are discovered, because a single
+ * file yields several kinds and the worker returns them as one contribution. The
+ * static helpers read literal values out of the parse tree, returning null rather
+ * than guessing whenever an argument is computed at runtime — an inferred value
+ * recorded as certain would be worse than an absent one.
+ */
 final class LaravelFactStore
 {
     /** @var array<string, array<string, mixed>> */
@@ -19,6 +28,7 @@ final class LaravelFactStore
     /** @var list<array<string, mixed>> */
     private array $diagnostics = [];
 
+    /** @param string $relativePath the file these facts came from, used as their evidence path */
     public function __construct(private readonly string $relativePath) {}
 
     /** @return list<array<string, mixed>> */
@@ -69,6 +79,7 @@ final class LaravelFactStore
         ];
     }
 
+    /** Record something the analysis could not resolve, reported with the scan rather than thrown. */
     public function addDiagnostic(string $code, string $message, Node $at): void
     {
         $this->diagnostics[] = [
@@ -79,6 +90,7 @@ final class LaravelFactStore
         ];
     }
 
+    /** The class named by a `Foo::class` argument, or null for anything computed at runtime. */
     public static function classArgument(?Node $node): ?string
     {
         return $node instanceof Expr\ClassConstFetch && $node->class instanceof Name
@@ -103,6 +115,7 @@ final class LaravelFactStore
         return $class === null ? [] : [$class];
     }
 
+    /** A literal string argument's value, or null when it is not a literal. */
     public static function string(?Node $node): ?string
     {
         return $node instanceof Scalar\String_ ? $node->value : null;

@@ -33,6 +33,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         $this->close(true);
     }
 
+    /** {@inheritDoc} */
     public function start(): void
     {
         if ($this->process !== null) {
@@ -71,6 +72,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         $this->placeInOwnProcessGroup();
     }
 
+    /** {@inheritDoc} */
     public function isRunning(): bool
     {
         return $this->process !== null;
@@ -127,6 +129,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         return proc_get_status($this->process);
     }
 
+    /** {@inheritDoc} */
     public function close(bool $terminate): void
     {
         if ($this->process === null) {

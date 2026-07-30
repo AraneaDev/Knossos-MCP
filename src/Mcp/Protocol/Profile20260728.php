@@ -38,11 +38,13 @@ final readonly class Profile20260728 implements ProtocolProfile
         'resources/read' => ['ttlMs' => self::PROJECT_TTL_MS, 'cacheScope' => 'private'],
     ];
 
+    /** {@inheritDoc} */
     public function version(): string
     {
         return self::VERSION;
     }
 
+    /** {@inheritDoc} */
     public function decorate(array $result, string $method): array
     {
         // `resultType` describes the protocol envelope, not the outcome: a tool
@@ -59,16 +61,19 @@ final readonly class Profile20260728 implements ProtocolProfile
         return $result;
     }
 
+    /** {@inheritDoc} */
     public function resourceNotFoundCode(): int
     {
         return -32602;
     }
 
+    /** {@inheritDoc} */
     public function emitsKeepalive(): bool
     {
         return false;
     }
 
+    /** {@inheritDoc} */
     public function requiresHandshake(): bool
     {
         return false;

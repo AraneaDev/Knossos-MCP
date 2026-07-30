@@ -18,11 +18,13 @@ final readonly class PythonFrameworkRoleRule implements ClassificationRule
         'python.task',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'python.framework.ast.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         $roles = $node->attributes['python_framework_roles'] ?? [];

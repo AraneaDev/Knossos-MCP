@@ -30,11 +30,13 @@ final readonly class TestModuleRule implements ClassificationRule
 
     private const SOURCE_ROOTS = ['src', 'lib', 'app', 'source'];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'core.test.modules.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         // Every declaration inside a test file is glob-discovered too, so the role is

@@ -23,8 +23,12 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
     /** @var list<array{name: string, route_prefix: string, message_handler: bool}> */
     private array $classes = [];
 
+    /**
+     * @param string $relativePath the file being analysed, carried onto every fact as evidence
+     */
     public function __construct(private readonly string $relativePath) {}
 
+    /** Dispatch a node to the class or method handler. */
     public function enterNode(Node $node): ?int
     {
         if ($node instanceof Stmt\ClassLike) {
@@ -35,6 +39,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return null;
     }
 
+    /** Pop the enclosing-class scope so attribution stays correct. */
     public function leaveNode(Node $node): ?int
     {
         if ($node instanceof Stmt\ClassLike) {
@@ -61,6 +66,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return $this->diagnostics;
     }
 
+    /** Emit the class node plus the facts its attributes imply (routes, services, subscribers). */
     private function enterClass(Stmt\ClassLike $node): void
     {
         $name = isset($node->namespacedName) ? $node->namespacedName->toString() : ($node->name?->toString() ?? '{anonymous}');
@@ -108,6 +114,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** Emit the method node and any route or listener its attributes declare. */
     private function enterMethod(Stmt\ClassMethod $node): void
     {
         $class = $this->currentClass();
@@ -201,6 +208,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return $result;
     }
 
+    /** An attribute argument by name, falling back to position for the shorthand form. */
     private function argument(Node\Attribute $attribute, string $name, int $position = -1): ?Node
     {
         foreach ($attribute->args as $index => $argument) {
@@ -211,6 +219,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return null;
     }
 
+    /** An attribute argument's literal string value, or null when it is computed. */
     private function stringArgument(Node\Attribute $attribute, string $name, int $position = -1): ?string
     {
         $value = $this->argument($attribute, $name, $position);
@@ -233,6 +242,7 @@ final class SymfonyFactCollector extends NodeVisitorAbstract
         return array_values(array_unique($result));
     }
 
+    /** The class a parameter is typed with, which is what autowiring resolves. */
     private function parameterClass(?Node\Param $parameter): ?string
     {
         return $parameter?->type instanceof Name ? $this->name($parameter->type) : null;

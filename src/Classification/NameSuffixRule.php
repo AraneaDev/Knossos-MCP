@@ -19,11 +19,13 @@ final readonly class NameSuffixRule implements ClassificationRule
         private Confidence $confidence = Confidence::Probable,
     ) {}
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return $this->ruleId;
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         if (!in_array($node->kind, $this->eligibleKinds, true)) {

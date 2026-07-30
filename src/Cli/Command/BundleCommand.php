@@ -11,11 +11,13 @@ use Knossos\Cli\CliCommandContext;
 
 final class BundleCommand implements CliCommand
 {
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return in_array($command, ['export-bundle', 'import-bundle'], true);
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return $command === 'export-bundle'
@@ -23,6 +25,7 @@ final class BundleCommand implements CliCommand
             : ['db', 'json', 'name'];
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return $command === 'export-bundle'

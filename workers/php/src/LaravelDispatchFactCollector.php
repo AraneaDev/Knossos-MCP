@@ -9,6 +9,13 @@ use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
 
+/**
+ * Records dispatch edges: facade static calls and the global dispatch helpers.
+ *
+ * Dispatching a job or event is an indirection the caller never names directly, so
+ * without these edges the handler looks unreferenced and dead-code detection would
+ * report it as a candidate for deletion.
+ */
 final readonly class LaravelDispatchFactCollector
 {
     public function __construct(
@@ -16,6 +23,7 @@ final readonly class LaravelDispatchFactCollector
         private LaravelTraversalContext $context,
     ) {}
 
+    /** Route static calls and function calls to the matching dispatch detector. */
     public function enterNode(Node $node): void
     {
         if ($node instanceof Expr\StaticCall) {

@@ -7,6 +7,14 @@ namespace KnossosPhpScanner;
 use PhpParser\Node;
 use PhpParser\Node\Stmt;
 
+/**
+ * Tracks where the traversal currently is: the enclosing class and callable.
+ *
+ * The Laravel collectors need that enclosing scope to attribute a fact — a route
+ * registered inside a method belongs to that method — and the parser visits nodes
+ * without carrying it. Maintained as stacks so nested declarations (a closure in a
+ * method, a class in a class) unwind in the right order.
+ */
 final class LaravelTraversalContext
 {
     use ResolvesDeclarationName;
@@ -16,8 +24,10 @@ final class LaravelTraversalContext
     /** @var list<string> */
     private array $callables = [];
 
+    /** @param string $relativePath the file being traversed, for evidence on emitted facts */
     public function __construct(private readonly string $relativePath = '') {}
 
+    /** Push a declaration onto the scope stacks as the traversal enters it. */
     public function enterNode(Node $node): void
     {
         if ($node instanceof Stmt\ClassLike) {
@@ -30,6 +40,7 @@ final class LaravelTraversalContext
         }
     }
 
+    /** Pop the scope stacks on the way out, keeping them balanced with enterNode(). */
     public function leaveNode(Node $node): void
     {
         if ($node instanceof Stmt\ClassMethod && $this->callables !== []) {
@@ -39,11 +50,13 @@ final class LaravelTraversalContext
         }
     }
 
+    /** The innermost enclosing class, or null at file scope. */
     public function currentClass(): ?string
     {
         return $this->classes === [] ? null : $this->classes[array_key_last($this->classes)];
     }
 
+    /** The innermost enclosing callable, which is what a fact is attributed to. */
     public function currentSource(): ?string
     {
         return $this->callables === [] ? $this->currentClass() : $this->callables[array_key_last($this->callables)];

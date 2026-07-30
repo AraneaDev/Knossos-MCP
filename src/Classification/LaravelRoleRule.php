@@ -25,11 +25,13 @@ final readonly class LaravelRoleRule implements ClassificationRule
         'Illuminate\\Contracts\\Events\\Dispatcher' => 'laravel.event_dispatcher',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'laravel.explicit.types.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         if ($node->kind !== 'class') {

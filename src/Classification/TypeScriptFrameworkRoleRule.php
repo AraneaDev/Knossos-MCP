@@ -22,11 +22,13 @@ final readonly class TypeScriptFrameworkRoleRule implements ClassificationRule
         'vue.composable',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'typescript.application.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         $roles = $node->attributes['typescript_framework_roles'] ?? [];

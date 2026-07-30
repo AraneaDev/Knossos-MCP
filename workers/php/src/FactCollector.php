@@ -94,6 +94,7 @@ final class FactCollector extends NodeVisitorAbstract
         return $this->diagnostics;
     }
 
+    /** Emit the class/interface/trait/enum node and its inheritance edges. */
     private function enterClassLike(Stmt\ClassLike $node): void
     {
         $kind = match (true) {
@@ -140,6 +141,7 @@ final class FactCollector extends NodeVisitorAbstract
         $this->classes[] = ['id' => $id, 'name' => $name, 'parent' => $parent, 'properties' => []];
     }
 
+    /** Emit a method node, its edge to the declaring class, and its signature types. */
     private function enterMethod(Stmt\ClassMethod $node): void
     {
         $class = $this->currentClass();
@@ -174,6 +176,7 @@ final class FactCollector extends NodeVisitorAbstract
         return array_values(array_unique($names));
     }
 
+    /** Emit a free function node and its signature types. */
     private function enterFunction(Stmt\Function_ $node): void
     {
         $name = $this->declarationName($node, $this->relativePath);
@@ -204,6 +207,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** Emit `uses` edges; a trait's members otherwise appear to belong to nothing. */
     private function traitUse(Stmt\TraitUse $node): void
     {
         $class = $this->currentClass();
@@ -215,6 +219,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** Emit a property node and an edge for its declared type. */
     private function property(Stmt\Property $node): void
     {
         $class = $this->currentClass();
@@ -236,6 +241,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** Track `$x = new Foo` so later `$x->method()` calls can be attributed to Foo. */
     private function assignment(Expr\Assign $node): void
     {
         if (!$node->var instanceof Expr\Variable || !is_string($node->var->name)) {
@@ -252,6 +258,7 @@ final class FactCollector extends NodeVisitorAbstract
         $this->clearVariableType($node->var->name);
     }
 
+    /** Emit an `instantiates` edge for a `new` whose class is statically known. */
     private function newExpression(Expr\New_ $node): void
     {
         $source = $this->currentSource();
@@ -260,6 +267,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** Emit a `calls` edge for a static call, resolving `self`/`static`/`parent` against the current class. */
     private function staticCall(Expr\StaticCall $node): void
     {
         $source = $this->currentSource();
@@ -298,6 +306,7 @@ final class FactCollector extends NodeVisitorAbstract
         $this->addEdge('references', $source, self::reference('class', $resolved), $evidence);
     }
 
+    /** Emit a `calls` edge, using the tracked variable type to name the receiver where possible. */
     private function methodCall(Expr\MethodCall|Expr\NullsafeMethodCall $node): void
     {
         $source = $this->currentSource();
@@ -338,6 +347,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** Emit a `calls` edge to a free function. */
     private function functionCall(Expr\FuncCall $node): void
     {
         $source = $this->currentSource();
@@ -366,6 +376,7 @@ final class FactCollector extends NodeVisitorAbstract
         return [];
     }
 
+    /** Fully-qualified name, honouring the parser's resolved name attribute when present. */
     private function resolvedClassName(Name $name): string
     {
         $value = strtolower($name->toString());
@@ -378,6 +389,7 @@ final class FactCollector extends NodeVisitorAbstract
     }
 
 
+    /** The name as written, for evidence where the resolved form would obscure the source. */
     private function name(Name $name): string
     {
         $resolved = $name->getAttribute('resolvedName');
@@ -408,6 +420,7 @@ final class FactCollector extends NodeVisitorAbstract
         ];
     }
 
+    /** Record an edge fact, defaulting to `certain` because most edges here are proven by syntax. */
     private function addEdge(string $kind, string $source, string $target, Node $evidence, string $confidence = 'certain'): void
     {
         $this->edges[] = [
@@ -438,16 +451,19 @@ final class FactCollector extends NodeVisitorAbstract
         return $this->classes === [] ? null : $this->classes[array_key_last($this->classes)];
     }
 
+    /** The innermost enclosing method or function id, used as an edge source. */
     private function currentCallableId(): ?string
     {
         return $this->callables === [] ? null : $this->callables[array_key_last($this->callables)]['id'];
     }
 
+    /** The node a fact should be attributed to: the callable if inside one, else the class. */
     private function currentSource(): ?string
     {
         return $this->currentCallableId() ?? ($this->currentClass()['id'] ?? null);
     }
 
+    /** Remember a variable's inferred class so later calls on it can be resolved. */
     private function setVariableType(string $variable, string $type, string $confidence = 'certain'): void
     {
         if ($this->callables !== []) {
@@ -458,6 +474,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** Forget a variable's type when it is reassigned to something unknown. */
     private function clearVariableType(string $variable): void
     {
         if ($this->callables !== []) {
@@ -465,6 +482,7 @@ final class FactCollector extends NodeVisitorAbstract
         }
     }
 
+    /** The tracked class for a variable, or null when it was never inferred. */
     private function variableType(string $variable): ?string
     {
         return $this->callables === []

@@ -9,6 +9,15 @@ use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
 use PDO;
 
+/**
+ * Facade over the specialised query services.
+ *
+ * Exists so callers — the MCP tools, the CLI commands — depend on one seam
+ * rather than on a dozen services, and so the split between those services can
+ * change without touching them. Almost every method here is a one-line
+ * delegation; the behaviour, limits, and result shape are documented on the
+ * delegate named in each `@see`.
+ */
 final readonly class ArchitectureQueryService
 {
     private PDO $pdo;
@@ -76,16 +85,19 @@ final readonly class ArchitectureQueryService
         return is_string($root) && $root !== '' ? $root : null;
     }
 
+    /** {@see ProjectCatalogQueryService::listProjects()} */
     public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
     {
         return $this->catalogQueries->listProjects($limit, $offset, $includeRoots);
     }
 
+    /** {@see ProjectCatalogQueryService::listSnapshots()} */
     public function listSnapshots(string $projectId, int $limit = 20, int $offset = 0): ResultEnvelope
     {
         return $this->catalogQueries->listSnapshots($projectId, $limit, $offset);
     }
 
+    /** {@see ProjectCatalogQueryService::snapshotDiff()} */
     public function snapshotDiff(string $projectId, string $fromSnapshot, string $toSnapshot = 'active', int $maxChanges = 25): ResultEnvelope
     {
         return $this->catalogQueries->snapshotDiff($projectId, $fromSnapshot, $toSnapshot, $maxChanges);
@@ -103,16 +115,19 @@ final readonly class ArchitectureQueryService
         return $this->catalogQueries->qualityGate($projectId, $baselineSnapshot, $budgets, $policies, $sarif, $proposeBaseline);
     }
 
+    /** {@see ProjectCatalogQueryService::architectureTrends()} */
     public function architectureTrends(string $projectId, int $limit = 10, ?string $releaseFrom = null): ResultEnvelope
     {
         return $this->catalogQueries->architectureTrends($projectId, $limit, $releaseFrom);
     }
 
+    /** {@see ComponentQueryService::findComponent()} */
     public function findComponent(string $projectId, string $name, int $limit = 20): ResultEnvelope
     {
         return $this->componentQueries->findComponent($projectId, $name, $limit);
     }
 
+    /** {@see ComponentQueryService::inspectComponent()} */
     public function inspectComponent(
         string $projectId,
         string $component,
@@ -129,11 +144,13 @@ final readonly class ArchitectureQueryService
         return $this->componentQueries->listUsages($projectId, $symbol, $edgeKinds, $minConfidence, $limit);
     }
 
+    /** {@see GraphTopologyQueryService::architectureSummary()} */
     public function architectureSummary(string $projectId, int $limit = 50): ResultEnvelope
     {
         return $this->topologyQueries->architectureSummary($projectId, $limit);
     }
 
+    /** {@see FileMetricsQueryService::fileMetrics()} */
     public function fileMetrics(
         string $projectId,
         ?string $pathContains = null,
@@ -187,6 +204,7 @@ final readonly class ArchitectureQueryService
         return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs);
     }
 
+    /** {@see ArchitecturePolicyQueryService::suggestLocation()} */
     public function suggestLocation(
         string $projectId,
         string $featureDescription,
@@ -317,11 +335,13 @@ final readonly class ArchitectureQueryService
         return $this->topologyQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
     }
 
+    /** {@see GraphTopologyQueryService::listBoundaries()} */
     public function listBoundaries(string $projectId, ?string $source = null, int $limit = 50, int $offset = 0): ResultEnvelope
     {
         return $this->topologyQueries->listBoundaries($projectId, $source, $limit, $offset);
     }
 
+    /** {@see AgentBriefService::exportAgentBrief()} */
     public function exportAgentBrief(string $projectId, int $maxChars = 4000): ResultEnvelope
     {
         return $this->briefQueries->exportAgentBrief($projectId, $maxChars);
@@ -341,11 +361,13 @@ final readonly class ArchitectureQueryService
         return $this->componentQueries->searchArchitecture($projectId, $query, $kinds, $roles, $boundaryIds, $confidences, $limit, $offset);
     }
 
+    /** {@see AnnotationService::annotateComponent()} */
     public function annotateComponent(string $projectId, string $component, string $kind, string $value = '', bool $remove = false, bool $execute = false): ResultEnvelope
     {
         return $this->annotationQueries->annotateComponent($projectId, $component, $kind, $value, $remove, $execute);
     }
 
+    /** {@see AnnotationService::listAnnotations()} */
     public function listAnnotations(string $projectId, ?string $component = null, ?string $kind = null, int $limit = 100, int $offset = 0): ResultEnvelope
     {
         return $this->annotationQueries->listAnnotations($projectId, $component, $kind, $limit, $offset);

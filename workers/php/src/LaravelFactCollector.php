@@ -16,6 +16,7 @@ final class LaravelFactCollector extends NodeVisitorAbstract
     private readonly LaravelDispatchFactCollector $dispatch;
     private readonly LaravelProviderMapFactCollector $providerMaps;
 
+    /** @param string $relativePath the file being visited, carried onto every emitted fact */
     public function __construct(string $relativePath)
     {
         $this->facts = new LaravelFactStore($relativePath);
@@ -26,6 +27,7 @@ final class LaravelFactCollector extends NodeVisitorAbstract
         $this->providerMaps = new LaravelProviderMapFactCollector($this->facts, $this->context);
     }
 
+    /** Fan the node out to the scope tracker and each specialised collector. */
     public function enterNode(Node $node): ?int
     {
         $this->context->enterNode($node);
@@ -37,6 +39,7 @@ final class LaravelFactCollector extends NodeVisitorAbstract
         return null;
     }
 
+    /** Unwind the scope tracker so enclosing-class attribution stays correct. */
     public function leaveNode(Node $node): ?int
     {
         $this->routes->leaveNode($node);

@@ -55,6 +55,7 @@ function runMeasured(array $command, float $timeoutSeconds): array
     ];
 }
 
+/** Peak resident memory across a process and its children, since scanners fan out into workers. */
 function processTreeRss(int $pid): int
 {
     if ($pid <= 0) {
@@ -91,6 +92,7 @@ function jsonObject(array $run): array
     return $decoded;
 }
 
+/** Delete a directory tree, used to reset a corpus between runs. */
 function removeTree(string $path): void
 {
     if (!str_starts_with($path, sys_get_temp_dir() . '/knossos-benchmark-') || !is_dir($path)) {

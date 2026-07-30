@@ -23,11 +23,13 @@ final readonly class LaravelPathRoleRule implements ClassificationRule
         '/Repositories/' => 'laravel.repository',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'laravel.paths.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         if ($node->kind !== 'class') {

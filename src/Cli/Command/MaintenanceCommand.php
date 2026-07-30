@@ -11,11 +11,13 @@ use Knossos\Runtime\DoctorService;
 
 final class MaintenanceCommand implements CliCommand
 {
+    /** {@inheritDoc} */
     public function supports(string $command): bool
     {
         return in_array($command, ['doctor', 'remove-project', 'cleanup-stale-scans', 'maintain-database'], true);
     }
 
+    /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
         return match ($command) {
@@ -26,6 +28,7 @@ final class MaintenanceCommand implements CliCommand
         };
     }
 
+    /** {@inheritDoc} */
     public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
     {
         return match ($command) {

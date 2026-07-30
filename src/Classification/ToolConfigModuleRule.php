@@ -42,11 +42,13 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
     /** Whole filenames that name a tool's entry file outright. */
     private const EXACT_STEMS = ['gulpfile', 'gruntfile', 'conftest'];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'core.tooling.config.v1';
     }
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         // Declarations inside a config file are reached exactly as the file is,
