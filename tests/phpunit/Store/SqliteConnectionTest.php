@@ -122,4 +122,16 @@ final class SqliteConnectionTest extends TestCase
 
         $this->assertTrue($reflection->isFinal());
     }
+    #[Group('storage')]
+    public function testTheWriteAheadLogIsCappedSoItsHighWaterMarkIsNotPermanent(): void
+    {
+        // A WAL keeps whatever size its busiest transaction needed. A full scan
+        // of this repository left 124 MB of allocated log holding two live
+        // pages, and nothing shrank it until someone ran maintenance by hand.
+        // A size limit truncates it back after each checkpoint instead.
+        $pdo = SqliteConnection::open($this->tempSqliteFile());
+
+        assertSame(64 * 1024 * 1024, $this->pragmaValue($pdo, 'journal_size_limit'));
+    }
+
 }
