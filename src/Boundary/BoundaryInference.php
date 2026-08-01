@@ -156,9 +156,19 @@ final class BoundaryInference
      */
     private function matches(NodeFact $node, array $matcher): bool
     {
-        return $matcher['type'] === 'path_prefix'
-            ? str_starts_with($node->evidence->relativePath, $matcher['value'])
-            : str_starts_with(ltrim($node->canonicalName, '\\'), ltrim($matcher['value'], '\\'));
+        if ($matcher['type'] === 'path_prefix') {
+            // An external node has no source file of its own: scanners evidence it at
+            // the reference site, so node:fs carries the path of whichever file
+            // imported it first. A path prefix says where code lives, so letting that
+            // borrowed path decide membership would make node:fs a member of that
+            // importer's boundary — and every other boundary importing fs would then
+            // read as depending on it. Namespace prefixes still apply: an external
+            // class genuinely is in the namespace its name declares.
+            return ($node->attributes['external'] ?? false) !== true
+                && str_starts_with($node->evidence->relativePath, $matcher['value']);
+        }
+
+        return str_starts_with(ltrim($node->canonicalName, '\\'), ltrim($matcher['value'], '\\'));
     }
 
     /**
