@@ -9,6 +9,7 @@ use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
 use PhpParser\Node\Stmt;
+use PhpParser\NodeFinder;
 use PhpParser\NodeVisitorAbstract;
 
 /**
@@ -38,7 +39,49 @@ final class FactCollector extends NodeVisitorAbstract
     /** @var list<array{id: string, variables: array<string, array{type: string, confidence: string}>}> */
     private array $callables = [];
 
+    /**
+     * Declared return types of the methods this file declares, keyed `Class::method`.
+     *
+     * Collected up front because a method is routinely called above its own
+     * declaration, and a single-pass visitor would not have read the signature
+     * yet when it reaches the call.
+     *
+     * @var array<string, string>
+     */
+    private array $returnTypes = [];
+
     public function __construct(private readonly string $relativePath) {}
+
+    /**
+     * Index the file's method return types before collecting facts from it.
+     *
+     * A helper reached only through `$x = $this->make(); $x->use()` otherwise
+     * has no inbound edge at all and reads as dead code, which is how this
+     * repository's own `server_info` and `diagnose_runtime` entry points came
+     * to report the environment methods they call on every request as unused.
+     *
+     * @param list<Node> $nodes
+     */
+    public function beforeTraverse(array $nodes): ?array
+    {
+        foreach ((new NodeFinder())->findInstanceOf($nodes, Stmt\ClassLike::class) as $class) {
+            $className = $class->namespacedName?->toString();
+            if ($className === null) {
+                // An anonymous class has no name to key its members by.
+                continue;
+            }
+            foreach ($class->getMethods() as $method) {
+                // Only a single named type is usable: a union or an intersection
+                // does not name one receiver, and a nullable one is dereferenced
+                // at the caller's risk rather than ours.
+                if ($method->returnType instanceof Name) {
+                    $this->returnTypes[$className . '::' . $method->name->toString()] = $method->returnType->toString();
+                }
+            }
+        }
+
+        return null;
+    }
     /** Collect whatever facts this node declares as the traversal enters it. */
 
     public function enterNode(Node $node): ?int
@@ -283,9 +326,44 @@ final class FactCollector extends NodeVisitorAbstract
 
             return;
         }
+        $returned = $this->returnedType($node->expr);
+        if ($returned !== null) {
+            // The type is declared, but the binding to this variable is local
+            // flow like the `new` case above, so it stays probable.
+            $this->setVariableType($node->var->name, $returned, 'probable');
+
+            return;
+        }
         // Reassignment to any untracked value invalidates the inferred type so a
         // stale `$x = new A; …; $x = something(); $x->m()` no longer resolves to A.
         $this->clearVariableType($node->var->name);
+    }
+
+    /**
+     * The class a call to one of this file's own methods is declared to return, if any.
+     *
+     * Only calls whose receiver is statically known are considered: `$this->m()`
+     * and a static call naming a class. A call on any other receiver could be
+     * dispatched anywhere, and guessing there would trade a missing edge for a
+     * wrong one.
+     */
+    private function returnedType(Expr $expression): ?string
+    {
+        if ($expression instanceof Expr\MethodCall
+            && $expression->var instanceof Expr\Variable
+            && $expression->var->name === 'this'
+            && $expression->name instanceof Identifier) {
+            $class = $this->currentClass()['name'] ?? null;
+
+            return $class === null ? null : ($this->returnTypes[$class . '::' . $expression->name->toString()] ?? null);
+        }
+        if ($expression instanceof Expr\StaticCall
+            && $expression->class instanceof Name
+            && $expression->name instanceof Identifier) {
+            return $this->returnTypes[$this->resolvedClassName($expression->class) . '::' . $expression->name->toString()] ?? null;
+        }
+
+        return null;
     }
 
     /** Emit an `instantiates` edge for a `new` whose class is statically known. */
@@ -370,6 +448,11 @@ final class FactCollector extends NodeVisitorAbstract
             && $node->var->name instanceof Identifier
         ) {
             $class = $this->propertyType($node->var->name->toString());
+        } elseif ($node->var instanceof Expr\MethodCall || $node->var instanceof Expr\StaticCall) {
+            // `$this->make()->use()`: the receiver is the inner call itself, so
+            // its declared return type names it with nothing in between that
+            // could have reassigned it.
+            $class = $this->returnedType($node->var);
         }
 
         if ($class !== null) {

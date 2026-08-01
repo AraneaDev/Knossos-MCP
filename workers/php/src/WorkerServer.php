@@ -14,7 +14,7 @@ use Throwable;
  */
 final class WorkerServer
 {
-    public const VERSION = '0.2.0';
+    public const VERSION = '0.3.0';
 
     /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
     private const SHEBANG_PROBE_BYTES = 256;

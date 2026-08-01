@@ -696,13 +696,9 @@ final class PhpScannerTest extends KnossosTestCase
                 $x = new A();
                 $x->m();
                 $y = new A();
-                $y = self::make();
+                // Reassigned to a value nothing declares a type for.
+                $y = \getenv('ANYTHING');
                 $y->m();
-            }
-
-            public static function make(): A
-            {
-                return new A();
             }
         }
         PHP);
@@ -811,4 +807,52 @@ final class PhpScannerTest extends KnossosTestCase
 
         $client->shutdown();
     }
+    #[Group('php-scanner')]
+    public function testALocalAssignedFromAMethodWithADeclaredReturnTypeCarriesTheCall(): void
+    {
+        // Without this, a helper reached only through `$x = $this->make();
+        // $x->use()` has no inbound edge and is reported as dead code. This
+        // repository's own `ServerEnvironment::describe` and `::doctor` were
+        // reported that way while `server_info` and `diagnose_runtime` called
+        // them on every request.
+        $client = $this->phpWorkerClient();
+        $client->initialize();
+
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/ReturnTypedLocal.php'],
+        ]));
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $contributions[0]->edges,
+        );
+
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Accountant::post', 'php:method:Fixture\\Ledger::record'],
+            $edgeTuples,
+        );
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Accountant::postStatically', 'php:method:Fixture\\Ledger::record'],
+            $edgeTuples,
+        );
+        // `$this->ledger()->record()` — chained, with no variable at all. This
+        // is the shape `diagnose_runtime` uses, which is why the environment's
+        // `doctor()` read as unreferenced.
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Accountant::postDirectly', 'php:method:Fixture\\Ledger::record'],
+            $edgeTuples,
+        );
+        // A later reassignment to an untracked value drops the inferred type,
+        // so the only call attributed here is the one on the typed parameter.
+        // Exactly one: the call on the typed parameter. A stale inferred type
+        // would add a second, indistinguishable edge from the same source.
+        $reassigned = array_values(array_filter(
+            $edgeTuples,
+            fn(array $tuple): bool => $tuple[0] === 'calls'
+                && $tuple[1] === 'php:method:Fixture\\Accountant::postReassigned'
+                && $tuple[2] === 'php:method:Fixture\\Ledger::record',
+        ));
+        assertSame(1, count($reassigned));
+    }
+
 }
