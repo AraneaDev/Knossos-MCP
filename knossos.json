@@ -27,5 +27,13 @@
         "tests"
       ]
     }
-  ]
+  ],
+  "quality_budgets": {
+    "new_cycles": 0,
+    "boundary_violations": 0,
+    "error_diagnostics": 0,
+    "warning_diagnostics": 0,
+    "hub_degree_growth": 25,
+    "unreferenced_candidates": 110
+  }
 }
