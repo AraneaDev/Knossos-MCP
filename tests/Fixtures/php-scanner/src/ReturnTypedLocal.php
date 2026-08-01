@@ -12,8 +12,26 @@ final class Ledger
     }
 }
 
+final class Bookkeeper
+{
+    public function __construct(private Accountant $accountant) {}
+
+    public function post(string $entry): bool
+    {
+        // A call on the result of a call on an injected collaborator: the
+        // property names the type, the type names the method, the method names
+        // its return type — but only the reconciler sees all three.
+        return $this->accountant->ledgerFor()->record($entry);
+    }
+}
+
 final class Accountant
 {
+    public function ledgerFor(): Ledger
+    {
+        return $this->ledger();
+    }
+
     public function post(string $entry): bool
     {
         // The receiver's type is declared by the return type of the accessor,
@@ -45,6 +63,15 @@ final class Accountant
     {
         // Chained: the receiver is the call itself, with no variable between.
         return $this->ledger()->record($entry);
+    }
+
+    public function postOptionally(string $entry, bool $enabled): bool
+    {
+        // The near-universal shape for an optional collaborator: a ternary that
+        // is either a construction or null, then a nullsafe call.
+        $ledger = $enabled ? new Ledger() : null;
+
+        return $ledger?->record($entry) ?? false;
     }
 
     private function ledger(): Ledger

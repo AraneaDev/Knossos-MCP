@@ -36,7 +36,7 @@ final class FactCollector extends NodeVisitorAbstract
     /** @var list<array{id: string, name: string, parent: ?string, properties: array<string, string>}> */
     private array $classes = [];
 
-    /** @var list<array{id: string, variables: array<string, array{type: string, confidence: string}>}> */
+    /** @var list<array{id: string, variables: array<string, array{type: ?string, confidence: string, returned_by?: string}>}> */
     private array $callables = [];
 
     /**
@@ -334,9 +334,108 @@ final class FactCollector extends NodeVisitorAbstract
 
             return;
         }
+        $optional = $this->optionalType($node->expr);
+        if ($optional !== null) {
+            // `$x = $flag ? new Y() : null` is how PHP spells an optional
+            // collaborator; losing the type there loses every call through it.
+            $this->setVariableType($node->var->name, $optional, 'probable');
+
+            return;
+        }
+        $callee = $this->calleeReference($node->expr);
+        if ($callee !== null) {
+            // The receiver is whatever that call returns, and the declaration
+            // that would say what is in another file. Record the call so a
+            // member access on this variable can name it; the reconciler, which
+            // sees every file, finishes the resolution.
+            $this->setVariableReturnSource($node->var->name, $callee);
+
+            return;
+        }
         // Reassignment to any untracked value invalidates the inferred type so a
         // stale `$x = new A; …; $x = something(); $x->m()` no longer resolves to A.
         $this->clearVariableType($node->var->name);
+    }
+
+    /**
+     * The declaring reference of a call whose receiver is statically known, if any.
+     *
+     * `Foo::make()` names its declaration outright; `$this->make()` names it once
+     * the enclosing class is known. Anything else could dispatch anywhere.
+     */
+    private function calleeReference(Expr $expression): ?string
+    {
+        if ($expression instanceof Expr\MethodCall
+            && $expression->var instanceof Expr\Variable
+            && $expression->var->name === 'this'
+            && $expression->name instanceof Identifier) {
+            $class = $this->currentClass()['name'] ?? null;
+
+            return $class === null ? null : $class . '::' . $expression->name->toString();
+        }
+        if ($expression instanceof Expr\StaticCall
+            && $expression->class instanceof Name
+            && $expression->name instanceof Identifier) {
+            return $this->resolvedClassName($expression->class) . '::' . $expression->name->toString();
+        }
+        if ($expression instanceof Expr\MethodCall && $expression->name instanceof Identifier) {
+            // A call on a collaborator whose type is declared — an injected
+            // property or a typed parameter. The collaborator's own declaration
+            // is usually in another file, which is exactly the case this exists
+            // for.
+            $receiver = $this->declaredReceiverType($expression->var);
+
+            return $receiver === null ? null : $receiver . '::' . $expression->name->toString();
+        }
+
+        return null;
+    }
+
+    /** The declared type of a receiver expression, when one is tracked. */
+    private function declaredReceiverType(Expr $receiver): ?string
+    {
+        if ($receiver instanceof Expr\Variable && is_string($receiver->name)) {
+            return $receiver->name === 'this'
+                ? ($this->currentClass()['name'] ?? null)
+                : $this->variableType($receiver->name);
+        }
+        if (($receiver instanceof Expr\PropertyFetch || $receiver instanceof Expr\NullsafePropertyFetch)
+            && $receiver->var instanceof Expr\Variable
+            && $receiver->var->name === 'this'
+            && $receiver->name instanceof Identifier) {
+            return $this->propertyType($receiver->name->toString());
+        }
+
+        return null;
+    }
+
+    /**
+     * The single class a ternary can yield, ignoring a null branch.
+     *
+     * Returns null when the branches disagree or when either names something
+     * this file cannot resolve: a receiver that might be one of two types is
+     * not a receiver this can attribute a call to.
+     */
+    private function optionalType(Expr $expression): ?string
+    {
+        if (!$expression instanceof Expr\Ternary) {
+            return null;
+        }
+        $types = [];
+        foreach ([$expression->if ?? $expression->cond, $expression->else] as $branch) {
+            if ($branch instanceof Expr\ConstFetch && strtolower($branch->name->toString()) === 'null') {
+                continue;
+            }
+            $type = $branch instanceof Expr\New_ && $branch->class instanceof Name
+                ? $this->resolvedClassName($branch->class)
+                : $this->returnedType($branch);
+            if ($type === null) {
+                return null;
+            }
+            $types[$type] = true;
+        }
+
+        return count($types) === 1 ? array_key_first($types) : null;
     }
 
     /**
@@ -457,7 +556,34 @@ final class FactCollector extends NodeVisitorAbstract
 
         if ($class !== null) {
             $this->addEdge('calls', $source, self::reference('method', $class . '::' . $node->name->toString()), $node, $confidence);
+
+            return;
         }
+        $returnedBy = $this->receiverReturnSource($node->var);
+        if ($returnedBy !== null) {
+            // Named indirectly: the member, and the call whose result it is on.
+            // Resolved by the reconciler once every file's return types are known,
+            // and dropped there if they do not name a member that exists.
+            $this->addEdge(
+                'calls',
+                $source,
+                self::reference('method_of_return', $returnedBy . '::' . $node->name->toString()),
+                $node,
+                'probable',
+            );
+        }
+    }
+
+    /** The call a receiver's value came from, whether held in a variable or used inline. */
+    private function receiverReturnSource(Expr $receiver): ?string
+    {
+        if ($receiver instanceof Expr\Variable && is_string($receiver->name) && $receiver->name !== 'this') {
+            return $this->variableReturnSource($receiver->name);
+        }
+
+        return $receiver instanceof Expr\MethodCall || $receiver instanceof Expr\StaticCall
+            ? $this->calleeReference($receiver)
+            : null;
     }
 
     /** Emit a `calls` edge to a free function. */
@@ -601,6 +727,32 @@ final class FactCollector extends NodeVisitorAbstract
                 'confidence' => $confidence,
             ];
         }
+    }
+
+    /**
+     * Remember that a variable holds whatever a named call returned.
+     *
+     * Kept instead of a type because the declaration that names the type is in
+     * another file; the reference this records is enough for the reconciler,
+     * which sees them all, to finish the resolution.
+     */
+    private function setVariableReturnSource(string $variable, string $callee): void
+    {
+        if ($this->callables !== []) {
+            $this->callables[array_key_last($this->callables)]['variables'][$variable] = [
+                'type' => null,
+                'confidence' => 'probable',
+                'returned_by' => $callee,
+            ];
+        }
+    }
+
+    /** The call a variable's value came from, when its type was not resolvable here. */
+    private function variableReturnSource(string $variable): ?string
+    {
+        return $this->callables === []
+            ? null
+            : ($this->callables[array_key_last($this->callables)]['variables'][$variable]['returned_by'] ?? null);
     }
 
     /** Forget a variable's type when it is reassigned to something unknown. */

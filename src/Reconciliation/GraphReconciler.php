@@ -358,6 +358,7 @@ final readonly class GraphReconciler
         $external = [];
         $edges = [];
         $inheritanceSources = $this->inheritanceSources($contributions);
+        $returnTypes = self::returnTypes($contributions);
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -368,13 +369,24 @@ final readonly class GraphReconciler
                     ));
                 }
 
-                $targetId = $nodeMap[$edge->targetReference]
-                    ?? $this->aliasedTypeTarget($edge->targetReference, $nodeMap)
-                    ?? $this->inheritedMemberTarget($edge->targetReference, $nodeMap, $inheritanceSources);
+                $deferred = str_contains($edge->targetReference, ':method_of_return:');
+                $reference = $deferred
+                    ? $this->returnedMemberReference($edge->targetReference, $returnTypes)
+                    : $edge->targetReference;
+                $targetId = $reference === null ? null : ($nodeMap[$reference]
+                    ?? $this->aliasedTypeTarget($reference, $nodeMap)
+                    ?? $this->inheritedMemberTarget($reference, $nodeMap, $inheritanceSources));
+                if ($targetId === null && $deferred) {
+                    // A speculative reference the graph cannot confirm. Dropping
+                    // it keeps an inference that did not pay off out of the
+                    // graph, rather than inventing an external symbol for a
+                    // member that may not exist.
+                    continue;
+                }
                 if ($targetId === null) {
                     [$targetId, $externalNode] = $this->externalNode(
                         $projectId,
-                        $edge->targetReference,
+                        $reference,
                         $edge->evidence,
                         $contribution->ownerKey,
                         $fileIds,
@@ -402,6 +414,67 @@ final readonly class GraphReconciler
         }
 
         return [$external, $edges];
+    }
+
+    /**
+     * Every method's declared return type, from the `returns` edges the scanners report.
+     *
+     * @param list<ScanContribution> $contributions @return array<string, string>
+     */
+    private static function returnTypes(array $contributions): array
+    {
+        $types = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'returns') {
+                    // First declaration wins, matching how a duplicate node is
+                    // resolved; a method has one declared return type anyway.
+                    $types[$edge->sourceReference] ??= $edge->targetReference;
+                }
+            }
+        }
+
+        return $types;
+    }
+
+    /**
+     * Turn "the member `m` of whatever `Type::factory()` returns" into a plain member reference.
+     *
+     * A scanner reads one file at a time, so it cannot see the return type of a
+     * factory declared elsewhere and cannot name the receiver of a call on its
+     * result. It names the call instead, and this resolves it here, where every
+     * file's declared return types are known. Returns null when the call is not
+     * one the graph knows, which is the caller's cue to drop the edge.
+     *
+     * @param array<string, string> $returnTypes
+     */
+    private function returnedMemberReference(string $reference, array $returnTypes): ?string
+    {
+        $parts = explode(':', $reference, 3);
+        if (count($parts) !== 3 || $parts[1] !== 'method_of_return') {
+            return null;
+        }
+        [$language, , $canonical] = $parts;
+        $separator = strrpos($canonical, '::');
+        if ($separator === false) {
+            return null;
+        }
+        $callee = substr($canonical, 0, $separator);
+        $member = substr($canonical, $separator + 2);
+        if ($callee === '' || $member === '') {
+            return null;
+        }
+        $returned = $returnTypes[$language . ':method:' . $callee] ?? null;
+        if ($returned === null) {
+            return null;
+        }
+        // The returns edge names a type; its members are addressed by the type's
+        // canonical name, whatever kind the declaration turns out to be.
+        $returnedParts = explode(':', $returned, 3);
+
+        return count($returnedParts) === 3 && $returnedParts[2] !== ''
+            ? $language . ':method:' . $returnedParts[2] . '::' . $member
+            : null;
     }
 
     /**

@@ -842,6 +842,11 @@ final class PhpScannerTest extends KnossosTestCase
             ['calls', 'php:method:Fixture\\Accountant::postDirectly', 'php:method:Fixture\\Ledger::record'],
             $edgeTuples,
         );
+        // `$enabled ? new Ledger() : null` then `$ledger?->record()`.
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Accountant::postOptionally', 'php:method:Fixture\\Ledger::record'],
+            $edgeTuples,
+        );
         // A later reassignment to an untracked value drops the inferred type,
         // so the only call attributed here is the one on the typed parameter.
         // Exactly one: the call on the typed parameter. A stale inferred type
