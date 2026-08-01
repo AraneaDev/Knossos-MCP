@@ -201,6 +201,11 @@ final readonly class GraphReconciler
             $this->repository->completeScan($projectId, $scanId);
             $mark('save_diagnostics');
         });
+        // The commit is a phase of its own: it writes every page the reconcile
+        // dirtied, which on this repository is a third of the reconciliation and
+        // was previously invisible — the phase timings summed to well under the
+        // total and gave no clue where the difference went.
+        $mark('commit');
 
         return new ReconciliationResult(
             $projectId,

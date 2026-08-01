@@ -1624,7 +1624,7 @@ final class GraphReconcilerTest extends TestCase
         $expected = [
             'prepare', 'archive_snapshot', 'read_existing', 'save_files', 'save_nodes',
             'save_edges', 'save_classifications', 'save_boundaries', 'prune', 'contribution_cache',
-            'save_diagnostics',
+            'save_diagnostics', 'commit',
         ];
         assertSame($expected, array_keys($result->phaseMilliseconds));
         foreach ($result->phaseMilliseconds as $milliseconds) {
