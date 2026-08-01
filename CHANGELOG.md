@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.9.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.9.0...v0.9.1) (2026-08-01)
+
+
+### Bug Fixes
+
+* **boundary:** keep external packages out of path-prefix boundaries ([3562cae](https://github.com/AraneaDev/Knossos-MCP/commit/3562cae40239faa7931bbeaa1c0075d5d6974bbb))
+* **boundary:** keep external packages out of path-prefix boundaries ([f48f9e6](https://github.com/AraneaDev/Knossos-MCP/commit/f48f9e6503654d7081f27cf3e22682d66e19f03f))
+
 ## [0.9.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.8.0...v0.9.0) (2026-07-30)
 
 
