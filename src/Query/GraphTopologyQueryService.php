@@ -283,6 +283,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $nodeIds = array_keys($nodes);
         $roles = $this->roles($nodeIds);
         $boundaries = $this->boundaryNames($nodeIds);
+        $repositoryWide = array_keys($this->repositoryWideBoundaryIds($projectId));
         $metrics = [];
         foreach ($nodeIds as $id) {
             $metrics[$id] = ['in_degree' => 0, 'out_degree' => 0, 'cross_boundary_degree' => 0];
@@ -306,8 +307,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             if (in_array($edge['kind'], ['implements', 'extends'], true)) {
                 $inheritanceInDegree[$edge['target_id']] = ($inheritanceInDegree[$edge['target_id']] ?? 0) + 1;
             }
-            $sourceBoundaries = array_column($boundaries[$edge['source_id']] ?? [], 'id');
-            $targetBoundaries = array_column($boundaries[$edge['target_id']] ?? [], 'id');
+            $sourceBoundaries = array_diff(array_column($boundaries[$edge['source_id']] ?? [], 'id'), $repositoryWide);
+            $targetBoundaries = array_diff(array_column($boundaries[$edge['target_id']] ?? [], 'id'), $repositoryWide);
             if ($sourceBoundaries !== [] && $targetBoundaries !== [] && array_intersect($sourceBoundaries, $targetBoundaries) === []) {
                 ++$metrics[$edge['source_id']]['cross_boundary_degree'];
                 ++$metrics[$edge['target_id']]['cross_boundary_degree'];

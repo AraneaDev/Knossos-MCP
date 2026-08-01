@@ -301,6 +301,34 @@ abstract readonly class AbstractArchitectureQueryService
     }
 
     /**
+     * Boundaries that span the whole repository, keyed by id.
+     *
+     * Package inference gives a single-package repository a boundary whose path
+     * prefix is empty, so every file in the tree belongs to it. Such a boundary
+     * says nothing about how the code is partitioned, and counting it as shared
+     * ground between two components makes every in-repository edge look
+     * intra-boundary — which silently zeroed cross-boundary reporting for the
+     * most common project shape there is.
+     *
+     * @return array<string, true>
+     */
+    protected function repositoryWideBoundaryIds(string $projectId): array
+    {
+        $statement = $this->pdo->prepare('SELECT id, matcher_json FROM boundaries WHERE project_id = :project');
+        $statement->execute(['project' => $projectId]);
+        $ids = [];
+        foreach ($statement->fetchAll() as $row) {
+            $matcher = self::decode((string) $row['matcher_json']);
+            $prefix = ($matcher['type'] ?? null) === 'path_prefix' ? ($matcher['value'] ?? null) : ($matcher['path_prefix'] ?? null);
+            if (is_string($prefix) && trim($prefix, '/') === '') {
+                $ids[(string) $row['id']] = true;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
      * Decode a stored JSON column, tolerating a null.
      *
      * @return array<string, mixed>

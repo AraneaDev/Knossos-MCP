@@ -13,6 +13,32 @@ use PHPUnit\Framework\Attributes\Group;
 final class HealthTest extends KnossosTestCase
 {
     #[Group('health')]
+    public function testTheRepositoryWideBoundaryDoesNotHideEveryCrossBoundaryEdge(): void
+    {
+        // Package inference gives a single-package repository a boundary whose
+        // path prefix is '', so every in-repo node belongs to it. Treating any
+        // shared boundary as "same side" then made cross_boundary_degree
+        // structurally zero for the whole project, and the term it contributes
+        // to the hotspot score dead.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $backend = StableId::boundary($ids['project'], 'Backend', 'inferred');
+        $billing = StableId::boundary($ids['project'], 'Billing', 'inferred');
+        $wholeRepository = StableId::boundary($ids['project'], 'composer:acme/shop', 'inferred');
+        $repository->saveBoundary($backend, $ids['project'], 'Backend', ['type' => 'path_prefix', 'value' => 'src/Checkout'], 'inferred', $ids['scan']);
+        $repository->saveBoundary($billing, $ids['project'], 'Billing', ['type' => 'path_prefix', 'value' => 'src/Invoice'], 'inferred', $ids['scan']);
+        $repository->saveBoundary($wholeRepository, $ids['project'], 'composer:acme/shop', ['type' => 'path_prefix', 'value' => ''], 'inferred', $ids['scan']);
+        $repository->saveBoundaryMembership($backend, $ids['project'], $ids['checkout'], $ids['scan']);
+        $repository->saveBoundaryMembership($billing, $ids['project'], $ids['invoice'], $ids['scan']);
+        $repository->saveBoundaryMembership($wholeRepository, $ids['project'], $ids['checkout'], $ids['scan']);
+        $repository->saveBoundaryMembership($wholeRepository, $ids['project'], $ids['invoice'], $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project']);
+
+        assertSame(1, $health->data['hubs'][0]['metrics']['cross_boundary_degree']);
+    }
+
+    #[Group('health')]
     public function testArchitectureHealthRanksStructuralSignalsAndLabelsDeadCodeUncertainty(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
