@@ -100,7 +100,9 @@ final readonly class GraphReconciler
         $mark('prepare');
 
         $diagnosticCount = 0;
-        $this->repository->transaction(function () use (
+        // A rewrite of this size is dominated by per-statement foreign-key
+        // enforcement, so integrity is verified once before the commit instead.
+        $this->repository->bulkTransaction(function () use (
             $request,
             $projectId,
             $scanId,

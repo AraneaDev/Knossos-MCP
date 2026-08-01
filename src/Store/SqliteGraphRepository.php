@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use PDO;
 use PDOStatement;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -61,6 +62,52 @@ final class SqliteGraphRepository implements GraphRepository
             } catch (Throwable) {
             }
             throw $error;
+        }
+    }
+
+    /**
+     * Run a whole-graph rewrite, verifying referential integrity once at the end.
+     *
+     * Per-statement foreign-key enforcement, not the row count, is what a rescan
+     * spends its time on: SQLite runs the referencing-table sub-programs for
+     * every row deleted, and clearing this repository's own graph measured 5.6s
+     * that way against 0.6s with enforcement off and a single
+     * `PRAGMA foreign_key_check` at the end. The check runs inside the
+     * transaction, so a rewrite that would leave a dangling reference is rolled
+     * back and never observable — the same guarantee, verified once instead of
+     * a few hundred thousand times.
+     *
+     * `PRAGMA foreign_keys` is a no-op inside a transaction, so it is toggled
+     * around the BEGIN and restored in a finally. A nested call cannot do that
+     * and runs as an ordinary transaction instead.
+     *
+     * @template T
+     * @param callable(GraphRepository): T $operation
+     *
+     * @return T
+     */
+    public function bulkTransaction(callable $operation): mixed
+    {
+        if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
+            return $this->transaction($operation);
+        }
+        $this->pdo->exec('PRAGMA foreign_keys = OFF');
+        try {
+            return $this->transaction(function (GraphRepository $repository) use ($operation): mixed {
+                $result = $operation($repository);
+                $violations = $this->pdo->query('PRAGMA foreign_key_check')->fetchAll();
+                if ($violations !== []) {
+                    throw new RuntimeException(sprintf(
+                        'Refusing to commit a graph with %d dangling reference(s); the first is in table %s.',
+                        count($violations),
+                        (string) ($violations[0]['table'] ?? 'unknown'),
+                    ));
+                }
+
+                return $result;
+            });
+        } finally {
+            $this->pdo->exec('PRAGMA foreign_keys = ON');
         }
     }
 

@@ -25,6 +25,19 @@ interface GraphRepository
     public function transaction(callable $operation): mixed;
 
     /**
+     * Execute a whole-graph rewrite atomically, checking referential integrity
+     * once at the end rather than on every statement.
+     *
+     * Implementations must still refuse to commit a graph with a dangling
+     * reference; what they may skip is re-proving it for each row.
+     *
+     * @template T
+     * @param callable(GraphRepository): T $operation
+     * @return T
+     */
+    public function bulkTransaction(callable $operation): mixed;
+
+    /**
      * Create or update project identity and non-secret configuration metadata.
      *
      * @param array<string, mixed> $config
