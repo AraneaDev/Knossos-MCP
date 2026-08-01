@@ -20,7 +20,27 @@ use Throwable;
  */
 final readonly class DoctorService
 {
+    /**
+     * The lowest version of each runtime this release supports.
+     *
+     * Each is a floor with no ceiling — see {@see RuntimeVersionRequirement} for
+     * why a newer major is accepted rather than reported as unsupported.
+     */
+    private const FLOORS = [
+        'php' => ['PHP', '/^(\d+\.\d+)\./', '8.3'],
+        'node' => ['Node', '/^v(\d+)\./', '22'],
+        'python' => ['Python 3', '/^Python (3\.\d+)\./', '3.11'],
+    ];
+
     public function __construct(private PDO $pdo, private string $installationRoot, private string $databasePath) {}
+
+    /** The version floor for one runtime, by the key it is registered under in {@see self::FLOORS}. */
+    private static function requirement(string $runtime): RuntimeVersionRequirement
+    {
+        [$name, $pattern, $minimum] = self::FLOORS[$runtime];
+
+        return new RuntimeVersionRequirement($name, $pattern, $minimum);
+    }
 
     /**
      * Run every check, reporting each rather than stopping at the first failure.
@@ -30,30 +50,13 @@ final readonly class DoctorService
     public function run(): array
     {
         $checks = [];
-        $this->check($checks, 'php.version', static function (): string {
-            if (preg_match('/^(\d+)\.(\d+)\./', PHP_VERSION, $matches) !== 1 || (int) $matches[1] !== 8 || (int) $matches[2] < 3 || (int) $matches[2] > 4) {
-                throw new \RuntimeException('PHP 8.3 or 8.4 is required.');
-            }
-            return PHP_VERSION;
-        });
+        $this->check($checks, 'php.version', static fn(): string => self::requirement('php')->verify(PHP_VERSION));
         foreach (['json', 'pdo', 'pdo_sqlite'] as $extension) {
             $this->check($checks, 'php.extension.' . $extension, static fn(): string => extension_loaded($extension) ? 'loaded' : throw new \RuntimeException('missing'));
         }
-        $this->check($checks, 'node.version', function (): string {
-            $version = $this->command(['node', '--version']);
-            if (!preg_match('/^v(\d+)\./', $version, $matches) || (int) $matches[1] < 22 || (int) $matches[1] > 24) {
-                throw new \RuntimeException(sprintf('%s is unsupported; Node 22–24 is required.', $version));
-            }
-            return $version;
-        });
+        $this->check($checks, 'node.version', fn(): string => self::requirement('node')->verify($this->command(['node', '--version'])));
         $this->check($checks, 'git.version', fn(): string => $this->command(['git', '--version']));
-        $this->check($checks, 'python.version', function (): string {
-            $version = $this->command(['python3', '--version']);
-            if (!preg_match('/^Python 3\.(\d+)\./', $version, $matches) || (int) $matches[1] < 11 || (int) $matches[1] > 13) {
-                throw new \RuntimeException(sprintf('%s is unsupported; Python 3.11–3.13 is required.', $version));
-            }
-            return $version;
-        });
+        $this->check($checks, 'python.version', fn(): string => self::requirement('python')->verify($this->command(['python3', '--version'])));
         $this->check($checks, 'sqlite.integrity', function (): string {
             $result = (string) $this->pdo->query('PRAGMA quick_check')->fetchColumn();
             if ($result !== 'ok') {

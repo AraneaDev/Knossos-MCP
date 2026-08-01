@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Runtime;
 
 use Knossos\Runtime\DoctorService;
+use Knossos\Runtime\RuntimeVersionRequirement;
 use Knossos\Store\SqliteConnection;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
@@ -359,6 +360,30 @@ final class DoctorServiceTest extends TestCase
         $this->assertNotEmpty($errorChecks);
         foreach ($errorChecks as $check) {
             $this->assertNotEmpty($check['detail']);
+        }
+    }
+
+    // ----- runtime version floors -----
+
+    public function testInstalledRuntimesAreAcceptedWheneverTheyMeetTheDocumentedFloor(): void
+    {
+        // The floors are minimums, not ranges: a runtime newer than the one this
+        // release was built against still has to pass, or `doctor` reports a
+        // working installation as broken.
+        $floors = [
+            'node.version' => [trim((string) shell_exec('node --version 2>/dev/null')), '/^v(\d+)\./', '22', 'Node'],
+            'python.version' => [trim((string) shell_exec('python3 --version 2>/dev/null')), '/^Python (3\.\d+)\./', '3.11', 'Python 3'],
+            'php.version' => [PHP_VERSION, '/^(\d+\.\d+)\./', '8.3', 'PHP'],
+        ];
+        $result = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();
+
+        foreach ($floors as $name => [$reported, $pattern, $minimum, $runtime]) {
+            if ($reported === '') {
+                continue;
+            }
+            $check = $this->findCheck($result, $name);
+            assertSame((new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify($reported), $check['detail'], $name);
+            assertSame('ok', $check['status'], $name);
         }
     }
 

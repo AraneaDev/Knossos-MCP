@@ -31,8 +31,11 @@ final class PackagingTest extends KnossosTestCase
         assertSame('ok', $byName['worker.python']['status']);
         assertContains('knossos.python@0.2.0 protocol 1.0', $byName['worker.python']['detail']);
         assertSame('13 applied', $byName['sqlite.migrations']['detail']);
+        // The Node requirement is a floor with no ceiling: every release from 22
+        // upwards passes, so a newer runtime than the one this release was built
+        // against does not turn a working installation into a failed report.
         preg_match('/v(\d+)\./', $byName['node.version']['detail'], $nodeVersion);
         $nodeMajor = (int) ($nodeVersion[1] ?? 0);
-        assertSame($nodeMajor >= 22 && $nodeMajor <= 24 ? 'ok' : 'error', $byName['node.version']['status']);
+        assertSame($nodeMajor >= 22 ? 'ok' : 'error', $byName['node.version']['status']);
     }
 }

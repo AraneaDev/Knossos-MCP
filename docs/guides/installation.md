@@ -115,8 +115,10 @@ can corrupt NDJSON.
 
 ## Native
 
-Supported native runtimes are PHP 8.3–8.4 with JSON, PDO, and PDO SQLite; Node
-22–24; Python 3.11–3.13; Composer 2; and Git. Install locked dependencies without running project
+Supported native runtimes are PHP 8.3 or newer with JSON, PDO, and PDO SQLite;
+Node 22 or newer; Python 3.11 or newer; Composer 2; and Git. Each is a floor
+rather than a range — newer releases are supported, and `doctor` reports a
+version below the floor rather than capping the ones above it. Install locked dependencies without running project
 scripts. `change_impact` still returns static impact when a scanned root is not
 a Git repository:
 
