@@ -90,8 +90,12 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
 
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
         $placeholders = implode(',', array_fill(0, count($allKinds), '?'));
+        // Only the columns the evaluation and the violation record read. `e.*`
+        // dragged attributes_json along for every edge, which is most of the
+        // width of a row and is never looked at here.
         $statement = $this->pdo->prepare(
-            'SELECT e.*, f.relative_path, source.kind AS source_kind, source.canonical_name AS source_name, ' .
+            'SELECT e.id, e.kind, e.source_id, e.target_id, e.confidence, e.origin, e.start_line, e.end_line, ' .
+            'f.relative_path, source.kind AS source_kind, source.canonical_name AS source_name, ' .
             'target.kind AS target_kind, target.canonical_name AS target_name FROM edges e ' .
             'JOIN nodes source ON source.id = e.source_id JOIN nodes target ON target.id = e.target_id ' .
             'LEFT JOIN files f ON f.id = e.file_id WHERE e.project_id = ? ' .
@@ -100,22 +104,25 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
         );
         $statement->execute([$projectId, ...$allKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
-        $edges = $statement->fetchAll();
-        $truncated = count($edges) > $maxEdges;
-        $truncationReasons = $truncated ? ['edge_limit'] : [];
-        $edges = array_slice($edges, 0, $maxEdges);
-        $nodeIds = [];
-        foreach ($edges as $edge) {
-            $nodeIds[$edge['source_id']] = true;
-            $nodeIds[$edge['target_id']] = true;
-        }
-        $boundaries = $this->boundaryNames(array_keys($nodeIds));
+        // Streamed rather than collected: a gate asks for the largest bound the
+        // checker accepts, and holding that many joined rows exhausted a 128 MB
+        // limit. Memory is now the boundary map plus the violations kept, both
+        // bounded by the graph's shape and the result limit rather than by the
+        // edge count.
+        $boundaries = $this->projectBoundaryNames($projectId);
 
+        $truncated = false;
+        $truncationReasons = [];
         $violations = [];
         $evidence = [];
         $violationCount = 0;
         $edgesExamined = 0;
-        foreach ($edges as $edge) {
+        while (($edge = $statement->fetch()) !== false) {
+            if ($edgesExamined >= $maxEdges) {
+                $truncated = true;
+                $truncationReasons[] = 'edge_limit';
+                break;
+            }
             ++$edgesExamined;
             if ($this->now() > $deadline) {
                 $truncated = true;

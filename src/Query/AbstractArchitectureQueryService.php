@@ -275,6 +275,31 @@ abstract readonly class AbstractArchitectureQueryService
     }
 
     /**
+     * Boundary names for every node in a project, keyed the same way {@see boundaryNames} keys them.
+     *
+     * For a walk that streams its rows rather than collecting them: the node ids
+     * are not known in advance, and asking per node would issue a query per edge.
+     * Membership rows are far smaller and far fewer than the joined edge rows a
+     * caller would otherwise have to hold in memory to build the id list first.
+     *
+     * @return array<string, list<array{id: string, name: string, source: string}>>
+     */
+    protected function projectBoundaryNames(string $projectId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT bm.node_id, b.id, b.name, b.source FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id ' .
+            'WHERE bm.project_id = :project ORDER BY bm.node_id, b.source, b.name',
+        );
+        $statement->execute(['project' => $projectId]);
+        $result = [];
+        while (($row = $statement->fetch()) !== false) {
+            $result[$row['node_id']][] = ['id' => $row['id'], 'name' => $row['name'], 'source' => $row['source']];
+        }
+
+        return $result;
+    }
+
+    /**
      * Boundary names for a set of nodes, for annotating results.
      *
      * @param list<string> $nodeIds @return array<string, list<array{id: string, name: string, source: string}>>

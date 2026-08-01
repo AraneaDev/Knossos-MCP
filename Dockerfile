@@ -100,7 +100,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # reasons unrelated to the change under test. Every other third-party binary in
 # this stage is already fetched by URL and verified by SHA-256; pcov now matches.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates curl docker.io python3-pip shellcheck $PHPIZE_DEPS \
+    && apt-get install --no-install-recommends -y ca-certificates curl docker-cli python3-pip shellcheck $PHPIZE_DEPS \
     && curl --fail --location --silent --show-error \
         --output /tmp/pcov.tar.gz \
         https://github.com/krakjoe/pcov/archive/refs/tags/v1.0.12.tar.gz \
@@ -143,8 +143,10 @@ RUN curl --fail --location --silent --show-error \
     && chmod 0755 /usr/local/bin/trivy /usr/local/bin/cosign \
     && rm -f /tmp/trivy.tar.gz /tmp/trivy.sha256 /tmp/cosign.sha256
 
-# Debian's `docker.io` ships the CLI without the Compose plugin, so `tools/quality`
-# would skip (or fail) its `docker compose config` gate. Install the plugin explicitly.
+# Debian ships the client as `docker-cli` (trixie split it out of `docker.io`,
+# which now carries only the daemon) and without the Compose plugin, so
+# `tools/quality` would skip or fail its `docker compose config` gate. Install
+# the plugin explicitly.
 RUN mkdir -p /usr/libexec/docker/cli-plugins \
     && curl --fail --location --silent --show-error \
         --output /usr/libexec/docker/cli-plugins/docker-compose \
