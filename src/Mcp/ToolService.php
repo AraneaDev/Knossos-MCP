@@ -741,7 +741,7 @@ final readonly class ToolService
                 'name' => 'maintain_database', 'title' => 'Maintain database',
                 'description' => 'Check integrity or run a checkpoint/optimize/backup of the graph store. Use for routine upkeep or before an upgrade.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
-                    'action' => ['type' => 'string', 'enum' => ['integrity', 'checkpoint', 'optimize', 'backup']],
+                    'action' => ['type' => 'string', 'enum' => ['integrity', 'checkpoint', 'optimize', 'vacuum', 'backup']],
                     'execute' => ['type' => 'boolean', 'default' => false],
                     'backup_name' => ['type' => 'string', 'minLength' => 8, 'maxLength' => 127, 'pattern' => '^[A-Za-z0-9._-]+\\.sqlite$', 'description' => 'A plain filename ending in .sqlite, with no directory part; the backup is written inside the server\'s data directory.'],
                 ], 'required' => ['action'], 'additionalProperties' => false],

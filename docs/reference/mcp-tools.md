@@ -546,7 +546,7 @@ Check integrity or run a checkpoint/optimize/backup of the graph store. Use for 
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
-| `action` | string | yes | enum=integrity, checkpoint, optimize, backup |
+| `action` | string | yes | enum=integrity, checkpoint, optimize, vacuum, backup |
 | `execute` | boolean | no | default=false |
 | `backup_name` | string | no | minLength=8; maxLength=127 |
 

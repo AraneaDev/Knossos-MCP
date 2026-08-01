@@ -12,6 +12,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Reconciliation\FullScanRequest;
 use Knossos\Reconciliation\GraphReconciler;
 use Knossos\Reconciliation\ReconciliationException;
+use Knossos\Store\SnapshotPayload;
 use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\Evidence;
@@ -115,7 +116,7 @@ final class ReconciliationTest extends KnossosTestCase
         $snapshotJson = (string) $pdo->query(
             "SELECT payload_json FROM scan_snapshots WHERE scan_id = '" . $first->scanId . "'",
         )->fetchColumn();
-        $snapshot = json_decode($snapshotJson, true, 512, JSON_THROW_ON_ERROR);
+        $snapshot = json_decode(SnapshotPayload::decode($snapshotJson), true, 512, JSON_THROW_ON_ERROR);
         assertSame(6, count($snapshot['facts']['edges']));
 
         $bundles = new GraphBundleService($pdo);
@@ -145,7 +146,7 @@ final class ReconciliationTest extends KnossosTestCase
         assertSame($first->scanId, $snapshot['scan_id']);
         assertSame(1, (int) $snapshot['complete']);
         assertSame(true, (int) $snapshot['fact_count'] > 0);
-        $payload = json_decode($snapshot['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+        $payload = json_decode(SnapshotPayload::decode($snapshot['payload_json']), true, 512, JSON_THROW_ON_ERROR);
         assertSame(1, $payload['schema']);
         assertSame($firstNodes, array_map(fn(array $node): array => [
             'id' => $node['id'], 'kind' => $node['kind'], 'canonical_name' => $node['canonical_name'],

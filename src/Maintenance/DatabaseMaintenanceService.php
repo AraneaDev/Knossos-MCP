@@ -125,8 +125,8 @@ final readonly class DatabaseMaintenanceService
 
     public function maintain(string $action, bool $execute = false, ?string $backupName = null): ResultEnvelope
     {
-        if (!in_array($action, ['integrity', 'checkpoint', 'optimize', 'backup'], true)) {
-            throw new InvalidArgumentException('action must be integrity, checkpoint, optimize, or backup.');
+        if (!in_array($action, ['integrity', 'checkpoint', 'optimize', 'vacuum', 'backup'], true)) {
+            throw new InvalidArgumentException('action must be integrity, checkpoint, optimize, vacuum, or backup.');
         }
         if ($action === 'integrity') {
             $rows = $this->pdo->query('PRAGMA integrity_check(100)')->fetchAll(PDO::FETCH_COLUMN);
@@ -151,6 +151,8 @@ final readonly class DatabaseMaintenanceService
                 $data['result'] = $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetch();
             } elseif ($action === 'optimize') {
                 $this->pdo->exec('PRAGMA optimize');
+            } elseif ($action === 'vacuum') {
+                $data += $this->vacuum();
             } else {
                 $data += $this->backup($backupName);
             }
@@ -161,6 +163,32 @@ final readonly class DatabaseMaintenanceService
         }
 
         return new ResultEnvelope('database', '', sprintf('Database %s completed.', $action), $data);
+    }
+
+    /**
+     * Rebuild the database file, returning the free pages the rebuild reclaimed.
+     *
+     * Deleting a project, or ageing a retained snapshot out of history, leaves
+     * its pages on the free list rather than returning them to the filesystem.
+     * Snapshots are the largest rows this schema holds, so without a rebuild the
+     * file keeps the high-water mark of every graph ever archived into it.
+     *
+     * @return array{reclaimed_pages: int, page_size: int, freed_bytes: int}
+     */
+    private function vacuum(): array
+    {
+        $before = (int) $this->pdo->query('PRAGMA freelist_count')->fetchColumn();
+        $pageSize = (int) $this->pdo->query('PRAGMA page_size')->fetchColumn();
+        // VACUUM cannot run inside a transaction, and acquireAllProjectLeases
+        // has already kept writers out for the duration.
+        $this->pdo->exec('VACUUM');
+        // VACUUM rewrites every page through the write-ahead log, so without
+        // this the reclaimed space reappears as a WAL the size of the database.
+        $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetchAll();
+        $after = (int) $this->pdo->query('PRAGMA freelist_count')->fetchColumn();
+        $reclaimed = max(0, $before - $after);
+
+        return ['reclaimed_pages' => $reclaimed, 'page_size' => $pageSize, 'freed_bytes' => $reclaimed * $pageSize];
     }
 
     /**

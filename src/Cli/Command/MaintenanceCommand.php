@@ -93,7 +93,7 @@ final class MaintenanceCommand implements CliCommand
      */
     private function maintain(array $positionals, array $options, CliCommandContext $context): int
     {
-        $action = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos maintain-database <integrity|checkpoint|optimize|backup> [options]');
+        $action = $positionals[0] ?? throw new InvalidArgumentException('Usage: knossos maintain-database <integrity|checkpoint|optimize|vacuum|backup> [options]');
         $result = $context->maintenance()->maintain(
             $action,
             $context->options->flag($options, 'execute'),

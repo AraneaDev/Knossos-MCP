@@ -33,7 +33,7 @@ Usage:
   knossos remove-project <project-id> [--execute] [--db=PATH] [--json]
   knossos cleanup-stale-scans <project-id> [--older-than-hours=N]
                               [--execute] [--db=PATH] [--json]
-  knossos maintain-database <integrity|checkpoint|optimize|backup>
+  knossos maintain-database <integrity|checkpoint|optimize|vacuum|backup>
                             [--backup-name=NAME.sqlite] [--execute] [--json]
   knossos scan <path> [--mode=auto|full|incremental] [--name=NAME]
                       [--boundary=NAME:path:PREFIX] [--snapshot-retention=N]

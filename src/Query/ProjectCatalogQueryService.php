@@ -6,6 +6,7 @@ namespace Knossos\Query;
 
 use Closure;
 use InvalidArgumentException;
+use Knossos\Store\SnapshotPayload;
 use PDO;
 
 /**
@@ -460,7 +461,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $resolved = $this->resolveSnapshot($projectId, $identifier, $activeScanId);
         $scanId = $resolved['scan_id'];
         if (!$resolved['is_active']) {
-            $payload = json_decode((string) $resolved['archived']['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+            $payload = json_decode(SnapshotPayload::decode((string) $resolved['archived']['payload_json']), true, 512, JSON_THROW_ON_ERROR);
             $facts = $payload['facts'] ?? null;
             if (!is_array($facts)) {
                 throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));
@@ -491,7 +492,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             $decoded = null;
             $load = static function (string $table) use (&$decoded, $archived, $scanId): array {
                 if ($decoded === null) {
-                    $payload = json_decode((string) $archived['payload_json'], true, 512, JSON_THROW_ON_ERROR);
+                    $payload = json_decode(SnapshotPayload::decode((string) $archived['payload_json']), true, 512, JSON_THROW_ON_ERROR);
                     $facts = $payload['facts'] ?? null;
                     if (!is_array($facts)) {
                         throw new InvalidArgumentException(sprintf('Snapshot archive payload is invalid: %s', $scanId));

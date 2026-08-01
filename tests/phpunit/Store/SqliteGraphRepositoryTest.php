@@ -409,7 +409,8 @@ final class SqliteGraphRepositoryTest extends TestCase
 
         assertSame(1, (int) $row['complete']);
         $this->assertGreaterThanOrEqual(0, (int) $row['fact_count']);
-        $this->assertStringContainsString('"schema":1', $row['payload_json']);
+        // Stored compressed; the schema marker is in the payload it decodes to.
+        $this->assertStringContainsString('"schema":1', \Knossos\Store\SnapshotPayload::decode($row['payload_json']));
     }
 
     public function testArchiveActiveSnapshotSkipsWhenActiveScanAlreadyArchived(): void

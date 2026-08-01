@@ -342,7 +342,7 @@ final class DatabaseMaintenanceServiceTest extends TestCase
                 InvalidArgumentException::class,
             );
 
-            $this->assertStringContainsString('integrity, checkpoint, optimize, or backup', $error->getMessage());
+            $this->assertStringContainsString('integrity, checkpoint, optimize, vacuum, or backup', $error->getMessage());
         }
     }
 
@@ -666,4 +666,54 @@ final class DatabaseMaintenanceServiceTest extends TestCase
         $result = $this->makeService()->removeProject('proj-1', false);
         $this->assertInstanceOf(ResultEnvelope::class, $result);
     }
+    public function testVacuumReclaimsSpaceLeftBehindByDeletedRows(): void
+    {
+        // A retained snapshot is tens of megabytes, and dropping one leaves its
+        // pages on the free list: this database was 328 MB with 7,049 free
+        // pages for a graph that fits in a fraction of it. Nothing reclaimed
+        // that space, because there was no action that could.
+        $pdo = $this->pdo;
+        $pdo->exec('CREATE TABLE ballast (id INTEGER PRIMARY KEY, blob TEXT)');
+        $insert = $pdo->prepare('INSERT INTO ballast (blob) VALUES (:blob)');
+        for ($i = 0; $i < 2000; $i++) {
+            $insert->execute(['blob' => str_repeat('x', 4096)]);
+        }
+        $pdo->exec('DELETE FROM ballast');
+        $pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetchAll();
+        $freeBefore = (int) $pdo->query('PRAGMA freelist_count')->fetchColumn();
+        assertSame(true, $freeBefore > 0);
+
+        $result = (new DatabaseMaintenanceService($pdo, $this->dbPath))->maintain('vacuum', execute: true);
+
+        assertSame(0, (int) $pdo->query('PRAGMA freelist_count')->fetchColumn());
+        assertSame($freeBefore, $result->data['reclaimed_pages']);
+    }
+
+    public function testVacuumReturnsTheReclaimedSpaceToTheFilesystem(): void
+    {
+        // VACUUM rewrites the whole database through the WAL, so without a
+        // checkpoint afterwards it hands back free pages while leaving a
+        // write-ahead log the size of the database beside it — a maintenance
+        // action that grows the footprint it was run to shrink.
+        $pdo = $this->pdo;
+        $pdo->exec('CREATE TABLE ballast (id INTEGER PRIMARY KEY, blob TEXT)');
+        $insert = $pdo->prepare('INSERT INTO ballast (blob) VALUES (:blob)');
+        for ($i = 0; $i < 2000; $i++) {
+            $insert->execute(['blob' => str_repeat('x', 4096)]);
+        }
+        $pdo->exec('DELETE FROM ballast');
+
+        (new DatabaseMaintenanceService($pdo, $this->dbPath))->maintain('vacuum', execute: true);
+
+        clearstatcache();
+        assertSame(0, (int) filesize($this->dbPath . '-wal'));
+    }
+
+    public function testVacuumIsPreviewedUnlessExecuted(): void
+    {
+        $result = (new DatabaseMaintenanceService($this->pdo, $this->dbPath))->maintain('vacuum');
+
+        assertSame(false, $result->data['executed']);
+    }
+
 }

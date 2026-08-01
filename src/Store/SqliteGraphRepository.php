@@ -362,6 +362,9 @@ final class SqliteGraphRepository implements GraphRepository
         } else {
             $encoded = self::json(['schema' => 1, 'reason' => 'fact_limit']);
         }
+        // byte_size stays the size of the facts themselves. It answers "how big
+        // is this snapshot", which readers compare across scans; how many bytes
+        // the row happens to occupy after compression is a storage detail.
         $insert = $this->pdo->prepare(
             'INSERT OR IGNORE INTO scan_snapshots(scan_id, project_id, scanner_set_hash, config_hash, complete, fact_count, byte_size, payload_json, captured_at) ' .
             'VALUES (:scan, :project, :scanner, :config, :complete, :facts, :bytes, :payload, :captured)',
@@ -369,7 +372,7 @@ final class SqliteGraphRepository implements GraphRepository
         $insert->execute([
             'scan' => $scanId, 'project' => $projectId, 'scanner' => $scannerHash, 'config' => $configHash,
             'complete' => $complete ? 1 : 0, 'facts' => $factCount, 'bytes' => strlen($encoded),
-            'payload' => $encoded, 'captured' => self::now(),
+            'payload' => SnapshotPayload::encode($encoded), 'captured' => self::now(),
         ]);
     }
 
