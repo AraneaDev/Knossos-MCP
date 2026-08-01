@@ -1,7 +1,7 @@
 {
-  "cross_file_duplicate_blocks": 18,
-  "max_php_function_complexity": 64,
-  "max_php_function_lines": 275,
+  "cross_file_duplicate_blocks": 13,
+  "max_php_function_complexity": 60,
+  "max_php_function_lines": 205,
   "max_dependency_fanout": 9,
   "min_docstring_coverage": {
     "src": 100.0,

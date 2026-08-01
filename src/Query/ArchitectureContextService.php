@@ -18,7 +18,7 @@ use PDO;
  */
 final readonly class ArchitectureContextService extends AbstractArchitectureQueryService
 {
-    public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ChangeImpactQueryService $changeQueries, private ComponentQueryService $componentQueries, private ArchitecturePolicyQueryService $policyQueries)
+    public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ChangeImpactQueryService $changeQueries, private ComponentQueryService $componentQueries, private LocationSuggestionService $locationQueries)
     {
         parent::__construct($pdo, $clock);
     }
@@ -51,7 +51,7 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
             'dossiers' => $maxChars - (int) floor($maxChars * 0.70),
         ];
         $summary = $this->topologyQueries->architectureSummary($projectId, 10);
-        $locations = $taskDescription === '' ? null : $this->policyQueries->suggestLocation(
+        $locations = $taskDescription === '' ? null : $this->locationQueries->suggestLocation(
             $projectId,
             $taskDescription,
             3,
