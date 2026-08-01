@@ -198,6 +198,27 @@ final class BoundaryInferenceTest extends TestCase
         assertSame(['type' => 'path_prefix', 'value' => 'src/payments/'], $exact[0]->matcher);
     }
 
+    public function testInferWithExplicitPathPrefixExcludesExternalPackages(): void
+    {
+        // The TypeScript scanner records an external package's evidence at the import
+        // site (workers/typescript/src/scanner.js), so node:fs carries the path of
+        // whichever file imported it first. A path prefix describes where code lives,
+        // so it must not let that file's boundary claim the package: otherwise
+        // node:fs joins "engines" and every other boundary importing fs looks like it
+        // depends on engines.
+        $explicit = [['name' => 'engines', 'path_prefix' => 'src/engines/']];
+        $contributions = [$this->makeContribution([
+            $this->makeNode('ts:class:src/engines/rust.ts#RustEngine', 'src/engines/rust.ts#RustEngine', 'src/engines/rust.ts'),
+            $this->makeExternalPackageNode('ts:package:node:fs', 'node:fs', 'src/engines/rust.ts'),
+        ])];
+
+        $facts = (new BoundaryInference())->infer([], $contributions, $explicit);
+
+        $engines = array_values(array_filter($facts, static fn (BoundaryFact $f): bool => $f->name === 'engines'));
+        assertSame(1, count($engines));
+        assertSame(['ts:class:src/engines/rust.ts#RustEngine'], $engines[0]->nodeReferences);
+    }
+
     public function testInferWithExplicitNamespacePrefixCreatesExplicitBoundary(): void
     {
         $explicit = [['name' => 'checkout', 'namespace_prefix' => "App\\Checkout\\"]];
@@ -495,6 +516,21 @@ final class BoundaryInferenceTest extends TestCase
             Origin::Ast,
             Confidence::Certain,
             new Evidence($relativePath, 1, 5),
+        );
+    }
+
+    /** A package node as the TypeScript scanner emits it: external, evidenced at the import site. */
+    private function makeExternalPackageNode(string $localId, string $packageName, string $relativePath): NodeFact
+    {
+        return new NodeFact(
+            $localId,
+            'package',
+            $packageName,
+            $packageName,
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence($relativePath, 1, 1),
+            ['external' => true],
         );
     }
 
