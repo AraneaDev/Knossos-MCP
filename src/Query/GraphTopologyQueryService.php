@@ -344,9 +344,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
             ];
             if ($degree > 0) {
-                $externalNode = str_starts_with((string) $row['kind'], 'external_')
-                    || in_array($row['origin'], ['external', 'unresolved'], true);
-                $testNode = self::hasRole($roles[$id] ?? [], 'quality.test_module');
+                $externalNode = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
+                $testNode = ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'));
                 if (!$includeExternal && $externalNode) {
                     ++$excludedExternal;
                 } elseif (!$includeTests && $testNode) {
@@ -1043,25 +1042,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         if (!in_array($node['kind'], ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'], true)) {
             return false;
         }
-        if (in_array($node['origin'], ['external', 'unresolved'], true)) {
+        if (ReportableComponent::isExternal((string) $node['kind'], $node['origin'])) {
             return false;
         }
-        $entryRoles = [
-            'application.controller', 'application.command', 'application.entry_point',
-            'laravel.controller', 'laravel.command', 'laravel.job', 'laravel.listener',
-            // A test runner discovers these by glob, so in-degree 0 is structural,
-            // not evidence that the module is unused.
-            'quality.test_module',
-            // Likewise a build or quality tool loading its own config by
-            // filename: nothing in the project ever imports `eslint.config.js`.
-            'tooling.config',
-        ];
-        foreach ($roles as $role) {
-            if (in_array($role['role'], $entryRoles, true)) {
-                return false;
-            }
-        }
-        return true;
+
+        return !ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
     }
     /**
      * Member names declared by the internal types that implement or extend
@@ -1376,20 +1361,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return false;
     }
 
-    /**
-     * Whether the node carries a given classified role.
-     *
-     * @param list<array<string, mixed>> $roles
-     */
-    private static function hasRole(array $roles, string $role): bool
-    {
-        foreach ($roles as $entry) {
-            if (($entry['role'] ?? null) === $role) {
-                return true;
-            }
-        }
-        return false;
-    }
     /**
      * The evidence path for a node, or null when it has none.
      *

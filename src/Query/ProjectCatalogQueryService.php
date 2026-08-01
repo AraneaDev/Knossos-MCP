@@ -634,6 +634,21 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         return $candidates;
     }
     /**
+     * The roles each of the snapshot's nodes carries, keyed by node id.
+     *
+     * @param array<string, list<array<string, mixed>>> $facts @return array<string, list<string>>
+     */
+    private function snapshotRoles(array $facts): array
+    {
+        $roles = [];
+        foreach ($facts['classifications'] ?? [] as $classification) {
+            $roles[$classification['node_id']][] = (string) $classification['role'];
+        }
+
+        return $roles;
+    }
+
+    /**
      * The metrics the quality gate compares: cycles, violations, diagnostics, hub degree.
      *
      * @param array<string, list<array<string, mixed>>> $facts @return array<string, int>
@@ -641,6 +656,15 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
     private function snapshotQualityMetrics(array $facts): array
     {
         $nodes = array_fill_keys(array_column($facts['nodes'] ?? [], 'id'), true);
+        $roles = $this->snapshotRoles($facts);
+        // Hub scope: vendor code and test code are not this architecture.
+        $reportable = [];
+        foreach ($facts['nodes'] ?? [] as $node) {
+            if (!ReportableComponent::isExternal((string) $node['kind'], $node['origin'] ?? null)
+                && !ReportableComponent::isTest($roles[$node['id']] ?? [])) {
+                $reportable[$node['id']] = true;
+            }
+        }
         $adjacency = $reverse = [];
         $degree = array_fill_keys(array_keys($nodes), 0);
         foreach (array_keys($nodes) as $id) {
@@ -668,25 +692,33 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             $errors += $diagnostic['severity'] === 'error' ? 1 : 0;
             $warnings += $diagnostic['severity'] === 'warning' ? 1 : 0;
         }
-        // Restrict unreferenced counting to the same declaration kinds and
-        // origins architecture_health treats as dead-code candidates, so the
-        // two tools agree instead of this budget over-counting by orders of
-        // magnitude (routes, members, externals, unresolved refs, etc.).
+        // Count only the declaration kinds architecture_health treats as
+        // dead-code candidates, and only the components it reports on at all —
+        // see ReportableComponent for why counting the rest made this budget
+        // unusable rather than merely imprecise.
         $candidateKinds = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
         $unreferenced = 0;
         foreach ($facts['nodes'] ?? [] as $node) {
-            if (($reverse[$node['id']] ?? []) !== []) {
+            if (($reverse[$node['id']] ?? []) !== [] || !isset($reportable[$node['id']])) {
                 continue;
             }
             if (!in_array($node['kind'], $candidateKinds, true)) {
                 continue;
             }
-            if (in_array($node['origin'] ?? null, ['external', 'unresolved'], true)) {
+            // A constructor or a convention-discovered component has no inbound
+            // edge by construction, so counting it would charge the budget for
+            // something no maintainer can act on.
+            if (ReportableComponent::isConstructor((string) $node['kind'], (string) $node['display_name'])
+                || ReportableComponent::isDiscoveredByConvention($roles[$node['id']] ?? [])) {
                 continue;
             }
             ++$unreferenced;
         }
-        return ['cycles' => $cycles, 'max_degree' => $degree === [] ? 0 : max($degree), 'error_diagnostics' => $errors,
+        // Hub size is likewise a statement about the architecture, so a test-only
+        // hub must not move it: otherwise every commit that adds tests spends
+        // hub_degree_growth budget it has no way to reclaim.
+        $reportableDegrees = array_intersect_key($degree, $reportable);
+        return ['cycles' => $cycles, 'max_degree' => $reportableDegrees === [] ? 0 : max($reportableDegrees), 'error_diagnostics' => $errors,
             'warning_diagnostics' => $warnings, 'unreferenced_candidates' => $unreferenced];
     }
     /**
