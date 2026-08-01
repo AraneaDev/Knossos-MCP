@@ -124,10 +124,10 @@ final readonly class GraphReconciler
             );
             $mark('archive_snapshot');
 
-            // saveProject/createScan fall inside the clear_graph window per the
+            // saveProject/createScan fall inside the read_existing window per the
             // phase-timing contract: they are cheap bookkeeping writes that
-            // immediately precede clearProjectGraph, and splitting them into
-            // their own phase would add noise without profiling value.
+            // immediately precede the read, and splitting them into their own
+            // phase would add noise without profiling value.
             $this->repository->saveProject(
                 $projectId,
                 $request->projectName,
@@ -135,8 +135,12 @@ final readonly class GraphReconciler
                 $request->projectConfig,
             );
             $this->repository->createScan($scanId, $projectId, $request->mode, $scannerSetHash);
-            $this->repository->clearProjectGraph($projectId);
-            $mark('clear_graph');
+            // What the graph holds now, so what this scan does not produce can be
+            // deleted afterwards. Reading ids is what makes the write proportional
+            // to the change: clearing the project first meant every row had to be
+            // written back whether or not the scan altered it.
+            $existing = $this->repository->existingGraphIds($projectId);
+            $mark('read_existing');
 
             $versions = $this->scannerVersions($request->scanners);
             $this->repository->saveFiles($this->fileRows($request->discovery->files, $fileIds, $versions), $projectId, $scanId);
@@ -167,12 +171,32 @@ final readonly class GraphReconciler
             $this->repository->saveBoundaryMemberships($memberships, $projectId, $scanId);
             $mark('save_boundaries');
 
+            $this->repository->pruneGraph($projectId, $existing, [
+                'files' => array_fill_keys(array_values($fileIds), true),
+                'nodes' => array_fill_keys(array_keys($nodes), true),
+                'edges' => array_fill_keys(array_keys($edges), true),
+                'classifications' => array_fill_keys(array_column($classifications, 'id'), true),
+                'boundaries' => array_fill_keys(array_column($boundaries, 'id'), true),
+                'boundary_memberships' => array_fill_keys(array_map(
+                    static fn(array $membership): string => $membership['boundary_id'] . "\0" . $membership['node_id'],
+                    $memberships,
+                ), true),
+            ]);
+            // Rows this scan left untouched are still current, so they carry its
+            // id too; nothing indexes the column, so this rewrites rows without
+            // touching an index.
+            $this->repository->stampGraphScan($projectId, $scanId);
+            $mark('prune');
+
             $this->repository->replaceContributionCache($projectId, $request->contributionCache);
             $mark('contribution_cache');
 
+            // Diagnostics belong to the scan that produced them, so the previous
+            // scan's are replaced wholesale rather than diffed.
+            $this->repository->clearProjectDiagnostics($projectId);
             $diagnosticCount = $this->saveDiagnostics($request, $projectId, $scanId, $fileIds, $nodeWarnings);
             // completeScan falls inside the save_diagnostics window (same rationale as
-            // clear_graph folding in saveProject/createScan above): it's a cheap trailing
+            // read_existing folding in saveProject/createScan above): it's a cheap trailing
             // bookkeeping write, not worth its own phase.
             $this->repository->completeScan($projectId, $scanId);
             $mark('save_diagnostics');

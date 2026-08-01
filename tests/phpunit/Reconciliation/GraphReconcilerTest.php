@@ -68,7 +68,8 @@ final class GraphReconcilerTest extends TestCase
         $this->assertCount(1, $this->repo->transactions);
         $this->assertCount(1, $this->repo->projects);
         $this->assertCount(1, $this->repo->scans);
-        $this->assertCount(1, $this->repo->clearedGraphs);
+        $this->assertCount(1, $this->repo->pruned);
+        $this->assertCount(1, $this->repo->stamped);
         $this->assertCount(1, $this->repo->completedScans);
         assertSame([], $this->repo->files);
         assertSame([], $this->repo->nodes);
@@ -1621,8 +1622,8 @@ final class GraphReconcilerTest extends TestCase
         $result = $reconciler->reconcile($request);
 
         $expected = [
-            'prepare', 'archive_snapshot', 'clear_graph', 'save_files', 'save_nodes',
-            'save_edges', 'save_classifications', 'save_boundaries', 'contribution_cache',
+            'prepare', 'archive_snapshot', 'read_existing', 'save_files', 'save_nodes',
+            'save_edges', 'save_classifications', 'save_boundaries', 'prune', 'contribution_cache',
             'save_diagnostics',
         ];
         assertSame($expected, array_keys($result->phaseMilliseconds));
@@ -1796,6 +1797,12 @@ final class FakeGraphRepository implements GraphRepository
     /** @var list<array<int, mixed>> */
     public array $clearedGraphs = [];
     /** @var list<array<int, mixed>> */
+    public array $pruned = [];
+    /** @var list<string> */
+    public array $stamped = [];
+    /** @var list<string> */
+    public array $clearedDiagnostics = [];
+    /** @var list<array<int, mixed>> */
     public array $files = [];
     /** @var list<array<int, mixed>> */
     public array $nodes = [];
@@ -1874,10 +1881,26 @@ final class FakeGraphRepository implements GraphRepository
         $this->archives[] = [$projectId, $configHash, $retention];
     }
 
-    public function clearProjectGraph(string $projectId): void
+    public function existingGraphIds(string $projectId): array
     {
-        $this->clearedGraphs[] = [$projectId];
+        return [];
     }
+
+    public function pruneGraph(string $projectId, array $existing, array $desired): void
+    {
+        $this->pruned[] = [$existing, $desired];
+    }
+
+    public function stampGraphScan(string $projectId, string $scanId): void
+    {
+        $this->stamped[] = $scanId;
+    }
+
+    public function clearProjectDiagnostics(string $projectId): void
+    {
+        $this->clearedDiagnostics[] = $projectId;
+    }
+
 
     public function saveFile(
         string $id,
