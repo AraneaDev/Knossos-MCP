@@ -31,16 +31,30 @@ final readonly class SnapshotPayload
     private const PREFIX = 'gzip64:';
 
     /**
-     * Balanced setting: on a 29.6 MB payload, level 6 reaches 20% of the
-     * original against 23% for level 1, and the extra ~340 ms is repaid by
-     * writing 24 MB fewer bytes.
+     * Measured on a 29.6 MB payload from this repository: level 1 compresses in
+     * 176 ms, level 3 in 196 ms, level 6 in 470 ms, for stored sizes of 9.1,
+     * 8.8, and 7.9 MB. Level 6 buys under a megabyte per snapshot for more than
+     * twice the time, and archiving runs on every scan that changed anything.
      */
-    private const LEVEL = 6;
+    private const LEVEL = 3;
 
     /** Compress an encoded payload for storage. */
     public static function encode(string $json): string
     {
         return self::PREFIX . base64_encode(gzencode($json, self::LEVEL));
+    }
+
+    /**
+     * A writer that compresses a payload as it is produced.
+     *
+     * Use this when the payload is assembled from a query rather than already in
+     * hand, which is every archive of a real project.
+     *
+     * @param int $maxBytes uncompressed ceiling past which the payload is abandoned
+     */
+    public static function writer(int $maxBytes): SnapshotPayloadWriter
+    {
+        return new SnapshotPayloadWriter(self::PREFIX, self::LEVEL, $maxBytes);
     }
 
     /**

@@ -352,28 +352,19 @@ final class SqliteGraphRepository implements GraphRepository
             }
         }
 
-        // Build and JSON-encode the payload exactly once. The over-limit and
-        // over-byte cases encode only a small marker object, never the full
-        // (discarded) payload a second time.
-        $factCount = 0;
-        if ($complete) {
-            $payload = [];
-            foreach ($tables as $table) {
-                $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
-                $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s', $table, $order));
-                $statement->execute(['project' => $projectId]);
-                $rows = $statement->fetchAll();
-                $payload[$table] = $rows;
-                $factCount += count($rows);
-            }
-            $encoded = self::json(['schema' => 1, 'facts' => $payload]);
-            if (strlen($encoded) > 50_000_000) {
-                $complete = false;
-                $factCount = 0;
-                $encoded = self::json(['schema' => 1, 'reason' => 'byte_limit']);
-            }
-        } else {
-            $encoded = self::json(['schema' => 1, 'reason' => 'fact_limit']);
+        // Streamed row by row into an incremental compressor rather than built
+        // whole: materialising the payload cost several times its own size in
+        // peak memory, and that multiplier grew with the project.
+        [$payload, $factCount, $byteSize] = $complete
+            ? $this->streamSnapshotPayload($projectId, $tables, $complete)
+            : [null, 0, 0];
+        if (!$complete) {
+            // Which ceiling stopped it: too many facts to be worth keeping, or a
+            // payload that outgrew the byte cap while being written.
+            $encoded = self::json(['schema' => 1, 'reason' => $payload === null ? 'fact_limit' : 'byte_limit']);
+            $factCount = 0;
+            $byteSize = strlen($encoded);
+            $payload = SnapshotPayload::encode($encoded);
         }
         // byte_size stays the size of the facts themselves. It answers "how big
         // is this snapshot", which readers compare across scans; how many bytes
@@ -384,9 +375,46 @@ final class SqliteGraphRepository implements GraphRepository
         );
         $insert->execute([
             'scan' => $scanId, 'project' => $projectId, 'scanner' => $scannerHash, 'config' => $configHash,
-            'complete' => $complete ? 1 : 0, 'facts' => $factCount, 'bytes' => strlen($encoded),
-            'payload' => SnapshotPayload::encode($encoded), 'captured' => self::now(),
+            'complete' => $complete ? 1 : 0, 'facts' => $factCount, 'bytes' => $byteSize,
+            'payload' => $payload, 'captured' => self::now(),
         ]);
+    }
+
+    /**
+     * Compress a project's facts into a stored payload as the rows are read.
+     *
+     * @param list<string> $tables
+     * @param bool $complete set to false when the payload outgrew its byte ceiling
+     *
+     * @return array{0: string, 1: int, 2: int} payload, fact count, uncompressed size
+     */
+    private function streamSnapshotPayload(string $projectId, array $tables, bool &$complete): array
+    {
+        $writer = SnapshotPayload::writer(50_000_000);
+        $writer->write('{"schema":1,"facts":{');
+        $factCount = 0;
+        foreach ($tables as $index => $table) {
+            $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
+            $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s', $table, $order));
+            $statement->execute(['project' => $projectId]);
+            $writer->write(sprintf('%s"%s":[', $index === 0 ? '' : ',', $table));
+            $first = true;
+            while (($row = $statement->fetch()) !== false) {
+                $writer->write(($first ? '' : ',') . self::json($row));
+                $first = false;
+                ++$factCount;
+            }
+            $writer->write(']');
+            if ($writer->exceeded()) {
+                // Past the ceiling the payload is discarded, so stop reading.
+                $complete = false;
+
+                return ['', 0, 0];
+            }
+        }
+        $writer->write('}}');
+
+        return [$writer->finish(), $factCount, $writer->byteSize()];
     }
 
     /**
