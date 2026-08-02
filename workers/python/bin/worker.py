@@ -12,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 EXCLUDED = {
     ".git",
     ".knossos",
@@ -550,6 +550,14 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.aliases: dict[str, str] = {}
         self.containers: list[tuple[str, str, str]] = []
         self.local_function_scopes: list[dict[str, str]] = []
+        # What a receiver holds, so a call on it names the method that runs.
+        # Attributes are keyed by the class that owns them; locals by the
+        # function being walked. Both are inferences from local flow, so a
+        # reassignment to anything untracked drops the entry rather than
+        # letting a stale type attribute a call to the wrong class.
+        self.attribute_types: dict[str, dict[str, str]] = {}
+        self.local_variable_types: list[dict[str, str]] = []
+        self.parameter_types: list[dict[str, str]] = []
         self.module_id = ref("module", self.module)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
@@ -670,9 +678,26 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.fastapi.enrich_function(node, local_id, canonical, route_decorators)
         self.containers.append((local_id, canonical, kind))
         self.local_function_scopes.append(self.local_function_declarations(node, canonical))
+        self.local_variable_types.append({})
+        self.parameter_types.append(self.annotated_parameters(node))
         self.generic_visit(node)
+        self.parameter_types.pop()
+        self.local_variable_types.pop()
         self.local_function_scopes.pop()
         self.containers.pop()
+
+    def annotated_parameters(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
+        """The class each annotated parameter declares it holds."""
+
+        annotated: dict[str, str] = {}
+        arguments = node.args
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
+            if argument.annotation is None:
+                continue
+            held = self.held_class(None, argument.annotation)
+            if held is not None:
+                annotated[argument.arg] = held
+        return annotated
 
     @staticmethod
     def local_function_declarations(
@@ -696,13 +721,96 @@ class PythonAstFactCollector(ast.NodeVisitor):
             variable = node.targets[0].id
             self.fastapi.register_assignment(variable, node.value)
             self.django.enrich_assignment(variable, node.value, node)
+            self.remember_local(variable, node.value)
+        if len(node.targets) == 1:
+            attribute = self.self_attribute(node.targets[0])
+            if attribute is not None:
+                self.remember_attribute(attribute, node.value)
         self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        attribute = self.self_attribute(node.target)
+        if attribute is not None:
+            # An annotation states the type outright, which beats inferring it.
+            self.remember_attribute(attribute, node.value, node.annotation)
+        elif isinstance(node.target, ast.Name):
+            self.remember_local(node.target.id, node.value, node.annotation)
+        self.generic_visit(node)
+
+    @staticmethod
+    def self_attribute(target: ast.AST) -> str | None:
+        """The attribute name when a target is `self.<name>`, else None."""
+
+        return (
+            target.attr
+            if isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+            else None
+        )
+
+    def remember_attribute(self, attribute: str, value: ast.AST | None, annotation: ast.AST | None = None) -> None:
+        """Record the class an attribute of the enclosing class holds."""
+
+        class_container = next((item for item in reversed(self.containers) if item[2] == "class"), None)
+        if class_container is None:
+            return
+        held = self.held_class(value, annotation)
+        owned = self.attribute_types.setdefault(class_container[1], {})
+        if held is None:
+            owned.pop(attribute, None)
+        else:
+            owned[attribute] = held
+
+    def remember_local(self, variable: str, value: ast.AST | None, annotation: ast.AST | None = None) -> None:
+        """Record the class a local variable holds, for the function being walked."""
+
+        if not self.local_variable_types:
+            return
+        held = self.held_class(value, annotation)
+        if held is None:
+            self.local_variable_types[-1].pop(variable, None)
+        else:
+            self.local_variable_types[-1][variable] = held
+
+    def held_class(self, value: ast.AST | None, annotation: ast.AST | None = None) -> str | None:
+        """The class reference an assigned value or annotation names, if any."""
+
+        for candidate in (annotation, value.func if isinstance(value, ast.Call) else None):
+            name = dotted(candidate) if candidate is not None else None
+            resolved = self.resolve_name(name, "class") if name else None
+            if resolved and resolved.startswith("py:class:"):
+                return resolved.removeprefix("py:class:")
+        # A parameter passed straight through carries its annotation's type.
+        if isinstance(value, ast.Name) and self.parameter_types:
+            return self.parameter_types[-1].get(value.id)
+        return None
+
+    def receiver_member(self, receiver: str, member: str) -> str | None:
+        """The method a call names when its receiver's class is known."""
+
+        held = None
+        if receiver.startswith("self.") and receiver.count(".") == 1:
+            class_container = next((item for item in reversed(self.containers) if item[2] == "class"), None)
+            if class_container is not None:
+                held = self.attribute_types.get(class_container[1], {}).get(receiver.split(".", 1)[1])
+        elif "." not in receiver:
+            held = self.local_variable_types[-1].get(receiver) if self.local_variable_types else None
+            if held is None and self.parameter_types:
+                held = self.parameter_types[-1].get(receiver)
+        return ref("method", f"{held}::{member}") if held else None
 
     def visit_Call(self, node: ast.Call) -> None:
         name = dotted(node.func)
         target = None
         if name:
-            if name.startswith("self.") and self.containers:
+            member = name.rsplit(".", 1)
+            if len(member) == 2:
+                target = self.receiver_member(member[0], member[1])
+            if target is None and name.startswith("self.") and name.count(".") == 1 and self.containers:
+                # Only a direct `self.<name>()`. `self.a.b()` is a call on
+                # whatever `a` holds, and reading it as a member of this class
+                # invents a symbol named `a.b` that nothing declares.
                 class_container = next((item for item in reversed(self.containers) if item[2] == "class"), None)
                 if class_container:
                     target = ref("method", f"{class_container[1]}::{name.split('.', 1)[1]}")

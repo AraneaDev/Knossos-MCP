@@ -157,3 +157,87 @@ def test_unsafe_path_aborts_request(worker: ModuleType, project, scan_collect) -
     root = project({"ok.py": "x = 1\n"})
     with pytest.raises(ValueError):
         scan_collect(root, ["../escape.py"])
+
+
+def test_attribute_receivers_resolve_instead_of_inventing_members(
+    worker: ModuleType, tmp_path: Path, scan_collect
+) -> None:
+    # `self.helper.use()` names a method of whatever `self.helper` holds. Reading
+    # it as a member of the enclosing class invents `Owner::helper.use`, a symbol
+    # no file declares, and leaves the real method looking unreferenced.
+    #
+    # Each receiver calls a different member, because identical relationships are
+    # deduplicated and a shared member would hide two of the three failing.
+    (tmp_path / "mod.py").write_text(
+        "class Helper:\n"
+        "    def injected_call(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "    def built_call(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "    def local_call(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "    def param_call(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "\n"
+        "class Owner:\n"
+        "    def __init__(self, injected: Helper) -> None:\n"
+        "        self.injected = injected\n"
+        "        self.built = Helper()\n"
+        "\n"
+        "    def run(self, passed: Helper) -> None:\n"
+        "        self.injected.injected_call()\n"
+        "        self.built.built_call()\n"
+        "        local = Helper()\n"
+        "        local.local_call()\n"
+        "        passed.param_call()\n",
+        encoding="utf-8",
+    )
+
+    [contribution] = scan_collect(tmp_path, ["mod.py"])
+
+    calls = sorted(
+        target for kind, source, target in _edges(contribution)
+        if kind == "calls" and source == "py:method:mod.Owner::run"
+    )
+    assert calls == [
+        "py:class:mod.Helper",
+        "py:method:mod.Helper::built_call",
+        "py:method:mod.Helper::injected_call",
+        "py:method:mod.Helper::local_call",
+        "py:method:mod.Helper::param_call",
+    ]
+    assert not any(
+        "." in target.split("::", 1)[1]
+        for _, _, target in _edges(contribution)
+        if "::" in target
+    ), "no edge may name a member containing a dot"
+
+
+def test_a_receiver_reassigned_to_something_untracked_stops_resolving(
+    worker: ModuleType, tmp_path: Path, scan_collect
+) -> None:
+    # The type is inferred from local flow, so it has to be given up when the
+    # flow stops supporting it, rather than attributing a later call to a class
+    # the receiver no longer holds.
+    (tmp_path / "mod.py").write_text(
+        "class Helper:\n"
+        "    def use(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "\n"
+        "def run(source) -> None:\n"
+        "    held = Helper()\n"
+        "    held = source.anything()\n"
+        "    held.use()\n",
+        encoding="utf-8",
+    )
+
+    [contribution] = scan_collect(tmp_path, ["mod.py"])
+
+    assert "py:method:mod.Helper::use" not in [
+        target for kind, source, target in _edges(contribution) if kind == "calls"
+    ]
