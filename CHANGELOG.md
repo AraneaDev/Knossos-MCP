@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.10.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.9.1...v0.10.0) (2026-08-02)
+
+
+### Features
+
+* **scanner:** resolve calls on values a method in another file returned ([5881a70](https://github.com/AraneaDev/Knossos-MCP/commit/5881a70f921529f4bf7c402563f51ca3de629a13))
+* **scanner:** resolve cross-file receivers, and fix what auditing Knossos with Knossos found ([076e3ec](https://github.com/AraneaDev/Knossos-MCP/commit/076e3ec8d1bb122a864264c14d94df709e761d32))
+
+
+### Bug Fixes
+
+* address review findings and cover the paths the floors caught ([f2fd27c](https://github.com/AraneaDev/Knossos-MCP/commit/f2fd27c367509bd7390e71ee3591a87b8da4d22c))
+* address the second review round ([02ba8ae](https://github.com/AraneaDev/Knossos-MCP/commit/02ba8aeccfdecaddfc88c5e2d60b375a72abf131))
+* **php-scanner:** resolve receivers typed by a method's declared return type ([6a5bb60](https://github.com/AraneaDev/Knossos-MCP/commit/6a5bb6048cca18af5812b944208d58f608a13a53))
+* **query:** count quality-gate budgets over the components health reports ([c2c973b](https://github.com/AraneaDev/Knossos-MCP/commit/c2c973b14990cb236539ca637ae714f616fff1ac))
+* **query:** scan every edge when the quality gate checks boundary policies ([008258b](https://github.com/AraneaDev/Knossos-MCP/commit/008258b6807cd6560435434d5db4dfb4a311f93f))
+* **query:** stop the repository-wide boundary from hiding every cross-boundary edge ([4a46eb0](https://github.com/AraneaDev/Knossos-MCP/commit/4a46eb06219322946a6bcec78e74607d4ce612c5))
+* **runtime:** treat supported runtime versions as floors, not ranges ([6e39b3a](https://github.com/AraneaDev/Knossos-MCP/commit/6e39b3a96e0f049ac93b496fb8f68a33462d2ce3))
+
+
+### Performance Improvements
+
+* **query:** stream the boundary-policy check instead of collecting its edges ([722b7cd](https://github.com/AraneaDev/Knossos-MCP/commit/722b7cd0e5db466a7c9aee4b3b3f1e411002f2d7))
+* **reconciliation:** report the commit as a phase of its own ([f3fd82d](https://github.com/AraneaDev/Knossos-MCP/commit/f3fd82de6da767bac2fc56228e2bcdb0fedb8018))
+* **reconciliation:** write the graph difference instead of rewriting the graph ([9f5662d](https://github.com/AraneaDev/Knossos-MCP/commit/9f5662de817d87d582daefea416f419d73c3c477))
+* **store:** cap the write-ahead log so its peak size is not permanent ([7ab1fae](https://github.com/AraneaDev/Knossos-MCP/commit/7ab1fae71845b647af8c7ff41bac86cd8864d2bf))
+* **store:** compress archived snapshots and add a vacuum action ([b13c210](https://github.com/AraneaDev/Knossos-MCP/commit/b13c2108375a131c7a8929851bcb4ab5168b9f28))
+* **store:** compress the snapshot as it is read rather than building it whole ([a3136d3](https://github.com/AraneaDev/Knossos-MCP/commit/a3136d37974b39fd5923725b8fa9209a5df7deba))
+* **store:** verify graph integrity once per rewrite instead of per statement ([a788f84](https://github.com/AraneaDev/Knossos-MCP/commit/a788f841d2442b9b7d260c7b3b7ee36e55a49d05))
+
 ## [0.9.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.9.0...v0.9.1) (2026-08-01)
 
 
