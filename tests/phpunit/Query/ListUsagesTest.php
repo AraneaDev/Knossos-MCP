@@ -40,6 +40,12 @@ final class ListUsagesTest extends KnossosTestCase
         assertSame(1, count($limited->data['usages']));
         assertSame(true, $limited->truncated);
         assertSame(['result_limit'], $limited->data['bounds']['truncation_reasons']);
+        // The count reports how many usages exist, not how many fitted: a
+        // summary reading "Found 1 usage site" for a symbol used 98 times is
+        // the opposite of what the caller asked.
+        assertContains('Found 2 usage sites', $limited->summary);
+        assertSame(2, $limited->data['bounds']['total_matched']);
+        assertSame(1, $limited->data['bounds']['total_shown']);
 
         assertThrows(fn() => $queries->listUsages($ids['project'], 'App\\InvoiceService', limit: 501), InvalidArgumentException::class);
         assertThrows(fn() => $queries->listUsages($ids['project'], 'App\\InvoiceService', edgeKinds: ['contains']), InvalidArgumentException::class);
