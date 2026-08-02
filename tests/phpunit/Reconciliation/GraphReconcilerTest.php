@@ -68,7 +68,8 @@ final class GraphReconcilerTest extends TestCase
         $this->assertCount(1, $this->repo->transactions);
         $this->assertCount(1, $this->repo->projects);
         $this->assertCount(1, $this->repo->scans);
-        $this->assertCount(1, $this->repo->clearedGraphs);
+        $this->assertCount(1, $this->repo->pruned);
+        $this->assertCount(1, $this->repo->stamped);
         $this->assertCount(1, $this->repo->completedScans);
         assertSame([], $this->repo->files);
         assertSame([], $this->repo->nodes);
@@ -1621,9 +1622,9 @@ final class GraphReconcilerTest extends TestCase
         $result = $reconciler->reconcile($request);
 
         $expected = [
-            'prepare', 'archive_snapshot', 'clear_graph', 'save_files', 'save_nodes',
-            'save_edges', 'save_classifications', 'save_boundaries', 'contribution_cache',
-            'save_diagnostics',
+            'prepare', 'archive_snapshot', 'read_existing', 'save_files', 'save_nodes',
+            'save_edges', 'save_classifications', 'save_boundaries', 'prune', 'contribution_cache',
+            'save_diagnostics', 'commit',
         ];
         assertSame($expected, array_keys($result->phaseMilliseconds));
         foreach ($result->phaseMilliseconds as $milliseconds) {
@@ -1638,6 +1639,40 @@ final class GraphReconcilerTest extends TestCase
     /**
      * @param array<string, mixed> $overrides
      */
+    /**
+     * A deferred receiver reference is a shape a third-party scanner can emit,
+     * so a malformed one must be ignored rather than resolved into something
+     * arbitrary or fabricated as an external symbol.
+     */
+    #[Group('reconciliation')]
+    public function testMalformedDeferredReceiverReferencesAreIgnored(): void
+    {
+        $source = $this->minimalNode('php:class:Fixture\\Caller', 'Fixture\\Caller');
+        $edges = [];
+        foreach (['php:method_of_return:NoMemberSeparator', 'php:method_of_return:::member', 'php:method_of_return:Fixture\\Absent::make::use'] as $index => $reference) {
+            $edges[] = new EdgeFact(
+                kind: 'calls',
+                sourceReference: $source->localId,
+                targetReference: $reference,
+                origin: Origin::Ast,
+                confidence: Confidence::Probable,
+                evidence: new Evidence('src/Foo.php', $index + 1, $index + 1),
+            );
+        }
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$source], $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        // The declaring node survives; none of the three references produce an
+        // edge, and no external symbol is invented for any of them.
+        assertSame(1, $result->nodes);
+        assertSame(0, $result->edges);
+        assertSame(0, $result->unresolvedNodes);
+    }
+
     private function buildRequest(array $overrides = []): FullScanRequest
     {
         $args = array_merge($this->minimalRequestArgs(), $overrides);
@@ -1794,7 +1829,11 @@ final class FakeGraphRepository implements GraphRepository
     /** @var list<array<int, mixed>> */
     public array $archives = [];
     /** @var list<array<int, mixed>> */
-    public array $clearedGraphs = [];
+    public array $pruned = [];
+    /** @var list<string> */
+    public array $stamped = [];
+    /** @var list<string> */
+    public array $clearedDiagnostics = [];
     /** @var list<array<int, mixed>> */
     public array $files = [];
     /** @var list<array<int, mixed>> */
@@ -1821,7 +1860,9 @@ final class FakeGraphRepository implements GraphRepository
         $this->scans = [];
         $this->completedScans = [];
         $this->archives = [];
-        $this->clearedGraphs = [];
+        $this->pruned = [];
+        $this->stamped = [];
+        $this->clearedDiagnostics = [];
         $this->files = [];
         $this->nodes = [];
         $this->edges = [];
@@ -1837,6 +1878,11 @@ final class FakeGraphRepository implements GraphRepository
     {
         $this->transactions[] = true;
         return $operation($this);
+    }
+
+    public function bulkTransaction(callable $operation): mixed
+    {
+        return $this->transaction($operation);
     }
 
     public function saveProject(string $id, string $name, string $rootRealpath, array $config = []): void
@@ -1869,10 +1915,26 @@ final class FakeGraphRepository implements GraphRepository
         $this->archives[] = [$projectId, $configHash, $retention];
     }
 
-    public function clearProjectGraph(string $projectId): void
+    public function existingGraphIds(string $projectId): array
     {
-        $this->clearedGraphs[] = [$projectId];
+        return [];
     }
+
+    public function pruneGraph(string $projectId, array $existing, array $desired): void
+    {
+        $this->pruned[] = [$existing, $desired];
+    }
+
+    public function stampGraphScan(string $projectId, string $scanId): void
+    {
+        $this->stamped[] = $scanId;
+    }
+
+    public function clearProjectDiagnostics(string $projectId): void
+    {
+        $this->clearedDiagnostics[] = $projectId;
+    }
+
 
     public function saveFile(
         string $id,

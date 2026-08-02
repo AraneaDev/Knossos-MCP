@@ -30,7 +30,9 @@ final class CancellationTokenTest extends TestCase
         $poll = static fn (): bool => false;
         $pollRef = (new ReflectionClass(CancellationToken::class))->getProperty('poll');
         $this->assertTrue($pollRef->isReadOnly());
-        $this->assertNull($pollRef->getDefaultValue());
+        // A promoted readonly parameter has no default; asking for its value is
+        // deprecated from PHP 8.5, so assert the absence directly.
+        $this->assertFalse($pollRef->hasDefaultValue());
     }
 
     public function testCancelledFieldIsMutable(): void

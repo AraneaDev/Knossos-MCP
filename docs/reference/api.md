@@ -47,13 +47,17 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 ### `Knossos\Store\GraphRepository`
 
 - `transaction(callable $operation): mixed` — Execute an operation atomically and return its result
+- `bulkTransaction(callable $operation): mixed` — Execute a whole-graph rewrite atomically, checking referential integrity
 - `saveProject(string $id, string $name, string $rootRealpath, array $config = []): void` — Create or update project identity and non-secret configuration metadata
 - `findProject(string $id): ?array` — Find one project by stable ID
 - `createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void` — Record the start of a scan before graph reconciliation
 - `completeScan(string $projectId, string $scanId): void` — Atomically make a successfully reconciled scan active
 - `recordFailedScan(string $id, string $projectId, string $mode, string $status): void` — Persist a terminal (failed or cancelled) scan attempt so it is observable
 - `archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void` — Retain the active snapshot under the configured bounded history policy
-- `clearProjectGraph(string $projectId): void` — Remove replaceable active graph facts while preserving project identity
+- `existingGraphIds(string $projectId): array` — The ids a project's graph currently holds, per table, before a scan writes its own
+- `pruneGraph(string $projectId, array $existing, array $desired): void` — Delete the graph rows a scan did not produce, leaving the rest untouched
+- `stampGraphScan(string $projectId, string $scanId): void` — Attribute every surviving graph row to the scan that just confirmed it
+- `clearProjectDiagnostics(string $projectId): void` — Drop a project's diagnostics, which belong to the scan that produced them
 - `saveFile(string $id, string $projectId, string $relativePath, string $contentHash, int $size, int $mtime, string $language, string $scannerVersion, string $scanId, int $lineCount = 0): void` — Persist one scanned file and its content/provenance fingerprints
 - `saveNode(string $id, string $projectId, string $language, string $kind, string $canonicalName, string $displayName, ?string $parentId, ?string $fileId, ?int $startLine, ?int $endLine, string $origin, string $confidence, array $attributes, string $ownerKey, string $scanId): void` — Persist one evidence-backed graph node
 - `saveEdge(string $id, string $projectId, string $kind, string $sourceId, string $targetId, ?string $fileId, ?int $startLine, ?int $endLine, string $origin, string $confidence, array $attributes, string $ownerKey, string $scanId): void` — Persist one occurrence-level, evidence-backed directed graph edge

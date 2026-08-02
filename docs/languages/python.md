@@ -1,6 +1,6 @@
 # Python scanner support
 
-Knossos supports Python 3.11–3.13 projects through the same versioned,
+Knossos supports Python 3.11 and newer projects through the same versioned,
 out-of-process scanner protocol used by the PHP and TypeScript workers. The
 bundled worker uses only Python's standard-library `ast` module and starts with
 isolated, bytecode-disabled interpreter flags. It never imports or runs the

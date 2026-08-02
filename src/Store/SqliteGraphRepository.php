@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use PDO;
 use PDOStatement;
+use RuntimeException;
 use Throwable;
 
 /**
@@ -29,6 +30,24 @@ final class SqliteGraphRepository implements GraphRepository
 
     /** Monotonic sequence used to name nested savepoints uniquely. */
     private int $savepointSequence = 0;
+
+    /**
+     * The graph tables a scan owns and the column identifying a row in each,
+     * child-first so a delete never orphans a row it has not reached yet.
+     */
+    /** Every table a graph rewrite writes, which is the scope its integrity check needs. */
+    private const REWRITTEN_TABLES = [
+        'files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics',
+    ];
+
+    private const GRAPH_TABLES = [
+        'boundary_memberships' => 'boundary_id',
+        'boundaries' => 'id',
+        'classifications' => 'id',
+        'edges' => 'id',
+        'nodes' => 'id',
+        'files' => 'id',
+    ];
 
     public function __construct(private PDO $pdo) {}
 
@@ -61,6 +80,60 @@ final class SqliteGraphRepository implements GraphRepository
             } catch (Throwable) {
             }
             throw $error;
+        }
+    }
+
+    /**
+     * Run a whole-graph rewrite, verifying referential integrity once at the end.
+     *
+     * Per-statement foreign-key enforcement, not the row count, is what a rescan
+     * spends its time on: SQLite runs the referencing-table sub-programs for
+     * every row deleted, and clearing this repository's own graph measured 5.6s
+     * that way against 0.6s with enforcement off and a single
+     * `PRAGMA foreign_key_check` at the end. The check runs inside the
+     * transaction, so a rewrite that would leave a dangling reference is rolled
+     * back and never observable — the same guarantee, verified once instead of
+     * a few hundred thousand times.
+     *
+     * `PRAGMA foreign_keys` is a no-op inside a transaction, so it is toggled
+     * around the BEGIN and restored in a finally. A nested call cannot do that
+     * and runs as an ordinary transaction instead.
+     *
+     * @template T
+     * @param callable(GraphRepository): T $operation
+     *
+     * @return T
+     */
+    public function bulkTransaction(callable $operation): mixed
+    {
+        if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
+            return $this->transaction($operation);
+        }
+        $previous = (string) $this->pdo->query('PRAGMA foreign_keys')->fetchColumn();
+        $this->pdo->exec('PRAGMA foreign_keys = OFF');
+        try {
+            return $this->transaction(function (GraphRepository $repository) use ($operation): mixed {
+                $result = $operation($repository);
+                // Checked per table rather than database-wide: an unrelated
+                // table's pre-existing damage is not this rewrite's to fail on,
+                // and naming the table keeps the blame where it belongs.
+                foreach (self::REWRITTEN_TABLES as $table) {
+                    $violations = $this->pdo->query(sprintf('PRAGMA foreign_key_check(%s)', $table))->fetchAll();
+                    if ($violations !== []) {
+                        throw new RuntimeException(sprintf(
+                            'Refusing to commit a graph with %d dangling reference(s) in table %s.',
+                            count($violations),
+                            $table,
+                        ));
+                    }
+                }
+
+                return $result;
+            });
+        } finally {
+            // Restored rather than forced on: a caller that had enforcement off
+            // did not ask this method to change that.
+            $this->pdo->exec('PRAGMA foreign_keys = ' . ($previous === '1' ? 'ON' : 'OFF'));
         }
     }
 
@@ -292,53 +365,188 @@ final class SqliteGraphRepository implements GraphRepository
             }
         }
 
-        // Build and JSON-encode the payload exactly once. The over-limit and
-        // over-byte cases encode only a small marker object, never the full
-        // (discarded) payload a second time.
-        $factCount = 0;
-        if ($complete) {
-            $payload = [];
-            foreach ($tables as $table) {
-                $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
-                $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s', $table, $order));
-                $statement->execute(['project' => $projectId]);
-                $rows = $statement->fetchAll();
-                $payload[$table] = $rows;
-                $factCount += count($rows);
-            }
-            $encoded = self::json(['schema' => 1, 'facts' => $payload]);
-            if (strlen($encoded) > 50_000_000) {
-                $complete = false;
-                $factCount = 0;
-                $encoded = self::json(['schema' => 1, 'reason' => 'byte_limit']);
-            }
-        } else {
-            $encoded = self::json(['schema' => 1, 'reason' => 'fact_limit']);
+        // Streamed row by row into an incremental compressor rather than built
+        // whole: materialising the payload cost several times its own size in
+        // peak memory, and that multiplier grew with the project.
+        [$payload, $factCount, $byteSize] = $complete
+            ? $this->streamSnapshotPayload($projectId, $tables, $complete)
+            : [null, 0, 0];
+        if (!$complete) {
+            // Which ceiling stopped it: too many facts to be worth keeping, or a
+            // payload that outgrew the byte cap while being written.
+            $encoded = self::json(['schema' => 1, 'reason' => $payload === null ? 'fact_limit' : 'byte_limit']);
+            $factCount = 0;
+            $byteSize = strlen($encoded);
+            $payload = SnapshotPayload::encode($encoded);
         }
+        // byte_size stays the size of the facts themselves. It answers "how big
+        // is this snapshot", which readers compare across scans; how many bytes
+        // the row happens to occupy after compression is a storage detail.
         $insert = $this->pdo->prepare(
             'INSERT OR IGNORE INTO scan_snapshots(scan_id, project_id, scanner_set_hash, config_hash, complete, fact_count, byte_size, payload_json, captured_at) ' .
             'VALUES (:scan, :project, :scanner, :config, :complete, :facts, :bytes, :payload, :captured)',
         );
         $insert->execute([
             'scan' => $scanId, 'project' => $projectId, 'scanner' => $scannerHash, 'config' => $configHash,
-            'complete' => $complete ? 1 : 0, 'facts' => $factCount, 'bytes' => strlen($encoded),
-            'payload' => $encoded, 'captured' => self::now(),
+            'complete' => $complete ? 1 : 0, 'facts' => $factCount, 'bytes' => $byteSize,
+            'payload' => $payload, 'captured' => self::now(),
         ]);
     }
 
     /**
-     * Delete a project's graph rows, leaving the project and its scan history.
+     * Compress a project's facts into a stored payload as the rows are read.
      *
-     * Tables are deleted child-first so foreign keys stay satisfied at every step
-     * rather than only at commit.
+     * @param list<string> $tables
+     * @param bool $complete set to false when the payload outgrew its byte ceiling
+     *
+     * @return array{0: string, 1: int, 2: int} payload, fact count, uncompressed size
      */
-    public function clearProjectGraph(string $projectId): void
+    private function streamSnapshotPayload(string $projectId, array $tables, bool &$complete): array
     {
-        foreach (['diagnostics', 'boundary_memberships', 'boundaries', 'classifications', 'edges', 'nodes', 'files'] as $table) {
-            $statement = $this->pdo->prepare(sprintf('DELETE FROM %s WHERE project_id = :project', $table));
+        $writer = SnapshotPayload::writer(50_000_000);
+        $writer->write('{"schema":1,"facts":{');
+        $factCount = 0;
+        foreach ($tables as $index => $table) {
+            $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
+            $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s', $table, $order));
             $statement->execute(['project' => $projectId]);
+            $writer->write(sprintf('%s"%s":[', $index === 0 ? '' : ',', $table));
+            $first = true;
+            while (($row = $statement->fetch()) !== false) {
+                $writer->write(($first ? '' : ',') . self::json($row));
+                $first = false;
+                ++$factCount;
+                if ($writer->exceeded()) {
+                    // The payload is already being abandoned; reading and
+                    // encoding the rest of this table would be work for nothing.
+                    break;
+                }
+            }
+            $writer->write(']');
+            if ($writer->exceeded()) {
+                // Past the ceiling the payload is discarded, so stop reading.
+                $complete = false;
+
+                return ['', 0, 0];
+            }
+        }
+        $writer->write('}}');
+
+        return [$writer->finish(), $factCount, $writer->byteSize()];
+    }
+
+    /**
+     * The ids a project's graph currently holds, per table.
+     *
+     * Read before the scan's own rows are written, so the difference against
+     * what the scan produced is exactly what no longer exists.
+     *
+     * @return array<string, array<string, true>> table name to id set
+     */
+    public function existingGraphIds(string $projectId): array
+    {
+        $ids = [];
+        foreach (array_keys(self::GRAPH_TABLES) as $table) {
+            if ($table === 'boundary_memberships') {
+                continue;
+            }
+            $statement = $this->prepare(sprintf('SELECT id FROM %s WHERE project_id = :project', $table));
+            $statement->execute(['project' => $projectId]);
+            $seen = [];
+            while (($row = $statement->fetch()) !== false) {
+                $seen[(string) $row['id']] = true;
+            }
+            $ids[$table] = $seen;
+        }
+        // A membership is identified by the pair it joins, not by an id column.
+        $statement = $this->prepare('SELECT boundary_id, node_id FROM boundary_memberships WHERE project_id = :project');
+        $statement->execute(['project' => $projectId]);
+        $memberships = [];
+        while (($row = $statement->fetch()) !== false) {
+            $memberships[$row['boundary_id'] . "\0" . $row['node_id']] = true;
+        }
+        $ids['boundary_memberships'] = $memberships;
+
+        return $ids;
+    }
+
+    /**
+     * Delete the graph rows a scan did not produce, leaving the rest untouched.
+     *
+     * The alternative — clearing the project and writing every row back — cost
+     * the size of the project on every rescan rather than the size of the
+     * change. Child rows go first so the delete order is meaningful even though
+     * a bulk transaction defers the foreign-key check to the commit.
+     *
+     * @param array<string, array<string, true>> $existing @param array<string, array<string, true>> $desired
+     */
+    public function pruneGraph(string $projectId, array $existing, array $desired): void
+    {
+        foreach (array_keys(self::GRAPH_TABLES) as $table) {
+            $obsolete = array_keys(array_diff_key($existing[$table] ?? [], $desired[$table] ?? []));
+            if ($obsolete === []) {
+                continue;
+            }
+            if ($table === 'boundary_memberships') {
+                $this->deleteMemberships($projectId, $obsolete);
+                continue;
+            }
+            foreach (array_chunk($obsolete, 400) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $statement = $this->prepare(sprintf('DELETE FROM %s WHERE project_id = ? AND id IN (%s)', $table, $placeholders));
+                $statement->execute([$projectId, ...$chunk]);
+            }
         }
     }
+
+    /**
+     * Delete memberships by the pair they join, grouped so each delete can use the index.
+     *
+     * @param list<string> $pairs boundary id and node id joined by a NUL byte
+     */
+    private function deleteMemberships(string $projectId, array $pairs): void
+    {
+        $byBoundary = [];
+        foreach ($pairs as $pair) {
+            [$boundaryId, $nodeId] = explode("\0", $pair, 2);
+            $byBoundary[$boundaryId][] = $nodeId;
+        }
+        foreach ($byBoundary as $boundaryId => $nodeIds) {
+            foreach (array_chunk($nodeIds, 400) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $statement = $this->prepare(sprintf(
+                    'DELETE FROM boundary_memberships WHERE project_id = ? AND boundary_id = ? AND node_id IN (%s)',
+                    $placeholders,
+                ));
+                $statement->execute([$projectId, $boundaryId, ...$chunk]);
+            }
+        }
+    }
+
+    /**
+     * Attribute every surviving graph row to the scan that just confirmed it.
+     *
+     * Rows a scan left untouched are still current, and `last_scan_id` is what
+     * keeps scan cleanup from deleting history the graph still points at — a row
+     * left on an older scan would pin that scan forever. Nothing indexes this
+     * column, so the update rewrites rows without touching an index: on this
+     * repository's graph it costs about a tenth of a second against the couple
+     * of seconds a full rewrite spent on index maintenance alone.
+     */
+    public function stampGraphScan(string $projectId, string $scanId): void
+    {
+        foreach (array_keys(self::GRAPH_TABLES) as $table) {
+            $statement = $this->prepare(sprintf('UPDATE %s SET last_scan_id = :scan WHERE project_id = :project AND last_scan_id <> :scan', $table));
+            $statement->execute(['scan' => $scanId, 'project' => $projectId]);
+        }
+    }
+
+    /** Drop a project's diagnostics, which belong to the scan that produced them. */
+    public function clearProjectDiagnostics(string $projectId): void
+    {
+        $this->prepare('DELETE FROM diagnostics WHERE project_id = :project')->execute(['project' => $projectId]);
+    }
+
     /** Drop the oldest snapshots beyond the project's retention setting. */
 
     private function pruneSnapshotHistory(string $projectId, int $retention): void
@@ -507,7 +715,8 @@ final class SqliteGraphRepository implements GraphRepository
             $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'));
             $sql = 'INSERT INTO nodes(id, project_id, language, kind, canonical_name, display_name, parent_id, file_id, start_line, end_line, origin, confidence, attributes_json, owner_key, last_scan_id) VALUES '
                 . $placeholders
-                . ' ON CONFLICT(id) DO UPDATE SET language = excluded.language, kind = excluded.kind, canonical_name = excluded.canonical_name, display_name = excluded.display_name, parent_id = excluded.parent_id, file_id = excluded.file_id, start_line = excluded.start_line, end_line = excluded.end_line, origin = excluded.origin, confidence = excluded.confidence, attributes_json = excluded.attributes_json, owner_key = excluded.owner_key, last_scan_id = excluded.last_scan_id';
+                . ' ON CONFLICT(id) DO UPDATE SET language = excluded.language, kind = excluded.kind, canonical_name = excluded.canonical_name, display_name = excluded.display_name, parent_id = excluded.parent_id, file_id = excluded.file_id, start_line = excluded.start_line, end_line = excluded.end_line, origin = excluded.origin, confidence = excluded.confidence, attributes_json = excluded.attributes_json, owner_key = excluded.owner_key, last_scan_id = excluded.last_scan_id'
+                . ' WHERE nodes.language IS NOT excluded.language OR nodes.kind IS NOT excluded.kind OR nodes.canonical_name IS NOT excluded.canonical_name OR nodes.display_name IS NOT excluded.display_name OR nodes.parent_id IS NOT excluded.parent_id OR nodes.file_id IS NOT excluded.file_id OR nodes.start_line IS NOT excluded.start_line OR nodes.end_line IS NOT excluded.end_line OR nodes.origin IS NOT excluded.origin OR nodes.confidence IS NOT excluded.confidence OR nodes.attributes_json IS NOT excluded.attributes_json OR nodes.owner_key IS NOT excluded.owner_key';
             $values = [];
             foreach ($chunk as $node) {
                 array_push($values, $node['id'], $projectId, $node['language'], $node['kind'], $node['canonical_name'], $node['display_name'], null, $node['file_id'], $node['start_line'], $node['end_line'], $node['origin'], $node['confidence'], self::json($node['attributes']), $node['owner_key'], $scanId);
@@ -527,7 +736,8 @@ final class SqliteGraphRepository implements GraphRepository
             $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?,?,?,?)'));
             $sql = 'INSERT INTO edges(id, project_id, kind, source_id, target_id, file_id, start_line, end_line, origin, confidence, attributes_json, owner_key, last_scan_id) VALUES '
                 . $placeholders
-                . ' ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, source_id = excluded.source_id, target_id = excluded.target_id, file_id = excluded.file_id, start_line = excluded.start_line, end_line = excluded.end_line, origin = excluded.origin, confidence = excluded.confidence, attributes_json = excluded.attributes_json, owner_key = excluded.owner_key, last_scan_id = excluded.last_scan_id';
+                . ' ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, source_id = excluded.source_id, target_id = excluded.target_id, file_id = excluded.file_id, start_line = excluded.start_line, end_line = excluded.end_line, origin = excluded.origin, confidence = excluded.confidence, attributes_json = excluded.attributes_json, owner_key = excluded.owner_key, last_scan_id = excluded.last_scan_id'
+                . ' WHERE edges.kind IS NOT excluded.kind OR edges.source_id IS NOT excluded.source_id OR edges.target_id IS NOT excluded.target_id OR edges.file_id IS NOT excluded.file_id OR edges.start_line IS NOT excluded.start_line OR edges.end_line IS NOT excluded.end_line OR edges.origin IS NOT excluded.origin OR edges.confidence IS NOT excluded.confidence OR edges.attributes_json IS NOT excluded.attributes_json OR edges.owner_key IS NOT excluded.owner_key';
             $values = [];
             foreach ($chunk as $edge) {
                 array_push($values, $edge['id'], $projectId, $edge['kind'], $edge['source_id'], $edge['target_id'], $edge['file_id'], $edge['start_line'], $edge['end_line'], $edge['origin'], $edge['confidence'], self::json($edge['attributes']), $edge['owner_key'], $scanId);
@@ -547,7 +757,8 @@ final class SqliteGraphRepository implements GraphRepository
             $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?)'));
             $sql = 'INSERT INTO files(id, project_id, relative_path, content_hash, size, mtime, language, scanner_version, last_scan_id, line_count) VALUES '
                 . $placeholders
-                . ' ON CONFLICT(project_id, relative_path) DO UPDATE SET content_hash = excluded.content_hash, size = excluded.size, mtime = excluded.mtime, language = excluded.language, scanner_version = excluded.scanner_version, last_scan_id = excluded.last_scan_id, line_count = excluded.line_count';
+                . ' ON CONFLICT(project_id, relative_path) DO UPDATE SET content_hash = excluded.content_hash, size = excluded.size, mtime = excluded.mtime, language = excluded.language, scanner_version = excluded.scanner_version, last_scan_id = excluded.last_scan_id, line_count = excluded.line_count'
+                . ' WHERE files.content_hash IS NOT excluded.content_hash OR files.size IS NOT excluded.size OR files.mtime IS NOT excluded.mtime OR files.language IS NOT excluded.language OR files.scanner_version IS NOT excluded.scanner_version OR files.line_count IS NOT excluded.line_count';
             $values = [];
             foreach ($chunk as $file) {
                 array_push($values, $file['id'], $projectId, $file['relative_path'], $file['content_hash'], $file['size'], $file['mtime'], $file['language'], $file['scanner_version'], $scanId, $file['line_count']);
@@ -565,7 +776,10 @@ final class SqliteGraphRepository implements GraphRepository
     {
         foreach (array_chunk($classifications, 80) as $chunk) { // 12 params/row
             $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?,?,?,?,?,?,?,?,?)'));
-            $sql = 'INSERT INTO classifications(id, project_id, node_id, role, origin, confidence, rule_id, file_id, start_line, end_line, attributes_json, last_scan_id) VALUES ' . $placeholders;
+            $sql = 'INSERT INTO classifications(id, project_id, node_id, role, origin, confidence, rule_id, file_id, start_line, end_line, attributes_json, last_scan_id) VALUES '
+                . $placeholders
+                . ' ON CONFLICT(id) DO UPDATE SET node_id = excluded.node_id, role = excluded.role, origin = excluded.origin, confidence = excluded.confidence, rule_id = excluded.rule_id, file_id = excluded.file_id, start_line = excluded.start_line, end_line = excluded.end_line, attributes_json = excluded.attributes_json, last_scan_id = excluded.last_scan_id'
+                . ' WHERE classifications.node_id IS NOT excluded.node_id OR classifications.role IS NOT excluded.role OR classifications.origin IS NOT excluded.origin OR classifications.confidence IS NOT excluded.confidence OR classifications.rule_id IS NOT excluded.rule_id OR classifications.file_id IS NOT excluded.file_id OR classifications.start_line IS NOT excluded.start_line OR classifications.end_line IS NOT excluded.end_line OR classifications.attributes_json IS NOT excluded.attributes_json';
             $values = [];
             foreach ($chunk as $classification) {
                 array_push($values, $classification['id'], $projectId, $classification['node_id'], $classification['role'], $classification['origin'], $classification['confidence'], $classification['rule_id'], $classification['file_id'], $classification['start_line'], $classification['end_line'], self::json($classification['attributes']), $scanId);
@@ -583,7 +797,7 @@ final class SqliteGraphRepository implements GraphRepository
     {
         foreach (array_chunk($memberships, 240) as $chunk) { // 4 params/row
             $placeholders = implode(',', array_fill(0, count($chunk), '(?,?,?,?)'));
-            $sql = 'INSERT INTO boundary_memberships(boundary_id, project_id, node_id, last_scan_id) VALUES ' . $placeholders;
+            $sql = 'INSERT OR IGNORE INTO boundary_memberships(boundary_id, project_id, node_id, last_scan_id) VALUES ' . $placeholders;
             $values = [];
             foreach ($chunk as $membership) {
                 array_push($values, $membership['boundary_id'], $projectId, $membership['node_id'], $scanId);
@@ -684,7 +898,9 @@ final class SqliteGraphRepository implements GraphRepository
     {
         $statement = $this->prepare(
             'INSERT INTO boundaries(id, project_id, name, matcher_json, source, last_scan_id) ' .
-            'VALUES (:id, :project, :name, :matcher, :source, :scan)',
+            'VALUES (:id, :project, :name, :matcher, :source, :scan) ' .
+            'ON CONFLICT(id) DO UPDATE SET name = excluded.name, matcher_json = excluded.matcher_json, source = excluded.source, last_scan_id = excluded.last_scan_id ' .
+            'WHERE boundaries.name IS NOT excluded.name OR boundaries.matcher_json IS NOT excluded.matcher_json OR boundaries.source IS NOT excluded.source',
         );
         $statement->execute([
             'id' => $id, 'project' => $projectId, 'name' => $name, 'matcher' => self::json($matcher),

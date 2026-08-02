@@ -1,0 +1,39 @@
+{
+  "$schema": "./schemas/project-config-v1.schema.json",
+  "version": 1,
+  "ignores": ["tests/Fixtures"],
+  "boundaries": [
+    { "name": "core", "path_prefix": "src" },
+    { "name": "php-worker", "path_prefix": "workers/php" },
+    { "name": "typescript-worker", "path_prefix": "workers/typescript" },
+    { "name": "python-worker", "path_prefix": "workers/python" },
+    { "name": "tooling", "path_prefix": "tools" },
+    { "name": "tests", "path_prefix": "tests" }
+  ],
+  "policies": [
+    {
+      "id": "workers-are-out-of-process",
+      "from_boundary": "php-worker",
+      "deny_targets": ["core"]
+    },
+    {
+      "id": "core-does-not-reach-into-workers",
+      "from_boundary": "core",
+      "deny_targets": [
+        "php-worker",
+        "typescript-worker",
+        "python-worker",
+        "tooling",
+        "tests"
+      ]
+    }
+  ],
+  "quality_budgets": {
+    "new_cycles": 0,
+    "boundary_violations": 0,
+    "error_diagnostics": 0,
+    "warning_diagnostics": 0,
+    "hub_degree_growth": 25,
+    "unreferenced_candidates": 110
+  }
+}

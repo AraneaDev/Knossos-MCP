@@ -4,16 +4,16 @@
 
 ### Prerequisites
 
-The supported path is Docker — it pins PHP 8.4, Node 24, Python 3.11, Composer,
+The supported path is Docker — it pins PHP 8.5, Node 26, Python 3.13, Composer,
 SQLite, and every linter the quality profile runs, so you need none of them on
 the host:
 
 - **Docker** with the Compose plugin
 - **Git**
 
-Running the tooling directly on the host additionally needs PHP >= 8.3 (<8.5)
-with `ext-json`, `ext-pdo`, and `ext-pdo_sqlite`, Node.js 24, Python 3.11, and
-Composer.
+Running the tooling directly on the host additionally needs PHP 8.3 or newer
+with `ext-json`, `ext-pdo`, and `ext-pdo_sqlite`, Node.js 22 or newer, Python
+3.11 or newer, and Composer. Those are minimums, not ranges.
 
 ### Setup
 

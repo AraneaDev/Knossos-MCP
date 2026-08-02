@@ -10,9 +10,9 @@ use PDO;
 /**
  * Opens SQLite with the settings the rest of the store assumes.
  *
- * WAL so a scan's writes do not block concurrent reads, enforced foreign keys so
- * a partial graph cannot survive, and exceptions rather than silent false
- * returns. Centralised because a connection opened without these behaves subtly
+ * WAL so a scan's writes do not block concurrent reads and bounded so its file
+ * does not keep a peak size for good, enforced foreign keys so a partial graph
+ * cannot survive, and exceptions rather than silent false returns. Centralised because a connection opened without these behaves subtly
  * differently, and the difference only shows up under concurrency.
  */
 final class SqliteConnection
@@ -45,6 +45,11 @@ final class SqliteConnection
         if ($path !== ':memory:') {
             $pdo->exec('PRAGMA journal_mode = WAL');
             $pdo->exec('PRAGMA synchronous = NORMAL');
+            // A write-ahead log keeps whatever size its busiest transaction
+            // needed, for good: a full scan of a large project left 124 MB of
+            // allocated log holding two live pages, and only maintenance run by
+            // hand shrank it. This truncates the file back after a checkpoint.
+            $pdo->exec('PRAGMA journal_size_limit = ' . (64 * 1024 * 1024));
         }
 
         return $pdo;

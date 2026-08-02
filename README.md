@@ -184,7 +184,7 @@ and [CLI reference](docs/reference/cli.md).
 
 ## Quick start
 
-The recommended distribution is Docker: it pins PHP 8.4, Node 24, Python,
+The recommended distribution is Docker: it pins PHP 8.5, Node 26, Python 3.13,
 Composer, SQLite, the PHP parser, and the TypeScript compiler, so the scanned
 project needs none of them.
 
@@ -230,9 +230,9 @@ Docker, native, and client-specific variants are in
 
 | Language              | Extraction                                                             | Framework enrichment                                                               |
 | --------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| PHP 8.3–8.4           | Declarations, inheritance, calls, construction, types, injection       | [Laravel](docs/languages/php-laravel.md), [Symfony](docs/languages/php-symfony.md) |
+| PHP 8.3 or newer      | Declarations, inheritance, calls, construction, types, injection       | [Laravel](docs/languages/php-laravel.md), [Symfony](docs/languages/php-symfony.md) |
 | TypeScript/JavaScript | Compiler symbol resolution, imports, calls, types, project references  | [Next.js, React, Vue, stores, endpoints](docs/languages/typescript.md)             |
-| Python 3.11–3.13      | Standard-library AST in an isolated interpreter; never imports modules | [FastAPI, Django, Celery](docs/languages/python.md)                                |
+| Python 3.11 or newer  | Standard-library AST in an isolated interpreter; never imports modules | [FastAPI, Django, Celery](docs/languages/python.md)                                |
 
 Mixed repositories reconcile into one graph. Third-party scanners plug in as
 isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.md).

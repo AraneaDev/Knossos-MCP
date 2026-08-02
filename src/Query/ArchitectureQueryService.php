@@ -25,6 +25,7 @@ final readonly class ArchitectureQueryService
     private ComponentQueryService $componentQueries;
     private GraphTopologyQueryService $topologyQueries;
     private ArchitecturePolicyQueryService $policyQueries;
+    private LocationSuggestionService $locationQueries;
     private ChangeImpactQueryService $changeQueries;
     private ArchitectureContextService $contextQueries;
     private ReviewDiffService $reviewQueries;
@@ -43,7 +44,8 @@ final readonly class ArchitectureQueryService
         ?Closure $wallClock = null,
     ) {
         $this->pdo = $pdo;
-        $this->policyQueries = new ArchitecturePolicyQueryService($pdo, $clock, $semanticRanker);
+        $this->policyQueries = new ArchitecturePolicyQueryService($pdo, $clock);
+        $this->locationQueries = new LocationSuggestionService($pdo, $clock, $semanticRanker);
         $this->topologyQueries = new GraphTopologyQueryService($pdo, $clock);
         $this->componentQueries = new ComponentQueryService($pdo, $clock);
         $this->catalogQueries = new ProjectCatalogQueryService($pdo, $clock, $this->policyQueries);
@@ -60,7 +62,7 @@ final readonly class ArchitectureQueryService
             $this->topologyQueries,
             $this->changeQueries,
             $this->componentQueries,
-            $this->policyQueries,
+            $this->locationQueries,
         );
         $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->catalogQueries, $this->topologyQueries);
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
@@ -210,7 +212,7 @@ final readonly class ArchitectureQueryService
         return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs);
     }
 
-    /** {@see ArchitecturePolicyQueryService::suggestLocation()} */
+    /** {@see LocationSuggestionService::suggestLocation()} */
     public function suggestLocation(
         string $projectId,
         string $featureDescription,
@@ -220,7 +222,7 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
         string $rankingMode = 'deterministic',
     ): ResultEnvelope {
-        return $this->policyQueries->suggestLocation($projectId, $featureDescription, $limit, $maxMembers, $maxEdges, $timeoutMs, $rankingMode);
+        return $this->locationQueries->suggestLocation($projectId, $featureDescription, $limit, $maxMembers, $maxEdges, $timeoutMs, $rankingMode);
     }
 
     /** @param list<string> $edgeKinds */

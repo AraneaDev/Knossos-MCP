@@ -25,8 +25,8 @@ final class LanguageWorkerPoolTest extends TestCase
             }
         };
 
+        // setAccessible() has been a no-op since PHP 8.1 and is deprecated from 8.5.
         $clients = new ReflectionProperty(LanguageWorkerPool::class, 'clients');
-        $clients->setAccessible(true);
         $clients->setValue($pool, ['php' => $misbehavingClient]);
 
         $pool->shutdown();

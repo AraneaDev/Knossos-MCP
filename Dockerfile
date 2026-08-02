@@ -1,10 +1,10 @@
-FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS node_runtime
+FROM node:26-trixie-slim@sha256:deae974a69e140f44f434ab29cb519fb5f8fe250fd364b8ca446bd0761acdc6a AS node_runtime
 
-RUN npm install --global npm@12.0.1 --ignore-scripts --no-audit --no-fund
+RUN npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
 
-FROM composer:2@sha256:5946476338742b200bb9ff88f8be56275ddae4b3949c72305cb0dbf10cfcb760 AS composer_runtime
+FROM composer:2@sha256:629d4ef35e75349d452851637d37a40ac33a09d6ac010139020603d79713d9bf AS composer_runtime
 
-FROM php:8.4-cli-bookworm@sha256:138a210978c7767ef2a26f499c413fe6de1c13233c9a5068139565c81191b1ac AS runtime
+FROM php:8.5-cli-trixie@sha256:f5d2b71350cdc3c2fc807d6679f5bdac2898d7558945105e46308e4659fb37ac AS runtime
 
 # x-release-please-start-version
 LABEL org.opencontainers.image.title="Knossos MCP" \
@@ -19,7 +19,7 @@ LABEL org.opencontainers.image.title="Knossos MCP" \
 # be exploited through. Purge the build deps once the extension is compiled, the
 # way the quality stage already does.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y git libsqlite3-dev python3 unzip \
+    && apt-get install --no-install-recommends -y git libatomic1 libsqlite3-dev python3 unzip \
     && docker-php-ext-install pdo_sqlite \
     && apt-get purge -y --auto-remove libsqlite3-dev libc6-dev $PHPIZE_DEPS \
     && rm -rf /var/lib/apt/lists/*
@@ -100,7 +100,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # reasons unrelated to the change under test. Every other third-party binary in
 # this stage is already fetched by URL and verified by SHA-256; pcov now matches.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates curl docker.io python3-pip shellcheck $PHPIZE_DEPS \
+    && apt-get install --no-install-recommends -y ca-certificates curl docker-cli python3-pip shellcheck $PHPIZE_DEPS \
     && curl --fail --location --silent --show-error \
         --output /tmp/pcov.tar.gz \
         https://github.com/krakjoe/pcov/archive/refs/tags/v1.0.12.tar.gz \
@@ -143,8 +143,10 @@ RUN curl --fail --location --silent --show-error \
     && chmod 0755 /usr/local/bin/trivy /usr/local/bin/cosign \
     && rm -f /tmp/trivy.tar.gz /tmp/trivy.sha256 /tmp/cosign.sha256
 
-# Debian's `docker.io` ships the CLI without the Compose plugin, so `tools/quality`
-# would skip (or fail) its `docker compose config` gate. Install the plugin explicitly.
+# Debian ships the client as `docker-cli` (trixie split it out of `docker.io`,
+# which now carries only the daemon) and without the Compose plugin, so
+# `tools/quality` would skip or fail its `docker compose config` gate. Install
+# the plugin explicitly.
 RUN mkdir -p /usr/libexec/docker/cli-plugins \
     && curl --fail --location --silent --show-error \
         --output /usr/libexec/docker/cli-plugins/docker-compose \

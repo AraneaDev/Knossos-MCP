@@ -25,6 +25,19 @@ interface GraphRepository
     public function transaction(callable $operation): mixed;
 
     /**
+     * Execute a whole-graph rewrite atomically, checking referential integrity
+     * once at the end rather than on every statement.
+     *
+     * Implementations must still refuse to commit a graph with a dangling
+     * reference; what they may skip is re-proving it for each row.
+     *
+     * @template T
+     * @param callable(GraphRepository): T $operation
+     * @return T
+     */
+    public function bulkTransaction(callable $operation): mixed;
+
+    /**
      * Create or update project identity and non-secret configuration metadata.
      *
      * @param array<string, mixed> $config
@@ -54,8 +67,25 @@ interface GraphRepository
     /** Retain the active snapshot under the configured bounded history policy. */
     public function archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void;
 
-    /** Remove replaceable active graph facts while preserving project identity. */
-    public function clearProjectGraph(string $projectId): void;
+    /**
+     * The ids a project's graph currently holds, per table, before a scan writes its own.
+     *
+     * @return array<string, array<string, true>>
+     */
+    public function existingGraphIds(string $projectId): array;
+
+    /**
+     * Delete the graph rows a scan did not produce, leaving the rest untouched.
+     *
+     * @param array<string, array<string, true>> $existing @param array<string, array<string, true>> $desired
+     */
+    public function pruneGraph(string $projectId, array $existing, array $desired): void;
+
+    /** Attribute every surviving graph row to the scan that just confirmed it. */
+    public function stampGraphScan(string $projectId, string $scanId): void;
+
+    /** Drop a project's diagnostics, which belong to the scan that produced them. */
+    public function clearProjectDiagnostics(string $projectId): void;
 
     /** Persist one scanned file and its content/provenance fingerprints. */
     public function saveFile(

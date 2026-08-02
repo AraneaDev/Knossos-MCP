@@ -100,7 +100,9 @@ final readonly class GraphReconciler
         $mark('prepare');
 
         $diagnosticCount = 0;
-        $this->repository->transaction(function () use (
+        // A rewrite of this size is dominated by per-statement foreign-key
+        // enforcement, so integrity is verified once before the commit instead.
+        $this->repository->bulkTransaction(function () use (
             $request,
             $projectId,
             $scanId,
@@ -122,10 +124,10 @@ final readonly class GraphReconciler
             );
             $mark('archive_snapshot');
 
-            // saveProject/createScan fall inside the clear_graph window per the
+            // saveProject/createScan fall inside the read_existing window per the
             // phase-timing contract: they are cheap bookkeeping writes that
-            // immediately precede clearProjectGraph, and splitting them into
-            // their own phase would add noise without profiling value.
+            // immediately precede the read, and splitting them into their own
+            // phase would add noise without profiling value.
             $this->repository->saveProject(
                 $projectId,
                 $request->projectName,
@@ -133,8 +135,12 @@ final readonly class GraphReconciler
                 $request->projectConfig,
             );
             $this->repository->createScan($scanId, $projectId, $request->mode, $scannerSetHash);
-            $this->repository->clearProjectGraph($projectId);
-            $mark('clear_graph');
+            // What the graph holds now, so what this scan does not produce can be
+            // deleted afterwards. Reading ids is what makes the write proportional
+            // to the change: clearing the project first meant every row had to be
+            // written back whether or not the scan altered it.
+            $existing = $this->repository->existingGraphIds($projectId);
+            $mark('read_existing');
 
             $versions = $this->scannerVersions($request->scanners);
             $this->repository->saveFiles($this->fileRows($request->discovery->files, $fileIds, $versions), $projectId, $scanId);
@@ -165,16 +171,41 @@ final readonly class GraphReconciler
             $this->repository->saveBoundaryMemberships($memberships, $projectId, $scanId);
             $mark('save_boundaries');
 
+            $this->repository->pruneGraph($projectId, $existing, [
+                'files' => array_fill_keys(array_values($fileIds), true),
+                'nodes' => array_fill_keys(array_keys($nodes), true),
+                'edges' => array_fill_keys(array_keys($edges), true),
+                'classifications' => array_fill_keys(array_column($classifications, 'id'), true),
+                'boundaries' => array_fill_keys(array_column($boundaries, 'id'), true),
+                'boundary_memberships' => array_fill_keys(array_map(
+                    static fn(array $membership): string => $membership['boundary_id'] . "\0" . $membership['node_id'],
+                    $memberships,
+                ), true),
+            ]);
+            // Rows this scan left untouched are still current, so they carry its
+            // id too; nothing indexes the column, so this rewrites rows without
+            // touching an index.
+            $this->repository->stampGraphScan($projectId, $scanId);
+            $mark('prune');
+
             $this->repository->replaceContributionCache($projectId, $request->contributionCache);
             $mark('contribution_cache');
 
+            // Diagnostics belong to the scan that produced them, so the previous
+            // scan's are replaced wholesale rather than diffed.
+            $this->repository->clearProjectDiagnostics($projectId);
             $diagnosticCount = $this->saveDiagnostics($request, $projectId, $scanId, $fileIds, $nodeWarnings);
             // completeScan falls inside the save_diagnostics window (same rationale as
-            // clear_graph folding in saveProject/createScan above): it's a cheap trailing
+            // read_existing folding in saveProject/createScan above): it's a cheap trailing
             // bookkeeping write, not worth its own phase.
             $this->repository->completeScan($projectId, $scanId);
             $mark('save_diagnostics');
         });
+        // The commit is a phase of its own: it writes every page the reconcile
+        // dirtied, which on this repository is a third of the reconciliation and
+        // was previously invisible — the phase timings summed to well under the
+        // total and gave no clue where the difference went.
+        $mark('commit');
 
         return new ReconciliationResult(
             $projectId,
@@ -327,6 +358,7 @@ final readonly class GraphReconciler
         $external = [];
         $edges = [];
         $inheritanceSources = $this->inheritanceSources($contributions);
+        $returnTypes = self::returnTypes($contributions);
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 $sourceId = $nodeMap[$edge->sourceReference] ?? null;
@@ -337,13 +369,24 @@ final readonly class GraphReconciler
                     ));
                 }
 
-                $targetId = $nodeMap[$edge->targetReference]
-                    ?? $this->aliasedTypeTarget($edge->targetReference, $nodeMap)
-                    ?? $this->inheritedMemberTarget($edge->targetReference, $nodeMap, $inheritanceSources);
+                $deferred = str_contains($edge->targetReference, ':method_of_return:');
+                $reference = $deferred
+                    ? $this->returnedMemberReference($edge->targetReference, $returnTypes)
+                    : $edge->targetReference;
+                $targetId = $reference === null ? null : ($nodeMap[$reference]
+                    ?? $this->aliasedTypeTarget($reference, $nodeMap)
+                    ?? $this->inheritedMemberTarget($reference, $nodeMap, $inheritanceSources));
+                if ($targetId === null && $deferred) {
+                    // A speculative reference the graph cannot confirm. Dropping
+                    // it keeps an inference that did not pay off out of the
+                    // graph, rather than inventing an external symbol for a
+                    // member that may not exist.
+                    continue;
+                }
                 if ($targetId === null) {
                     [$targetId, $externalNode] = $this->externalNode(
                         $projectId,
-                        $edge->targetReference,
+                        $reference,
                         $edge->evidence,
                         $contribution->ownerKey,
                         $fileIds,
@@ -371,6 +414,67 @@ final readonly class GraphReconciler
         }
 
         return [$external, $edges];
+    }
+
+    /**
+     * Every method's declared return type, from the `returns` edges the scanners report.
+     *
+     * @param list<ScanContribution> $contributions @return array<string, string>
+     */
+    private static function returnTypes(array $contributions): array
+    {
+        $types = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'returns') {
+                    // First declaration wins, matching how a duplicate node is
+                    // resolved; a method has one declared return type anyway.
+                    $types[$edge->sourceReference] ??= $edge->targetReference;
+                }
+            }
+        }
+
+        return $types;
+    }
+
+    /**
+     * Turn "the member `m` of whatever `Type::factory()` returns" into a plain member reference.
+     *
+     * A scanner reads one file at a time, so it cannot see the return type of a
+     * factory declared elsewhere and cannot name the receiver of a call on its
+     * result. It names the call instead, and this resolves it here, where every
+     * file's declared return types are known. Returns null when the call is not
+     * one the graph knows, which is the caller's cue to drop the edge.
+     *
+     * @param array<string, string> $returnTypes
+     */
+    private function returnedMemberReference(string $reference, array $returnTypes): ?string
+    {
+        $parts = explode(':', $reference, 3);
+        if (count($parts) !== 3 || $parts[1] !== 'method_of_return') {
+            return null;
+        }
+        [$language, , $canonical] = $parts;
+        $separator = strrpos($canonical, '::');
+        if ($separator === false) {
+            return null;
+        }
+        $callee = substr($canonical, 0, $separator);
+        $member = substr($canonical, $separator + 2);
+        if ($callee === '' || $member === '') {
+            return null;
+        }
+        $returned = $returnTypes[$language . ':method:' . $callee] ?? null;
+        if ($returned === null) {
+            return null;
+        }
+        // The returns edge names a type; its members are addressed by the type's
+        // canonical name, whatever kind the declaration turns out to be.
+        $returnedParts = explode(':', $returned, 3);
+
+        return count($returnedParts) === 3 && $returnedParts[2] !== ''
+            ? $language . ':method:' . $returnedParts[2] . '::' . $member
+            : null;
     }
 
     /**

@@ -409,7 +409,8 @@ final class SqliteGraphRepositoryTest extends TestCase
 
         assertSame(1, (int) $row['complete']);
         $this->assertGreaterThanOrEqual(0, (int) $row['fact_count']);
-        $this->assertStringContainsString('"schema":1', $row['payload_json']);
+        // Stored compressed; the schema marker is in the payload it decodes to.
+        $this->assertStringContainsString('"schema":1', \Knossos\Store\SnapshotPayload::decode($row['payload_json']));
     }
 
     public function testArchiveActiveSnapshotSkipsWhenActiveScanAlreadyArchived(): void
@@ -437,9 +438,9 @@ final class SqliteGraphRepositoryTest extends TestCase
         );
     }
 
-    // ----- clearProjectGraph() -----
+    // ----- pruneGraph() -----
 
-    public function testClearProjectGraphDeletesAllGraphRowsButKeepsProjectIdentity(): void
+    public function testPruningEverythingDeletesTheGraphButKeepsProjectIdentity(): void
     {
         $this->seedProject('proj-clear');
         $this->seedScan('proj-clear', 'scan-clear');
@@ -455,17 +456,17 @@ final class SqliteGraphRepositoryTest extends TestCase
             scanId: 'scan-clear',
         );
 
-        $this->repository->clearProjectGraph('proj-clear');
+        $this->repository->pruneGraph('proj-clear', $this->repository->existingGraphIds('proj-clear'), []);
 
         assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM files WHERE project_id = 'proj-clear'")->fetchColumn());
         assertSame(1, (int) $this->pdo->query("SELECT COUNT(*) FROM projects WHERE id = 'proj-clear'")->fetchColumn());
         assertSame(1, (int) $this->pdo->query("SELECT COUNT(*) FROM scans WHERE project_id = 'proj-clear'")->fetchColumn());
     }
 
-    public function testClearProjectGraphLeavesOtherProjectsGraphIntact(): void
+    public function testPruningOneProjectLeavesAnotherProjectsGraphIntact(): void
     {
-        // clearProjectGraph must delete exactly the target project's rows — the
-        // FK-index optimization must not widen or narrow the delete's scope.
+        // A prune must delete exactly the target project's rows: the ids it is
+        // given are scoped to one project, and the delete must be too.
         foreach ([['proj-keep', 'scan-keep'], ['proj-drop', 'scan-drop']] as [$projectId, $scanId]) {
             $this->repository->saveProject(
                 id: $projectId,
@@ -525,7 +526,7 @@ final class SqliteGraphRepositoryTest extends TestCase
             );
         }
 
-        $this->repository->clearProjectGraph('proj-drop');
+        $this->repository->pruneGraph('proj-drop', $this->repository->existingGraphIds('proj-drop'), []);
 
         assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM nodes WHERE project_id = 'proj-drop'")->fetchColumn());
         assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM edges WHERE project_id = 'proj-drop'")->fetchColumn());
