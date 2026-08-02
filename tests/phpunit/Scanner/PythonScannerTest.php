@@ -65,6 +65,39 @@ final class PythonScannerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    /**
+     * A script's body is run by a shell or `python -m`, never referenced from
+     * the codebase, so its module has no inbound edge however heavily the
+     * script is used. Only the PHP scanner marked its modules executable, so
+     * `architecture_health` had nothing to exclude on and reported this
+     * repository's own Python worker — launched on every scan — as probably
+     * dead code.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerMarksScriptModulesExecutable(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/python';
+        $contributions = iterator_to_array($this->pythonWorkerClient()->scan([
+            'root' => $root,
+            'files' => ['shop/cli.py', 'shop/guarded.py', 'shop/service.py'],
+        ]));
+        $executable = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $executable[$node->canonicalName] = $node->attributes['executable'] ?? false;
+                }
+            }
+        }
+
+        // A shebang and a `__main__` guard each say the file is run directly.
+        assertSame(true, $executable['shop.cli']);
+        assertSame(true, $executable['shop.guarded']);
+        // A library module nothing imports is exactly what dead-code analysis
+        // exists to surface, so it must stay reportable.
+        assertSame(false, $executable['shop.service']);
+    }
+
     #[Group('python-scanner')]
     public function testPythonWorkerIsDeterministicBoundedAndPathSafe(): void
     {
@@ -327,16 +360,16 @@ PYTHON);
             (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
             $service = new ProjectScanService($pdo, self::repositoryRoot(), [$root]);
             $first = $service->scan($root, 'Python Fixture');
-            assertSame(5, $first->data['parsed_files']);
-            assertSame('5', (string) $pdo->query("SELECT COUNT(*) FROM files WHERE language = 'python'")->fetchColumn());
+            assertSame(7, $first->data['parsed_files']);
+            assertSame('7', (string) $pdo->query("SELECT COUNT(*) FROM files WHERE language = 'python'")->fetchColumn());
             assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM classifications WHERE role = 'application.service'")->fetchColumn());
             assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM boundaries WHERE name = 'python:knossos-python-fixture'")->fetchColumn());
             assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM diagnostics WHERE code = 'PY_SYNTAX_ERROR'")->fetchColumn());
-            assertSame('5', (string) $pdo->query("SELECT COUNT(*) FROM contribution_cache WHERE scanner_id = 'knossos.python'")->fetchColumn());
+            assertSame('7', (string) $pdo->query("SELECT COUNT(*) FROM contribution_cache WHERE scanner_id = 'knossos.python'")->fetchColumn());
 
             $second = $service->scan($root, 'Python Fixture');
             assertSame(0, $second->data['parsed_files']);
-            assertSame(5, $second->data['unchanged_files']);
+            assertSame(7, $second->data['unchanged_files']);
         } finally {
             unset($service, $pdo);
             foreach ([$database, $database . '-shm', $database . '-wal'] as $candidate) {

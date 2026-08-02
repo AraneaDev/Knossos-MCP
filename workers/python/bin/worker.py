@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import codecs
 import json
 import os
 import re
@@ -66,6 +67,41 @@ def names_python_in_shebang(absolute: Path) -> bool:
     except OSError:
         return False
     return first.startswith("#!") and re.search(r"\b(python)[0-9.]*\b", first, re.IGNORECASE) is not None
+
+
+def starts_with_shebang(source: bytes) -> bool:
+    """Whether the file opens with a shebang, whatever interpreter it names.
+
+    A shebang means the file is meant to be executed rather than imported, which
+    is what dead-code analysis needs to know: nothing in the codebase references
+    a script, so its module having no inbound edge says nothing about whether it
+    is wanted. Unlike `names_python_in_shebang`, which decides whether an
+    extensionless file is Python at all, this asks only how the file is entered,
+    so the interpreter is irrelevant. A byte-order mark may precede it.
+    """
+    return source.removeprefix(codecs.BOM_UTF8).startswith(b"#!")
+
+
+def names_main_guard(tree: ast.Module) -> bool:
+    """Whether the module body guards a block with `if __name__ == "__main__":`.
+
+    The other half of the same question: a module run as `python -m package.mod`
+    carries no shebang, and the guard is the declaration that it is meant to be
+    run. Only module-level statements are considered — the guard means nothing
+    nested inside a function — and either operand order is accepted.
+    """
+    for statement in tree.body:
+        if not isinstance(statement, ast.If):
+            continue
+        test = statement.test
+        if not isinstance(test, ast.Compare) or len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+            continue
+        operands = (test.left, test.comparators[0])
+        names = {operand.id for operand in operands if isinstance(operand, ast.Name)}
+        values = {operand.value for operand in operands if isinstance(operand, ast.Constant)}
+        if "__name__" in names and "__main__" in values:
+            return True
+    return False
 
 
 def assert_scannable_path(value: Any) -> PurePosixPath:
@@ -540,8 +576,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
         tree: ast.Module,
         index: ProjectModuleIndex,
         module_collision: bool = False,
+        has_shebang: bool = False,
     ) -> None:
         self.relative = relative
+        self.has_shebang = has_shebang
         self.index = index
         self.module = index.module_for(relative)
         self.is_package = PurePosixPath(relative).stem == "__init__"
@@ -566,7 +604,15 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
     def collect(self) -> dict[str, Any]:
         self.facts.add_node(
-            self.module_id, "module", self.module, self.module, self.tree, {"stub": self.relative.endswith(".pyi")}
+            self.module_id,
+            "module",
+            self.module,
+            self.module,
+            self.tree,
+            {
+                "stub": self.relative.endswith(".pyi"),
+                "executable": self.has_shebang or names_main_guard(self.tree),
+            },
         )
         if self.is_package:
             package = self.module
@@ -873,16 +919,22 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
         # oversized recursion, or an unexpected fault degrades to a per-file
         # diagnostic and never discards facts for the other inputs.
         try:
-            tree = ast.parse(absolute.read_bytes(), filename=relative, type_comments=True)
+            source = absolute.read_bytes()
+            tree = ast.parse(source, filename=relative, type_comments=True)
         except (SyntaxError, UnicodeDecodeError, ValueError) as error:
             emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error)))
             continue
         except RecursionError as error:
             emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
             continue
+        # The shebang lives in a comment the parser drops, so it has to be read
+        # off the source. Reduce it to a flag and release the bytes here, so the
+        # loop's memory bound stays the largest single tree.
+        shebang = starts_with_shebang(source)
+        del source
         try:
             collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
-            contribution = PythonAstFactCollector(relative, tree, index, collision).collect()
+            contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
         except RecursionError as error:
             emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
             continue

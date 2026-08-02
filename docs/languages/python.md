@@ -20,9 +20,12 @@ Virtual environments and tool caches such as `.venv`, `venv`, `__pycache__`,
 
 The worker emits evidence-backed modules, packages, classes, functions,
 methods, containment, imports, inheritance, and statically resolvable calls.
-Async status and decorator names are retained as node attributes. Cross-file
-references are resolved when their declarations are in the same scan; other
-references remain explicit unresolved/external graph facts.
+Async status and decorator names are retained as node attributes. A module with
+a shebang or an `if __name__ == "__main__":` guard is marked `executable`, which
+keeps a script run by a shell or `python -m` — and that nothing therefore
+imports — off the dead-code report. Cross-file references are resolved when
+their declarations are in the same scan; other references remain explicit
+unresolved/external graph facts.
 
 Framework enrichment is structural and import-free:
 

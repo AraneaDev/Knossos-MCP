@@ -17,6 +17,8 @@ references remain the primary facts; framework roles use
   `create` factory declarations.
 - Literal `fetch` and common Axios calls as endpoint nodes and
   `calls_endpoint` edges, including a static `fetch` method option.
+- A leading shebang marks the module `executable`, which keeps a script a shell
+  runs — and that nothing therefore imports — off the dead-code report.
 
 Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that

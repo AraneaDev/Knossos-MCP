@@ -328,6 +328,7 @@ class TypeScriptLanguageFactCollector {
             this.sourceFile,
             {
                 declaration_file: this.sourceFile.isDeclarationFile,
+                executable: startsWithShebang(this.sourceFile.text),
             },
         );
     }
@@ -1244,6 +1245,18 @@ function namesJavaScriptInShebang(absolute) {
         first.startsWith("#!") &&
         /\b(node|nodejs|bun|deno)[0-9.]*\b/i.test(first)
     );
+}
+
+// Whether a file opens with a shebang, whatever interpreter it names.
+//
+// A shebang means the file is executed rather than imported, which is what
+// dead-code analysis needs to know: nothing in the codebase references a
+// script, so its module having no inbound edge says nothing about whether it is
+// wanted. Unlike the probe above, which decides whether an extensionless file
+// is JavaScript at all, this asks only how the file is entered, so the
+// interpreter is irrelevant. A byte-order mark may precede it.
+function startsWithShebang(text) {
+    return text.replace(/^\uFEFF/, "").startsWith("#!");
 }
 
 function validateRoot(input) {
