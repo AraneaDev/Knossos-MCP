@@ -241,3 +241,67 @@ def test_a_receiver_reassigned_to_something_untracked_stops_resolving(
     assert "py:method:mod.Helper::use" not in [
         target for kind, source, target in _edges(contribution) if kind == "calls"
     ]
+
+
+def test_a_tracked_local_propagates_through_a_passthrough_assignment(
+    worker: ModuleType, tmp_path: Path, scan_collect
+) -> None:
+    # A receiver is resolved against the local and parameter stacks both, so a
+    # name assigned from one of them has to carry the same type across. Reading
+    # only the parameter stack made `other = passed` propagate while
+    # `other = local` did not, for no difference either name can observe.
+    (tmp_path / "mod.py").write_text(
+        "class Helper:\n"
+        "    def copied_call(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "    def stored_call(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "\n"
+        "class Owner:\n"
+        "    def run(self) -> None:\n"
+        "        local = Helper()\n"
+        "        copied = local\n"
+        "        copied.copied_call()\n"
+        "        self.stored = local\n"
+        "        self.stored.stored_call()\n",
+        encoding="utf-8",
+    )
+
+    [contribution] = scan_collect(tmp_path, ["mod.py"])
+
+    calls = sorted(
+        target for kind, source, target in _edges(contribution)
+        if kind == "calls" and source == "py:method:mod.Owner::run"
+    )
+    assert calls == [
+        "py:class:mod.Helper",
+        "py:method:mod.Helper::copied_call",
+        "py:method:mod.Helper::stored_call",
+    ]
+
+
+def test_a_parameter_reassigned_to_something_untracked_stops_resolving(
+    worker: ModuleType, tmp_path: Path, scan_collect
+) -> None:
+    # The local stack gives up a name reassigned to something untracked, but the
+    # annotation outlives the assignment: unless the parameter is given up with
+    # it, the stale annotation answers for a name that no longer holds it.
+    (tmp_path / "mod.py").write_text(
+        "class Helper:\n"
+        "    def use(self) -> None:\n"
+        "        pass\n"
+        "\n"
+        "\n"
+        "def run(held: Helper, source) -> None:\n"
+        "    held = source.anything()\n"
+        "    held.use()\n",
+        encoding="utf-8",
+    )
+
+    [contribution] = scan_collect(tmp_path, ["mod.py"])
+
+    assert "py:method:mod.Helper::use" not in [
+        target for kind, source, target in _edges(contribution) if kind == "calls"
+    ]

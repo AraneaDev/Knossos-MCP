@@ -768,6 +768,11 @@ class PythonAstFactCollector(ast.NodeVisitor):
         held = self.held_class(value, annotation)
         if held is None:
             self.local_variable_types[-1].pop(variable, None)
+            # A parameter reassigned to something untracked no longer holds what
+            # its annotation declared. Dropping only the local would leave the
+            # annotation to answer for the name and attribute a later call to a
+            # class it has lost.
+            self.parameter_types[-1].pop(variable, None)
         else:
             self.local_variable_types[-1][variable] = held
 
@@ -779,9 +784,14 @@ class PythonAstFactCollector(ast.NodeVisitor):
             resolved = self.resolve_name(name, "class") if name else None
             if resolved and resolved.startswith("py:class:"):
                 return resolved.removeprefix("py:class:")
-        # A parameter passed straight through carries its annotation's type.
-        if isinstance(value, ast.Name) and self.parameter_types:
-            return self.parameter_types[-1].get(value.id)
+        # A name passed straight through carries whatever it is tracked as, from
+        # the same two stacks a receiver is resolved against and in the same
+        # order, so `other = local` propagates as `other = parameter` does.
+        if isinstance(value, ast.Name):
+            if self.local_variable_types and value.id in self.local_variable_types[-1]:
+                return self.local_variable_types[-1][value.id]
+            if self.parameter_types:
+                return self.parameter_types[-1].get(value.id)
         return None
 
     def receiver_member(self, receiver: str, member: str) -> str | None:
