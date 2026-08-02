@@ -1,3 +1,9 @@
 {
-  "ignorePatterns": ["coverage/", "chaos-infection-log.json", ".knossos/"]
+  "ignorePatterns": ["coverage/", "chaos-infection-log.json", ".knossos/"],
+  "container": {
+    "mode": "auto",
+    "modes": {
+      "php": "native"
+    }
+  }
 }
