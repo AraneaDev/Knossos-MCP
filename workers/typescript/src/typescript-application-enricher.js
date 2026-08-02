@@ -59,16 +59,15 @@ export class TypeScriptApplicationEnricher {
               : null;
         if (functionNode && hasUseDirective(functionNode, "use server"))
             roles.push("nextjs.server_action");
-        if (
-            this.context.sourceFile.languageVariant ===
-                ts.LanguageVariant.JSX &&
-            /^[A-Z]/.test(name) &&
-            (functionNode !== null || ts.isClassDeclaration(node))
-        )
-            roles.push("react.component");
-        if (functionNode && /^use[A-Z0-9]/.test(name)) roles.push("react.hook");
-        if (functionNode && /^use[A-Z0-9]/.test(name) && lower.includes("vue"))
-            roles.push("vue.composable");
+        roles.push(
+            ...componentRoles(
+                this.context.sourceFile,
+                name,
+                functionNode !== null || ts.isClassDeclaration(node),
+                functionNode !== null,
+                node,
+            ),
+        );
         const initializer = ts.isVariableDeclaration(node)
             ? node.initializer
             : null;
@@ -101,20 +100,16 @@ export class TypeScriptApplicationEnricher {
             )
         )
             roles.push("state.store");
-        if (
-            functionNode &&
-            /^[A-Z]/.test(node.name.text) &&
-            this.context.sourceFile.languageVariant === ts.LanguageVariant.JSX
-        )
-            roles.push("react.component");
-        if (functionNode && /^use[A-Z0-9]/.test(node.name.text))
-            roles.push("react.hook");
-        if (
-            functionNode &&
-            /^use[A-Z0-9]/.test(node.name.text) &&
-            this.context.relative.toLowerCase().includes("vue")
-        )
-            roles.push("vue.composable");
+        if (functionNode)
+            roles.push(
+                ...componentRoles(
+                    this.context.sourceFile,
+                    node.name.text,
+                    true,
+                    true,
+                    functionNode,
+                ),
+            );
         if (functionNode && hasUseDirective(functionNode, "use server"))
             roles.push("nextjs.server_action");
         if (roles.length === 0) return;
@@ -198,6 +193,94 @@ function isFunctionLike(node) {
         ts.isArrowFunction(node) ||
         ts.isFunctionExpression(node)
     );
+}
+
+/**
+ * The React/Vue roles a named declaration earns, if any.
+ *
+ * Each rule is keyed on evidence from the code rather than on the file's name
+ * or extension: a component renders JSX, and a `use`-prefixed function is a
+ * hook or a composable according to which library the file actually imports.
+ */
+function componentRoles(sourceFile, name, componentShaped, callable, body) {
+    const roles = [];
+    if (componentShaped && /^[A-Z]/.test(name) && containsJsx(body))
+        roles.push("react.component");
+    if (callable && /^use[A-Z0-9]/.test(name)) {
+        if (importsModule(sourceFile, "react")) roles.push("react.hook");
+        if (importsModule(sourceFile, "vue")) roles.push("vue.composable");
+    }
+    return roles;
+}
+
+/**
+ * Whether a declaration actually contains JSX.
+ *
+ * The TypeScript compiler reports languageVariant JSX for every .js, .jsx, .mjs
+ * and .cjs file — only .ts is Standard — so that flag cannot distinguish a
+ * React component from any other capitalized declaration in a JavaScript
+ * project. Looking for JSX in the declaration itself does, and it keeps working
+ * for the plenty of real React code that lives in plain .js files.
+ */
+function containsJsx(node) {
+    let found = false;
+    const walk = (current) => {
+        if (found) return;
+        if (
+            ts.isJsxElement(current) ||
+            ts.isJsxSelfClosingElement(current) ||
+            ts.isJsxFragment(current)
+        ) {
+            found = true;
+            return;
+        }
+        ts.forEachChild(current, walk);
+    };
+    ts.forEachChild(node, walk);
+    return found;
+}
+
+/**
+ * Whether the file imports the given package, by import declaration or require.
+ *
+ * A hook and a composable are both just a `use`-prefixed function; only the
+ * library in scope says which — or whether it is neither, as with a
+ * `useDatabase()` helper in a plain Node service.
+ */
+function importsModule(sourceFile, packageName) {
+    const cache = (sourceFile.knossosImportedModules ??=
+        collectImports(sourceFile));
+    return cache.has(packageName);
+}
+
+function collectImports(sourceFile) {
+    const modules = new Set();
+    const record = (specifier) => {
+        if (typeof specifier !== "string" || specifier === "") return;
+        // "react-dom/client" and "react/jsx-runtime" both count as react.
+        modules.add(specifier.split("/")[0].replace(/^(@[^/]+)$/, "$1"));
+    };
+    const walk = (node) => {
+        if (
+            (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
+            node.moduleSpecifier &&
+            ts.isStringLiteral(node.moduleSpecifier)
+        ) {
+            record(node.moduleSpecifier.text);
+        } else if (
+            ts.isCallExpression(node) &&
+            (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+                (ts.isIdentifier(node.expression) &&
+                    node.expression.text === "require")) &&
+            node.arguments[0] &&
+            ts.isStringLiteral(node.arguments[0])
+        ) {
+            record(node.arguments[0].text);
+        }
+        ts.forEachChild(node, walk);
+    };
+    walk(sourceFile);
+    return modules;
 }
 
 function hasUseDirective(node, directive) {

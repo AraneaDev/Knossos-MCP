@@ -1,3 +1,6 @@
+import { useState } from "react";
+
 export function useOrders() {
-  return [];
+  const [orders] = useState([]);
+  return orders;
 }
