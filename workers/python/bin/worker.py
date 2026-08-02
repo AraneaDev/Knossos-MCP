@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import ast
-import codecs
 import json
 import os
 import re
@@ -33,6 +32,10 @@ EXCLUDED = {
 }
 # Bytes read when probing an extensionless file's shebang; one short line is enough.
 SHEBANG_PROBE_BYTES = 256
+# The UTF-8 byte-order mark, spelled out rather than reached for through
+# `codecs`: a single constant does not earn a module dependency, and this file's
+# import count is a budgeted maintainability metric.
+UTF8_BOM = b"\xef\xbb\xbf"
 
 
 def write(message: dict[str, Any]) -> None:
@@ -79,7 +82,7 @@ def starts_with_shebang(source: bytes) -> bool:
     extensionless file is Python at all, this asks only how the file is entered,
     so the interpreter is irrelevant. A byte-order mark may precede it.
     """
-    return source.removeprefix(codecs.BOM_UTF8).startswith(b"#!")
+    return source.removeprefix(UTF8_BOM).startswith(b"#!")
 
 
 def names_main_guard(tree: ast.Module) -> bool:
