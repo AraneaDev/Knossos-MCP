@@ -64,6 +64,35 @@ final class AgentBriefTest extends KnossosTestCase
         assertSame(false, str_contains($markdown, 'assertWidgets'));
     }
 
+    /**
+     * The hub section already drops test-role components; the entry-point
+     * section did not, so a console-command stub declared inside a test file
+     * was offered to a fresh agent as one of twelve places execution enters the
+     * system. This repository's own brief listed `FakeCliCommand` from
+     * `tests/phpunit/InterfacesStubsTest.php` among its entry points.
+     */
+    #[Group('query')]
+    public function testBriefEntryPointsExcludeTestRoleComponents(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $stub = StableId::symbol($ids['project'], 'php', 'class', 'App\\Tests\\FakeCommand');
+        $repository->saveNode($stub, $ids['project'], 'php', 'class', 'App\\Tests\\FakeCommand', 'FakeCommand', null, $ids['file'], 40, 44, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        foreach (['application.command', 'quality.test_module'] as $role) {
+            $repository->saveClassification(StableId::classification($ids['project'], $stub, $role, 'rule.' . $role), $ids['project'], $stub, $role, 'derived', 'probable', 'rule.' . $role, $ids['file'], 40, 44, [], $ids['scan']);
+        }
+        // A production command with the same role stays listed: the section is
+        // about where execution enters, and dropping those would empty it.
+        $real = StableId::symbol($ids['project'], 'php', 'class', 'App\\ShipCommand');
+        $repository->saveNode($real, $ids['project'], 'php', 'class', 'App\\ShipCommand', 'ShipCommand', null, $ids['file'], 50, 54, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveClassification(StableId::classification($ids['project'], $real, 'application.command', 'rule.command'), $ids['project'], $real, 'application.command', 'derived', 'probable', 'rule.command', $ids['file'], 50, 54, [], $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+
+        assertSame(false, str_contains($markdown, 'FakeCommand'));
+        assertSame(true, str_contains($markdown, 'ShipCommand'));
+    }
+
     #[Group('query')]
     public function testBriefDispatchesThroughToolService(): void
     {
