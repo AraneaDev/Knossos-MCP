@@ -195,3 +195,38 @@ describe("per-file rejection", () => {
         ).toThrow();
     });
 });
+
+// A shebang says the module is executed rather than imported, which is what
+// dead-code analysis keys on: nothing in a codebase references a script, so its
+// module having no inbound edge says nothing about whether it is wanted.
+// Nothing here asserted the attribute, so mutating the marker to "" — which
+// makes startsWith() true for every file and marks the whole tree executable —
+// survived a mutation run.
+describe("the executable module attribute", () => {
+    it("marks a shebang script executable and leaves an ordinary module alone", () => {
+        const root = fixture({
+            "package.json": '{"name":"executable-fixture"}',
+            "bin/cli":
+                "#!/usr/bin/env node\nexport function run() {\n    return 1;\n}\n",
+            "src/loop.mjs":
+                "#!/usr/bin/env node\nexport function loop() {\n    return 2;\n}\n",
+            "src/helper.js": "export function helper() {\n    return 3;\n}\n",
+        });
+
+        const { byOwner } = scanned(root, [
+            "bin/cli",
+            "src/loop.mjs",
+            "src/helper.js",
+        ]);
+        const executableOf = (owner) =>
+            byOwner.get(owner).nodes.find((node) => node.kind === "module")
+                .attributes.executable;
+
+        // An extensionless script and a suffixed one are both entered by a shell.
+        expect(executableOf("bin/cli")).toBe(true);
+        expect(executableOf("src/loop.mjs")).toBe(true);
+        // A library module nothing imports is exactly what dead-code analysis
+        // exists to surface, so it must stay reportable.
+        expect(executableOf("src/helper.js")).toBe(false);
+    });
+});

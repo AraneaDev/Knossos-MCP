@@ -302,6 +302,40 @@ final class AuditBatch2Test extends KnossosTestCase
         }
     }
 
+    /**
+     * The reclaim pass covered every section but the summary, so the one
+     * section that is always wanted — and is by far the cheapest to hold — was
+     * the only one that could be dropped while the budget went unspent. On this
+     * repository a 6,000-character request came back with 779 characters and
+     * all four sections empty, the summary among them for overrunning its
+     * 1,200-character share by 206 bytes.
+     */
+    #[Group('query')]
+    public function testArchitectureContextReclaimsSpareBudgetForTheSummary(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        // A summary wide enough to overrun a 20% share: its size is driven by
+        // how many distinct kinds and roles the project has, not by node count.
+        $kinds = ['interface', 'trait', 'enum', 'function', 'method', 'property', 'module', 'package', 'route', 'endpoint'];
+        foreach ($kinds as $index => $kind) {
+            $node = StableId::symbol($ids['project'], 'php', $kind, 'App\\Wide' . $index);
+            $repository->saveNode($node, $ids['project'], 'php', $kind, 'App\\Wide' . $index, 'Wide' . $index, null, $ids['file'], 1, 2, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+            $role = 'application.role_number_' . $index;
+            $repository->saveClassification(StableId::classification($ids['project'], $node, $role, 'rule.' . $index), $ids['project'], $node, $role, 'derived', 'probable', 'rule.' . $index, $ids['file'], 1, 2, [], $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->architectureContext(
+            $ids['project'],
+            'checkout billing invoice',
+            maxChars: 4000,
+        );
+
+        $summary = $result->data['context']['sections']['summary'];
+        $spare = $result->data['budget']['max_chars'] - $result->data['budget']['actual_chars'];
+        assertSame('included', $summary['status'], sprintf('summary dropped with %d characters to spare', $spare));
+    }
+
     #[Group('query')]
     public function testChangedFilesImpactLoneBaseRefYieldsSpecificMessage(): void
     {

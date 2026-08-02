@@ -305,3 +305,26 @@ def test_a_parameter_reassigned_to_something_untracked_stops_resolving(
     assert "py:method:mod.Helper::use" not in [
         target for kind, source, target in _edges(contribution) if kind == "calls"
     ]
+
+
+def test_unreadable_file_costs_only_itself(monkeypatch, worker: ModuleType, project, scan_collect) -> None:
+    """A file that vanishes between validation and the read.
+
+    `safe_file` stats the path, then the loop reads it — another process can
+    delete or chmod it in between, and the read raises OSError. That escaped the
+    per-file handlers and aborted the whole batch, discarding facts for every
+    sibling, which is exactly what the loop's isolation is meant to prevent.
+    """
+    root = project({"good.py": "x = 1\n", "gone.py": "y = 2\n"})
+    real_read = worker.Path.read_bytes
+
+    def flaky(self):  # type: ignore[no-untyped-def]
+        if self.name == "gone.py":
+            raise OSError("No such file or directory")
+        return real_read(self)
+
+    monkeypatch.setattr(worker.Path, "read_bytes", flaky)
+    contributions = {c["owner_key"].rsplit(":", 1)[-1]: c for c in scan_collect(root, ["good.py", "gone.py"])}
+
+    assert _diag_codes(contributions["gone.py"]) == ["PY_UNSCANNABLE_FILE"]
+    assert contributions["good.py"]["nodes"]  # unaffected by the sibling failure

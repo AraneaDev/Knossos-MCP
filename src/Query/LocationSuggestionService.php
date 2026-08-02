@@ -229,26 +229,27 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
             $matchedTokens = [];
             $related = [];
             $nameScore = $memberScore = $roleScore = 0;
-            $boundaryText = strtolower($boundary['name']);
+            $boundaryWords = self::identifierWords($boundary['name']);
             foreach ($tokens as $token) {
-                if (str_contains($boundaryText, $token)) {
+                if (self::matchesWord($boundaryWords, $token)) {
                     $nameScore += 12;
                     $matchedTokens[$token] = true;
                 }
             }
             foreach ($members as $member) {
-                $memberText = strtolower($member['canonical_name'] . ' ' . $member['display_name']);
+                $memberWords = self::identifierWords($member['canonical_name'] . ' ' . $member['display_name']);
                 $memberMatches = [];
                 foreach ($tokens as $token) {
-                    if (str_contains($memberText, $token)) {
+                    if (self::matchesWord($memberWords, $token)) {
                         $memberMatches[] = $token;
                         $matchedTokens[$token] = true;
                     }
                 }
                 $roleMatches = [];
                 foreach ($roles[$member['id']] ?? [] as $role) {
+                    $roleWords = self::identifierWords($role['role']);
                     foreach ($tokens as $token) {
-                        if (str_contains(strtolower($role['role']), $token)) {
+                        if (self::matchesWord($roleWords, $token)) {
                             $roleMatches[] = $token;
                             $matchedTokens[$token] = true;
                         }
@@ -266,14 +267,23 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
             $incident = $cohesion[$boundary['id']]['incident'];
             $ratio = $incident === 0 ? 0.0 : $cohesion[$boundary['id']]['internal'] / $incident;
             $cohesionScore = round($ratio * 10, 3);
-            $score = $nameScore + $memberScore + $roleScore + $cohesionScore;
+            // Density, not total: a summed member score grows with boundary
+            // size, so the widest boundary won every ranking however diluted
+            // its match was. What a location suggestion is asking is which
+            // boundary is *most about* the description, not which contains the
+            // most matching members.
+            $memberCount = max(1, count($members));
+            $memberRelevance = round(($memberScore / $memberCount) * 10, 3);
+            $roleRelevance = round(($roleScore / $memberCount) * 10, 3);
+            $score = round($nameScore + $memberRelevance + $roleRelevance + $cohesionScore, 3);
             $candidates[] = [
                 'boundary' => ['id' => $boundary['id'], 'name' => $boundary['name'], 'source' => $boundary['source'], 'matcher' => self::decode($boundary['matcher_json'])],
                 'score' => $score,
                 'confidence' => count($matchedTokens) >= 2 ? 'probable' : 'possible',
                 'factors' => [
-                    'boundary_name_relevance' => $nameScore, 'member_relevance' => $memberScore,
-                    'role_relevance' => $roleScore, 'internal_dependency_cohesion' => $cohesionScore,
+                    'boundary_name_relevance' => $nameScore, 'member_relevance' => $memberRelevance,
+                    'role_relevance' => $roleRelevance, 'internal_dependency_cohesion' => $cohesionScore,
+                    'matching_members' => count($related), 'boundary_members' => count($members),
                     'internal_edges' => $cohesion[$boundary['id']]['internal'], 'incident_edges' => $incident,
                 ],
                 'matched_tokens' => array_map(strval(...), array_keys($matchedTokens)),
@@ -446,13 +456,59 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
     }
 
     /**
+     * Split an identifier into its lowercase words, across case and separators.
+     *
+     * `NdjsonRpcChannel` yields ndjson/rpc/channel, and
+     * `testRunWithVersionAndJsonFlagReturnsZero` yields …/and/json/… — which is
+     * the whole point: matching tokens as bare substrings made "ndjson" match
+     * the latter, because "AndJson" contains it across a word boundary.
+     *
+     * @return list<string>
+     */
+    private static function identifierWords(string $text): array
+    {
+        $spaced = preg_replace(
+            // camelCase, then an acronym run followed by a word (NDJSONChannel).
+            ['/(\p{Ll}|\p{N})(\p{Lu})/u', '/(\p{Lu}+)(\p{Lu}\p{Ll})/u'],
+            ['$1 $2', '$1 $2'],
+            $text,
+        ) ?? $text;
+        $words = preg_split('/[^\pL\pN]+/u', mb_strtolower($spaced), -1, PREG_SPLIT_NO_EMPTY);
+
+        return is_array($words) ? $words : [];
+    }
+
+    /**
+     * Whether a token names one of these words.
+     *
+     * A token matches a whole word or the start of one, so "worker" still finds
+     * `workers` — a prefix at a word boundary is a real match, unlike a
+     * substring that begins mid-word.
+     *
+     * @param list<string> $words
+     */
+    private static function matchesWord(array $words, string $token): bool
+    {
+        foreach ($words as $word) {
+            if (str_starts_with($word, $token)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Tokenise a feature description into the terms ranking scores against.
      *
      * @return list<string>
      */
     private function featureTokens(string $description): array
     {
-        $parts = preg_split('/[^\pL\pN]+/u', strtolower($description), -1, PREG_SPLIT_NO_EMPTY);
+        // `mb_strtolower`, matching identifierWords(): ASCII-only lowering left
+        // an accented query token in a case no indexed word is ever written in,
+        // so it could never match the identifier it names.
+        $parts = preg_split('/[^\pL\pN]+/u', mb_strtolower($description), -1, PREG_SPLIT_NO_EMPTY);
         if (!is_array($parts)) {
             return [];
         }

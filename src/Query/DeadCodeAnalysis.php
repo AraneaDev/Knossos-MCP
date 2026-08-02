@@ -62,6 +62,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         $excludedConstructors = 0;
         $excludedContracts = 0;
+        $excludedEntryScripts = 0;
         $suppressions = $this->deadCodeSuppressions($projectId);
         $suppressedCount = 0;
         $annotationsByName = $this->componentAnnotations($projectId);
@@ -103,6 +104,15 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 ++$excludedConstructors;
                 continue;
             }
+            // A script's body is run by something outside the graph, so nothing
+            // in the codebase references it and "unreferenced" carries no
+            // information about whether it is wanted. An ordinary module that
+            // nothing imports stays reportable — an orphaned one is precisely
+            // what this analysis exists to surface.
+            if (ReportableComponent::isExecutableScript((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)) {
+                ++$excludedEntryScripts;
+                continue;
+            }
             $dynamicRisk = $candidate['row']['origin'] !== 'ast' || $this->hasFrameworkRole($candidate['roles']);
             $confidence = $dynamicRisk ? 'possible' : 'probable';
             $reason = 'No inbound static reference was found among the selected edge kinds.';
@@ -131,11 +141,13 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'inherited' => $excludedInherited,
                 'contracts' => $excludedContracts,
                 'constructors' => $excludedConstructors,
+                'entry_scripts' => $excludedEntryScripts,
                 'suppressed' => $suppressedCount,
                 'annotated_false_positives' => $annotatedFalsePositives,
             ],
         ];
     }
+
 
     /**
      * True when the candidate is a member the language runtime invokes, rather
@@ -308,8 +320,17 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             $discovered = [];
             foreach (array_chunk($pending, 500) as $chunk) {
                 $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                // `returns` joins the walk because a factory returning an object
+                // literal is how a language without classes writes an
+                // implementation: the literal's members are contained by the
+                // FUNCTION, and a call site typed as the interface resolves to
+                // the interface's member, so the literal's member has no inbound
+                // edge and reads as dead. The function's declared return type is
+                // the contract it satisfies, which is exactly what `extends` and
+                // `implements` say for a class. Only a function carries a
+                // `returns` edge, so the class case is untouched.
                 $statement = $this->pdo->prepare(
-                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
+                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends', 'returns') " .
                     sprintf('AND source_id IN (%s)', $placeholders),
                 );
                 $statement->execute([$projectId, ...$chunk]);

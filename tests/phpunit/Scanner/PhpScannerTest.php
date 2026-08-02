@@ -221,7 +221,12 @@ final class PhpScannerTest extends KnossosTestCase
         ]));
 
         assertSame('PHP_PARSE_ERROR', $contributions[0]->diagnostics[0]->code);
-        assertSame('Fixture\\NoExecute', $contributions[1]->nodes[0]->canonicalName);
+        // By name, not by position: the fixture's own top-level call also
+        // declares a module node, and which comes first is not the point here.
+        assertArrayContains(
+            'Fixture\\NoExecute',
+            array_map(fn(NodeFact $node): string => $node->canonicalName, $contributions[1]->nodes),
+        );
         assertSame(false, file_exists($marker));
         $client->shutdown();
     }
@@ -879,4 +884,104 @@ final class PhpScannerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    #[Group('php-scanner')]
+    public function testCallsMadeAtFileScopeAreAttributedToTheFileModule(): void
+    {
+        // A procedural script — an entry point, a Laravel route file, a tools
+        // script — calls things from file scope, where there is no enclosing
+        // callable or class to attribute the edge to. Dropping those calls
+        // leaves anything reached only that way with no inbound edge, which is
+        // how this repository's own `declaredTypes` and `declaredFunctions`
+        // came to be reported as dead while two tools scripts called them.
+        $client = $this->phpWorkerClient();
+        $client->initialize();
+
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/TopLevelScript.php'],
+        ]));
+        $contribution = $contributions[0];
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $contribution->edges,
+        );
+
+        assertArrayContains(
+            ['calls', 'php:module:src/TopLevelScript.php', 'php:function:knossosFixtureBootstrap'],
+            $edgeTuples,
+        );
+        assertArrayContains(
+            ['constructs', 'php:module:src/TopLevelScript.php', 'php:class:KnossosFixtureBootstrapper'],
+            $edgeTuples,
+        );
+        assertArrayContains(
+            ['calls', 'php:module:src/TopLevelScript.php', 'php:method:KnossosFixtureBootstrapper::boot'],
+            $edgeTuples,
+        );
+
+        // The module is a real node so those edges have a source to resolve to.
+        $modules = array_values(array_filter(
+            $contribution->nodes,
+            fn(NodeFact $node): bool => $node->kind === 'module',
+        ));
+        assertSame(1, count($modules));
+        assertSame('src/TopLevelScript.php', $modules[0]->canonicalName);
+
+        $client->shutdown();
+    }
+
+    /**
+     * An unqualified call inside a namespace is ambiguous by design: PHP tries
+     * the current namespace and falls back to the global function. Emitting the
+     * name as written resolved every one of them to the global candidate, so a
+     * namespaced free function called from its own namespace gained a phantom
+     * global twin and carried no inbound edge itself.
+     */
+    #[Group('php-scanner')]
+    public function testAnUnqualifiedCallInANamespaceDefersToTheReconciler(): void
+    {
+        $client = $this->phpWorkerClient();
+        $client->initialize();
+
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/NamespacedCall.php'],
+        ]));
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $contributions[0]->edges,
+        );
+        $source = 'php:method:Fixture\\NamespacedCaller::run';
+
+        // Both unqualified calls carry the namespaced candidate; only the
+        // reconciler can say which of the two names actually exists.
+        assertArrayContains(['calls', $source, 'php:namespaced_function:Fixture\\localHelper'], $edgeTuples);
+        assertArrayContains(['calls', $source, 'php:namespaced_function:Fixture\\absentHelper'], $edgeTuples);
+        // A leading backslash already names the global function outright.
+        assertArrayContains(['calls', $source, 'php:function:strlen'], $edgeTuples);
+
+        $client->shutdown();
+    }
+
+    #[Group('php-scanner')]
+    public function testAFileWithoutFileScopeCallsDeclaresNoModule(): void
+    {
+        // The module exists to carry top-level edges. A file that only declares
+        // types has none, and inventing a module for all 366 of this
+        // repository's PHP files would add 366 unreferenced nodes to the graph.
+        $client = $this->phpWorkerClient();
+        $client->initialize();
+
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/Architecture.php'],
+        ]));
+        $modules = array_values(array_filter(
+            $contributions[0]->nodes,
+            fn(NodeFact $node): bool => $node->kind === 'module',
+        ));
+        assertSame([], $modules);
+
+        $client->shutdown();
+    }
 }

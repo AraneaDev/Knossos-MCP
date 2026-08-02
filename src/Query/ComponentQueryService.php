@@ -227,6 +227,19 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         $rows = $statement->fetchAll();
         $truncated = count($rows) > $limit;
         $rows = array_slice($rows, 0, $limit);
+        // Fetching limit + 1 rows proves there are more but not how many, and
+        // "Found 5 usage sites" for a symbol used 98 times understates the very
+        // thing the caller asked for. Count only when the page did not already
+        // hold every match.
+        $totalMatched = count($rows);
+        if ($truncated) {
+            $countStatement = $this->pdo->prepare(
+                'SELECT COUNT(*) FROM edges e WHERE e.project_id = ? AND e.target_id = ? ' .
+                'AND e.kind IN (' . $kindPlaceholders . ') AND e.confidence IN (' . $confidencePlaceholders . ')',
+            );
+            $countStatement->execute([$projectId, $target['id'], ...$edgeKinds, ...$allowedConfidence]);
+            $totalMatched = (int) $countStatement->fetchColumn();
+        }
         $usages = [];
         $evidence = [];
         foreach ($rows as $row) {
@@ -243,11 +256,20 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Found %d usage site%s of %s.', count($usages), count($usages) === 1 ? '' : 's', $target['canonical_name']),
+            sprintf(
+                'Found %d usage site%s of %s%s.',
+                $totalMatched,
+                $totalMatched === 1 ? '' : 's',
+                $target['canonical_name'],
+                $truncated ? sprintf(', showing %d', count($usages)) : '',
+            ),
             [
                 'target' => ['id' => $target['id'], 'kind' => $target['kind'], 'canonical_name' => $target['canonical_name'], 'display_name' => $target['display_name']],
                 'usages' => $usages,
-                'bounds' => ['limit' => $limit, 'total_shown' => count($usages), 'edge_kinds' => $edgeKinds, 'truncation_reasons' => $truncated ? ['result_limit'] : []],
+                'bounds' => [
+                    'limit' => $limit, 'total_matched' => $totalMatched, 'total_shown' => count($usages),
+                    'edge_kinds' => $edgeKinds, 'truncation_reasons' => $truncated ? ['result_limit'] : [],
+                ],
             ],
             $evidence,
             ['Usage sites are static occurrences; dynamic dispatch, reflection, and string-based references are not resolved.'],

@@ -30,7 +30,11 @@ final readonly class StalenessProbe
      */
     public function probe(string $projectId): ?array
     {
-        if ($projectId === '' || $projectId === 'catalog') {
+        // 'catalog' and 'server' are scopes, not projects: the tools using them
+        // describe the server itself. Probing them found no project row and
+        // reported state 'missing' with advice to run scan_project — a project
+        // that does not exist, and a scan that would not change the answer.
+        if ($projectId === '' || $projectId === 'catalog' || $projectId === 'server') {
             return null;
         }
         $project = $this->fetchProject($projectId);

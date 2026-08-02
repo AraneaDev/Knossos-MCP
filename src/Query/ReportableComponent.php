@@ -65,6 +65,25 @@ final readonly class ReportableComponent
     }
 
     /**
+     * A module a scanner marked as an executable script.
+     *
+     * Scanners set this on a module they emitted because the file has a body
+     * that runs — a shebang, a `__main__` guard, PHP file-scope code — rather
+     * than because it declares things others import. Such a body is entered by
+     * something outside the graph: a shell, a web server, a CI step. Nothing in
+     * the codebase references it and nothing ever will, so counting it as
+     * unreferenced charges a budget nobody can pay down.
+     */
+    public static function isExecutableScript(string $kind, mixed $attributesJson): bool
+    {
+        if ($kind !== 'module' || !is_string($attributesJson)) {
+            return false;
+        }
+        $decoded = json_decode($attributesJson, true);
+        return is_array($decoded) && ($decoded['executable'] ?? false) === true;
+    }
+
+    /**
      * A constructor, which the engine invokes through `new` on the declaring type.
      *
      * No call edge points at it even in code that constructs the type constantly,

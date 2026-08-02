@@ -48,6 +48,24 @@ final class ServerEnvironmentToolsTest extends KnossosTestCase
         assertSame($file, $data['roots_file']);
     }
 
+    /**
+     * `server_info` and `diagnose_runtime` describe the server, not a project.
+     * Attaching a project's staleness block to them reported state "missing"
+     * and told the caller to run `scan_project` first — advice for a project
+     * that does not exist and would not change the answer.
+     */
+    #[Group('mcp')]
+    public function testServerScopedToolsCarryNoProjectStaleness(): void
+    {
+        $file = $this->makeTempDir() . '/roots.json';
+        file_put_contents($file, json_encode(['roots' => [$this->makeTempDir()]], JSON_THROW_ON_ERROR));
+        $tools = $this->tools(new AllowedRoots([], $file));
+
+        foreach (['server_info', 'diagnose_runtime'] as $tool) {
+            assertSame(null, $tools->call($tool, [])->staleness, $tool);
+        }
+    }
+
     #[Group('mcp')]
     public function testServerInfoWarnsWhenNothingIsScannable(): void
     {

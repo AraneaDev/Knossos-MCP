@@ -116,7 +116,11 @@ final readonly class ArchitectureContextService extends AbstractArchitectureQuer
         // task-specific section first. The remainder is measured against the
         // whole context, not just the sections, so reclaiming can never overrun
         // the total and force the backstop below to drop a section that fitted.
-        foreach (['change_impact', 'locations', 'dossiers'] as $name) {
+        // The summary reclaims last because it is the least task-specific, but
+        // it must reclaim: leaving it out of this pass made the one section a
+        // caller always wants, and the cheapest to hold, the only one that
+        // could be dropped over budget its neighbours never spent.
+        foreach (['change_impact', 'locations', 'dossiers', 'summary'] as $name) {
             if (($context['sections'][$name]['status'] ?? null) !== 'truncated') {
                 continue;
             }

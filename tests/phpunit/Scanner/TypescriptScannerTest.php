@@ -76,6 +76,59 @@ final class TypescriptScannerTest extends KnossosTestCase
         );
     }
 
+    /**
+     * A script's body is run by a shell, never referenced from the codebase, so
+     * its module has no inbound edge however heavily the script is used. Only
+     * the PHP scanner marked its modules executable, so `architecture_health`
+     * had nothing to exclude on and reported this repository's own
+     * `tools/chaos-loop.mjs` — driven by a shell wrapper — as probably dead
+     * code, while the TypeScript worker escaped the same fate only because a
+     * manifest happened to name it an entry point.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerMarksShebangScriptModulesExecutable(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-executable-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o755, true);
+        mkdir($root . '/src', 0o755, true);
+        file_put_contents($root . '/package.json', '{"name":"executable-fixture"}');
+        file_put_contents($root . '/bin/cli', "#!/usr/bin/env node\nexport function run() {\n    return 1;\n}\n");
+        file_put_contents($root . '/src/loop.mjs', "#!/usr/bin/env node\nexport function loop() {\n    return 2;\n}\n");
+        file_put_contents($root . '/src/helper.js', "export function helper() {\n    return 3;\n}\n");
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['bin/cli', 'src/loop.mjs', 'src/helper.js'],
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (['bin/cli', 'src/loop.mjs', 'src/helper.js', 'package.json'] as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/bin');
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $executable = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $executable[$node->canonicalName] = $node->attributes['executable'] ?? false;
+                }
+            }
+        }
+
+        // An extensionless script and a suffixed one are both entered by a shell.
+        assertSame(true, $executable['bin/cli']);
+        assertSame(true, $executable['src/loop.mjs']);
+        // A library module nothing imports is exactly what dead-code analysis
+        // exists to surface, so it must stay reportable.
+        assertSame(false, $executable['src/helper.js']);
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerDiscoversConfigsAndExtractsCrossProjectArchitecture(): void
     {

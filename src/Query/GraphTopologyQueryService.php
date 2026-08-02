@@ -423,6 +423,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'excluded_inherited_methods' => $excluded['inherited'],
                     'excluded_contract_methods' => $excluded['contracts'],
                     'excluded_constructors' => $excluded['constructors'],
+                    'excluded_entry_scripts' => $excluded['entry_scripts'],
                     'suppressed_candidates' => $excluded['suppressed'],
                     'annotated_false_positives' => $excluded['annotated_false_positives'],
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
@@ -484,6 +485,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $queue[] = [[$start], [], [$start['id'] => true]];
         }
         $paths = [];
+        // Keyed by signature: the cap and the max_paths budget are both about
+        // distinct ROUTES, and two call sites between the same pair of symbols
+        // are one route written twice. Counting the copies let a hot pair spend
+        // the whole search before any other route was reached.
         $visited = 0;
         $truncated = false;
         $truncationReasons = [];
@@ -516,7 +521,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $newNodes = [...$nodes, $next];
                 $newHops = [...$hops, $edge];
                 if ($isTarget) {
-                    $paths[] = $this->path($newNodes, $newHops);
+                    $candidate = $this->path($newNodes, $newHops);
+                    $existing = $paths[$candidate['signature']] ?? null;
+                    // Keep the best-scoring witness, not merely the first one
+                    // found: two call sites for the same route can carry
+                    // different confidence, and the answer should show the
+                    // strongest evidence that route has.
+                    if ($existing === null || self::comparePaths($candidate, $existing) < 0) {
+                        $paths[$candidate['signature']] = $candidate;
+                    }
                     if (count($paths) >= $candidateCap) {
                         $truncated = true;
                         $truncationReasons[] = 'candidate_limit';
@@ -539,12 +552,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $truncated = true;
             $truncationReasons[] = 'endpoint_expansion_limit';
         }
-        usort($paths, static function (array $left, array $right): int {
-            return ($right['score']['minimum_confidence'] <=> $left['score']['minimum_confidence'])
-                ?: ($left['score']['hops'] <=> $right['score']['hops'])
-                ?: ($right['score']['semantic_edges'] <=> $left['score']['semantic_edges'])
-                ?: ($left['signature'] <=> $right['signature']);
-        });
+        // One entry per distinct route already; this only orders them, which
+        // decides which survive the max_paths budget.
+        $paths = array_values($paths);
+        usort($paths, static fn(array $left, array $right): int => self::comparePaths($left, $right));
         if (count($paths) > $maxPaths) {
             $paths = array_slice($paths, 0, $maxPaths);
             $truncated = true;
@@ -908,6 +919,23 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         return false;
     }
+    /**
+     * Rank one flow against another: strongest evidence first.
+     *
+     * Shared by the sort and by the choice between two witnesses of the same
+     * route, so a duplicate is resolved on exactly the criteria that decide the
+     * final order rather than on discovery order.
+     *
+     * @param array<string, mixed> $left @param array<string, mixed> $right
+     */
+    private static function comparePaths(array $left, array $right): int
+    {
+        return ($right['score']['minimum_confidence'] <=> $left['score']['minimum_confidence'])
+            ?: ($left['score']['hops'] <=> $right['score']['hops'])
+            ?: ($right['score']['semantic_edges'] <=> $left['score']['semantic_edges'])
+            ?: ($left['signature'] <=> $right['signature']);
+    }
+
     /**
      * The evidence path for a node, or null when it has none.
      *

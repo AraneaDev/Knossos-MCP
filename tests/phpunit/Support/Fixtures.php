@@ -48,7 +48,9 @@ trait Fixtures
             'shop/__init__.py',
             'shop/api.py',
             'shop/bad.py',
+            'shop/cli.py',
             'shop/contracts.pyi',
+            'shop/guarded.py',
             'shop/service.py',
         ];
     }

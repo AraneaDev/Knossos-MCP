@@ -112,6 +112,123 @@ final class SuggestionTest extends KnossosTestCase
         assertSame(true, in_array('dot', $tokens, true));
     }
 
+    /**
+     * Token matching must respect identifier word boundaries. Plain substring
+     * matching made "ndjson" match `testRunWithVersionAndJsonFlagReturnsZero`,
+     * because "AndJson" lowercases to a string containing "ndjson" — so an
+     * unrelated test class scored as evidence for an NDJSON feature.
+     */
+    #[Group('suggestion')]
+    public function testTokensMatchIdentifierWordsRatherThanBareSubstrings(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $this->boundaryWithMembers($repository, $ids, 'coincidence', [
+            'App\\Tests\\ApplicationTest::testRunWithVersionAndJsonFlagReturnsZero',
+        ]);
+        $this->boundaryWithMembers($repository, $ids, 'transport', [
+            'App\\Transport\\NdjsonRpcChannel',
+        ]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->suggestLocation($ids['project'], 'ndjson channel');
+        $byName = [];
+        foreach ($result->data['candidates'] as $candidate) {
+            $byName[$candidate['boundary']['name']] = $candidate;
+        }
+
+        // "AndJson" is not the word "ndjson".
+        assertSame([], $byName['coincidence']['related_members']);
+        assertSame(false, in_array('ndjson', $byName['coincidence']['matched_tokens'], true));
+        // The real one still matches, split out of NdjsonRpcChannel.
+        assertSame(true, in_array('ndjson', $byName['transport']['matched_tokens'], true));
+    }
+
+    /**
+     * Both sides of the comparison must lower-case the same way.
+     *
+     * Member words go through `mb_strtolower`, so `ÉclairService` indexes as
+     * `éclair`. The description went through ASCII-only `strtolower`, which
+     * leaves `É` untouched, so the query token stayed `Éclair` and could never
+     * match the word it names — silently, and only for non-ASCII identifiers.
+     */
+    #[Group('suggestion')]
+    public function testANonAsciiQueryTokenMatchesTheIdentifierWordItNames(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $this->boundaryWithMembers($repository, $ids, 'patisserie', [
+            'App\\Bakery\\EclairService',
+            'App\\Bakery\\ÉclairService',
+        ]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->suggestLocation($ids['project'], 'Éclair service');
+        $byName = [];
+        foreach ($result->data['candidates'] as $candidate) {
+            $byName[$candidate['boundary']['name']] = $candidate;
+        }
+
+        assertSame(true, in_array('éclair', $byName['patisserie']['matched_tokens'], true));
+    }
+
+    /**
+     * Member relevance summed over a boundary's members, so the score grew with
+     * boundary size and the widest boundary always won. Asking where a new
+     * worker belongs then returned the repository-root boundary — matcher
+     * `path_prefix: ""`, meaning "anywhere" — ahead of `workers/`.
+     */
+    #[Group('suggestion')]
+    public function testAFocusedBoundaryOutranksAWiderOneThatMerelyContainsIt(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $focused = ['App\\Alpha\\WorkerHost', 'App\\Alpha\\WorkerPool'];
+        // The wide boundary contains the focused members plus much unrelated
+        // material, exactly as a repository-root boundary contains every module.
+        $wide = [...$focused, 'App\\Wide\\WorkerAudit', 'App\\Wide\\WorkerNote', 'App\\Wide\\WorkerTag'];
+        foreach (range(1, 7) as $index) {
+            $wide[] = 'App\\Wide\\Unrelated' . $index;
+        }
+        $this->boundaryWithMembers($repository, $ids, 'alpha', $focused);
+        $this->boundaryWithMembers($repository, $ids, 'omnibus', $wide);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->suggestLocation($ids['project'], 'worker process');
+
+        assertSame('alpha', $result->data['candidates'][0]['boundary']['name']);
+    }
+
+    /**
+     * Declare a boundary owning nodes with the given canonical names.
+     *
+     * @param list<string> $canonicalNames
+     */
+    private function boundaryWithMembers(object $repository, array $ids, string $name, array $canonicalNames): void
+    {
+        $boundary = StableId::boundary($ids['project'], $name, 'explicit');
+        $repository->saveBoundary($boundary, $ids['project'], $name, ['path_prefix' => 'src/' . $name], 'explicit', $ids['scan']);
+        foreach ($canonicalNames as $canonicalName) {
+            $node = StableId::symbol($ids['project'], 'php', 'class', $canonicalName);
+            $separator = strrpos($canonicalName, '\\');
+            $repository->saveNode(
+                $node,
+                $ids['project'],
+                'php',
+                'class',
+                $canonicalName,
+                $separator === false ? $canonicalName : substr($canonicalName, $separator + 1),
+                null,
+                $ids['file'],
+                1,
+                2,
+                'ast',
+                'certain',
+                [],
+                'php:file:src/Checkout.php',
+                $ids['scan'],
+            );
+            $repository->saveBoundaryMembership($boundary, $ids['project'], $node, $ids['scan']);
+        }
+    }
+
     #[Group('suggestion')]
     public function testAllStopWordDescriptionFallsBackToUnfilteredTokens(): void
     {

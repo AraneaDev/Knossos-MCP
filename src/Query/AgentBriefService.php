@@ -147,8 +147,15 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
         );
         return "\n## Boundaries\n\n" . implode("\n", $lines) . "\n";
     }
-    /** The brief's entry-point section: where execution enters the system. */
-
+    /**
+     * The brief's entry-point section: where execution enters the system.
+     *
+     * Test-role components are excluded for the same reason the hub section
+     * excludes them: a command stub declared inside a test file carries the
+     * command role but is not a way into the system, and offering it to a fresh
+     * agent as one of twelve entry points spends the section's budget on
+     * scaffolding.
+     */
     private function entryPointsSection(string $projectId): ?string
     {
         $statement = $this->pdo->prepare(
@@ -156,7 +163,9 @@ final readonly class AgentBriefService extends AbstractArchitectureQueryService
             "WHERE n.project_id = :project AND (n.kind IN ('route', 'command', 'endpoint') OR n.id IN (" .
             'SELECT node_id FROM classifications WHERE project_id = :project AND role IN (' .
             "'application.controller', 'application.command', 'application.entry_point', 'laravel.controller', 'laravel.command')" .
-            ')) ORDER BY n.kind, n.canonical_name LIMIT 12',
+            ')) AND n.id NOT IN (SELECT node_id FROM classifications WHERE project_id = :project AND role = ' .
+            sprintf("'%s'", ReportableComponent::TEST_ROLE) .
+            ') ORDER BY n.kind, n.canonical_name LIMIT 12',
         );
         $statement->execute(['project' => $projectId]);
         $rows = $statement->fetchAll();

@@ -50,6 +50,9 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private array $returnTypes = [];
 
+    /** Whether this file's module node has been declared; see {@see self::fileModuleId()}. */
+    private bool $moduleDeclared = false;
+
     public function __construct(private readonly string $relativePath) {}
 
     /**
@@ -468,19 +471,18 @@ final class FactCollector extends NodeVisitorAbstract
     /** Emit an `instantiates` edge for a `new` whose class is statically known. */
     private function newExpression(Expr\New_ $node): void
     {
-        $source = $this->currentSource();
-        if ($source !== null && $node->class instanceof Name) {
-            $this->addEdge('constructs', $source, self::reference('class', $this->resolvedClassName($node->class)), $node);
+        if ($node->class instanceof Name) {
+            $this->addEdge('constructs', $this->currentSource(), self::reference('class', $this->resolvedClassName($node->class)), $node);
         }
     }
 
     /** Emit a `calls` edge for a static call, resolving `self`/`static`/`parent` against the current class. */
     private function staticCall(Expr\StaticCall $node): void
     {
-        $source = $this->currentSource();
-        if ($source === null || !$node->class instanceof Name || !$node->name instanceof Identifier) {
+        if (!$node->class instanceof Name || !$node->name instanceof Identifier) {
             return;
         }
+        $source = $this->currentSource();
         $class = $this->resolvedClassName($node->class);
         $this->addEdge('calls', $source, self::reference('method', $class . '::' . $node->name->toString()), $node);
         $this->classReference($node->class, $node);
@@ -502,10 +504,10 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private function classReference(Node $class, Node $evidence): void
     {
-        $source = $this->currentSource();
-        if ($source === null || !$class instanceof Name) {
+        if (!$class instanceof Name) {
             return;
         }
+        $source = $this->currentSource();
         $resolved = $this->resolvedClassName($class);
         if ($resolved === ($this->currentClass()['name'] ?? null)) {
             return;
@@ -516,10 +518,10 @@ final class FactCollector extends NodeVisitorAbstract
     /** Emit a `calls` edge, using the tracked variable type to name the receiver where possible. */
     private function methodCall(Expr\MethodCall|Expr\NullsafeMethodCall $node): void
     {
-        $source = $this->currentSource();
-        if ($source === null || !$node->name instanceof Identifier) {
+        if (!$node->name instanceof Identifier) {
             return;
         }
+        $source = $this->currentSource();
 
         $class = null;
         // Declared param/property types stay certain; a type inferred from a
@@ -589,9 +591,8 @@ final class FactCollector extends NodeVisitorAbstract
     /** Emit a `calls` edge to a free function. */
     private function functionCall(Expr\FuncCall $node): void
     {
-        $source = $this->currentSource();
-        if ($source !== null && $node->name instanceof Name) {
-            $this->addEdge('calls', $source, self::reference('function', $this->name($node->name)), $node);
+        if ($node->name instanceof Name) {
+            $this->addEdge('calls', $this->currentSource(), $this->functionReference($node->name), $node);
         }
     }
 
@@ -631,6 +632,35 @@ final class FactCollector extends NodeVisitorAbstract
         };
     }
 
+
+    /**
+     * The reference a function call names, deferring the ambiguous case.
+     *
+     * PHP resolves an unqualified call inside a namespace to that namespace's
+     * function when one exists and to the global function otherwise — a choice
+     * that depends on declarations in other files, which a per-file scanner
+     * cannot see. Naming it as written resolved every such call to the global
+     * candidate, so a namespaced free function called from its own namespace
+     * gained a phantom global twin and carried no inbound edge itself.
+     *
+     * A `use function` import and a leading backslash are already unambiguous:
+     * the parser marks both fully qualified, and they are named outright.
+     */
+    private function functionReference(Name $name): string
+    {
+        $resolved = $name->getAttribute('resolvedName');
+        if ($resolved instanceof Name) {
+            return self::reference('function', $resolved->toString());
+        }
+        $namespaced = $name->getAttribute('namespacedName');
+        if (!$name instanceof Name\FullyQualified
+            && $namespaced instanceof Name
+            && $namespaced->toString() !== $name->toString()) {
+            return self::reference('namespaced_function', $namespaced->toString());
+        }
+
+        return self::reference('function', $name->toString());
+    }
 
     /** The name as written, for evidence where the resolved form would obscure the source. */
     private function name(Name $name): string
@@ -712,10 +742,48 @@ final class FactCollector extends NodeVisitorAbstract
         return $this->callables === [] ? null : $this->callables[array_key_last($this->callables)]['id'];
     }
 
-    /** The node a fact should be attributed to: the callable if inside one, else the class. */
-    private function currentSource(): ?string
+    /**
+     * The node a fact should be attributed to: the callable, else the class, else the file itself.
+     *
+     * PHP has no module scope, so a procedural script — an entry point, a route
+     * file, a tools script — makes its calls from file scope, where neither a
+     * callable nor a class encloses them. Attributing those to nothing dropped
+     * them outright, leaving anything reached only from a script body with no
+     * inbound edge and reading as dead code.
+     */
+    private function currentSource(): string
     {
-        return $this->currentCallableId() ?? ($this->currentClass()['id'] ?? null);
+        return $this->currentCallableId() ?? ($this->currentClass()['id'] ?? $this->fileModuleId());
+    }
+
+    /**
+     * The file's own module node, declared the first time file-scope code needs it.
+     *
+     * Declared lazily so a file that only declares types — which is most of
+     * them — contributes no module, keeping the graph free of a node per file
+     * that nothing could ever reference.
+     */
+    private function fileModuleId(): string
+    {
+        $id = self::reference('module', $this->relativePath);
+        if (!$this->moduleDeclared) {
+            $this->moduleDeclared = true;
+            $this->nodes[] = [
+                'local_id' => $id,
+                'kind' => 'module',
+                'canonical_name' => $this->relativePath,
+                'display_name' => basename($this->relativePath),
+                'origin' => 'ast',
+                'confidence' => 'certain',
+                'evidence' => ['path' => $this->relativePath, 'start_line' => 1, 'end_line' => 1],
+                // A PHP module node exists only because the file has a body
+                // that runs, which by definition is entered from outside the
+                // graph — a shell, a web server, a CI step.
+                'attributes' => (object) ['executable' => true],
+            ];
+        }
+
+        return $id;
     }
 
     /** Remember a variable's inferred class so later calls on it can be resolved. */
