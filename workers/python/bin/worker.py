@@ -743,9 +743,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
         return (
             target.attr
-            if isinstance(target, ast.Attribute)
-            and isinstance(target.value, ast.Name)
-            and target.value.id == "self"
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self"
             else None
         )
 
