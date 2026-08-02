@@ -68,6 +68,28 @@ final class QualityGateMetricsTest extends KnossosTestCase
         assertSame(2, $gate->data['metrics']['unreferenced_candidates']);
     }
 
+    /**
+     * The exclusion is for a *module* a scanner marked executable, and the kind
+     * half of that guard carries the weight: the predicate is public, both call
+     * sites hand it every node kind they walk, and a scanner or an imported
+     * bundle is free to put the attribute anywhere. Without this case, swapping
+     * the guard's `||` for `&&` — or dropping its `return` outright — let a
+     * class carrying the attribute pass as a script, and both mutants survived.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesStillCountANonModuleCarryingAnExecutableAttribute(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $this->addNode($repository, $ids, 'class', 'App\\Orphan', 'Orphan', attributes: ['executable' => true]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // App\Checkout from the baseline plus the class: only a module can be a script.
+        assertSame(2, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
     #[Group('query')]
     public function testHubDegreeIgnoresTestOnlyHubsSoAddingTestsIsNotAnArchitectureRegression(): void
     {

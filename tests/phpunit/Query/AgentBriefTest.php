@@ -93,6 +93,28 @@ final class AgentBriefTest extends KnossosTestCase
         assertSame(true, str_contains($markdown, 'ShipCommand'));
     }
 
+    /**
+     * Excluding test components made an empty section reachable for the first
+     * time: a project whose only command is a stub in a test file now matches
+     * no rows at all. The section has to be omitted whole rather than rendered
+     * as a bare heading over nothing.
+     */
+    #[Group('query')]
+    public function testBriefOmitsTheEntryPointSectionWhenEveryCandidateIsTestCode(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $stub = StableId::symbol($ids['project'], 'php', 'class', 'App\\Tests\\OnlyFake');
+        $repository->saveNode($stub, $ids['project'], 'php', 'class', 'App\\Tests\\OnlyFake', 'OnlyFake', null, $ids['file'], 40, 44, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        foreach (['application.command', 'quality.test_module'] as $role) {
+            $repository->saveClassification(StableId::classification($ids['project'], $stub, $role, 'rule.' . $role), $ids['project'], $stub, $role, 'derived', 'probable', 'rule.' . $role, $ids['file'], 40, 44, [], $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+
+        assertSame(false, str_contains($markdown, '## Entry points'));
+    }
+
     #[Group('query')]
     public function testBriefDispatchesThroughToolService(): void
     {
