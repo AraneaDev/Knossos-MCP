@@ -372,7 +372,7 @@ final class DoctorServiceTest extends TestCase
         // working installation as broken.
         $floors = [
             'node.version' => [trim((string) shell_exec('node --version 2>/dev/null')), '/^v(\d+)\./', '22', 'Node'],
-            'python.version' => [trim((string) shell_exec('python3 --version 2>/dev/null')), '/^Python (3\.\d+)\./', '3.11', 'Python 3'],
+            'python.version' => [trim((string) shell_exec('python3 --version 2>/dev/null')), '/^Python (\d+\.\d+)\./', '3.11', 'Python'],
             'php.version' => [PHP_VERSION, '/^(\d+\.\d+)\./', '8.3', 'PHP'],
         ];
         $result = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();

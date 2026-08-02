@@ -27,8 +27,10 @@ final class ReturnedReceiverTest extends KnossosTestCase
     #[Group('php-scanner')]
     public function testACallOnAValueReturnedByAnotherFileResolvesToTheDeclaringMethod(): void
     {
-        $root = sys_get_temp_dir() . '/knossos-incremental-' . bin2hex(random_bytes(6));
-        mkdir($root . '/src', 0o755, true);
+        $root = sys_get_temp_dir() . '/knossos-incremental-returned-' . bin2hex(random_bytes(6));
+        if (!mkdir($root . '/src', 0o755, true)) {
+            throw new \RuntimeException('Unable to create fixture tree.');
+        }
         file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/returned'], JSON_THROW_ON_ERROR));
         file_put_contents($root . '/src/Attempt.php', <<<'PHP'
             <?php
@@ -104,4 +106,65 @@ final class ReturnedReceiverTest extends KnossosTestCase
         unset($pdo);
         $this->removeFixtureTree($root);
     }
+    #[Group('php-scanner')]
+    public function testAnInferenceTheGraphCannotConfirmLeavesNoEdgeBehind(): void
+    {
+        // The deferred reference is a guess about a receiver, so a guess that
+        // does not pay off has to disappear: inventing an external symbol for a
+        // member that may not exist would put the inference in the graph as if
+        // it were an observation.
+        $root = sys_get_temp_dir() . '/knossos-incremental-returned-' . bin2hex(random_bytes(6));
+        try {
+            if (!mkdir($root . '/src', 0o755, true)) {
+                throw new \RuntimeException('Unable to create fixture tree.');
+            }
+            file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/unconfirmed'], JSON_THROW_ON_ERROR));
+            file_put_contents($root . '/src/Service.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                final class Service
+                {
+                    public function unknownFactory(): mixed
+                    {
+                        // Nothing in the project declares Vendor\Client, so the
+                        // call it is said to return cannot be resolved.
+                        $client = \Vendor\Client::make();
+
+                        return $client->send();
+                    }
+
+                    public function untypedFactory(): mixed
+                    {
+                        // Declared here, but with no return type to follow.
+                        $thing = self::build();
+
+                        return $thing->use();
+                    }
+
+                    public static function build(): mixed
+                    {
+                        return null;
+                    }
+                }
+                PHP);
+            $pdo = SqliteConnection::open($root . '/graph.sqlite');
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full');
+
+            // No node, external or otherwise, is invented for the unresolved members.
+            assertSame(0, (int) $pdo->query(
+                "SELECT COUNT(*) FROM nodes WHERE canonical_name LIKE '%method_of_return%' OR display_name IN ('send', 'use')",
+            )->fetchColumn());
+            assertSame(0, (int) $pdo->query(
+                "SELECT COUNT(*) FROM edges e JOIN nodes t ON t.id = e.target_id WHERE t.display_name IN ('send', 'use')",
+            )->fetchColumn());
+        } finally {
+            unset($pdo);
+            $this->removeFixtureTree($root);
+        }
+    }
+
 }

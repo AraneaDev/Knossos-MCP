@@ -442,7 +442,11 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         return $referenced;
     }
-    /** Components annotated as false positives, excluded from candidates thereafter. */
+    /**
+     * Canonical names the project's own configuration suppresses, exactly or by prefix.
+     *
+     * @return list<string>
+     */
     private function deadCodeSuppressions(string $projectId): array
     {
         $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');

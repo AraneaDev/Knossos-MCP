@@ -76,6 +76,28 @@ final class BulkTransactionTest extends KnossosTestCase
         assertSame('1', (string) $pdo->query('SELECT * FROM pragma_foreign_keys')->fetchColumn());
     }
 
+    #[Group('storage')]
+    public function testANestedBulkTransactionRunsInsideTheOneAlreadyOpen(): void
+    {
+        // The pragma toggle a bulk transaction relies on is a no-op inside a
+        // transaction, so a nested call cannot have the behaviour its name
+        // promises and must run as an ordinary nested transaction instead.
+        [$pdo, $repository, $ids] = $this->storeFixture();
+
+        $result = $repository->transaction(static fn(SqliteGraphRepository $outer): string => $outer->bulkTransaction(
+            static function (SqliteGraphRepository $inner) use ($ids): string {
+                $inner->saveProject($ids['project'], 'Renamed Inside', '/workspace/fixture-shop');
+
+                return 'nested';
+            },
+        ));
+
+        assertSame('nested', $result);
+        assertSame('Renamed Inside', (string) $pdo->query('SELECT name FROM projects')->fetchColumn());
+        // Enforcement is untouched by the nested call, because it never toggled it.
+        assertSame('1', (string) $pdo->query('SELECT * FROM pragma_foreign_keys')->fetchColumn());
+    }
+
     private function countEdgesFrom(\PDO $pdo, string $sourceId): string
     {
         $statement = $pdo->prepare('SELECT COUNT(*) FROM edges WHERE source_id = :source');

@@ -35,6 +35,11 @@ final class SqliteGraphRepository implements GraphRepository
      * The graph tables a scan owns and the column identifying a row in each,
      * child-first so a delete never orphans a row it has not reached yet.
      */
+    /** Every table a graph rewrite writes, which is the scope its integrity check needs. */
+    private const REWRITTEN_TABLES = [
+        'files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics',
+    ];
+
     private const GRAPH_TABLES = [
         'boundary_memberships' => 'boundary_id',
         'boundaries' => 'id',
@@ -104,23 +109,31 @@ final class SqliteGraphRepository implements GraphRepository
         if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
             return $this->transaction($operation);
         }
+        $previous = (string) $this->pdo->query('PRAGMA foreign_keys')->fetchColumn();
         $this->pdo->exec('PRAGMA foreign_keys = OFF');
         try {
             return $this->transaction(function (GraphRepository $repository) use ($operation): mixed {
                 $result = $operation($repository);
-                $violations = $this->pdo->query('PRAGMA foreign_key_check')->fetchAll();
-                if ($violations !== []) {
-                    throw new RuntimeException(sprintf(
-                        'Refusing to commit a graph with %d dangling reference(s); the first is in table %s.',
-                        count($violations),
-                        (string) ($violations[0]['table'] ?? 'unknown'),
-                    ));
+                // Checked per table rather than database-wide: an unrelated
+                // table's pre-existing damage is not this rewrite's to fail on,
+                // and naming the table keeps the blame where it belongs.
+                foreach (self::REWRITTEN_TABLES as $table) {
+                    $violations = $this->pdo->query(sprintf('PRAGMA foreign_key_check(%s)', $table))->fetchAll();
+                    if ($violations !== []) {
+                        throw new RuntimeException(sprintf(
+                            'Refusing to commit a graph with %d dangling reference(s) in table %s.',
+                            count($violations),
+                            $table,
+                        ));
+                    }
                 }
 
                 return $result;
             });
         } finally {
-            $this->pdo->exec('PRAGMA foreign_keys = ON');
+            // Restored rather than forced on: a caller that had enforcement off
+            // did not ask this method to change that.
+            $this->pdo->exec('PRAGMA foreign_keys = ' . ($previous === '1' ? 'ON' : 'OFF'));
         }
     }
 

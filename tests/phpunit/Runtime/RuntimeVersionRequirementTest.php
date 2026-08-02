@@ -46,7 +46,7 @@ final class RuntimeVersionRequirementTest extends TestCase
 
     public function testAnUnparsableVersionIsRejected(): void
     {
-        $requirement = new RuntimeVersionRequirement('Python 3', '/^Python (3\.\d+)\./', '3.11');
+        $requirement = new RuntimeVersionRequirement('Python', '/^Python (\d+\.\d+)\./', '3.11');
 
         $error = self::assertThrowsWith(static fn() => $requirement->verify('command not found'), \RuntimeException::class);
 
@@ -73,16 +73,25 @@ final class RuntimeVersionRequirementTest extends TestCase
     {
         // '3.9' > '3.11' lexically, so a string comparison would wrongly accept
         // Python 3.9. The floor has to be compared as a version.
-        $requirement = new RuntimeVersionRequirement('Python 3', '/^Python (3\.\d+)\./', '3.11');
+        $requirement = new RuntimeVersionRequirement('Python', '/^Python (\d+\.\d+)\./', '3.11');
 
         self::assertThrowsWith(static fn() => $requirement->verify('Python 3.9.18'), \RuntimeException::class);
     }
 
     public function testSurroundingWhitespaceIsTrimmedFromTheAcceptedVersion(): void
     {
-        $requirement = new RuntimeVersionRequirement('Python 3', '/^Python (3\.\d+)\./', '3.11');
+        $requirement = new RuntimeVersionRequirement('Python', '/^Python (\d+\.\d+)\./', '3.11');
 
         assertSame('Python 3.12.3', $requirement->verify("  Python 3.12.3\n"));
+    }
+
+    public function testAFutureMajorIsAcceptedRatherThanReadAsUnparsable(): void
+    {
+        // A floor with no ceiling has to mean it: Python 4 is above 3.11, and
+        // failing to parse it would report a working runtime as unreadable.
+        $requirement = new RuntimeVersionRequirement('Python', '/^Python (\d+\.\d+)\./', '3.11');
+
+        assertSame('Python 4.0.1', $requirement->verify('Python 4.0.1'));
     }
 
     /**

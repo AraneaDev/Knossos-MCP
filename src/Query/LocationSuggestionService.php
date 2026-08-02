@@ -189,6 +189,11 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
             $sourceBoundaries = $boundariesByNode[$edge['source_id']] ?? [];
             $targetBoundaries = $boundariesByNode[$edge['target_id']] ?? [];
             foreach (array_values(array_unique([...$sourceBoundaries, ...$targetBoundaries])) as $boundaryId) {
+                if (!isset($cohesion[$boundaryId])) {
+                    // A membership can name a boundary beyond the boundary cap,
+                    // which is not a candidate and has no counters to move.
+                    continue;
+                }
                 ++$cohesion[$boundaryId]['incident'];
                 if (in_array($boundaryId, $sourceBoundaries, true) && in_array($boundaryId, $targetBoundaries, true)) {
                     ++$cohesion[$boundaryId]['internal'];
@@ -427,8 +432,11 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
                 'requested_mode' => $rankingMode, 'applied_mode' => 'deterministic', 'provider' => null,
                 'fallback_reason' => $rankingMode === 'semantic_if_available' ? 'provider_unavailable' : null,
             ], 'candidates' => [], 'bounds' => [
+                // Same shape the ranked response reports, so a consumer reading
+                // bounds does not have to branch on whether anything ranked.
                 'limit' => $limit, 'max_members' => $maxMembers, 'max_edges' => $maxEdges,
-                'timeout_ms' => $timeoutMs, 'truncation_reasons' => [],
+                'timeout_ms' => $timeoutMs, 'members_examined' => 0, 'edges_examined' => 0,
+                'truncation_reasons' => [],
             ]],
             [],
             ['Scan or configure boundaries before requesting a location suggestion.'],
@@ -468,6 +476,8 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
                 }
             }
         }
-        return array_keys($tokens);
+        // PHP turns a numeric string key into an int, so a description mentioning
+        // "2024" would yield a token the declared list<string> does not allow.
+        return array_map(strval(...), array_keys($tokens));
     }
 }

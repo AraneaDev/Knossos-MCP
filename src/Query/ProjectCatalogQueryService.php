@@ -297,11 +297,13 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $policyResult = null;
         $boundaryIndeterminate = false;
         if ($policies !== []) {
-            // Scanned at the largest bound the checker accepts. A gate exists to
-            // answer pass or fail, and it treats a truncated scan as neither —
-            // so at checkArchitecture's own 20,000-edge default the budget was
-            // unpassable on any larger graph, with no argument to raise it.
-            $policyResult = $this->policyQueries->checkArchitecture($projectId, $policies, limit: 100, maxEdges: 100_000);
+            // Scanned at the largest bounds the checker accepts, in both edges
+            // and time. A gate exists to answer pass or fail, and it treats a
+            // truncated scan as neither — so at checkArchitecture's own defaults
+            // the budget was unpassable on any larger graph, with no argument to
+            // raise either bound. Lifting only the edge ceiling would have left
+            // the deadline to become the ceiling in its place.
+            $policyResult = $this->policyQueries->checkArchitecture($projectId, $policies, limit: 100, maxEdges: 100_000, timeoutMs: 5000);
             $policyBounds = $policyResult->data['bounds'] ?? [];
             // Exact count past the collection limit; a budget of >=100 was
             // previously dead because the collected subset capped at 100.

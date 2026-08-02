@@ -29,7 +29,7 @@ final readonly class DoctorService
     private const FLOORS = [
         'php' => ['PHP', '/^(\d+\.\d+)\./', '8.3'],
         'node' => ['Node', '/^v(\d+)\./', '22'],
-        'python' => ['Python 3', '/^Python (3\.\d+)\./', '3.11'],
+        'python' => ['Python', '/^Python (\d+\.\d+)\./', '3.11'],
     ];
 
     public function __construct(private PDO $pdo, private string $installationRoot, private string $databasePath) {}

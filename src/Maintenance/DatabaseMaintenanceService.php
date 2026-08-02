@@ -173,7 +173,7 @@ final readonly class DatabaseMaintenanceService
      * Snapshots are the largest rows this schema holds, so without a rebuild the
      * file keeps the high-water mark of every graph ever archived into it.
      *
-     * @return array{reclaimed_pages: int, page_size: int, freed_bytes: int}
+     * @return array{reclaimed_pages: int, page_size: int, freed_bytes: int, log_truncated: bool}
      */
     private function vacuum(): array
     {
@@ -184,11 +184,20 @@ final readonly class DatabaseMaintenanceService
         $this->pdo->exec('VACUUM');
         // VACUUM rewrites every page through the write-ahead log, so without
         // this the reclaimed space reappears as a WAL the size of the database.
-        $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetchAll();
+        // The checkpoint can be blocked by a concurrent reader, and reporting
+        // freed bytes while the log still holds them would be a lie: its busy
+        // flag is carried out so the caller knows the file did not shrink.
+        $checkpoint = $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetch();
+        $blocked = is_array($checkpoint) && (int) reset($checkpoint) !== 0;
         $after = (int) $this->pdo->query('PRAGMA freelist_count')->fetchColumn();
         $reclaimed = max(0, $before - $after);
 
-        return ['reclaimed_pages' => $reclaimed, 'page_size' => $pageSize, 'freed_bytes' => $reclaimed * $pageSize];
+        return [
+            'reclaimed_pages' => $reclaimed,
+            'page_size' => $pageSize,
+            'freed_bytes' => $reclaimed * $pageSize,
+            'log_truncated' => !$blocked,
+        ];
     }
 
     /**

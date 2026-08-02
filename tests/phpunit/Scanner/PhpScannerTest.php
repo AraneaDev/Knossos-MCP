@@ -858,6 +858,25 @@ final class PhpScannerTest extends KnossosTestCase
                 && $tuple[2] === 'php:method:Fixture\\Ledger::record',
         ));
         assertSame(1, count($reassigned));
+
+        // Where the receiver's type is declared in another file, the scanner
+        // names the call it came from and leaves the resolution to the
+        // reconciler, which is the only place every file's returns are known.
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Accountant::postThroughAbsentFactory', 'php:method_of_return:Fixture\\Elsewhere\\Registry::current::record'],
+            $edgeTuples,
+        );
+        assertArrayContains(
+            ['calls', 'php:method:Fixture\\Accountant::postThroughParameter', 'php:method_of_return:Fixture\\Registrar::ledger::record'],
+            $edgeTuples,
+        );
+        // A ternary naming two different classes names no receiver at all.
+        assertSame([], array_values(array_filter(
+            $edgeTuples,
+            fn(array $tuple): bool => $tuple[1] === 'php:method:Fixture\\Accountant::postAmbiguously' && $tuple[0] === 'calls',
+        )));
+
+        $client->shutdown();
     }
 
 }

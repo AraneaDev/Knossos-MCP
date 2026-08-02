@@ -689,7 +689,7 @@ final readonly class ToolCatalog
             ],
             [
                 'name' => 'remove_project', 'title' => 'Remove project',
-                'description' => 'Delete a project and its stored graph. Preview by default; pass the confirm flag to actually remove. Use to clean up projects you no longer query.',
+                'description' => 'Delete a project and its stored graph. Preview by default; pass execute to actually remove. Use to clean up projects you no longer query.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'project_id' => ['type' => 'string', 'minLength' => 1],
                     'execute' => ['type' => 'boolean', 'default' => false],
@@ -708,7 +708,7 @@ final readonly class ToolCatalog
             ],
             [
                 'name' => 'maintain_database', 'title' => 'Maintain database',
-                'description' => 'Check integrity or run a checkpoint/optimize/backup of the graph store. Use for routine upkeep or before an upgrade.',
+                'description' => 'Check integrity, or run a checkpoint, optimize, vacuum, or backup of the graph store. Use for routine upkeep or before an upgrade; vacuum rebuilds the file to return space that deleted projects and aged-out snapshots left behind.',
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'action' => ['type' => 'string', 'enum' => ['integrity', 'checkpoint', 'optimize', 'vacuum', 'backup']],
                     'execute' => ['type' => 'boolean', 'default' => false],

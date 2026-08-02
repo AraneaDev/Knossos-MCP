@@ -519,7 +519,7 @@ Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`
 
 ## `remove_project`
 
-Delete a project and its stored graph. Preview by default; pass the confirm flag to actually remove. Use to clean up projects you no longer query.
+Delete a project and its stored graph. Preview by default; pass execute to actually remove. Use to clean up projects you no longer query.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -542,7 +542,7 @@ Annotations: read-only `no`; destructive `yes`; idempotent `yes`; open-world `no
 
 ## `maintain_database`
 
-Check integrity or run a checkpoint/optimize/backup of the graph store. Use for routine upkeep or before an upgrade.
+Check integrity, or run a checkpoint, optimize, vacuum, or backup of the graph store. Use for routine upkeep or before an upgrade; vacuum rebuilds the file to return space that deleted projects and aged-out snapshots left behind.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |

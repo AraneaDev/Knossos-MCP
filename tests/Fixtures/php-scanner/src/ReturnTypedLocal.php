@@ -12,6 +12,11 @@ final class Ledger
     }
 }
 
+interface Registrar
+{
+    public function ledger(): Ledger;
+}
+
 final class Bookkeeper
 {
     public function __construct(private Accountant $accountant) {}
@@ -72,6 +77,31 @@ final class Accountant
         $ledger = $enabled ? new Ledger() : null;
 
         return $ledger?->record($entry) ?? false;
+    }
+
+    public function postThroughAbsentFactory(string $entry): bool
+    {
+        // Declared in another file, so this file cannot name the receiver's
+        // type; the scanner reports the call it came from instead.
+        $ledger = \Fixture\Elsewhere\Registry::current();
+
+        return $ledger->record($entry);
+    }
+
+    public function postThroughParameter(Registrar $registrar, string $entry): bool
+    {
+        // The parameter's declared type is known here, but what its method
+        // returns is not, so the same deferred reference is reported.
+        return $registrar->ledger()->record($entry);
+    }
+
+    public function postAmbiguously(bool $flag, string $entry): bool
+    {
+        // Two different classes: nothing here names one receiver, so no call is
+        // attributed rather than one of the two being guessed at.
+        $target = $flag ? new Ledger() : new Accountant($entry);
+
+        return $target !== null && $entry !== '';
     }
 
     private function ledger(): Ledger

@@ -54,4 +54,33 @@ final class SnapshotPayloadTest extends TestCase
         $this->expectException(\RuntimeException::class);
         SnapshotPayload::decode(substr($encoded, 0, (int) (strlen($encoded) / 2)));
     }
+    public function testAPayloadThatOutgrowsItsCeilingIsAbandonedRatherThanCompressed(): void
+    {
+        // The ceiling exists so one enormous project cannot write an unbounded
+        // row. Past it the payload is discarded, so continuing to compress would
+        // spend exactly the effort the ceiling is there to avoid.
+        $writer = SnapshotPayload::writer(64);
+
+        $writer->write(str_repeat('a', 32));
+        assertSame(false, $writer->exceeded());
+        assertSame(32, $writer->byteSize());
+
+        $writer->write(str_repeat('b', 64));
+        assertSame(true, $writer->exceeded());
+
+        // Further writes are ignored, and the size stops at what was accepted.
+        $writer->write(str_repeat('c', 1024));
+        assertSame(true, $writer->exceeded());
+        assertSame(96, $writer->byteSize());
+    }
+
+    public function testAWriterUnderItsCeilingProducesADecodablePayload(): void
+    {
+        $writer = SnapshotPayload::writer(1024);
+        $writer->write('{"schema":1,');
+        $writer->write('"facts":{}}');
+
+        assertSame('{"schema":1,"facts":{}}', SnapshotPayload::decode($writer->finish()));
+    }
+
 }
