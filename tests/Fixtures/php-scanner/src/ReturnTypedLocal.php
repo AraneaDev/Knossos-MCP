@@ -14,7 +14,7 @@ final class Ledger
 
 interface Registrar
 {
-    public function ledger(): Ledger;
+    public function ledger(): \Fixture\Elsewhere\Ledger;
 }
 
 final class Bookkeeper
@@ -90,8 +90,9 @@ final class Accountant
 
     public function postThroughParameter(Registrar $registrar, string $entry): bool
     {
-        // The parameter's declared type is known here, but what its method
-        // returns is not, so the same deferred reference is reported.
+        // The parameter's declared type is known here, but the type its method
+        // returns is declared in another file, so the same deferred reference
+        // is reported and the reconciler resolves it.
         return $registrar->ledger()->record($entry);
     }
 

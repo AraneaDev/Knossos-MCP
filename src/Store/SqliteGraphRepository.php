@@ -416,6 +416,11 @@ final class SqliteGraphRepository implements GraphRepository
                 $writer->write(($first ? '' : ',') . self::json($row));
                 $first = false;
                 ++$factCount;
+                if ($writer->exceeded()) {
+                    // The payload is already being abandoned; reading and
+                    // encoding the rest of this table would be work for nothing.
+                    break;
+                }
             }
             $writer->write(']');
             if ($writer->exceeded()) {

@@ -32,7 +32,7 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
     }
 
     /** Rank where a described feature would fit the existing structure. */
-    public function suggestLocation(string $projectId, string $featureDescription, int $limit = 5, int $maxMembers = 20_000, int $maxEdges = 20_000, int $timeoutMs = 1000, string $rankingMode = 'deterministic'): ResultEnvelope
+    public function suggestLocation(string $projectId, string $featureDescription, int $limit = 5, int $maxMembers = 20_000, int $maxEdges = 100_000, int $timeoutMs = 1000, string $rankingMode = 'deterministic'): ResultEnvelope
     {
         $project = $this->project($projectId);
         $tokens = $this->assertArguments($featureDescription, $limit, $maxMembers, $maxEdges, $timeoutMs, $rankingMode);
@@ -276,7 +276,7 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
                     'role_relevance' => $roleScore, 'internal_dependency_cohesion' => $cohesionScore,
                     'internal_edges' => $cohesion[$boundary['id']]['internal'], 'incident_edges' => $incident,
                 ],
-                'matched_tokens' => array_keys($matchedTokens),
+                'matched_tokens' => array_map(strval(...), array_keys($matchedTokens)),
                 'related_members' => array_slice($related, 0, 5),
                 '_semantic_text' => substr($boundary['name'] . ' ' . implode(' ', array_map(
                     static fn(array $member): string => $member['canonical_name'] . ' ' . $member['display_name'],
@@ -429,8 +429,10 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
             $project['active_scan_id'],
             'No architecture boundaries are available for location ranking.',
             ['feature_description' => $featureDescription, 'tokens' => $tokens, 'ranking' => [
+                // No candidates means no ranking was attempted, so no provider
+                // can have been unavailable for it.
                 'requested_mode' => $rankingMode, 'applied_mode' => 'deterministic', 'provider' => null,
-                'fallback_reason' => $rankingMode === 'semantic_if_available' ? 'provider_unavailable' : null,
+                'fallback_reason' => null,
             ], 'candidates' => [], 'bounds' => [
                 // Same shape the ranked response reports, so a consumer reading
                 // bounds does not have to branch on whether anything ranked.
@@ -462,7 +464,7 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
         ];
         $tokens = [];
         foreach ($parts as $part) {
-            if (strlen($part) < 3 || in_array($part, $stopWords, true)) {
+            if (mb_strlen($part) < 3 || in_array($part, $stopWords, true)) {
                 continue;
             }
             $tokens[$part] = true;
@@ -471,7 +473,7 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
             // A description made entirely of stop words or short tokens still
             // deserves ranking; fall back to the permissive pre-filter set.
             foreach ($parts as $part) {
-                if (strlen($part) >= 2) {
+                if (mb_strlen($part) >= 2) {
                     $tokens[$part] = true;
                 }
             }

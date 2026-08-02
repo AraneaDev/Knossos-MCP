@@ -31,81 +31,85 @@ final class ReturnedReceiverTest extends KnossosTestCase
         if (!mkdir($root . '/src', 0o755, true)) {
             throw new \RuntimeException('Unable to create fixture tree.');
         }
-        file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/returned'], JSON_THROW_ON_ERROR));
-        file_put_contents($root . '/src/Attempt.php', <<<'PHP'
-            <?php
+        try {
+            file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/returned'], JSON_THROW_ON_ERROR));
+            file_put_contents($root . '/src/Attempt.php', <<<'PHP'
+                <?php
 
-            namespace Fixture;
+                namespace Fixture;
 
-            final class Attempt
-            {
-                public static function make(): self
+                final class Attempt
                 {
-                    return new self();
+                    public static function make(): self
+                    {
+                        return new self();
+                    }
+
+                    public function isTerminal(): bool
+                    {
+                        return true;
+                    }
+                }
+                PHP);
+            file_put_contents($root . '/src/Service.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                final class Registry
+                {
+                    public function latest(): Attempt
+                    {
+                        return Attempt::make();
+                    }
                 }
 
-                public function isTerminal(): bool
+                final class Service
                 {
-                    return true;
+                    public function run(): bool
+                    {
+                        $attempt = Attempt::make();
+
+                        return $attempt->isTerminal();
+                    }
+
+                    public function chained(): bool
+                    {
+                        return Attempt::make()->isTerminal();
+                    }
+
+                    public function viaCollaborator(Registry $registry): bool
+                    {
+                        return $registry->latest()->isTerminal();
+                    }
                 }
-            }
-            PHP);
-        file_put_contents($root . '/src/Service.php', <<<'PHP'
-            <?php
+                PHP);
+            $pdo = SqliteConnection::open($root . '/graph.sqlite');
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
 
-            namespace Fixture;
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full');
 
-            final class Registry
-            {
-                public function latest(): Attempt
-                {
-                    return Attempt::make();
-                }
-            }
+            $calls = $pdo->query(
+                "SELECT s.canonical_name AS source, t.canonical_name AS target, t.kind AS target_kind FROM edges e " .
+                "JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id " .
+                "WHERE e.kind = 'calls' AND t.display_name = 'isTerminal' ORDER BY s.canonical_name",
+            )->fetchAll();
 
-            final class Service
-            {
-                public function run(): bool
-                {
-                    $attempt = Attempt::make();
+            assertSame(
+                [
+                    ['source' => 'Fixture\\Service::chained', 'target' => 'Fixture\\Attempt::isTerminal', 'target_kind' => 'method'],
+                    ['source' => 'Fixture\\Service::run', 'target' => 'Fixture\\Attempt::isTerminal', 'target_kind' => 'method'],
+                    ['source' => 'Fixture\\Service::viaCollaborator', 'target' => 'Fixture\\Attempt::isTerminal', 'target_kind' => 'method'],
+                ],
+                array_map(static fn(array $row): array => ['source' => $row['source'], 'target' => $row['target'], 'target_kind' => $row['target_kind']], $calls),
+            );
 
-                    return $attempt->isTerminal();
-                }
-
-                public function chained(): bool
-                {
-                    return Attempt::make()->isTerminal();
-                }
-
-                public function viaCollaborator(Registry $registry): bool
-                {
-                    return $registry->latest()->isTerminal();
-                }
-            }
-            PHP);
-        $pdo = SqliteConnection::open($root . '/graph.sqlite');
-        (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
-
-        (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full');
-
-        $calls = $pdo->query(
-            "SELECT s.canonical_name AS source, t.canonical_name AS target, t.kind AS target_kind FROM edges e " .
-            "JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id " .
-            "WHERE e.kind = 'calls' AND t.display_name = 'isTerminal' ORDER BY s.canonical_name",
-        )->fetchAll();
-
-        assertSame(
-            [
-                ['source' => 'Fixture\\Service::chained', 'target' => 'Fixture\\Attempt::isTerminal', 'target_kind' => 'method'],
-                ['source' => 'Fixture\\Service::run', 'target' => 'Fixture\\Attempt::isTerminal', 'target_kind' => 'method'],
-                ['source' => 'Fixture\\Service::viaCollaborator', 'target' => 'Fixture\\Attempt::isTerminal', 'target_kind' => 'method'],
-            ],
-            array_map(static fn(array $row): array => ['source' => $row['source'], 'target' => $row['target'], 'target_kind' => $row['target_kind']], $calls),
-        );
-
-        unset($pdo);
-        $this->removeFixtureTree($root);
+        } finally {
+            unset($pdo);
+            $this->removeFixtureTree($root);
+        }
     }
+
     #[Group('php-scanner')]
     public function testAnInferenceTheGraphCannotConfirmLeavesNoEdgeBehind(): void
     {
@@ -115,52 +119,52 @@ final class ReturnedReceiverTest extends KnossosTestCase
         // it were an observation.
         $root = sys_get_temp_dir() . '/knossos-incremental-returned-' . bin2hex(random_bytes(6));
         try {
-            if (!mkdir($root . '/src', 0o755, true)) {
-                throw new \RuntimeException('Unable to create fixture tree.');
-            }
-            file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/unconfirmed'], JSON_THROW_ON_ERROR));
-            file_put_contents($root . '/src/Service.php', <<<'PHP'
-                <?php
-
-                namespace Fixture;
-
-                final class Service
-                {
-                    public function unknownFactory(): mixed
-                    {
-                        // Nothing in the project declares Vendor\Client, so the
-                        // call it is said to return cannot be resolved.
-                        $client = \Vendor\Client::make();
-
-                        return $client->send();
+                    if (!mkdir($root . '/src', 0o755, true)) {
+                        throw new \RuntimeException('Unable to create fixture tree.');
                     }
+                    file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/unconfirmed'], JSON_THROW_ON_ERROR));
+                    file_put_contents($root . '/src/Service.php', <<<'PHP'
+                        <?php
 
-                    public function untypedFactory(): mixed
-                    {
-                        // Declared here, but with no return type to follow.
-                        $thing = self::build();
+                        namespace Fixture;
 
-                        return $thing->use();
-                    }
+                        final class Service
+                        {
+                            public function unknownFactory(): mixed
+                            {
+                                // Nothing in the project declares Vendor\Client, so the
+                                // call it is said to return cannot be resolved.
+                                $client = \Vendor\Client::make();
 
-                    public static function build(): mixed
-                    {
-                        return null;
-                    }
-                }
-                PHP);
-            $pdo = SqliteConnection::open($root . '/graph.sqlite');
-            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+                                return $client->send();
+                            }
 
-            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full');
+                            public function untypedFactory(): mixed
+                            {
+                                // Declared here, but with no return type to follow.
+                                $thing = self::build();
 
-            // No node, external or otherwise, is invented for the unresolved members.
-            assertSame(0, (int) $pdo->query(
-                "SELECT COUNT(*) FROM nodes WHERE canonical_name LIKE '%method_of_return%' OR display_name IN ('send', 'use')",
-            )->fetchColumn());
-            assertSame(0, (int) $pdo->query(
-                "SELECT COUNT(*) FROM edges e JOIN nodes t ON t.id = e.target_id WHERE t.display_name IN ('send', 'use')",
-            )->fetchColumn());
+                                return $thing->use();
+                            }
+
+                            public static function build(): mixed
+                            {
+                                return null;
+                            }
+                        }
+                        PHP);
+                    $pdo = SqliteConnection::open($root . '/graph.sqlite');
+                    (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+
+                    (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full');
+
+                    // No node, external or otherwise, is invented for the unresolved members.
+                    assertSame(0, (int) $pdo->query(
+                        "SELECT COUNT(*) FROM nodes WHERE canonical_name LIKE '%method_of_return%' OR display_name IN ('send', 'use')",
+                    )->fetchColumn());
+                    assertSame(0, (int) $pdo->query(
+                        "SELECT COUNT(*) FROM edges e JOIN nodes t ON t.id = e.target_id WHERE t.display_name IN ('send', 'use')",
+                    )->fetchColumn());
         } finally {
             unset($pdo);
             $this->removeFixtureTree($root);

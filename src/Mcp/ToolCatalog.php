@@ -712,7 +712,7 @@ final readonly class ToolCatalog
                 'inputSchema' => ['type' => 'object', 'properties' => [
                     'action' => ['type' => 'string', 'enum' => ['integrity', 'checkpoint', 'optimize', 'vacuum', 'backup']],
                     'execute' => ['type' => 'boolean', 'default' => false],
-                    'backup_name' => ['type' => 'string', 'minLength' => 8, 'maxLength' => 127, 'pattern' => '^[A-Za-z0-9._-]+\\.sqlite$', 'description' => 'A plain filename ending in .sqlite, with no directory part; the backup is written inside the server\'s data directory.'],
+                    'backup_name' => ['type' => 'string', 'minLength' => 8, 'maxLength' => 127, 'pattern' => '^[A-Za-z0-9][A-Za-z0-9._-]{0,119}\\.sqlite$', 'description' => 'A plain filename ending in .sqlite, with no directory part; the backup is written inside the server\'s data directory.'],
                 ], 'required' => ['action'], 'additionalProperties' => false],
                 'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => false, 'openWorldHint' => false],
             ],
