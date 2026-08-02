@@ -1,9 +1,21 @@
 #!/usr/bin/env node
 
 import { createInterface } from "node:readline";
-import { TypeScriptScanner } from "../src/scanner.js";
 
-const scanner = new TypeScriptScanner();
+// The scanner pulls in the TypeScript compiler, which costs about 190ms of the
+// ~220ms this worker used to take to answer `initialize` — paid on every scan,
+// including the ones where no TypeScript file changed and the compiler is never
+// asked to parse anything. Loaded on first use instead, so the handshake and
+// shutdown cost only Node's own startup.
+let scanner = null;
+async function loadScanner() {
+    if (scanner === null) {
+        const { TypeScriptScanner } = await import("../src/scanner.js");
+        scanner = new TypeScriptScanner();
+    }
+    return scanner;
+}
+
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 
 for await (const line of input) {
@@ -13,7 +25,7 @@ for await (const line of input) {
         if (!request || Array.isArray(request) || typeof request !== "object") {
             throw new Error("Request must be a JSON object.");
         }
-        handle(request);
+        await handle(request);
     } catch (error) {
         write({
             jsonrpc: "2.0",
@@ -26,7 +38,7 @@ for await (const line of input) {
     }
 }
 
-function handle(request) {
+async function handle(request) {
     const { method, id, params = {} } = request;
     if (
         typeof method !== "string" ||
@@ -62,10 +74,10 @@ function handle(request) {
             };
             break;
         case "discover":
-            result = scanner.discover(params);
+            result = (await loadScanner()).discover(params);
             break;
         case "scan":
-            result = scanner.scan(params, (contribution) => {
+            result = (await loadScanner()).scan(params, (contribution) => {
                 write({
                     jsonrpc: "2.0",
                     method: "scan/contribution",
