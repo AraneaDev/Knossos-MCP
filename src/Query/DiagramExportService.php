@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use InvalidArgumentException;
-use PDO;
 
 /**
  * Renders a slice of the graph as Mermaid or PlantUML source.
@@ -15,6 +14,70 @@ use PDO;
  */
 final readonly class DiagramExportService extends AbstractArchitectureQueryService
 {
+    /**
+     * How many candidates the slice may be grown from, whatever `max_nodes` is.
+     *
+     * The pool is loaded with its edges to choose a connected slice, so it is
+     * bounded independently of the diagram's own node cap.
+     */
+    private const int MAX_CANDIDATE_POOL = 2000;
+
+    /**
+     * Choose up to `$maxNodes` nodes that are actually connected to each other.
+     *
+     * Ranking by degree alone is not enough: the highest-degree nodes in a real
+     * codebase are hubs whose neighbours are spread across everything else, so
+     * the top N of them share almost no edges and the diagram comes out as a
+     * page of unconnected boxes. This seeds on the busiest node and then
+     * repeatedly takes whichever candidate is most strongly attached to what is
+     * already chosen, falling back to the next busiest when nothing connects —
+     * which is what starts a second component rather than stalling.
+     *
+     * @param list<array<string, mixed>> $pool candidates, most connected first
+     * @param list<array<string, mixed>> $poolEdges distinct edges within the pool
+     * @return list<array<string, mixed>>
+     */
+    private function selectSlice(array $pool, array $poolEdges, int $maxNodes): array
+    {
+        if (count($pool) <= $maxNodes) {
+            return $pool;
+        }
+        $neighbours = [];
+        foreach ($poolEdges as $edge) {
+            $neighbours[$edge['source_id']][] = $edge['target_id'];
+            $neighbours[$edge['target_id']][] = $edge['source_id'];
+        }
+        $byId = array_column($pool, null, 'id');
+        $selected = [];
+        $attachment = [];
+        $remaining = $byId;
+        while (count($selected) < $maxNodes && $remaining !== []) {
+            $bestId = null;
+            $bestAttachment = -1;
+            foreach ($remaining as $id => $_) {
+                // $remaining preserves the pool's degree-then-name order, so
+                // the first candidate at a given attachment wins the tie and
+                // the export stays deterministic.
+                if (($attachment[$id] ?? 0) > $bestAttachment) {
+                    $bestAttachment = $attachment[$id] ?? 0;
+                    $bestId = $id;
+                }
+            }
+            if ($bestId === null) {
+                break;
+            }
+            $selected[$bestId] = $byId[$bestId];
+            unset($remaining[$bestId]);
+            foreach ($neighbours[$bestId] ?? [] as $neighbour) {
+                if (isset($remaining[$neighbour])) {
+                    $attachment[$neighbour] = ($attachment[$neighbour] ?? 0) + 1;
+                }
+            }
+        }
+
+        return array_values($selected);
+    }
+
     /**
      * Render a bounded slice of the graph as Mermaid or PlantUML.
      *
@@ -51,46 +114,79 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
             $statement->execute(['project' => $projectId]);
             $boundaryId = $this->resolvePolicyBoundary($boundary, $statement->fetchAll());
         }
-        $sql = 'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.start_line, n.end_line, f.relative_path ' .
-            'FROM nodes n LEFT JOIN files f ON f.id = n.file_id WHERE n.project_id = :project';
+        // Ranked by how connected each node is, because a bounded diagram of a
+        // real codebase has to choose, and the alphabetically-first nodes are
+        // rarely the ones whose relationships explain anything — truncating on
+        // name produced pages of unconnected boxes.
+        $kindPlaceholders = implode(',', array_fill(0, count($edgeKinds), '?'));
+        $confidenceCase = "CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER)";
+        $degreeSql = sprintf(
+            'SELECT node_id, COUNT(*) AS degree FROM (' .
+            'SELECT source_id AS node_id FROM edges WHERE project_id = ? AND kind IN (%s) AND %s ' .
+            'UNION ALL ' .
+            'SELECT target_id AS node_id FROM edges WHERE project_id = ? AND kind IN (%s) AND %s' .
+            ') GROUP BY node_id',
+            $kindPlaceholders,
+            $confidenceCase,
+            $kindPlaceholders,
+            $confidenceCase,
+        );
+        $sql = 'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.start_line, n.end_line, f.relative_path, ' .
+            'COALESCE(d.degree, 0) AS degree ' .
+            'FROM nodes n LEFT JOIN files f ON f.id = n.file_id ' .
+            'LEFT JOIN (' . $degreeSql . ') d ON d.node_id = n.id ' .
+            'WHERE n.project_id = ?';
+        $nodeParams = [
+            $projectId, ...$edgeKinds, $rank[$minConfidence],
+            $projectId, ...$edgeKinds, $rank[$minConfidence],
+            $projectId,
+        ];
         if ($boundaryId !== null) {
-            $sql .= ' AND EXISTS (SELECT 1 FROM boundary_memberships bm WHERE bm.node_id = n.id AND bm.boundary_id = :boundary)';
-            $params['boundary'] = $boundaryId;
+            $sql .= ' AND EXISTS (SELECT 1 FROM boundary_memberships bm WHERE bm.node_id = n.id AND bm.boundary_id = ?)';
+            $nodeParams[] = $boundaryId;
         }
-        $sql .= ' ORDER BY n.canonical_name, n.id LIMIT :limit';
+        // Name and id break ties so the export stays deterministic. The pool is
+        // wider than the slice so the selection below has neighbours to grow
+        // into rather than only the very top of the degree ranking.
+        $poolSize = min(self::MAX_CANDIDATE_POOL, $maxNodes * 8);
+        $sql .= ' ORDER BY degree DESC, n.canonical_name, n.id LIMIT ?';
+        $nodeParams[] = max($poolSize, $maxNodes + 1);
         $statement = $this->pdo->prepare($sql);
-        foreach ($params as $key => $value) {
-            $statement->bindValue(':' . $key, $value);
-        }
-        $statement->bindValue(':limit', $maxNodes + 1, PDO::PARAM_INT);
-        $statement->execute();
-        $rows = $statement->fetchAll();
-        $truncated = count($rows) > $maxNodes;
+        $statement->execute($nodeParams);
+        $pool = $statement->fetchAll();
+        $truncated = count($pool) > $maxNodes;
         $reasons = $truncated ? ['node_limit'] : [];
-        $rows = array_slice($rows, 0, $maxNodes);
+
+        $poolEdges = [];
+        if ($pool !== []) {
+            $poolIds = array_column($pool, 'id');
+            $poolPlaceholders = implode(',', array_fill(0, count($poolIds), '?'));
+            // DISTINCT: a relationship written at ten call sites is ten edges
+            // but one arrow, and rendering it ten times drew ten overlapping
+            // arrows while spending ten of the caller's max_edges budget.
+            $statement = $this->pdo->prepare(
+                'SELECT DISTINCT kind, source_id, target_id FROM edges WHERE project_id = ? ' .
+                sprintf('AND source_id IN (%s) AND target_id IN (%s) AND kind IN (%s) ', $poolPlaceholders, $poolPlaceholders, $kindPlaceholders) .
+                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+                'ORDER BY source_id, target_id, kind',
+            );
+            $statement->execute([$projectId, ...$poolIds, ...$poolIds, ...$edgeKinds, $rank[$minConfidence]]);
+            $poolEdges = $statement->fetchAll();
+        }
+        $rows = $this->selectSlice($pool, $poolEdges, $maxNodes);
         $nodes = [];
         foreach ($rows as $row) {
             $nodes[$row['id']] = $row;
         }
-        $edges = [];
-        if ($nodes !== []) {
-            $nodeIds = array_keys($nodes);
-            $nodePlaceholders = implode(',', array_fill(0, count($nodeIds), '?'));
-            $kindPlaceholders = implode(',', array_fill(0, count($edgeKinds), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT id, kind, source_id, target_id, confidence FROM edges WHERE project_id = ? ' .
-                sprintf('AND source_id IN (%s) AND target_id IN (%s) AND kind IN (%s) ', $nodePlaceholders, $nodePlaceholders, $kindPlaceholders) .
-                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-                'ORDER BY source_id, target_id, kind, id LIMIT ?',
-            );
-            $statement->execute([$projectId, ...$nodeIds, ...$nodeIds, ...$edgeKinds, $rank[$minConfidence], $maxEdges + 1]);
-            $edges = $statement->fetchAll();
-            if (count($edges) > $maxEdges) {
-                $truncated = true;
-                $reasons[] = 'edge_limit';
-            }
-            $edges = array_slice($edges, 0, $maxEdges);
+        $edges = array_values(array_filter(
+            $poolEdges,
+            static fn(array $edge): bool => isset($nodes[$edge['source_id']], $nodes[$edge['target_id']]),
+        ));
+        if (count($edges) > $maxEdges) {
+            $truncated = true;
+            $reasons[] = 'edge_limit';
         }
+        $edges = array_slice($edges, 0, $maxEdges);
         $aliases = [];
         foreach (array_keys($nodes) as $index => $id) {
             $aliases[$id] = 'n' . ($index + 1);
