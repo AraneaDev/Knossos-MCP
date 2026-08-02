@@ -320,8 +320,17 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             $discovered = [];
             foreach (array_chunk($pending, 500) as $chunk) {
                 $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                // `returns` joins the walk because a factory returning an object
+                // literal is how a language without classes writes an
+                // implementation: the literal's members are contained by the
+                // FUNCTION, and a call site typed as the interface resolves to
+                // the interface's member, so the literal's member has no inbound
+                // edge and reads as dead. The function's declared return type is
+                // the contract it satisfies, which is exactly what `extends` and
+                // `implements` say for a class. Only a function carries a
+                // `returns` edge, so the class case is untouched.
                 $statement = $this->pdo->prepare(
-                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends') " .
+                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('implements', 'extends', 'returns') " .
                     sprintf('AND source_id IN (%s)', $placeholders),
                 );
                 $statement->execute([$projectId, ...$chunk]);

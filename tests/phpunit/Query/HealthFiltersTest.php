@@ -89,6 +89,56 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(1, $data['bounds']['excluded_inherited_methods']);
     }
 
+    /**
+     * A factory returning an object literal is how TypeScript writes an
+     * implementation without a class, and the members of that literal are
+     * contained by the FUNCTION rather than by a type. A call site typed as the
+     * interface resolves to the interface's member, so the literal's member
+     * carries no inbound edge and read as dead code — Chaos-MCP carries a
+     * hand-written suppression for exactly one of these.
+     *
+     * The ancestor walk already had what it needed: the function declares a
+     * `returns` edge to the interface. A class never has one, so following it
+     * costs the class case nothing.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesAnObjectLiteralMemberSatisfyingTheReturnedInterface(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $policy = StableId::symbol($ids['project'], 'typescript', 'interface', 'src/policy.ts#CopyPolicy');
+        $policyMember = StableId::symbol($ids['project'], 'typescript', 'method', 'src/policy.ts#CopyPolicy::shouldCopy');
+        $factory = StableId::symbol($ids['project'], 'typescript', 'function', 'src/policy.ts#buildCopyPolicy');
+        $literalMember = StableId::symbol($ids['project'], 'typescript', 'method', 'src/policy.ts#buildCopyPolicy::shouldCopy');
+        foreach ([
+            [$policy, 'interface', 'src/policy.ts#CopyPolicy', 'CopyPolicy'],
+            [$policyMember, 'method', 'src/policy.ts#CopyPolicy::shouldCopy', 'shouldCopy'],
+            [$factory, 'function', 'src/policy.ts#buildCopyPolicy', 'buildCopyPolicy'],
+            [$literalMember, 'method', 'src/policy.ts#buildCopyPolicy::shouldCopy', 'shouldCopy'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'typescript', $kind, $canonical, $display, null, $file, 1, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $edges = [
+            ['contains', $policy, $policyMember, 'c1'],
+            ['contains', $factory, $literalMember, 'c2'],
+            // What the scanner already emits for `function build(): CopyPolicy`.
+            ['returns', $factory, $policy, 'r1'],
+            // A caller typed as the interface reaches the interface's member.
+            ['calls', $ids['checkout'], $policyMember, 'k1'],
+        ];
+        foreach ($edges as [$kind, $from, $to, $seed]) {
+            $repository->saveEdge(StableId::edge($ids['project'], $kind, $from, $to, $seed), $ids['project'], $kind, $from, $to, $file, 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $candidateNames = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('src/policy.ts#buildCopyPolicy::shouldCopy', $candidateNames, true));
+        assertSame(1, $data['bounds']['excluded_inherited_methods']);
+    }
+
     #[Group('query')]
     public function testDeadCodeDemotesMethodsOfClassesWithExternalAncestors(): void
     {
