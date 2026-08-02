@@ -1673,6 +1673,76 @@ final class GraphReconcilerTest extends TestCase
         assertSame(0, $result->unresolvedNodes);
     }
 
+    /**
+     * A scanner reading one file sees `$x = $this->make(); $x->use()` and names
+     * the factory against the class it is *called on*. When `make()` is declared
+     * by a trait the class uses, or by the class it extends, the deferred
+     * reference names a method that does not exist under that name and every
+     * call on the result was dropped — which is why this repository's own
+     * `ProcessScannerClient::stderr` read as unreferenced while a test called it
+     * through a trait-provided factory.
+     */
+    #[Group('reconciliation')]
+    public function testDeferredReceiverResolvesThroughATraitProvidedFactory(): void
+    {
+        $result = $this->reconcileDeferredFactory('uses_trait', 'trait', 'Fixture\\FactoryTrait');
+
+        assertSame(1, $result['resolved']);
+        assertSame(0, $result['unresolved']);
+    }
+
+    #[Group('reconciliation')]
+    public function testDeferredReceiverResolvesThroughAnInheritedFactory(): void
+    {
+        $result = $this->reconcileDeferredFactory('extends', 'class', 'Fixture\\BaseFactory');
+
+        assertSame(1, $result['resolved']);
+        assertSame(0, $result['unresolved']);
+    }
+
+    /**
+     * Reconcile a graph where `Fixture\Consumer` reaches `make()` through the
+     * given composition edge, and a call is deferred against its return type.
+     *
+     * @return array{resolved: int, unresolved: int}
+     */
+    private function reconcileDeferredFactory(string $compositionKind, string $declarerKind, string $declarer): array
+    {
+        $declarerReference = 'php:' . $declarerKind . ':' . $declarer;
+        $nodes = [
+            $this->minimalNode($declarerReference, $declarer),
+            $this->minimalNode('php:method:' . $declarer . '::make', $declarer . '::make'),
+            $this->minimalNode('php:class:Fixture\\Consumer', 'Fixture\\Consumer'),
+            $this->minimalNode('php:method:Fixture\\Consumer::run', 'Fixture\\Consumer::run'),
+            $this->minimalNode('php:class:Fixture\\Product', 'Fixture\\Product'),
+            $this->minimalNode('php:method:Fixture\\Product::use', 'Fixture\\Product::use'),
+        ];
+        $edge = fn(string $kind, string $from, string $to, int $line): EdgeFact => new EdgeFact(
+            kind: $kind,
+            sourceReference: $from,
+            targetReference: $to,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', $line, $line),
+        );
+        $edges = [
+            $edge($compositionKind, 'php:class:Fixture\\Consumer', $declarerReference, 1),
+            $edge('returns', 'php:method:' . $declarer . '::make', 'php:class:Fixture\\Product', 2),
+            // The call the scanner could only name against Consumer.
+            $edge('calls', 'php:method:Fixture\\Consumer::run', 'php:method_of_return:Fixture\\Consumer::make::use', 3),
+        ];
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        // Three edges in, three edges out means the deferred one resolved; had
+        // it been dropped only the two composition/returns edges would survive.
+        return ['resolved' => $result->edges - 2, 'unresolved' => $result->unresolvedNodes];
+    }
+
     private function buildRequest(array $overrides = []): FullScanRequest
     {
         $args = array_merge($this->minimalRequestArgs(), $overrides);

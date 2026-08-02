@@ -371,7 +371,7 @@ final readonly class GraphReconciler
 
                 $deferred = str_contains($edge->targetReference, ':method_of_return:');
                 $reference = $deferred
-                    ? $this->returnedMemberReference($edge->targetReference, $returnTypes)
+                    ? $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources)
                     : $edge->targetReference;
                 $targetId = $reference === null ? null : ($nodeMap[$reference]
                     ?? $this->aliasedTypeTarget($reference, $nodeMap)
@@ -447,8 +447,9 @@ final readonly class GraphReconciler
      * one the graph knows, which is the caller's cue to drop the edge.
      *
      * @param array<string, string> $returnTypes
+     * @param array<string, list<string>> $inheritanceSources
      */
-    private function returnedMemberReference(string $reference, array $returnTypes): ?string
+    private function returnedMemberReference(string $reference, array $returnTypes, array $inheritanceSources): ?string
     {
         $parts = explode(':', $reference, 3);
         if (count($parts) !== 3 || $parts[1] !== 'method_of_return') {
@@ -464,7 +465,8 @@ final readonly class GraphReconciler
         if ($callee === '' || $member === '') {
             return null;
         }
-        $returned = $returnTypes[$language . ':method:' . $callee] ?? null;
+        $returned = $returnTypes[$language . ':method:' . $callee]
+            ?? $this->inheritedReturnType($language, $callee, $returnTypes, $inheritanceSources);
         if ($returned === null) {
             return null;
         }
@@ -475,6 +477,38 @@ final readonly class GraphReconciler
         return count($returnedParts) === 3 && $returnedParts[2] !== ''
             ? $language . ':method:' . $returnedParts[2] . '::' . $member
             : null;
+    }
+
+    /**
+     * The declared return type of a factory the named type reaches through a trait or an ancestor.
+     *
+     * A scanner names `$this->make()` against the class the call is written in,
+     * so a factory a trait or a parent provides is looked up under a name it
+     * was never declared with. Without this, every call on that factory's
+     * result is dropped — trait-heavy suites and framework base classes lose
+     * whole call chains that way.
+     *
+     * @param array<string, string> $returnTypes
+     * @param array<string, list<string>> $inheritanceSources
+     */
+    private function inheritedReturnType(string $language, string $callee, array $returnTypes, array $inheritanceSources): ?string
+    {
+        $separator = strrpos($callee, '::');
+        if ($separator === false) {
+            return null;
+        }
+        $type = substr($callee, 0, $separator);
+        $member = substr($callee, $separator + 2);
+        if ($type === '' || $member === '') {
+            return null;
+        }
+
+        return $this->throughComposition(
+            $language,
+            $type,
+            $inheritanceSources,
+            fn(string $declaringType): ?string => $returnTypes[$language . ':method:' . $declaringType . '::' . $member] ?? null,
+        );
     }
 
     /**
@@ -621,8 +655,30 @@ final readonly class GraphReconciler
             return null;
         }
 
-        // The reference carries the member's kind, not the declaring type's, so
-        // every type kind that could inherit members is tried.
+        return $this->throughComposition(
+            $language,
+            $type,
+            $inheritanceSources,
+            fn(string $declaringType): ?string => $nodeMap[$language . ':' . $kind . ':' . $declaringType . '::' . $member] ?? null,
+        );
+    }
+
+    /**
+     * Walk a type's traits, parents, and interfaces, returning the first
+     * declaring type for which `$probe` yields a result.
+     *
+     * Breadth-first from the type's own composition outwards, so the nearest
+     * declaration wins, and depth-bounded so a cyclic contribution cannot hang
+     * the reconcile. `$probe` receives each candidate declaring type's
+     * canonical name and returns null when it declares nothing of interest.
+     *
+     * @param array<string, list<string>> $inheritanceSources
+     * @param callable(string): ?string $probe
+     */
+    private function throughComposition(string $language, string $type, array $inheritanceSources, callable $probe): ?string
+    {
+        // A reference carries the member's kind, not the declaring type's, so
+        // every type kind that could contribute members is tried.
         $frontier = [];
         foreach (self::TYPE_KINDS as $typeKind) {
             foreach ($inheritanceSources[$language . ':' . $typeKind . ':' . $type] ?? [] as $source) {
@@ -641,7 +697,7 @@ final readonly class GraphReconciler
                 if (count($sourceParts) !== 3 || $sourceParts[0] !== $language) {
                     continue;
                 }
-                $candidate = $nodeMap[$language . ':' . $kind . ':' . $sourceParts[2] . '::' . $member] ?? null;
+                $candidate = $probe($sourceParts[2]);
                 if ($candidate !== null) {
                     return $candidate;
                 }
