@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.10.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.1...v0.10.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* **mcp:** drop project staleness from server-scoped tools ([4e094bc](https://github.com/AraneaDev/Knossos-MCP/commit/4e094bcaf2484667ce6108e3cc02873b0cc820bf))
+* **query,scanner:** address the review findings on flow, tokens and reads ([d1c3cd3](https://github.com/AraneaDev/Knossos-MCP/commit/d1c3cd31ab99a2e237caf38b7b33842bc910737e))
+* **query:** dedupe flow paths and exclude script modules from dead code ([1c68473](https://github.com/AraneaDev/Knossos-MCP/commit/1c684735fe2f3798bff964863b054072cdf60eeb))
+* **query:** drop test components from the agent brief's entry points ([63eb105](https://github.com/AraneaDev/Knossos-MCP/commit/63eb105846a607be36ed8af114f01dc4bc2593cd))
+* **query:** grow diagrams along relationships and draw one arrow per edge ([0d77ed3](https://github.com/AraneaDev/Knossos-MCP/commit/0d77ed3c0753636cfb4297516bab687095e10307))
+* **query:** let the architecture context summary reclaim spare budget ([0ca844e](https://github.com/AraneaDev/Knossos-MCP/commit/0ca844ed21a1f969c7dcef06f082af603cf8b5c3))
+* **query:** rank locations by relevance density and match identifier words ([a0afb61](https://github.com/AraneaDev/Knossos-MCP/commit/a0afb6113c04f86586cf576f24966243c8de19e9))
+* **query:** report the true usage total when results are capped ([a08f282](https://github.com/AraneaDev/Knossos-MCP/commit/a08f28284ac25c18b09d2736bfee4af15e998e31))
+* **query:** stop the quality gate counting entry scripts as unreferenced ([aa4a084](https://github.com/AraneaDev/Knossos-MCP/commit/aa4a084dba3d085f6874a5c7fb2f34c9e8ff80e7))
+* **query:** treat a returned interface as the contract a factory satisfies ([57fb18d](https://github.com/AraneaDev/Knossos-MCP/commit/57fb18d286ca3d5aff77f7392df0b3945b15e81c))
+* **reconciliation:** resolve deferred receivers through traits and ancestors ([36c9570](https://github.com/AraneaDev/Knossos-MCP/commit/36c9570f86b1dbfd8318161d88195aaaef61511d))
+* scanner and query accuracy findings from real-project runs ([185deaa](https://github.com/AraneaDev/Knossos-MCP/commit/185deaa4ac705e080f798e7ee7309dacaec85320))
+* **scanner:** attribute PHP file-scope calls to a file module node ([f082738](https://github.com/AraneaDev/Knossos-MCP/commit/f082738311cf812e574a2c1c1faf311ecaa8aad5))
+* **scanner:** key React and Vue roles on JSX and imports, not file extension ([8f3824e](https://github.com/AraneaDev/Knossos-MCP/commit/8f3824e4155f74a500e3707e4b266cac7c93dd94))
+* **scanner:** mark Python and TypeScript script modules executable ([413299c](https://github.com/AraneaDev/Knossos-MCP/commit/413299c9608e2e42d7ba14cbe3271635c7c02c8e))
+* **scanner:** resolve unqualified function calls against their namespace ([ca7aff7](https://github.com/AraneaDev/Knossos-MCP/commit/ca7aff78a3ee11acd92e3a6a126e9596f6ecb6f0))
+* **scanner:** spell the byte-order mark out instead of importing codecs ([4d7cb9a](https://github.com/AraneaDev/Knossos-MCP/commit/4d7cb9abb982d7ab63baf0e8ce48f202017c7d7e))
+
 ## [0.10.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.0...v0.10.1) (2026-08-02)
 
 
