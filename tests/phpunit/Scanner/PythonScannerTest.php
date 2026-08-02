@@ -206,6 +206,115 @@ final class PythonScannerTest extends KnossosTestCase
     }
 
     #[Group('python-scanner')]
+    public function testPythonWorkerResolvesReceiversThroughWhatTheyHold(): void
+    {
+        // Receiver resolution is only reachable through a real parse, so it is
+        // exercised end to end here rather than against the collector: every
+        // way a name comes to hold a class -- annotation, construction,
+        // assignment from another name -- and the reassignment that takes it
+        // away again.
+        $root = sys_get_temp_dir() . '/knossos-python-receiver-' . bin2hex(random_bytes(6));
+        if (!mkdir($root, 0o700, true)) {
+            throw new RuntimeException('Unable to create Python receiver fixture.');
+        }
+        // Each receiver calls a different member: identical relationships are
+        // deduplicated, so a shared member would hide every failure but one.
+        file_put_contents($root . '/mod.py', <<<'PYTHON'
+class Helper:
+    def injected_call(self) -> None: ...
+
+    def built_call(self) -> None: ...
+
+    def typed_call(self) -> None: ...
+
+    def stored_call(self) -> None: ...
+
+    def copied_call(self) -> None: ...
+
+    def annotated_call(self) -> None: ...
+
+    def param_call(self) -> None: ...
+
+    def dropped_call(self) -> None: ...
+
+
+def orphan(seed: Helper) -> None:
+    # No enclosing class, so there is no attribute map to record into.
+    self.orphan = seed
+
+
+class Owner:
+    def __init__(self, injected: Helper) -> None:
+        self.injected = injected
+        self.built = Helper()
+        self.typed: Helper = Helper()
+
+    def run(self, passed: Helper, source) -> None:
+        local = Helper()
+        copied = local
+        annotated: Helper = Helper()
+        paired = also = Helper()
+        self.stored = local
+        self.injected.injected_call()
+        self.built.built_call()
+        self.typed.typed_call()
+        self.stored.stored_call()
+        copied.copied_call()
+        annotated.annotated_call()
+        passed.param_call()
+        dropped = passed
+        dropped = source.anything()
+        dropped.dropped_call()
+        # Last, so the calls above still see what the attribute held: an
+        # attribute reassigned to something untracked is given up too.
+        self.built = source.anything()
+PYTHON);
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['mod.py']]));
+            $client->shutdown();
+
+            assertSame(1, count($contributions));
+            assertSame([], $contributions[0]->diagnostics);
+            $edges = array_map(
+                fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+                $contributions[0]->edges,
+            );
+            foreach ([
+                'injected_call',  // an annotated parameter stored on the instance
+                'built_call',     // an attribute constructed in place
+                'typed_call',     // an annotated attribute
+                'stored_call',    // an attribute assigned from a tracked local
+                'copied_call',    // a local assigned from another local
+                'annotated_call', // an annotated local
+                'param_call',     // an annotated parameter, called directly
+            ] as $member) {
+                assertArrayContains(
+                    ['calls', 'py:method:mod.Owner::run', 'py:method:mod.Helper::' . $member],
+                    $edges,
+                );
+            }
+            // `dropped` held the parameter's class until it was reassigned to
+            // something untracked. Neither the local nor the annotation may
+            // answer for it afterwards.
+            assertSame([], array_values(array_filter(
+                $edges,
+                fn(array $edge): bool => $edge[0] === 'calls' && $edge[2] === 'py:method:mod.Helper::dropped_call',
+            )));
+            // The invented-member guard: `self.a.b()` must never be read as a
+            // member named `a.b`, which no file declares.
+            assertSame([], array_values(array_filter(
+                $edges,
+                fn(array $edge): bool => str_contains($edge[2], '::') && str_contains(explode('::', $edge[2], 2)[1], '.'),
+            )));
+        } finally {
+            @unlink($root . '/mod.py');
+            @rmdir($root);
+        }
+    }
+
+    #[Group('python-scanner')]
     public function testPythonProjectScanPersistsClassificationsBoundariesDiagnosticsAndCache(): void
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/python';
