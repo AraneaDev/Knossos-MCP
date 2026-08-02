@@ -125,6 +125,62 @@ final class FlowTest extends KnossosTestCase
         assertSame('constructs', $flow->data['paths'][0]['hops'][0]['kind']);
     }
 
+    /**
+     * Two call sites between the same pair of symbols are two edges but one
+     * flow. Returning both filled the max_paths budget with copies of a single
+     * route — identical node lists, identical signatures — and pushed the
+     * genuinely different routes out of the answer.
+     */
+    #[Group('flow')]
+    public function testRepeatedCallSitesCollapseToOneFlow(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $node = function (string $name) use ($repository, $ids): string {
+            $id = StableId::symbol($ids['project'], 'php', 'method', $name);
+            $repository->saveNode($id, $ids['project'], 'php', 'method', $name, $name, null, $ids['file'], 1, 2, 'ast', 'certain', [], 'php:file:src/Flow.php', $ids['scan']);
+            return $id;
+        };
+        $entry = $node('App\\Entry::run');
+        $middle = $node('App\\Middle::relay');
+        $target = $node('App\\Target::finish');
+        $call = function (string $from, string $to, int $line) use ($repository, $ids): void {
+            $repository->saveEdge(
+                StableId::edge($ids['project'], 'calls', $from, $to, 'src/Flow.php:' . $line),
+                $ids['project'],
+                'calls',
+                $from,
+                $to,
+                $ids['file'],
+                $line,
+                $line,
+                'ast',
+                'certain',
+                [],
+                'php:file:src/Flow.php',
+                $ids['scan'],
+            );
+        };
+        // The same direct route, written at two call sites…
+        $call($entry, $target, 10);
+        $call($entry, $target, 20);
+        // …and a genuinely different route through a collaborator.
+        $call($entry, $middle, 30);
+        $call($middle, $target, 40);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $flow = (new ArchitectureQueryService($pdo))
+            ->explainFlow($ids['project'], 'App\\Entry::run', 'App\\Target::finish', maxPaths: 2);
+
+        $signatures = array_column($flow->data['paths'], 'signature');
+        assertSame(2, count($signatures));
+        assertSame($signatures, array_values(array_unique($signatures)));
+        // The budget went to the two distinct routes, not two copies of one.
+        assertSame([1, 2], array_map(
+            fn(array $path): int => count($path['hops']),
+            $flow->data['paths'],
+        ));
+    }
+
     #[Group('flow')]
     public function testInterfaceEndpointsExpandToContainedMethods(): void
     {

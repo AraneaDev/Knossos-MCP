@@ -62,6 +62,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         $excludedConstructors = 0;
         $excludedContracts = 0;
+        $excludedEntryScripts = 0;
         $suppressions = $this->deadCodeSuppressions($projectId);
         $suppressedCount = 0;
         $annotationsByName = $this->componentAnnotations($projectId);
@@ -103,6 +104,15 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 ++$excludedConstructors;
                 continue;
             }
+            // A script's body is run by something outside the graph, so nothing
+            // in the codebase references it and "unreferenced" carries no
+            // information about whether it is wanted. An ordinary module that
+            // nothing imports stays reportable — an orphaned one is precisely
+            // what this analysis exists to surface.
+            if (self::isExecutableScript($candidate['row'])) {
+                ++$excludedEntryScripts;
+                continue;
+            }
             $dynamicRisk = $candidate['row']['origin'] !== 'ast' || $this->hasFrameworkRole($candidate['roles']);
             $confidence = $dynamicRisk ? 'possible' : 'probable';
             $reason = 'No inbound static reference was found among the selected edge kinds.';
@@ -131,10 +141,28 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'inherited' => $excludedInherited,
                 'contracts' => $excludedContracts,
                 'constructors' => $excludedConstructors,
+                'entry_scripts' => $excludedEntryScripts,
                 'suppressed' => $suppressedCount,
                 'annotated_false_positives' => $annotatedFalsePositives,
             ],
         ];
+    }
+
+    /**
+     * Whether a node is a module whose scanner marked it as an executable script.
+     *
+     * Scanners set this on a module they emitted because the file has a body
+     * that runs, rather than because it declares things others import.
+     *
+     * @param array<string, mixed> $node
+     */
+    private static function isExecutableScript(array $node): bool
+    {
+        if ($node['kind'] !== 'module') {
+            return false;
+        }
+
+        return (self::decode($node['attributes_json'] ?? '{}')['executable'] ?? false) === true;
     }
 
     /**

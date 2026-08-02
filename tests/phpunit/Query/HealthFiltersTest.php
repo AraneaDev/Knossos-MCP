@@ -226,6 +226,32 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * A script's body is run by something outside the graph — a shell, a web
+     * server, a CI step — so nothing in the codebase ever references it and
+     * "unreferenced" says nothing about whether it is wanted. Reporting these
+     * put `bin/knossos` on its own dead-code list.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesExecutableScriptModules(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $script = StableId::symbol($ids['project'], 'php', 'module', 'bin/console');
+        $repository->saveNode($script, $ids['project'], 'php', 'module', 'bin/console', 'console', null, $ids['file'], 1, 1, 'ast', 'certain', ['executable' => true], 'php:file:src/Checkout.php', $ids['scan']);
+        // A module that is not an executable script stays reportable: an
+        // orphaned library module is exactly what this analysis is for.
+        $orphan = StableId::symbol($ids['project'], 'typescript', 'module', 'src/orphan.ts');
+        $repository->saveNode($orphan, $ids['project'], 'typescript', 'module', 'src/orphan.ts', 'orphan.ts', null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('bin/console', $names, true));
+        assertSame(true, in_array('src/orphan.ts', $names, true));
+        assertSame(1, $data['bounds']['excluded_entry_scripts']);
+    }
+
+    /**
      * The mirror of the inherited-method exclusion. That one drops the
      * override because the ancestor carries the contract; nothing dropped the
      * declaration when the implementation is what call sites reach. A call

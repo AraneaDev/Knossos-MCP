@@ -423,6 +423,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'excluded_inherited_methods' => $excluded['inherited'],
                     'excluded_contract_methods' => $excluded['contracts'],
                     'excluded_constructors' => $excluded['constructors'],
+                    'excluded_entry_scripts' => $excluded['entry_scripts'],
                     'suppressed_candidates' => $excluded['suppressed'],
                     'annotated_false_positives' => $excluded['annotated_false_positives'],
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
@@ -545,6 +546,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 ?: ($right['score']['semantic_edges'] <=> $left['score']['semantic_edges'])
                 ?: ($left['signature'] <=> $right['signature']);
         });
+        // Two call sites between the same symbols are two edges but one flow.
+        // Deduping after the sort keeps the best-scoring witness for each route
+        // and stops copies of one path from spending the whole max_paths
+        // budget, which pushed genuinely different routes out of the answer.
+        $distinct = [];
+        foreach ($paths as $path) {
+            $distinct[$path['signature']] ??= $path;
+        }
+        $paths = array_values($distinct);
         if (count($paths) > $maxPaths) {
             $paths = array_slice($paths, 0, $maxPaths);
             $truncated = true;
