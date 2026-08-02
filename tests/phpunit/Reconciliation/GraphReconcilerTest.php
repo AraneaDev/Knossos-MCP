@@ -1763,6 +1763,42 @@ final class GraphReconcilerTest extends TestCase
     }
 
     /**
+     * A reference carrying the marker but no name at all.
+     *
+     * The resolver reads the third `:` field to choose between the namespaced
+     * and the global candidate. There is nothing to choose between here, so it
+     * hands the reference back untouched rather than inventing
+     * `php:function:` — a node whose canonical name would be the empty string.
+     * Nothing downstream can name that target either, so the scan fails loudly
+     * instead of persisting a nameless symbol: only a scanner bug can produce
+     * this, and a silent empty node would be far harder to trace back to it.
+     */
+    #[Group('reconciliation')]
+    public function testAnUnqualifiedFunctionCallWithNoNameIsRefusedRatherThanNamedEmpty(): void
+    {
+        $caller = $this->minimalNode('php:function:App\\caller', 'App\\caller');
+        $edge = new EdgeFact(
+            kind: 'calls',
+            sourceReference: 'php:function:App\\caller',
+            targetReference: 'php:namespaced_function:',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller], [$edge])],
+        ]);
+
+        $error = captureThrows(
+            fn() => (new GraphReconciler($this->repo))->reconcile($request),
+            ReconciliationException::class,
+        );
+
+        assertSame('Unresolvable edge target reference: php:namespaced_function:', $error->getMessage());
+    }
+
+    /**
      * Reconcile a graph where `Fixture\Consumer` reaches `make()` through the
      * given composition edge, and a call is deferred against its return type.
      *

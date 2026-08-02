@@ -505,7 +505,10 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
      */
     private function featureTokens(string $description): array
     {
-        $parts = preg_split('/[^\pL\pN]+/u', strtolower($description), -1, PREG_SPLIT_NO_EMPTY);
+        // `mb_strtolower`, matching identifierWords(): ASCII-only lowering left
+        // an accented query token in a case no indexed word is ever written in,
+        // so it could never match the identifier it names.
+        $parts = preg_split('/[^\pL\pN]+/u', mb_strtolower($description), -1, PREG_SPLIT_NO_EMPTY);
         if (!is_array($parts)) {
             return [];
         }

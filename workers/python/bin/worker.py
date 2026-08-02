@@ -923,6 +923,14 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
         # diagnostic and never discards facts for the other inputs.
         try:
             source = absolute.read_bytes()
+        except OSError as error:
+            # `safe_file` stats the path, and the file can still be deleted or
+            # made unreadable before this read. Nothing about that is specific
+            # to the batch, so it costs only its own file — the same treatment
+            # discovery gives a file it could not resolve.
+            emit(_unscannable_contribution(relative, str(error)))
+            continue
+        try:
             tree = ast.parse(source, filename=relative, type_comments=True)
         except (SyntaxError, UnicodeDecodeError, ValueError) as error:
             emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error)))

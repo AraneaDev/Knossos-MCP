@@ -144,6 +144,33 @@ final class SuggestionTest extends KnossosTestCase
     }
 
     /**
+     * Both sides of the comparison must lower-case the same way.
+     *
+     * Member words go through `mb_strtolower`, so `ÉclairService` indexes as
+     * `éclair`. The description went through ASCII-only `strtolower`, which
+     * leaves `É` untouched, so the query token stayed `Éclair` and could never
+     * match the word it names — silently, and only for non-ASCII identifiers.
+     */
+    #[Group('suggestion')]
+    public function testANonAsciiQueryTokenMatchesTheIdentifierWordItNames(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $this->boundaryWithMembers($repository, $ids, 'patisserie', [
+            'App\\Bakery\\EclairService',
+            'App\\Bakery\\ÉclairService',
+        ]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->suggestLocation($ids['project'], 'Éclair service');
+        $byName = [];
+        foreach ($result->data['candidates'] as $candidate) {
+            $byName[$candidate['boundary']['name']] = $candidate;
+        }
+
+        assertSame(true, in_array('éclair', $byName['patisserie']['matched_tokens'], true));
+    }
+
+    /**
      * Member relevance summed over a boundary's members, so the score grew with
      * boundary size and the widest boundary always won. Asking where a new
      * worker belongs then returned the repository-root boundary — matcher
