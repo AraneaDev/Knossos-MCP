@@ -930,6 +930,39 @@ final class PhpScannerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    /**
+     * An unqualified call inside a namespace is ambiguous by design: PHP tries
+     * the current namespace and falls back to the global function. Emitting the
+     * name as written resolved every one of them to the global candidate, so a
+     * namespaced free function called from its own namespace gained a phantom
+     * global twin and carried no inbound edge itself.
+     */
+    #[Group('php-scanner')]
+    public function testAnUnqualifiedCallInANamespaceDefersToTheReconciler(): void
+    {
+        $client = $this->phpWorkerClient();
+        $client->initialize();
+
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/NamespacedCall.php'],
+        ]));
+        $edgeTuples = array_map(
+            fn(EdgeFact $edge): array => [$edge->kind, $edge->sourceReference, $edge->targetReference],
+            $contributions[0]->edges,
+        );
+        $source = 'php:method:Fixture\\NamespacedCaller::run';
+
+        // Both unqualified calls carry the namespaced candidate; only the
+        // reconciler can say which of the two names actually exists.
+        assertArrayContains(['calls', $source, 'php:namespaced_function:Fixture\\localHelper'], $edgeTuples);
+        assertArrayContains(['calls', $source, 'php:namespaced_function:Fixture\\absentHelper'], $edgeTuples);
+        // A leading backslash already names the global function outright.
+        assertArrayContains(['calls', $source, 'php:function:strlen'], $edgeTuples);
+
+        $client->shutdown();
+    }
+
     #[Group('php-scanner')]
     public function testAFileWithoutFileScopeCallsDeclaresNoModule(): void
     {

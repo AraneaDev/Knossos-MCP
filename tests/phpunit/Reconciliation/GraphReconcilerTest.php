@@ -1701,6 +1701,68 @@ final class GraphReconcilerTest extends TestCase
     }
 
     /**
+     * PHP resolves an unqualified function call to the current namespace when
+     * that namespace declares it, and to the global function otherwise. Only
+     * the reconciler sees every declaration, so the scanner defers and this
+     * picks the candidate that exists.
+     */
+    #[Group('reconciliation')]
+    public function testAnUnqualifiedFunctionCallPrefersTheNamespacedDeclaration(): void
+    {
+        $declared = $this->minimalNode('php:function:App\\helper', 'App\\helper');
+        $caller = $this->minimalNode('php:function:App\\caller', 'App\\caller');
+        $edge = new EdgeFact(
+            kind: 'calls',
+            sourceReference: 'php:function:App\\caller',
+            targetReference: 'php:namespaced_function:App\\helper',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$declared, $caller], [$edge])],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        // Resolved to the declaration, so no global twin was invented.
+        assertSame(2, $result->nodes);
+        assertSame(1, $result->edges);
+        assertSame(0, $result->unresolvedNodes);
+    }
+
+    #[Group('reconciliation')]
+    public function testAnUnqualifiedFunctionCallFallsBackToTheGlobalFunction(): void
+    {
+        $caller = $this->minimalNode('php:function:App\\caller', 'App\\caller');
+        $edge = new EdgeFact(
+            kind: 'calls',
+            sourceReference: 'php:function:App\\caller',
+            // No App\str_contains is declared, so PHP reaches the global one.
+            targetReference: 'php:namespaced_function:App\\str_contains',
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller], [$edge])],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        // The edge survives against an external global symbol; unlike a
+        // speculative receiver, a function call is known to happen.
+        assertSame(1, $result->edges);
+        assertSame(1, $result->unresolvedNodes);
+        // The global name, not the namespaced candidate that does not exist.
+        $canonicalNames = array_map(static fn(array $args): string => (string) $args[4], $this->repo->nodes);
+        assertArrayContains('str_contains', $canonicalNames);
+        assertSame(false, in_array('App\\str_contains', $canonicalNames, true));
+    }
+
+    /**
      * Reconcile a graph where `Fixture\Consumer` reaches `make()` through the
      * given composition edge, and a call is deferred against its return type.
      *

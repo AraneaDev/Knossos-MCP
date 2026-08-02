@@ -370,9 +370,11 @@ final readonly class GraphReconciler
                 }
 
                 $deferred = str_contains($edge->targetReference, ':method_of_return:');
-                $reference = $deferred
-                    ? $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources)
-                    : $edge->targetReference;
+                $reference = match (true) {
+                    $deferred => $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources),
+                    str_contains($edge->targetReference, ':namespaced_function:') => self::namespacedFunctionReference($edge->targetReference, $nodeMap),
+                    default => $edge->targetReference,
+                };
                 $targetId = $reference === null ? null : ($nodeMap[$reference]
                     ?? $this->aliasedTypeTarget($reference, $nodeMap)
                     ?? $this->inheritedMemberTarget($reference, $nodeMap, $inheritanceSources));
@@ -477,6 +479,34 @@ final readonly class GraphReconciler
         return count($returnedParts) === 3 && $returnedParts[2] !== ''
             ? $language . ':method:' . $returnedParts[2] . '::' . $member
             : null;
+    }
+
+    /**
+     * Resolve an unqualified PHP function call to the namespace's function, or the global one.
+     *
+     * PHP tries the current namespace first and falls back to the global
+     * function, a choice that depends on what other files declare — so the
+     * scanner defers it and this decides, being the only place every
+     * declaration is known. Unlike a deferred receiver this never drops the
+     * edge: the call definitely happens, and an undeclared global name is a
+     * genuine external symbol.
+     *
+     * @param array<string, string> $nodeMap
+     */
+    private static function namespacedFunctionReference(string $reference, array $nodeMap): string
+    {
+        $parts = explode(':', $reference, 3);
+        if (count($parts) !== 3 || $parts[2] === '') {
+            return $reference;
+        }
+        [$language, , $canonical] = $parts;
+        $namespaced = $language . ':function:' . $canonical;
+        if (isset($nodeMap[$namespaced])) {
+            return $namespaced;
+        }
+        $separator = strrpos($canonical, '\\');
+
+        return $language . ':function:' . ($separator === false ? $canonical : substr($canonical, $separator + 1));
     }
 
     /**

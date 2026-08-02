@@ -592,7 +592,7 @@ final class FactCollector extends NodeVisitorAbstract
     private function functionCall(Expr\FuncCall $node): void
     {
         if ($node->name instanceof Name) {
-            $this->addEdge('calls', $this->currentSource(), self::reference('function', $this->name($node->name)), $node);
+            $this->addEdge('calls', $this->currentSource(), $this->functionReference($node->name), $node);
         }
     }
 
@@ -632,6 +632,35 @@ final class FactCollector extends NodeVisitorAbstract
         };
     }
 
+
+    /**
+     * The reference a function call names, deferring the ambiguous case.
+     *
+     * PHP resolves an unqualified call inside a namespace to that namespace's
+     * function when one exists and to the global function otherwise — a choice
+     * that depends on declarations in other files, which a per-file scanner
+     * cannot see. Naming it as written resolved every such call to the global
+     * candidate, so a namespaced free function called from its own namespace
+     * gained a phantom global twin and carried no inbound edge itself.
+     *
+     * A `use function` import and a leading backslash are already unambiguous:
+     * the parser marks both fully qualified, and they are named outright.
+     */
+    private function functionReference(Name $name): string
+    {
+        $resolved = $name->getAttribute('resolvedName');
+        if ($resolved instanceof Name) {
+            return self::reference('function', $resolved->toString());
+        }
+        $namespaced = $name->getAttribute('namespacedName');
+        if (!$name instanceof Name\FullyQualified
+            && $namespaced instanceof Name
+            && $namespaced->toString() !== $name->toString()) {
+            return self::reference('namespaced_function', $namespaced->toString());
+        }
+
+        return self::reference('function', $name->toString());
+    }
 
     /** The name as written, for evidence where the resolved form would obscure the source. */
     private function name(Name $name): string
