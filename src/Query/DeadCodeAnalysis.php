@@ -109,7 +109,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             // information about whether it is wanted. An ordinary module that
             // nothing imports stays reportable — an orphaned one is precisely
             // what this analysis exists to surface.
-            if (self::isExecutableScript($candidate['row'])) {
+            if (ReportableComponent::isExecutableScript((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)) {
                 ++$excludedEntryScripts;
                 continue;
             }
@@ -148,22 +148,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         ];
     }
 
-    /**
-     * Whether a node is a module whose scanner marked it as an executable script.
-     *
-     * Scanners set this on a module they emitted because the file has a body
-     * that runs, rather than because it declares things others import.
-     *
-     * @param array<string, mixed> $node
-     */
-    private static function isExecutableScript(array $node): bool
-    {
-        if ($node['kind'] !== 'module') {
-            return false;
-        }
-
-        return (self::decode($node['attributes_json'] ?? '{}')['executable'] ?? false) === true;
-    }
 
     /**
      * True when the candidate is a member the language runtime invokes, rather
