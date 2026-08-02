@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.0...v0.10.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* **scanner:** resolve Python calls through their receiver and load the TypeScript compiler lazily ([#32](https://github.com/AraneaDev/Knossos-MCP/issues/32)) ([e9793dc](https://github.com/AraneaDev/Knossos-MCP/commit/e9793dc4d126e9d2da0cd4c2d2b8b45aa73ea096))
+
 ## [0.10.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.9.1...v0.10.0) (2026-08-02)
 
 
