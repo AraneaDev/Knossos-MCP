@@ -89,3 +89,17 @@ for host access to that port. For custom ports/hosts, set `KNOSSOS_HTTP_ALLOWED_
 token in a URL. For non-loopback or multi-user access, put a TLS/OAuth-capable
 gateway in front, restrict the upstream network, and keep exact Host/Origin
 values rather than broad wildcards.
+
+## Git subprocesses
+
+`changed_files_impact`, `test_impact`, `review_diff`, and `change_impact` run
+`git` inside the scanned project. Git reads that repository's `.git/config`,
+which can name commands Git executes — `core.fsmonitor` during any index
+refresh, `diff.external` during diff generation, `core.pager` for output.
+`GitProcessRunner` forces all three off via `-c` overrides and runs the child
+with an explicit environment (`GIT_CONFIG_NOSYSTEM=1`,
+`GIT_CONFIG_GLOBAL=/dev/null`, no inherited variables).
+
+This matters whenever a repository directory arrives with its own `.git/`
+rather than from a fresh `clone`: CI artifacts, extracted archives, container
+volumes, restored backups.

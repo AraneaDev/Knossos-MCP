@@ -7,9 +7,52 @@ namespace Knossos\Git;
 use RuntimeException;
 use Throwable;
 
-/** Runs bounded, timeout-controlled read-only Git subprocesses. */
+/**
+ * Runs bounded, timeout-controlled read-only Git subprocesses.
+ *
+ * Git is the one subprocess family that reads state the scanned repository
+ * controls: `.git/config` can name commands Git executes while refreshing the
+ * index (`core.fsmonitor`), generating a diff (`diff.external`), or paging
+ * (`core.pager`). Both `diff` and `ls-files --others` refresh the index, so
+ * every invocation forces those settings off and runs under an explicit,
+ * minimal environment — the same treatment WorkerProcessSupervisor gives the
+ * scanner workers, for the same reason.
+ */
 final readonly class GitProcessRunner implements GitProcessRunnerInterface
 {
+    /**
+     * Config overrides prepended to every command, as `-c key=value` pairs.
+     *
+     * Public so tests can assert the set is complete without reconstructing it,
+     * and so a future call site cannot quietly build a command that skips them.
+     *
+     * @var list<string>
+     */
+    public const FORCED_CONFIG = [
+        'core.fsmonitor=false',
+        'core.hooksPath=/dev/nonexistent',
+        'diff.external=',
+        'protocol.version=2',
+    ];
+
+    /**
+     * The child's complete environment. Nothing is inherited: a Git subprocess
+     * over an untrusted tree has no business seeing the server's bearer token,
+     * data directory, or database credentials. HOME is deliberately a path that
+     * does not exist so no user config is found even if GIT_CONFIG_GLOBAL were
+     * ignored by an older Git.
+     *
+     * @var array<string, string>
+     */
+    public const ENVIRONMENT = [
+        'HOME' => '/dev/nonexistent',
+        'GIT_CONFIG_NOSYSTEM' => '1',
+        'GIT_CONFIG_GLOBAL' => '/dev/null',
+        'GIT_TERMINAL_PROMPT' => '0',
+        'GIT_ASKPASS' => '',
+        'GIT_OPTIONAL_LOCKS' => '0',
+    ];
+
     public function __construct(private int $maxOutputBytes = 2_000_000, private int $maxErrorBytes = 65_536) {}
 
     /**
@@ -20,7 +63,13 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     public function run(array $command, int $timeoutMs, string $operation): string
     {
         $pipes = [];
-        $process = proc_open($command, [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        $process = proc_open(
+            self::harden($command),
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            sys_get_temp_dir(),
+            self::environment(),
+        );
         if (!is_resource($process)) {
             throw new RuntimeException('Unable to start Git.');
         }
@@ -64,5 +113,43 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
             throw new RuntimeException(sprintf('Git %s unavailable: %s', $operation, substr(trim($stderr), 0, 500)));
         }
         return $stdout;
+    }
+
+    /**
+     * Insert the forced config overrides directly after the binary, where Git
+     * requires its top-level options, leaving the caller's own options and
+     * subcommand untouched. {@see \Knossos\Runtime\DoctorService} reuses this
+     * runner's deadline/select loop for non-Git version probes (`node
+     * --version`, `python3 --version`); those binaries do not understand `-c`,
+     * so the overrides are scoped to commands whose binary is actually git.
+     *
+     * @param non-empty-list<string> $command
+     * @return non-empty-list<string>
+     */
+    private static function harden(array $command): array
+    {
+        if (basename($command[0]) !== 'git') {
+            return $command;
+        }
+        $hardened = [$command[0]];
+        foreach (self::FORCED_CONFIG as $setting) {
+            $hardened[] = '-c';
+            $hardened[] = $setting;
+        }
+
+        return [...$hardened, ...array_slice($command, 1)];
+    }
+
+    /**
+     * The child environment: the constant above plus PATH, which Git needs to
+     * find its own helper binaries.
+     *
+     * @return array<string, string>
+     */
+    private static function environment(): array
+    {
+        $path = getenv('PATH');
+
+        return self::ENVIRONMENT + ['PATH' => is_string($path) && $path !== '' ? $path : '/usr/bin:/bin'];
     }
 }
