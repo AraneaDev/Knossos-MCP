@@ -35,16 +35,16 @@ final class BoundaryInferenceTest extends TestCase
 
         assertSame(1, count($facts));
         // Rules are keyed by "kind:configPath" internally (so two manifests declaring
-        // the same name never collide), but the BoundaryFact name displays the
-        // declared package name, not the internal key.
-        assertSame('vendor/app', $facts[0]->name);
+        // the same name never collide), but the BoundaryFact name is unchanged from
+        // before this fix: boundary names are a public reference surface (policies
+        // resolve `from_boundary` by name), so the fix must not rename anything.
+        assertSame('composer:vendor/app', $facts[0]->name);
         assertSame('inferred', $facts[0]->source);
         assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
         assertSame([], $facts[0]->nodeReferences);
-        // The rule's display dropped the "composer:" prefix, but identityName still
-        // pins the stable id to the pre-fix "kind:name" identity (unique here, so it's
-        // reused verbatim) — otherwise every existing single-manifest repo's persisted
-        // boundary id would move purely because of this display-label change.
+        // identityName is now always non-null for an inferred manifest rule, even
+        // though here it is identical to $name (no collision to disambiguate) — see
+        // BoundaryFact's docblock.
         assertSame('composer:vendor/app', $facts[0]->identityName);
     }
 
@@ -56,9 +56,7 @@ final class BoundaryInferenceTest extends TestCase
         $facts = (new BoundaryInference())->infer($units, $contributions, []);
 
         assertSame(1, count($facts));
-        // The declared package name is the display; the kind lives only in the
-        // internal rule key.
-        assertSame('web-app', $facts[0]->name);
+        assertSame('node:web-app', $facts[0]->name);
         assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
     }
 
@@ -80,8 +78,7 @@ final class BoundaryInferenceTest extends TestCase
         $facts = (new BoundaryInference())->infer($units, [], []);
 
         assertSame(1, count($facts));
-        // Declared package name displays without the kind prefix (see note above).
-        assertSame('core-lib', $facts[0]->name);
+        assertSame('python:core-lib', $facts[0]->name);
     }
 
     public function testInferWithUnknownUnitKindProducesNoBoundary(): void
@@ -100,8 +97,7 @@ final class BoundaryInferenceTest extends TestCase
         $facts = (new BoundaryInference())->infer($units, [], []);
 
         assertSame(1, count($facts));
-        // No declared name: falls back to 'root', displayed without the kind prefix.
-        assertSame('root', $facts[0]->name);
+        assertSame('composer:root', $facts[0]->name);
         assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
     }
 
@@ -322,26 +318,31 @@ final class BoundaryInferenceTest extends TestCase
 
     public function testInferOrdersBoundariesByRuleKeyNotDisplayName(): void
     {
-        // Behavioural note: before keying rules by manifest path, the internal rule
-        // key WAS "kind:declaredName" (the same string shown as $fact->name), so
-        // sorting rules by key incidentally also sorted the displayed names
-        // alphabetically. Now that rules key on "kind:configPath" and display the
-        // bare declared name, that coincidence is gone: ordering is deterministic
-        // (kind, then config path) but no longer alphabetical by display name. Names
-        // are chosen here specifically out of alphabetical order to prove that.
+        // Behavioural note (found during review): the original version of this test —
+        // one unit each of kind composer/node/python — was tautological independent of
+        // this fix. $rules is ksort'd by its array key, and across different kinds the
+        // leading "composer"/"node"/"python" segment alone always decides the compare
+        // (those three words are already alphabetically ordered), so ANY suffix values
+        // would come back "sorted" — the test never actually exercised the suffix.
+        // That was true even before this fix, when the key doubled as the display name.
+        //
+        // To assert something real, use two units of the SAME kind (so the kind prefix
+        // cancels out) where the array key (kind:configPath, what $rules sorts by) and
+        // the display name (kind:declaredName, unaffected by this fix) disagree on
+        // order. Rules are keyed on config path — never on the declared name, which is
+        // exactly this task's fix — so ordering follows the path, not the name.
         $units = [
-            $this->makeUnit('node', 'services/a-node/package.json', ['name' => 'zzz']),
-            $this->makeUnit('composer', 'services/z-composer/composer.json', ['name' => 'aaa']),
-            $this->makeUnit('python', 'services/m-python/pyproject.toml', ['name' => 'mmm']),
+            $this->makeUnit('composer', 'a-dir/composer.json', ['name' => 'zzz-package']),
+            $this->makeUnit('composer', 'b-dir/composer.json', ['name' => 'aaa-package']),
         ];
 
         $facts = (new BoundaryInference())->infer($units, [], []);
 
         $names = array_map(static fn (BoundaryFact $f): string => $f->name, $facts);
-        // Deterministic key order is "composer:...", "node:...", "python:..." (kind
-        // sorts first), which is why the displayed names come back as
-        // aaa, zzz, mmm — not alphabetical.
-        assertSame(['aaa', 'zzz', 'mmm'], $names);
+        // Key order is "composer:a-dir/composer.json" before "composer:b-dir/composer.json",
+        // so the a-dir unit's boundary (declared name "zzz-package") comes first even
+        // though its name sorts after "aaa-package" alphabetically.
+        assertSame(['composer:zzz-package', 'composer:aaa-package'], $names);
     }
 
     public function testInferWithMatchingNodeForPathPrefixRuleReturnsNodeInMembers(): void
@@ -352,15 +353,8 @@ final class BoundaryInferenceTest extends TestCase
 
         $facts = (new BoundaryInference())->infer($units, $contributions, []);
 
-        // The displayed name is the declared package name, not "composer:"-prefixed
-        // (the kind prefix now lives only in the internal rule key), so filter by
-        // matcher/source instead of by name prefix.
-        $composer = array_values(array_filter(
-            $facts,
-            static fn (BoundaryFact $f): bool => $f->source === 'inferred' && $f->matcher === ['type' => 'path_prefix', 'value' => 'src/payments/'],
-        ));
+        $composer = array_values(array_filter($facts, static fn (BoundaryFact $f): bool => str_starts_with($f->name, 'composer:')));
         assertSame(1, count($composer));
-        assertSame('payments-svc', $composer[0]->name);
         assertSame(['php:class:App\\Payments\\Charge'], $composer[0]->nodeReferences);
 
         // The namespace:App boundary should ALSO contain the node.
@@ -449,10 +443,10 @@ final class BoundaryInferenceTest extends TestCase
 
     public function testTwoManifestsSharingAPackageNameGetDistinctStableIdentities(): void
     {
-        // Reusing the shared "composer:acme/lib" legacy identity for both boundaries
-        // would just move the silent overwrite downstream, from the rule key (fixed
-        // above) to GraphReconciler's StableId::boundary() call — two different
-        // boundaries would persist under the same id and one would still vanish.
+        // Reusing the shared "composer:acme/lib" identity for both boundaries would
+        // just move the silent overwrite downstream, from the rule key (fixed above)
+        // to GraphReconciler's StableId::boundary() call — two different boundaries
+        // would persist under the same id and one would still vanish.
         $units = [
             new ProjectUnit('composer', 'packages/a/composer.json', 'hash-a', ['name' => 'acme/lib']),
             new ProjectUnit('composer', 'packages/b/composer.json', 'hash-b', ['name' => 'acme/lib']),
@@ -466,20 +460,45 @@ final class BoundaryInferenceTest extends TestCase
         assertSame(true, $facts[0]->identityName !== $facts[1]->identityName);
     }
 
-    public function testSingleManifestUnitKeepsItsPreFixStableIdentity(): void
+    public function testFallbackIdentityDoesNotCollideWithAnotherManifestsPinnedIdentity(): void
+    {
+        // Reviewer-constructed case: the disambiguating fallback identity used when two
+        // manifests share a declared name is shaped "kind:configPath" (the rule's own
+        // array key). A THIRD manifest that happens to declare a name identical to one
+        // of those config paths would, without a disjoint namespace, land its pinned
+        // "kind:name" identity on exactly the same string as that fallback — silently
+        // re-colliding two genuinely distinct boundaries onto one stable id, the very
+        // bug this task exists to remove, just relocated from the rule key to the id.
+        $units = [
+            new ProjectUnit('composer', 'packages/a/composer.json', 'hash-a', ['name' => 'acme/lib']),
+            new ProjectUnit('composer', 'packages/b/composer.json', 'hash-b', ['name' => 'acme/lib']),
+            new ProjectUnit('composer', 'other/composer.json', 'hash-c', ['name' => 'packages/a/composer.json']),
+        ];
+
+        $facts = (new BoundaryInference())->infer($units, []);
+
+        assertSame(3, count($facts));
+        $identities = array_map(static fn (BoundaryFact $f): ?string => $f->identityName, $facts);
+        assertSame(3, count(array_unique($identities)));
+        foreach ($identities as $identity) {
+            assertSame(true, $identity !== null);
+        }
+    }
+
+    public function testSingleManifestUnitKeepsItsPreFixNameAndStableIdentity(): void
     {
         // Regression for the common case: exactly one composer.json (as this
-        // repository itself has). Its display name drops the "composer:" prefix, but
-        // identityName — which is what GraphReconciler feeds to StableId::boundary()
-        // — must still resolve to the pre-fix "kind:name" value, or every such repo's
-        // persisted boundary id (and any policy referencing it) would move for no
-        // reason connected to this fix's actual bug.
+        // repository itself has). Both the display name AND identityName — which
+        // GraphReconciler feeds to StableId::boundary() — must resolve to exactly the
+        // pre-fix "kind:name" value, or every such repo's boundary name (a public
+        // reference surface: policies resolve `from_boundary` by name) and/or its
+        // persisted id would move for no reason connected to this fix's actual bug.
         $units = [$this->makeUnit('composer', 'composer.json', ['name' => 'knossos-mcp/knossos'])];
 
         $facts = (new BoundaryInference())->infer($units, [], []);
 
         assertSame(1, count($facts));
-        assertSame('knossos-mcp/knossos', $facts[0]->name);
+        assertSame('composer:knossos-mcp/knossos', $facts[0]->name);
         assertSame('composer:knossos-mcp/knossos', $facts[0]->identityName);
     }
 
@@ -540,17 +559,11 @@ final class BoundaryInferenceTest extends TestCase
         $facts = (new BoundaryInference())->infer($units, [], []);
 
         assertSame(1, count($facts));
-        // Merged names are the declared package names (no kind prefix), since the
-        // internal rule key that used to carry the kind prefix is no longer what's
-        // displayed.
-        assertSame('vendor/app (+web-app)', $facts[0]->name);
+        assertSame('composer:vendor/app (+node:web-app)', $facts[0]->name);
         assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
         assertSame('inferred', $facts[0]->source);
-        // identityName pins the stable id to the surviving primary rule's pre-fix
-        // "kind:name" identity (unique here, so reused verbatim) so that adding or
-        // removing merge partners renames the display only, not the id — and so a
-        // repo whose composer.json and package.json already merged before this fix
-        // keeps the same persisted boundary id after it.
+        // identityName pins the stable id to the surviving primary rule's base name so
+        // that adding/removing merge partners renames the display only, not the id.
         assertSame('composer:vendor/app', $facts[0]->identityName);
     }
 

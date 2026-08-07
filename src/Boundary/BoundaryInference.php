@@ -50,33 +50,42 @@ final class BoundaryInference
             // Keyed by the manifest's own path, never by its declared name: two
             // packages can legitimately declare the same name (a vendored or forked
             // copy), and keying on the name silently dropped one whole boundary along
-            // with the path prefix that defined its members. The declared name
-            // survives as the display label. TypeScript units have no declared
-            // package name (tsconfig.json carries none), so they keep displaying
-            // their key, as before this change.
+            // with the path prefix that defined its members. Boundary NAMES stay
+            // exactly as they were before this change ("kind:name", e.g.
+            // "composer:acme/lib") — a policy's `from_boundary` resolves by name
+            // (see AbstractArchitectureQueryService::resolvePolicyBoundary()), so this
+            // fix must not rename any boundary, only stop two of them from colliding
+            // on the same internal key. TypeScript units have no declared package name
+            // (tsconfig.json carries none), so they keep displaying their key, as
+            // before this change.
             $rule = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $prefix]];
             if ($unit->kind !== 'typescript') {
                 $label = is_string($unit->metadata['name'] ?? null) ? $unit->metadata['name'] : ($prefix === '' ? 'root' : rtrim($prefix, '/'));
-                $rule['display'] = $label;
-                // The pre-fix rule key ("kind:name") is what every already-persisted
-                // boundary's stable id was derived from. Recording it here lets the
-                // facts loop below reuse it as $identityName whenever it is still
-                // unique, so the overwhelmingly common case (one manifest per kind)
-                // keeps its existing id even though $display dropped the kind prefix.
-                $rule['legacy_identity'] = $unit->kind . ':' . $label;
-                $legacyIdentityCounts[$rule['legacy_identity']] = ($legacyIdentityCounts[$rule['legacy_identity']] ?? 0) + 1;
+                $rule['display'] = $unit->kind . ':' . $label;
+                // $rule['display'] is also the pre-fix rule key: every already-persisted
+                // boundary's stable id was derived from exactly this string. Counting it
+                // here lets the pass below reuse it as $identityName whenever it is
+                // still unique, so the overwhelmingly common case (one manifest per
+                // kind) keeps its existing id even though the array key that groups
+                // rules is no longer this string.
+                $legacyIdentityCounts[$rule['display']] = ($legacyIdentityCounts[$rule['display']] ?? 0) + 1;
             }
             $rules[$unit->kind . ':' . $unit->configPath] = $rule;
         }
         foreach ($rules as $key => $rule) {
-            if (!isset($rule['legacy_identity'])) {
+            if (!isset($rule['display']) || !isset($legacyIdentityCounts[$rule['display']])) {
                 continue;
             }
             // Two manifests colliding on the same declared name is exactly the case
-            // this fix exists for: reusing their shared legacy identity here would
-            // just move the silent overwrite from the rule key to the stable id, so
-            // fall back to each rule's own unique key instead.
-            $rules[$key]['identity'] = $legacyIdentityCounts[$rule['legacy_identity']] === 1 ? $rule['legacy_identity'] : $key;
+            // this fix exists for: reusing their shared display as the stable-id basis
+            // would just move the silent overwrite from the rule key to the id, so
+            // fall back to each rule's own unique key instead. That fallback is
+            // "path:"-prefixed so it can never collide with a genuine "kind:name"
+            // display belonging to some other manifest — for example a manifest
+            // literally named after another manifest's config path ("packages/a/composer.json")
+            // would otherwise land the fallback in the very same string space as a
+            // legacy identity and silently re-collide two distinct boundaries onto one id.
+            $rules[$key]['identity'] = $legacyIdentityCounts[$rule['display']] === 1 ? $rule['display'] : ('path:' . $key);
         }
         foreach ($nodes as $node) {
             // Synthetic nodes (routes, endpoints) have canonical names like
@@ -156,10 +165,11 @@ final class BoundaryInference
             sort($members, SORT_STRING);
             $baseName = $rule['display'] ?? $name;
             $displayName = $baseName;
-            // A manifest rule's pinned legacy identity (see above) keeps its stable id
-            // put even though $baseName no longer carries the kind prefix. Rules with
-            // no pinned identity (language-derived and explicit rules) fall back to
-            // null, meaning "same as $name" — unchanged from before this fix.
+            // A manifest rule's pinned identity (see above) keeps its stable id fixed
+            // even though it now groups on a different, path-based array key than the
+            // one that used to double as both key and display name. Rules with no
+            // pinned identity (language-derived and explicit rules) fall back to null,
+            // meaning "same as $name" — unchanged from before this fix.
             $identityName = $rule['identity'] ?? null;
             if (isset($rule['merged_names'])) {
                 // The merged-from list is display-only: appending it to $displayName must
@@ -167,8 +177,8 @@ final class BoundaryInference
                 // composition shifts (e.g. a package.json added next to composer.json)
                 // would rename AND re-id the boundary, breaking persisted policy
                 // references. $identityName pins the id to the surviving primary rule's
-                // pre-suffix identity (its pinned legacy identity when it has one,
-                // otherwise its base display name).
+                // pre-suffix identity (its pinned identity when it has one, otherwise
+                // its base display name).
                 $displayName .= ' (+' . implode(', ', $rule['merged_names']) . ')';
                 $identityName = $rule['identity'] ?? $baseName;
             }
