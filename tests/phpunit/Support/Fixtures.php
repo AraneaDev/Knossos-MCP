@@ -302,6 +302,11 @@ trait Fixtures
         $this->copyTree($src, $root);
         $pdo = $this->freshTestDatabase();
         $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+        // See TempTrees::backdateDirectories(): without this, a caller that
+        // probes staleness right after scanning (with no mutation at all) can
+        // intermittently see 'stale', because the directories copyTree() just
+        // created can read as being at or after the scan's own finished_at.
+        $this->backdateDirectories($root, 10);
         return [$pdo, $result->projectId, $root];
     }
 

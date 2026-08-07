@@ -22,18 +22,6 @@ final class RefreshIfStaleTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
-            // Backdate the fixture's directories: StalenessProbe::addedSince()
-            // compares a directory's mtime against the rescan's finished_at,
-            // two clock reads (a stat() here, a DB write moments later) that
-            // are not guaranteed to agree on which integer second an instant
-            // rounds to. Without this margin, a fast run can copy the fixture
-            // and rescan it closely enough in wall-clock time that the
-            // untouched 'src' directory's mtime reads as after the rescan's
-            // finished_at, flipping the final assertion to 'stale'. This
-            // only backdates the filesystem, not finished_at itself, so it
-            // does not affect this test's own use of the real scan timestamp.
-            self::backdateDirectories($root, 10);
-
             $file = $root . '/src/CheckoutService.php';
             file_put_contents($file, "\n// drift\n", FILE_APPEND);
             touch($file, filemtime($file) + 60);
@@ -77,21 +65,6 @@ final class RefreshIfStaleTest extends KnossosTestCase
             assertThrows(fn() => $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => 'yes']), InvalidArgumentException::class);
         } finally {
             $this->removeTempTree($root);
-        }
-    }
-
-    /** Pushes every directory under $root's mtime $seconds into the past, so a scan's finished_at clears it comfortably. */
-    private static function backdateDirectories(string $root, int $seconds): void
-    {
-        touch($root, filemtime($root) - $seconds);
-        foreach (scandir($root) ?: [] as $entry) {
-            if ($entry === '.' || $entry === '..') {
-                continue;
-            }
-            $path = $root . '/' . $entry;
-            if (is_dir($path)) {
-                self::backdateDirectories($path, $seconds);
-            }
         }
     }
 }
