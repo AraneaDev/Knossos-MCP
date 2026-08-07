@@ -101,12 +101,20 @@ for its hook scripts, `diff.external` during diff generation, and a
 `diff.<name>.textconv` driver while `git diff` reads a changed path.
 `GitProcessRunner` forces the first three off via fixed `-c` overrides, and
 neutralises filter/textconv drivers per repository by first running
-`git config --list --local` (which refreshes nothing and invokes no filter
-itself) and appending a blanking `-c` override for every driver name it
-finds. `core.pager` is neutralised separately, by `--no-pager` at each call
-site rather than by an override. The child also runs under an explicit
-environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, no
-inherited variables).
+`git config --list --includes --name-only -z` (which refreshes nothing and
+invokes no filter itself, so it runs with only the restricted environment
+below, not the `-c` overrides) and appending a blanking `-c` override for
+every driver name it finds. That query follows `include`/`includeIf`
+directives and, by not restricting itself to `--local`, also sees
+`extensions.worktreeConfig`-enabled per-worktree settings — either can define
+a driver a narrower query would miss, while `git diff` itself still resolves
+them. A driver name containing `=` cannot be expressed as a `-c` override at
+all (Git's own `-c` parser splits on the first `=`), so that case fails
+closed: the command is refused rather than run un-neutralised. `core.pager` is
+neutralised separately, by `--no-pager` at each call site rather than by an
+override. The child also runs under an explicit environment
+(`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, no inherited
+variables).
 
 This matters whenever a repository directory arrives with its own `.git/`
 rather than from a fresh `clone`: CI artifacts, extracted archives, container

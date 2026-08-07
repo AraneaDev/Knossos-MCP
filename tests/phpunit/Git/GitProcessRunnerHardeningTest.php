@@ -105,11 +105,7 @@ final class GitProcessRunnerHardeningTest extends TestCase
             self::runQuiet([$git, '-C', $root, 'config', 'core.fsmonitor', sprintf('sh -c "echo PWNED > %s; false"', $canary)]);
             file_put_contents($root . '/a.txt', "changed\n");
 
-            (new GitProcessRunner())->run(
-                [$git, '--no-optional-locks', '--no-pager', '-C', $root, 'diff', '--name-status', '-z', '--no-ext-diff', '--find-renames', 'HEAD', '--'],
-                5000,
-                'hardening test',
-            );
+            (new GitProcessRunner())->run(self::diffCommand($git, $root), 5000, 'hardening test');
 
             self::assertFileDoesNotExist($canary, 'core.fsmonitor was executed by a read-only Git query.');
         } finally {
@@ -144,17 +140,145 @@ final class GitProcessRunnerHardeningTest extends TestCase
             self::runQuiet([$git, '-C', $root, 'config', 'filter.pwn.clean', sprintf('sh -c "echo PWNED > %s; cat"', $canary)]);
             file_put_contents($root . '/a.txt', "changed\n");
 
-            (new GitProcessRunner())->run(
-                [$git, '--no-optional-locks', '--no-pager', '-C', $root, 'diff', '--name-status', '-z', '--no-ext-diff', '--find-renames', 'HEAD', '--'],
-                5000,
-                'hardening test',
-            );
+            (new GitProcessRunner())->run(self::diffCommand($git, $root), 5000, 'hardening test');
 
             self::assertFileDoesNotExist($canary, 'filter.pwn.clean was executed by a read-only Git query.');
         } finally {
             self::runQuiet(['rm', '-rf', $root]);
             @unlink($canary);
         }
+    }
+
+    /**
+     * A driver name containing `=` cannot be expressed as a `-c` override —
+     * `-c filter.a=b.clean=` is itself parsed by Git as key `filter.a`, value
+     * `b.clean=`, which does not target the driver at all. The only safe
+     * response is to refuse the command outright rather than run it
+     * un-neutralised, so this asserts a throw and an untouched canary, not a
+     * successful diff: there is no `-c` override this method could append
+     * that would let the read proceed safely. Skipped where git is
+     * unavailable.
+     */
+    public function testDriverNameContainingEqualsFailsClosedInsteadOfExecuting(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-eqname-' . bin2hex(random_bytes(8));
+        $canary = $root . '.canary';
+        mkdir($root, 0o700, true);
+        try {
+            self::runQuiet([$git, 'init', '-q', $root]);
+            file_put_contents($root . '/.gitattributes', "a.txt filter=a=b\n");
+            file_put_contents($root . '/a.txt', "hi\n");
+            self::runQuiet([$git, '-C', $root, 'add', '.gitattributes', 'a.txt']);
+            self::runQuiet([$git, '-C', $root, '-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'init']);
+            self::runQuiet([$git, '-C', $root, 'config', 'filter.a=b.clean', sprintf('sh -c "echo PWNED > %s; cat"', $canary)]);
+            file_put_contents($root . '/a.txt', "changed\n");
+
+            $threw = false;
+            try {
+                (new GitProcessRunner())->run(self::diffCommand($git, $root), 5000, 'hardening test');
+            } catch (\RuntimeException) {
+                $threw = true;
+            }
+
+            self::assertTrue($threw, 'A driver name containing "=" must fail closed rather than run un-neutralised.');
+            self::assertFileDoesNotExist($canary, "filter.'a=b'.clean was executed by a read-only Git query.");
+        } finally {
+            self::runQuiet(['rm', '-rf', $root]);
+            @unlink($canary);
+        }
+    }
+
+    /**
+     * `git config --list --local` (round 1's enumeration command) does not
+     * expand `include.path`, so a filter defined only in an included file was
+     * invisible to it while `git diff` itself still followed the include and
+     * ran the filter. `--includes` closes that gap. Skipped where git is
+     * unavailable.
+     */
+    public function testIncludedFilterIsNotExecuted(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-include-' . bin2hex(random_bytes(8));
+        $canary = $root . '.canary';
+        mkdir($root, 0o700, true);
+        try {
+            self::runQuiet([$git, 'init', '-q', $root]);
+            file_put_contents($root . '/.gitattributes', "a.txt filter=pwn\n");
+            file_put_contents($root . '/a.txt', "hi\n");
+            self::runQuiet([$git, '-C', $root, 'add', '.gitattributes', 'a.txt']);
+            self::runQuiet([$git, '-C', $root, '-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'init']);
+            file_put_contents(
+                $root . '/.git/extra',
+                "[filter \"pwn\"]\n\tclean = sh -c \"echo PWNED > " . $canary . "; cat\"\n",
+            );
+            self::runQuiet([$git, '-C', $root, 'config', 'include.path', 'extra']);
+            file_put_contents($root . '/a.txt', "changed\n");
+
+            $output = (new GitProcessRunner())->run(self::diffCommand($git, $root), 5000, 'hardening test');
+
+            self::assertFileDoesNotExist($canary, 'The included filter.pwn.clean was executed by a read-only Git query.');
+            self::assertSame("M\0a.txt\0", $output, 'Neutralising the included filter must not change the diff result.');
+        } finally {
+            self::runQuiet(['rm', '-rf', $root]);
+            @unlink($canary);
+        }
+    }
+
+    /**
+     * With `extensions.worktreeConfig=true`, per-worktree settings live in
+     * `.git/config.worktree`, outside plain `--local` scope. Round 1's
+     * enumeration (`--local`) missed a filter defined there while `git diff`
+     * itself still resolved it. Dropping `--local` (system/global are already
+     * suppressed via {@see GitProcessRunner::ENVIRONMENT}) closes that gap.
+     * Skipped where git is unavailable.
+     */
+    public function testWorktreeConfiguredFilterIsNotExecuted(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-worktree-' . bin2hex(random_bytes(8));
+        $canary = $root . '.canary';
+        mkdir($root, 0o700, true);
+        try {
+            self::runQuiet([$git, 'init', '-q', $root]);
+            file_put_contents($root . '/.gitattributes', "a.txt filter=pwn\n");
+            file_put_contents($root . '/a.txt', "hi\n");
+            self::runQuiet([$git, '-C', $root, 'add', '.gitattributes', 'a.txt']);
+            self::runQuiet([$git, '-C', $root, '-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'init']);
+            self::runQuiet([$git, '-C', $root, 'config', 'extensions.worktreeConfig', 'true']);
+            self::runQuiet([$git, '-C', $root, 'config', '--worktree', 'filter.pwn.clean', sprintf('sh -c "echo PWNED > %s; cat"', $canary)]);
+            file_put_contents($root . '/a.txt', "changed\n");
+
+            $output = (new GitProcessRunner())->run(self::diffCommand($git, $root), 5000, 'hardening test');
+
+            self::assertFileDoesNotExist($canary, 'The worktree-scoped filter.pwn.clean was executed by a read-only Git query.');
+            self::assertSame("M\0a.txt\0", $output, 'Neutralising the worktree-scoped filter must not change the diff result.');
+        } finally {
+            self::runQuiet(['rm', '-rf', $root]);
+            @unlink($canary);
+        }
+    }
+
+    /**
+     * The exact argv shape `ProcessGitWorkingTreeProvider::changes()` runs for
+     * a working-tree diff, shared by the exploit tests above so each plants
+     * its own hostile config and runs the identical query the production code
+     * runs.
+     *
+     * @return non-empty-list<string>
+     */
+    private static function diffCommand(string $git, string $root): array
+    {
+        return [$git, '--no-optional-locks', '--no-pager', '-C', $root, 'diff', '--name-status', '-z', '--no-ext-diff', '--find-renames', 'HEAD', '--'];
     }
 
     /** The git binary, or null when the host has none. */

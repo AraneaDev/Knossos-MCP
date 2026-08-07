@@ -17,9 +17,11 @@ use Throwable;
  * `diff.<name>.textconv`). Both `diff` and `ls-files --others` refresh the
  * index, and `diff` runs clean/textconv filters on the paths it touches, so
  * every invocation forces the fixed hooks off, enumerates and neutralises any
- * repository-specific filter/diff drivers, and runs under an explicit,
- * minimal environment — the same treatment WorkerProcessSupervisor gives the
- * scanner workers, for the same reason.
+ * repository-specific filter/diff drivers — following `include`/`includeIf`
+ * directives and per-worktree config, since either can define a driver a
+ * narrower query would miss — and runs under an explicit, minimal environment
+ * — the same treatment WorkerProcessSupervisor gives the scanner workers, for
+ * the same reason.
  *
  * Hardening applies only to actual `git` invocations: {@see
  * \Knossos\Runtime\DoctorService} reuses this runner's deadline/select loop
@@ -68,6 +70,18 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     ];
 
     /**
+     * Upper bound, in milliseconds, on the driver-enumeration probe that
+     * {@see self::driverOverrides()} runs before the caller's real command.
+     * Bounded independently of the caller's own timeout so a hostile or slow
+     * repository cannot inflate the probe to consume the whole budget by
+     * itself; {@see self::run()} additionally deducts the probe's actual
+     * elapsed time from the real command's deadline, so a single `run()` call
+     * still completes close to its caller-supplied `$timeoutMs` rather than
+     * up to double it.
+     */
+    private const MAX_ENUMERATION_TIMEOUT_MS = 2_000;
+
+    /**
      * @param bool $hardenGitConfig Whether to force the config overrides above
      *   and drop the inherited environment. The default is safe for every
      *   actual `git` invocation; callers that reuse this runner to probe an
@@ -83,11 +97,20 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     /**
      * Run a git command under a deadline with bounded, non-blocking reads.
      *
+     * Hardening (including the driver-enumeration probe it runs) happens
+     * first and is timed; whatever it consumed is deducted from the deadline
+     * given to the real command, so the two subprocesses together still
+     * respect `$timeoutMs` rather than each getting the full budget.
+     *
      * @param non-empty-list<string> $command
      */
     public function run(array $command, int $timeoutMs, string $operation): string
     {
-        return $this->execute($this->harden($command, $timeoutMs), $timeoutMs, $operation);
+        $start = hrtime(true);
+        $hardened = $this->harden($command, $timeoutMs);
+        $elapsedMs = (int) ((hrtime(true) - $start) / 1_000_000);
+
+        return $this->execute($hardened, max(1, $timeoutMs - $elapsedMs), $operation);
     }
 
     /**
@@ -125,20 +148,33 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      *
      * A `.gitattributes` file inside the scanned tree can route any path
      * through a `filter.<name>.clean` (or `.process`/`.smudge`) command
-     * defined in that same repository's own `.git/config`; `diff.<name>.textconv`
-     * is the equivalent hook for `git diff`. Both run during the read-only
-     * commands this class exists to run, and neither name is known in advance
-     * — unlike {@see self::FORCED_CONFIG}, which is fixed — so this runs
-     * `git config --list --local` first. That command refreshes nothing and
-     * invokes no filter, so it only needs the fixed overrides, not this method,
-     * applied to it.
+     * defined anywhere that repository's config resolves from; `diff.<name>.textconv`
+     * is the equivalent hook for `git diff`. "Anywhere it resolves from" is
+     * wider than the repository's own `.git/config`: an `include.path` (or
+     * `includeIf`) directive can pull in another file that defines the driver,
+     * and `extensions.worktreeConfig=true` moves per-worktree settings into
+     * `.git/config.worktree`, outside plain `--local` scope. Both are
+     * ordinary Git features a repository can enable on itself, so the
+     * enumeration query has to see everything `git diff` itself would resolve:
+     * `--includes` follows include directives, and omitting `--local` (system
+     * and global are already suppressed via {@see self::ENVIRONMENT}) leaves
+     * worktree config in view. `--name-only -z` returns NUL-separated keys
+     * with no values, so a value containing `=` or a NUL byte cannot be
+     * mistaken for another key.
+     *
+     * This enumeration query itself refreshes no index and invokes no filter,
+     * so unlike the caller's real command it does not need {@see
+     * self::FORCED_CONFIG} applied to it — it runs with only the restricted
+     * {@see self::ENVIRONMENT}, under its own bounded sub-timeout (see {@see
+     * self::MAX_ENUMERATION_TIMEOUT_MS}).
      *
      * Returns no overrides, rather than failing, when `$command` carries no
      * `-C <root>`: such a command (e.g. `git --version`) does not target a
      * repository tree and so has no filter/diff drivers to neutralise. When a
-     * root *is* present, any failure enumerating its config propagates instead
-     * of being swallowed, so a broken enumeration is a loud error rather than
-     * a silent hardening gap.
+     * root *is* present, any failure enumerating its config — including a
+     * driver name this method cannot safely neutralise, see {@see
+     * self::assertNameIsOverridable()} — propagates instead of being
+     * swallowed, so a gap is a loud error rather than a silent one.
      *
      * @param non-empty-list<string> $command
      * @return list<string>
@@ -149,13 +185,13 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         if ($root === null) {
             return [];
         }
-        $configList = $this->execute(
-            [$command[0], '--no-optional-locks', '-C', $root, 'config', '--list', '--local'],
-            $timeoutMs,
+        $keys = $this->execute(
+            [$command[0], '--no-optional-locks', '-C', $root, 'config', '--list', '--includes', '--name-only', '-z'],
+            min($timeoutMs, self::MAX_ENUMERATION_TIMEOUT_MS),
             'driver enumeration',
         );
 
-        return self::parseDriverOverrides($configList);
+        return self::parseDriverOverrides($keys);
     }
 
     /**
@@ -171,19 +207,20 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     }
 
     /**
-     * Parse `git config --list --local` output into `-c` overrides that blank
-     * every `filter.<name>.clean`/`.process`/`.smudge` and `diff.<name>.textconv`
-     * entry the repository defines.
+     * Parse NUL-separated `git config --list --name-only -z` keys into `-c`
+     * overrides that blank every `filter.<name>.clean`/`.process`/`.smudge`
+     * and `diff.<name>.textconv` entry the repository defines.
      *
      * @return list<string>
      */
-    private static function parseDriverOverrides(string $configList): array
+    private static function parseDriverOverrides(string $keys): array
     {
         $filters = [];
         $diffDrivers = [];
-        foreach (preg_split('/\R/', $configList) ?: [] as $line) {
-            $separator = strpos($line, '=');
-            $key = $separator === false ? $line : substr($line, 0, $separator);
+        foreach (explode("\0", $keys) as $key) {
+            if ($key === '') {
+                continue;
+            }
             if (preg_match('/^filter\.(.+)\.(?:clean|process|smudge)$/', $key, $matches) === 1) {
                 $filters[$matches[1]] = true;
             } elseif (preg_match('/^diff\.(.+)\.textconv$/', $key, $matches) === 1) {
@@ -192,15 +229,39 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         }
         $overrides = [];
         foreach (array_keys($filters) as $name) {
+            self::assertNameIsOverridable($name, 'filter');
             $overrides[] = sprintf('filter.%s.clean=', $name);
             $overrides[] = sprintf('filter.%s.process=', $name);
             $overrides[] = sprintf('filter.%s.smudge=', $name);
         }
         foreach (array_keys($diffDrivers) as $name) {
+            self::assertNameIsOverridable($name, 'diff driver');
             $overrides[] = sprintf('diff.%s.textconv=', $name);
         }
 
         return $overrides;
+    }
+
+    /**
+     * Refuse a driver name that a `-c key=value` override cannot target.
+     *
+     * Git's `-c` parser splits its argument on the *first* `=`, the same way
+     * a config file line does. A driver named e.g. `a=b` would need an
+     * override of `filter.a=b.clean=`, which Git itself reads back as key
+     * `filter.a` with value `b.clean=` — not the driver at all. No override
+     * can express this name, so there is nothing safe to append; the caller's
+     * command must not run un-neutralised, hence a throw rather than a
+     * silently skipped override.
+     */
+    private static function assertNameIsOverridable(string $name, string $kind): void
+    {
+        if (str_contains($name, '=')) {
+            throw new RuntimeException(sprintf(
+                "Repository %s '%s' cannot be safely neutralised: '-c' overrides split on the first '=', so a name containing '=' is not expressible as one. Refusing to run.",
+                $kind,
+                $name,
+            ));
+        }
     }
 
     /**
