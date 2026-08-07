@@ -438,4 +438,48 @@ final class McpTest extends KnossosTestCase
         assertSame(true, $data['changes']['diagnostics']['counts']['added'] > 0);
         assertSame(0, count($data['changes']['diagnostics']['added']));
     }
+
+    #[Group('mcp')]
+    public function testStringArgumentsAreTrimmed(): void
+    {
+        // A padded id passed the non-empty check but was then looked up
+        // verbatim, so it matched no row and surfaced to the caller as "not
+        // found" rather than as the invalid argument it is.
+        [$tools, $projectId] = $this->twoSnapshotFixture();
+
+        $envelope = $tools->call('architecture_summary', ['project_id' => '  ' . $projectId . '  ']);
+
+        assertSame($projectId, $envelope->projectId);
+    }
+
+    #[Group('mcp')]
+    public function testEveryHandlerRejectsAnUnknownArgumentThroughTheCatalog(): void
+    {
+        // The catalog is the single source: no handler needs its own key list.
+        // Every advertised tool must reject an undeclared argument before it is
+        // dispatched, so this holds even for tools whose required arguments are
+        // filled with placeholders that would never survive the handler.
+        [$tools] = $this->twoSnapshotFixture();
+
+        assertThrows(
+            fn() => $tools->call('architecture_summary', ['project_id' => 'project_abc', 'nope' => 1]),
+            \Knossos\Mcp\ToolInputException::class,
+        );
+
+        foreach (\Knossos\Mcp\ToolCatalog::definitions() as $definition) {
+            /** @var string $name */
+            $name = $definition['name'];
+            $schema = \Knossos\Mcp\ToolCatalog::schemaFor($name);
+            assertSame(true, $schema !== null);
+            /** @var array{properties: list<string>, required: list<string>} $schema */
+            $arguments = ['knossos_undeclared_argument' => true];
+            foreach ($schema['required'] as $required) {
+                $arguments[$required] = 'placeholder';
+            }
+            assertThrows(
+                fn() => $tools->call($name, $arguments),
+                \Knossos\Mcp\ToolInputException::class,
+            );
+        }
+    }
 }
