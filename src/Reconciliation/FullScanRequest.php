@@ -21,6 +21,9 @@ final readonly class FullScanRequest
      * @param list<ClassificationFact> $classifications
      * @param list<BoundaryFact> $boundaries
      * @param list<ContributionCacheEntry> $contributionCache
+     * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
+     *        Languages whose worker failed, persisted so a degraded scan is
+     *        visible in the graph and not only in the scan response.
      */
     public function __construct(
         public string $projectIdentity,
@@ -33,6 +36,7 @@ final readonly class FullScanRequest
         public array $boundaries = [],
         public string $mode = 'full',
         public array $contributionCache = [],
+        public array $workerDiagnostics = [],
     ) {
         if ($projectIdentity === '' || $projectName === '') {
             throw new InvalidArgumentException('Project identity and name must not be empty.');

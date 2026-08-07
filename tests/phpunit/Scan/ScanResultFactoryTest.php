@@ -47,7 +47,7 @@ final class ScanResultFactoryTest extends TestCase
         );
     }
 
-    private function makeLanguageResult(int $parsed, int $unchanged, int $added, int $changed, array $metadata): LanguageScanResult
+    private function makeLanguageResult(int $parsed, int $unchanged, int $added, int $changed, array $metadata, array $workerDiagnostics = []): LanguageScanResult
     {
         return new LanguageScanResult(
             manifests: [],
@@ -59,6 +59,7 @@ final class ScanResultFactoryTest extends TestCase
             changed: $changed,
             scannerMetadata: $metadata,
             stageMilliseconds: [],
+            workerDiagnostics: $workerDiagnostics,
         );
     }
 
@@ -100,6 +101,39 @@ final class ScanResultFactoryTest extends TestCase
         assertSame(3, $envelope->data['added_files']);
         assertSame(1, $envelope->data['changed_files']);
         assertSame(['kind' => 'php'], $envelope->data['scanner_metadata']);
+        assertSame([], $envelope->data['degraded_languages']);
+    }
+
+    public function testCreateReportsDegradedLanguagesAndWarnsAboutEachWorkerFailure(): void
+    {
+        // Two failures from one owner: the envelope names the language once, but
+        // every failure still has to reach the caller as its own warning.
+        $factory = new ScanResultFactory();
+        $plan = new ScanPlan(
+            preparation: $this->makePreparation(diagnostics: [
+                new DiscoveryDiagnostic(severity: 'warning', code: 'PARSE_ERR', message: 'Syntax error on line 5'),
+            ]),
+            projectId: 'plan-proj',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+        $language = $this->makeLanguageResult(0, 0, 0, 0, [], [
+            ['owner' => 'knossos.typescript', 'code' => 'WORKER_TIMEOUT', 'message' => 'typescript scanner failed: timed out.'],
+            ['owner' => 'knossos.typescript', 'code' => 'WORKER_EXITED', 'message' => 'typescript scanner failed: exited.'],
+            ['owner' => 'knossos.python', 'code' => 'WORKER_FAILED', 'message' => 'python scanner failed: broken pipe.'],
+        ]);
+        $result = new ReconciliationResult('rec-proj', 'scan-abc', 0, 0, 0, 0, 0);
+
+        $envelope = $factory->create($plan, $language, $result, 1_000_000_000, []);
+
+        assertSame(['knossos.typescript', 'knossos.python'], $envelope->data['degraded_languages']);
+        assertSame([
+            'PARSE_ERR: Syntax error on line 5',
+            'WORKER_TIMEOUT: typescript scanner failed: timed out.',
+            'WORKER_EXITED: typescript scanner failed: exited.',
+            'WORKER_FAILED: python scanner failed: broken pipe.',
+        ], $envelope->warnings);
     }
 
     public function testCreateBuildsWarningsFromDiagnostics(): void

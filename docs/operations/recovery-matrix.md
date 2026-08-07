@@ -4,21 +4,36 @@ Knossos treats the active scan as the last known-good architecture graph.
 Failed work is never activated, derived caches are disposable, and worker
 processes are supervised within explicit protocol and resource limits.
 
-| Fault                          | Observable diagnostic                                             | Recovery and preserved state                                                                                                    |
-| ------------------------------ | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Worker crash or broken pipe    | `WORKER_EXITED` or `WORKER_PIPE_BROKEN`                           | Worker and Linux descendants are terminated; active graph remains unchanged.                                                    |
-| Worker timeout or flood        | `WORKER_TIMEOUT`, `WORKER_OUTPUT_LIMIT`, or `WORKER_STDERR_LIMIT` | Request is aborted, process tree is terminated, incomplete scan stays inactive; effective limits are reported in scan metadata. |
-| Cancellation or signal         | `KNOSSOS_SCAN_CANCELLED` / watch `stopped` event                  | Worker cleanup and transaction rollback run; lease is released.                                                                 |
-| Concurrent writer              | `KNOSSOS_SCAN_BUSY`                                               | Current active graph remains queryable; retry after the writer finishes or stale lease recovery.                                |
-| SQLite locked/full/I/O failure | `KNOSSOS_STORAGE_ERROR`                                           | Transaction fails closed; free capacity or release the lock, then retry.                                                        |
-| Partial reconciliation write   | `KNOSSOS_STORAGE_ERROR` or runtime error                          | The graph transaction rolls back and prior active scan remains selected.                                                        |
-| Corrupt contribution cache     | no user-visible error; affected file is reparsed                  | Invalid derived payload is discarded and rebuilt from read-only source.                                                         |
-| Corrupt database               | failing `doctor` integrity check                                  | Stop writers and restore a verified atomic backup; do not continue scanning the corrupt file.                                   |
-| Stale writer lease             | `KNOSSOS_SCAN_BUSY` until lease expiry                            | A later writer atomically removes an expired lease and proceeds.                                                                |
+| Fault                          | Observable diagnostic                                             | Recovery and preserved state                                                                                                                       |
+| ------------------------------ | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Worker crash or broken pipe    | `WORKER_EXITED` or `WORKER_PIPE_BROKEN`                           | Worker and Linux descendants are terminated; that language degrades to an `error` diagnostic and the rest of the scan proceeds.                    |
+| Worker timeout or flood        | `WORKER_TIMEOUT`, `WORKER_OUTPUT_LIMIT`, or `WORKER_STDERR_LIMIT` | Request is aborted and the process tree terminated; that language degrades to a diagnostic and its effective limits are reported in scan metadata. |
+| Cancellation or signal         | `KNOSSOS_SCAN_CANCELLED` / watch `stopped` event                  | Worker cleanup and transaction rollback run; lease is released.                                                                                    |
+| Concurrent writer              | `KNOSSOS_SCAN_BUSY`                                               | Current active graph remains queryable; retry after the writer finishes or stale lease recovery.                                                   |
+| SQLite locked/full/I/O failure | `KNOSSOS_STORAGE_ERROR`                                           | Transaction fails closed; free capacity or release the lock, then retry.                                                                           |
+| Partial reconciliation write   | `KNOSSOS_STORAGE_ERROR` or runtime error                          | The graph transaction rolls back and prior active scan remains selected.                                                                           |
+| Corrupt contribution cache     | no user-visible error; affected file is reparsed                  | Invalid derived payload is discarded and rebuilt from read-only source.                                                                            |
+| Corrupt database               | failing `doctor` integrity check                                  | Stop writers and restore a verified atomic backup; do not continue scanning the corrupt file.                                                      |
+| Stale writer lease             | `KNOSSOS_SCAN_BUSY` until lease expiry                            | A later writer atomically removes an expired lease and proceeds.                                                                                   |
 
 CLI execution failures use exit code `2` and a stable diagnostic prefix. MCP
 tool errors carry the same family in structured content. Details after the
 prefix are explanatory and may vary by operating system or SQLite version.
+
+## Degraded scans
+
+A worker that fails or times out costs its own language, not the whole scan.
+The remaining languages are still analysed and reconciled, so a dead TypeScript
+worker leaves a usable PHP and Python graph rather than no graph at all.
+
+- `degraded_languages` — owner keys of scanners that failed during this scan.
+  Non-empty means the graph is partial: the listed languages contributed no
+  facts, and the corresponding failure is also persisted as an `error`
+  diagnostic against the scan.
+- Every failure is repeated in the envelope's `warnings` as `CODE: message`, so
+  a caller reading only the warnings still learns the answer is incomplete.
+- Cancellation is not a degradation. `KNOSSOS_SCAN_CANCELLED` still aborts the
+  entire scan, because stopping is the caller's decision rather than a fault.
 
 ## Fault-injection coverage
 

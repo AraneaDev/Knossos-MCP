@@ -32,6 +32,9 @@ final readonly class ScanResultFactory
             static fn($diagnostic): string => sprintf('%s: %s', $diagnostic->code, $diagnostic->message),
             $plan->preparation->discovery->diagnostics,
         );
+        foreach ($language->workerDiagnostics as $diagnostic) {
+            $warnings[] = sprintf('%s: %s', $diagnostic['code'], $diagnostic['message']);
+        }
         $data = [
             'files' => $result->files,
             'nodes' => $result->nodes,
@@ -45,6 +48,7 @@ final readonly class ScanResultFactory
             'changed_files' => $language->changed,
             'deleted_files' => $plan->deletedFiles,
             'scanner_metadata' => $language->scannerMetadata,
+            'degraded_languages' => array_values(array_unique(array_column($language->workerDiagnostics, 'owner'))),
             'worker_execution' => $plan->preparation->executionPolicy->metadata(),
             'configuration' => [
                 'source' => $plan->preparation->configuration->path,

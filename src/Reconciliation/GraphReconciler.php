@@ -930,6 +930,25 @@ final readonly class GraphReconciler
             );
             ++$count;
         }
+        // A language whose worker died has no file to anchor to, so the row
+        // carries a null file_id (the column is nullable). Persisting it here is
+        // what makes a degraded scan visible in the graph, not only in the
+        // response envelope the caller happened to read.
+        foreach ($request->workerDiagnostics as $diagnostic) {
+            $this->repository->saveDiagnostic(
+                StableId::edge($projectId, 'diagnostic', $scanId, $diagnostic['code'], 'worker:' . $count),
+                $projectId,
+                $scanId,
+                null,
+                'error',
+                $diagnostic['code'],
+                $diagnostic['message'],
+                null,
+                null,
+                $diagnostic['owner'],
+            );
+            ++$count;
+        }
 
         return $count;
     }

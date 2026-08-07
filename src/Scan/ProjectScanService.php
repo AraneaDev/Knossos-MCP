@@ -123,6 +123,7 @@ final class ProjectScanService implements ProjectScanner
                 $analysis->boundaries,
                 $plan->effectiveMode,
                 $language->cacheEntries,
+                $language->workerDiagnostics,
             ));
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;

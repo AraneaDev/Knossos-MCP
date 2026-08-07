@@ -665,6 +665,35 @@ final class GraphReconcilerTest extends TestCase
         assertSame(null, $dArgs[8]);
     }
 
+    public function testReconcileSavesWorkerFailuresAsFilelessErrorDiagnostics(): void
+    {
+        // A language whose worker died has no source file to point at, so the
+        // row must persist with a null file_id and null line range.
+        $request = $this->buildRequest([
+            'workerDiagnostics' => [
+                ['owner' => 'knossos.typescript', 'code' => 'WORKER_TIMEOUT', 'message' => 'typescript scanner failed: timed out.'],
+                ['owner' => 'knossos.python', 'code' => 'WORKER_FAILED', 'message' => 'python scanner failed: broken pipe.'],
+            ],
+        ]);
+        $reconciler = new GraphReconciler($this->repo);
+
+        $result = $reconciler->reconcile($request);
+
+        assertSame(2, $result->diagnostics);
+        $this->assertCount(2, $this->repo->diagnostics);
+        $first = $this->repo->diagnostics[0];
+        assertSame(null, $first[3]);
+        assertSame('error', $first[4]);
+        assertSame('WORKER_TIMEOUT', $first[5]);
+        assertSame('typescript scanner failed: timed out.', $first[6]);
+        assertSame(null, $first[7]);
+        assertSame(null, $first[8]);
+        assertSame('knossos.typescript', $first[9]);
+        assertSame('knossos.python', $this->repo->diagnostics[1][9]);
+        // Distinct ids: both rows are keyed on the running diagnostic sequence.
+        $this->assertNotSame($first[0], $this->repo->diagnostics[1][0]);
+    }
+
     public function testReconcileSavesDiscoveryDiagnosticsAsOriginDiscovery(): void
     {
         $diagnostic = new DiscoveryDiagnostic(
@@ -1904,6 +1933,7 @@ final class GraphReconcilerTest extends TestCase
             $args['boundaries'],
             $args['mode'] ?? 'full',
             $args['contributionCache'] ?? [],
+            $args['workerDiagnostics'] ?? [],
         );
     }
 
