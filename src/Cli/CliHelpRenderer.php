@@ -43,7 +43,6 @@ Usage:
                        [--db=PATH] [--json]
   knossos export-bundle <project-id> --output=FILE
                         [--redaction=none|paths|strict] [--db=PATH] [--json]
-                        [--redaction=none|paths|strict] [--db=PATH] [--json]
   knossos import-bundle <file> [--name=NAME] [--db=PATH] [--json]
   knossos find-component <project-id> <name> [--limit=N] [--db=PATH] [--json]
   knossos inspect-component <project-id> <component> [--max-relationships=N]

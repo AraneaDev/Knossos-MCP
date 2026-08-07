@@ -387,6 +387,21 @@ final class CliTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testExportBundleUsageHasNoDuplicatedLine(): void
+    {
+        // render() writes straight to STDOUT via fwrite(), so the only way to
+        // observe its output is through a real subprocess (ob_get_clean does
+        // not capture it — see CliHelpersTest's smoke-test comment).
+        [$exit, $stdout] = $this->runFixtureCommandOutput([PHP_BINARY, self::repositoryRoot() . '/bin/knossos', '--help']);
+        assertSame(0, $exit);
+
+        $lines = explode("\n", $stdout);
+        $redaction = array_values(array_filter($lines, static fn(string $line): bool => str_contains($line, '--redaction=')));
+
+        assertSame(1, count($redaction));
+    }
+
+    #[Group('cli')]
     public function testListProjectsCliExposesTheCatalogueWithoutRootsByDefault(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'knossos-catalogue-');

@@ -345,4 +345,26 @@ final class StoreTest extends KnossosTestCase
             StableId::file('p', 'name-' . "\u{1F600}"),
         );
     }
+
+    /**
+     * MigrationRunner::migrate() checksums the whole file — comments
+     * included (see migrations/README.md) — and throws if an applied
+     * migration's checksum ever changes. That makes every already-applied
+     * migration immutable: corrections belong in migrations/README.md, not
+     * in the file. This enforces the invariant against the real
+     * migrations/ directory: re-running migrate() over an already-migrated
+     * database applies nothing and leaves every file on disk byte-for-byte
+     * unchanged.
+     */
+    #[Group('store')]
+    public function testAppliedMigrationsAreImmutable(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $directory = self::repositoryRoot() . '/migrations';
+        $sha256File = static fn(string $path): string => hash_file('sha256', $path);
+        $before = array_map($sha256File, glob($directory . '/*.sql') ?: []);
+
+        assertSame([], (new MigrationRunner($pdo, $directory))->migrate(), 'a second run must be a no-op');
+        assertSame($before, array_map($sha256File, glob($directory . '/*.sql') ?: []));
+    }
 }
