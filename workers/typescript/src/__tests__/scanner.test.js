@@ -327,17 +327,23 @@ describe("TypeScriptScanner.scan backstop", () => {
         const root = fixture({ "a.ts": "export const a = 1;\n" });
         const real = fs.statSync.bind(fs);
         let stats = 0;
-        const spy = vi.spyOn(fs, "statSync").mockImplementation((target, options) => {
-            const result = real(target, options);
-            if (String(target).endsWith("a.ts") && ++stats > 1) {
-                return { ...result, isFile: () => true, size: 10_000_000 };
-            }
-            return result;
-        });
+        const spy = vi
+            .spyOn(fs, "statSync")
+            .mockImplementation((target, options) => {
+                const result = real(target, options);
+                if (String(target).endsWith("a.ts") && ++stats > 1) {
+                    return { ...result, isFile: () => true, size: 10_000_000 };
+                }
+                return result;
+            });
         try {
             const emitted = [];
             new TypeScriptScanner().scan(
-                { root, files: ["a.ts"], limits: { max_files: 10, max_file_bytes: 2_000_000 } },
+                {
+                    root,
+                    files: ["a.ts"],
+                    limits: { max_files: 10, max_file_bytes: 2_000_000 },
+                },
                 (contribution) => emitted.push(contribution),
             );
             expect(emitted).toHaveLength(1);
@@ -350,11 +356,19 @@ describe("TypeScriptScanner.scan backstop", () => {
 
     it("emits exactly one contribution per accepted file", () => {
         // The invariant the PHP side depends on, asserted directly.
-        const files = { "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n", "c.js": "module.exports = 3;\n" };
+        const files = {
+            "a.ts": "export const a = 1;\n",
+            "b.ts": "export const b = 2;\n",
+            "c.js": "module.exports = 3;\n",
+        };
         const root = fixture(files);
         const emitted = [];
         const summary = new TypeScriptScanner().scan(
-            { root, files: Object.keys(files), limits: { max_files: 10, max_file_bytes: 2_000_000 } },
+            {
+                root,
+                files: Object.keys(files),
+                limits: { max_files: 10, max_file_bytes: 2_000_000 },
+            },
             (contribution) => emitted.push(contribution),
         );
         expect(emitted).toHaveLength(Object.keys(files).length);
