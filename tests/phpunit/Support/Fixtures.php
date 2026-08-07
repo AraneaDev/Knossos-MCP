@@ -231,6 +231,69 @@ trait Fixtures
         return $pdo;
     }
 
+    /**
+     * Builds a real temp-directory project for StalenessProbe tests that need
+     * to mutate the filesystem (delete, add, or rewind an mtime) independently
+     * of the `files` row that was scanned, rather than running the actual
+     * scanners the way scanTempFixture() does.
+     *
+     * Writes each path under a fresh `knossos-stale-` temp root (the prefix
+     * removeTempTree() requires), inserts a `projects` row pointing at it, one
+     * `files` row per path stamped with that file's current on-disk mtime, and
+     * a completed `scans` row. Sets $this->pdo and $this->projectId on the
+     * calling test so its assertions can construct a StalenessProbe directly
+     * against the same database; the caller must declare both as `protected`
+     * properties (protected, not private, because this method is compiled
+     * into KnossosTestCase by the trait, one level up from the declaring
+     * test class).
+     *
+     * @param list<string> $relativePaths
+     * @return string the temp root, for the caller to mutate and to pass to removeTempTree()
+     */
+    public function seedProjectWithFiles(array $relativePaths): string
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        foreach ($relativePaths as $relativePath) {
+            $absolute = $root . '/' . $relativePath;
+            $directory = dirname($absolute);
+            if (!is_dir($directory)) {
+                mkdir($directory, 0o777, true);
+            }
+            file_put_contents($absolute, "<?php\n");
+        }
+
+        $this->pdo = $this->freshTestDatabase();
+        $this->projectId = StableId::project('stale-probe-' . bin2hex(random_bytes(6)));
+        $scanId = StableId::scan($this->projectId, 'scan-1');
+        $repository = new SqliteGraphRepository($this->pdo);
+        $repository->saveProject($this->projectId, 'Stale Probe Fixture', $root);
+        $repository->createScan($scanId, $this->projectId, 'full', hash('sha256', 'stale-probe'));
+        foreach ($relativePaths as $relativePath) {
+            $absolute = $root . '/' . $relativePath;
+            $repository->saveFile(
+                StableId::file($this->projectId, $relativePath),
+                $this->projectId,
+                $relativePath,
+                hash('sha256', (string) file_get_contents($absolute)),
+                (int) filesize($absolute),
+                (int) filemtime($absolute),
+                'php',
+                '0.1.0',
+                $scanId,
+            );
+        }
+        $repository->completeScan($this->projectId, $scanId);
+        // Backdate finished_at a few seconds into the past: completeScan()
+        // stamps it with second resolution, and a test that seeds a project
+        // then immediately mutates the tree can otherwise land in the same
+        // wall-clock second, making a strictly-later directory mtime
+        // indistinguishable from "no change" for addedSince().
+        $this->pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
+            ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() - 5), 'id' => $scanId]);
+
+        return $root;
+    }
+
     /** @return array{0: PDO, 1: string, 2: string} [pdo, projectId, absoluteRoot] */
     public function scanTempFixture(string $fixture): array
     {

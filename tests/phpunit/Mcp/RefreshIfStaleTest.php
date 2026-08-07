@@ -22,6 +22,15 @@ final class RefreshIfStaleTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
+            // StalenessProbe infers additions from directory mtimes at
+            // second resolution, with a further second of grace (see
+            // StalenessProbe::ADDED_GRACE_SECONDS) for a directory's mtime
+            // and the scan's finished_at to disagree on which integer second
+            // an instant rounds to. Without this gap, a fast run can copy the
+            // fixture, scan it, and rescan it inside that same window,
+            // flipping this assertion to 'stale'.
+            sleep(1);
+
             $file = $root . '/src/CheckoutService.php';
             file_put_contents($file, "\n// drift\n", FILE_APPEND);
             touch($file, filemtime($file) + 60);

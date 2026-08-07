@@ -10,6 +10,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\StalenessProbe;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
 /** Concrete probe exposing the protected Kosaraju routine for direct testing. */
@@ -28,6 +29,12 @@ final readonly class SccProbe extends AbstractArchitectureQueryService
 
 final class AuditBatch2Test extends KnossosTestCase
 {
+    /** Populated by seedProjectWithFiles() for the staleness-detection tests below. */
+    protected PDO $pdo;
+
+    /** Populated by seedProjectWithFiles() for the staleness-detection tests below. */
+    protected string $projectId;
+
     #[Group('query')]
     public function testCheckArchitectureCountsViolationsPastCollectionLimit(): void
     {
@@ -350,5 +357,55 @@ final class AuditBatch2Test extends KnossosTestCase
             $message = $error->getMessage();
         }
         assertSame('base_ref requires working_tree.', $message);
+    }
+
+    #[Group('query')]
+    public function testDeletedFileMakesTheGraphStale(): void
+    {
+        $root = $this->seedProjectWithFiles(['src/a.php', 'src/b.php']);
+        try {
+            unlink($root . '/src/b.php');
+
+            $probe = (new StalenessProbe($this->pdo))->probe($this->projectId);
+
+            assertSame('stale', $probe['state']);
+            assertSame(1, $probe['deleted_files_since']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testAddedFileMakesTheGraphStale(): void
+    {
+        $root = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            file_put_contents($root . '/src/new.php', "<?php\n");
+
+            $probe = (new StalenessProbe($this->pdo))->probe($this->projectId);
+
+            assertSame('stale', $probe['state']);
+            assertSame(1, $probe['added_files_since']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testMtimeMovedBackwardsMakesTheGraphStale(): void
+    {
+        // `git checkout` of an older revision and `tar -x` both restore older
+        // mtimes; a strictly-greater comparison read that as unchanged.
+        $root = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            touch($root . '/src/a.php', time() - 86_400);
+
+            $probe = (new StalenessProbe($this->pdo))->probe($this->projectId);
+
+            assertSame('stale', $probe['state']);
+            assertSame(1, $probe['changed_files_since']);
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 }

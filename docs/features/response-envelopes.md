@@ -75,7 +75,9 @@ The same `impact_analysis` call at each verbosity. Compact:
     "staleness": {
         "state": "fresh",
         "age_seconds": 811,
-        "changed_files_since": 0
+        "changed_files_since": 0,
+        "added_files_since": 0,
+        "deleted_files_since": 0
     },
     "meta": {
         "result_bytes": 3763,
@@ -143,6 +145,15 @@ by trimming result lists.` — an honest overflow rather than a silent lie.
 
 `stale` and `unverified` carry a `guidance` string naming the rescan to run.
 `unverified` exists so an unconfirmable graph is never reported as fresh.
+
+When change detection ran, `staleness` also carries:
+
+- `changed_files_since` — tracked files whose on-disk mtime differs from the scan's.
+- `added_files_since` — directories holding tracked files that gained an entry
+  since the scan. An approximation: it reports where something appeared, not what.
+- `deleted_files_since` — tracked files that no longer exist.
+
+All three are omitted, and the state is `unverified`, above 500 tracked files.
 
 ## Next steps
 
