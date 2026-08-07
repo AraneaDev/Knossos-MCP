@@ -59,6 +59,15 @@ final readonly class GraphReconciler
      */
     private const MAX_INHERITANCE_DEPTH = 20;
 
+    /**
+     * A reference the graph cannot turn into a symbol. Emitted by a scanner that
+     * could not name one segment — a relative import with no parent package, an
+     * unqualified call it deferred and never resolved. One malformed fact must
+     * cost its own edge, not the scan: the source file is still worth a graph,
+     * and the caller needs to be told which reference was dropped.
+     */
+    private const UNRESOLVABLE_TARGET_CODE = 'reconciler.unresolvable_edge_target';
+
     public function __construct(private GraphRepository $repository) {}
     /** Merge a scan's contributions into the graph, in one transaction. */
 
@@ -85,7 +94,8 @@ final readonly class GraphReconciler
 
         [$nodeMap, $nodes, $nodeWarnings] = $this->collectNodes($projectId, $request->contributions);
         $this->attachNodeFiles($nodes, $fileIds);
-        [$externalNodes, $edges] = $this->resolveEdges($projectId, $request->contributions, $nodeMap, $fileIds);
+        [$externalNodes, $edges, $edgeWarnings] = $this->resolveEdges($projectId, $request->contributions, $nodeMap, $fileIds);
+        $nodeWarnings = [...$nodeWarnings, ...$edgeWarnings];
         foreach ($externalNodes as $id => $node) {
             $nodes[$id] = $node;
         }
@@ -351,12 +361,14 @@ final readonly class GraphReconciler
      * @param list<ScanContribution> $contributions
      * @param array<string, string> $nodeMap
      * @param array<string, string> $fileIds
-     * @return array{0: array<string, array<string, mixed>>, 1: array<string, array<string, mixed>>}
+     * @return array{0: array<string, array<string, mixed>>, 1: array<string, array<string, mixed>>, 2: list<array<string, string>>}
      */
     private function resolveEdges(string $projectId, array $contributions, array $nodeMap, array $fileIds): array
     {
         $external = [];
         $edges = [];
+        $warnings = [];
+        $warnedReferences = [];
         $inheritanceSources = $this->inheritanceSources($contributions);
         $returnTypes = self::returnTypes($contributions);
         foreach ($contributions as $contribution) {
@@ -383,6 +395,23 @@ final readonly class GraphReconciler
                     // it keeps an inference that did not pay off out of the
                     // graph, rather than inventing an external symbol for a
                     // member that may not exist.
+                    continue;
+                }
+                if ($targetId === null && !self::isResolvableReference((string) $reference)) {
+                    if (!isset($warnedReferences[$reference])) {
+                        $warnedReferences[$reference] = true;
+                        $warnings[] = [
+                            'owner' => $contribution->ownerKey,
+                            'code' => self::UNRESOLVABLE_TARGET_CODE,
+                            'message' => sprintf(
+                                'Edge target %s names no resolvable symbol; the %s edge from %s was dropped.',
+                                json_encode($reference),
+                                $edge->kind,
+                                $edge->sourceReference,
+                            ),
+                            'path' => $edge->evidence->relativePath,
+                        ];
+                    }
                     continue;
                 }
                 if ($targetId === null) {
@@ -415,7 +444,19 @@ final readonly class GraphReconciler
             }
         }
 
-        return [$external, $edges];
+        return [$external, $edges, $warnings];
+    }
+
+    /**
+     * Whether a reference has the three non-empty segments an external node
+     * needs. Mirrors the check {@see externalNode()} performs, so a caller can
+     * decide to drop an edge before reaching it.
+     */
+    private static function isResolvableReference(string $reference): bool
+    {
+        $parts = explode(':', $reference, 3);
+
+        return count($parts) === 3 && !in_array('', $parts, true);
     }
 
     /**
