@@ -187,7 +187,13 @@ final class ProjectScanService implements ProjectScanner
      */
     private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig, ?string $name): ?ReconciliationResult
     {
-        if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0) {
+        // A degraded language contributes nothing to added/changed, so those tallies
+        // cannot see it, and the scanner-set hash only differs when the failed
+        // language was in the previously active scan. Without this guard the first
+        // scan to discover a language whose worker is missing would take the fast
+        // path and never reconcile, so the error diagnostic this scan produced would
+        // never reach the graph. A degraded scan is by definition not a no-change one.
+        if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0 || $language->workerDiagnostics !== []) {
             return null;
         }
         // Explicit boundary overrides and rename requests arrive as call arguments,

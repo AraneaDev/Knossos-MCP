@@ -119,6 +119,57 @@ final class FastPathTest extends KnossosTestCase
         }
     }
 
+    /**
+     * An installation root whose TypeScript worker dies on start. The PHP worker
+     * is copied verbatim so it still succeeds: the point is one dead language
+     * beside a healthy one, not a scan with nothing left.
+     */
+    private function installationRootWithDeadTypescriptWorker(): string
+    {
+        $installation = sys_get_temp_dir() . '/knossos-stale-install-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/workers/php', $installation . '/workers/php');
+        mkdir($installation . '/workers/typescript/bin', 0o777, true);
+        file_put_contents($installation . '/workers/typescript/bin/worker.js', "process.exit(3);\n");
+
+        return $installation;
+    }
+
+    #[Group('scan')]
+    public function testDegradedLanguageSkipsFastPathSoItsDiagnosticReachesTheGraph(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+        $installation = $this->installationRootWithDeadTypescriptWorker();
+        try {
+            $pdo = $this->freshTestDatabase();
+            $service = new ProjectScanService($pdo, $installation, [$root]);
+
+            // TypeScript is already dead on the first scan, so it never enters the
+            // active scan's scanner set -- which is exactly why the scanner-set-hash
+            // guard cannot notice the failure on the rescan below.
+            $first = $service->scan($root);
+            assertSame(['knossos.typescript'], $first->data['degraded_languages']);
+
+            // Nothing changed on disk, so every tally the fast path consults is zero
+            // and the scanner set still matches. Only the degradation guard can stop
+            // it short-circuiting -- and it must, or the error diagnostic this scan
+            // produced would never be reconciled into the graph.
+            $second = $service->scan($root);
+
+            assertSame(false, array_key_exists('fast_path', $second->data));
+            assertSame('incremental', $second->data['mode']);
+            assertSame(['knossos.typescript'], $second->data['degraded_languages']);
+
+            $rows = $pdo->query("SELECT severity, code, file_id FROM diagnostics WHERE owner_key = 'knossos.typescript'")->fetchAll();
+            assertSame(1, count($rows));
+            assertSame('error', $rows[0]['severity']);
+            assertSame(null, $rows[0]['file_id']);
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($installation);
+        }
+    }
+
     #[Group('scan')]
     public function testConfigOrScannerSetChangeSkipsFastPath(): void
     {

@@ -331,10 +331,13 @@ final class LanguageScanRunnerTest extends TestCase
         );
     }
 
-    public function testOneFailingWorkerDoesNotDiscardAnotherLanguagesFacts(): void
+    /**
+     * A runner whose TypeScript worker times out and whose PHP worker is live.
+     *
+     * @param list<LanguageDescriptor> $descriptors in the order the runner walks them
+     */
+    private function runnerWithFailingTypescript(array $descriptors): LanguageScanRunner
     {
-        // PHP succeeds, TypeScript throws. The PHP graph must survive and the
-        // TypeScript failure must arrive as a diagnostic, not an exception.
         $pool = $this->createStub(LanguageWorkerPool::class);
         $client = $this->fakeWorkerClient();
         $pool->method('client')->willReturnCallback(
@@ -346,26 +349,50 @@ final class LanguageScanRunnerTest extends TestCase
                 return $client;
             },
         );
-        $runner = new LanguageScanRunner(
-            [$this->phpDescriptor(), $this->typescriptDescriptor()],
-            $pool,
-            new ContributionCacheService(),
-        );
 
-        $result = $runner->run(
-            $this->planWithCachedPhpFile([
-                $this->fileFixture('src/Foo.php', 'php'),
-                $this->fileFixture('src/a.ts', 'typescript'),
-            ]),
-            new CancellationToken(),
-        );
+        return new LanguageScanRunner($descriptors, $pool, new ContributionCacheService());
+    }
 
+    /** The two-language plan both isolation tests run, PHP cached and TypeScript fresh. */
+    private function twoLanguagePlan(): ScanPlan
+    {
+        return $this->planWithCachedPhpFile([
+            $this->fileFixture('src/Foo.php', 'php'),
+            $this->fileFixture('src/a.ts', 'typescript'),
+        ]);
+    }
+
+    /**
+     * Both isolation tests assert the same surviving facts; only the descriptor
+     * order differs.
+     */
+    private function assertPhpSurvivedTypescriptTimeout(LanguageScanResult $result): void
+    {
         assertSame(1, count($result->contributions));
         assertSame(1, count($result->manifests));
         assertSame(1, $result->unchanged);
         assertSame(1, count($result->workerDiagnostics));
         assertSame('WORKER_TIMEOUT', $result->workerDiagnostics[0]['code']);
         assertSame('knossos.typescript', $result->workerDiagnostics[0]['owner']);
+    }
+
+    public function testOneFailingWorkerDoesNotDiscardAnotherLanguagesFacts(): void
+    {
+        // PHP succeeds, TypeScript throws. The PHP graph must survive and the
+        // TypeScript failure must arrive as a diagnostic, not an exception.
+        $runner = $this->runnerWithFailingTypescript([$this->phpDescriptor(), $this->typescriptDescriptor()]);
+
+        $this->assertPhpSurvivedTypescriptTimeout($runner->run($this->twoLanguagePlan(), new CancellationToken()));
+    }
+
+    public function testAFailingWorkerDoesNotStopTheLanguagesAfterIt(): void
+    {
+        // The same scenario with the failure FIRST. Without this ordering a
+        // `break` or `return` in place of the catch's `continue` would leave the
+        // suite green while defeating the whole point of the isolation.
+        $runner = $this->runnerWithFailingTypescript([$this->typescriptDescriptor(), $this->phpDescriptor()]);
+
+        $this->assertPhpSurvivedTypescriptTimeout($runner->run($this->twoLanguagePlan(), new CancellationToken()));
     }
 
     public function testCancellationStillPropagatesRatherThanDegrading(): void

@@ -53,6 +53,31 @@ final readonly class FullScanRequest
             throw new InvalidArgumentException('snapshot_retention must be an integer between 0 and 20.');
         }
         self::assertListOf($contributionCache, ContributionCacheEntry::class, 'contributionCache');
+        self::assertWorkerDiagnostics($workerDiagnostics);
+    }
+
+    /**
+     * Reject a malformed worker diagnostic here rather than mid-transaction.
+     *
+     * Every other list on this request is validated by its element class, but a
+     * worker failure is a plain shape, and GraphReconciler indexes it raw while
+     * the graph transaction is open — leaving PHPStan as the only other thing
+     * enforcing the contract.
+     *
+     * @param list<mixed> $values
+     */
+    private static function assertWorkerDiagnostics(array $values): void
+    {
+        if (!array_is_list($values)) {
+            throw new InvalidArgumentException('workerDiagnostics must be a list.');
+        }
+        foreach ($values as $value) {
+            foreach (['owner', 'code', 'message'] as $field) {
+                if (!is_array($value) || !is_string($value[$field] ?? null) || $value[$field] === '') {
+                    throw new InvalidArgumentException('workerDiagnostics contains an invalid value.');
+                }
+            }
+        }
     }
 
     /**
