@@ -17,7 +17,8 @@
     "prettier": "latest"
   },
   "overrides": {
-    "js-yaml": "5.2.2"
+    "js-yaml": "5.2.2",
+    "brace-expansion": "5.0.9"
   },
   "engines": {
     "node": ">=22"
