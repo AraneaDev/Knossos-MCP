@@ -100,7 +100,16 @@ while (($line = fgets(STDIN)) !== false) {
             if ($mode === 'per_file_exit' && count($requested) > $threshold) {
                 exit(3);
             }
-            if ($mode === 'per_file_overflow' && count($requested) > $threshold) {
+            // Overflows the FIRST oversized request only, so a caller that
+            // re-widened its budget afterwards can be told apart from one that
+            // stayed pinned at the reduced value.
+            $overflowOnce = $mode === 'per_file_overflow_once'
+                && count($requested) > $threshold
+                && !file_exists($pidFile . '.overflowed');
+            if ($overflowOnce) {
+                file_put_contents($pidFile . '.overflowed', '1');
+            }
+            if ($overflowOnce || ($mode === 'per_file_overflow' && count($requested) > $threshold)) {
                 // Contributions FIRST, so the caller has already received facts
                 // for these files when the flood aborts the request. A retry
                 // re-sends the same files, so a caller that kept the partial

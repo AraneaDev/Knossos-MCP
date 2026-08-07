@@ -17,9 +17,11 @@ final readonly class LanguageScanResult
      *        Languages whose worker failed. Not Diagnostic objects: a worker
      *        failure has no source file to point at, and Evidence requires one.
      * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
-     *        The scan-request bounds each language ran under, keyed by language
-     *        key. `source_bytes_used` differs from `source_bytes` when a batch
-     *        overflowed the worker's output cap and the budget was halved.
+     *        The scan-request bounds each language ran under, keyed by owner
+     *        (`knossos.php`) to match $workerDiagnostics and $scannerMetadata.
+     *        `source_bytes_used` is the narrowest budget any of that language's
+     *        requests ran at, so a value below `source_bytes` means a batch
+     *        overflowed the worker's output cap and was re-split.
      */
     public function __construct(
         public array $manifests,

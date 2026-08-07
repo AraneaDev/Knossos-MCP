@@ -35,12 +35,21 @@ final readonly class LanguageScanRunner
                 $plan->preparation->discovery->files,
                 static fn($file): bool => in_array($file->language, $descriptor->languages, true),
             ));
+            // Keyed on the owner, like workerDiagnostics and scannerMetadata, so
+            // a consumer can join the three. Recorded for every descriptor,
+            // including one with nothing to scan, so the shape is stable.
+            $owner = 'knossos.' . $descriptor->key;
+            $batchBudgets[$owner] = [
+                'files' => $descriptor->scanBatchFiles,
+                'source_bytes' => $descriptor->scanBatchSourceBytes,
+                'source_bytes_used' => $descriptor->scanBatchSourceBytes,
+            ];
             if ($files === []) {
                 continue;
             }
-            // Read back by reference below, so the reported budget is the one
-            // the scan settled on rather than the one it started with — which
-            // is the number an operator needs when a language overflowed.
+            // Read back by reference below: the narrowest budget any request in
+            // this language ran at. Lower than the configured value means a
+            // batch overflowed the worker's output cap and was re-split.
             $sourceBytes = $descriptor->scanBatchSourceBytes;
             try {
                 $outcome = $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
@@ -62,13 +71,9 @@ final readonly class LanguageScanRunner
                 ];
                 continue;
             } finally {
-                // Recorded on both paths: a degraded language is exactly the one
+                // Updated on both paths: a degraded language is exactly the one
                 // whose batch bounds the reader wants to see.
-                $batchBudgets[$descriptor->key] = [
-                    'files' => $descriptor->scanBatchFiles,
-                    'source_bytes' => $descriptor->scanBatchSourceBytes,
-                    'source_bytes_used' => $sourceBytes,
-                ];
+                $batchBudgets[$owner]['source_bytes_used'] = $sourceBytes;
             }
             $manifests[] = $outcome['manifest'];
             array_push($contributions, ...$outcome['contributions']);
@@ -146,10 +151,10 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
-        $pending = self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $sourceBytes);
-        $halvings = 0;
+        $full = $descriptor->scanBatchSourceBytes;
+        $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0);
         while ($pending !== []) {
-            $batch = array_shift($pending);
+            $item = array_shift($pending);
             try {
                 // Held aside rather than appended directly: an overflowing
                 // request has already streamed some contributions, and the
@@ -159,7 +164,7 @@ final readonly class LanguageScanRunner
                 // `['files' => ...] + $request` overrides `files` only: PHP's
                 // `+` keeps the left operand's key, so `root`, `limits` and the
                 // per-language extras above survive every batch.
-                $requested = array_map(static fn(object $file): string => $file->relativePath, $batch);
+                $requested = array_map(static fn(object $file): string => $file->relativePath, $item['files']);
                 foreach ($client->scan(['files' => $requested] + $request, $cancellation->isCancelled(...)) as $contribution) {
                     $received[] = $contribution;
                 }
@@ -169,21 +174,30 @@ final readonly class LanguageScanRunner
                 // worker is broken. Everything else — a crash, a timeout, and
                 // above all a cancellation — keeps the per-language behaviour it
                 // already had: rethrow, and let run() degrade or propagate it.
+                // A single file cannot be split any further, so retrying it
+                // would only burn the remaining attempts and worker restarts.
                 if ($error->diagnosticCode !== 'WORKER_OUTPUT_LIMIT'
-                    || $halvings >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
+                    || count($item['files']) <= 1
+                    || $item['halvings'] >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
                     || $cancellation->isCancelled()) {
                     throw $error;
                 }
-                ++$halvings;
-                $sourceBytes = max(1, intdiv($sourceBytes, 2));
+                $budget = max(1, intdiv($item['budget'], 2));
+                $sourceBytes = min($sourceBytes, $budget);
                 // The failed request closed its session, so this language needs
                 // a fresh worker before the smaller batches can be sent.
                 $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
-                // Re-split the failed batch AND everything still queued: the
-                // queued batches were sized by the budget that just proved too
-                // large, so leaving them would spend one doomed request each.
-                // Order is preserved, so a retry re-sends the same files.
-                $pending = self::batches(array_merge($batch, ...$pending), $descriptor->scanBatchFiles, $sourceBytes);
+                // Only the batch that overflowed is re-split, and only its own
+                // descendants inherit the reduced budget. Carrying the reduction
+                // across the rest of the language would let one pathological
+                // directory pin a whole repository at a fraction of its budget —
+                // which for TypeScript means rebuilding the program per request.
+                // The cost of keeping the others at full width is one doomed
+                // request each if they overflow too: a tax, not a cliff.
+                $pending = [
+                    ...self::queued(self::batches($item['files'], $descriptor->scanBatchFiles, $budget), $budget, $item['halvings'] + 1),
+                    ...$pending,
+                ];
                 continue;
             }
             foreach ($received as $contribution) {
@@ -216,14 +230,22 @@ final readonly class LanguageScanRunner
     /**
      * Split the files a language must scan into scan requests.
      *
-     * Bounded on two axes because protocol output has two terms. A fixed cost
-     * per file — measured at roughly 1.8 KB — dominates on a project of many
+     * Bounded on two axes because protocol output has two known terms. A fixed
+     * cost per file — around 800 B to 1.8 KB — dominates on a project of many
      * tiny files, which is why the file count is capped; the rest scales with
      * how much source the request covers, which is why the cumulative byte
-     * total is capped too. Neither alone is sufficient: the same 400 TypeScript
-     * files emitted 2.5 MB or 29.6 MB depending only on declared-symbol
-     * density, and generated 130-byte files expand 15x where the real sources
-     * they imitate expand under 2x.
+     * total is capped too. Neither alone is sufficient: generated 130-byte
+     * files expand 15x where the real sources they imitate expand under 2x.
+     *
+     * Both terms together are still only a lower bound. They predict real
+     * corpora within a few percent but cannot explain a corpus dense in
+     * declared symbols: 400 TypeScript files of 1.9 MB emitted 29.6 MB, where
+     * the per-file term accounts for 2.5% and the source term would need a
+     * coefficient of ~15x against a measured 1.85x. Symbol density is simply
+     * not modelled here, and no cheap pre-scan measurement of it exists. That
+     * is why the byte budget adapts on WORKER_OUTPUT_LIMIT rather than trying
+     * to predict: these bounds make the common case one request, and the retry
+     * covers the case they cannot see coming.
      *
      * Returns the file objects rather than their paths so a batch the worker
      * rejected as too large can be re-split at a smaller budget.
@@ -256,6 +278,26 @@ final readonly class LanguageScanRunner
         }
 
         return $batches;
+    }
+
+    /**
+     * Wrap batches as queue items carrying the budget they were split at.
+     *
+     * The budget travels with the batch rather than with the language so a
+     * reduction stays scoped to the work that provoked it: a batch's own
+     * descendants inherit it, the rest of the language does not.
+     *
+     * @param list<list<object>> $batches
+     * @param int $budget the source-byte budget these batches were split at
+     * @param int $halvings how many reductions this lineage has already had
+     * @return list<array{files: list<object>, budget: int, halvings: int}>
+     */
+    private static function queued(array $batches, int $budget, int $halvings): array
+    {
+        return array_map(
+            static fn(array $files): array => ['files' => $files, 'budget' => $budget, 'halvings' => $halvings],
+            $batches,
+        );
     }
 
     /**

@@ -33,11 +33,13 @@ because they differ per language and the byte budget can differ per scan:
 - `files` — most files sent per worker request. This bound guards the deadline.
 - `source_bytes` — most source bytes sent per worker request. This bound guards
   `max_output_bytes`, because protocol output has a large per-file constant
-  (about 1.8 KB) plus a term that scales with how much source the request
-  covers. Neither axis alone is sufficient.
-- `source_bytes_used` — the budget the scan actually settled on. When it is
-  lower than `source_bytes`, at least one request overflowed and the budget was
-  halved; see below.
+  (roughly 0.8-1.8 KB) plus a term that scales with how much source the request
+  covers. Neither axis alone is sufficient — and neither is both together, since
+  how densely a file declares symbols also drives output and is not modelled at
+  all. That unmodelled term is why the budget adapts rather than predicts.
+- `source_bytes_used` — the narrowest budget any of that language's requests ran
+  at. Lower than `source_bytes` means at least one batch overflowed and was
+  re-split; see below.
 
 TypeScript uses a much larger file cap (2,000) and a larger byte budget (3 MB)
 than the defaults (400 and 4 MB), because it rebuilds and re-checks a whole
@@ -52,12 +54,19 @@ any fixed budget to be both safe and fast: 1.68x for KaTeX's TypeScript sources,
 files and for code unusually dense in declared symbols. The byte budget is
 therefore set optimistically, and corrected when it is wrong.
 
-When a scan request fails with `WORKER_OUTPUT_LIMIT`, that language's byte
-budget is halved, its worker is restarted, and its remaining files are re-split
-and retried. This repeats up to `max_scan_batch_halvings` times (4), after which
-the failure falls through to the ordinary degrade path below. `WORKER_OUTPUT_LIMIT`
-is the only retryable failure: a crash, a timeout, or a cancellation is never
-retried.
+When a scan request fails with `WORKER_OUTPUT_LIMIT`, the budget is halved, that
+language's worker is restarted, and **the failing batch** is re-split and
+retried. The reduction applies only to that batch and its descendants: later
+batches start again at the configured budget, so one pathological directory
+costs a single wasted request rather than pinning the whole language at a
+fraction of its budget for the rest of the scan. This repeats up to
+`max_scan_batch_halvings` times (4) per batch, after which the failure falls
+through to the ordinary degrade path below.
+
+A batch of one file is never retried — there is nothing left to split — so it
+degrades immediately instead of burning the remaining attempts.
+`WORKER_OUTPUT_LIMIT` is the only retryable failure: a crash, a timeout, or a
+cancellation is never retried.
 
 Sending a whole project in one request made `max_output_bytes` a project-wide
 ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than

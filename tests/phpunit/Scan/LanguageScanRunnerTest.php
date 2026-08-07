@@ -756,16 +756,63 @@ final class LanguageScanRunnerTest extends TestCase
 
         $result = $runner->run($this->planForFiles($this->eightBigPhpFiles(), 100_000), new CancellationToken());
 
-        // One doomed 4-file request, then the whole language re-split at 2.
-        assertSame([4, 2, 2, 2, 2], $this->recordedBatches());
+        // Each 4-file batch overflows once and is then re-split into 2s. The
+        // second batch pays its own doomed request because the reduction is
+        // scoped to the batch that provoked it — one wasted request per
+        // oversized batch, rather than pinning the whole language.
+        assertSame([4, 2, 2, 4, 2, 2], $this->recordedBatches());
         assertSame([], $result->workerDiagnostics);
         assertSame(8, $result->parsed);
         // The overflowing request had already streamed frames; counting them
         // would double-count the files the retry re-sends.
         assertSame(8, $result->scannerMetadata['knossos.fake']['files_scanned']);
-        // The settled budget is reported, not the one the scan started with.
-        assertSame(400_000, $result->batchBudgets['php']['source_bytes']);
-        assertSame(200_000, $result->batchBudgets['php']['source_bytes_used']);
+        // The narrowest budget any request ran at is reported, not the start.
+        assertSame(400_000, $result->batchBudgets['knossos.php']['source_bytes']);
+        assertSame(200_000, $result->batchBudgets['knossos.php']['source_bytes_used']);
+    }
+
+    public function testAReducedBudgetDoesNotPinTheRestOfTheLanguage(): void
+    {
+        // The reduction must not outlive the batch that caused it. This worker
+        // overflows only its first oversized request, so if the budget stayed
+        // pinned every later request would carry 2 files; the trailing 4s prove
+        // the descriptor's full budget came back.
+        $this->allocateRecordPath();
+        $files = [];
+        for ($index = 0; $index < 12; ++$index) {
+            $files[sprintf('src/Big%02d.php', $index)] = 'php';
+        }
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_overflow_once', threshold: 2, tightCap: true),
+            $this->descriptorFor('php', batchSourceBytes: 400_000),
+        );
+
+        $result = $runner->run($this->planForFiles($files, 100_000), new CancellationToken());
+
+        assertSame([4, 2, 2, 4, 4], $this->recordedBatches());
+        assertSame([], $result->workerDiagnostics);
+        assertSame(12, $result->parsed);
+    }
+
+    public function testAFileThatOverflowsAloneIsNotRetriedAtAll(): void
+    {
+        // batches() always emits at least one file per request, so a file that
+        // overflows by itself cannot be split any further. Retrying it would
+        // burn every remaining attempt and a worker restart each time before
+        // degrading anyway.
+        $this->allocateRecordPath();
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_overflow', threshold: 0, tightCap: true),
+            $this->descriptorFor('php', batchSourceBytes: 400_000),
+        );
+
+        $result = $runner->run($this->planForFiles(['src/Huge.php' => 'php'], 900_000), new CancellationToken());
+
+        assertSame([1], $this->recordedBatches());
+        assertSame(1, count($result->workerDiagnostics));
+        assertSame('WORKER_OUTPUT_LIMIT', $result->workerDiagnostics[0]['code']);
+        // Never halved, because it was never retried.
+        assertSame(400_000, $result->batchBudgets['knossos.php']['source_bytes_used']);
     }
 
     public function testHalvingIsBoundedAndThenDegradesTheLanguage(): void
@@ -773,23 +820,32 @@ final class LanguageScanRunnerTest extends TestCase
         // A worker that refuses every request must not be retried forever. After
         // the bounded halvings the failure falls through to the per-language
         // degrade path exactly as any other worker fault does.
+        //
+        // 64 files of 1 KB against a 64 KB budget stay splittable through all
+        // four halvings (64 -> 32 -> 16 -> 8 -> 4 files), so it is the bound
+        // that stops this and not the single-file guard.
         $this->allocateRecordPath();
-        $descriptor = $this->descriptorFor('php', batchSourceBytes: 400_000);
+        $files = [];
+        for ($index = 0; $index < 64; ++$index) {
+            $files[sprintf('src/Small%02d.php', $index)] = 'php';
+        }
+        $descriptor = $this->descriptorFor('php', batchSourceBytes: 64_000);
         $runner = $this->runnerWithWorkerFactory(
             fn(): ProcessScannerClient => $this->workerClient('per_file_overflow', threshold: 0, tightCap: true),
             $descriptor,
         );
 
-        $result = $runner->run($this->planForFiles($this->eightBigPhpFiles(), 100_000), new CancellationToken());
+        $result = $runner->run($this->planForFiles($files, 1_000), new CancellationToken());
 
         // The initial attempt plus MAX_SCAN_BATCH_HALVINGS retries, then stop.
+        assertSame([64, 32, 16, 8, 4], $this->recordedBatches());
         assertSame(1 + WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS, count($this->recordedBatches()));
         assertSame(1, count($result->workerDiagnostics));
         assertSame('WORKER_OUTPUT_LIMIT', $result->workerDiagnostics[0]['code']);
         assertSame('knossos.php', $result->workerDiagnostics[0]['owner']);
         // Reported even though the language failed: how far the budget fell is
         // exactly what an operator needs to see here.
-        assertSame(25_000, $result->batchBudgets['php']['source_bytes_used']);
+        assertSame(4_000, $result->batchBudgets['knossos.php']['source_bytes_used']);
     }
 
     public function testAFailureThatIsNotAnOutputOverflowIsNeverRetried(): void
@@ -809,7 +865,7 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame(1, count($this->recordedBatches()));
         assertSame(1, count($result->workerDiagnostics));
         assertSame('knossos.php', $result->workerDiagnostics[0]['owner']);
-        assertSame(400_000, $result->batchBudgets['php']['source_bytes_used']);
+        assertSame(400_000, $result->batchBudgets['knossos.php']['source_bytes_used']);
     }
 
     public function testBatchBudgetsAreReportedForALanguageThatNeededNoRetry(): void
@@ -819,7 +875,26 @@ final class LanguageScanRunnerTest extends TestCase
 
         assertSame(
             ['files' => 400, 'source_bytes' => 4_000_000, 'source_bytes_used' => 4_000_000],
-            $result->batchBudgets['php'],
+            $result->batchBudgets['knossos.php'],
+        );
+    }
+
+    public function testBatchBudgetsAreReportedForALanguageWithNothingToScan(): void
+    {
+        // A stable shape is easier to consume than one whose keys depend on what
+        // the project happened to contain, and the configured bounds are still
+        // the answer to "what would this language have run under?".
+        $runner = $this->runnerWithClients(
+            ['php' => $this->recordingClient()],
+            [$this->descriptorFor('php'), $this->descriptorFor('typescript', batchFiles: 2_000)],
+        );
+
+        $result = $runner->run($this->planForFiles(['src/Foo.php' => 'php']), new CancellationToken());
+
+        assertSame(2_000, $result->batchBudgets['knossos.typescript']['files']);
+        assertSame(
+            $result->batchBudgets['knossos.typescript']['source_bytes'],
+            $result->batchBudgets['knossos.typescript']['source_bytes_used'],
         );
     }
 }
