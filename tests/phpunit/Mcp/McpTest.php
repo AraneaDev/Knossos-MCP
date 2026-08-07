@@ -453,6 +453,72 @@ final class McpTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testNestedBoundaryAndListArgumentsAreTrimmedToo(): void
+    {
+        // boundariesArgument() called string() only for its side effect and
+        // returned the original array, so a padded path_prefix reached
+        // BoundaryInference verbatim and matched no file at all -- the same
+        // silent-empty result the top-level trim exists to remove. strings()
+        // had the same shape of defect for list entries.
+        $padded = $this->scanWithBoundary('  src/  ');
+        $plain = $this->scanWithBoundary('src/');
+
+        assertSame(true, $plain > 0);
+        assertSame($plain, $padded);
+
+        // A padded list entry must resolve to the same query as the plain one.
+        // edge_kinds is checked against a closed set downstream, so before the
+        // trim a padded kind was rejected as "an unsupported relationship" --
+        // an error about the caller's vocabulary rather than their whitespace.
+        [$tools, $projectId] = $this->toolServiceWithScannedFixture();
+        $trimmedKinds = $tools->call('impact_analysis', [
+            'project_id' => $projectId, 'symbol' => 'CheckoutService', 'edge_kinds' => ['  calls  '],
+        ]);
+        $plainKinds = $tools->call('impact_analysis', [
+            'project_id' => $projectId, 'symbol' => 'CheckoutService', 'edge_kinds' => ['calls'],
+        ]);
+        assertSame($plainKinds->jsonSerialize()['data'], $trimmedKinds->jsonSerialize()['data']);
+
+        // A whitespace-only entry is still rejected, not trimmed into nothing.
+        assertThrows(
+            fn() => $tools->call('impact_analysis', [
+                'project_id' => $projectId, 'symbol' => 'CheckoutService', 'edge_kinds' => ['   '],
+            ]),
+            InvalidArgumentException::class,
+        );
+    }
+
+    /**
+     * Scan the mixed fixture into a fresh database with one explicit
+     * path_prefix boundary, returning how many components it captured.
+     */
+    private function scanWithBoundary(string $pathPrefix): int
+    {
+        $pdo = $this->freshTestDatabase();
+        $root = self::repositoryRoot() . '/tests/Fixtures/mixed';
+        $tools = new ToolService(
+            new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $scanned = $tools->call('scan_project', [
+            'path' => $root,
+            'boundaries' => [['name' => 'Core', 'path_prefix' => $pathPrefix]],
+        ]);
+        $boundaries = $tools->call('list_boundaries', ['project_id' => $scanned->projectId])->jsonSerialize();
+        $members = 0;
+        /** @var list<array<string, mixed>> $rows */
+        $rows = $boundaries['data']['boundaries'];
+        foreach ($rows as $row) {
+            if (($row['name'] ?? null) === 'Core') {
+                $members += (int) ($row['member_count'] ?? 0);
+            }
+        }
+        return $members;
+    }
+
+    #[Group('mcp')]
     public function testEveryHandlerRejectsAnUnknownArgumentThroughTheCatalog(): void
     {
         // The catalog is the single source: no handler needs its own key list.

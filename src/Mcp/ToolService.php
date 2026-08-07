@@ -121,9 +121,10 @@ final readonly class ToolService
     }
 
     /**
-     * Central pre-dispatch key check: every remaining argument must be declared
-     * and every non-common required key present. Mirrors the per-handler keys()
-     * guard so an invalid request is rejected before refresh_if_stale runs.
+     * The only top-level key check: every remaining argument must be declared
+     * and every non-common required key present. Driven by ToolCatalog, so the
+     * advertised schema and the accepted arguments cannot drift apart, and run
+     * before refresh_if_stale so an invalid request triggers no rescan.
      *
      * @param array<string, mixed> $arguments
      * @param array{properties: list<string>, required: list<string>} $schema
@@ -902,7 +903,10 @@ final readonly class ToolService
     }
 
     /**
-     * A list-of-strings argument, rejecting a bare string so a caller cannot pass one by mistake.
+     * A list-of-strings argument, rejecting a bare string so a caller cannot
+     * pass one by mistake. Entries are trimmed for the same reason {@see string()}
+     * trims: every list here holds enum values, ids, or paths matched literally,
+     * so a padded entry silently matched nothing instead of being rejected.
      *
      * @param array<string, mixed> $arguments @return list<string>
      */
@@ -912,16 +916,21 @@ final readonly class ToolService
         if (!is_array($value) || !array_is_list($value) || count($value) > $maximum) {
             throw new InvalidArgumentException(sprintf('%s must be a list of at most %d strings.', $key, $maximum));
         }
+        $trimmed = [];
         foreach ($value as $item) {
-            if (!is_string($item) || $item === '') {
+            if (!is_string($item) || trim($item) === '') {
                 throw new InvalidArgumentException(sprintf('%s must contain non-empty strings.', $key));
             }
+            $trimmed[] = trim($item);
         }
-        return $value;
+        return $trimmed;
     }
 
     /**
-     * Boundary definitions from the scan arguments, validated into the shape the planner expects.
+     * Boundary definitions from the scan arguments, validated into the shape the
+     * planner expects. The validated strings are written back rather than
+     * discarded: BoundaryInference matches a prefix literally, so a padded
+     * path_prefix would define a boundary that matches nothing.
      *
      * @param array<string, mixed> $arguments @return list<array<string, mixed>>
      */
@@ -931,18 +940,21 @@ final readonly class ToolService
         if (!is_array($values) || !array_is_list($values) || count($values) > 50) {
             throw new InvalidArgumentException('boundaries must be a list of at most 50 objects.');
         }
+        $normalized = [];
         foreach ($values as $value) {
             if (!is_array($value) || array_is_list($value)) {
                 throw new InvalidArgumentException('Each boundary must be an object.');
             }
             self::keys($value, ['name'], ['path_prefix', 'namespace_prefix']);
-            self::string($value, 'name');
+            $value['name'] = self::string($value, 'name');
             $matchers = (int) array_key_exists('path_prefix', $value) + (int) array_key_exists('namespace_prefix', $value);
             if ($matchers !== 1) {
                 throw new InvalidArgumentException('Each boundary requires exactly one matcher.');
             }
-            self::string($value, array_key_exists('path_prefix', $value) ? 'path_prefix' : 'namespace_prefix');
+            $matcher = array_key_exists('path_prefix', $value) ? 'path_prefix' : 'namespace_prefix';
+            $value[$matcher] = self::string($value, $matcher);
+            $normalized[] = $value;
         }
-        return $values;
+        return $normalized;
     }
 }
