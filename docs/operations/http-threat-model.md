@@ -110,11 +110,18 @@ directives and, by not restricting itself to `--local`, also sees
 a driver a narrower query would miss, while `git diff` itself still resolves
 them. A driver name containing `=` cannot be expressed as a `-c` override at
 all (Git's own `-c` parser splits on the first `=`), so that case fails
-closed: the command is refused rather than run un-neutralised. `core.pager` is
-neutralised separately, by `--no-pager` at each call site rather than by an
-override. The child also runs under an explicit environment
-(`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, no inherited
-variables).
+closed: the command is refused rather than run un-neutralised. A repository
+defining more filter/diff drivers than `GitProcessRunner::MAX_DRIVER_NAMES`
+fails closed the same way, rather than building an argv long enough to make
+`proc_open()` itself fail. Alongside the blanked `clean`/`process`/`smudge`,
+each filter also gets `required=false` forced: `required=true` is how
+Git-LFS's own `git lfs install --local` marks its filter (and how a hostile
+repository could otherwise turn a neutralised filter into a fatal error), and
+without this a blanked-but-required filter fails the whole command rather than
+being skipped. `core.pager` is neutralised separately, by `--no-pager` at each
+call site rather than by an override. The child also runs under an explicit
+environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, no
+inherited variables).
 
 This matters whenever a repository directory arrives with its own `.git/`
 rather than from a fresh `clone`: CI artifacts, extracted archives, container

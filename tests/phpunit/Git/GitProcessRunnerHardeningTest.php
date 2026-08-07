@@ -269,6 +269,70 @@ final class GitProcessRunnerHardeningTest extends TestCase
     }
 
     /**
+     * Git-LFS's own `git lfs install --local` writes `required = true` next
+     * to `clean`/`smudge` in `.git/config`. Blanking `clean`/`process`/`smudge`
+     * without also forcing `required=false` turns this from a neutralised
+     * filter into a fatal `clean filter '<name>' failed`, breaking every
+     * Git-backed tool on an ordinary Git-LFS repository — the same failure a
+     * hostile repository could otherwise force deliberately. This plants the
+     * same shape (a canary-writing `clean` stands in for LFS's harmless
+     * `cat`, so the test also proves the filter itself never runs) and
+     * asserts the diff still succeeds with the correct output. Skipped where
+     * git is unavailable.
+     */
+    public function testRequiredFilterDoesNotFailTheDiff(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-git-hardening-lfs-' . bin2hex(random_bytes(8));
+        $canary = $root . '.canary';
+        mkdir($root, 0o700, true);
+        try {
+            self::runQuiet([$git, 'init', '-q', $root]);
+            file_put_contents($root . '/.gitattributes', "a.txt filter=lfs\n");
+            file_put_contents($root . '/a.txt', "hi\n");
+            self::runQuiet([$git, '-C', $root, 'add', '.gitattributes', 'a.txt']);
+            self::runQuiet([$git, '-C', $root, '-c', 'user.email=a@b', '-c', 'user.name=a', 'commit', '-qm', 'init']);
+            self::runQuiet([$git, '-C', $root, 'config', 'filter.lfs.clean', sprintf('sh -c "echo PWNED > %s; cat"', $canary)]);
+            self::runQuiet([$git, '-C', $root, 'config', 'filter.lfs.smudge', 'cat']);
+            self::runQuiet([$git, '-C', $root, 'config', 'filter.lfs.required', 'true']);
+            file_put_contents($root . '/a.txt', "changed\n");
+
+            $output = (new GitProcessRunner())->run(self::diffCommand($git, $root), 5000, 'hardening test');
+
+            self::assertFileDoesNotExist($canary, 'filter.lfs.clean was executed by a read-only Git query.');
+            self::assertSame("M\0a.txt\0", $output, 'A required=true filter must not turn the diff into a fatal error.');
+        } finally {
+            self::runQuiet(['rm', '-rf', $root]);
+            @unlink($canary);
+        }
+    }
+
+    /**
+     * The cap is enforced while building overrides, not by actually spawning
+     * a repository with thousands of filter drivers: this constructs the
+     * NUL-separated key list `parseDriverOverrides()` would see directly, via
+     * reflection on the private method, and asserts it refuses rather than
+     * building an unbounded `-c` list. No git binary is needed, so this test
+     * never skips.
+     */
+    public function testDriverCountAboveTheCapFailsClosedWithoutSpawning(): void
+    {
+        $keys = '';
+        for ($i = 0; $i <= GitProcessRunner::MAX_DRIVER_NAMES; ++$i) {
+            $keys .= sprintf("filter.driver%d.clean\0", $i);
+        }
+        $method = new \ReflectionMethod(GitProcessRunner::class, 'parseDriverOverrides');
+        $method->setAccessible(true);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/exceeding the ' . GitProcessRunner::MAX_DRIVER_NAMES . '/');
+        $method->invoke(null, $keys);
+    }
+
+    /**
      * The exact argv shape `ProcessGitWorkingTreeProvider::changes()` runs for
      * a working-tree diff, shared by the exploit tests above so each plants
      * its own hostile config and runs the identical query the production code

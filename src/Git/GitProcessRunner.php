@@ -82,6 +82,18 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     private const MAX_ENUMERATION_TIMEOUT_MS = 2_000;
 
     /**
+     * Upper bound on the number of distinct filter/diff-driver names {@see
+     * self::parseDriverOverrides()} will neutralise in one call. A real
+     * repository defines a handful (Git-LFS, git-crypt, and the like); this
+     * exists only to fail closed on a repository that defines an unreasonable
+     * number of them, rather than build an argv list long enough to make
+     * `proc_open()` itself fail. Public for the same reason {@see
+     * self::FORCED_CONFIG} is: so a test can assert the cap without
+     * reconstructing it.
+     */
+    public const MAX_DRIVER_NAMES = 1_000;
+
+    /**
      * @param bool $hardenGitConfig Whether to force the config overrides above
      *   and drop the inherited environment. The default is safe for every
      *   actual `git` invocation; callers that reuse this runner to probe an
@@ -209,7 +221,18 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     /**
      * Parse NUL-separated `git config --list --name-only -z` keys into `-c`
      * overrides that blank every `filter.<name>.clean`/`.process`/`.smudge`
-     * and `diff.<name>.textconv` entry the repository defines.
+     * and `diff.<name>.textconv` entry the repository defines, plus
+     * `filter.<name>.required=false`.
+     *
+     * That last one is not itself a hook: `filter.<name>.required=true` is
+     * how a repository tells Git to treat a missing or failing filter as
+     * fatal rather than a pass-through. Git-LFS's own `git lfs install --local`
+     * writes exactly that (`clean = cat`, `smudge = cat`, `required = true`)
+     * into `.git/config`, so blanking `clean`/`process`/`smudge` without also
+     * forcing `required=false` turns an ordinary Git-LFS repository into a
+     * hard `fatal: clean filter '<name>' failed` on every one of these tools
+     * — the same failure a hostile repository could otherwise force
+     * deliberately by setting `required = true` on its own filter.
      *
      * @return list<string>
      */
@@ -227,12 +250,21 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
                 $diffDrivers[$matches[1]] = true;
             }
         }
+        $driverCount = count($filters) + count($diffDrivers);
+        if ($driverCount > self::MAX_DRIVER_NAMES) {
+            throw new RuntimeException(sprintf(
+                'Repository defines %d filter/diff drivers, exceeding the %d this runner will neutralise in one call; refusing to run rather than build an unbounded command line.',
+                $driverCount,
+                self::MAX_DRIVER_NAMES,
+            ));
+        }
         $overrides = [];
         foreach (array_keys($filters) as $name) {
             self::assertNameIsOverridable($name, 'filter');
             $overrides[] = sprintf('filter.%s.clean=', $name);
             $overrides[] = sprintf('filter.%s.process=', $name);
             $overrides[] = sprintf('filter.%s.smudge=', $name);
+            $overrides[] = sprintf('filter.%s.required=false', $name);
         }
         foreach (array_keys($diffDrivers) as $name) {
             self::assertNameIsOverridable($name, 'diff driver');
@@ -281,12 +313,20 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * Run an already-hardened command under a deadline with bounded,
      * non-blocking reads.
      *
+     * `proc_open()` is called with `@`: an argv long enough (e.g. a huge
+     * `-c` list) can make the underlying `posix_spawn()` fail with a raw PHP
+     * Warning, and this process's stdout is an MCP protocol stream where
+     * {@see \Knossos\Mcp\StdioServer} — one stray write corrupts it — so no
+     * warning may reach it. The `is_resource()` check immediately below
+     * already turns that failure into a clean exception; `@` only silences
+     * the warning that would otherwise print before it.
+     *
      * @param non-empty-list<string> $command
      */
     private function execute(array $command, int $timeoutMs, string $operation): string
     {
         $pipes = [];
-        $process = proc_open(
+        $process = @proc_open(
             $command,
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
