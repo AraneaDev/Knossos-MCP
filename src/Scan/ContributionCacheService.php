@@ -7,7 +7,7 @@ namespace Knossos\Scan;
 use InvalidArgumentException;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Reconciliation\ContributionCacheEntry;
-use Knossos\Scanner\Protocol\{ScanContribution, ScannerManifest};
+use Knossos\Scanner\Protocol\{Diagnostic, Evidence, ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\ContributionDecoder;
 use Throwable;
 
@@ -80,7 +80,16 @@ final readonly class ContributionCacheService
         $entries = [];
         foreach ($files as $file) {
             $owner = $manifest->id . ':file:' . $file->relativePath;
-            $contribution = $byOwner[$owner] ?? throw new InvalidArgumentException(sprintf('Scanner omitted contribution for %s.', $file->relativePath));
+            $contribution = $byOwner[$owner] ?? null;
+            if ($contribution === null) {
+                // A worker that skipped a file it was asked for. Synthesise the
+                // contribution it owed so the file is accounted for and the gap
+                // is visible, rather than failing a scan whose other files have
+                // already produced facts. Deliberately not cached below: the
+                // next scan must retry this file from source.
+                $contributions[] = self::omittedContribution($owner, $file->relativePath);
+                continue;
+            }
             $contributions[] = $contribution;
             // TOCTOU guard: discovery hashed these bytes before the worker read them.
             // If the file changed during that window, persisting a cache entry keyed on
@@ -120,5 +129,21 @@ final readonly class ContributionCacheService
     private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
     {
         return new ContributionCacheEntry($file->relativePath, $file->contentHash, $manifest->id, $manifest->version, $configurationHash, $contribution);
+    }
+
+    /**
+     * The contribution a worker owed for a file it never reported on, carrying
+     * only the reason. Never cached, so the next scan re-analyses the file.
+     */
+    private static function omittedContribution(string $owner, string $relativePath): ScanContribution
+    {
+        return new ScanContribution($owner, [], [], [
+            new Diagnostic(
+                'error',
+                'SCANNER_OMITTED_CONTRIBUTION',
+                sprintf('The scanner returned no contribution for %s; the file contributed no facts.', $relativePath),
+                new Evidence($relativePath, 1, 1),
+            ),
+        ]);
     }
 }

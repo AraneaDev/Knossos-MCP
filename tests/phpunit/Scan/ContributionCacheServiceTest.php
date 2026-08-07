@@ -164,4 +164,25 @@ final class ContributionCacheServiceTest extends TestCase
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
     }
+
+    public function testMissingContributionBecomesADiagnosticRatherThanAnException(): void
+    {
+        // A worker that fails to emit for one file must cost that file, not the
+        // scan: every other file in the batch has already contributed facts.
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $fileA = $this->writeFile('a.php', "<?php // a\n");
+        $fileB = $this->writeFile('b.php', "<?php // b\n");
+        $contributionA = new ScanContribution($manifest->id . ':file:a.php');
+
+        $result = $service->entriesForScanned([$contributionA], [$fileA, $fileB], $manifest, 'cfg');
+
+        self::assertCount(2, $result['contributions']);
+        $missing = $result['contributions'][1];
+        self::assertSame($manifest->id . ':file:b.php', $missing->ownerKey);
+        self::assertSame([], $missing->nodes);
+        self::assertSame('SCANNER_OMITTED_CONTRIBUTION', $missing->diagnostics[0]->code);
+        // Never cached: the next scan must retry the file from source.
+        self::assertCount(1, $result['cache_entries']);
+    }
 }

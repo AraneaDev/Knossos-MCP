@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import fs, { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { TypeScriptScanner } from "../scanner.js";
@@ -314,5 +314,50 @@ describe("TypeScriptScanner.scan program cache", () => {
 
         expect(residentAtBuild.length).toBeGreaterThanOrEqual(3);
         expect(Math.max(...residentAtBuild)).toBeLessThanOrEqual(1);
+    });
+});
+
+describe("TypeScriptScanner.scan backstop", () => {
+    it("emits a contribution for a requested file that no program included", () => {
+        // validateRequestedFiles stats the file, then createRestrictedProgram stats
+        // it again via exceedsByteCap. A file that grows in between passes the first
+        // check and is dropped from the program by the second — so it is requested,
+        // accepted, and never emitted. The PHP side requires exactly one
+        // contribution per requested file, so that gap must not be silent.
+        const root = fixture({ "a.ts": "export const a = 1;\n" });
+        const real = fs.statSync.bind(fs);
+        let stats = 0;
+        const spy = vi.spyOn(fs, "statSync").mockImplementation((target, options) => {
+            const result = real(target, options);
+            if (String(target).endsWith("a.ts") && ++stats > 1) {
+                return { ...result, isFile: () => true, size: 10_000_000 };
+            }
+            return result;
+        });
+        try {
+            const emitted = [];
+            new TypeScriptScanner().scan(
+                { root, files: ["a.ts"], limits: { max_files: 10, max_file_bytes: 2_000_000 } },
+                (contribution) => emitted.push(contribution),
+            );
+            expect(emitted).toHaveLength(1);
+            expect(emitted[0].owner_key).toBe("knossos.typescript:file:a.ts");
+            expect(emitted[0].diagnostics[0].code).toBe("TS_UNSCANNABLE_FILE");
+        } finally {
+            spy.mockRestore();
+        }
+    });
+
+    it("emits exactly one contribution per accepted file", () => {
+        // The invariant the PHP side depends on, asserted directly.
+        const files = { "a.ts": "export const a = 1;\n", "b.ts": "export const b = 2;\n", "c.js": "module.exports = 3;\n" };
+        const root = fixture(files);
+        const emitted = [];
+        const summary = new TypeScriptScanner().scan(
+            { root, files: Object.keys(files), limits: { max_files: 10, max_file_bytes: 2_000_000 } },
+            (contribution) => emitted.push(contribution),
+        );
+        expect(emitted).toHaveLength(Object.keys(files).length);
+        expect(summary.files_scanned).toBe(Object.keys(files).length);
     });
 });

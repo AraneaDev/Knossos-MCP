@@ -172,6 +172,23 @@ export class TypeScriptScanner {
             ++programs;
         }
 
+        // Backstop: the PHP side requires exactly one contribution per requested
+        // file and treats a gap as a hard error. A file can still be absent from
+        // every program — it grew past the byte cap after validateRequestedFiles
+        // stat'd it, or a symlinked path resolved outside the root — so name the
+        // gap here rather than letting it surface as "scanner omitted".
+        for (const relative of requested) {
+            const key = normalize(relative);
+            if (emitted.has(key)) continue;
+            emit(
+                unscannableContribution(
+                    key,
+                    "File was not included in any TypeScript program (it may have changed size or moved since discovery).",
+                ),
+            );
+            emitted.add(key);
+        }
+
         return {
             files_scanned: emitted.size + rejected.length,
             programs,
