@@ -288,8 +288,7 @@ trait Fixtures
         // then immediately mutates the tree can otherwise land in the same
         // wall-clock second, making a strictly-later directory mtime
         // indistinguishable from "no change" for addedSince().
-        $this->pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
-            ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() - 5), 'id' => $scanId]);
+        self::backdateScanFinishedAt($this->pdo, $scanId);
 
         return $root;
     }
@@ -304,6 +303,13 @@ trait Fixtures
         $pdo = $this->freshTestDatabase();
         $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
         return [$pdo, $result->projectId, $root];
+    }
+
+    /** Backdates a scan's finished_at by 5 seconds; used by seedProjectWithFiles() to give a later mutation headroom against StalenessProbe::addedSince()'s directory-mtime comparison. */
+    private static function backdateScanFinishedAt(PDO $pdo, string $scanId): void
+    {
+        $pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
+            ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() - 5), 'id' => $scanId]);
     }
 
     /** @return array{0: ToolService, 1: string, 2: string, 3: PDO} [tools, projectId, absoluteRoot, pdo] */

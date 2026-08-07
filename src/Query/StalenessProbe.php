@@ -19,18 +19,6 @@ final readonly class StalenessProbe
     /** Tracked files above which content probing is skipped and freshness reported as unverified. */
     private const MAX_PROBED_FILES = 500;
 
-    /**
-     * Grace period, in seconds, subtracted from a directory's edge in
-     * addedSince()'s comparison. `finished_at` (second-resolution, stamped by
-     * the scan) and a directory's on-disk mtime (also second-resolution, but
-     * read moments later by an unrelated stat() call) are not guaranteed to
-     * agree on which integer second a given instant rounds to — under load,
-     * a directory nobody touched can read one second later than a
-     * `finished_at` stamped only milliseconds earlier. One second of slack
-     * absorbs that without materially delaying detection of a real addition.
-     */
-    private const ADDED_GRACE_SECONDS = 1;
-
     private Closure $wallClock;
 
     public function __construct(private PDO $pdo, ?Closure $wallClock = null)
@@ -227,7 +215,7 @@ final readonly class StalenessProbe
         $added = 0;
         foreach (array_keys($directories) as $directory) {
             $mtime = @filemtime($directory);
-            if ($mtime !== false && $mtime > $scannedAt + self::ADDED_GRACE_SECONDS) {
+            if ($mtime !== false && $mtime > $scannedAt) {
                 ++$added;
             }
         }
