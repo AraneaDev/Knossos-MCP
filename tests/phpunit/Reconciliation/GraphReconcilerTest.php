@@ -1500,6 +1500,44 @@ final class GraphReconcilerTest extends TestCase
         assertContains('Edge evidence file was not discovered', $error->getMessage());
     }
 
+    public function testExternalNodeStillThrowsForAReferenceItsGuardWouldReject(): void
+    {
+        // resolveEdges() now drops an unresolvable reference via
+        // isResolvableReference() before ever reaching externalNode(), so
+        // externalNode()'s own throw is unreachable through the public
+        // reconcile() path. It is kept as the contract for any future
+        // caller that skips the guard, so it is invoked directly here via
+        // reflection — the only way left to pin it. The two are asserted
+        // to agree on the same inputs: if isResolvableReference() ever
+        // drifted from what externalNode() rejects, a reference the guard
+        // waved through would reach this throw and abort a whole reconcile
+        // again, exactly the failure mode Task 2 removed.
+        $isResolvable = new \ReflectionMethod(GraphReconciler::class, 'isResolvableReference');
+        $externalNode = new \ReflectionMethod(GraphReconciler::class, 'externalNode');
+        $reconciler = new GraphReconciler($this->repo);
+        $evidence = new Evidence('src/Foo.php', 1, 5);
+
+        foreach (['no_colons', ':empty_lang:class', 'php:class:', 'php::Foo'] as $reference) {
+            assertSame(false, $isResolvable->invoke(null, $reference));
+
+            $error = captureThrows(
+                fn() => $externalNode->invoke($reconciler, 'project-1', $reference, $evidence, 'owner', []),
+                ReconciliationException::class,
+            );
+
+            assertContains('Unresolvable edge target reference', $error->getMessage());
+            assertContains($reference, $error->getMessage());
+        }
+
+        // A reference the guard accepts must not throw, confirming the two
+        // checks agree in both directions rather than only rejecting.
+        $accepted = 'php:class:App\\Foo';
+        assertSame(true, $isResolvable->invoke(null, $accepted));
+        [$id, $node] = $externalNode->invoke($reconciler, 'project-1', $accepted, $evidence, 'owner', []);
+        assertContains('external_class', $node['kind']);
+        assertSame($id, $node['id']);
+    }
+
     public function testDropsExternalNodeUnresolvableReferenceWithoutThreeParts(): void
     {
         $source = $this->minimalNode('php:class:App\\Foo');
