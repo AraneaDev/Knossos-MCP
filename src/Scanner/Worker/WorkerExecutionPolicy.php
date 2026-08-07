@@ -13,6 +13,16 @@ final readonly class WorkerExecutionPolicy
     public const MIN_REQUEST_TIMEOUT_MS = 1_000;
     public const MAX_REQUEST_TIMEOUT_MS = 120_000;
 
+    /**
+     * Files sent per scan request.
+     *
+     * Every request gets its own byte budget and deadline, so this is what keeps
+     * both proportional to a batch rather than to the project. Measured on this
+     * repository: ~14.9 KB of protocol output per PHP file, so 400 files is
+     * ~6 MB against the 20 MB cap, and ~1.7 s against the 30 s default.
+     */
+    public const SCAN_BATCH_FILES = 400;
+
     public function __construct(
         public int $requestTimeoutMs = self::DEFAULT_REQUEST_TIMEOUT_MS,
     ) {
@@ -46,6 +56,7 @@ final readonly class WorkerExecutionPolicy
             'max_line_bytes' => $limits->maxLineBytes,
             'max_output_bytes' => $limits->maxOutputBytes,
             'max_stderr_bytes' => $limits->maxStderrBytes,
+            'scan_batch_files' => self::SCAN_BATCH_FILES,
         ];
     }
 }

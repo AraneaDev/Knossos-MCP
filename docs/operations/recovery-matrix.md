@@ -20,6 +20,23 @@ CLI execution failures use exit code `2` and a stable diagnostic prefix. MCP
 tool errors carry the same family in structured content. Details after the
 prefix are explanatory and may vary by operating system or SQLite version.
 
+## Worker request batching
+
+The limits in the `worker_execution` block are per request, not per project: a
+worker request has its own cumulative output-byte budget and its own
+`request_timeout_ms` deadline. A language's files are therefore split across
+several requests rather than sent as one.
+
+- `scan_batch_files` — files sent per worker request. Each request carries its
+  own output-byte budget and its own `request_timeout_ms`, so both scale with a
+  batch rather than with the project.
+
+Sending a whole project in one request made `max_output_bytes` a project-wide
+ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than
+about 1,340 files aborted with `WORKER_OUTPUT_LIMIT` even though `max_files`
+permits far more. Batching keeps the reported budgets meaningful at any project
+size.
+
 ## Degraded scans
 
 A worker that fails or times out costs its own language, not the whole scan.

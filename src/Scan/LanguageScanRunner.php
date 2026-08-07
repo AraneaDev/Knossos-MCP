@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use Throwable;
 
 /**
@@ -122,8 +123,29 @@ final readonly class LanguageScanRunner
                 array_filter($plan->preparation->discovery->units, static fn($unit): bool => $unit->kind === 'typescript'),
             ));
         }
-        $scanned = $paths === [] ? [] : iterator_to_array($client->scan($request, $cancellation->isCancelled(...)));
-        $cancellation->throwIfCancelled();
+        // One request per batch: ScannerProtocolSession::scan() calls
+        // beginRequest() per invocation, which resets both the cumulative
+        // output-byte counter and the deadline. Sending the whole project in
+        // one request made a 20 MB cap and a 30 s budget apply to the project
+        // rather than to a batch, so a full scan of a mid-sized codebase failed
+        // on limits sized for a batch.
+        $scanned = $metadata = [];
+        foreach (array_chunk($paths, WorkerExecutionPolicy::SCAN_BATCH_FILES) as $batch) {
+            // `['files' => $batch] + $request` overrides `files` only: PHP's `+`
+            // keeps the left operand's key, so `root`, `limits` and the
+            // per-language extras above survive every batch.
+            $scanned = [...$scanned, ...iterator_to_array($client->scan(['files' => $batch] + $request, $cancellation->isCancelled(...)))];
+            $batchResult = $client->lastScanResult();
+            // Sum the per-batch counts; carry every other field (parser,
+            // programs, programs_reused) from the batch that reported it.
+            // PHP's `+` prefers the left operand, so the newest batch's scalars
+            // win and files_scanned is reassigned afterwards so the running sum
+            // is not overwritten by the last batch's own count.
+            $total = (int) ($metadata['files_scanned'] ?? 0) + (int) ($batchResult['files_scanned'] ?? 0);
+            $metadata = $batchResult + $metadata;
+            $metadata['files_scanned'] = $total;
+            $cancellation->throwIfCancelled();
+        }
         $recorded = $this->cache->entriesForScanned(
             $scanned,
             $partition->filesToScan,
@@ -139,7 +161,7 @@ final readonly class LanguageScanRunner
             'unchanged' => count($partition->cached),
             'added' => $partition->added,
             'changed' => $partition->changed,
-            'scanner_metadata' => $paths === [] ? [] : [$manifest->id => $client->lastScanResult()],
+            'scanner_metadata' => $paths === [] ? [] : [$manifest->id => $metadata],
             'milliseconds' => self::elapsedMilliseconds($started),
         ];
     }

@@ -83,5 +83,17 @@ final class WorkerExecutionPolicyTest extends TestCase
         assertSame(1_000_000, $meta['max_line_bytes']);
         assertSame(20_000_000, $meta['max_output_bytes']);
         assertSame(100_000, $meta['max_stderr_bytes']);
+        assertSame(400, $meta['scan_batch_files']);
+    }
+
+    public function testScanBatchStaysWellUnderTheOutputByteCap(): void
+    {
+        // At the measured ~14.9 KB of protocol output per PHP file, a batch has
+        // to stay far enough under max_output_bytes that a heavier language
+        // still fits; a batch sized past the cap would reinstate the ceiling
+        // this constant exists to remove.
+        $limits = new WorkerLimits();
+
+        assertSame(true, WorkerExecutionPolicy::SCAN_BATCH_FILES * 15_000 < $limits->maxOutputBytes);
     }
 }

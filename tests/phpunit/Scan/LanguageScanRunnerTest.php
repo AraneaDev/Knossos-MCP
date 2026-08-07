@@ -25,6 +25,17 @@ use RuntimeException;
 #[Group('scan-runner')]
 final class LanguageScanRunnerTest extends TestCase
 {
+    /** Where the recording worker appends one line per scan request it received. */
+    private ?string $recordPath = null;
+
+    protected function tearDown(): void
+    {
+        if ($this->recordPath !== null && is_file($this->recordPath)) {
+            unlink($this->recordPath);
+        }
+        $this->recordPath = null;
+    }
+
     private function makePreparation(): ScanPreparation
     {
         return new ScanPreparation(
@@ -421,5 +432,160 @@ final class LanguageScanRunnerTest extends TestCase
         );
 
         assertSame(true, $error instanceof ScanCancelledException);
+    }
+
+    /**
+     * A live worker that answers one contribution per requested file and appends
+     * every request's file count to $this->recordPath. Going through the real
+     * NDJSON protocol is what makes the batching observable: each request is a
+     * separate `beginRequest()`, which is the whole point of the split.
+     */
+    private function recordingClient(): ProcessScannerClient
+    {
+        $path = tempnam(sys_get_temp_dir(), 'knossos-scan-batches-');
+        if ($path === false) {
+            throw new RuntimeException('Unable to create the batch record file.');
+        }
+        $this->recordPath = $path;
+
+        return new ProcessScannerClient([
+            PHP_BINARY,
+            dirname(__DIR__, 2) . '/Fixtures/workers/fake-worker.php',
+            'per_file',
+            $path,
+        ]);
+    }
+
+    /**
+     * The file count of every scan request the recording worker received, in order.
+     *
+     * @return list<int>
+     */
+    private function recordedBatches(): array
+    {
+        $contents = $this->recordPath === null ? '' : (string) file_get_contents($this->recordPath);
+        $lines = array_filter(explode("\n", $contents), static fn(string $line): bool => $line !== '');
+
+        return array_map(intval(...), array_values($lines));
+    }
+
+    /** A descriptor for one language key, claiming files of the same-named language. */
+    private function descriptorFor(string $key): LanguageDescriptor
+    {
+        return new LanguageDescriptor(
+            key: $key,
+            stage: $key . '-analysis',
+            languages: [$key],
+            command: ['php', '-r', 'echo 1'],
+        );
+    }
+
+    /**
+     * A runner whose pool hands back the given client for each language key.
+     *
+     * @param array<string, ProcessScannerClient> $clients keyed by descriptor key
+     */
+    private function runnerWithClients(array $clients): LanguageScanRunner
+    {
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        $pool->method('client')->willReturnCallback(
+            static fn(LanguageDescriptor $descriptor): ProcessScannerClient => $clients[$descriptor->key],
+        );
+
+        return new LanguageScanRunner(
+            array_map($this->descriptorFor(...), array_keys($clients)),
+            $pool,
+            new ContributionCacheService(),
+        );
+    }
+
+    /**
+     * A plan whose discovered files are exactly the given paths, none cached.
+     *
+     * @param array<string, string> $files relative path => language
+     */
+    private function planForFiles(array $files): ScanPlan
+    {
+        $fixtures = array_map(
+            fn(string $language, string $path): \stdClass => $this->fileFixture($path, $language),
+            array_values($files),
+            array_keys($files),
+        );
+
+        return new ScanPlan(
+            // A cache entry rejects an empty configuration hash, so the
+            // preparation carries real ones for the recorded scan to complete.
+            preparation: $this->makePreparationWithFiles(
+                $fixtures,
+                ['php' => 'cfg-php', 'typescript' => 'cfg-ts', 'python' => 'cfg-py'],
+            ),
+            projectId: 'plan-batches',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+    }
+
+    /**
+     * 900 distinct PHP paths, enough to need three batches at 400 per request.
+     *
+     * @return array<string, string>
+     */
+    private function nineHundredPhpFiles(): array
+    {
+        $files = [];
+        for ($index = 0; $index < 900; ++$index) {
+            $files[sprintf('src/File%03d.php', $index)] = 'php';
+        }
+
+        return $files;
+    }
+
+    public function testAScanIsSplitIntoBoundedBatches(): void
+    {
+        // Each batch gets its own beginRequest(), so the byte cap and the
+        // deadline are per batch rather than per project.
+        $runner = $this->runnerWithClients(['php' => $this->recordingClient()]);
+
+        $runner->run($this->planForFiles($this->nineHundredPhpFiles()), new CancellationToken());
+
+        // 900 files at 400 per batch = 3 scan calls.
+        assertSame([400, 400, 100], $this->recordedBatches());
+    }
+
+    public function testASingleBatchIsStillOneRequest(): void
+    {
+        $runner = $this->runnerWithClients(['php' => $this->recordingClient()]);
+
+        $runner->run($this->planForFiles(['src/Foo.php' => 'php']), new CancellationToken());
+
+        assertSame([1], $this->recordedBatches());
+    }
+
+    public function testEveryBatchCarriesTheRequestFieldsBesidesFiles(): void
+    {
+        // `['files' => $batch] + $request` must override only `files`: the wrong
+        // operand order silently resends the whole file list every batch, and
+        // dropping the rest would strip `root`, `limits` and the language extras.
+        $runner = $this->runnerWithClients(['php' => $this->recordingClient()]);
+
+        $result = $runner->run($this->planForFiles($this->nineHundredPhpFiles()), new CancellationToken());
+
+        assertSame(900, count($result->contributions));
+        assertSame(900, $result->parsed);
+    }
+
+    public function testScannerMetadataSumsFilesScannedAcrossBatches(): void
+    {
+        $result = $this->runnerWithClients(['php' => $this->recordingClient()])
+            ->run($this->planForFiles($this->nineHundredPhpFiles()), new CancellationToken());
+
+        $metadata = $result->scannerMetadata['knossos.fake'];
+        // Counts are summed across batches...
+        assertSame(900, $metadata['files_scanned']);
+        // ...the newest batch's other scalars win...
+        assertSame(3, $metadata['batch']);
+        // ...and a field only the first batch reported is still carried out.
+        assertSame(7, $metadata['programs']);
     }
 }

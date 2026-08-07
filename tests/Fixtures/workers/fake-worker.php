@@ -87,6 +87,22 @@ while (($line = fgets(STDIN)) !== false) {
             fwrite(STDERR, str_repeat('x', 2048));
             fflush(STDERR);
         }
+        if ($mode === 'per_file') {
+            $requested = $request['params']['files'] ?? [];
+            $batch = recordBatch($pidFile, count($requested));
+            foreach ($requested as $relativePath) {
+                notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+            }
+            $result = ['count' => count($requested), 'files_scanned' => count($requested), 'batch' => $batch];
+            if ($batch === 1) {
+                // Reported by the first batch only, so a caller that carries
+                // fields forward can be told apart from one that keeps the last
+                // batch's reply wholesale.
+                $result['programs'] = 7;
+            }
+            respond($id, $result);
+            continue;
+        }
         if ($mode === 'output_flood') {
             for ($index = 0; $index < 20; ++$index) {
                 notifyContribution(contribution('worker:file:src/File' . $index . '.ts'));
@@ -146,6 +162,45 @@ function contribution(string $owner): array
         'edges' => [],
         'diagnostics' => [],
     ];
+}
+
+/**
+ * One trivial contribution for a requested path, so a caller can see exactly
+ * which files each scan request carried.
+ *
+ * @return array<string, mixed>
+ */
+function fileContribution(string $owner, string $relativePath): array
+{
+    return [
+        'owner_key' => $owner,
+        'nodes' => [[
+            'local_id' => 'file:' . $relativePath,
+            'kind' => 'class',
+            'canonical_name' => $relativePath,
+            'display_name' => $relativePath,
+            'origin' => 'ast',
+            'confidence' => 'certain',
+            'evidence' => ['path' => $relativePath, 'start_line' => 1, 'end_line' => 1],
+            'attributes' => (object) [],
+        ]],
+        'edges' => [],
+        'diagnostics' => [],
+    ];
+}
+
+/**
+ * Append one scan request's file count to the record file and return this
+ * request's 1-based ordinal, so a test can assert how the work was split.
+ */
+function recordBatch(?string $recordPath, int $files): int
+{
+    if (!is_string($recordPath) || $recordPath === '') {
+        return 1;
+    }
+    file_put_contents($recordPath, $files . "\n", FILE_APPEND);
+
+    return count(array_filter(explode("\n", (string) file_get_contents($recordPath)), static fn(string $line): bool => $line !== ''));
 }
 
 /** @param array<string, mixed> $contribution */
