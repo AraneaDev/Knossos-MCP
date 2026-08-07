@@ -192,6 +192,51 @@ final class MaxCharsTest extends KnossosTestCase
     }
 
     #[Group('mcp')]
+    public function testTrimmingConvergesInAFewPassesRatherThanOnePerDroppedItem(): void
+    {
+        // 800 items against a 4000-char budget: one item per pass meant ~780
+        // full re-encodes of a shrinking payload plus two whole-tree walks each.
+        $pdo = $this->freshTestDatabase();
+        $passes = 0;
+        $enricher = new ResultEnricher(
+            new StalenessProbe($pdo),
+            new NextStepPlanner(),
+            static function (ResultEnvelope $candidate) use (&$passes): int {
+                ++$passes;
+
+                return strlen((string) json_encode($candidate->jsonSerialize(), JSON_UNESCAPED_SLASHES));
+            },
+        );
+        $rows = array_map(static fn(int $i): array => ['name' => 'component_' . $i, 'padding' => str_repeat('x', 40)], range(1, 800));
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['components' => $rows]);
+
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4000);
+
+        assertSame(true, strlen((string) json_encode($result->jsonSerialize(), JSON_UNESCAPED_SLASHES)) <= 4000);
+        // The lower bound guards the seam itself: PHP silently discards a surplus
+        // argument to a userland constructor, so an enricher that never wired the
+        // measurer would leave the count at zero and satisfy the upper bound
+        // without measuring anything.
+        assertSame(true, $passes > 0);
+        assertSame(true, $passes < 25);
+    }
+
+    #[Group('mcp')]
+    public function testReportedResultBytesIncludesTheMetaBlock(): void
+    {
+        $pdo = $this->freshTestDatabase();
+        $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['components' => [1, 2, 3]]);
+
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 30_000);
+
+        assertSame(
+            strlen((string) json_encode($result->jsonSerialize(), JSON_UNESCAPED_SLASHES)),
+            $result->meta['result_bytes'],
+        );
+    }
+
+    #[Group('mcp')]
     public function testToolServiceStripsAndValidatesMaxChars(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

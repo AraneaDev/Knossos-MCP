@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Mcp;
 
+use Closure;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
 
@@ -22,10 +23,24 @@ final readonly class ResultEnricher
     /** Reserved key under which the evidence list joins the victim walk; NUL keeps it clear of real data keys. */
     private const EVIDENCE_KEY = "\0evidence";
 
+    /**
+     * @param (Closure(ResultEnvelope): int)|null $measurer Encoded-size measurer.
+     *        Injected only so a test can count sizing passes; production always
+     *        passes null and uses the default, and the class stays final.
+     */
     public function __construct(
         private StalenessProbe $probe,
         private NextStepPlanner $planner,
+        private ?Closure $measurer = null,
     ) {}
+
+    /** The encoded size of a candidate envelope, through the injected measurer when one was given. */
+    private function measure(ResultEnvelope $candidate): int
+    {
+        return $this->measurer === null
+            ? strlen((string) json_encode($candidate->jsonSerialize(), JSON_UNESCAPED_SLASHES))
+            : ($this->measurer)($candidate);
+    }
     /** Trim, budget, and annotate a result for an agent rather than a human. */
 
     public function enrich(ResultEnvelope $envelope, string $toolName, string $verbosity, ?int $maxChars = null): ResultEnvelope
@@ -44,29 +59,7 @@ final readonly class ResultEnricher
         $evidence = $enriched->evidence;
         if ($maxChars !== null) {
             while (true) {
-                $candidateMeta = [
-                    'result_bytes' => 99_999_999,
-                    'verbosity' => $verbosity,
-                    'evidence_total' => $total,
-                    'evidence_shown' => count($evidence),
-                ];
-                if ($dropped !== []) {
-                    $candidateMeta['max_chars'] = $maxChars;
-                    $candidateMeta['dropped_items'] = $dropped;
-                }
-                $candidate = new ResultEnvelope(
-                    $enriched->projectId,
-                    $enriched->snapshotId,
-                    $enriched->summary,
-                    $data,
-                    $evidence,
-                    $enriched->warnings,
-                    $enriched->truncated || $dropped !== [],
-                    $enriched->staleness,
-                    $enriched->nextSteps,
-                    $candidateMeta,
-                );
-                $size = strlen((string) json_encode($candidate->jsonSerialize(), JSON_UNESCAPED_SLASHES));
+                $size = $this->measure($this->candidate($enriched, $data, $evidence, $verbosity, $total, $dropped, $maxChars));
                 if ($size <= $maxChars) {
                     $met = true;
                     break;
@@ -76,9 +69,20 @@ final readonly class ResultEnricher
                     $met = false;
                     break;
                 }
-                self::popTail($data, $evidence, $victim);
+                // Drop in proportion to the overage rather than one element per
+                // full re-encode. One element per pass made this O(n^2) in
+                // dropped items against an O(n) payload, on every tool call —
+                // and changed_files_impact routinely arrives at ~70,000
+                // characters against a 30,000 budget.
                 $label = self::victimLabel($victim);
-                $dropped[$label] = ($dropped[$label] ?? 0) + 1;
+                $batch = self::batchSize($size, $maxChars, self::victimCount($data, $evidence, $victim));
+                for ($i = 0; $i < $batch; ++$i) {
+                    if (self::victimCount($data, $evidence, $victim) === 0) {
+                        break;
+                    }
+                    self::popTail($data, $evidence, $victim);
+                    $dropped[$label] = ($dropped[$label] ?? 0) + 1;
+                }
             }
         }
 
@@ -100,9 +104,8 @@ final readonly class ResultEnricher
             $enriched->nextSteps,
         );
 
-        $resultBytes = strlen((string) json_encode($final->jsonSerialize(), JSON_UNESCAPED_SLASHES));
         $meta = [
-            'result_bytes' => $resultBytes,
+            'result_bytes' => 0,
             'verbosity' => $verbosity,
             'evidence_total' => $total,
             'evidence_shown' => count($evidence),
@@ -113,7 +116,101 @@ final readonly class ResultEnricher
         if ($dropped !== []) {
             $meta['dropped_items'] = $dropped;
         }
+        // Measured with the meta block attached, so the number a caller reads is
+        // the size of what it actually received — it previously excluded itself.
+        // Iterated because substituting the value changes the length it
+        // describes; two passes settle it for any payload, and the loop is
+        // bounded so a pathological oscillation cannot spin.
+        for ($pass = 0; $pass < 4; ++$pass) {
+            $measured = $this->measure($final->with(meta: $meta));
+            if ($measured === $meta['result_bytes']) {
+                break;
+            }
+            $meta['result_bytes'] = $measured;
+        }
+
         return $final->with(meta: $meta);
+    }
+
+    /**
+     * The envelope as it would be returned right now, sized to decide whether
+     * more trimming is needed. `result_bytes` is padded rather than measured:
+     * measuring it would require encoding the very thing being measured, and the
+     * padding is wider than any value the finished envelope can report, so the
+     * candidate is never smaller than what is finally returned.
+     *
+     * @param array<string, mixed> $data
+     * @param list<array<string, mixed>> $evidence
+     * @param array<string, int> $dropped
+     */
+    private function candidate(ResultEnvelope $enriched, array $data, array $evidence, string $verbosity, int $total, array $dropped, int $maxChars): ResultEnvelope
+    {
+        $meta = [
+            'result_bytes' => 99_999_999,
+            'verbosity' => $verbosity,
+            'evidence_total' => $total,
+            'evidence_shown' => count($evidence),
+        ];
+        if ($dropped !== []) {
+            $meta['max_chars'] = $maxChars;
+            $meta['dropped_items'] = $dropped;
+        }
+
+        return new ResultEnvelope(
+            $enriched->projectId,
+            $enriched->snapshotId,
+            $enriched->summary,
+            $data,
+            $evidence,
+            $enriched->warnings,
+            $enriched->truncated || $dropped !== [],
+            $enriched->staleness,
+            $enriched->nextSteps,
+            $meta,
+        );
+    }
+
+    /**
+     * How many tail items to drop this pass: enough to cover the overage at the
+     * collection's average item cost, capped at half the collection so a large
+     * estimate cannot empty a list the next pass would have kept.
+     *
+     * The per-item cost is derived from the *whole* envelope rather than the
+     * collection alone, so it can only overstate what one item is worth, which
+     * makes the batch an under-estimate of the items actually needed. Dropping
+     * can therefore never overshoot past the exact-fit check at the top of the
+     * loop — it only reaches the fit in fewer passes.
+     */
+    private static function batchSize(int $size, int $maxChars, int $available): int
+    {
+        if ($available <= 1) {
+            return 1;
+        }
+        $overage = $size - $maxChars;
+        $perItem = max(1, intdiv($size, max(1, $available)));
+
+        return max(1, min(intdiv($available, 2), (int) ceil($overage / $perItem)));
+    }
+
+    /**
+     * The number of items currently in the collection at $path, so a batch never
+     * over-drops.
+     *
+     * @param array<string, mixed> $data
+     * @param list<array<string, mixed>> $evidence
+     * @param list<string> $path
+     */
+    private static function victimCount(array $data, array $evidence, array $path): int
+    {
+        $cursor = $path[0] === self::EVIDENCE_KEY ? $evidence : $data;
+        foreach (array_slice($path, $path[0] === self::EVIDENCE_KEY ? 1 : 0) as $segment) {
+            if (!is_array($cursor) || !array_key_exists($segment, $cursor)) {
+                return 0;
+            }
+            $cursor = $cursor[$segment];
+        }
+
+        return is_array($cursor) ? count($cursor) : 0;
     }
 
     /**
