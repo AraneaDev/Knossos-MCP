@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Scanner;
 
 use Knossos\Scan\ProjectScanService;
+use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Worker\WorkerException;
@@ -377,6 +378,34 @@ PYTHON);
                     unlink($candidate);
                 }
             }
+        }
+    }
+
+    /**
+     * A top-level relative import is unrunnable Python but legal to parse. It
+     * must cost its own edge and produce a diagnostic, never a reference the
+     * graph cannot name.
+     */
+    #[Group('python-scanner')]
+    public function testTopLevelRelativeImportReportsADiagnosticInsteadOfAnEmptyModule(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-pyrelative-' . bin2hex(random_bytes(8));
+        mkdir($root, 0o700, true);
+        file_put_contents($root . '/toplevel.py', "from . import helper\n");
+        try {
+            $contributions = iterator_to_array($this->pythonWorkerClient()->scan([
+                'root' => $root,
+                'files' => ['toplevel.py'],
+            ]));
+
+            assertSame(1, count($contributions));
+            $targets = array_map(fn(EdgeFact $edge): string => $edge->targetReference, $contributions[0]->edges);
+            assertSame(false, in_array('py:module:', $targets, true));
+            $codes = array_map(fn(Diagnostic $diagnostic): string => $diagnostic->code, $contributions[0]->diagnostics);
+            assertArrayContains('PY_UNRESOLVED_RELATIVE_IMPORT', $codes);
+        } finally {
+            @unlink($root . '/toplevel.py');
+            @rmdir($root);
         }
     }
 }

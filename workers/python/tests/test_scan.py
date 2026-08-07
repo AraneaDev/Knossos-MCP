@@ -328,3 +328,20 @@ def test_unreadable_file_costs_only_itself(monkeypatch, worker: ModuleType, proj
 
     assert _diag_codes(contributions["gone.py"]) == ["PY_UNSCANNABLE_FILE"]
     assert contributions["good.py"]["nodes"]  # unaffected by the sibling failure
+
+
+def test_top_level_relative_import_emits_no_empty_module_edge(worker: ModuleType, tmp_path: Path, scan_collect) -> None:
+    # `from . import x` in a module with no parent package resolves to nothing.
+    # Emitting `py:module:` for it produced a reference the graph cannot name.
+    (tmp_path / "toplevel.py").write_text("from . import helper\n", encoding="utf-8")
+    [contribution] = scan_collect(tmp_path, ["toplevel.py"])
+    assert all(edge["target"] != "py:module:" for edge in contribution["edges"])
+    assert "PY_UNRESOLVED_RELATIVE_IMPORT" in _diag_codes(contribution)
+
+
+def test_package_relative_import_still_emits_its_module_edge(worker: ModuleType, project, scan_collect) -> None:
+    # The guard must not swallow a relative import that does resolve.
+    root = project({"pkg/__init__.py": "", "pkg/a.py": "from . import b\n", "pkg/b.py": "VALUE = 1\n"})
+    [contribution] = scan_collect(root, ["pkg/a.py"])
+    assert ("imports", "py:module:pkg.a", "py:module:pkg") in _edges(contribution)
+    assert "PY_UNRESOLVED_RELATIVE_IMPORT" not in _diag_codes(contribution)

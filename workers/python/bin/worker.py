@@ -660,6 +660,18 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = absolute_import(self.module, node.level, node.module, self.is_package)
+        if not module:
+            # A relative import that climbs past the top of the project: legal to
+            # parse, unrunnable at import time, and nameable by nothing in the
+            # graph. Report it rather than emitting `py:module:`, which is not a
+            # symbol reference at all.
+            self.facts.add_diagnostic(
+                "PY_UNRESOLVED_RELATIVE_IMPORT",
+                f"Relative import at level {node.level} has no parent package in module "
+                f"'{self.module}'; the import edge was skipped.",
+                node,
+            )
+            return
         self.facts.add_edge("imports", self.module_id, ref("module", module), node, {"relative_level": node.level})
         for alias in node.names:
             if alias.name == "*":
