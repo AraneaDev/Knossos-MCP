@@ -35,6 +35,29 @@ class LanguageWorkerPool
         return $this->clients[$descriptor->key] ??= new ProcessScannerClient($descriptor->command, $policy->limits());
     }
 
+    /**
+     * Replace one language's worker, leaving the other languages' alone.
+     *
+     * A request that ends in a WorkerException closes its session, so the
+     * cached client is unusable even though the failure was retryable. Only the
+     * affected language pays: a full shutdown would also discard, for instance,
+     * the TypeScript worker's program cache.
+     */
+    public function restart(LanguageDescriptor $descriptor, WorkerExecutionPolicy $policy): ProcessScannerClient
+    {
+        $client = $this->clients[$descriptor->key] ?? null;
+        unset($this->clients[$descriptor->key]);
+        if ($client !== null) {
+            try {
+                $client->shutdown();
+            } catch (Throwable) {
+                // Already dead, which is the usual reason for restarting it.
+            }
+        }
+
+        return $this->client($descriptor, $policy);
+    }
+
     /** Stop every worker; called on the way out of a scan, including a failed one. */
     public function shutdown(): void
     {

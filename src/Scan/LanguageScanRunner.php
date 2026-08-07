@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Scanner\Worker\WorkerException;
+use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use Throwable;
 
 /**
@@ -28,7 +29,7 @@ final readonly class LanguageScanRunner
     {
         $manifests = $contributions = $cacheEntries = [];
         $parsed = $unchanged = $added = $changed = 0;
-        $scannerMetadata = $stages = $workerDiagnostics = [];
+        $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = [];
         foreach ($this->descriptors as $descriptor) {
             $files = array_values(array_filter(
                 $plan->preparation->discovery->files,
@@ -37,8 +38,12 @@ final readonly class LanguageScanRunner
             if ($files === []) {
                 continue;
             }
+            // Read back by reference below, so the reported budget is the one
+            // the scan settled on rather than the one it started with — which
+            // is the number an operator needs when a language overflowed.
+            $sourceBytes = $descriptor->scanBatchSourceBytes;
             try {
-                $outcome = $this->runLanguage($descriptor, $files, $plan, $cancellation);
+                $outcome = $this->runLanguage($descriptor, $files, $plan, $cancellation, $sourceBytes);
             } catch (Throwable $error) {
                 // A cancellation is the caller's decision, not a worker fault: it
                 // must reach the transport so the response is suppressed rather
@@ -56,6 +61,14 @@ final readonly class LanguageScanRunner
                     'message' => sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
                 ];
                 continue;
+            } finally {
+                // Recorded on both paths: a degraded language is exactly the one
+                // whose batch bounds the reader wants to see.
+                $batchBudgets[$descriptor->key] = [
+                    'files' => $descriptor->scanBatchFiles,
+                    'source_bytes' => $descriptor->scanBatchSourceBytes,
+                    'source_bytes_used' => $sourceBytes,
+                ];
             }
             $manifests[] = $outcome['manifest'];
             array_push($contributions, ...$outcome['contributions']);
@@ -68,7 +81,7 @@ final readonly class LanguageScanRunner
             $stages[$descriptor->stage] = $outcome['milliseconds'];
         }
 
-        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics);
+        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets);
     }
 
     /**
@@ -78,6 +91,9 @@ final readonly class LanguageScanRunner
      * failure here costs this language's facts and nothing else.
      *
      * @param list<object> $files
+     * @param int $sourceBytes the language's source-byte batch budget, read on
+     *        entry and written back as it is halved, so the caller can report
+     *        what the scan actually settled on even when this throws
      * @return array{
      *     manifest: \Knossos\Scanner\Protocol\ScannerManifest,
      *     contributions: list<\Knossos\Scanner\Protocol\ScanContribution>,
@@ -95,6 +111,7 @@ final readonly class LanguageScanRunner
         array $files,
         ScanPlan $plan,
         CancellationToken $cancellation,
+        int &$sourceBytes,
     ): array {
         $started = hrtime(true);
         $cancellation->throwIfCancelled();
@@ -129,11 +146,47 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
-        foreach (self::batches($partition->filesToScan, $descriptor) as $batch) {
-            // `['files' => $batch] + $request` overrides `files` only: PHP's `+`
-            // keeps the left operand's key, so `root`, `limits` and the
-            // per-language extras above survive every batch.
-            foreach ($client->scan(['files' => $batch] + $request, $cancellation->isCancelled(...)) as $contribution) {
+        $pending = self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $sourceBytes);
+        $halvings = 0;
+        while ($pending !== []) {
+            $batch = array_shift($pending);
+            try {
+                // Held aside rather than appended directly: an overflowing
+                // request has already streamed some contributions, and the
+                // retry re-sends those files, so keeping them would double-count
+                // both `parsed` and the reconciled facts.
+                $received = [];
+                // `['files' => ...] + $request` overrides `files` only: PHP's
+                // `+` keeps the left operand's key, so `root`, `limits` and the
+                // per-language extras above survive every batch.
+                $requested = array_map(static fn(object $file): string => $file->relativePath, $batch);
+                foreach ($client->scan(['files' => $requested] + $request, $cancellation->isCancelled(...)) as $contribution) {
+                    $received[] = $contribution;
+                }
+            } catch (WorkerException $error) {
+                // WORKER_OUTPUT_LIMIT is the one failure this loop can answer,
+                // because it says the batch was too big rather than that the
+                // worker is broken. Everything else — a crash, a timeout, and
+                // above all a cancellation — keeps the per-language behaviour it
+                // already had: rethrow, and let run() degrade or propagate it.
+                if ($error->diagnosticCode !== 'WORKER_OUTPUT_LIMIT'
+                    || $halvings >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
+                    || $cancellation->isCancelled()) {
+                    throw $error;
+                }
+                ++$halvings;
+                $sourceBytes = max(1, intdiv($sourceBytes, 2));
+                // The failed request closed its session, so this language needs
+                // a fresh worker before the smaller batches can be sent.
+                $client = $this->pool->restart($descriptor, $plan->preparation->executionPolicy);
+                // Re-split the failed batch AND everything still queued: the
+                // queued batches were sized by the budget that just proved too
+                // large, so leaving them would spend one doomed request each.
+                // Order is preserved, so a retry re-sends the same files.
+                $pending = self::batches(array_merge($batch, ...$pending), $descriptor->scanBatchFiles, $sourceBytes);
+                continue;
+            }
+            foreach ($received as $contribution) {
                 $scanned[] = $contribution;
             }
             $metadata = self::mergeScanResult($metadata, $client->lastScanResult());
@@ -163,23 +216,25 @@ final readonly class LanguageScanRunner
     /**
      * Split the files a language must scan into scan requests.
      *
-     * Bounded on two axes because two different per-request budgets have to
-     * hold. The file count guards the deadline, which for a per-file parser
-     * tracks how many files were asked for. The cumulative source-byte total
-     * guards `max_output_bytes`, which tracks how much source the request
-     * covers rather than how many files: measured across TypeScript corpora of
-     * very different density, protocol output stayed at ~15.5x source bytes
-     * while file counts told nothing useful — 400 files of dense TypeScript
-     * emitted 29.6 MB against the 20 MB cap where 400 sparse files emitted
-     * 2.5 MB.
+     * Bounded on two axes because protocol output has two terms. A fixed cost
+     * per file — measured at roughly 1.8 KB — dominates on a project of many
+     * tiny files, which is why the file count is capped; the rest scales with
+     * how much source the request covers, which is why the cumulative byte
+     * total is capped too. Neither alone is sufficient: the same 400 TypeScript
+     * files emitted 2.5 MB or 29.6 MB depending only on declared-symbol
+     * density, and generated 130-byte files expand 15x where the real sources
+     * they imitate expand under 2x.
+     *
+     * Returns the file objects rather than their paths so a batch the worker
+     * rejected as too large can be re-split at a smaller budget.
      *
      * A file bigger than the whole byte budget still gets a request of its own
      * rather than an empty one; nothing smaller can be sent.
      *
      * @param list<object> $files
-     * @return list<list<string>>
+     * @return list<list<object>>
      */
-    private static function batches(array $files, LanguageDescriptor $descriptor): array
+    private static function batches(array $files, int $maxFiles, int $maxSourceBytes): array
     {
         $batches = [];
         $current = [];
@@ -188,12 +243,12 @@ final readonly class LanguageScanRunner
             // Test fixtures and any non-DiscoveredFile input carry no size; a
             // missing size only relaxes the byte axis, never the count axis.
             $size = isset($file->size) && is_int($file->size) ? $file->size : 0;
-            if ($current !== [] && (count($current) >= $descriptor->scanBatchFiles || $bytes + $size > $descriptor->scanBatchSourceBytes)) {
+            if ($current !== [] && (count($current) >= $maxFiles || $bytes + $size > $maxSourceBytes)) {
                 $batches[] = $current;
                 $current = [];
                 $bytes = 0;
             }
-            $current[] = $file->relativePath;
+            $current[] = $file;
             $bytes += $size;
         }
         if ($current !== []) {

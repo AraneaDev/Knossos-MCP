@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Scanner\Worker;
 
 use InvalidArgumentException;
+use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use Knossos\Scanner\Worker\WorkerLimits;
 use PHPUnit\Framework\Attributes\Group;
@@ -83,30 +84,97 @@ final class WorkerExecutionPolicyTest extends TestCase
         assertSame(1_000_000, $meta['max_line_bytes']);
         assertSame(20_000_000, $meta['max_output_bytes']);
         assertSame(100_000, $meta['max_stderr_bytes']);
-        assertSame(400, $meta['scan_batch_files']);
-        assertSame(4_000_000, $meta['scan_batch_source_bytes']);
+        assertSame(4, $meta['max_scan_batch_halvings']);
     }
 
-    public function testScanBatchSourceBudgetLeavesRealHeadroomUnderTheOutputCap(): void
+    public function testMetadataCarriesNoBatchBoundsBecauseTheyArePerLanguage(): void
     {
-        // The source-byte budget is what actually guards max_output_bytes, and
-        // it has to hold for a language that expands far more than PHP's
-        // measured ~2.2x. TypeScript measured 15.2-15.9x, so require the default
-        // budget to survive a 4x expansion with the cap still unspent: an
-        // assertion that merely clears the cap would pass right up to the batch
-        // size at which the original ceiling reappears.
-        $limits = new WorkerLimits();
+        // A single pair of numbers here would misreport whichever language
+        // actually differs — which is TypeScript, the one most likely to
+        // overflow. The scan result reports them per language instead.
+        $meta = (new WorkerExecutionPolicy())->metadata();
 
-        assertSame(true, WorkerExecutionPolicy::SCAN_BATCH_SOURCE_BYTES * 4 < $limits->maxOutputBytes);
+        assertSame(false, array_key_exists('scan_batch_files', $meta));
+        assertSame(false, array_key_exists('scan_batch_source_bytes', $meta));
     }
 
-    public function testScanBatchFileCapLeavesRealHeadroomUnderTheOutputCap(): void
+    /**
+     * Measured expansion (protocol output bytes / source bytes) per language,
+     * over real hand-written sources. Every packaged descriptor's budget is
+     * checked against its own figure below.
+     *
+     * @return array<string, float>
+     */
+    private static function measuredExpansion(): array
     {
-        // The file cap is the deadline guard, but it must not on its own be able
-        // to reinstate the byte ceiling: at the measured ~14.9 KB per PHP file a
-        // batch has to stay a wide margin under the cap, not merely inside it.
-        $limits = new WorkerLimits();
+        return [
+            // KaTeX src/*.ts at 1.68x and KaTeX plus this repository's own
+            // worker sources at 1.81x; the higher one is used.
+            'typescript' => 1.81,
+            // This repository's own src/ at 2.24x.
+            'php' => 2.24,
+            // This repository's Python worker and its tests at 1.88x.
+            'python' => 1.88,
+        ];
+    }
 
-        assertSame(true, WorkerExecutionPolicy::SCAN_BATCH_FILES * 15_000 * 3 < $limits->maxOutputBytes);
+    public function testEveryDescriptorsBatchBudgetStaysUnderHalfTheOutputCap(): void
+    {
+        // Asserted per descriptor against that language's own measured
+        // expansion, because one shared factor cannot describe them: an earlier
+        // version of this test asserted the default budget against 4x while its
+        // own docblock claimed 15.9x, so it validated nothing.
+        $cap = (new WorkerLimits())->maxOutputBytes;
+        foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
+            $expansion = self::measuredExpansion()[$descriptor->key];
+            $projected = $descriptor->scanBatchSourceBytes * $expansion;
+
+            assertSame(
+                true,
+                $projected <= $cap * 0.5,
+                sprintf(
+                    '%s projects %d bytes of output per batch (%d source bytes at %.2fx), over half of the %d cap.',
+                    $descriptor->key,
+                    (int) $projected,
+                    $descriptor->scanBatchSourceBytes,
+                    $expansion,
+                    $cap,
+                ),
+            );
+        }
+    }
+
+    public function testPackagedTypescriptDescriptorCarriesItsOwnBatchBounds(): void
+    {
+        // Pins the production constants themselves, not just the parameterised
+        // helper the runner tests use. Without this, deleting the override
+        // silently returns a dense TypeScript project to WORKER_OUTPUT_LIMIT
+        // with a fully green suite.
+        $descriptors = [];
+        foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
+            $descriptors[$descriptor->key] = $descriptor;
+        }
+
+        assertSame(2_000, $descriptors['typescript']->scanBatchFiles);
+        assertSame(3_000_000, $descriptors['typescript']->scanBatchSourceBytes);
+        // The other two keep the defaults, so a change to either is deliberate.
+        assertSame(WorkerExecutionPolicy::SCAN_BATCH_FILES, $descriptors['php']->scanBatchFiles);
+        assertSame(WorkerExecutionPolicy::SCAN_BATCH_SOURCE_BYTES, $descriptors['php']->scanBatchSourceBytes);
+        assertSame(WorkerExecutionPolicy::SCAN_BATCH_FILES, $descriptors['python']->scanBatchFiles);
+        assertSame(WorkerExecutionPolicy::SCAN_BATCH_SOURCE_BYTES, $descriptors['python']->scanBatchSourceBytes);
+    }
+
+    public function testTypescriptTakesAWiderFileCapThanTheDefault(): void
+    {
+        // TypeScript pays a whole-program cost per request rather than per file,
+        // so its file cap must stay above the default or a normal project is
+        // split into requests that each repeat that cost.
+        $descriptors = [];
+        foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
+            $descriptors[$descriptor->key] = $descriptor;
+        }
+
+        assertSame(true, $descriptors['typescript']->scanBatchFiles > WorkerExecutionPolicy::SCAN_BATCH_FILES);
+        assertSame(true, $descriptors['typescript']->scanBatchSourceBytes >= 3_000_000);
     }
 }

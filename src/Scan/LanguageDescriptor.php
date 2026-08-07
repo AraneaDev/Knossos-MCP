@@ -32,23 +32,25 @@ final readonly class LanguageDescriptor
     /**
      * The packaged worker descriptors for every supported language.
      *
-     * The two batch bounds differ per language because the two costs they guard
-     * differ per language:
+     * Only TypeScript overrides the defaults, and both of its overrides exist
+     * for the same reason: it pays for a whole `ts.createProgram` plus
+     * `ts.getPreEmitDiagnostics` on EVERY request, a cost set by the program
+     * rather than by how many files the request asked for. Splitting its work
+     * into more requests therefore repeats the expensive part. Measured on a
+     * 366-file / 2.7 MB corpus of real hand-written TypeScript and JavaScript
+     * (KaTeX plus this repository's own worker): one request 4.6 s, five
+     * requests 8.5 s.
      *
-     * - PHP and Python pay per file, so the file-count cap is the binding one.
-     * - TypeScript pays for a whole `ts.createProgram` plus
-     *   `ts.getPreEmitDiagnostics` on EVERY request, a cost set by the program
-     *   rather than by how many files the request asked for. Splitting its work
-     *   into more requests therefore repeats the expensive part: measured on a
-     *   1,200-file single-tsconfig corpus, three 400-file requests cost 2.27 s
-     *   against 1.32 s for one request. Its file cap is raised to 2,000 so a
-     *   normal project is one request again. Its source-byte budget is cut to
-     *   600 KB instead, because TypeScript output expands ~15.5x from source
-     *   against PHP's ~2.2x; 600 KB * 15.5 is ~9 MB, the same share of the
-     *   20 MB cap that PHP's 4 MB * 2.2 takes.
+     * So TypeScript takes a 2,000-file cap and a 3 MB source budget, sized so a
+     * real project is one request. Both are optimistic, and deliberately: real
+     * TypeScript expands 1.68-1.81x from source, well inside the cap at 3 MB,
+     * but a codebase dense in declared symbols can expand far more. That case is
+     * handled by halving the budget and retrying rather than by making every
+     * scan pay for it — see WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS.
      *
-     * Python keeps the defaults: its expansion has not been measured, so it
-     * inherits the conservative PHP-derived budget rather than a guess.
+     * PHP and Python keep the defaults. Both were measured on real sources
+     * (2.24x and 1.88x respectively), and both pay per file rather than per
+     * program, so nothing is gained by widening their batches.
      *
      * @return list<self>
      */
@@ -62,7 +64,7 @@ final readonly class LanguageDescriptor
                 ['node', '--max-old-space-size=512', $installationRoot . '/workers/typescript/bin/worker.js'],
                 'scanner_typescript',
                 scanBatchFiles: 2_000,
-                scanBatchSourceBytes: 600_000,
+                scanBatchSourceBytes: 3_000_000,
             ),
             new self('python', ['python'], ['python3', '-I', '-B', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python'),
         ];

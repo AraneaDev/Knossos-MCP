@@ -27,17 +27,37 @@ worker request has its own cumulative output-byte budget and its own
 `request_timeout_ms` deadline. A language's files are therefore split across
 several requests rather than sent as one.
 
-- `scan_batch_files` — most files sent per worker request. Each request carries
-  its own output-byte budget and its own `request_timeout_ms`, so both scale
-  with a batch rather than with the project. This bound guards the deadline.
-- `scan_batch_source_bytes` — most source bytes sent per worker request. This
-  bound guards `max_output_bytes`, because protocol output tracks how much
-  source a request covers rather than how many files it named.
+The bounds are reported per language, under `worker_execution.scan_batches`,
+because they differ per language and the byte budget can differ per scan:
 
-Both values are the defaults. A language may raise or lower either: TypeScript
-uses a much larger file cap and a much smaller source-byte budget, because it
-rebuilds and re-checks a whole `ts.Program` on every request while emitting
-about 15.5x its source bytes, against PHP's roughly 2.2x.
+- `files` — most files sent per worker request. This bound guards the deadline.
+- `source_bytes` — most source bytes sent per worker request. This bound guards
+  `max_output_bytes`, because protocol output has a large per-file constant
+  (about 1.8 KB) plus a term that scales with how much source the request
+  covers. Neither axis alone is sufficient.
+- `source_bytes_used` — the budget the scan actually settled on. When it is
+  lower than `source_bytes`, at least one request overflowed and the budget was
+  halved; see below.
+
+TypeScript uses a much larger file cap (2,000) and a larger byte budget (3 MB)
+than the defaults (400 and 4 MB), because it rebuilds and re-checks a whole
+`ts.Program` on every request — a cost set by the program, not by how many files
+the request named — so splitting its work repeats the expensive part.
+
+### Adaptive budgets
+
+Measured expansion from source bytes to protocol output varies far too much for
+any fixed budget to be both safe and fast: 1.68x for KaTeX's TypeScript sources,
+2.24x for this repository's PHP, but 15x for corpora of very small generated
+files and for code unusually dense in declared symbols. The byte budget is
+therefore set optimistically, and corrected when it is wrong.
+
+When a scan request fails with `WORKER_OUTPUT_LIMIT`, that language's byte
+budget is halved, its worker is restarted, and its remaining files are re-split
+and retried. This repeats up to `max_scan_batch_halvings` times (4), after which
+the failure falls through to the ordinary degrade path below. `WORKER_OUTPUT_LIMIT`
+is the only retryable failure: a crash, a timeout, or a cancellation is never
+retried.
 
 Sending a whole project in one request made `max_output_bytes` a project-wide
 ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than

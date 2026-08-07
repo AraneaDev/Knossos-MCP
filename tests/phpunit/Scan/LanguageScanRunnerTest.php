@@ -18,6 +18,7 @@ use Knossos\Scan\ScanPreparation;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
+use Knossos\Scanner\Worker\WorkerLimits;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use RuntimeException;
@@ -448,18 +449,58 @@ final class LanguageScanRunnerTest extends TestCase
      */
     private function recordingClient(): ProcessScannerClient
     {
+        $this->allocateRecordPath();
+
+        return $this->workerClient('per_file');
+    }
+
+    /** Open the file every worker in this test appends its request sizes to. */
+    private function allocateRecordPath(): void
+    {
         $path = tempnam(sys_get_temp_dir(), 'knossos-scan-batches-');
         if ($path === false) {
             throw new RuntimeException('Unable to create the batch record file.');
         }
         $this->recordPath = $path;
+    }
 
-        return new ProcessScannerClient([
-            PHP_BINARY,
-            dirname(__DIR__, 2) . '/Fixtures/workers/fake-worker.php',
-            'per_file',
-            $path,
-        ]);
+    /**
+     * A recording worker in one of the `per_file*` modes, reusing the record
+     * file already opened by recordingClient() so a restarted worker keeps
+     * appending to the same log.
+     *
+     * @param int $threshold requests for more files than this are refused by the
+     *        overflow and exit modes
+     * @param bool $tightCap give the client an output cap the fixture's flood
+     *        crosses in a few frames, instead of the production 20 MB
+     */
+    private function workerClient(string $mode, int $threshold = 0, bool $tightCap = false): ProcessScannerClient
+    {
+        return new ProcessScannerClient(
+            [
+                PHP_BINARY,
+                dirname(__DIR__, 2) . '/Fixtures/workers/fake-worker.php',
+                $mode,
+                (string) $this->recordPath,
+                (string) $threshold,
+            ],
+            // maxOutputBytes may not fall below maxLineBytes, so both come down.
+            $tightCap ? new WorkerLimits(maxLineBytes: 100_000, maxOutputBytes: 200_000) : new WorkerLimits(),
+        );
+    }
+
+    /**
+     * A runner whose pool serves — and restarts — one language's worker from a
+     * factory, so a retry after a closed session gets a live process the way
+     * production does.
+     */
+    private function runnerWithWorkerFactory(callable $factory, LanguageDescriptor $descriptor): LanguageScanRunner
+    {
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        $pool->method('client')->willReturnCallback($factory);
+        $pool->method('restart')->willReturnCallback($factory);
+
+        return new LanguageScanRunner([$descriptor], $pool, new ContributionCacheService());
     }
 
     /**
@@ -682,5 +723,103 @@ final class LanguageScanRunnerTest extends TestCase
 
         assertSame(true, $error instanceof ScanCancelledException);
         assertSame([400], $this->recordedBatches());
+    }
+
+    /**
+     * Eight files of 100 KB, so a 400 KB budget puts four in a request.
+     *
+     * @return array<string, string>
+     */
+    private function eightBigPhpFiles(): array
+    {
+        $files = [];
+        for ($index = 0; $index < 8; ++$index) {
+            $files[sprintf('src/Big%d.php', $index)] = 'php';
+        }
+
+        return $files;
+    }
+
+    public function testAnOverflowingBatchHalvesTheBudgetAndRetries(): void
+    {
+        // No static estimate of protocol output holds for every codebase, so the
+        // budget is optimistic and corrects itself against the cap actually
+        // being hit. The worker here refuses any request for more than two
+        // files, so the first 4-file request overflows, the budget halves to
+        // 200 KB, and the work is re-split into 2-file requests that succeed.
+        $this->allocateRecordPath();
+        $descriptor = $this->descriptorFor('php', batchSourceBytes: 400_000);
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_overflow', threshold: 2, tightCap: true),
+            $descriptor,
+        );
+
+        $result = $runner->run($this->planForFiles($this->eightBigPhpFiles(), 100_000), new CancellationToken());
+
+        // One doomed 4-file request, then the whole language re-split at 2.
+        assertSame([4, 2, 2, 2, 2], $this->recordedBatches());
+        assertSame([], $result->workerDiagnostics);
+        assertSame(8, $result->parsed);
+        // The overflowing request had already streamed frames; counting them
+        // would double-count the files the retry re-sends.
+        assertSame(8, $result->scannerMetadata['knossos.fake']['files_scanned']);
+        // The settled budget is reported, not the one the scan started with.
+        assertSame(400_000, $result->batchBudgets['php']['source_bytes']);
+        assertSame(200_000, $result->batchBudgets['php']['source_bytes_used']);
+    }
+
+    public function testHalvingIsBoundedAndThenDegradesTheLanguage(): void
+    {
+        // A worker that refuses every request must not be retried forever. After
+        // the bounded halvings the failure falls through to the per-language
+        // degrade path exactly as any other worker fault does.
+        $this->allocateRecordPath();
+        $descriptor = $this->descriptorFor('php', batchSourceBytes: 400_000);
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_overflow', threshold: 0, tightCap: true),
+            $descriptor,
+        );
+
+        $result = $runner->run($this->planForFiles($this->eightBigPhpFiles(), 100_000), new CancellationToken());
+
+        // The initial attempt plus MAX_SCAN_BATCH_HALVINGS retries, then stop.
+        assertSame(1 + WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS, count($this->recordedBatches()));
+        assertSame(1, count($result->workerDiagnostics));
+        assertSame('WORKER_OUTPUT_LIMIT', $result->workerDiagnostics[0]['code']);
+        assertSame('knossos.php', $result->workerDiagnostics[0]['owner']);
+        // Reported even though the language failed: how far the budget fell is
+        // exactly what an operator needs to see here.
+        assertSame(25_000, $result->batchBudgets['php']['source_bytes_used']);
+    }
+
+    public function testAFailureThatIsNotAnOutputOverflowIsNeverRetried(): void
+    {
+        // WORKER_OUTPUT_LIMIT is the only code that says "the batch was too
+        // big". Anything else says the worker is broken, and retrying it would
+        // multiply the cost of a failure Task 4 already handles.
+        $this->allocateRecordPath();
+        $descriptor = $this->descriptorFor('php', batchSourceBytes: 400_000);
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_exit', threshold: 0),
+            $descriptor,
+        );
+
+        $result = $runner->run($this->planForFiles($this->eightBigPhpFiles(), 100_000), new CancellationToken());
+
+        assertSame(1, count($this->recordedBatches()));
+        assertSame(1, count($result->workerDiagnostics));
+        assertSame('knossos.php', $result->workerDiagnostics[0]['owner']);
+        assertSame(400_000, $result->batchBudgets['php']['source_bytes_used']);
+    }
+
+    public function testBatchBudgetsAreReportedForALanguageThatNeededNoRetry(): void
+    {
+        $result = $this->runnerWithClients(['php' => $this->recordingClient()])
+            ->run($this->planForFiles($this->nineHundredPhpFiles()), new CancellationToken());
+
+        assertSame(
+            ['files' => 400, 'source_bytes' => 4_000_000, 'source_bytes_used' => 4_000_000],
+            $result->batchBudgets['php'],
+        );
     }
 }

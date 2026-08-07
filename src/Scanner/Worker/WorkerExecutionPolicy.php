@@ -27,22 +27,52 @@ final readonly class WorkerExecutionPolicy
     public const SCAN_BATCH_FILES = 400;
 
     /**
-     * Most source bytes sent in one scan request.
+     * Most source bytes sent in one scan request, before any adaptation.
      *
-     * This is what actually guards `max_output_bytes`. Protocol output tracks
-     * source SIZE, not file count: measured over three generated TypeScript
-     * corpora of very different symbol density (6.3, 22.6 and 74.1 KB of NDJSON
-     * per file) the ratio of output bytes to source bytes stayed at 15.2-15.9x,
-     * while this repository's own PHP source expands only ~2.2x. Batching by
-     * file count alone is therefore unsafe: 400 files of dense TypeScript
-     * emitted 29.6 MB against a 20 MB cap, and 400 files of sparse TypeScript
-     * emitted 2.5 MB — the same count, a 12x spread.
+     * This is the second guard on `max_output_bytes`, and it is deliberately
+     * OPTIMISTIC rather than worst-case, because no static estimate of protocol
+     * output survives every codebase. Measured expansion (output bytes / source
+     * bytes) over real hand-written code:
      *
-     * 4 MB at PHP's ~2.2x expansion is ~9 MB of output, comfortably under half
-     * the 20 MB cap. Each language sets its own value from its own measured
-     * expansion so every batch targets that same output share.
+     * - KaTeX `src/*.ts`, 38 files / 392 KB — 1.68x
+     * - KaTeX + this repository's own worker sources, 366 files / 2.7 MB — 1.81x
+     * - this repository's PHP `src/`, 154 files / 1.0 MB — 2.24x
+     * - this repository's Python worker and tests, 5 files / 71 KB — 1.88x
+     *
+     * and over generated corpora of very small files:
+     *
+     * - benchmark corpus Python, 1,001 files averaging 132 B — 15.69x
+     * - benchmark corpus PHP, 1,000 files averaging 175 B — 9.13x
+     * - a dense generated TypeScript corpus, 400 files / 1.9 MB — 15.30x
+     *
+     * The first group is what real projects look like; the second is what a
+     * generator produces. The spread is not language-specific — it is dominated
+     * by a fixed ~1.8 KB of protocol output per file, which swamps the source
+     * term when files are tiny, and by declared-symbol density, which the dense
+     * corpus maximises. That is why batches are bounded on BOTH axes: the file
+     * cap covers the many-tiny-files regime and this budget covers the
+     * large-source regime.
+     *
+     * Neither axis can be sized for the worst case without making the common
+     * case slow, so overflow is handled rather than prevented: see
+     * MAX_SCAN_BATCH_HALVINGS.
      */
     public const SCAN_BATCH_SOURCE_BYTES = 4_000_000;
+
+    /**
+     * How many times a language's source-byte budget may be halved and the
+     * batch retried after `WORKER_OUTPUT_LIMIT`.
+     *
+     * The budget above is optimistic on purpose, so it will occasionally be
+     * wrong — a codebase dense enough in declared symbols emits far more per
+     * source byte than any measurement predicted. Rather than sizing every scan
+     * for that case, the runner halves the language's budget and re-splits the
+     * offending batch, which corrects against the only authority that matters:
+     * the cap actually being hit. Four halvings take TypeScript's 3 MB to
+     * 187 KB, below even the worst measured density, after which the failure
+     * falls through to the per-language degrade path unchanged.
+     */
+    public const MAX_SCAN_BATCH_HALVINGS = 4;
 
     public function __construct(
         public int $requestTimeoutMs = self::DEFAULT_REQUEST_TIMEOUT_MS,
@@ -65,6 +95,11 @@ final readonly class WorkerExecutionPolicy
     /**
      * The policy as reported in the scan result, so a timeout is explicable after the fact.
      *
+     * Deliberately carries no batch bounds: those are per language and, for the
+     * source-byte budget, per scan, so a single pair of numbers here would
+     * misreport whichever language actually differed. The scan result reports
+     * them per language under `scan_batches` instead.
+     *
      * @return array<string, int>
      */
     public function metadata(): array
@@ -77,8 +112,7 @@ final readonly class WorkerExecutionPolicy
             'max_line_bytes' => $limits->maxLineBytes,
             'max_output_bytes' => $limits->maxOutputBytes,
             'max_stderr_bytes' => $limits->maxStderrBytes,
-            'scan_batch_files' => self::SCAN_BATCH_FILES,
-            'scan_batch_source_bytes' => self::SCAN_BATCH_SOURCE_BYTES,
+            'max_scan_batch_halvings' => self::MAX_SCAN_BATCH_HALVINGS,
         ];
     }
 }

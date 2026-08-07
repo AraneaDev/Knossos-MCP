@@ -74,6 +74,14 @@ Two consequences for a worker author:
   The packaged TypeScript worker keeps its `ts.Program` cache on the scanner
   instance for exactly this reason, and the core in turn gives TypeScript a much
   larger file batch than PHP or Python so a normal project is still one request.
+- **A request that exceeds the output limit may be re-sent as smaller batches.**
+  The core cannot predict how much output a request will produce — measured
+  expansion from source bytes to protocol output ranges from under 2x for real
+  hand-written sources to 15x for code dense in declared symbols — so it sizes
+  batches optimistically and halves the budget when a worker overflows. A worker
+  must therefore be safe to re-ask for files it has already partially reported
+  on; the core discards the partial output of a failed request. Ordinary worker
+  failures are not retried.
 
 Each contribution has one stable owner key and lists node facts, unresolved edge
 facts, and diagnostics. Re-emitting an owner replaces that owner's previous

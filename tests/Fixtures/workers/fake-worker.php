@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 $mode = $argv[1] ?? 'compliant';
 $pidFile = $argv[2] ?? null;
+// Batch-size threshold for the per_file_* modes: a scan request asking for more
+// files than this is treated as too big to answer.
+$threshold = (int) ($argv[3] ?? 0);
 $cancelled = [];
 
 while (($line = fgets(STDIN)) !== false) {
@@ -87,9 +90,31 @@ while (($line = fgets(STDIN)) !== false) {
             fwrite(STDERR, str_repeat('x', 2048));
             fflush(STDERR);
         }
-        if ($mode === 'per_file') {
+        if (str_starts_with($mode, 'per_file')) {
             $requested = $request['params']['files'] ?? [];
             $batch = recordBatch($pidFile, count($requested));
+            // A request the worker considers oversized. `per_file_overflow`
+            // floods past the client's output cap, which is the retryable
+            // WORKER_OUTPUT_LIMIT; `per_file_exit` dies instead, which is not
+            // retryable and must cost the language exactly once.
+            if ($mode === 'per_file_exit' && count($requested) > $threshold) {
+                exit(3);
+            }
+            if ($mode === 'per_file_overflow' && count($requested) > $threshold) {
+                // Contributions FIRST, so the caller has already received facts
+                // for these files when the flood aborts the request. A retry
+                // re-sends the same files, so a caller that kept the partial
+                // results would count them twice.
+                foreach ($requested as $relativePath) {
+                    notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
+                }
+                for ($chunk = 0; $chunk < 64; ++$chunk) {
+                    // Ignored by the session's decoder, so only its bytes count.
+                    writeMessage(['jsonrpc' => '2.0', 'method' => 'scan/progress', 'params' => ['pad' => str_repeat('p', 8192)]]);
+                }
+                respond($id, ['count' => 0]);
+                continue;
+            }
             foreach ($requested as $relativePath) {
                 notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
             }
