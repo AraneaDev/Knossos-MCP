@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Discovery;
 
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\IgnoreMatcher;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -64,6 +65,55 @@ final class IgnoreMatcherTest extends TestCase
     {
         $this->expectException(DiscoveryException::class);
         new IgnoreMatcher(['[z-a]']);
+    }
+
+    /**
+     * characterClassEnd() skipped a leading '!' but not a leading '^' — the
+     * other gitignore/POSIX negation spelling — so '[^]x]' (a negated class
+     * whose first member is the literal ']') closed two characters early, at
+     * the ']' that is actually the class's own first member. Pre-fix that
+     * malformed regex failed to compile — loud, if unhelpful. Post one-line-fix
+     * but pre this round's correction it compiled to the wrong thing (`x]`
+     * taken as two trailing literals) and matched silently and incorrectly:
+     * a loud failure turned into a quiet wrong answer, which is worse than
+     * what was there before. fnmatch() is the oracle throughout, exactly as
+     * the reviewer verified it against a reflection-based call into the real
+     * toRegex().
+     *
+     * @return iterable<string, array{0: string, 1: string, 2: bool}>
+     */
+    public static function characterClassAgreesWithFnmatchProvider(): iterable
+    {
+        $cases = [
+            '[^]x]' => ['a', ']', 'x', '^', 'b'],
+            // Bare '[^]' has no member after the negation marker is stripped
+            // (the literal-first-']' special case consumes the only ']'
+            // available), so it is unterminated and falls back to matching its
+            // own literal text — same as '[!]' already did.
+            '[^]' => ['a', 'b', '^', ']', '[^]'],
+            // Embedded in a longer, slash-free pattern: the missing terminator
+            // makes the whole pattern literal, not just the bracket portion.
+            'x[^]y' => ['x[^]y', 'xay', 'x^y'],
+            '[!]x]' => ['a', ']', 'x', '!'],
+            '[]]' => [']', 'a'],
+            '[^x]' => ['a', 'x', '^'],
+            '[!x]' => ['a', 'x', '!'],
+            '[a-z]' => ['a', 'm', 'z', 'A'],
+            '*.[oa]' => ['thing.o', 'thing.a', 'thing.c'],
+        ];
+        foreach ($cases as $pattern => $candidates) {
+            foreach ($candidates as $candidate) {
+                yield "$pattern vs '$candidate'" => [$pattern, $candidate, (bool) fnmatch($pattern, $candidate)];
+            }
+        }
+    }
+
+    #[DataProvider('characterClassAgreesWithFnmatchProvider')]
+    public function testCharacterClassAgreesWithFnmatch(string $pattern, string $candidate, bool $expected): void
+    {
+        $matcher = new IgnoreMatcher([$pattern]);
+
+        assertSame($expected, $matcher->matches($candidate));
     }
 
     public function testClassIsFinalAndReadonly(): void

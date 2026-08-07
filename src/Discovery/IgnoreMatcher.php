@@ -81,7 +81,7 @@ final readonly class IgnoreMatcher
                 $normalized = substr($normalized, 0, -3);
                 $anchored = true;
             }
-            $regex = self::compile($normalized);
+            $regex = self::compile($normalized, $pattern);
             $compiled[] = [$normalized, $anchored, $regex, $negated];
         }
         $this->compiled = $compiled;
@@ -152,15 +152,24 @@ final readonly class IgnoreMatcher
      * excluded while it was still being scanned. Checking here turns that into a
      * loud, attributable configuration error instead.
      *
+     * @param string|null $original the as-written pattern to name in the error, when it
+     *     differs from $pattern (the constructor normalises before compiling — stripping
+     *     whitespace, the negation marker, and anchoring slashes — and reporting that
+     *     stripped-down form back to the user would weaken the attribution this exists for)
      * @throws DiscoveryException when the pattern does not compile to a valid regex
      */
-    public static function compile(string $pattern): string
+    public static function compile(string $pattern, ?string $original = null): string
     {
         $regex = self::toRegex($pattern);
         if (@preg_match('#^' . $regex . '$#', '') === false) {
+            $shown = $original ?? $pattern;
+            // json_encode() itself returns false on invalid UTF-8, which would
+            // otherwise render as an empty slot in the message; var_export() has
+            // no such failure mode.
+            $encoded = json_encode($shown);
             throw new DiscoveryException(sprintf(
                 'PROJECT_CONFIG_INVALID: ignore pattern %s is not a valid glob.',
-                json_encode($pattern),
+                $encoded === false ? var_export($shown, true) : $encoded,
             ));
         }
 
@@ -213,6 +222,13 @@ final readonly class IgnoreMatcher
      * false, and the pattern silently excluded nothing at all. Only the
      * gitignore-to-PCRE negation ('!' becomes '^') and ranges are meaningful
      * here; everything else is a literal.
+     *
+     * $class always has a non-empty body once the negation marker is stripped:
+     * characterClassEnd() only reports a class as terminated after it has
+     * consumed at least one body character following the optional negation
+     * marker (either a literal-first ']' or whatever the scan for the real
+     * terminator found), so there is no bracket-class fallback here — an
+     * unterminated class never reaches this method at all.
      */
     private static function characterClass(string $class): string
     {
@@ -233,14 +249,18 @@ final readonly class IgnoreMatcher
             $escaped .= $char === '-' && $i > 0 && $i < $length - 1 ? '-' : preg_quote($char, '#');
         }
 
-        return $escaped === '' ? '' : '[' . ($negated ? '^' : '') . $escaped . ']';
+        return '[' . ($negated ? '^' : '') . $escaped . ']';
     }
 
     /** The index closing a bracket class, or null when it is unterminated. */
     private static function characterClassEnd(string $pattern, int $start, int $length): ?int
     {
         $j = $start + 1;
-        if ($j < $length && $pattern[$j] === '!') {
+        // Both negation spellings ('!' and '^') are followed by the same
+        // literal-first-']' allowance below; skipping only '!' left '[^]x]' — a
+        // valid gitignore/POSIX class — closing two characters early, at the
+        // ']' that is actually the class's first (negated-away) member.
+        if ($j < $length && ($pattern[$j] === '!' || $pattern[$j] === '^')) {
             ++$j;
         }
         if ($j < $length && $pattern[$j] === ']') {
