@@ -198,17 +198,35 @@ final class ProcessGitProviderTest extends KnossosTestCase
         assertSame(false, $result['truncated']);
     }
 
+    public function testLastChangedAtOrdersByInstantNotByOffsetString(): void
+    {
+        // 10:00+02:00 is 08:00 UTC; 09:00+00:00 is 09:00 UTC — so the SECOND
+        // commit is later, even though the first sorts higher as a string.
+        $log = implode("\n", [
+            "KNOSSOS_COMMIT\x1faaa\x1f2024-01-01T10:00:00+02:00\x1f1704096000\x1fa@example.com",
+            'src/Foo.php',
+            '',
+            "KNOSSOS_COMMIT\x1fbbb\x1f2024-01-01T09:00:00+00:00\x1f1704099600\x1fb@example.com",
+            'src/Foo.php',
+            '',
+        ]);
+
+        $result = (new ProcessGitHistoryProvider(runner: $this->mockRunner($log)))->history('/tmp', 30, 100, 1000);
+
+        self::assertSame('2024-01-01T09:00:00+00:00', $result['files']['src/Foo.php']['last_changed_at']);
+    }
+
     public function testHistoryParsesCommitsAndAggregatesFiles(): void
     {
         $gitLog = implode("\n", [
-            "KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00\x1fa@test.dev",
+            "KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00\x1f1784541600\x1fa@test.dev",
             "src/InvoiceService.php",
             "src/Checkout.php",
             '',
-            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1fb@test.dev",
+            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev",
             "src/InvoiceService.php",
             '',
-            "KNOSSOS_COMMIT\x1fghi789\x1f2026-07-18T08:00:00+00:00\x1fa@test.dev",
+            "KNOSSOS_COMMIT\x1fghi789\x1f2026-07-18T08:00:00+00:00\x1f1784361600\x1fa@test.dev",
             "src/Order.php",
             '',
         ]);
@@ -230,7 +248,7 @@ final class ProcessGitProviderTest extends KnossosTestCase
         $lines = [];
         for ($i = 0; $i < 5; ++$i) {
             $hash = str_pad((string) $i, 40, 'a');
-            $lines[] = "KNOSSOS_COMMIT\x1f{$hash}\x1f2026-07-20T10:00:00+00:00\x1fa@test.dev";
+            $lines[] = "KNOSSOS_COMMIT\x1f{$hash}\x1f2026-07-20T10:00:00+00:00\x1f1784541600\x1fa@test.dev";
             $lines[] = "src/file{$i}.php";
             $lines[] = '';
         }
@@ -244,14 +262,14 @@ final class ProcessGitProviderTest extends KnossosTestCase
 
     public function testHistorySkipsMalformedCommitLines(): void
     {
-        // Malformed commit line (3 parts instead of 4) comes FIRST — its path
+        // Malformed commit line (3 parts instead of 5) comes FIRST — its path
         // leaks into an undefined $current (null) and is dropped.
         $gitLog = implode("\n", [
-            // Short line — only 3 parts instead of 4
+            // Short line — only 3 parts instead of 5
             "KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00",
             "src/skipped_path.php",
             '',
-            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1fb@test.dev",
+            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev",
             "src/valid.php",
             '',
         ]);

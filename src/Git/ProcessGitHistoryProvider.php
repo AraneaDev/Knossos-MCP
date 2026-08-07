@@ -43,7 +43,7 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         $output = $this->runner->run([
             'git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', $root, 'log',
             '--since=' . $sinceDays . ' days ago', '--max-count=' . ($maxCommits + 1),
-            '--format=KNOSSOS_COMMIT%x1f%H%x1f%aI%x1f%ae', '--name-only', '--no-renames', '--',
+            '--format=KNOSSOS_COMMIT%x1f%H%x1f%aI%x1f%at%x1f%ae', '--name-only', '--no-renames', '--',
         ], $timeoutMs, 'history');
         return $this->parse($output, $maxCommits);
     }
@@ -59,11 +59,21 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         $current = null;
         foreach (preg_split('/\R/', $output) ?: [] as $line) {
             if (str_starts_with($line, 'KNOSSOS_COMMIT' . "\x1f")) {
-                $parts = explode("\x1f", $line, 4);
-                if (count($parts) !== 4) {
+                $parts = explode("\x1f", $line, 5);
+                if (count($parts) !== 5) {
                     continue;
                 }
-                $commits[] = ['hash' => $parts[1], 'changed_at' => $parts[2], 'author' => $parts[3], 'paths' => []];
+                $commits[] = [
+                    'hash' => $parts[1],
+                    'changed_at' => $parts[2],
+                    // %aI carries the author's local UTC offset, so comparing
+                    // those strings orders 10:00+02:00 (08:00Z) above
+                    // 09:00+00:00 (09:00Z). Order on the epoch instead and
+                    // present the ISO string.
+                    'changed_epoch' => (int) $parts[3],
+                    'author' => $parts[4],
+                    'paths' => [],
+                ];
                 $current = array_key_last($commits);
                 continue;
             }
@@ -83,10 +93,11 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         $files = [];
         foreach ($commits as $commit) {
             foreach (array_keys($commit['paths']) as $path) {
-                $files[$path] ??= ['commit_count' => 0, 'authors' => [], 'last_changed_at' => ''];
+                $files[$path] ??= ['commit_count' => 0, 'authors' => [], 'last_changed_at' => '', 'last_changed_epoch' => 0];
                 ++$files[$path]['commit_count'];
                 $files[$path]['authors'][$commit['author']] = true;
-                if ($commit['changed_at'] > $files[$path]['last_changed_at']) {
+                if ($commit['changed_epoch'] > $files[$path]['last_changed_epoch']) {
+                    $files[$path]['last_changed_epoch'] = $commit['changed_epoch'];
                     $files[$path]['last_changed_at'] = $commit['changed_at'];
                 }
             }
@@ -94,6 +105,8 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
         foreach ($files as &$file) {
             $file['authors'] = array_keys($file['authors']);
             sort($file['authors'], SORT_STRING);
+            // Internal ordering key; the public shape carries the ISO string only.
+            unset($file['last_changed_epoch']);
         }
         unset($file);
         ksort($files, SORT_STRING);
