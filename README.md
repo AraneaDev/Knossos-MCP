@@ -24,8 +24,10 @@ analysis cannot prove are labelled with their confidence and origin instead of
 being guessed. Nothing in the scan pipeline installs dependencies, imports a
 module, or boots an application framework. The Git-backed diff tools do invoke
 `git` inside the project, with repository-controlled command hooks
-(`core.fsmonitor`, `diff.external`, `core.pager`) forced off and a minimal
-environment — see [the HTTP threat model](docs/operations/http-threat-model.md).
+(`core.fsmonitor`, `core.hooksPath`, `diff.external`, and any
+`.gitattributes` filter/textconv driver) forced off, `core.pager` neutralised
+by `--no-pager` at each call site, and a minimal environment — see [the HTTP
+threat model](docs/operations/http-threat-model.md).
 
 ## What you can ask after one scan
 

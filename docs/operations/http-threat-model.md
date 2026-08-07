@@ -93,12 +93,20 @@ values rather than broad wildcards.
 ## Git subprocesses
 
 `changed_files_impact`, `test_impact`, `review_diff`, and `change_impact` run
-`git` inside the scanned project. Git reads that repository's `.git/config`,
-which can name commands Git executes — `core.fsmonitor` during any index
-refresh, `diff.external` during diff generation, `core.pager` for output.
-`GitProcessRunner` forces all three off via `-c` overrides and runs the child
-with an explicit environment (`GIT_CONFIG_NOSYSTEM=1`,
-`GIT_CONFIG_GLOBAL=/dev/null`, no inherited variables).
+`git` inside the scanned project. Git reads that repository's `.git/config`
+(and, for filters, its `.gitattributes`), either of which can name commands
+Git executes: `core.fsmonitor` during any index refresh, `core.hooksPath`
+for its hook scripts, `diff.external` during diff generation, and a
+`.gitattributes`-routed `filter.<name>.clean`/`.process`/`.smudge` or
+`diff.<name>.textconv` driver while `git diff` reads a changed path.
+`GitProcessRunner` forces the first three off via fixed `-c` overrides, and
+neutralises filter/textconv drivers per repository by first running
+`git config --list --local` (which refreshes nothing and invokes no filter
+itself) and appending a blanking `-c` override for every driver name it
+finds. `core.pager` is neutralised separately, by `--no-pager` at each call
+site rather than by an override. The child also runs under an explicit
+environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, no
+inherited variables).
 
 This matters whenever a repository directory arrives with its own `.git/`
 rather than from a fresh `clone`: CI artifacts, extracted archives, container
