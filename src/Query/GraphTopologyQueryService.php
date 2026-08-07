@@ -266,9 +266,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $nodeStatement->bindValue(':limit', $maxNodes + 1, PDO::PARAM_INT);
         $nodeStatement->execute();
         $nodes = [];
-        // Streamed for the same reason as the edge walk below: max_nodes reaches
-        // 50,000 joined rows, and fetchAll() read every one of them before the
-        // deadline was ever consulted.
+        // Streamed for the same reason as the edge walk below: max_nodes reaches 50,000 joined
+        // rows, and fetchAll() read every one of them before the deadline was ever consulted.
         $truncationReasons = $this->streamBounded($nodeStatement, $maxNodes, $deadline, function (array $row) use (&$nodes): bool {
             $nodes[$row['id']] = $row;
 
@@ -283,7 +282,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
             'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
         );
-        $edgeStatement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
 
         $nodeIds = array_keys($nodes);
         $roles = $this->roles($nodeIds);
@@ -297,6 +295,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // implemented is not evidence that anything uses it, so the contract
         // gate below has to be able to discount them.
         $inheritanceInDegree = [];
+        // Executed beside its consumer, not its prepare(): a streamed statement holds its read cursor from
+        // execute() until drained, and the three lookups above would otherwise run inside it — undrained if any threw.
+        $edgeStatement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
         $edgesExamined = 0;
         $edgeReasons = $this->streamBounded($edgeStatement, $maxEdges, $deadline, function (array $edge) use (&$edgesExamined, &$metrics, &$inheritanceInDegree, $nodes, $boundaries, $repositoryWide): bool {
             ++$edgesExamined;

@@ -224,6 +224,66 @@ trait Fixtures
         return json_encode($graph, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     }
 
+    /**
+     * A project whose graph is large enough that a row-by-row bound is observable.
+     *
+     * Seeds `$count + 1` chained nodes and `$count` `depends_on` edges on top of
+     * storeFixture(), so a traversal that streams its rows can be told apart
+     * from one that materialises them: the two produce the same envelope, and
+     * only the number of rows actually read separates them.
+     *
+     * @return array{0: PDO, 1: string} the connection and the project id
+     */
+    public function seedGraphWithEdges(int $count): array
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $pdo->beginTransaction();
+        $previous = null;
+        for ($index = 0; $index <= $count; ++$index) {
+            $name = sprintf('App\\Chain%05d', $index);
+            $node = StableId::symbol($ids['project'], 'php', 'class', $name);
+            $repository->saveNode(
+                $node,
+                $ids['project'],
+                'php',
+                'class',
+                $name,
+                sprintf('Chain%05d', $index),
+                null,
+                $ids['file'],
+                $index + 1,
+                $index + 2,
+                'ast',
+                'certain',
+                [],
+                'php:file:src/Checkout.php',
+                $ids['scan'],
+            );
+            if ($previous !== null) {
+                $repository->saveEdge(
+                    StableId::edge($ids['project'], 'depends_on', $previous, $node, (string) $index),
+                    $ids['project'],
+                    'depends_on',
+                    $previous,
+                    $node,
+                    $ids['file'],
+                    $index + 1,
+                    $index + 1,
+                    'ast',
+                    'certain',
+                    [],
+                    'php:file:src/Checkout.php',
+                    $ids['scan'],
+                );
+            }
+            $previous = $node;
+        }
+        $pdo->commit();
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        return [$pdo, $ids['project']];
+    }
+
     public function freshTestDatabase(): PDO
     {
         $pdo = SqliteConnection::open(':memory:');

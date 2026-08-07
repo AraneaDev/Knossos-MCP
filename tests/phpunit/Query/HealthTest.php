@@ -8,6 +8,8 @@ use InvalidArgumentException;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use Knossos\Tests\Phpunit\Support\RowCountingStatement;
+use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
 final class HealthTest extends KnossosTestCase
@@ -134,5 +136,44 @@ final class HealthTest extends KnossosTestCase
         $timed = $timedQuery->architectureHealth($ids['project'], timeoutMs: 1);
         assertSame(true, $timed->truncated);
         assertSame(true, in_array('time_limit', $timed->data['bounds']['truncation_reasons'], true));
+    }
+
+    /**
+     * Both of architecture_health's fetches are bounded by the deadline, not just the walk after them.
+     *
+     * The node fetch and the edge fetch each used to be a fetchAll() that ran to
+     * completion before the clock was ever consulted, so timeout_ms bounded
+     * neither. `time_limit` alone cannot pin that: it appears on this envelope
+     * either way, because the cycle scan below the fetches reports it too. The
+     * row count is the only thing that separates a streamed fetch from a
+     * materialised one, so that is what is asserted — removing the bound from
+     * either fetch reads the whole 5,001-node or 5,000-edge result and fails it.
+     *
+     * The empty report is the intended shape: a deadline that has already
+     * expired means nothing was read within budget, and `truncated` plus
+     * `nodes_examined: 0` say exactly that. The alternative — a full node list
+     * gathered past the deadline — is the bug being fixed.
+     */
+    #[Group('health')]
+    public function testHealthFetchesStopAtTheirDeadlineDuringTheFetch(): void
+    {
+        [$pdo, $projectId] = $this->seedGraphWithEdges(5_000);
+        $pdo->setAttribute(PDO::ATTR_STATEMENT_CLASS, [RowCountingStatement::class, []]);
+        $time = 0;
+        $expired = new ArchitectureQueryService($pdo, function () use (&$time): int {
+            $time += 2_000_000;
+            return $time;
+        });
+
+        RowCountingStatement::reset();
+        $envelope = $expired->architectureHealth($projectId, timeoutMs: 1);
+
+        assertSame(true, $envelope->truncated);
+        assertSame(true, in_array('time_limit', $envelope->data['bounds']['truncation_reasons'], true));
+        assertSame(true, RowCountingStatement::$rows < 100);
+        assertSame(0, $envelope->data['bounds']['nodes_examined']);
+        assertSame(0, $envelope->data['bounds']['edges_examined']);
+        assertSame([], $envelope->data['hubs']);
+        assertSame([], $envelope->data['dead_code_candidates']);
     }
 }
