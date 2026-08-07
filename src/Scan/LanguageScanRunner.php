@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Scanner\Worker\WorkerException;
-use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use Throwable;
 
 /**
@@ -130,20 +129,16 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
-        foreach (array_chunk($paths, WorkerExecutionPolicy::SCAN_BATCH_FILES) as $batch) {
+        foreach (self::batches($partition->filesToScan, $descriptor) as $batch) {
             // `['files' => $batch] + $request` overrides `files` only: PHP's `+`
             // keeps the left operand's key, so `root`, `limits` and the
             // per-language extras above survive every batch.
-            $scanned = [...$scanned, ...iterator_to_array($client->scan(['files' => $batch] + $request, $cancellation->isCancelled(...)))];
-            $batchResult = $client->lastScanResult();
-            // Sum the per-batch counts; carry every other field (parser,
-            // programs, programs_reused) from the batch that reported it.
-            // PHP's `+` prefers the left operand, so the newest batch's scalars
-            // win and files_scanned is reassigned afterwards so the running sum
-            // is not overwritten by the last batch's own count.
-            $total = (int) ($metadata['files_scanned'] ?? 0) + (int) ($batchResult['files_scanned'] ?? 0);
-            $metadata = $batchResult + $metadata;
-            $metadata['files_scanned'] = $total;
+            foreach ($client->scan(['files' => $batch] + $request, $cancellation->isCancelled(...)) as $contribution) {
+                $scanned[] = $contribution;
+            }
+            $metadata = self::mergeScanResult($metadata, $client->lastScanResult());
+            // Inside the loop so a cancelled scan stops at the next batch
+            // boundary instead of running the language to completion.
             $cancellation->throwIfCancelled();
         }
         $recorded = $this->cache->entriesForScanned(
@@ -164,6 +159,71 @@ final readonly class LanguageScanRunner
             'scanner_metadata' => $paths === [] ? [] : [$manifest->id => $metadata],
             'milliseconds' => self::elapsedMilliseconds($started),
         ];
+    }
+    /**
+     * Split the files a language must scan into scan requests.
+     *
+     * Bounded on two axes because two different per-request budgets have to
+     * hold. The file count guards the deadline, which for a per-file parser
+     * tracks how many files were asked for. The cumulative source-byte total
+     * guards `max_output_bytes`, which tracks how much source the request
+     * covers rather than how many files: measured across TypeScript corpora of
+     * very different density, protocol output stayed at ~15.5x source bytes
+     * while file counts told nothing useful — 400 files of dense TypeScript
+     * emitted 29.6 MB against the 20 MB cap where 400 sparse files emitted
+     * 2.5 MB.
+     *
+     * A file bigger than the whole byte budget still gets a request of its own
+     * rather than an empty one; nothing smaller can be sent.
+     *
+     * @param list<object> $files
+     * @return list<list<string>>
+     */
+    private static function batches(array $files, LanguageDescriptor $descriptor): array
+    {
+        $batches = [];
+        $current = [];
+        $bytes = 0;
+        foreach ($files as $file) {
+            // Test fixtures and any non-DiscoveredFile input carry no size; a
+            // missing size only relaxes the byte axis, never the count axis.
+            $size = isset($file->size) && is_int($file->size) ? $file->size : 0;
+            if ($current !== [] && (count($current) >= $descriptor->scanBatchFiles || $bytes + $size > $descriptor->scanBatchSourceBytes)) {
+                $batches[] = $current;
+                $current = [];
+                $bytes = 0;
+            }
+            $current[] = $file->relativePath;
+            $bytes += $size;
+        }
+        if ($current !== []) {
+            $batches[] = $current;
+        }
+
+        return $batches;
+    }
+
+    /**
+     * Fold one batch's scan reply into the language's running scanner metadata.
+     *
+     * Every integer a worker reports is a count of what THAT request did —
+     * files_scanned, and TypeScript's programs and programs_reused — so they are
+     * summed. Keeping the last batch's value would report a fraction of the
+     * language's work as if it were the total. Non-integers (a parser name, a
+     * version) are not counts, so the newest batch's value wins.
+     *
+     * @param array<string, mixed> $metadata
+     * @param array<string, mixed> $batchResult
+     * @return array<string, mixed>
+     */
+    private static function mergeScanResult(array $metadata, array $batchResult): array
+    {
+        foreach ($batchResult as $field => $value) {
+            $running = $metadata[$field] ?? null;
+            $metadata[$field] = is_int($value) && is_int($running) ? $running + $value : $value;
+        }
+
+        return $metadata;
     }
     /** Milliseconds since a hrtime() mark, for the stage timings. */
 

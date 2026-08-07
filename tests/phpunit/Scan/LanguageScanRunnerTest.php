@@ -300,13 +300,19 @@ final class LanguageScanRunnerTest extends TestCase
 
     /**
      * A file fixture standing in for DiscoveredFile, as the tests above do.
+     *
+     * `size` is only set when a test asks for it: a fixture without one proves
+     * the runner still batches a non-DiscoveredFile input on the count axis.
      */
-    private function fileFixture(string $relativePath, string $language): \stdClass
+    private function fileFixture(string $relativePath, string $language, int $size = 0): \stdClass
     {
         $file = new \stdClass();
         $file->language = $language;
         $file->relativePath = $relativePath;
         $file->contentHash = 'hash-' . $relativePath;
+        if ($size > 0) {
+            $file->size = $size;
+        }
 
         return $file;
     }
@@ -469,14 +475,19 @@ final class LanguageScanRunnerTest extends TestCase
         return array_map(intval(...), array_values($lines));
     }
 
-    /** A descriptor for one language key, claiming files of the same-named language. */
-    private function descriptorFor(string $key): LanguageDescriptor
+    /**
+     * A descriptor for one language key, claiming files of the same-named
+     * language, with the packaged batch bounds unless a test overrides them.
+     */
+    private function descriptorFor(string $key, ?int $batchFiles = null, ?int $batchSourceBytes = null): LanguageDescriptor
     {
         return new LanguageDescriptor(
             key: $key,
             stage: $key . '-analysis',
             languages: [$key],
             command: ['php', '-r', 'echo 1'],
+            scanBatchFiles: $batchFiles ?? WorkerExecutionPolicy::SCAN_BATCH_FILES,
+            scanBatchSourceBytes: $batchSourceBytes ?? WorkerExecutionPolicy::SCAN_BATCH_SOURCE_BYTES,
         );
     }
 
@@ -484,8 +495,9 @@ final class LanguageScanRunnerTest extends TestCase
      * A runner whose pool hands back the given client for each language key.
      *
      * @param array<string, ProcessScannerClient> $clients keyed by descriptor key
+     * @param list<LanguageDescriptor> $descriptors overriding the default one-per-key set
      */
-    private function runnerWithClients(array $clients): LanguageScanRunner
+    private function runnerWithClients(array $clients, array $descriptors = []): LanguageScanRunner
     {
         $pool = $this->createStub(LanguageWorkerPool::class);
         $pool->method('client')->willReturnCallback(
@@ -493,7 +505,7 @@ final class LanguageScanRunnerTest extends TestCase
         );
 
         return new LanguageScanRunner(
-            array_map($this->descriptorFor(...), array_keys($clients)),
+            $descriptors === [] ? array_map($this->descriptorFor(...), array_keys($clients)) : $descriptors,
             $pool,
             new ContributionCacheService(),
         );
@@ -503,11 +515,12 @@ final class LanguageScanRunnerTest extends TestCase
      * A plan whose discovered files are exactly the given paths, none cached.
      *
      * @param array<string, string> $files relative path => language
+     * @param int $size byte size reported for every file, for the byte axis
      */
-    private function planForFiles(array $files): ScanPlan
+    private function planForFiles(array $files, int $size = 0): ScanPlan
     {
         $fixtures = array_map(
-            fn(string $language, string $path): \stdClass => $this->fileFixture($path, $language),
+            fn(string $language, string $path): \stdClass => $this->fileFixture($path, $language, $size),
             array_values($files),
             array_keys($files),
         );
@@ -575,17 +588,99 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame(900, $result->parsed);
     }
 
-    public function testScannerMetadataSumsFilesScannedAcrossBatches(): void
+    public function testScannerMetadataSumsEveryCounterAcrossBatches(): void
     {
         $result = $this->runnerWithClients(['php' => $this->recordingClient()])
             ->run($this->planForFiles($this->nineHundredPhpFiles()), new CancellationToken());
 
         $metadata = $result->scannerMetadata['knossos.fake'];
-        // Counts are summed across batches...
+        // Every integer a worker reports counts what THAT request did, so all of
+        // them are summed — not just files_scanned. The real TypeScript worker
+        // returns programs and programs_reused exactly this way, and keeping the
+        // last batch's value would report one batch as the language total.
         assertSame(900, $metadata['files_scanned']);
-        // ...the newest batch's other scalars win...
-        assertSame(3, $metadata['batch']);
-        // ...and a field only the first batch reported is still carried out.
-        assertSame(7, $metadata['programs']);
+        assertSame(3, $metadata['programs']);
+        assertSame(2, $metadata['programs_reused']);
+        // A non-integer is a name, not a count: the newest batch's value wins.
+        assertSame('fake-3', $metadata['parser']);
+    }
+
+    public function testABatchIsAlsoBoundedByCumulativeSourceBytes(): void
+    {
+        // Protocol output tracks source size, not file count, so the byte axis
+        // has to be able to split a batch well before the file cap: 12 files of
+        // 100 KB against a 300 KB budget is 3 files per request, not one
+        // request of 12.
+        $files = [];
+        for ($index = 0; $index < 12; ++$index) {
+            $files[sprintf('src/Big%02d.php', $index)] = 'php';
+        }
+        $runner = $this->runnerWithClients(
+            ['php' => $this->recordingClient()],
+            [$this->descriptorFor('php', batchSourceBytes: 300_000)],
+        );
+
+        $runner->run($this->planForFiles($files, 100_000), new CancellationToken());
+
+        assertSame([3, 3, 3, 3], $this->recordedBatches());
+    }
+
+    public function testAFileLargerThanTheWholeByteBudgetStillGetsARequest(): void
+    {
+        // Nothing smaller than one file can be sent, so an oversized file must
+        // occupy a request of its own rather than produce an empty batch or an
+        // endless loop.
+        $runner = $this->runnerWithClients(
+            ['php' => $this->recordingClient()],
+            [$this->descriptorFor('php', batchSourceBytes: 1_000)],
+        );
+
+        $runner->run(
+            $this->planForFiles(['src/A.php' => 'php', 'src/B.php' => 'php'], 50_000),
+            new CancellationToken(),
+        );
+
+        assertSame([1, 1], $this->recordedBatches());
+    }
+
+    public function testADescriptorCanRaiseItsOwnFileBatchSize(): void
+    {
+        // TypeScript pays a whole-program cost on every request regardless of
+        // how many files it was asked for, so its descriptor raises the file cap
+        // to keep a normal project in one request. The bound has to come from
+        // the descriptor, not from a single global constant.
+        $runner = $this->runnerWithClients(
+            ['php' => $this->recordingClient()],
+            [$this->descriptorFor('php', batchFiles: 2_000)],
+        );
+
+        $runner->run($this->planForFiles($this->nineHundredPhpFiles()), new CancellationToken());
+
+        assertSame([900], $this->recordedBatches());
+    }
+
+    public function testCancellationDuringABatchStopsTheRemainingRequests(): void
+    {
+        // A cancelled scan must abandon the language's remaining batches rather
+        // than run all 900 files to completion. The poll closure latches as soon
+        // as the worker records the first request, so cancellation lands while
+        // batch 1 is still streaming and batch 2 is never sent.
+        //
+        // Note this pins the outcome, not the in-loop throwIfCancelled() by
+        // itself: ScannerProtocolSession consults the same token per frame and
+        // in send(), so with a live protocol client the loop checkpoint is
+        // belt-and-braces for the gap between batches, where no request is in
+        // flight to carry the callback.
+        $recorded = fn(): int => count($this->recordedBatches());
+        $token = new CancellationToken(static fn(): bool => $recorded() >= 1);
+        $runner = $this->runnerWithClients(['php' => $this->recordingClient()]);
+
+        $error = captureThrows(
+            fn(): LanguageScanResult => $runner->run($this->planForFiles($this->nineHundredPhpFiles()), $token),
+            ScanCancelledException::class,
+        );
+
+        assertSame(true, $error instanceof ScanCancelledException);
+        assertSame([400], $this->recordedBatches());
     }
 }

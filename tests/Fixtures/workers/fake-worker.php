@@ -93,14 +93,16 @@ while (($line = fgets(STDIN)) !== false) {
             foreach ($requested as $relativePath) {
                 notifyContribution(fileContribution('knossos.fake:file:' . $relativePath, (string) $relativePath));
             }
-            $result = ['count' => count($requested), 'files_scanned' => count($requested), 'batch' => $batch];
-            if ($batch === 1) {
-                // Reported by the first batch only, so a caller that carries
-                // fields forward can be told apart from one that keeps the last
-                // batch's reply wholesale.
-                $result['programs'] = 7;
-            }
-            respond($id, $result);
+            // Shaped like the real TypeScript worker's reply: every integer is a
+            // count of what THIS request did, so a caller must sum them, while
+            // `parser` is a name the newest request simply overwrites.
+            respond($id, [
+                'count' => count($requested),
+                'files_scanned' => count($requested),
+                'programs' => 1,
+                'programs_reused' => $batch === 1 ? 0 : 1,
+                'parser' => 'fake-' . $batch,
+            ]);
             continue;
         }
         if ($mode === 'output_flood') {

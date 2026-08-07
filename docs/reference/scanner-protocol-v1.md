@@ -55,6 +55,26 @@ Accepts a request ID, project context, project-relative added/changed/deleted
 inputs, configuration hashes, and limits. A worker streams zero or more
 `scan/contribution` notifications followed by a final result containing counts.
 
+**One language's files arrive over several `scan` requests on the same
+session.** The line, total-output, and time limits are enforced per request, so
+the core splits a language's work into batches bounded by both a file count and
+a cumulative source-byte budget; the batch bounds differ per language. A worker
+must therefore treat every `scan` as covering only the files that request named,
+and must not assume the first `scan` sees the whole project or that any request
+is the last one.
+
+Two consequences for a worker author:
+
+- **Every integer in the result is a per-request count, and the core sums it
+  across a language's requests.** `files_scanned`, and any counter of its own a
+  worker adds, must report what THIS request did, not a running total — a worker
+  that returns a cumulative figure will be double-counted. Non-integer result
+  fields are not summed; the last request's value is the one reported.
+- **Work that can be amortised across requests should be cached on the session.**
+  The packaged TypeScript worker keeps its `ts.Program` cache on the scanner
+  instance for exactly this reason, and the core in turn gives TypeScript a much
+  larger file batch than PHP or Python so a normal project is still one request.
+
 Each contribution has one stable owner key and lists node facts, unresolved edge
 facts, and diagnostics. Re-emitting an owner replaces that owner's previous
 facts atomically during reconciliation.

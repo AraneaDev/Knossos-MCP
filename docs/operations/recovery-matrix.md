@@ -27,9 +27,17 @@ worker request has its own cumulative output-byte budget and its own
 `request_timeout_ms` deadline. A language's files are therefore split across
 several requests rather than sent as one.
 
-- `scan_batch_files` — files sent per worker request. Each request carries its
-  own output-byte budget and its own `request_timeout_ms`, so both scale with a
-  batch rather than with the project.
+- `scan_batch_files` — most files sent per worker request. Each request carries
+  its own output-byte budget and its own `request_timeout_ms`, so both scale
+  with a batch rather than with the project. This bound guards the deadline.
+- `scan_batch_source_bytes` — most source bytes sent per worker request. This
+  bound guards `max_output_bytes`, because protocol output tracks how much
+  source a request covers rather than how many files it named.
+
+Both values are the defaults. A language may raise or lower either: TypeScript
+uses a much larger file cap and a much smaller source-byte budget, because it
+rebuilds and re-checks a whole `ts.Program` on every request while emitting
+about 15.5x its source bytes, against PHP's roughly 2.2x.
 
 Sending a whole project in one request made `max_output_bytes` a project-wide
 ceiling: at roughly 14.9 KB of protocol output per PHP file, a scan of more than

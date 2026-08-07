@@ -84,16 +84,29 @@ final class WorkerExecutionPolicyTest extends TestCase
         assertSame(20_000_000, $meta['max_output_bytes']);
         assertSame(100_000, $meta['max_stderr_bytes']);
         assertSame(400, $meta['scan_batch_files']);
+        assertSame(4_000_000, $meta['scan_batch_source_bytes']);
     }
 
-    public function testScanBatchStaysWellUnderTheOutputByteCap(): void
+    public function testScanBatchSourceBudgetLeavesRealHeadroomUnderTheOutputCap(): void
     {
-        // At the measured ~14.9 KB of protocol output per PHP file, a batch has
-        // to stay far enough under max_output_bytes that a heavier language
-        // still fits; a batch sized past the cap would reinstate the ceiling
-        // this constant exists to remove.
+        // The source-byte budget is what actually guards max_output_bytes, and
+        // it has to hold for a language that expands far more than PHP's
+        // measured ~2.2x. TypeScript measured 15.2-15.9x, so require the default
+        // budget to survive a 4x expansion with the cap still unspent: an
+        // assertion that merely clears the cap would pass right up to the batch
+        // size at which the original ceiling reappears.
         $limits = new WorkerLimits();
 
-        assertSame(true, WorkerExecutionPolicy::SCAN_BATCH_FILES * 15_000 < $limits->maxOutputBytes);
+        assertSame(true, WorkerExecutionPolicy::SCAN_BATCH_SOURCE_BYTES * 4 < $limits->maxOutputBytes);
+    }
+
+    public function testScanBatchFileCapLeavesRealHeadroomUnderTheOutputCap(): void
+    {
+        // The file cap is the deadline guard, but it must not on its own be able
+        // to reinstate the byte ceiling: at the measured ~14.9 KB per PHP file a
+        // batch has to stay a wide margin under the cap, not merely inside it.
+        $limits = new WorkerLimits();
+
+        assertSame(true, WorkerExecutionPolicy::SCAN_BATCH_FILES * 15_000 * 3 < $limits->maxOutputBytes);
     }
 }
