@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Discovery;
 
+use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\IgnoreMatcher;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
@@ -11,6 +12,60 @@ use PHPUnit\Framework\TestCase;
 #[Group('ignore-matcher')]
 final class IgnoreMatcherTest extends TestCase
 {
+    /**
+     * '[#]' used to terminate the '#'-delimited compiled pattern early:
+     * preg_match warned "Unknown modifier ']'" and returned false, so the
+     * pattern silently excluded nothing. Escaping the class body fixes the
+     * delimiter injection outright — the pattern now compiles and matches the
+     * literal '#' it names, rather than either throwing or vanishing.
+     */
+    public function testADelimiterCharacterInsideAClassMatchesLiterally(): void
+    {
+        $matcher = new IgnoreMatcher(['file[#]name']);
+
+        assertSame(true, $matcher->matches('file#name'));
+        assertSame(false, $matcher->matches('fileXname'));
+    }
+
+    /**
+     * '[a\]' used to leave the compiled character class unterminated: the
+     * scanner (unlike PCRE) does not treat '\' as an escape character, so it
+     * closed the class one character later than PCRE would once the body was
+     * copied verbatim, and PCRE saw the trailing '\]' as an escaped literal
+     * bracket rather than the terminator. Escaping the recovered body produces
+     * a class that compiles instead of silently matching nothing. (The class
+     * also names a literal backslash, but a backslash cannot appear in a
+     * segment to test that with: matches() normalises '\' to '/' as a path
+     * separator before segmenting, same as everywhere else in this class.)
+     */
+    public function testATrailingBackslashInAClassMatchesLiterally(): void
+    {
+        $matcher = new IgnoreMatcher(['[a\\]']);
+
+        assertSame(true, $matcher->matches('a'));
+        assertSame(false, $matcher->matches('b'));
+    }
+
+    public function testValidCharacterClassStillMatches(): void
+    {
+        $matcher = new IgnoreMatcher(['*.[oa]']);
+        self::assertTrue($matcher->matches('build/thing.o'));
+        self::assertFalse($matcher->matches('src/thing.php'));
+    }
+
+    /**
+     * Escaping the class body does not make every pattern compile: a
+     * descending range (start byte greater than end byte) has no valid PCRE
+     * interpretation and preg_match rejects it. The constructor now checks the
+     * compile result instead of silently matching nothing on every path, so
+     * this surfaces as a loud, attributable configuration error.
+     */
+    public function testAPatternWithAnInvalidCharacterRangeIsRejected(): void
+    {
+        $this->expectException(DiscoveryException::class);
+        new IgnoreMatcher(['[z-a]']);
+    }
+
     public function testClassIsFinalAndReadonly(): void
     {
         $reflection = new \ReflectionClass(IgnoreMatcher::class);

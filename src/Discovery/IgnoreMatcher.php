@@ -41,10 +41,53 @@ final readonly class IgnoreMatcher
         'storage/framework',
     ];
 
-    /** @param list<string> $patterns */
-    public function __construct(private array $patterns) {}
-    /** Whether a path is ignored, applying built-in exclusions then the user patterns. */
+    /**
+     * Patterns pre-compiled to `[normalized, anchored, regex, negated]`, so a
+     * pattern that cannot compile is rejected at construction rather than
+     * silently matching nothing on every path, and the regex is built once per
+     * pattern instead of once per pattern per discovered file.
+     *
+     * @var list<array{0: string, 1: bool, 2: string, 3: bool}>
+     */
+    private array $compiled;
 
+    /**
+     * @param list<string> $patterns
+     * @throws DiscoveryException when a pattern does not compile to a valid regex
+     */
+    public function __construct(array $patterns)
+    {
+        $compiled = [];
+        foreach ($patterns as $pattern) {
+            // Trim before reading the negation marker, not after. Testing the raw
+            // pattern meant a single leading space turned "!keep.js" into a literal
+            // pattern matching nothing, silently discarding the re-include while the
+            // trim two lines later made the same whitespace irrelevant everywhere
+            // else. Whitespace is either significant here or it is not.
+            $normalized = trim(str_replace('\\', '/', $pattern));
+            $negated = str_starts_with($normalized, '!');
+            if ($negated) {
+                $normalized = trim(substr($normalized, 1));
+            }
+            $anchored = str_starts_with($normalized, '/') || str_contains(trim($normalized, '/'), '/');
+            $normalized = trim($normalized, '/');
+            if ($normalized === '') {
+                continue;
+            }
+            // Trailing '/**' ignores the directory itself and everything under it, so
+            // reduce it to its base and let the descendant suffix in patternMatches()
+            // cover contents.
+            if (str_ends_with($normalized, '/**')) {
+                $normalized = substr($normalized, 0, -3);
+                $anchored = true;
+            }
+            $regex = self::compile($normalized);
+            $compiled[] = [$normalized, $anchored, $regex, $negated];
+        }
+        $this->compiled = $compiled;
+    }
+
+    /** Whether a path is ignored, applying built-in exclusions then the user patterns. */
     public function matches(string $relativePath): bool
     {
         $path = trim(str_replace('\\', '/', $relativePath), '/');
@@ -66,24 +109,8 @@ final readonly class IgnoreMatcher
         // depth, and '**' spans directory segments. Built-in excludes above are
         // absolute and cannot be negated.
         $ignored = false;
-        foreach ($this->patterns as $pattern) {
-            // Trim before reading the negation marker, not after. Testing the raw
-            // pattern meant a single leading space turned "!keep.js" into a literal
-            // pattern matching nothing, silently discarding the re-include while the
-            // trim two lines later made the same whitespace irrelevant everywhere
-            // else. Whitespace is either significant here or it is not.
-            $normalized = trim(str_replace('\\', '/', $pattern));
-            $negated = str_starts_with($normalized, '!');
-            if ($negated) {
-                $normalized = trim(substr($normalized, 1));
-            }
-            $anchored = str_starts_with($normalized, '/') || str_contains(trim($normalized, '/'), '/');
-            $normalized = trim($normalized, '/');
-            if ($normalized === '') {
-                continue;
-            }
-
-            if ($this->patternMatches($normalized, $anchored, $path, $segments)) {
+        foreach ($this->compiled as [, $anchored, $regex, $negated]) {
+            if (self::patternMatches($regex, $anchored, $path, $segments)) {
                 $ignored = !$negated;
             }
         }
@@ -92,20 +119,12 @@ final readonly class IgnoreMatcher
     }
 
     /**
-     * Whether one normalised pattern matches, honouring anchoring and descendants.
+     * Whether one compiled pattern matches, honouring anchoring and descendants.
      *
      * @param list<string> $segments
      */
-    private function patternMatches(string $pattern, bool $anchored, string $path, array $segments): bool
+    private static function patternMatches(string $regex, bool $anchored, string $path, array $segments): bool
     {
-        // Trailing '/**' ignores the directory itself and everything under it, so
-        // reduce it to its base and let the descendant suffix below cover contents.
-        if (str_ends_with($pattern, '/**')) {
-            $pattern = substr($pattern, 0, -3);
-            $anchored = true;
-        }
-        $regex = self::toRegex($pattern);
-
         if ($anchored) {
             // Anchor to the project root; the '(?:/.*)?' suffix ignores descendants
             // when the pattern names a directory (gitignore directory semantics).
@@ -121,6 +140,31 @@ final readonly class IgnoreMatcher
         }
 
         return false;
+    }
+
+    /**
+     * Translate a normalised glob fragment into a PCRE body (delimiter '#') and
+     * confirm the result actually compiles.
+     *
+     * `preg_match()`'s `false` return used to go unchecked: a class containing the
+     * '#' delimiter or one left unterminated compiled to garbage that silently
+     * matched nothing on every path, so a project believed a directory was
+     * excluded while it was still being scanned. Checking here turns that into a
+     * loud, attributable configuration error instead.
+     *
+     * @throws DiscoveryException when the pattern does not compile to a valid regex
+     */
+    public static function compile(string $pattern): string
+    {
+        $regex = self::toRegex($pattern);
+        if (@preg_match('#^' . $regex . '$#', '') === false) {
+            throw new DiscoveryException(sprintf(
+                'PROJECT_CONFIG_INVALID: ignore pattern %s is not a valid glob.',
+                json_encode($pattern),
+            ));
+        }
+
+        return $regex;
     }
 
     /** Translate a gitignore glob fragment into a PCRE body (delimiter '#'). */
@@ -149,10 +193,7 @@ final readonly class IgnoreMatcher
                 if ($close === null) {
                     $out .= '\\[';
                 } else {
-                    $class = substr($pattern, $i, $close - $i + 1);
-                    // gitignore negates a class with a leading '!'; PCRE uses '^'.
-                    $class = preg_replace('/^\[!/', '[^', $class);
-                    $out .= $class;
+                    $out .= self::characterClass(substr($pattern, $i, $close - $i + 1));
                     $i = $close;
                 }
             } else {
@@ -162,8 +203,40 @@ final readonly class IgnoreMatcher
 
         return $out;
     }
-    /** The index closing a bracket class, or null when it is unterminated. */
 
+    /**
+     * Translate one bracket class, escaping its body.
+     *
+     * The body used to be copied verbatim into a '#'-delimited pattern, so a
+     * class containing '#' terminated the delimiter and one ending in '\]' left
+     * the class unterminated — both compiled to nothing, preg_match returned
+     * false, and the pattern silently excluded nothing at all. Only the
+     * gitignore-to-PCRE negation ('!' becomes '^') and ranges are meaningful
+     * here; everything else is a literal.
+     */
+    private static function characterClass(string $class): string
+    {
+        $body = substr($class, 1, -1);
+        $negated = str_starts_with($body, '!') || str_starts_with($body, '^');
+        if ($negated) {
+            $body = substr($body, 1);
+        }
+        $escaped = '';
+        $length = strlen($body);
+        for ($i = 0; $i < $length; ++$i) {
+            $char = $body[$i];
+            // A range hyphen between two literals is the one metacharacter a
+            // gitignore class may carry; everything else is quoted. An invalid
+            // range (for example a descending one) still fails to compile —
+            // compile() turns that into a loud PROJECT_CONFIG_INVALID rather than
+            // a silently-empty match.
+            $escaped .= $char === '-' && $i > 0 && $i < $length - 1 ? '-' : preg_quote($char, '#');
+        }
+
+        return $escaped === '' ? '' : '[' . ($negated ? '^' : '') . $escaped . ']';
+    }
+
+    /** The index closing a bracket class, or null when it is unterminated. */
     private static function characterClassEnd(string $pattern, int $start, int $length): ?int
     {
         $j = $start + 1;
