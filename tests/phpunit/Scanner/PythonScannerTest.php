@@ -364,7 +364,10 @@ PYTHON);
             assertSame(7, $first->data['parsed_files']);
             assertSame('7', (string) $pdo->query("SELECT COUNT(*) FROM files WHERE language = 'python'")->fetchColumn());
             assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM classifications WHERE role = 'application.service'")->fetchColumn());
-            assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM boundaries WHERE name = 'python:knossos-python-fixture'")->fetchColumn());
+            // Inferred boundary rules key internally on "kind:configPath" (so two
+            // manifests declaring the same name never collide), but display the
+            // declared package name without the kind prefix.
+            assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM boundaries WHERE name = 'knossos-python-fixture'")->fetchColumn());
             assertSame('1', (string) $pdo->query("SELECT COUNT(*) FROM diagnostics WHERE code = 'PY_SYNTAX_ERROR'")->fetchColumn());
             assertSame('7', (string) $pdo->query("SELECT COUNT(*) FROM contribution_cache WHERE scanner_id = 'knossos.python'")->fetchColumn());
 

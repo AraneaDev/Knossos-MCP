@@ -39,21 +39,44 @@ final class BoundaryInference
             }
         }
         $rules = [];
+        $manifestKinds = ['composer' => true, 'node' => true, 'python' => true, 'typescript' => true];
+        $legacyIdentityCounts = [];
         foreach ($units as $unit) {
+            if (!isset($manifestKinds[$unit->kind])) {
+                continue;
+            }
             $directory = dirname($unit->configPath);
             $prefix = $directory === '.' ? '' : rtrim(str_replace('\\', '/', $directory), '/') . '/';
-            if ($unit->kind === 'composer') {
+            // Keyed by the manifest's own path, never by its declared name: two
+            // packages can legitimately declare the same name (a vendored or forked
+            // copy), and keying on the name silently dropped one whole boundary along
+            // with the path prefix that defined its members. The declared name
+            // survives as the display label. TypeScript units have no declared
+            // package name (tsconfig.json carries none), so they keep displaying
+            // their key, as before this change.
+            $rule = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $prefix]];
+            if ($unit->kind !== 'typescript') {
                 $label = is_string($unit->metadata['name'] ?? null) ? $unit->metadata['name'] : ($prefix === '' ? 'root' : rtrim($prefix, '/'));
-                $rules['composer:' . $label] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $prefix]];
-            } elseif ($unit->kind === 'node') {
-                $label = is_string($unit->metadata['name'] ?? null) ? $unit->metadata['name'] : ($prefix === '' ? 'root' : rtrim($prefix, '/'));
-                $rules['node:' . $label] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $prefix]];
-            } elseif ($unit->kind === 'typescript') {
-                $rules['typescript:' . $unit->configPath] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $prefix]];
-            } elseif ($unit->kind === 'python') {
-                $label = is_string($unit->metadata['name'] ?? null) ? $unit->metadata['name'] : ($prefix === '' ? 'root' : rtrim($prefix, '/'));
-                $rules['python:' . $label] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $prefix]];
+                $rule['display'] = $label;
+                // The pre-fix rule key ("kind:name") is what every already-persisted
+                // boundary's stable id was derived from. Recording it here lets the
+                // facts loop below reuse it as $identityName whenever it is still
+                // unique, so the overwhelmingly common case (one manifest per kind)
+                // keeps its existing id even though $display dropped the kind prefix.
+                $rule['legacy_identity'] = $unit->kind . ':' . $label;
+                $legacyIdentityCounts[$rule['legacy_identity']] = ($legacyIdentityCounts[$rule['legacy_identity']] ?? 0) + 1;
             }
+            $rules[$unit->kind . ':' . $unit->configPath] = $rule;
+        }
+        foreach ($rules as $key => $rule) {
+            if (!isset($rule['legacy_identity'])) {
+                continue;
+            }
+            // Two manifests colliding on the same declared name is exactly the case
+            // this fix exists for: reusing their shared legacy identity here would
+            // just move the silent overwrite from the rule key to the stable id, so
+            // fall back to each rule's own unique key instead.
+            $rules[$key]['identity'] = $legacyIdentityCounts[$rule['legacy_identity']] === 1 ? $rule['legacy_identity'] : $key;
         }
         foreach ($nodes as $node) {
             // Synthetic nodes (routes, endpoints) have canonical names like
@@ -133,16 +156,21 @@ final class BoundaryInference
             sort($members, SORT_STRING);
             $baseName = $rule['display'] ?? $name;
             $displayName = $baseName;
-            $identityName = null;
+            // A manifest rule's pinned legacy identity (see above) keeps its stable id
+            // put even though $baseName no longer carries the kind prefix. Rules with
+            // no pinned identity (language-derived and explicit rules) fall back to
+            // null, meaning "same as $name" — unchanged from before this fix.
+            $identityName = $rule['identity'] ?? null;
             if (isset($rule['merged_names'])) {
                 // The merged-from list is display-only: appending it to $displayName must
                 // not perturb the boundary's stable id, or every scan whose merge
                 // composition shifts (e.g. a package.json added next to composer.json)
                 // would rename AND re-id the boundary, breaking persisted policy
                 // references. $identityName pins the id to the surviving primary rule's
-                // pre-suffix name.
+                // pre-suffix identity (its pinned legacy identity when it has one,
+                // otherwise its base display name).
                 $displayName .= ' (+' . implode(', ', $rule['merged_names']) . ')';
-                $identityName = $baseName;
+                $identityName = $rule['identity'] ?? $baseName;
             }
             $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], array_values(array_unique($members)), $identityName);
         }
