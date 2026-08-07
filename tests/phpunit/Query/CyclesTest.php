@@ -8,6 +8,8 @@ use InvalidArgumentException;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use Knossos\Tests\Phpunit\Support\RowCountingStatement;
+use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
 final class CyclesTest extends KnossosTestCase
@@ -92,6 +94,11 @@ final class CyclesTest extends KnossosTestCase
         $edgeLimited = $query->dependencyCycles($ids['project'], maxEdges: 1);
         assertSame(true, $edgeLimited->truncated);
         assertSame(true, in_array('edge_limit', $edgeLimited->data['bounds']['truncation_reasons'], true));
+        // The node cap is the one stop condition the row stream cannot see, so
+        // it reports itself — once, and without a row reason alongside it.
+        $nodeLimited = $query->dependencyCycles($ids['project'], maxNodes: 1);
+        assertSame(true, $nodeLimited->truncated);
+        assertSame(['node_limit'], $nodeLimited->data['bounds']['truncation_reasons']);
         assertThrows(fn() => $query->dependencyCycles($ids['project'], edgeKinds: ['contains']), InvalidArgumentException::class);
         assertThrows(fn() => $query->dependencyCycles($ids['project'], maxNodes: 0), InvalidArgumentException::class);
 
@@ -145,5 +152,98 @@ final class CyclesTest extends KnossosTestCase
         $complete = $query->dependencyCycles($ids['project']);
         assertSame(1, count($complete->data['cycles']));
         assertSame(false, str_contains($complete->summary, 'truncated'));
+    }
+
+    /**
+     * The deadline has to bound the fetch, not only what follows it.
+     *
+     * The row phase used to be a fetchAll() with the first deadline check inside
+     * the loop that ran afterwards, so timeout_ms could not bound the phase that
+     * dominates the cost and every joined row was materialised first regardless.
+     * The envelope looked identical either way, so the row count is what the
+     * assertion has to be made against.
+     */
+    #[Group('cycles')]
+    public function testTraversalStopsAtItsDeadlineDuringTheFetch(): void
+    {
+        // A deadline already past when the query starts must produce a truncated
+        // result immediately, not after every row is materialised.
+        [$pdo, $projectId] = $this->seedGraphWithEdges(5_000);
+        $pdo->setAttribute(PDO::ATTR_STATEMENT_CLASS, [RowCountingStatement::class, []]);
+        $time = 0;
+        $expired = new ArchitectureQueryService($pdo, function () use (&$time): int {
+            $time += 2_000_000;
+            return $time;
+        });
+
+        RowCountingStatement::reset();
+        $envelope = $expired->dependencyCycles($projectId, timeoutMs: 1);
+
+        assertSame(true, $envelope->truncated);
+        assertSame(true, in_array('time_limit', $envelope->data['bounds']['truncation_reasons'], true));
+        // The 5,000-edge join must not have been read past the deadline check.
+        assertSame(true, RowCountingStatement::$rows < 100);
+
+        // A live clock crosses the periodic gate rather than tripping on the
+        // first row, which is the path a real timeout_ms takes.
+        RowCountingStatement::reset();
+        $live = (new ArchitectureQueryService($pdo))->dependencyCycles($projectId, timeoutMs: 1);
+        assertSame(true, $live->truncated);
+        assertSame(true, in_array('time_limit', $live->data['bounds']['truncation_reasons'], true));
+    }
+
+    /**
+     * A project whose graph is large enough that a row-by-row bound is observable.
+     *
+     * @return array{0: PDO, 1: string} the connection and the project id
+     */
+    private function seedGraphWithEdges(int $count): array
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $pdo->beginTransaction();
+        $previous = null;
+        for ($index = 0; $index <= $count; ++$index) {
+            $name = sprintf('App\\Chain%05d', $index);
+            $node = StableId::symbol($ids['project'], 'php', 'class', $name);
+            $repository->saveNode(
+                $node,
+                $ids['project'],
+                'php',
+                'class',
+                $name,
+                sprintf('Chain%05d', $index),
+                null,
+                $ids['file'],
+                $index + 1,
+                $index + 2,
+                'ast',
+                'certain',
+                [],
+                'php:file:src/Checkout.php',
+                $ids['scan'],
+            );
+            if ($previous !== null) {
+                $repository->saveEdge(
+                    StableId::edge($ids['project'], 'depends_on', $previous, $node, (string) $index),
+                    $ids['project'],
+                    'depends_on',
+                    $previous,
+                    $node,
+                    $ids['file'],
+                    $index + 1,
+                    $index + 1,
+                    'ast',
+                    'certain',
+                    [],
+                    'php:file:src/Checkout.php',
+                    $ids['scan'],
+                );
+            }
+            $previous = $node;
+        }
+        $pdo->commit();
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        return [$pdo, $ids['project']];
     }
 }

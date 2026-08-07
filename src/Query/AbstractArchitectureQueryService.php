@@ -7,6 +7,7 @@ namespace Knossos\Query;
 use Closure;
 use InvalidArgumentException;
 use PDO;
+use PDOStatement;
 
 /**
  * Shared foundation for the query services.
@@ -165,6 +166,53 @@ abstract readonly class AbstractArchitectureQueryService
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
         return $confidenceRank;
+    }
+
+    /**
+     * Stream a bounded result set, stopping at the row limit, the deadline, or the consumer.
+     *
+     * This replaces fetchAll() in every deadline-carrying traversal. A deadline
+     * cannot bound a phase that has already finished, and fetchAll() over a
+     * 100,001-row join finished before the first check ever ran — so the
+     * documented timeout_ms bounded only the cheap part of the walk while the
+     * whole joined result sat in memory, and nothing else on the connection ran
+     * meanwhile.
+     *
+     * The clock is read on the first row and every 64th after it. Reading
+     * hrtime() per row is itself measurable at 100,000 rows, and 64 rows is far
+     * finer than the millisecond resolution the deadline is expressed in;
+     * checking the first row is what lets an already-expired deadline stop the
+     * walk before anything is read.
+     *
+     * A caller whose own cap is not expressible in rows — a node budget, say —
+     * stops the walk by returning false from $consume and reports its own
+     * reason, so the reasons never double up on one stop.
+     *
+     * @param callable(array<string, mixed>): bool $consume receives each row; false stops the walk
+     * @param string $rowLimitReason truncation reason to report when $maxRows is exceeded
+     * @return list<string> truncation reasons, empty when the set was exhausted or $consume stopped it
+     */
+    protected function streamBounded(PDOStatement $statement, int $maxRows, int $deadline, callable $consume, string $rowLimitReason = 'edge_limit'): array
+    {
+        $seen = 0;
+        try {
+            while (($row = $statement->fetch()) !== false) {
+                if (++$seen > $maxRows) {
+                    return [$rowLimitReason];
+                }
+                if (($seen % 64) === 1 && $this->now() > $deadline) {
+                    return ['time_limit'];
+                }
+                if (!$consume($row)) {
+                    return [];
+                }
+            }
+        } finally {
+            // An abandoned result set keeps the statement open otherwise.
+            $statement->closeCursor();
+        }
+
+        return [];
     }
 
     /**
