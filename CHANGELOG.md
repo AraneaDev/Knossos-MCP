@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.10.3](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.2...v0.10.3) (2026-08-08)
+
+
+### Bug Fixes
+
+* **boundary:** close the id-collision fallback and restore display names ([ea54646](https://github.com/AraneaDev/Knossos-MCP/commit/ea546468ee62e485fb2c59cce6054dedff84dace))
+* **boundary:** key inferred rules by manifest path, not declared package name ([4f5aeae](https://github.com/AraneaDev/Knossos-MCP/commit/4f5aeae48e1f0164fb30e94260a44bb214cc518b))
+* close 22 audit findings, including an RCE when scanning an untrusted repository ([ddcda6d](https://github.com/AraneaDev/Knossos-MCP/commit/ddcda6d4c696f05b4c258f5a3f726fd02fd6d95b))
+* **discovery:** escape bracket classes and reject ignore patterns that cannot compile ([2744fbe](https://github.com/AraneaDev/Knossos-MCP/commit/2744fbe11c3c0bbe0f6fb75d8e51ba6df2cb258a))
+* **discovery:** fix negated-class scanning and pin ignore-loader attribution ([a4cae77](https://github.com/AraneaDev/Knossos-MCP/commit/a4cae771cd3f6b35ab6dc9a38d5bf9da819845b3))
+* **discovery:** match POSIX character classes in ignore patterns ([3efaaf9](https://github.com/AraneaDev/Knossos-MCP/commit/3efaaf97a7a390222622bc5a51f8e10f2799328d))
+* **git:** bound the driver overrides by bytes and keep the spawn failure reason ([6d6c88f](https://github.com/AraneaDev/Knossos-MCP/commit/6d6c88f401f03b8bb524f30694b228f45ed5aca9))
+* **git:** close include/worktree/equals-name bypasses in driver enumeration ([f42b5bf](https://github.com/AraneaDev/Knossos-MCP/commit/f42b5bf363fcbd9cbdb46d36d37c33c01ee5df94))
+* **git:** drop the active commit when a malformed header follows it ([9bc1996](https://github.com/AraneaDev/Knossos-MCP/commit/9bc199619d0675ab6f09fd315c3baddfd243acca))
+* **git:** force repository-controlled command hooks off and drop the inherited environment ([e6f99a2](https://github.com/AraneaDev/Knossos-MCP/commit/e6f99a249adfbca93c21da3f42da4fd4791e26c1))
+* **git:** keep required filters from failing the diff and bound driver overrides ([9299fc2](https://github.com/AraneaDev/Knossos-MCP/commit/9299fc2802d6c650eeb053dfda36e5b9a109680d))
+* **git:** neutralise repository-controlled filter/textconv drivers and make hardening opt-out explicit ([d764923](https://github.com/AraneaDev/Knossos-MCP/commit/d764923854f8b697063a987644c09171732885a2))
+* **git:** order commit history by epoch instead of offset-bearing ISO strings ([f8b67c3](https://github.com/AraneaDev/Knossos-MCP/commit/f8b67c351dfacc87170385fc8fc995ce081807fa))
+* **git:** refuse the two ambiguous shapes the runner used to resolve quietly ([0536f8d](https://github.com/AraneaDev/Knossos-MCP/commit/0536f8df667c76837b7d3a03c4b713ca76997889))
+* **mcp:** normalise verbosity like every other string argument ([e46ed6f](https://github.com/AraneaDev/Knossos-MCP/commit/e46ed6f2ee318614f953a1a075498bd242d94af2))
+* **mcp:** trim nested boundary and list-of-string arguments too ([c26c41d](https://github.com/AraneaDev/Knossos-MCP/commit/c26c41d81fa093fb0c81879c353ef779d2d9de21))
+* **mcp:** trim string arguments and validate keys only against the catalog ([edc6ac8](https://github.com/AraneaDev/Knossos-MCP/commit/edc6ac8c0d9a25323c937ffba3d2573053ac25ff))
+* **python:** report a parentless relative import instead of emitting py:module: ([0dddd07](https://github.com/AraneaDev/Knossos-MCP/commit/0dddd0784517ae153dd09e18650a198ca1b48f28))
+* **query:** bound the staleness probe's enumeration, not just its stat calls ([aa1723b](https://github.com/AraneaDev/Knossos-MCP/commit/aa1723b73b754e994eeb658743bab332bca3f116))
+* **query:** count the entries that appeared, not the directories that drifted ([66cf408](https://github.com/AraneaDev/Knossos-MCP/commit/66cf408c3eb18aaec9df1d77882586a28f89f941))
+* **query:** remove unnecessary staleness grace period, fix flake in tests ([5ccc196](https://github.com/AraneaDev/Knossos-MCP/commit/5ccc1963ec58af68d34791ae34992801dcbeb5f7))
+* **query:** report added, deleted, and rewound files as staleness ([10b1cbc](https://github.com/AraneaDev/Knossos-MCP/commit/10b1cbcfe307c0264b699ad126b2a62791304e35))
+* **query:** stop a bounded architecture-health report reading as an exhaustive one ([b52895b](https://github.com/AraneaDev/Knossos-MCP/commit/b52895b450a7ce8f85ca920f92bc507fc089bcd8))
+* **reconciliation:** drop an unresolvable edge target instead of aborting the scan ([21adb48](https://github.com/AraneaDev/Knossos-MCP/commit/21adb48d696c3c2888aec1ff619a59898c5286b6))
+* **scan:** a file no worker emitted costs that file, not the scan ([12d640a](https://github.com/AraneaDev/Knossos-MCP/commit/12d640af3306aa16ba46aefaa008cf8881962af3))
+* **scan:** bound scan batches by source bytes and per-language cost ([9ef059d](https://github.com/AraneaDev/Knossos-MCP/commit/9ef059dbedcea7c0d112fa45201080b0d8227149))
+* **scan:** degrade a failed language worker to a diagnostic instead of failing the scan ([94acee5](https://github.com/AraneaDev/Knossos-MCP/commit/94acee516265c01f8ef1c50cef71f5f192803b82))
+* **scan:** give a misattributed worker contribution its own diagnostic ([b0a78b1](https://github.com/AraneaDev/Knossos-MCP/commit/b0a78b1d0c583f3c1659bf5f7c3b783ce3054b75))
+* **scan:** halve the scan batch budget on overflow instead of guessing it ([56fe87d](https://github.com/AraneaDev/Knossos-MCP/commit/56fe87db5ee119e10811ada66dd257841f2f88ac))
+* **scanner:** reap worker descendants through a process group that actually exists ([214f1c4](https://github.com/AraneaDev/Knossos-MCP/commit/214f1c4099fa90e8bd41ac0ff8a5434e5674a52d))
+* **scanner:** report a failed read during send() instead of reselecting it ([bd48b8e](https://github.com/AraneaDev/Knossos-MCP/commit/bd48b8e372ad2fb5f3846b84629e7b9a73b324e5))
+* **scanner:** stop selecting on an exhausted stderr descriptor ([afa92ee](https://github.com/AraneaDev/Knossos-MCP/commit/afa92ee2b0170c5fcf0df0cec71ad9fcd8c7be74))
+* **scanner:** stop the send loop spinning on an exhausted stdout ([5f31100](https://github.com/AraneaDev/Knossos-MCP/commit/5f3110081ab56985c5ad4a12fc5d36861568f3f9))
+* **scan:** report every invalid contribution cardinality, not just the visible one ([73fc46c](https://github.com/AraneaDev/Knossos-MCP/commit/73fc46c84861e876932d3bd1d37df63077e96b97))
+* **scan:** restamp the active scan when the fast path verifies the graph ([ae22368](https://github.com/AraneaDev/Knossos-MCP/commit/ae223686ae3e7cb222d28f6f8e7f75345d3649e5))
+* **scan:** scope a reduced batch budget to the batch that overflowed ([9d1e313](https://github.com/AraneaDev/Knossos-MCP/commit/9d1e31348531433cdbaa4660ada631e1a7d69922))
+* **scan:** send worker scan requests in bounded batches ([4944694](https://github.com/AraneaDev/Knossos-MCP/commit/4944694d13543eb844d89995bb0a88063202b5a2))
+* **scan:** stop a degraded scan taking the no-change fast path ([d3e80fd](https://github.com/AraneaDev/Knossos-MCP/commit/d3e80fd873139452ba542f2444dce8c374800b3f))
+* **tests:** make the liveness probe answer on hosts without procfs ([325bef3](https://github.com/AraneaDev/Knossos-MCP/commit/325bef39e9c82c09e0114c1207d001cc119dd682))
+
+
+### Performance Improvements
+
+* **mcp:** trim result payloads in proportion to the overage ([36858e9](https://github.com/AraneaDev/Knossos-MCP/commit/36858e948fbba8507f9e639d40ddd25bf8ee9aa9))
+* **query:** stream traversal rows so timeout_ms bounds the fetch it documents ([02cd6d6](https://github.com/AraneaDev/Knossos-MCP/commit/02cd6d62418837a90874bf78fc3149030d378a7c))
+
 ## [0.10.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.1...v0.10.2) (2026-08-02)
 
 
