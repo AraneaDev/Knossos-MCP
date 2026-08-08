@@ -33,7 +33,10 @@ describe("discoverConfigFiles", () => {
             "a.ts": "export const a = 1;\n",
         });
 
-        expect(discoverConfigFiles(root).sort()).toEqual([
+        // Not re-sorted here: sorting the result before comparing it made the
+        // function's own configs.sort() untestable — a `configs.sort().reverse()`
+        // mutant produced the same assertion.
+        expect(discoverConfigFiles(root)).toEqual([
             "packages/app/tsconfig.build.json",
             "tsconfig.json",
         ]);
