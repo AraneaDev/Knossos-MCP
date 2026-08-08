@@ -149,8 +149,14 @@ by trimming result lists.` — an honest overflow rather than a silent lie.
 When change detection ran, `staleness` also carries:
 
 - `changed_files_since` — tracked files whose on-disk mtime differs from the scan's.
-- `added_files_since` — directories holding tracked files that gained an entry
-  since the scan. An approximation: it reports where something appeared, not what.
+- `added_files_since` — entries that appeared since the scan in the directories
+  holding tracked files: entries absent from the tracked-path set whose inode
+  change time is later than the scan. Two limits follow from the 500-file bound
+  below rather than from the method. A new directory is only seen when its
+  parent holds a tracked file, so one created in a subtree with no tracked file
+  in it is invisible. Ignore rules are not applied either, so a build artifact
+  or a vendored dependency counts as an addition even though a rescan would
+  skip it.
 - `deleted_files_since` — tracked files that no longer exist.
 
 All three are omitted, and the state is `unverified`, above 500 tracked files.

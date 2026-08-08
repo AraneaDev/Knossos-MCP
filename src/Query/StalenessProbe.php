@@ -52,7 +52,7 @@ final readonly class StalenessProbe
         $finishedAt = $this->activeFinishedAt($activeScanId);
         $ageSeconds = $this->age($finishedAt);
         $newerAttempt = $this->hasNewerAttempt($projectId, $activeScanId);
-        $drift = $this->changedFilesSince($projectId, $activeScanId, (string) $project['root_realpath']);
+        $drift = $this->changedFilesSince($projectId, $activeScanId, (string) $project['root_realpath'], $finishedAt);
         $drifted = $drift === null ? null : $drift['changed'] + $drift['added'] + $drift['deleted'];
 
         // 'unverified' when no newer scan attempt exists but content-change
@@ -157,9 +157,11 @@ final readonly class StalenessProbe
      * Bounded: above self::MAX_PROBED_FILES tracked files the walk is skipped
      * and the caller reports 'unverified' rather than guessing.
      *
+     * @param ?string $finishedAt when the active scan finished, already read by
+     *   the caller — passed down rather than queried again.
      * @return array{changed: int, added: int, deleted: int}|null
      */
-    private function changedFilesSince(string $projectId, string $activeScanId, string $root): ?array
+    private function changedFilesSince(string $projectId, string $activeScanId, string $root, ?string $finishedAt): ?array
     {
         if (!is_dir($root)) {
             return null;
@@ -188,35 +190,66 @@ final readonly class StalenessProbe
             if ($current !== (int) $file['mtime']) {
                 ++$changed;
             }
-            $directories[dirname($absolute)] = true;
+            $directories[dirname($absolute)][basename($absolute)] = true;
         }
 
-        return ['changed' => $changed, 'added' => $this->addedSince($directories, $activeScanId), 'deleted' => $deleted];
+        return ['changed' => $changed, 'added' => self::addedSince($directories, $finishedAt), 'deleted' => $deleted];
     }
 
     /**
-     * Files created since the scan, inferred from directory mtimes.
+     * Entries that appeared since the scan, in the directories that hold
+     * tracked files.
      *
-     * A directory's mtime changes when an entry is created or unlinked inside
-     * it, so comparing it against the scan's completion is enough to notice an
-     * addition without walking the tree. Deliberately an approximation: it
-     * reports "something appeared here", which is what the caller needs to
-     * decide the graph is stale.
+     * A directory's mtime changes when an entry is created *or* unlinked
+     * inside it, so the mtime alone cannot tell the two apart: counting one
+     * addition per drifted directory reported a pure deletion as both a
+     * deletion and an addition. The mtime is therefore only a filter for which
+     * directories are worth opening; the count comes from the entries
+     * themselves — those absent from the tracked-path set, and whose own inode
+     * change time is later than the scan, so an untracked entry that has sat
+     * there since before the scan is not counted every time a sibling moves.
      *
-     * @param array<string, true> $directories directories holding tracked files
+     * Two limits remain, both consequences of the {@see
+     * self::MAX_PROBED_FILES} bound this probe works under rather than
+     * oversights. Neither can be closed without walking the tree, which is the
+     * cost the bound exists to avoid:
+     *
+     * - A new directory is seen only when its parent holds a tracked file.
+     *   Nothing points at a subtree with no tracked file in it, so a new
+     *   directory created there is invisible to this check.
+     * - Ignore rules are not applied. An entry the scanner would never have
+     *   tracked — a build artifact, a vendored dependency — counts as an
+     *   addition, so this can report drift that a rescan would not act on.
+     *
+     * @param array<string, array<string, true>> $directories directory => tracked basenames within it
+     * @param ?string $finishedAt when the active scan finished
      */
-    private function addedSince(array $directories, string $activeScanId): int
+    private static function addedSince(array $directories, ?string $finishedAt): int
     {
-        $finishedAt = $this->activeFinishedAt($activeScanId);
         $scannedAt = $finishedAt === null ? false : strtotime($finishedAt);
         if ($scannedAt === false) {
             return 0;
         }
         $added = 0;
-        foreach (array_keys($directories) as $directory) {
+        foreach ($directories as $directory => $tracked) {
             $mtime = @filemtime($directory);
-            if ($mtime !== false && $mtime > $scannedAt) {
-                ++$added;
+            if ($mtime === false || $mtime <= $scannedAt) {
+                continue;
+            }
+            foreach (@scandir($directory) ?: [] as $entry) {
+                if ($entry === '.' || $entry === '..' || isset($tracked[$entry])) {
+                    continue;
+                }
+                $createdAt = @filectime($directory . '/' . $entry);
+                if ($createdAt !== false && $createdAt > $scannedAt) {
+                    ++$added;
+                }
+                // Bounded like the tracked-file walk above: a directory holding
+                // a hundred thousand untracked entries must not turn a
+                // freshness probe into a full enumeration.
+                if ($added >= self::MAX_PROBED_FILES) {
+                    return $added;
+                }
             }
         }
 

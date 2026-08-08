@@ -61,8 +61,9 @@ final class FastPathTest extends KnossosTestCase
      * Deliberately does not lean on scanTempFixture()'s directory backdating,
      * which exists to keep a freshly copied tree from reading as stale and would
      * otherwise be the only reason this passes: the scan's finished_at is pushed
-     * explicitly into the past and the directory is touched to now, so the
-     * "later than the scan" relation is established here rather than inherited.
+     * explicitly into the past and a real ignored artefact is written, so the
+     * "appeared later than the scan" relation is established here rather than
+     * inherited.
      */
     #[Group('scan')]
     public function testDirectoryMtimeBumpIsRetractedByTheFastPath(): void
@@ -72,7 +73,12 @@ final class FastPathTest extends KnossosTestCase
             $scanId = (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn();
             $pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
                 ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() - 5), 'id' => $scanId]);
-            touch($root . '/src');
+            // An entry, not a bare `touch` of the directory: the probe counts
+            // the entries that appeared rather than the directories whose mtime
+            // moved, because an mtime moves on unlink too and counting it as an
+            // addition reported every deletion twice.
+            mkdir($root . '/src/__pycache__');
+            file_put_contents($root . '/src/__pycache__/service.cpython-312.pyc', "\x00\x00");
 
             $probe = new StalenessProbe($pdo);
             $before = $probe->probe($projectId);
