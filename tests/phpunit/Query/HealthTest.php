@@ -176,4 +176,86 @@ final class HealthTest extends KnossosTestCase
         assertSame([], $envelope->data['hubs']);
         assertSame([], $envelope->data['dead_code_candidates']);
     }
+
+    /**
+     * An empty architecture_health report says whether it is empty because the
+     * project is clean or because the walk hit a bound.
+     *
+     * The summary sentence used to be built unconditionally, so "Ranked 0 hubs,
+     * 0 static hotspots, and 0 unreferenced-code candidates." was byte-identical
+     * for a genuinely clean project and for a walk that read nothing at all
+     * before its deadline. dependency_cycles already qualifies its own summary
+     * that way; this pins the two to the same contract.
+     */
+    #[Group('health')]
+    public function testABoundedHealthReportNamesItsBoundInTheSummary(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $time = 0;
+        $expired = new ArchitectureQueryService($pdo, function () use (&$time): int {
+            $time += 2_000_000;
+            return $time;
+        });
+
+        $bounded = $expired->architectureHealth($ids['project'], timeoutMs: 1);
+        $whole = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project']);
+
+        assertSame([], $bounded->data['hubs']);
+        assertSame(true, str_starts_with($bounded->summary, 'Ranked 0 hubs, 0 static hotspots, and 0 unreferenced-code candidates.'));
+        assertSame(true, str_contains($bounded->summary, 'The ranking was truncated (time_limit)'));
+        assertSame(false, $whole->truncated);
+        assertSame('Ranked 2 hubs, 2 static hotspots, and 1 unreferenced-code candidates.', $whole->summary);
+    }
+
+    /**
+     * A constructor is not called dead code because the bounded walk never read
+     * the edge that instantiates its class.
+     *
+     * The classifier excuses an engine-invoked member only when its DECLARING
+     * type is referenced, and it read that type's in-degree from the same
+     * truncated slice that made the member look unreferenced in the first place.
+     * The re-check against the whole edge table covered the candidates but not
+     * the types those exclusions gate on, so scanning this very repository under
+     * the CLI's default edge cap reported
+     * `LaravelContainerFactCollector::__construct` — instantiated one file away
+     * — as a `probable` unreferenced-code candidate.
+     *
+     * `App\Zed` sorts last by canonical name, which is the order the node walk
+     * reads in, so max_nodes deterministically drops exactly the class that does
+     * the instantiating and nothing else.
+     */
+    #[Group('health')]
+    public function testAConstructorSurvivesWhenItsClassIsInstantiatedBeyondTheNodeBound(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $mailer = StableId::symbol($ids['project'], 'php', 'class', 'App\\Mailer');
+        $constructor = StableId::symbol($ids['project'], 'php', 'method', 'App\\Mailer::__construct');
+        $caller = StableId::symbol($ids['project'], 'php', 'class', 'App\\Zed');
+        foreach ([[$mailer, 'class', 'App\\Mailer', 'Mailer'], [$constructor, 'method', 'App\\Mailer::__construct', '__construct'], [$caller, 'class', 'App\\Zed', 'Zed']] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $ids['file'], 60, 70, 'ast', 'certain', [], 'php:file:src/Mailer.php', $ids['scan']);
+        }
+        $repository->saveEdge(
+            StableId::edge($ids['project'], 'constructs', $caller, $mailer, 'src/Zed.php:9'),
+            $ids['project'],
+            'constructs',
+            $caller,
+            $mailer,
+            $ids['file'],
+            9,
+            9,
+            'ast',
+            'certain',
+            [],
+            'php:file:src/Zed.php',
+            $ids['scan'],
+        );
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], maxNodes: 4);
+
+        assertSame(true, in_array('node_limit', $health->data['bounds']['truncation_reasons'], true));
+        assertSame(1, $health->data['bounds']['excluded_constructors']);
+        assertSame(false, in_array('App\\Mailer::__construct', array_column(array_column($health->data['dead_code_candidates'], 'component'), 'canonical_name'), true));
+    }
 }

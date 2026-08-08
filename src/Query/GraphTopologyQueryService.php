@@ -378,9 +378,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // inbound edge makes a referenced symbol look unreferenced. Re-check the
         // survivors against the whole edge table before calling anything dead.
         if ($provisional !== [] && array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== []) {
-            foreach ($deadCode->referencedNodes($projectId, array_keys($provisional), $edgeKinds, $confidenceRank[$minConfidence]) as $referencedId) {
-                unset($provisional[$referencedId]);
-            }
+            $provisional = $deadCode->reconcileBoundedWalk($projectId, $provisional, $nodes, $edgeKinds, $confidenceRank[$minConfidence], $metrics, $inheritanceInDegree);
         }
         $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree);
         $deadCandidates = $classified['candidates'];
@@ -421,7 +419,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates.', count($hubs), count($hotspots), count($deadCandidates)),
+            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $truncationReasons),
             [
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
@@ -444,6 +442,32 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             ],
             $truncated,
         );
+    }
+
+    /**
+     * The one-line summary for architecture_health, naming the bound when the
+     * ranking was truncated.
+     *
+     * A bounded ranking must not read as an exhaustive one: "Ranked 0 hubs, 0
+     * static hotspots, and 0 unreferenced-code candidates" is the same sentence
+     * a genuinely clean project gets, and a hub sitting beyond the node, edge,
+     * time, or result cap is invisible in it. Naming the bound here is what lets
+     * a caller tell the two apart without reading bounds.truncation_reasons —
+     * the same contract {@see self::dependencyCycles()} keeps.
+     *
+     * Extracted rather than inlined because architectureHealth is up against
+     * the repository's own function-length budget.
+     *
+     * @param list<string> $truncationReasons
+     */
+    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, array $truncationReasons): string
+    {
+        $summary = sprintf('Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates.', $hubs, $hotspots, $deadCandidates);
+        if ($truncationReasons !== []) {
+            $summary .= sprintf(' The ranking was truncated (%s), so components beyond that bound are not reported.', implode(', ', $truncationReasons));
+        }
+
+        return $summary;
     }
 
     /**
