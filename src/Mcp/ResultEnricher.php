@@ -47,7 +47,6 @@ final readonly class ResultEnricher
     {
         $total = count($envelope->evidence);
         $base = $verbosity === 'compact' ? $this->compact($envelope) : $envelope;
-        $shown = count($base->evidence);
 
         $staleness = $this->probe->probe($envelope->projectId);
         $steps = $this->planner->plan($toolName, $envelope);
