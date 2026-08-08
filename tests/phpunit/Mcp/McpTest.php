@@ -479,13 +479,19 @@ final class McpTest extends KnossosTestCase
         ]);
         assertSame($plainKinds->jsonSerialize()['data'], $trimmedKinds->jsonSerialize()['data']);
 
-        // A whitespace-only entry is still rejected, not trimmed into nothing.
-        assertThrows(
+        // A whitespace-only entry is still rejected, not trimmed into nothing --
+        // and rejected by the argument layer, which is the layer the trim moved
+        // it to. The exception TYPE alone proves nothing here: before the fix
+        // ['   '] also raised InvalidArgumentException, from the downstream
+        // edge-kind check complaining about an unsupported relationship. Only
+        // the message tells the two layers apart.
+        $rejected = captureThrows(
             fn() => $tools->call('impact_analysis', [
                 'project_id' => $projectId, 'symbol' => 'CheckoutService', 'edge_kinds' => ['   '],
             ]),
             InvalidArgumentException::class,
         );
+        assertSame('edge_kinds must contain non-empty strings.', $rejected->getMessage());
     }
 
     /**

@@ -155,10 +155,10 @@ final readonly class ToolService
      */
     private function refreshIfStale(array $arguments, ?CancellationToken $cancellation): array
     {
-        // Trimmed for the same reason string() trims: a padded id looks up no
-        // project, and silently skipping the refresh would leave the caller
-        // with a stale answer their refresh_if_stale asked to avoid.
-        $projectId = trim(is_string($arguments['project_id'] ?? null) ? (string) $arguments['project_id'] : '');
+        // Normalised for the same reason string() normalises: a padded id looks
+        // up no project, and silently skipping the refresh would leave the
+        // caller with a stale answer their refresh_if_stale asked to avoid.
+        $projectId = self::normalized($arguments['project_id'] ?? null);
         if ($projectId === '') {
             return [];
         }
@@ -867,11 +867,30 @@ final readonly class ToolService
      */
     private static function string(array $arguments, string $key): string
     {
-        $value = $arguments[$key] ?? null;
-        if (!is_string($value) || trim($value) === '') {
+        $value = self::normalized($arguments[$key] ?? null);
+        if ($value === '') {
             throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
         }
-        return trim($value);
+        return $value;
+    }
+
+    /**
+     * The one place an incoming string argument is normalised.
+     *
+     * Every helper here routes through this rather than spelling out its own
+     * trim(): surrounding whitespace is invisible in a JSON payload, and every
+     * value these helpers produce is then matched literally — an id looked up
+     * in the database, an enum value, a path prefix — so ' proj_1' matched
+     * nothing and surfaced as "not found" rather than "invalid". The rule had
+     * been written out at four separate sites, with nothing structural stopping
+     * a fifth helper from omitting it.
+     *
+     * A non-string collapses to the empty string so each caller rejects it with
+     * its own message, which is what they did with the type check inline.
+     */
+    private static function normalized(mixed $value): string
+    {
+        return is_string($value) ? trim($value) : '';
     }
 
     /**
@@ -918,10 +937,11 @@ final readonly class ToolService
         }
         $trimmed = [];
         foreach ($value as $item) {
-            if (!is_string($item) || trim($item) === '') {
+            $entry = self::normalized($item);
+            if ($entry === '') {
                 throw new InvalidArgumentException(sprintf('%s must contain non-empty strings.', $key));
             }
-            $trimmed[] = trim($item);
+            $trimmed[] = $entry;
         }
         return $trimmed;
     }
