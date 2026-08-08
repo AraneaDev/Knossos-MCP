@@ -158,7 +158,7 @@ final readonly class IgnoreMatcher
      *     stripped-down form back to the user would weaken the attribution this exists for)
      * @throws DiscoveryException when the pattern does not compile to a valid regex
      */
-    public static function compile(string $pattern, ?string $original = null): string
+    private static function compile(string $pattern, ?string $original = null): string
     {
         $regex = self::toRegex($pattern);
         if (@preg_match('#^' . $regex . '$#', '') === false) {
@@ -229,6 +229,12 @@ final readonly class IgnoreMatcher
      * marker (either a literal-first ']' or whatever the scan for the real
      * terminator found), so there is no bracket-class fallback here — an
      * unterminated class never reaches this method at all.
+     *
+     * A POSIX class ('[:alpha:]' and friends) is the exception to "everything
+     * else is a literal": PCRE spells it the same way fnmatch does, so it is
+     * copied through untouched. Quoting it produced '[\[\:alpha\:\]]', which
+     * does not match 'a' but does match 'a]' — a quiet wrong answer about which
+     * files a project scans, not a loud one.
      */
     private static function characterClass(string $class): string
     {
@@ -240,6 +246,12 @@ final readonly class IgnoreMatcher
         $escaped = '';
         $length = strlen($body);
         for ($i = 0; $i < $length; ++$i) {
+            $posix = self::posixClassEnd($body, $i, $length);
+            if ($posix !== null) {
+                $escaped .= substr($body, $i, $posix - $i);
+                $i = $posix - 1;
+                continue;
+            }
             $char = $body[$i];
             // A range hyphen between two literals is the one metacharacter a
             // gitignore class may carry; everything else is quoted. An invalid
@@ -267,9 +279,30 @@ final readonly class IgnoreMatcher
             ++$j;
         }
         while ($j < $length && $pattern[$j] !== ']') {
-            ++$j;
+            // The ']' inside '[:alpha:]' belongs to the POSIX class, not to the
+            // bracket class around it. Stopping there cut '[[:alpha:]]' short at
+            // '[[:alpha:]' and left the trailing ']' to be read as a literal.
+            $j = self::posixClassEnd($pattern, $j, $length) ?? $j + 1;
         }
 
         return $j < $length ? $j : null;
+    }
+
+    /**
+     * The index just past the POSIX class starting at $start, or null when none
+     * starts there.
+     *
+     * Only the '[:' … ':]' shape is recognised. An unterminated '[:' is not a
+     * class at all and falls back to the literal '[' the surrounding scan
+     * already handled.
+     */
+    private static function posixClassEnd(string $subject, int $start, int $length): ?int
+    {
+        if ($start + 1 >= $length || $subject[$start] !== '[' || $subject[$start + 1] !== ':') {
+            return null;
+        }
+        $close = strpos($subject, ':]', $start + 2);
+
+        return $close === false || $close + 2 > $length ? null : $close + 2;
     }
 }

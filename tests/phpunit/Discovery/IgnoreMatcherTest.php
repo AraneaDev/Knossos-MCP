@@ -100,6 +100,18 @@ final class IgnoreMatcherTest extends TestCase
             '[!x]' => ['a', 'x', '!'],
             '[a-z]' => ['a', 'm', 'z', 'A'],
             '*.[oa]' => ['thing.o', 'thing.a', 'thing.c'],
+            // POSIX classes. preg_quote()ing the body turned '[[:alpha:]]' into
+            // '[\[\:alpha\:\]]' — a class of the literal characters '[', ':',
+            // 'a', 'l', 'p', 'h' and ']' — which does not match 'a' but does
+            // match 'a]', so the wrong files were scanned and nothing said so.
+            '[[:alpha:]]' => ['a', 'Z', '1', '_', 'a]', 'ab'],
+            '[[:digit:]x]' => ['1', 'x', 'a', '1]', 'x]'],
+            '[^[:space:]]' => ['a', ' ', "\t", '^', ' ]'],
+            '[a-z[:digit:]]' => ['a', 'z', '5', 'A', '-', 'a]'],
+            // The class terminator has to be found past ':]', not at it: the
+            // scan used to stop inside the POSIX class and leave the real ']'
+            // to be read as a trailing literal.
+            '[[:upper:]]x' => ['Ax', 'ax', '1x', 'A]x'],
         ];
         foreach ($cases as $pattern => $candidates) {
             foreach ($candidates as $candidate) {
