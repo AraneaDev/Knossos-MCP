@@ -26,7 +26,7 @@ final readonly class PortableGraphImporter
      */
     public function import(array $payload, array $manifest, array $maps, string $projectId, string $scanId, string $checksum, ?string $name): void
     {
-        $scan = $this->object($payload['scan'] ?? null, 'scan');
+        $scan = GraphBundleDecoder::object($payload['scan'] ?? null, 'scan');
         $finishedAt = $this->timestampOrFallback($scan['finished_at'] ?? null, '1970-01-01T00:00:00+00:00');
         $projectName = $this->text($name ?? ($payload['project_name'] ?? 'Imported graph'));
         $this->insertProjectAndScan($manifest, $scan, $projectId, $scanId, $checksum, $projectName, $finishedAt);
@@ -60,7 +60,7 @@ final readonly class PortableGraphImporter
     private function insertFiles(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
-            $item = $this->object($row, 'file');
+            $item = GraphBundleDecoder::object($row, 'file');
             $this->insert('files', ['id' => $this->mappedRequired($maps['files'], $item['id'] ?? null), 'project_id' => $projectId, 'relative_path' => $this->relativePath($item['relative_path'] ?? null), 'content_hash' => $this->hexHash($item['content_hash'] ?? null, hash('sha256', '')), 'size' => $this->nonNegative($item['size'] ?? null), 'line_count' => $this->nonNegative($item['line_count'] ?? 0), 'mtime' => 0, 'language' => $this->text($item['language'] ?? null), 'scanner_version' => $this->text($item['scanner_version'] ?? null), 'last_scan_id' => $scanId]);
         }
     }
@@ -74,7 +74,7 @@ final readonly class PortableGraphImporter
     {
         $parents = [];
         foreach ($rows as $row) {
-            $item = $this->object($row, 'node');
+            $item = GraphBundleDecoder::object($row, 'node');
             $nodeId = $this->mappedRequired($maps['nodes'], $item['id'] ?? null);
             $parents[$nodeId] = $this->mappedNullable($maps['nodes'], $item['parent_id'] ?? null);
             $this->insert('nodes', ['id' => $nodeId, 'project_id' => $projectId, 'language' => $this->language($item), 'kind' => $this->text($item['kind'] ?? null), 'canonical_name' => $this->text($item['canonical_name'] ?? null), 'display_name' => $this->text($item['display_name'] ?? null), 'parent_id' => null, 'file_id' => $this->mappedNullable($maps['files'], $item['file_id'] ?? null), 'start_line' => $this->nullablePositiveInt($item['start_line'] ?? null), 'end_line' => $this->nullablePositiveInt($item['end_line'] ?? null), 'origin' => $this->text($item['origin'] ?? null), 'confidence' => $this->confidence($item['confidence'] ?? null), 'attributes_json' => $this->jsonObject($item['attributes_json'] ?? '{}'), 'owner_key' => $this->text($item['owner_key'] ?? null), 'last_scan_id' => $scanId]);
@@ -125,7 +125,7 @@ final readonly class PortableGraphImporter
     private function insertEdges(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
-            $item = $this->object($row, 'edge');
+            $item = GraphBundleDecoder::object($row, 'edge');
             $this->insert('edges', ['id' => BundleIdMapBuilder::mappedId($projectId, 'edges', $this->text($item['id'] ?? null)), 'project_id' => $projectId, 'kind' => $this->text($item['kind'] ?? null), 'source_id' => $this->mappedRequired($maps['nodes'], $item['source_id'] ?? null), 'target_id' => $this->mappedRequired($maps['nodes'], $item['target_id'] ?? null), 'file_id' => $this->mappedNullable($maps['files'], $item['file_id'] ?? null), 'start_line' => $this->nullablePositiveInt($item['start_line'] ?? null), 'end_line' => $this->nullablePositiveInt($item['end_line'] ?? null), 'origin' => $this->text($item['origin'] ?? null), 'confidence' => $this->confidence($item['confidence'] ?? null), 'attributes_json' => $this->jsonObject($item['attributes_json'] ?? '{}'), 'owner_key' => $this->text($item['owner_key'] ?? null), 'last_scan_id' => $scanId]);
         }
     }
@@ -138,7 +138,7 @@ final readonly class PortableGraphImporter
     private function insertBoundaries(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
-            $item = $this->object($row, 'boundary');
+            $item = GraphBundleDecoder::object($row, 'boundary');
             $source = in_array($item['source'] ?? null, ['explicit', 'inferred'], true) ? $item['source'] : throw new InvalidArgumentException('Boundary source is invalid.');
             $this->insert('boundaries', ['id' => $this->mappedRequired($maps['boundaries'], $item['id'] ?? null), 'project_id' => $projectId, 'name' => $this->text($item['name'] ?? null), 'matcher_json' => $this->jsonObject($item['matcher_json'] ?? '{}'), 'source' => $source, 'last_scan_id' => $scanId]);
         }
@@ -152,7 +152,7 @@ final readonly class PortableGraphImporter
     private function insertMemberships(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
-            $item = $this->object($row, 'membership');
+            $item = GraphBundleDecoder::object($row, 'membership');
             $this->insert('boundary_memberships', ['boundary_id' => $this->mappedRequired($maps['boundaries'], $item['boundary_id'] ?? null), 'project_id' => $projectId, 'node_id' => $this->mappedRequired($maps['nodes'], $item['node_id'] ?? null), 'last_scan_id' => $scanId]);
         }
     }
@@ -165,7 +165,7 @@ final readonly class PortableGraphImporter
     private function insertClassifications(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
-            $item = $this->object($row, 'classification');
+            $item = GraphBundleDecoder::object($row, 'classification');
             $this->insert('classifications', ['id' => BundleIdMapBuilder::mappedId($projectId, 'classifications', $this->text($item['id'] ?? null)), 'project_id' => $projectId, 'node_id' => $this->mappedRequired($maps['nodes'], $item['node_id'] ?? null), 'role' => $this->text($item['role'] ?? null), 'origin' => $this->text($item['origin'] ?? null), 'confidence' => $this->confidence($item['confidence'] ?? null), 'rule_id' => $this->text($item['rule_id'] ?? null), 'file_id' => $this->mappedNullable($maps['files'], $item['file_id'] ?? null), 'start_line' => $this->nullablePositiveInt($item['start_line'] ?? null), 'end_line' => $this->nullablePositiveInt($item['end_line'] ?? null), 'attributes_json' => $this->jsonObject($item['attributes_json'] ?? '{}'), 'last_scan_id' => $scanId]);
         }
     }
@@ -178,7 +178,7 @@ final readonly class PortableGraphImporter
     private function insertDiagnostics(array $rows, array $maps, string $projectId, string $scanId): void
     {
         foreach ($rows as $row) {
-            $item = $this->object($row, 'diagnostic');
+            $item = GraphBundleDecoder::object($row, 'diagnostic');
             $severity = in_array($item['severity'] ?? null, ['info', 'warning', 'error'], true) ? $item['severity'] : throw new InvalidArgumentException('Diagnostic severity is invalid.');
             $this->insert('diagnostics', ['id' => BundleIdMapBuilder::mappedId($projectId, 'diagnostics', $this->text($item['id'] ?? null)), 'project_id' => $projectId, 'scan_id' => $scanId, 'file_id' => $this->mappedNullable($maps['files'], $item['file_id'] ?? null), 'severity' => $severity, 'code' => $this->text($item['code'] ?? null), 'message' => $this->text($item['message'] ?? null), 'start_line' => $this->nullablePositiveInt($item['start_line'] ?? null), 'end_line' => $this->nullablePositiveInt($item['end_line'] ?? null), 'owner_key' => $this->text($item['owner_key'] ?? null)]);
         }
@@ -219,18 +219,6 @@ final readonly class PortableGraphImporter
         return $old === null ? null : $this->mappedRequired($map, $old);
     }
 
-    /**
-     * A required object field, rejecting a scalar.
-     *
-     * @return array<string, mixed>
-     */
-    private function object(mixed $value, string $name): array
-    {
-        if (!is_array($value) || array_is_list($value)) {
-            throw new InvalidArgumentException('Bundle ' . $name . ' must be an object.');
-        }
-        return $value;
-    }
     /** A required string field from untrusted bundle data. */
 
     private function text(mixed $value): string
