@@ -94,6 +94,21 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     public const MAX_DRIVER_NAMES = 1_000;
 
     /**
+     * Upper bound, in bytes, on the `-c` overrides {@see
+     * self::parseDriverOverrides()} will place on one command line.
+     *
+     * The count above bounds the wrong quantity on its own: a driver name is
+     * unbounded in length, so 900 drivers named with 2 KB each stay under
+     * MAX_DRIVER_NAMES and still build an argv far past `ARG_MAX` — the exact
+     * `proc_open()` failure the count exists to prevent, reached by a route it
+     * cannot see. Nothing legitimate comes close: 128 KiB is Linux's
+     * per-argument `MAX_ARG_STRLEN` and a small fraction of the 2 MB total,
+     * while a real repository's whole override list is a few hundred bytes.
+     * Public for the same reason MAX_DRIVER_NAMES is.
+     */
+    public const MAX_DRIVER_OVERRIDE_BYTES = 131_072;
+
+    /**
      * @param bool $hardenGitConfig Whether to force the config overrides above
      *   and drop the inherited environment. The default is safe for every
      *   actual `git` invocation; callers that reuse this runner to probe an
@@ -270,8 +285,37 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
             self::assertNameIsOverridable($name, 'diff driver');
             $overrides[] = sprintf('diff.%s.textconv=', $name);
         }
+        self::assertOverridesFitOneCommandLine($overrides);
 
         return $overrides;
+    }
+
+    /**
+     * Refuse an override list too large to hand to `proc_open()`, whatever the
+     * number of drivers that produced it.
+     *
+     * Measured after building because the strings are what actually land in
+     * argv, and holding a few megabytes of them in PHP memory is harmless —
+     * it is the `execve()` that fails, loudly and unattributably, with a raw
+     * warning on a process whose stdout is an MCP protocol stream. Each
+     * override costs its own bytes plus the `-c` that precedes it and the two
+     * NUL terminators the kernel counts.
+     *
+     * @param list<string> $overrides
+     */
+    private static function assertOverridesFitOneCommandLine(array $overrides): void
+    {
+        $bytes = 0;
+        foreach ($overrides as $override) {
+            $bytes += strlen($override) + 4;
+        }
+        if ($bytes > self::MAX_DRIVER_OVERRIDE_BYTES) {
+            throw new RuntimeException(sprintf(
+                'Repository filter/diff driver overrides occupy %d bytes, exceeding the %d this runner will place on one command line; refusing to run rather than build an unbounded command line.',
+                $bytes,
+                self::MAX_DRIVER_OVERRIDE_BYTES,
+            ));
+        }
     }
 
     /**
@@ -326,6 +370,9 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     private function execute(array $command, int $timeoutMs, string $operation): string
     {
         $pipes = [];
+        // Cleared first so error_get_last() below reports this spawn's failure
+        // and not some unrelated warning from earlier in the request.
+        error_clear_last();
         $process = @proc_open(
             $command,
             [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
@@ -334,7 +381,14 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
             self::environment(),
         );
         if (!is_resource($process)) {
-            throw new RuntimeException('Unable to start Git.');
+            // '@' suppresses the warning's output, not its recording: the
+            // reason ('Argument list too long', 'No such file or directory')
+            // is the only clue to why the spawn failed, and dropping it left
+            // callers with a bare sentence and nothing to act on. It travels
+            // in the exception message, which surfaces on stderr and in
+            // diagnostics — never on this process's stdout MCP stream.
+            $reason = error_get_last()['message'] ?? null;
+            throw new RuntimeException('Unable to start Git.' . ($reason === null ? '' : ' ' . $reason));
         }
         fclose($pipes[0]);
         stream_set_blocking($pipes[1], false);

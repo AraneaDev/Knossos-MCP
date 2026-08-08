@@ -333,6 +333,47 @@ final class GitProcessRunnerHardeningTest extends TestCase
     }
 
     /**
+     * A byte budget, not only a count: MAX_DRIVER_NAMES bounds the wrong
+     * quantity on its own, because a driver name has no length limit. A
+     * hundred 2 KB names is a hundredth of the permitted count and still
+     * builds roughly 800 KB of `-c` arguments — well past ARG_MAX, so
+     * `proc_open()` fails with the raw warning the cap exists to avoid.
+     */
+    public function testDriverNamesTooLargeForOneCommandLineFailClosedWithinTheCount(): void
+    {
+        $keys = '';
+        for ($i = 0; $i < 100; ++$i) {
+            $keys .= sprintf("filter.%s%d.clean\0", str_repeat('n', 2_000), $i);
+        }
+        $method = new \ReflectionMethod(GitProcessRunner::class, 'parseDriverOverrides');
+        $method->setAccessible(true);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/exceeding the ' . GitProcessRunner::MAX_DRIVER_OVERRIDE_BYTES . ' this runner will place on one command line/');
+        $method->invoke(null, $keys);
+    }
+
+    /**
+     * A spawn that fails says why.
+     *
+     * `proc_open()` is called under '@' because its warning would corrupt the
+     * MCP stdout stream, and the reason was then dropped on the floor: every
+     * cause — an argv past ARG_MAX, a missing binary, an exhausted process
+     * table — arrived as the same bare 'Unable to start Git.' A single
+     * over-long argument reproduces it without needing git, or a repository,
+     * or a real fork.
+     */
+    public function testAFailedSpawnCarriesTheReasonIntoTheException(): void
+    {
+        $method = new \ReflectionMethod(GitProcessRunner::class, 'execute');
+        $method->setAccessible(true);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/^Unable to start Git\\. .*[Aa]rgument list too long/');
+        $method->invoke(new GitProcessRunner(), ['/bin/true', str_repeat('x', 200_000)], 1_000, 'spawn failure test');
+    }
+
+    /**
      * The exact argv shape `ProcessGitWorkingTreeProvider::changes()` runs for
      * a working-tree diff, shared by the exploit tests above so each plants
      * its own hostile config and runs the identical query the production code
