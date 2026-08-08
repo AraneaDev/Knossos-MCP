@@ -1634,6 +1634,46 @@ final class GraphReconcilerTest extends TestCase
         assertSame(1, $result->diagnostics);
     }
 
+    /**
+     * Once per REFERENCE, not once per scan.
+     *
+     * The test above pins only that a repeated reference collapses to one
+     * diagnostic, which a dedup keyed on nothing at all — a single
+     * already-warned flag for the whole reconcile — satisfies just as well. It
+     * would also collapse three genuinely different malformed references into
+     * one report, hiding two scanner bugs behind the first. Three distinct
+     * unresolvable shapes, three diagnostics, each naming its own reference.
+     */
+    public function testEachDistinctUnresolvableReferenceGetsItsOwnDiagnostic(): void
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $edge = static fn(string $target): EdgeFact => new EdgeFact(
+            kind: 'depends_on',
+            sourceReference: 'php:class:App\\Foo',
+            targetReference: $target,
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution(
+                [$source],
+                [$edge('php:namespaced_function:'), $edge(':empty_lang:class'), $edge('no_colons')],
+            )],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(0, $result->edges);
+        assertSame(3, $result->diagnostics);
+        $this->assertCount(3, $this->repo->diagnostics);
+        $messages = implode("\n", array_column($this->repo->diagnostics, 6));
+        $this->assertStringContainsString('php:namespaced_function:', $messages);
+        $this->assertStringContainsString(':empty_lang:class', $messages);
+        $this->assertStringContainsString('no_colons', $messages);
+    }
+
     public function testThrowsClassificationTargetNotEmitted(): void
     {
         $classification = new ClassificationFact(
