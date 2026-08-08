@@ -220,6 +220,11 @@ final readonly class StalenessProbe
      * - Ignore rules are not applied. An entry the scanner would never have
      *   tracked — a build artifact, a vendored dependency — counts as an
      *   addition, so this can report drift that a rescan would not act on.
+     * - Only the first self::MAX_PROBED_FILES untracked entries of a directory
+     *   are stat'ed, so an addition sitting behind that many others in the
+     *   same directory is missed. The bound is per directory rather than per
+     *   probe on purpose: one crowded directory next to a small source tree
+     *   must not exhaust the budget and report the tree as fresh.
      *
      * @param array<string, array<string, true>> $directories directory => tracked basenames within it
      * @param ?string $finishedAt when the active scan finished
@@ -236,20 +241,36 @@ final readonly class StalenessProbe
             if ($mtime === false || $mtime <= $scannedAt) {
                 continue;
             }
-            foreach (@scandir($directory) ?: [] as $entry) {
-                if ($entry === '.' || $entry === '..' || isset($tracked[$entry])) {
-                    continue;
+            // Read incrementally rather than with scandir(): the bound below
+            // has to stop the enumeration itself, and scandir() materialises
+            // the whole listing before the first entry is looked at. A
+            // directory holding a hundred thousand untracked entries must not
+            // turn a freshness probe into a full enumeration, and counting
+            // only the entries that turned out to be additions bounded the
+            // stat() calls while leaving the listing unbounded.
+            $handle = @opendir($directory);
+            if ($handle === false) {
+                continue;
+            }
+            try {
+                $examined = 0;
+                while ($examined < self::MAX_PROBED_FILES && ($entry = readdir($handle)) !== false) {
+                    if ($entry === '.' || $entry === '..' || isset($tracked[$entry])) {
+                        continue;
+                    }
+                    ++$examined;
+                    $createdAt = @filectime($directory . '/' . $entry);
+                    if ($createdAt !== false && $createdAt > $scannedAt) {
+                        ++$added;
+                    }
+                    // Enough drift to report; what the rest of the tree holds
+                    // cannot change the answer.
+                    if ($added >= self::MAX_PROBED_FILES) {
+                        return $added;
+                    }
                 }
-                $createdAt = @filectime($directory . '/' . $entry);
-                if ($createdAt !== false && $createdAt > $scannedAt) {
-                    ++$added;
-                }
-                // Bounded like the tracked-file walk above: a directory holding
-                // a hundred thousand untracked entries must not turn a
-                // freshness probe into a full enumeration.
-                if ($added >= self::MAX_PROBED_FILES) {
-                    return $added;
-                }
+            } finally {
+                closedir($handle);
             }
         }
 
