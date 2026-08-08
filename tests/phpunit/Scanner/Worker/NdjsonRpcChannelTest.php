@@ -640,4 +640,84 @@ final class NdjsonRpcChannelTest extends TestCase
         fclose($stdinPair[1]);
         fclose($stdoutPair[1]);
     }
+
+    /**
+     * The exhaustion rule itself: empty AND at EOF, never either alone.
+     *
+     * Both callers reach this only through stream_select(), and nothing a test
+     * can do in-process makes select() report a descriptor ready that then
+     * yields an empty read while the peer is still open — which is exactly the
+     * case the feof() term defends against. Deleting that term therefore left
+     * every channel test green. It is asserted directly instead, the way
+     * GitProcessRunner's driver cap is.
+     */
+    public function testExhaustionRequiresEofAndNotMerelyAnEmptyRead(): void
+    {
+        $method = new \ReflectionMethod(NdjsonRpcChannel::class, 'isExhausted');
+        $method->setAccessible(true);
+        [$reader, $writer] = $this->socketPair();
+        stream_set_blocking($reader, false);
+
+        // Quiet but open: the peer is alive and may still write its last words.
+        assertSame(false, $method->invoke(null, $reader, ''));
+        // Data is data, whatever the descriptor's state.
+        assertSame(false, $method->invoke(null, $reader, 'ImportError'));
+
+        fclose($writer);
+        fread($reader, 8192);
+
+        assertSame(true, $method->invoke(null, $reader, ''));
+
+        fclose($reader);
+    }
+
+    /**
+     * Only stderr's exhaustion drops stderr from the select set.
+     *
+     * absorb() reports exhaustion for whichever descriptor it drained, so
+     * without the `$stream === $stderr` guard a worker that closed its STDOUT
+     * first — an ordinary shutdown order — took stderr out of the select set
+     * with it, and every diagnostic written afterwards was lost. Here stdout is
+     * at EOF from the first pass and 'TAIL' is written to stderr on the second,
+     * so only a run that kept stderr selected ever sees it.
+     */
+    public function testStdoutReachingEofDoesNotDropStderrFromTheSelectSet(): void
+    {
+        $stdinPair = $this->socketPair();
+        stream_set_blocking($stdinPair[0], false);
+        @fwrite($stdinPair[0], str_repeat('x', 4_000_000)); // Fill it: never writable.
+        $stdoutPair = $this->socketPair();
+        fclose($stdoutPair[1]); // Worker closed stdout: permanently ready, always empty.
+        $stderrPair = $this->socketPair();
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $stdinPair[0];
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 200));
+        $channel->beginRequest();
+
+        $passes = 0;
+        captureThrows(
+            static function () use ($channel, &$passes, $stderrPair): void {
+                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes, $stderrPair): bool {
+                    // Written on the second pass, after stdout's EOF has already
+                    // been observed once, so it is reachable only while stderr
+                    // is still in the select set.
+                    if (++$passes === 2) {
+                        fwrite($stderrPair[1], 'TAIL');
+                    }
+
+                    return false;
+                });
+            },
+            WorkerException::class,
+        );
+
+        assertSame('TAIL', $channel->stderr());
+
+        fclose($stdinPair[1]);
+        fclose($stderrPair[1]);
+    }
 }

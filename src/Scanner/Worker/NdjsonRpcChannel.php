@@ -186,7 +186,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                     throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
                 }
                 if ($stream === $stderr) {
-                    if ($chunk === '' && feof($stderr)) {
+                    if (self::isExhausted($stderr, $chunk)) {
                         // Exhausted, not merely quiet: everything the worker
                         // wrote has been drained, so stop selecting on it.
                         $stderrOpen = false;
@@ -240,7 +240,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     {
         $chunk = fread($stream, 8192);
         if ($chunk === false || $chunk === '') {
-            return $chunk === '' && feof($stream);
+            return is_string($chunk) && self::isExhausted($stream, $chunk);
         }
         if ($stream === $stderr) {
             $this->appendStderr($chunk);
@@ -249,6 +249,29 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->appendStdout($chunk);
 
         return false;
+    }
+
+    /**
+     * Whether a drained descriptor is genuinely finished — an empty read *at
+     * EOF* — rather than merely quiet for one pass.
+     *
+     * Both conditions matter and in opposite directions. Drop a descriptor that
+     * is only quiet and the last words of a dying worker are lost, which is
+     * usually the only clue to why it died. Keep one that is exhausted and
+     * stream_select() reports it ready forever, turning the wait into a spin
+     * that pins a core until the deadline.
+     *
+     * Extracted so the rule lives once and can be pinned once: its two callers
+     * both reach it through stream_select(), and no in-process test can make
+     * select() report a descriptor ready that then yields an empty read while
+     * still open — the very case the feof() term exists for. Dropping that term
+     * therefore left the whole suite green.
+     *
+     * @param resource $stream
+     */
+    private static function isExhausted($stream, string $chunk): bool
+    {
+        return $chunk === '' && feof($stream);
     }
 
     /**
