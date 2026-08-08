@@ -675,11 +675,14 @@ final class NdjsonRpcChannelTest extends TestCase
      * Only stderr's exhaustion drops stderr from the select set.
      *
      * absorb() reports exhaustion for whichever descriptor it drained, so
-     * without the `$stream === $stderr` guard a worker that closed its STDOUT
-     * first — an ordinary shutdown order — took stderr out of the select set
-     * with it, and every diagnostic written afterwards was lost. Here stdout is
-     * at EOF from the first pass and 'TAIL' is written to stderr on the second,
-     * so only a run that kept stderr selected ever sees it.
+     * without the per-descriptor split a worker that closed its STDOUT first —
+     * an ordinary shutdown order — took stderr out of the select set with it,
+     * and every diagnostic written afterwards was lost. Here stdout is at EOF
+     * for the whole run and 'TAIL' is written to stderr once stdout's EOF has
+     * already been observed, so only a run that kept stderr selected ever sees
+     * it. "Once" and not "on the Nth pass": how many passes the loop makes is a
+     * property of the select set this test is meant to be independent of, so
+     * the write is gated on a flag rather than on a pass number.
      */
     public function testStdoutReachingEofDoesNotDropStderrFromTheSelectSet(): void
     {
@@ -699,13 +702,16 @@ final class NdjsonRpcChannelTest extends TestCase
         $channel->beginRequest();
 
         $passes = 0;
+        $announced = false;
         captureThrows(
-            static function () use ($channel, &$passes, $stderrPair): void {
-                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes, $stderrPair): bool {
-                    // Written on the second pass, after stdout's EOF has already
-                    // been observed once, so it is reachable only while stderr
-                    // is still in the select set.
-                    if (++$passes === 2) {
+            static function () use ($channel, &$passes, &$announced, $stderrPair): void {
+                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes, &$announced, $stderrPair): bool {
+                    // Any pass after the first: stdout's EOF has been observed
+                    // by then, so this is reachable only while stderr is still
+                    // in the select set. Written once, so the assertion below
+                    // pins the content and not the pass count.
+                    if (++$passes > 1 && !$announced) {
+                        $announced = true;
                         fwrite($stderrPair[1], 'TAIL');
                     }
 
@@ -716,6 +722,57 @@ final class NdjsonRpcChannelTest extends TestCase
         );
 
         assertSame('TAIL', $channel->stderr());
+
+        fclose($stdinPair[1]);
+        fclose($stderrPair[1]);
+    }
+
+    /**
+     * The other half of the same rule: an exhausted STDOUT leaves the select
+     * set too.
+     *
+     * A worker that closes stdout while the parent is still writing a large
+     * frame leaves a descriptor stream_select() reports ready on every pass
+     * and that yields nothing, so the send loop spun at full speed until the
+     * deadline. Only stderr's exhaustion was acted on, so this half was left
+     * open when the stderr half was fixed.
+     *
+     * Counted rather than timed: the wait is capped at 100 ms whenever a
+     * cancellation callback is supplied, so a loop that actually waits reaches
+     * a handful of passes inside a 200 ms deadline, while a spinning one
+     * reaches thousands. The bound below is two orders of magnitude clear of
+     * both.
+     */
+    public function testAnExhaustedStdoutStopsTheSendLoopFromSpinning(): void
+    {
+        $stdinPair = $this->socketPair();
+        stream_set_blocking($stdinPair[0], false);
+        @fwrite($stdinPair[0], str_repeat('x', 4_000_000)); // Fill it: never writable.
+        $stdoutPair = $this->socketPair();
+        fclose($stdoutPair[1]); // Worker closed stdout: permanently ready, always empty.
+        $stderrPair = $this->socketPair();
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $stdinPair[0];
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 200));
+        $channel->beginRequest();
+
+        $passes = 0;
+        captureThrows(
+            static function () use ($channel, &$passes): void {
+                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes): bool {
+                    ++$passes;
+
+                    return false;
+                });
+            },
+            WorkerException::class,
+        );
+
+        self::assertLessThan(50, $passes, sprintf('send() made %d passes in 200 ms; the exhausted stdout is still selected', $passes));
 
         fclose($stdinPair[1]);
         fclose($stderrPair[1]);

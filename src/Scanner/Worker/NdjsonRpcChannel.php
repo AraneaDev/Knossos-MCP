@@ -71,12 +71,15 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $stdout = $this->process->stdout();
         $stderr = $this->process->stderr();
         // An exhausted descriptor is permanently "ready", so a worker that
-        // closed stderr while still running would make every stream_select()
-        // return instantly and turn this wait into a busy loop. Track stderr's
-        // exhaustion and drop it from the select set once it is genuinely at
-        // EOF — never merely because one read came back empty, or the last
-        // diagnostics of a dying worker would be lost.
+        // closed one of its output pipes while the parent is still writing
+        // would make every stream_select() return instantly and turn this wait
+        // into a busy loop — and with $cancelled === null there is no 100 ms
+        // cap on the wait either, so that spin runs for the whole request
+        // timeout. Track both output descriptors and drop each from the select
+        // set once it is genuinely at EOF — never merely because one read came
+        // back empty, or the last diagnostics of a dying worker would be lost.
         $stderrOpen = true;
+        $stdoutOpen = true;
         $written = 0;
         while ($written < $length) {
             if ($cancelled !== null && $cancelled()) {
@@ -91,7 +94,16 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             // Watch stdin for writability while simultaneously draining the
             // worker's stdout/stderr, so a worker blocked writing to its own
             // (bounded) output pipe cannot deadlock a >64 KB parent write.
-            $read = $stderrOpen ? [$stdout, $stderr] : [$stdout];
+            // `null`, not `[]`, once both are exhausted: stream_select() still
+            // has the writable $stdin to wait on and stays bounded by the
+            // timeout, but an empty array would be a third state to reason
+            // about at every use of $read below.
+            $read = match (true) {
+                $stdoutOpen && $stderrOpen => [$stdout, $stderr],
+                $stdoutOpen => [$stdout],
+                $stderrOpen => [$stderr],
+                default => null,
+            };
             $write = [$stdin];
             $except = null;
             $wait = $cancelled === null ? $remaining : min($remaining, 100_000_000);
@@ -109,9 +121,14 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 continue;
             }
 
-            foreach ($read as $stream) {
-                if ($this->absorb($stream, $stderr) && $stream === $stderr) {
+            foreach ($read ?? [] as $stream) {
+                if (!$this->absorb($stream, $stderr)) {
+                    continue;
+                }
+                if ($stream === $stderr) {
                     $stderrOpen = false;
+                } else {
+                    $stdoutOpen = false;
                 }
             }
 
