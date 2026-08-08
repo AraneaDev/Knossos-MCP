@@ -70,6 +70,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $stdin = $this->process->stdin();
         $stdout = $this->process->stdout();
         $stderr = $this->process->stderr();
+        // An exhausted descriptor is permanently "ready", so a worker that
+        // closed stderr while still running would make every stream_select()
+        // return instantly and turn this wait into a busy loop. Track stderr's
+        // exhaustion and drop it from the select set once it is genuinely at
+        // EOF — never merely because one read came back empty, or the last
+        // diagnostics of a dying worker would be lost.
+        $stderrOpen = true;
         $written = 0;
         while ($written < $length) {
             if ($cancelled !== null && $cancelled()) {
@@ -84,7 +91,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             // Watch stdin for writability while simultaneously draining the
             // worker's stdout/stderr, so a worker blocked writing to its own
             // (bounded) output pipe cannot deadlock a >64 KB parent write.
-            $read = [$stdout, $stderr];
+            $read = $stderrOpen ? [$stdout, $stderr] : [$stdout];
             $write = [$stdin];
             $except = null;
             $wait = $cancelled === null ? $remaining : min($remaining, 100_000_000);
@@ -103,7 +110,9 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             }
 
             foreach ($read as $stream) {
-                $this->absorb($stream, $stderr);
+                if ($this->absorb($stream, $stderr) && $stream === $stderr) {
+                    $stderrOpen = false;
+                }
             }
 
             foreach ($write as $writable) {
@@ -126,6 +135,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     {
         $stdout = $this->process->stdout();
         $stderr = $this->process->stderr();
+        // An EOF descriptor is permanently "ready", so keeping a closed stderr
+        // in the select set turns this wait into a busy loop against a worker
+        // that is still alive — the liveness check below never fires for it.
+        // Drop stderr once exhausted; stdout's own EOF is handled by that
+        // check. The flag is per-call, so a restarted worker (an adaptive
+        // budget retry) is polled on its fresh stderr again.
+        $stderrOpen = true;
         while (true) {
             if ($cancelled !== null && $cancelled()) {
                 throw new WorkerException('WORKER_CANCELLED', 'Scanner worker request was cancelled.');
@@ -143,7 +159,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 throw new WorkerException('WORKER_TIMEOUT', $this->withStderr('Scanner worker request timed out.'));
             }
 
-            $read = [$stdout, $stderr];
+            $read = $stderrOpen ? [$stdout, $stderr] : [$stdout];
             $write = null;
             $except = null;
             $wait = $cancelled === null ? $remaining : min($remaining, 100_000_000);
@@ -170,6 +186,12 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                     throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
                 }
                 if ($stream === $stderr) {
+                    if ($chunk === '' && feof($stderr)) {
+                        // Exhausted, not merely quiet: everything the worker
+                        // wrote has been drained, so stop selecting on it.
+                        $stderrOpen = false;
+                        continue;
+                    }
                     $this->appendStderr($chunk);
                     continue;
                 }
@@ -211,18 +233,22 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      *
      * @param resource $stream
      * @param resource $stderr
+     * @return bool True once the stream is exhausted — an empty read at EOF —
+     *              so the caller may drop the descriptor from its select set.
      */
-    private function absorb($stream, $stderr): void
+    private function absorb($stream, $stderr): bool
     {
         $chunk = fread($stream, 8192);
         if ($chunk === false || $chunk === '') {
-            return;
+            return $chunk === '' && feof($stream);
         }
         if ($stream === $stderr) {
             $this->appendStderr($chunk);
-            return;
+            return false;
         }
         $this->appendStdout($chunk);
+
+        return false;
     }
 
     /**

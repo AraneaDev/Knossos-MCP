@@ -96,6 +96,9 @@ final class NdjsonRpcChannelTest extends TestCase
 
             public bool $started = false;
 
+            /** Number of liveness probes, i.e. completed readMessage() loop iterations. */
+            public int $statusChecks = 0;
+
             public function start(): void
             {
                 $this->started = true;
@@ -127,6 +130,8 @@ final class NdjsonRpcChannelTest extends TestCase
             /** @return array{command: string, pid: int, running: bool, signaled: bool, stopped: bool, exitcode: int, termsig: int, stopsig: int} */
             public function status(): array
             {
+                ++$this->statusChecks;
+
                 return [
                     'command' => '',
                     'pid' => 0,
@@ -517,5 +522,122 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame('WORKER_EXITED', $error->diagnosticCode);
         // Must not have spun for anywhere near the 60s deadline.
         assertSame(true, $elapsedMs < 1_000);
+    }
+
+    // ----- exhausted stderr descriptor -----
+
+    /**
+     * A connected socket pair, or a skipped test where the platform lacks one.
+     *
+     * @return array{0: resource, 1: resource}
+     */
+    private function socketPair(): array
+    {
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if (!is_array($pair)) {
+            $this->markTestSkipped('stream_socket_pair is not available on this platform.');
+        }
+
+        return $pair;
+    }
+
+    public function testAnEofStderrDoesNotSpinTheReadLoop(): void
+    {
+        // A live worker that closed stderr leaves a permanently-ready
+        // descriptor: stream_select() returns instantly forever, the read
+        // yields '', and the liveness check never fires because the worker is
+        // alive. That pinned a core until the deadline.
+        $stdoutPair = $this->socketPair();
+        $stderrPair = $this->socketPair();
+        fclose($stderrPair[1]); // Worker closed its stderr; nothing was written.
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = fopen('php://temp', 'r+');
+        $process->stdoutPipe = $stdoutPair[0]; // Peer alive and silent: never readable.
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+
+        $error = captureThrows(
+            static fn() => $channel->readMessage(hrtime(true) + 200_000_000),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
+        // Each loop iteration probes liveness exactly once, so this counts the
+        // spin. Dropping the exhausted descriptor leaves a couple of passes.
+        assertSame(true, $process->statusChecks < 10);
+
+        fclose($stdoutPair[1]);
+    }
+
+    public function testStderrWrittenBeforeCloseIsStillReportedOnTimeout(): void
+    {
+        // The descriptor must be dropped only once genuinely exhausted, never
+        // on a single empty read, or the last words of a dying worker are lost.
+        $stdoutPair = $this->socketPair();
+        $stderrPair = $this->socketPair();
+        fwrite($stderrPair[1], 'ImportError: no module named knossos');
+        fclose($stderrPair[1]);
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = fopen('php://temp', 'r+');
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+
+        $error = captureThrows(
+            static fn() => $channel->readMessage(hrtime(true) + 200_000_000),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
+        assertSame(true, str_contains($error->getMessage(), 'ImportError: no module named knossos'));
+        assertSame('ImportError: no module named knossos', $channel->stderr());
+        assertSame(true, $process->statusChecks < 10);
+
+        fclose($stdoutPair[1]);
+    }
+
+    public function testAnEofStderrDoesNotSpinTheSendLoop(): void
+    {
+        // send() drains the worker's pipes while waiting for stdin to accept
+        // more bytes, and had the same permanently-ready-descriptor hazard.
+        $stdinPair = $this->socketPair();
+        stream_set_blocking($stdinPair[0], false);
+        @fwrite($stdinPair[0], str_repeat('x', 4_000_000)); // Fill it: never writable.
+        $stdoutPair = $this->socketPair();
+        $stderrPair = $this->socketPair();
+        fwrite($stderrPair[1], 'warming up');
+        fclose($stderrPair[1]);
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $stdinPair[0];
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 200));
+        $channel->beginRequest();
+
+        // The cancellation probe runs once per loop pass, so it counts the spin.
+        $passes = 0;
+        $error = captureThrows(
+            static function () use ($channel, &$passes): void {
+                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes): bool {
+                    ++$passes;
+
+                    return false;
+                });
+            },
+            WorkerException::class,
+        );
+
+        assertSame(true, in_array($error->diagnosticCode, ['WORKER_TIMEOUT', 'WORKER_PIPE_BROKEN'], true));
+        assertSame(true, $passes < 25);
+        assertSame('warming up', $channel->stderr());
+
+        fclose($stdinPair[1]);
+        fclose($stdoutPair[1]);
     }
 }
