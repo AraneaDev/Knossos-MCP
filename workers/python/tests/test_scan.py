@@ -27,9 +27,7 @@ def test_bom_prefixed_file_parses_without_syntax_error(worker: ModuleType, tmp_p
 def test_pep263_encoded_file_parses_without_syntax_error(worker: ModuleType, tmp_path: Path, scan_collect) -> None:
     # A PEP 263 coding cookie with a latin-1 byte would raise UnicodeDecodeError
     # under utf-8 text decoding; parsing bytes honours the declared encoding.
-    (tmp_path / "latin.py").write_bytes(
-        b"# -*- coding: latin-1 -*-\n# \xe9 accented comment\nclass Caf:\n    pass\n"
-    )
+    (tmp_path / "latin.py").write_bytes(b"# -*- coding: latin-1 -*-\n# \xe9 accented comment\nclass Caf:\n    pass\n")
     [contribution] = scan_collect(tmp_path, ["latin.py"])
     assert _diag_codes(contribution) == []
     assert any(node["kind"] == "class" for node in contribution["nodes"])
@@ -200,7 +198,8 @@ def test_attribute_receivers_resolve_instead_of_inventing_members(
     [contribution] = scan_collect(tmp_path, ["mod.py"])
 
     calls = sorted(
-        target for kind, source, target in _edges(contribution)
+        target
+        for kind, source, target in _edges(contribution)
         if kind == "calls" and source == "py:method:mod.Owner::run"
     )
     assert calls == [
@@ -210,11 +209,9 @@ def test_attribute_receivers_resolve_instead_of_inventing_members(
         "py:method:mod.Helper::local_call",
         "py:method:mod.Helper::param_call",
     ]
-    assert not any(
-        "." in target.split("::", 1)[1]
-        for _, _, target in _edges(contribution)
-        if "::" in target
-    ), "no edge may name a member containing a dot"
+    assert not any("." in target.split("::", 1)[1] for _, _, target in _edges(contribution) if "::" in target), (
+        "no edge may name a member containing a dot"
+    )
 
 
 def test_a_receiver_reassigned_to_something_untracked_stops_resolving(
@@ -272,7 +269,8 @@ def test_a_tracked_local_propagates_through_a_passthrough_assignment(
     [contribution] = scan_collect(tmp_path, ["mod.py"])
 
     calls = sorted(
-        target for kind, source, target in _edges(contribution)
+        target
+        for kind, source, target in _edges(contribution)
         if kind == "calls" and source == "py:method:mod.Owner::run"
     )
     assert calls == [
