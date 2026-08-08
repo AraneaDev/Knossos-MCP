@@ -31,6 +31,29 @@ use Throwable;
 final readonly class GitProcessRunner implements GitProcessRunnerInterface
 {
     /**
+     * Git's own top-level options that take their value as a separate
+     * argument. {@see self::repositoryRoot()} walks the leading option region
+     * looking for `-C`, and stops at the first argument that is not an option;
+     * without this list `-c core.quotePath=false` would end that walk at its
+     * own value, and the `-C` after it would never be seen. Each of these also
+     * has an `--option=value` spelling, which needs no entry because it is a
+     * single argument.
+     *
+     * @var list<string>
+     */
+    private const OPTIONS_TAKING_A_VALUE = [
+        '-C',
+        '-c',
+        '--attr-source',
+        '--config-env',
+        '--exec-path',
+        '--git-dir',
+        '--namespace',
+        '--super-prefix',
+        '--work-tree',
+    ];
+
+    /**
      * Config overrides prepended to every hardened command, as `-c key=value`
      * pairs. Fixed because they name a hook rather than a repository-specific
      * driver; per-repository filter and diff-driver names are enumerated at
@@ -50,9 +73,13 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     ];
 
     /**
-     * The child's complete environment. Nothing is inherited: a Git subprocess
-     * over an untrusted tree has no business seeing the server's bearer token,
-     * data directory, or database credentials. HOME is deliberately a path that
+     * The child's environment, less the one variable {@see
+     * self::environment()} carries over. Nothing else is inherited: a Git
+     * subprocess over an untrusted tree has no business seeing the server's
+     * bearer token, data directory, or database credentials. `PATH` is the
+     * exception, because Git resolves its own helper binaries through it; it
+     * falls back to `/usr/bin:/bin` when the parent has none. HOME is
+     * deliberately a path that
      * does not exist so no user config is found even if GIT_CONFIG_GLOBAL were
      * ignored by an older Git. GIT_ASKPASS points at the same nonexistent path
      * rather than an empty string: PHP's proc_open drops env entries whose
@@ -110,10 +137,14 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
 
     /**
      * @param bool $hardenGitConfig Whether to force the config overrides above
-     *   and drop the inherited environment. The default is safe for every
-     *   actual `git` invocation; callers that reuse this runner to probe an
-     *   unrelated binary (see the class docblock) must pass `false` explicitly
-     *   rather than rely on the binary's name not matching `git`.
+     *   and enumerate the repository's filter/diff drivers. It does *not*
+     *   control the environment: {@see self::execute()} applies the restricted
+     *   {@see self::ENVIRONMENT} either way, since no probe needs the parent's
+     *   variables. The default is safe for every actual `git` invocation;
+     *   callers that reuse this runner to probe an unrelated binary (see the
+     *   class docblock) must pass `false` explicitly — leaving it true and
+     *   relying on the binary's name not matching `git` is rejected by {@see
+     *   self::harden()} rather than silently honoured.
      */
     public function __construct(
         private int $maxOutputBytes = 2_000_000,
@@ -146,19 +177,29 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
      * requires its top-level options, leaving the caller's own options and
      * subcommand untouched.
      *
-     * Scoped to actual git invocations by both the explicit `hardenGitConfig`
-     * flag and, as a secondary check, the binary's basename — every call site
-     * in this codebase passes a literal `'git'`, so the basename check cannot
-     * be defeated by repository-controlled input; it exists only to fail
-     * closed if a future call site forgets the flag.
+     * Scoped to actual git invocations by the explicit `hardenGitConfig` flag.
+     * The binary's basename is then a cross-check on that flag rather than a
+     * second switch: a caller asking for Git hardening on something that is
+     * not `git` is a mismatch between the two, and returning the command
+     * unchanged resolved it by silently running with no hardening at all. A
+     * wrapper name (`git-wrapper`, a vendored `git2`) would have taken that
+     * path with nothing reporting it, so the mismatch is refused instead.
+     * Every call site in this codebase passes a literal `'git'`, so this
+     * cannot be reached by repository-controlled input.
      *
      * @param non-empty-list<string> $command
      * @return non-empty-list<string>
      */
     private function harden(array $command, int $timeoutMs): array
     {
-        if (!$this->hardenGitConfig || basename($command[0]) !== 'git') {
+        if (!$this->hardenGitConfig) {
             return $command;
+        }
+        if (basename($command[0]) !== 'git') {
+            throw new RuntimeException(sprintf(
+                'Git hardening was requested for %s, which is not git; construct with hardenGitConfig: false to probe another binary.',
+                $command[0],
+            ));
         }
         $hardened = [$command[0]];
         foreach ([...self::FORCED_CONFIG, ...$this->driverOverrides($command, $timeoutMs)] as $setting) {
@@ -224,13 +265,50 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
     /**
      * The `-C <root>` argument of a command, or null when it has none.
      *
+     * Only the leading option region is searched — everything before the
+     * subcommand — because that is the only place Git reads `-C` from. A
+     * scan of the whole argv would read a pathspec, or an option value, that
+     * happened to be the two characters `-C` as the repository root, and would
+     * then enumerate the config of some path the caller passed as data.
+     *
+     * A second `-C` is refused rather than resolved. Git composes repeated
+     * `-C` options relative to one another, so the directory the caller's real
+     * command runs in is not the one this method would return, and the
+     * enumeration would neutralise the drivers of the wrong repository while
+     * reporting success. Nothing in this codebase passes more than one, so the
+     * refusal is a guard on a future call site, not a supported shape.
+     *
      * @param non-empty-list<string> $command
      */
     private static function repositoryRoot(array $command): ?string
     {
-        $index = array_search('-C', $command, true);
+        $root = null;
+        $total = count($command);
+        // From 1: index 0 is the binary. Stops at the first argument that is
+        // neither an option nor an option's value — the subcommand — since
+        // everything after that belongs to the subcommand, not to Git.
+        for ($index = 1; $index < $total; ++$index) {
+            $argument = $command[$index];
+            if (!str_starts_with($argument, '-')) {
+                break;
+            }
+            if (!in_array($argument, self::OPTIONS_TAKING_A_VALUE, true)) {
+                continue;
+            }
+            if (!isset($command[$index + 1])) {
+                break;
+            }
+            $value = $command[++$index];
+            if ($argument !== '-C') {
+                continue;
+            }
+            if ($root !== null) {
+                throw new RuntimeException('A Git command may carry only one -C option.');
+            }
+            $root = $value;
+        }
 
-        return $index === false || !isset($command[$index + 1]) ? null : $command[$index + 1];
+        return $root;
     }
 
     /**
