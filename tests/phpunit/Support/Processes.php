@@ -36,6 +36,31 @@ trait Processes
         return is_executable('/usr/bin/setsid') || is_executable('/bin/setsid');
     }
 
+    /** Whether this host exposes the procfs that {@see processState()} prefers. */
+    private static function hasProcfs(): bool
+    {
+        return @is_readable('/proc/self/stat');
+    }
+
+    /**
+     * Whether this host can tell a live process from a terminated one at all.
+     *
+     * A liveness assertion is only worth making where the answer can be wrong.
+     * Without procfs and without a BSD-style `ps`, every probe below reports
+     * 'gone' unconditionally — so `assertSame(false, processIsAlive($pid))`
+     * would pass on a host where the process is still running, which is the
+     * exact failure those assertions exist to catch. Tests guard on this and
+     * skip rather than record a pass they did not earn.
+     *
+     * Probed against this very process, which is by definition alive: a probe
+     * that cannot see its own caller is not a working probe, whatever the
+     * platform claims.
+     */
+    public static function hasProcessStateProbe(): bool
+    {
+        return self::hasProcfs() || self::psState((int) getmypid()) !== 'gone';
+    }
+
     /**
      * A process's scheduler state letter, or 'gone'.
      *
@@ -46,9 +71,18 @@ trait Processes
      * The state is the field after the executable name, which is itself
      * parenthesised and may contain parentheses and spaces, so it is found from
      * the LAST `)` rather than by splitting on whitespace.
+     *
+     * procfs is consulted only where procfs exists, rather than as a first
+     * attempt that falls through on failure: on Linux an unreadable
+     * `/proc/<pid>/stat` is the answer — that process is gone — and treating it
+     * as a failed lookup would spawn a `ps` per call, which the callers that
+     * poll this every 10ms for up to ten seconds cannot afford.
      */
     public static function processState(int $pid): string
     {
+        if (!self::hasProcfs()) {
+            return self::psState($pid);
+        }
         $stat = @file_get_contents('/proc/' . $pid . '/stat');
         $close = is_string($stat) ? strrpos($stat, ')') : false;
         if (!is_string($stat) || $close === false) {
@@ -57,6 +91,23 @@ trait Processes
         $state = substr($stat, $close + 2, 1);
 
         return $state === 'Z' ? 'gone' : $state;
+    }
+
+    /**
+     * The same state letter via `ps`, for hosts without procfs — macOS above
+     * all, where `/proc` does not exist and the procfs branch would otherwise
+     * report every process, running or not, as 'gone'.
+     *
+     * BSD `ps` decorates the state with flags (`S+`, `Ss`, `R<`), so only the
+     * first character is the state proper. Empty output means `ps` knows of no
+     * such pid.
+     */
+    private static function psState(int $pid): string
+    {
+        $output = @shell_exec('ps -o state= -p ' . $pid . ' 2>/dev/null');
+        $state = is_string($output) ? substr(trim($output), 0, 1) : '';
+
+        return $state === '' || $state === 'Z' ? 'gone' : $state;
     }
 
     /**

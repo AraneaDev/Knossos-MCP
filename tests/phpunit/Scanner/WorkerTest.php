@@ -100,6 +100,9 @@ final class WorkerTest extends KnossosTestCase
             // initialize() took id 1, so the scan the host cancelled is 2.
             assertSame(2, $cancel['request_id']);
             assertSame('int', $cancel['type']);
+            if (!self::hasProcessStateProbe()) {
+                $this->markTestSkipped('Asserting the worker was terminated needs a process-state probe.');
+            }
             assertSame(false, self::processIsAlive($workerPid));
         } finally {
             unset($client);

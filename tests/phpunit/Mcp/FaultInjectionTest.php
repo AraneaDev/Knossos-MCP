@@ -107,6 +107,9 @@ final class FaultInjectionTest extends KnossosTestCase
             // an already-exec'd child, refused 40 times out of 40), so the reap
             // depended on a point-in-time walk of the worker's /proc children
             // and missed anything spawned while the worker was being killed.
+            if (!self::hasProcessStateProbe()) {
+                $this->markTestSkipped('Asserting the process tree was reaped needs a process-state probe.');
+            }
             $deadline = microtime(true) + 10.0;
             while (self::processIsAlive($childPid) && microtime(true) < $deadline) {
                 usleep(10_000);

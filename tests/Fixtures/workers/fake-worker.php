@@ -62,10 +62,15 @@ while (($line = fgets(STDIN)) !== false) {
             // callback and sends the cancel notification. A worker that
             // emitted nothing would instead be cancelled from inside the read
             // loop, which fails the request without notifying anyone.
-            notifyContribution(contribution('worker:file:src/Checkout.ts'));
+            // The pid is recorded BEFORE the contribution, not after. The
+            // contribution is what hands control back to the host, and the host
+            // may cancel and terminate this process the moment it has it — so a
+            // pid written afterwards races the kill and is sometimes never
+            // written at all, leaving the test reading an empty first line.
             if (is_string($pidFile)) {
                 file_put_contents($pidFile, getmypid() . "\n");
             }
+            notifyContribution(contribution('worker:file:src/Checkout.ts'));
             // A real worker is blocked in its analyser and never sees the
             // cancel at all; this one keeps reading stdin purely so the test
             // can assert what went over the wire — above all that an int
