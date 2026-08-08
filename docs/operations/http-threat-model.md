@@ -120,8 +120,10 @@ repository could otherwise turn a neutralised filter into a fatal error), and
 without this a blanked-but-required filter fails the whole command rather than
 being skipped. `core.pager` is neutralised separately, by `--no-pager` at each
 call site rather than by an override. The child also runs under an explicit
-environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, no
-inherited variables).
+environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`HOME`/`GIT_ASKPASS` pointed at a nonexistent path); the only value carried
+over from the parent is `PATH` — which Git needs to find its helper binaries,
+and which falls back to `/usr/bin:/bin` when the parent has none.
 
 This matters whenever a repository directory arrives with its own `.git/`
 rather than from a fresh `clone`: CI artifacts, extracted archives, container

@@ -41,10 +41,10 @@ because they differ per language and the byte budget can differ per scan:
   at. Lower than `source_bytes` means at least one batch overflowed and was
   re-split; see below.
 
-TypeScript uses a much larger file cap (2,000) and a larger byte budget (3 MB)
-than the defaults (400 and 4 MB), because it rebuilds and re-checks a whole
-`ts.Program` on every request — a cost set by the program, not by how many files
-the request named — so splitting its work repeats the expensive part.
+TypeScript uses a much larger file cap (2,000) than the default (400), and a
+3 MB byte budget against the 4 MB default, because it rebuilds and re-checks a
+whole `ts.Program` on every request — a cost set by the program, not by how many
+files the request named — so splitting its work repeats the expensive part.
 
 ### Adaptive budgets
 
