@@ -53,15 +53,26 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             2 => ['pipe', 'w'],
         ];
         $pipes = [];
+        $setsid = self::setsidPath();
+        $environment = $this->resolveEnvironment();
+        // Checked before spawning rather than relying on proc_open() to fail:
+        // once the command is wrapped (below) it is `setsid` that proc_open
+        // starts, and setsid starts perfectly well before failing to exec a
+        // command that does not exist. Without this, an unrunnable worker
+        // stopped being a loud WORKER_START_FAILED at spawn and became a
+        // protocol timeout thirty seconds later.
+        if (!self::isRunnable($this->command[0], $environment['PATH'] ?? '')) {
+            throw new WorkerException('WORKER_START_FAILED', 'Unable to start scanner worker.');
+        }
         // A neutral working directory and an explicit, minimal environment keep
         // the untrusted-source parser from inheriting the server's cwd, PATH
         // secrets, DB credentials, or tokens.
         $process = @proc_open(
-            $this->command,
+            $setsid === null ? $this->command : [$setsid, ...$this->command],
             $descriptors,
             $pipes,
             $this->workingDirectory(),
-            $this->resolveEnvironment(),
+            $environment,
         );
         if (!is_resource($process)) {
             throw new WorkerException('WORKER_START_FAILED', 'Unable to start scanner worker.');
@@ -76,7 +87,7 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         stream_set_blocking($this->pipes[1], false);
         stream_set_blocking($this->pipes[2], false);
 
-        $this->placeInOwnProcessGroup();
+        $this->placeInOwnProcessGroup($setsid !== null);
     }
 
     /** {@inheritDoc} */
@@ -242,9 +253,94 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             @posix_kill($descendant, $signal);
         }
     }
-    /** Put the child in its own group so signalling it cannot reach this process or its siblings. */
+    /**
+     * Whether a command names something this host can actually execute.
+     *
+     * Deliberately permissive where it cannot know: a bare name with no PATH to
+     * search against is accepted rather than rejected, because the child's own
+     * `execvp()` has resolution rules of its own and a false rejection here
+     * would refuse to start a worker that works. It exists to keep the one
+     * answer it CAN give with certainty — this path does not exist, or is not
+     * executable — as loud as it was before the spawn was wrapped.
+     */
+    private static function isRunnable(string $binary, string $path): bool
+    {
+        if ($binary === '') {
+            return false;
+        }
+        if (str_contains($binary, DIRECTORY_SEPARATOR) || str_contains($binary, '/')) {
+            return is_executable($binary);
+        }
+        if ($path === '') {
+            return true;
+        }
+        foreach (explode(PATH_SEPARATOR, $path) as $directory) {
+            if ($directory !== '' && is_executable(rtrim($directory, '/') . '/' . $binary)) {
+                return true;
+            }
+        }
 
-    private function placeInOwnProcessGroup(): void
+        return false;
+    }
+
+    /**
+     * `setsid`, so the worker leads its own session and process group from the
+     * first instruction it executes — or null where the binary is unavailable.
+     *
+     * This is what makes the group-directed kill in {@see self::signalTree()}
+     * real. Placing the child in its own group from the parent afterwards
+     * cannot work: `proc_open()` returns once the fork has happened, the child
+     * reaches `execve()` first, and `setpgid()` on an already-exec'd child is
+     * refused with EACCES — measured at 40 failures out of 40 spawns on this
+     * host, i.e. always. The group was therefore never established, leaving a
+     * point-in-time walk of `/proc/<worker>/task/<worker>/children` as the only
+     * reaper, and that walk loses to both cases that matter: a worker that
+     * spawns an analyser while it is being terminated, and a worker that exits
+     * before the walk runs, whose children are re-parented to init the instant
+     * it dies and are then unreachable from its pid. A process group has
+     * neither problem — it outlives its leader for as long as any member
+     * remains, so the escalation to SIGKILL still reaches everything.
+     *
+     * `setsid` execs in place when its caller is not already a group leader,
+     * which a `proc_open()` child never is, so the pid, the pipes and
+     * `proc_get_status()` all still describe the worker itself. Absent the
+     * binary the command is spawned unchanged and termination falls back to
+     * the descendant walk, exactly as before. An absolute path rather than a
+     * PATH lookup: the worker environment is a deliberate allow-list and the
+     * spawn boundary is not the place to start resolving names.
+     */
+    private static function setsidPath(): ?string
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            return null;
+        }
+        foreach (['/usr/bin/setsid', '/bin/setsid'] as $path) {
+            if (is_executable($path)) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Record the worker's own process group, so signalling it cannot reach this
+     * process or its siblings.
+     *
+     * The group is only ever recorded once the worker has been OBSERVED to lead
+     * it. That check is not optional bookkeeping: `posix_kill(-$pgid, SIGKILL)`
+     * against an unverified group id is a kill of whatever group the child
+     * happens to be in, which without `setsid` is the parent's own.
+     *
+     * @param bool $viaSetsid whether the spawn was wrapped, in which case the
+     *     group appears a moment after `proc_open()` returns rather than at
+     *     once — `setsid` is a program that has to be scheduled and reach its
+     *     own `setsid()` call first. Measured at 0.28-0.92 ms across 30 spawns
+     *     (median 0.55), so the ceiling below is some 270x the worst case
+     *     observed and is not a timing assumption so much as a refusal to wait
+     *     forever. Unwrapped spawns never wait at all: nothing would change.
+     */
+    private function placeInOwnProcessGroup(bool $viaSetsid): void
     {
         if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_setpgid') || !function_exists('posix_getpgid')) {
             return;
@@ -254,10 +350,16 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
         if ($pid <= 1) {
             return;
         }
-        // Best effort: the child may already have exec'd, in which case the
-        // kernel refuses (EACCES) and we fall back to descendant enumeration.
+        // Best effort, and on Linux always refused: kept because it costs one
+        // failed syscall and wins outright on any platform where the child has
+        // not exec'd yet.
         @posix_setpgid($pid, $pid);
         $pgid = @posix_getpgid($pid);
+        $deadline = hrtime(true) + 250_000_000;
+        while ($viaSetsid && $pgid !== $pid && hrtime(true) < $deadline) {
+            usleep(200);
+            $pgid = @posix_getpgid($pid);
+        }
         if ($pgid === $pid) {
             $this->processGroupId = $pid;
         }

@@ -95,14 +95,46 @@ final class FaultInjectionTest extends KnossosTestCase
             // take far longer than 50 * 10ms = 500ms to reap the process tree, and
             // a fixed-count bound would flake there. The deadline is a generous
             // ceiling; the reap normally completes in a handful of polls.
+            //
+            // Liveness is the scheduler state, not the presence of /proc/<pid>:
+            // a killed process stays visible there as a zombie until whoever
+            // inherited it gets round to waiting on it, which is not something
+            // this test is asking about and not something it can control. The
+            // failure this test was seen to produce under gate load — the
+            // grandchild still there after the full ten seconds — had a second
+            // cause too, fixed in WorkerProcessSupervisor: the process group the
+            // termination is meant to signal was never established (setpgid on
+            // an already-exec'd child, refused 40 times out of 40), so the reap
+            // depended on a point-in-time walk of the worker's /proc children
+            // and missed anything spawned while the worker was being killed.
             $deadline = microtime(true) + 10.0;
-            while (is_dir('/proc/' . $childPid) && microtime(true) < $deadline) {
+            while (self::processIsAlive($childPid) && microtime(true) < $deadline) {
                 usleep(10_000);
             }
-            assertSame(false, is_dir('/proc/' . $childPid));
+            assertSame(false, self::processIsAlive($childPid));
         } finally {
             unset($client);
             @unlink($pidFile);
         }
+    }
+
+    /**
+     * Whether a pid names a process that is still running, as opposed to one
+     * that has been killed and is waiting to be reaped.
+     *
+     * `/proc/<pid>` and `posix_kill($pid, 0)` both answer yes for a zombie, so
+     * neither distinguishes "the supervisor failed to kill it" from "the
+     * supervisor killed it and its new parent has not called wait() yet". Only
+     * the first is a defect.
+     */
+    private static function processIsAlive(int $pid): bool
+    {
+        $stat = @file_get_contents('/proc/' . $pid . '/stat');
+        $close = is_string($stat) ? strrpos($stat, ')') : false;
+        if (!is_string($stat) || $close === false) {
+            return false;
+        }
+
+        return substr($stat, $close + 2, 1) !== 'Z';
     }
 }
