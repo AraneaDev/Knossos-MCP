@@ -55,6 +55,35 @@ while (($line = fgets(STDIN)) !== false) {
             respond($id, ['count' => 0, 'cancelled' => $cancelled]);
             continue;
         }
+        if ($mode === 'blocked_scan') {
+            // One contribution, then a request that never gets its final
+            // response. The contribution matters: it hands control back to the
+            // consumer, which is where the host re-checks its cancellation
+            // callback and sends the cancel notification. A worker that
+            // emitted nothing would instead be cancelled from inside the read
+            // loop, which fails the request without notifying anyone.
+            notifyContribution(contribution('worker:file:src/Checkout.ts'));
+            if (is_string($pidFile)) {
+                file_put_contents($pidFile, getmypid() . "\n");
+            }
+            // A real worker is blocked in its analyser and never sees the
+            // cancel at all; this one keeps reading stdin purely so the test
+            // can assert what went over the wire — above all that an int
+            // request id arrives as an int, not as a stringified copy.
+            while (($incoming = fgets(STDIN)) !== false) {
+                $decoded = json_decode($incoming, true);
+                if (!is_array($decoded) || ($decoded['method'] ?? '') !== 'cancel' || !is_string($pidFile)) {
+                    continue;
+                }
+                $requestId = $decoded['params']['request_id'] ?? null;
+                file_put_contents(
+                    $pidFile,
+                    json_encode(['request_id' => $requestId, 'type' => get_debug_type($requestId)]) . "\n",
+                    FILE_APPEND,
+                );
+            }
+            exit(0);
+        }
         if ($mode === 'slow_scan') {
             usleep(500_000);
         }
@@ -169,7 +198,7 @@ function manifest(string $protocol): array
         'output_schema_version' => '1.0',
         'languages' => ['typescript'],
         'file_extensions' => ['ts'],
-        'capabilities' => ['cancel'],
+        'capabilities' => ['partial_ast'],
     ];
 }
 

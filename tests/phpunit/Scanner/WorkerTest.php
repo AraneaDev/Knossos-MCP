@@ -42,6 +42,71 @@ final class WorkerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    /**
+     * Cancellation of a request that is still in flight.
+     *
+     * The test above only replays fake-worker state: it cancels an id after
+     * that scan has already completed, then reads the echo back on the next
+     * round trip. Nothing in it exercises the path that matters — a request
+     * with no reply coming, a cancellation callback that turns true while the
+     * host is still waiting, the notification that follows, and the worker
+     * being torn down rather than left running.
+     *
+     * The request id is also asserted to arrive as an int. The host numbers
+     * its own requests with integers, and a type-strict worker matching
+     * `request_id === $active` never matches a stringified copy, so a cancel
+     * that looked correct on the wire would silently cancel nothing.
+     */
+    #[Group('worker')]
+    public function testCancellingAnActiveScanTerminatesTheWorkerAndSendsTheIntegerRequestId(): void
+    {
+        $record = sys_get_temp_dir() . '/knossos-blocked-scan-' . bin2hex(random_bytes(6));
+        $client = new ProcessScannerClient([
+            PHP_BINARY,
+            self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php',
+            'blocked_scan',
+            $record,
+        ]);
+        try {
+            $client->initialize();
+            $cancel = false;
+            $received = 0;
+            $error = captureThrows(
+                static function () use ($client, &$cancel, &$received): void {
+                    // The callback turns true only once a contribution has been
+                    // handed back, which is the deterministic point at which the
+                    // request is provably still active: the worker has answered
+                    // part of it and will never answer the rest.
+                    foreach ($client->scan(
+                        ['root' => '/workspace', 'files' => ['src/Checkout.ts']],
+                        // By reference: an arrow function would capture the flag
+                        // by value and never see the loop body set it.
+                        static function () use (&$cancel): bool {
+                            return $cancel;
+                        },
+                    ) as $contribution) {
+                        ++$received;
+                        $cancel = true;
+                    }
+                },
+                WorkerException::class,
+            );
+            assertSame('WORKER_CANCELLED', $error->diagnosticCode);
+            assertSame(1, $received);
+
+            $lines = array_values(array_filter(explode("\n", (string) file_get_contents($record))));
+            $workerPid = (int) $lines[0];
+            $cancel = json_decode($lines[1] ?? '', true, 512, JSON_THROW_ON_ERROR);
+            // initialize() took id 1, so the scan the host cancelled is 2.
+            assertSame(2, $cancel['request_id']);
+            assertSame('int', $cancel['type']);
+            assertSame(false, self::processIsAlive($workerPid));
+        } finally {
+            unset($client);
+            @unlink($record);
+        }
+    }
+
     #[Group('worker')]
     public function testWorkerSupervisorRejectsProtocolMismatchesBeforeAnyProjectInput(): void
     {

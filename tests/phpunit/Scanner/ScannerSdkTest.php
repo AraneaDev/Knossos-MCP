@@ -31,7 +31,7 @@ final class ScannerSdkTest extends KnossosTestCase
         assertSame(Protocol::VERSION, $golden['initialize']['protocol_version']);
 
         $client = $this->fakeWorkerClient('compliant');
-        assertSame('knossos.fake', $client->requireCapabilities(['cancel'])->id);
+        assertSame('knossos.fake', $client->requireCapabilities(['partial_ast'])->id);
         $client->shutdown();
         $error = captureThrows(fn() => $this->fakeWorkerClient('compliant')->requireCapabilities(['incremental']), WorkerException::class);
         assertSame('WORKER_CAPABILITY_MISMATCH', $error->diagnosticCode);
@@ -39,7 +39,7 @@ final class ScannerSdkTest extends KnossosTestCase
         $process = proc_open([
             PHP_BINARY,
             self::repositoryRoot() . '/tools/scanner-conformance',
-            '--require=cancel',
+            '--require=partial_ast',
             '--',
             PHP_BINARY,
             self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php',
