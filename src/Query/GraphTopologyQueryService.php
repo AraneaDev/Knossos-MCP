@@ -83,35 +83,44 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
         );
         $statement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
-        $rows = $statement->fetchAll();
-        $truncated = count($rows) > $maxEdges;
-        $truncationReasons = $truncated ? ['edge_limit'] : [];
-        $rows = array_slice($rows, 0, $maxEdges);
         $nodes = [];
         $edges = [];
-        foreach ($rows as $row) {
-            if ($this->now() > $deadline) {
-                $truncated = true;
-                $truncationReasons[] = 'time_limit';
-                break;
-            }
-            foreach (['source', 'target'] as $side) {
-                $id = $row[$side . '_id'];
-                if (!isset($nodes[$id]) && count($nodes) >= $maxNodes) {
-                    $truncated = true;
-                    $truncationReasons[] = 'node_limit';
-                    break 2;
+        $nodeLimitHit = false;
+        // Streamed rather than fetchAll(): the deadline used to be checked only
+        // after every row was materialised, so a timeout_ms of 1000 could not
+        // bound the phase that dominates the cost, and 100,001 joined rows were
+        // held in memory before the first check.
+        $truncationReasons = $this->streamBounded(
+            $statement,
+            $maxEdges,
+            $deadline,
+            function (array $row) use (&$nodes, &$edges, &$nodeLimitHit, $maxNodes): bool {
+                foreach (['source', 'target'] as $side) {
+                    $id = $row[$side . '_id'];
+                    if (!isset($nodes[$id]) && count($nodes) >= $maxNodes) {
+                        $nodeLimitHit = true;
+
+                        return false;
+                    }
+                    $nodes[$id] ??= [
+                        'id' => $id,
+                        'kind' => $row[$side . '_kind'],
+                        'canonical_name' => $row[$side . '_name'],
+                        'display_name' => $row[$side . '_display_name'],
+                        'confidence' => $row[$side . '_confidence'],
+                    ];
                 }
-                $nodes[$id] ??= [
-                    'id' => $id,
-                    'kind' => $row[$side . '_kind'],
-                    'canonical_name' => $row[$side . '_name'],
-                    'display_name' => $row[$side . '_display_name'],
-                    'confidence' => $row[$side . '_confidence'],
-                ];
-            }
-            $edges[] = $row;
+                $edges[] = $row;
+
+                return true;
+            },
+        );
+        // The node cap is the one stop condition streamBounded cannot see, so it
+        // reports itself here rather than being folded into a row reason.
+        if ($nodeLimitHit) {
+            $truncationReasons[] = 'node_limit';
         }
+        $truncated = $truncationReasons !== [];
 
         $adjacency = $reverse = [];
         foreach (array_keys($nodes) as $id) {
@@ -256,14 +265,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $nodeStatement->bindValue(':project', $projectId);
         $nodeStatement->bindValue(':limit', $maxNodes + 1, PDO::PARAM_INT);
         $nodeStatement->execute();
-        $nodeRows = $nodeStatement->fetchAll();
-        $truncated = count($nodeRows) > $maxNodes;
-        $truncationReasons = $truncated ? ['node_limit'] : [];
-        $nodeRows = array_slice($nodeRows, 0, $maxNodes);
         $nodes = [];
-        foreach ($nodeRows as $row) {
+        // Streamed for the same reason as the edge walk below: max_nodes reaches 50,000 joined
+        // rows, and fetchAll() read every one of them before the deadline was ever consulted.
+        $truncationReasons = $this->streamBounded($nodeStatement, $maxNodes, $deadline, function (array $row) use (&$nodes): bool {
             $nodes[$row['id']] = $row;
-        }
+
+            return true;
+        }, 'node_limit');
+        $truncated = $truncationReasons !== [];
 
         $placeholders = implode(',', array_fill(0, count($edgeKinds), '?'));
         $edgeStatement = $this->pdo->prepare(
@@ -272,13 +282,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
             'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
         );
-        $edgeStatement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
-        $edgeRows = $edgeStatement->fetchAll();
-        if (count($edgeRows) > $maxEdges) {
-            $truncated = true;
-            $truncationReasons[] = 'edge_limit';
-        }
-        $edgeRows = array_slice($edgeRows, 0, $maxEdges);
 
         $nodeIds = array_keys($nodes);
         $roles = $this->roles($nodeIds);
@@ -292,15 +295,14 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // implemented is not evidence that anything uses it, so the contract
         // gate below has to be able to discount them.
         $inheritanceInDegree = [];
+        // Executed beside its consumer, not its prepare(): a streamed statement holds its read cursor from
+        // execute() until drained, and the three lookups above would otherwise run inside it — undrained if any threw.
+        $edgeStatement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
         $edgesExamined = 0;
-        foreach ($edgeRows as $edge) {
-            if ((++$edgesExamined % 256) === 0 && $this->now() > $deadline) {
-                $truncated = true;
-                $truncationReasons[] = 'time_limit';
-                break;
-            }
+        $edgeReasons = $this->streamBounded($edgeStatement, $maxEdges, $deadline, function (array $edge) use (&$edgesExamined, &$metrics, &$inheritanceInDegree, $nodes, $boundaries, $repositoryWide): bool {
+            ++$edgesExamined;
             if (!isset($nodes[$edge['source_id']], $nodes[$edge['target_id']])) {
-                continue;
+                return true;
             }
             ++$metrics[$edge['source_id']]['out_degree'];
             ++$metrics[$edge['target_id']]['in_degree'];
@@ -313,6 +315,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 ++$metrics[$edge['source_id']]['cross_boundary_degree'];
                 ++$metrics[$edge['target_id']]['cross_boundary_degree'];
             }
+
+            return true;
+        });
+        if ($edgeReasons !== []) {
+            $truncated = true;
+            $truncationReasons = array_merge($truncationReasons, $edgeReasons);
         }
 
         $cycleMembers = [];
@@ -370,9 +378,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // inbound edge makes a referenced symbol look unreferenced. Re-check the
         // survivors against the whole edge table before calling anything dead.
         if ($provisional !== [] && array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== []) {
-            foreach ($deadCode->referencedNodes($projectId, array_keys($provisional), $edgeKinds, $confidenceRank[$minConfidence]) as $referencedId) {
-                unset($provisional[$referencedId]);
-            }
+            $provisional = $deadCode->reconcileBoundedWalk($projectId, $provisional, $nodes, $edgeKinds, $confidenceRank[$minConfidence], $metrics, $inheritanceInDegree);
         }
         $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree);
         $deadCandidates = $classified['candidates'];
@@ -413,7 +419,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            sprintf('Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates.', count($hubs), count($hotspots), count($deadCandidates)),
+            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $truncationReasons),
             [
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
@@ -436,6 +442,32 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             ],
             $truncated,
         );
+    }
+
+    /**
+     * The one-line summary for architecture_health, naming the bound when the
+     * ranking was truncated.
+     *
+     * A bounded ranking must not read as an exhaustive one: "Ranked 0 hubs, 0
+     * static hotspots, and 0 unreferenced-code candidates" is the same sentence
+     * a genuinely clean project gets, and a hub sitting beyond the node, edge,
+     * time, or result cap is invisible in it. Naming the bound here is what lets
+     * a caller tell the two apart without reading bounds.truncation_reasons —
+     * the same contract {@see self::dependencyCycles()} keeps.
+     *
+     * Extracted rather than inlined because architectureHealth is up against
+     * the repository's own function-length budget.
+     *
+     * @param list<string> $truncationReasons
+     */
+    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, array $truncationReasons): string
+    {
+        $summary = sprintf('Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates.', $hubs, $hotspots, $deadCandidates);
+        if ($truncationReasons !== []) {
+            $summary .= sprintf(' The ranking was truncated (%s), so components beyond that bound are not reported.', implode(', ', $truncationReasons));
+        }
+
+        return $summary;
     }
 
     /**

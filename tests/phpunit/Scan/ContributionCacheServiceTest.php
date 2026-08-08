@@ -164,4 +164,99 @@ final class ContributionCacheServiceTest extends TestCase
         assertSame(1, count($result['contributions']));
         assertSame(1, count($result['cache_entries']));
     }
+
+    public function testMissingContributionBecomesADiagnosticRatherThanAnException(): void
+    {
+        // A worker that fails to emit for one file must cost that file, not the
+        // scan: every other file in the batch has already contributed facts.
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $fileA = $this->writeFile('a.php', "<?php // a\n");
+        $fileB = $this->writeFile('b.php', "<?php // b\n");
+        $contributionA = new ScanContribution($manifest->id . ':file:a.php');
+
+        $result = $service->entriesForScanned([$contributionA], [$fileA, $fileB], $manifest, 'cfg');
+
+        self::assertCount(2, $result['contributions']);
+        $missing = $result['contributions'][1];
+        self::assertSame($manifest->id . ':file:b.php', $missing->ownerKey);
+        self::assertSame([], $missing->nodes);
+        self::assertSame('SCANNER_OMITTED_CONTRIBUTION', $missing->diagnostics[0]->code);
+        // Never cached: the next scan must retry the file from source.
+        self::assertCount(1, $result['cache_entries']);
+    }
+
+    /**
+     * A worker that answers under the wrong owner key is not the same failure
+     * as one that skips a file, and must not be reported as one.
+     *
+     * The misattributed contribution held real nodes and edges; nothing maps
+     * them to a scanned file, so they are discarded and the file they should
+     * have described comes back empty. Reporting that under
+     * SCANNER_OMITTED_CONTRIBUTION filed a bug in the worker's own bookkeeping
+     * under the ordinary, expected "that file produced nothing" code, where it
+     * reads as coverage noise rather than as the defect it is.
+     */
+    public function testAContributionUnderAnUnrequestedOwnerGetsItsOwnDiagnostic(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $file = $this->writeFile('b.php', "<?php // b\n");
+        $misattributed = new ScanContribution($manifest->id . ':file:not/asked/for.php');
+
+        $result = $service->entriesForScanned([$misattributed], [$file], $manifest, 'cfg');
+
+        self::assertCount(1, $result['contributions']);
+        $diagnostic = $result['contributions'][0]->diagnostics[0];
+        self::assertSame('SCANNER_MISATTRIBUTED_CONTRIBUTION', $diagnostic->code);
+        self::assertStringContainsString('not/asked/for.php', $diagnostic->message);
+        self::assertCount(0, $result['cache_entries']);
+    }
+
+    /**
+     * An unrequested owner key was only ever reported through the requested
+     * file that went missing because of it. A worker that answers for every
+     * file it was asked about *and* adds a stray owner leaves no such file
+     * behind, so its discarded nodes and edges went unrecorded entirely.
+     */
+    public function testAnUnrequestedOwnerIsReportedEvenWhenEveryRequestedFileWasAnswered(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $file = $this->writeFile('b.php', "<?php // b\n");
+        $answered = new ScanContribution($manifest->id . ':file:b.php');
+        $stray = new ScanContribution($manifest->id . ':file:not/asked/for.php');
+
+        $result = $service->entriesForScanned([$answered, $stray], [$file], $manifest, 'cfg');
+
+        self::assertCount(2, $result['contributions']);
+        $report = $result['contributions'][1];
+        self::assertSame($manifest->id . ':scan', $report->ownerKey);
+        self::assertSame('SCANNER_MISATTRIBUTED_CONTRIBUTION', $report->diagnostics[0]->code);
+        self::assertStringContainsString('not/asked/for.php', $report->diagnostics[0]->message);
+        // The answered file is legitimate and still cached.
+        self::assertCount(1, $result['cache_entries']);
+    }
+
+    /**
+     * Two contributions under one owner key silently overwrote each other in
+     * the lookup index, so the earlier one's facts vanished and the survivor
+     * — picked by arrival order — was cached as if it were authoritative.
+     */
+    public function testADuplicateOwnerKeyIsReportedAndKeepsTheFileOutOfTheCache(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $file = $this->writeFile('b.php', "<?php // b\n");
+        $first = new ScanContribution($manifest->id . ':file:b.php');
+        $second = new ScanContribution($manifest->id . ':file:b.php');
+
+        $result = $service->entriesForScanned([$first, $second], [$file], $manifest, 'cfg');
+
+        self::assertCount(1, $result['contributions']);
+        $diagnostic = $result['contributions'][0]->diagnostics[0];
+        self::assertSame('SCANNER_DUPLICATE_CONTRIBUTION', $diagnostic->code);
+        self::assertStringContainsString('b.php', $diagnostic->message);
+        self::assertCount(0, $result['cache_entries']);
+    }
 }

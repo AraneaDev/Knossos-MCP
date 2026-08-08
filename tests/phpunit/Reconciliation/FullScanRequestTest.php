@@ -15,6 +15,7 @@ use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\Origin;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
@@ -79,7 +80,56 @@ final class FullScanRequestTest extends TestCase
             // mode is positional 9; default 'full' if absent
             $args['mode'] ?? 'full',
             $args['contributionCache'] ?? [],
+            $args['workerDiagnostics'] ?? [],
         );
+    }
+
+    public function testWorkerDiagnosticsAcceptAWellFormedFailure(): void
+    {
+        $request = self::buildRequest(['workerDiagnostics' => [
+            ['owner' => 'knossos.typescript', 'code' => 'WORKER_TIMEOUT', 'message' => 'typescript scanner failed.'],
+        ]]);
+
+        assertSame('WORKER_TIMEOUT', $request->workerDiagnostics[0]['code']);
+    }
+
+    public function testWorkerDiagnosticsRejectANonList(): void
+    {
+        $error = captureThrows(
+            static fn(): FullScanRequest => self::buildRequest(['workerDiagnostics' => [
+                'typescript' => ['owner' => 'knossos.typescript', 'code' => 'WORKER_TIMEOUT', 'message' => 'failed.'],
+            ]]),
+            InvalidArgumentException::class,
+        );
+
+        assertSame('workerDiagnostics must be a list.', $error->getMessage());
+    }
+
+    /**
+     * GraphReconciler indexes these three keys raw while the graph transaction is
+     * open, so a missing, non-string, or empty field has to fail before that.
+     *
+     * @return array<string, array{0: list<mixed>}>
+     */
+    public static function malformedWorkerDiagnosticProvider(): array
+    {
+        return [
+            'missing key' => [[['owner' => 'knossos.php', 'code' => 'WORKER_FAILED']]],
+            'non-string field' => [[['owner' => 'knossos.php', 'code' => 7, 'message' => 'failed.']]],
+            'empty field' => [[['owner' => '', 'code' => 'WORKER_FAILED', 'message' => 'failed.']]],
+            'not an array' => [['WORKER_FAILED']],
+        ];
+    }
+
+    #[DataProvider('malformedWorkerDiagnosticProvider')]
+    public function testWorkerDiagnosticsRejectAMalformedEntry(array $workerDiagnostics): void
+    {
+        $error = captureThrows(
+            static fn(): FullScanRequest => self::buildRequest(['workerDiagnostics' => $workerDiagnostics]),
+            InvalidArgumentException::class,
+        );
+
+        assertSame('workerDiagnostics contains an invalid value.', $error->getMessage());
     }
 
     private static function minimalEvidence(): Evidence

@@ -12,7 +12,7 @@
       "capabilities"
     ]
   },
-  "lifecycle": ["initialize", "discover", "scan", "shutdown"],
+  "lifecycle": ["initialize", "scan", "cancel", "shutdown"],
   "contribution_notification": "scan/contribution",
   "stable_errors": [
     "WORKER_PROTOCOL_VERSION_MISMATCH",

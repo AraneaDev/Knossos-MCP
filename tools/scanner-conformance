@@ -33,8 +33,6 @@ $client = new ProcessScannerClient($command);
 try {
     $manifest = $client->requireCapabilities($required);
     $checks[] = ['name' => 'initialize', 'status' => 'pass'];
-    $discovery = $client->discover(['root' => $temporary]);
-    $checks[] = ['name' => 'discover', 'status' => is_array($discovery) ? 'pass' : 'fail'];
     $contributions = iterator_to_array($client->scan(['root' => $temporary, 'files' => []]));
     $checks[] = ['name' => 'empty_scan', 'status' => $contributions === [] ? 'pass' : 'fail'];
     $client->shutdown();

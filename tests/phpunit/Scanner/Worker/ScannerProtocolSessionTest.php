@@ -470,56 +470,6 @@ final class ScannerProtocolSessionTest extends TestCase
         assertSame(true, $process->lastTerminate);
     }
 
-    // ── discover() ─────────────────────────────────────────────────────────
-
-    public function testDiscoverSendsDiscoverAndReturnsResult(): void
-    {
-        $channel = new class implements RpcChannelInterface {
-            public array $sent = [];
-            private int $readCount = 0;
-
-            public function beginRequest(): int { return hrtime(true) + 10_000_000_000; }
-            public function send(array $message, ?callable $cancelled = null): void { $this->sent[] = $message; }
-            public function readMessage(int $deadline, ?callable $cancelled = null): array
-            {
-                ++$this->readCount;
-                // First read: initialize response
-                if ($this->readCount === 1) {
-                    return ['id' => 1, 'result' => [
-                        'id' => 'php-scanner',
-                        'version' => '1.0.0',
-                        'protocol_version' => Protocol::VERSION,
-                        'output_schema_version' => Protocol::OUTPUT_SCHEMA_VERSION,
-                        'languages' => ['php'],
-                        'file_extensions' => ['.php'],
-                        'capabilities' => [],
-                    ]];
-                }
-                // Second read: discover response
-                return ['id' => 2, 'result' => ['files' => ['src/Foo.php']]];
-            }
-            public function stderr(): string { return ''; }
-        };
-
-        $process = new class implements ProcessSupervisorInterface {
-            public function start(): void {}
-            public function isRunning(): bool { return true; }
-            public function stdin() { return fopen('php://temp', 'r+'); }
-            public function stdout() { return fopen('php://temp', 'r+'); }
-            public function stderr() { return fopen('php://temp', 'r+'); }
-            public function status(): array { return ['command' => '', 'pid' => 0, 'running' => true, 'signaled' => false, 'stopped' => false, 'exitcode' => -1, 'termsig' => 0, 'stopsig' => 0]; }
-            public function close(bool $terminate): void {}
-        };
-
-        $session = new ScannerProtocolSession($process, $channel);
-        $result = $session->discover(['path' => '/test']);
-
-        assertSame(['files' => ['src/Foo.php']], $result);
-        // Two requests: initialize (id=1) + discover (id=2)
-        $this->assertCount(2, $channel->sent);
-        assertSame('discover', $channel->sent[1]['method']);
-    }
-
     // ── scan() ─────────────────────────────────────────────────────────────
 
     public function testScanYieldsContributionsAndReturnsResult(): void

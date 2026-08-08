@@ -1,8 +1,8 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { describe, it, expect, afterEach, vi } from "vitest";
+import fs, { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { TypeScriptScanner } from "../scanner.js";
+import { TypeScriptScanner, discoverConfigFiles } from "../scanner.js";
 
 const created = [];
 
@@ -24,20 +24,22 @@ afterEach(() => {
     }
 });
 
-describe("TypeScriptScanner.discover", () => {
-    it("returns sorted tsconfig and package inputs, skipping node_modules", () => {
+describe("discoverConfigFiles", () => {
+    it("discovers tsconfig files below the root when none are supplied", () => {
         const root = fixture({
-            "package.json": "{}",
-            "tsconfig.json": "{}",
-            "src/index.ts": "export const x = 1;\n",
-            "node_modules/dep/package.json": "{}",
-            "node_modules/dep/tsconfig.json": "{}",
+            "tsconfig.json": "{}\n",
+            "packages/app/tsconfig.build.json": "{}\n",
+            "node_modules/dep/tsconfig.json": "{}\n",
+            "a.ts": "export const a = 1;\n",
         });
 
-        const result = new TypeScriptScanner().discover({ root });
-
-        expect(result.config_files).toEqual(["tsconfig.json"]);
-        expect(result.package_files).toEqual(["package.json"]);
+        // Not re-sorted here: sorting the result before comparing it made the
+        // function's own configs.sort() untestable — a `configs.sort().reverse()`
+        // mutant produced the same assertion.
+        expect(discoverConfigFiles(root)).toEqual([
+            "packages/app/tsconfig.build.json",
+            "tsconfig.json",
+        ]);
     });
 });
 
@@ -255,64 +257,150 @@ describe("TypeScriptScanner.scan value references", () => {
     });
 });
 
+// Each test below builds one or more full ts.Program instances in-process
+// (~947-964ms measured on a quiet run). Vitest's 5000ms default leaves no
+// headroom under the quality gate's parallel load (concurrent docker build +
+// PHP suite); 30s gives real headroom without masking an actual hang.
+const PROGRAM_BUILD_TIMEOUT_MS = 30000;
+
 describe("TypeScriptScanner.scan program cache", () => {
-    it("bounds the retained program cache when a project has many tsconfigs", () => {
-        // Regression guard for the OOM fix: one full ts.Program per tsconfig,
-        // all retained at once, exhausted the worker heap. The cache is LRU-capped.
-        const root = fixture({
-            "package.json": "{}",
-            "a/tsconfig.json": '{"include":["x.ts"]}',
-            "a/x.ts": "export const a = 1;\n",
-            "b/tsconfig.json": '{"include":["y.ts"]}',
-            "b/y.ts": "export const b = 2;\n",
-            "c/tsconfig.json": '{"include":["z.ts"]}',
-            "c/z.ts": "export const c = 3;\n",
-        });
+    it(
+        "bounds the retained program cache when a project has many tsconfigs",
+        () => {
+            // Regression guard for the OOM fix: one full ts.Program per tsconfig,
+            // all retained at once, exhausted the worker heap. The cache is LRU-capped.
+            const root = fixture({
+                "package.json": "{}",
+                "a/tsconfig.json": '{"include":["x.ts"]}',
+                "a/x.ts": "export const a = 1;\n",
+                "b/tsconfig.json": '{"include":["y.ts"]}',
+                "b/y.ts": "export const b = 2;\n",
+                "c/tsconfig.json": '{"include":["z.ts"]}',
+                "c/z.ts": "export const c = 3;\n",
+            });
 
-        const scanner = new TypeScriptScanner();
-        const emitted = [];
-        const summary = scanner.scan(
-            { root, files: ["a/x.ts", "b/y.ts", "c/z.ts"] },
-            (c) => emitted.push(c),
-        );
+            const scanner = new TypeScriptScanner();
+            const emitted = [];
+            const summary = scanner.scan(
+                { root, files: ["a/x.ts", "b/y.ts", "c/z.ts"] },
+                (c) => emitted.push(c),
+            );
 
-        expect(summary.files_scanned).toBe(3);
-        expect(new Set(emitted.map((c) => c.owner_key)).size).toBe(3);
-        // Never retains more than the documented bound, however many configs exist.
-        expect(scanner.programCache.size).toBeLessThanOrEqual(2);
+            expect(summary.files_scanned).toBe(3);
+            expect(new Set(emitted.map((c) => c.owner_key)).size).toBe(3);
+            // Never retains more than the documented bound, however many configs exist.
+            expect(scanner.programCache.size).toBeLessThanOrEqual(2);
+        },
+        PROGRAM_BUILD_TIMEOUT_MS,
+    );
+
+    it(
+        "frees a cache slot before building the next program",
+        () => {
+            // Retaining the cap and *then* evicting put cap + 1 programs in memory
+            // at the peak, because the new program is constructed while the cache
+            // is still full — the overshoot the cap exists to prevent. A real
+            // 111-file project with three tsconfigs died on it: the worker's
+            // 512 MB heap held two programs and OOMed building the third, so the
+            // scan failed outright while the retained-size assertion above passed.
+            const root = fixture({
+                "package.json": "{}",
+                "a/tsconfig.json": '{"include":["x.ts"]}',
+                "a/x.ts": "export const a = 1;\n",
+                "b/tsconfig.json": '{"include":["y.ts"]}',
+                "b/y.ts": "export const b = 2;\n",
+                "c/tsconfig.json": '{"include":["z.ts"]}',
+                "c/z.ts": "export const c = 3;\n",
+            });
+
+            const scanner = new TypeScriptScanner();
+            // The cache is read immediately before each program is built, so its
+            // size at that moment is the number of programs already resident.
+            const residentAtBuild = [];
+            const cache = scanner.programCache;
+            const realGet = cache.get.bind(cache);
+            cache.get = (key) => {
+                residentAtBuild.push(cache.size);
+                return realGet(key);
+            };
+
+            scanner.scan(
+                { root, files: ["a/x.ts", "b/y.ts", "c/z.ts"] },
+                () => {},
+            );
+
+            expect(residentAtBuild.length).toBeGreaterThanOrEqual(3);
+            expect(Math.max(...residentAtBuild)).toBeLessThanOrEqual(1);
+        },
+        PROGRAM_BUILD_TIMEOUT_MS,
+    );
+});
+
+describe("TypeScriptScanner.scan backstop", () => {
+    it("emits a contribution for a requested file that no program included", () => {
+        // validateRequestedFiles stats the file, then createRestrictedProgram stats
+        // it again via exceedsByteCap. A file that grows in between passes the first
+        // check and is dropped from the program by the second — so it is requested,
+        // accepted, and never emitted. The PHP side requires exactly one
+        // contribution per requested file, so that gap must not be silent.
+        const root = fixture({ "a.ts": "export const a = 1;\n" });
+        const real = fs.statSync.bind(fs);
+        let stats = 0;
+        const spy = vi
+            .spyOn(fs, "statSync")
+            .mockImplementation((target, options) => {
+                const result = real(target, options);
+                if (String(target).endsWith("a.ts") && ++stats > 1) {
+                    return { ...result, isFile: () => true, size: 10_000_000 };
+                }
+                return result;
+            });
+        try {
+            const emitted = [];
+            new TypeScriptScanner().scan(
+                {
+                    root,
+                    files: ["a.ts"],
+                    limits: { max_files: 10, max_file_bytes: 2_000_000 },
+                },
+                (contribution) => emitted.push(contribution),
+            );
+            expect(emitted).toHaveLength(1);
+            expect(emitted[0].owner_key).toBe("knossos.typescript:file:a.ts");
+            expect(emitted[0].diagnostics[0].code).toBe("TS_UNSCANNABLE_FILE");
+        } finally {
+            spy.mockRestore();
+        }
     });
 
-    it("frees a cache slot before building the next program", () => {
-        // Retaining the cap and *then* evicting put cap + 1 programs in memory
-        // at the peak, because the new program is constructed while the cache
-        // is still full — the overshoot the cap exists to prevent. A real
-        // 111-file project with three tsconfigs died on it: the worker's
-        // 512 MB heap held two programs and OOMed building the third, so the
-        // scan failed outright while the retained-size assertion above passed.
-        const root = fixture({
-            "package.json": "{}",
-            "a/tsconfig.json": '{"include":["x.ts"]}',
-            "a/x.ts": "export const a = 1;\n",
-            "b/tsconfig.json": '{"include":["y.ts"]}',
-            "b/y.ts": "export const b = 2;\n",
-            "c/tsconfig.json": '{"include":["z.ts"]}',
-            "c/z.ts": "export const c = 3;\n",
-        });
-
-        const scanner = new TypeScriptScanner();
-        // The cache is read immediately before each program is built, so its
-        // size at that moment is the number of programs already resident.
-        const residentAtBuild = [];
-        const cache = scanner.programCache;
-        const realGet = cache.get.bind(cache);
-        cache.get = (key) => {
-            residentAtBuild.push(cache.size);
-            return realGet(key);
+    it("emits exactly one contribution per accepted file", () => {
+        // The invariant the PHP side depends on, asserted directly.
+        const files = {
+            "a.ts": "export const a = 1;\n",
+            "b.ts": "export const b = 2;\n",
+            "c.js": "module.exports = 3;\n",
         };
-
-        scanner.scan({ root, files: ["a/x.ts", "b/y.ts", "c/z.ts"] }, () => {});
-
-        expect(residentAtBuild.length).toBeGreaterThanOrEqual(3);
-        expect(Math.max(...residentAtBuild)).toBeLessThanOrEqual(1);
+        const root = fixture(files);
+        const emitted = [];
+        const summary = new TypeScriptScanner().scan(
+            {
+                root,
+                files: Object.keys(files),
+                limits: { max_files: 10, max_file_bytes: 2_000_000 },
+            },
+            (contribution) => emitted.push(contribution),
+        );
+        expect(emitted).toHaveLength(Object.keys(files).length);
+        expect(summary.files_scanned).toBe(Object.keys(files).length);
+        // The keys, not just the count: emitting one owner_key twice and
+        // another not at all keeps both counts correct while breaking the
+        // one-contribution-per-file invariant the PHP side relies on.
+        expect(
+            emitted.map((contribution) => contribution.owner_key).sort(),
+        ).toEqual(
+            Object.keys(files)
+                .map((file) => `knossos.typescript:file:${file}`)
+                .sort(),
+        );
     });
 });

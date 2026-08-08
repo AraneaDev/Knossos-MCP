@@ -233,6 +233,41 @@ JSON;
         $this->assertStringContainsString('PROJECT_CONFIG_UNSAFE', $error->getMessage());
     }
 
+    public function testLoadRejectsAnIgnorePatternOverFiveHundredBytes(): void
+    {
+        $tooLong = str_repeat('a', 501);
+        $root = $this->writeConfig('knossos.json', json_encode(['version' => 1, 'ignores' => [$tooLong]]));
+
+        $error = captureThrows(
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
+            DiscoveryException::class,
+        );
+
+        $this->assertStringContainsString('PROJECT_CONFIG_UNSAFE', $error->getMessage());
+        $this->assertStringContainsString('500 bytes', $error->getMessage());
+    }
+
+    /**
+     * The whole point of compiling ignore patterns eagerly at load time is
+     * that a pattern which cannot compile is attributed to the configuration
+     * file that declared it, rather than surfacing later, mid-discovery, on
+     * whatever arbitrary path happened to exercise it. '[z-a]' is a
+     * descending character-class range, which has no valid PCRE
+     * interpretation even once the class body is correctly escaped.
+     */
+    public function testLoadRejectsAnIgnorePatternThatCannotCompile(): void
+    {
+        $root = $this->writeConfig('knossos.json', '{"version": 1, "ignores": ["[z-a]"]}');
+
+        $error = captureThrows(
+            static fn() => ProjectConfigurationLoader::load($root, [$root]),
+            DiscoveryException::class,
+        );
+
+        $this->assertStringContainsString('PROJECT_CONFIG_INVALID', $error->getMessage());
+        $this->assertStringContainsString('[z-a]', $error->getMessage());
+    }
+
     // ----- limits validation -----
 
     public function testLoadRejectsMaxFilesBelowOne(): void

@@ -51,38 +51,12 @@ const EXCLUDED_DIRECTORIES = new Set([
 const MAX_CACHED_PROGRAMS = 2;
 
 /**
- * Performs bounded compiler-backed discovery and scanning without executing
- * target modules. Instances retain TypeScript programs for incremental reuse.
+ * Performs bounded compiler-backed scanning without executing target modules.
+ * Instances retain TypeScript programs for incremental reuse.
  */
 export class TypeScriptScanner {
     constructor() {
         this.programCache = new Map();
-    }
-
-    /**
-     * Return sorted TypeScript configuration and package inputs below a validated root.
-     *
-     * @param {{root: unknown}} params
-     * @returns {{root: string, config_files: string[], package_files: string[]}}
-     */
-    discover(params) {
-        const root = validateRoot(params.root);
-        const configs = [];
-        const packages = [];
-        walk(root, root, (absolute, relative) => {
-            const basename = path.basename(relative).toLowerCase();
-            if (basename === "package.json") packages.push(relative);
-            if (
-                basename === "tsconfig.json" ||
-                (basename.startsWith("tsconfig.") && basename.endsWith(".json"))
-            ) {
-                configs.push(relative);
-            }
-        });
-
-        configs.sort();
-        packages.sort();
-        return { root, config_files: configs, package_files: packages };
     }
 
     /**
@@ -170,6 +144,23 @@ export class TypeScriptScanner {
             if (oldProgram) ++programsReused;
             this.#emitProgram(root, program, requestedSet, emitted, emit);
             ++programs;
+        }
+
+        // Backstop: the PHP side requires exactly one contribution per requested
+        // file and treats a gap as a hard error. A file can still be absent from
+        // every program — it grew past the byte cap after validateRequestedFiles
+        // stat'd it, or a symlinked path resolved outside the root — so name the
+        // gap here rather than letting it surface as "scanner omitted".
+        for (const relative of requested) {
+            const key = normalize(relative);
+            if (emitted.has(key)) continue;
+            emit(
+                unscannableContribution(
+                    key,
+                    "File was not included in any TypeScript program (it may have changed size or moved since discovery).",
+                ),
+            );
+            emitted.add(key);
         }
 
         return {
@@ -1132,7 +1123,31 @@ function configFilesForScan(root, requested) {
             normalize(path.relative(root, validatedInside(root, item))),
         );
     }
-    return new TypeScriptScanner().discover({ root }).config_files;
+    return discoverConfigFiles(root);
+}
+
+/**
+ * Return sorted project-relative tsconfig paths below a validated root.
+ *
+ * Walking is the fallback, not the norm: the core names `config_files` on every
+ * scan it plans, so this runs only for a request that supplied none.
+ *
+ * @param {string} root Absolute, already-validated project root.
+ * @returns {string[]} Project-relative tsconfig paths, sorted.
+ */
+export function discoverConfigFiles(root) {
+    const configs = [];
+    walk(root, root, (absolute, relative) => {
+        const basename = path.basename(relative).toLowerCase();
+        if (
+            basename === "tsconfig.json" ||
+            (basename.startsWith("tsconfig.") && basename.endsWith(".json"))
+        ) {
+            configs.push(relative);
+        }
+    });
+
+    return configs.sort();
 }
 
 function maxFileBytesFrom(limits) {
@@ -1345,7 +1360,7 @@ function walk(root, directory, onFile) {
         entries = fs.readdirSync(directory, { withFileTypes: true });
     } catch {
         // An unreadable directory (EACCES/EPERM) must not fail the whole
-        // discover/scan walk; skip it and continue, matching Python's os.walk.
+        // tsconfig walk; skip it and continue, matching Python's os.walk.
         return;
     }
     for (const entry of entries) {

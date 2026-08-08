@@ -50,6 +50,58 @@ final class FastPathTest extends KnossosTestCase
         }
     }
 
+    /**
+     * A directory-mtime bump that discovery cannot see -- a `__pycache__`
+     * appearing, a build artefact written, an editor swap file created and
+     * removed -- makes StalenessProbe report an addition, and the fast path is
+     * the only thing that can retract it: it creates no scan row, so unless it
+     * restamps the active scan's completion the project reads stale for ever and
+     * every `refresh_if_stale` call rescans the whole tree for nothing.
+     *
+     * Deliberately does not lean on scanTempFixture()'s directory backdating,
+     * which exists to keep a freshly copied tree from reading as stale and would
+     * otherwise be the only reason this passes: the scan's finished_at is pushed
+     * explicitly into the past and a real ignored artefact is written, so the
+     * "appeared later than the scan" relation is established here rather than
+     * inherited.
+     */
+    #[Group('scan')]
+    public function testDirectoryMtimeBumpIsRetractedByTheFastPath(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $scanId = (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn();
+            $pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
+                ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() - 5), 'id' => $scanId]);
+            // An entry, not a bare `touch` of the directory: the probe counts
+            // the entries that appeared rather than the directories whose mtime
+            // moved, because an mtime moves on unlink too and counting it as an
+            // addition reported every deletion twice.
+            mkdir($root . '/src/__pycache__');
+            file_put_contents($root . '/src/__pycache__/service.cpython-312.pyc', "\x00\x00");
+
+            $probe = new StalenessProbe($pdo);
+            $before = $probe->probe($projectId);
+            assertSame('stale', $before['state']);
+            assertSame(1, $before['added_files_since']);
+
+            $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+
+            assertSame('no_change', $result->data['fast_path']);
+            $after = $probe->probe($projectId);
+            assertSame('fresh', $after['state']);
+            assertSame(0, $after['added_files_since']);
+
+            // Retracted by restamping the active scan, not by recording a new
+            // one: a new scan row would have to carry every graph row's
+            // last_scan_id forward, which is the work this path exists to skip.
+            assertSame(1, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn());
+            assertSame($scanId, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('scan')]
     public function testContentChangeOrFullModeSkipsFastPath(): void
     {
@@ -116,6 +168,57 @@ final class FastPathTest extends KnossosTestCase
             assertSame('no_change', $again->data['fast_path']);
         } finally {
             $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * An installation root whose TypeScript worker dies on start. The PHP worker
+     * is copied verbatim so it still succeeds: the point is one dead language
+     * beside a healthy one, not a scan with nothing left.
+     */
+    private function installationRootWithDeadTypescriptWorker(): string
+    {
+        $installation = sys_get_temp_dir() . '/knossos-stale-install-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/workers/php', $installation . '/workers/php');
+        mkdir($installation . '/workers/typescript/bin', 0o777, true);
+        file_put_contents($installation . '/workers/typescript/bin/worker.js', "process.exit(3);\n");
+
+        return $installation;
+    }
+
+    #[Group('scan')]
+    public function testDegradedLanguageSkipsFastPathSoItsDiagnosticReachesTheGraph(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
+        $installation = $this->installationRootWithDeadTypescriptWorker();
+        try {
+            $pdo = $this->freshTestDatabase();
+            $service = new ProjectScanService($pdo, $installation, [$root]);
+
+            // TypeScript is already dead on the first scan, so it never enters the
+            // active scan's scanner set -- which is exactly why the scanner-set-hash
+            // guard cannot notice the failure on the rescan below.
+            $first = $service->scan($root);
+            assertSame(['knossos.typescript'], $first->data['degraded_languages']);
+
+            // Nothing changed on disk, so every tally the fast path consults is zero
+            // and the scanner set still matches. Only the degradation guard can stop
+            // it short-circuiting -- and it must, or the error diagnostic this scan
+            // produced would never be reconciled into the graph.
+            $second = $service->scan($root);
+
+            assertSame(false, array_key_exists('fast_path', $second->data));
+            assertSame('incremental', $second->data['mode']);
+            assertSame(['knossos.typescript'], $second->data['degraded_languages']);
+
+            $rows = $pdo->query("SELECT severity, code, file_id FROM diagnostics WHERE owner_key = 'knossos.typescript'")->fetchAll();
+            assertSame(1, count($rows));
+            assertSame('error', $rows[0]['severity']);
+            assertSame(null, $rows[0]['file_id']);
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($installation);
         }
     }
 

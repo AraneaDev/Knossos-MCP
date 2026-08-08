@@ -27,9 +27,7 @@ def test_bom_prefixed_file_parses_without_syntax_error(worker: ModuleType, tmp_p
 def test_pep263_encoded_file_parses_without_syntax_error(worker: ModuleType, tmp_path: Path, scan_collect) -> None:
     # A PEP 263 coding cookie with a latin-1 byte would raise UnicodeDecodeError
     # under utf-8 text decoding; parsing bytes honours the declared encoding.
-    (tmp_path / "latin.py").write_bytes(
-        b"# -*- coding: latin-1 -*-\n# \xe9 accented comment\nclass Caf:\n    pass\n"
-    )
+    (tmp_path / "latin.py").write_bytes(b"# -*- coding: latin-1 -*-\n# \xe9 accented comment\nclass Caf:\n    pass\n")
     [contribution] = scan_collect(tmp_path, ["latin.py"])
     assert _diag_codes(contribution) == []
     assert any(node["kind"] == "class" for node in contribution["nodes"])
@@ -200,7 +198,8 @@ def test_attribute_receivers_resolve_instead_of_inventing_members(
     [contribution] = scan_collect(tmp_path, ["mod.py"])
 
     calls = sorted(
-        target for kind, source, target in _edges(contribution)
+        target
+        for kind, source, target in _edges(contribution)
         if kind == "calls" and source == "py:method:mod.Owner::run"
     )
     assert calls == [
@@ -210,11 +209,9 @@ def test_attribute_receivers_resolve_instead_of_inventing_members(
         "py:method:mod.Helper::local_call",
         "py:method:mod.Helper::param_call",
     ]
-    assert not any(
-        "." in target.split("::", 1)[1]
-        for _, _, target in _edges(contribution)
-        if "::" in target
-    ), "no edge may name a member containing a dot"
+    assert not any("." in target.split("::", 1)[1] for _, _, target in _edges(contribution) if "::" in target), (
+        "no edge may name a member containing a dot"
+    )
 
 
 def test_a_receiver_reassigned_to_something_untracked_stops_resolving(
@@ -272,7 +269,8 @@ def test_a_tracked_local_propagates_through_a_passthrough_assignment(
     [contribution] = scan_collect(tmp_path, ["mod.py"])
 
     calls = sorted(
-        target for kind, source, target in _edges(contribution)
+        target
+        for kind, source, target in _edges(contribution)
         if kind == "calls" and source == "py:method:mod.Owner::run"
     )
     assert calls == [
@@ -328,3 +326,20 @@ def test_unreadable_file_costs_only_itself(monkeypatch, worker: ModuleType, proj
 
     assert _diag_codes(contributions["gone.py"]) == ["PY_UNSCANNABLE_FILE"]
     assert contributions["good.py"]["nodes"]  # unaffected by the sibling failure
+
+
+def test_top_level_relative_import_emits_no_empty_module_edge(worker: ModuleType, tmp_path: Path, scan_collect) -> None:
+    # `from . import x` in a module with no parent package resolves to nothing.
+    # Emitting `py:module:` for it produced a reference the graph cannot name.
+    (tmp_path / "toplevel.py").write_text("from . import helper\n", encoding="utf-8")
+    [contribution] = scan_collect(tmp_path, ["toplevel.py"])
+    assert all(edge["target"] != "py:module:" for edge in contribution["edges"])
+    assert "PY_UNRESOLVED_RELATIVE_IMPORT" in _diag_codes(contribution)
+
+
+def test_package_relative_import_still_emits_its_module_edge(worker: ModuleType, project, scan_collect) -> None:
+    # The guard must not swallow a relative import that does resolve.
+    root = project({"pkg/__init__.py": "", "pkg/a.py": "from . import b\n", "pkg/b.py": "VALUE = 1\n"})
+    [contribution] = scan_collect(root, ["pkg/a.py"])
+    assert ("imports", "py:module:pkg.a", "py:module:pkg") in _edges(contribution)
+    assert "PY_UNRESOLVED_RELATIVE_IMPORT" not in _diag_codes(contribution)

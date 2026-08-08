@@ -60,6 +60,13 @@ function ask(requests) {
     });
 }
 
+// Spawning a real worker subprocess and building a full ts.Program via
+// ts.createProgram measures ~2s on a quiet run. Vitest's 5000ms default
+// leaves no headroom for that under the quality gate's parallel load
+// (concurrent docker build + PHP suite), which is exactly how this test
+// timed out there. 30s gives real headroom without masking an actual hang.
+const SUBPROCESS_AND_PROGRAM_TIMEOUT_MS = 30000;
+
 describe("worker startup", () => {
     it("answers the handshake without loading the TypeScript compiler", async () => {
         // The compiler is roughly 190ms of load time and is not needed to say
@@ -76,25 +83,32 @@ describe("worker startup", () => {
         expect(loadedCompiler).toBe(false);
     });
 
-    it("loads the compiler when a scan actually needs it", async () => {
-        const root = path.resolve(
-            path.dirname(fileURLToPath(import.meta.url)),
-            "../../../../tests/Fixtures/typescript-scanner",
-        );
-        const { responses, loadedCompiler } = await ask([
-            { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
-            {
-                jsonrpc: "2.0",
-                id: 2,
-                method: "scan",
-                params: { root, files: ["packages/shared/src/contracts.ts"] },
-            },
-            { jsonrpc: "2.0", id: 3, method: "shutdown", params: {} },
-        ]);
+    it(
+        "loads the compiler when a scan actually needs it",
+        async () => {
+            const root = path.resolve(
+                path.dirname(fileURLToPath(import.meta.url)),
+                "../../../../tests/Fixtures/typescript-scanner",
+            );
+            const { responses, loadedCompiler } = await ask([
+                { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+                {
+                    jsonrpc: "2.0",
+                    id: 2,
+                    method: "scan",
+                    params: {
+                        root,
+                        files: ["packages/shared/src/contracts.ts"],
+                    },
+                },
+                { jsonrpc: "2.0", id: 3, method: "shutdown", params: {} },
+            ]);
 
-        const scan = responses.find((item) => item.id === 2);
-        expect(scan.error).toBeUndefined();
-        expect(scan.result.files_scanned).toBe(1);
-        expect(loadedCompiler).toBe(true);
-    });
+            const scan = responses.find((item) => item.id === 2);
+            expect(scan.error).toBeUndefined();
+            expect(scan.result.files_scanned).toBe(1);
+            expect(loadedCompiler).toBe(true);
+        },
+        SUBPROCESS_AND_PROGRAM_TIMEOUT_MS,
+    );
 });

@@ -123,6 +123,7 @@ final class ProjectScanService implements ProjectScanner
                 $analysis->boundaries,
                 $plan->effectiveMode,
                 $language->cacheEntries,
+                $language->workerDiagnostics,
             ));
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
@@ -179,14 +180,21 @@ final class ProjectScanService implements ProjectScanner
      * When an incremental scan discovered zero added/changed/deleted files and
      * neither the scanner set nor the persisted configuration moved, the
      * stored graph is already the correct result: skip teardown/rebuild and
-     * snapshot archiving entirely. Only stored file mtimes are refreshed so
-     * the staleness probe agrees with reality.
+     * snapshot archiving entirely. No graph row is rewritten and no scan row is
+     * created; only the stored file mtimes and the active scan's finished_at are
+     * refreshed, so the staleness probe agrees with reality.
      *
      * @param array<string, mixed> $projectConfig
      */
     private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig, ?string $name): ?ReconciliationResult
     {
-        if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0) {
+        // A degraded language contributes nothing to added/changed, so those tallies
+        // cannot see it, and the scanner-set hash only differs when the failed
+        // language was in the previously active scan. Without this guard the first
+        // scan to discover a language whose worker is missing would take the fast
+        // path and never reconcile, so the error diagnostic this scan produced would
+        // never reach the graph. A degraded scan is by definition not a no-change one.
+        if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0 || $language->workerDiagnostics !== []) {
             return null;
         }
         // Explicit boundary overrides and rename requests arrive as call arguments,
@@ -219,18 +227,33 @@ final class ProjectScanService implements ProjectScanner
         if ($row['scanner_set_hash'] !== GraphReconciler::scannerSetHash($language->manifests)) {
             return null;
         }
-        $this->refreshFileMtimes($plan->projectId, $preparation->discovery->files);
+        $this->recordVerifiedGraph($plan->projectId, (string) $row['active_scan_id'], $preparation->discovery->files);
         return $this->currentGraphCounts($plan->projectId, (string) $row['active_scan_id']);
     }
 
     /**
-     * Update stored mtimes for files whose content was unchanged, so the next scan can still reuse them.
+     * Record that this scan re-verified the stored graph without rebuilding it:
+     * refresh stored mtimes for files whose content was unchanged, and restamp
+     * the active scan's completion.
+     *
+     * Both halves exist for StalenessProbe, which compares stored file mtimes
+     * against the tree AND the directories holding tracked files against the
+     * active scan's finished_at. Refreshing mtimes alone left that second
+     * comparison anchored to a timestamp the fast path never advanced, so any
+     * directory-mtime bump discovery cannot see -- a `__pycache__` appearing, a
+     * build artefact, an editor swap file written and removed -- marked the
+     * project stale permanently: every rescan took this path, changed nothing
+     * the probe reads, and left the same verdict behind.
+     *
+     * One transaction, so a crash cannot leave refreshed mtimes measured against
+     * a completion that was never restated, or the reverse.
      *
      * @param list<\Knossos\Discovery\DiscoveredFile> $files
      */
-    private function refreshFileMtimes(string $projectId, array $files): void
+    private function recordVerifiedGraph(string $projectId, string $activeScanId, array $files): void
     {
-        (new SqliteGraphRepository($this->pdo))->transaction(function () use ($projectId, $files): void {
+        $repository = new SqliteGraphRepository($this->pdo);
+        $repository->transaction(function () use ($repository, $projectId, $activeScanId, $files): void {
             // Positional params: the mtime value is used twice (SET and guard).
             $update = $this->pdo->prepare(
                 'UPDATE files SET mtime = ? WHERE project_id = ? AND relative_path = ? AND mtime <> ?',
@@ -238,6 +261,7 @@ final class ProjectScanService implements ProjectScanner
             foreach ($files as $file) {
                 $update->execute([$file->mtime, $projectId, $file->relativePath, $file->mtime]);
             }
+            $repository->refreshScanCompletion($projectId, $activeScanId);
         });
     }
     /** Node and edge counts before reconciliation, for the scan report's delta. */

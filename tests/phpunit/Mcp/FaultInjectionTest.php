@@ -95,11 +95,26 @@ final class FaultInjectionTest extends KnossosTestCase
             // take far longer than 50 * 10ms = 500ms to reap the process tree, and
             // a fixed-count bound would flake there. The deadline is a generous
             // ceiling; the reap normally completes in a handful of polls.
+            //
+            // Liveness is the scheduler state, not the presence of /proc/<pid>:
+            // a killed process stays visible there as a zombie until whoever
+            // inherited it gets round to waiting on it, which is not something
+            // this test is asking about and not something it can control. The
+            // failure this test was seen to produce under gate load — the
+            // grandchild still there after the full ten seconds — had a second
+            // cause too, fixed in WorkerProcessSupervisor: the process group the
+            // termination is meant to signal was never established (setpgid on
+            // an already-exec'd child, refused 40 times out of 40), so the reap
+            // depended on a point-in-time walk of the worker's /proc children
+            // and missed anything spawned while the worker was being killed.
+            if (!self::hasProcessStateProbe()) {
+                $this->markTestSkipped('Asserting the process tree was reaped needs a process-state probe.');
+            }
             $deadline = microtime(true) + 10.0;
-            while (is_dir('/proc/' . $childPid) && microtime(true) < $deadline) {
+            while (self::processIsAlive($childPid) && microtime(true) < $deadline) {
                 usleep(10_000);
             }
-            assertSame(false, is_dir('/proc/' . $childPid));
+            assertSame(false, self::processIsAlive($childPid));
         } finally {
             unset($client);
             @unlink($pidFile);

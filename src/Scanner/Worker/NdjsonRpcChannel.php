@@ -70,6 +70,16 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $stdin = $this->process->stdin();
         $stdout = $this->process->stdout();
         $stderr = $this->process->stderr();
+        // An exhausted descriptor is permanently "ready", so a worker that
+        // closed one of its output pipes while the parent is still writing
+        // would make every stream_select() return instantly and turn this wait
+        // into a busy loop — and with $cancelled === null there is no 100 ms
+        // cap on the wait either, so that spin runs for the whole request
+        // timeout. Track both output descriptors and drop each from the select
+        // set once it is genuinely at EOF — never merely because one read came
+        // back empty, or the last diagnostics of a dying worker would be lost.
+        $stderrOpen = true;
+        $stdoutOpen = true;
         $written = 0;
         while ($written < $length) {
             if ($cancelled !== null && $cancelled()) {
@@ -84,7 +94,16 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             // Watch stdin for writability while simultaneously draining the
             // worker's stdout/stderr, so a worker blocked writing to its own
             // (bounded) output pipe cannot deadlock a >64 KB parent write.
-            $read = [$stdout, $stderr];
+            // `null`, not `[]`, once both are exhausted: stream_select() still
+            // has the writable $stdin to wait on and stays bounded by the
+            // timeout, but an empty array would be a third state to reason
+            // about at every use of $read below.
+            $read = match (true) {
+                $stdoutOpen && $stderrOpen => [$stdout, $stderr],
+                $stdoutOpen => [$stdout],
+                $stderrOpen => [$stderr],
+                default => null,
+            };
             $write = [$stdin];
             $except = null;
             $wait = $cancelled === null ? $remaining : min($remaining, 100_000_000);
@@ -102,8 +121,15 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 continue;
             }
 
-            foreach ($read as $stream) {
-                $this->absorb($stream, $stderr);
+            foreach ($read ?? [] as $stream) {
+                if (!$this->absorb($stream, $stderr)) {
+                    continue;
+                }
+                if ($stream === $stderr) {
+                    $stderrOpen = false;
+                } else {
+                    $stdoutOpen = false;
+                }
             }
 
             foreach ($write as $writable) {
@@ -126,6 +152,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     {
         $stdout = $this->process->stdout();
         $stderr = $this->process->stderr();
+        // An EOF descriptor is permanently "ready", so keeping a closed stderr
+        // in the select set turns this wait into a busy loop against a worker
+        // that is still alive — the liveness check below never fires for it.
+        // Drop stderr once exhausted; stdout's own EOF is handled by that
+        // check. The flag is per-call, so a restarted worker (an adaptive
+        // budget retry) is polled on its fresh stderr again.
+        $stderrOpen = true;
         while (true) {
             if ($cancelled !== null && $cancelled()) {
                 throw new WorkerException('WORKER_CANCELLED', 'Scanner worker request was cancelled.');
@@ -143,7 +176,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 throw new WorkerException('WORKER_TIMEOUT', $this->withStderr('Scanner worker request timed out.'));
             }
 
-            $read = [$stdout, $stderr];
+            $read = $stderrOpen ? [$stdout, $stderr] : [$stdout];
             $write = null;
             $except = null;
             $wait = $cancelled === null ? $remaining : min($remaining, 100_000_000);
@@ -165,11 +198,17 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             }
 
             foreach ($read as $stream) {
-                $chunk = fread($stream, 8192);
+                $chunk = @fread($stream, 8192);
                 if ($chunk === false) {
                     throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
                 }
                 if ($stream === $stderr) {
+                    if (self::isExhausted($stderr, $chunk)) {
+                        // Exhausted, not merely quiet: everything the worker
+                        // wrote has been drained, so stop selecting on it.
+                        $stderrOpen = false;
+                        continue;
+                    }
                     $this->appendStderr($chunk);
                     continue;
                 }
@@ -211,18 +250,53 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      *
      * @param resource $stream
      * @param resource $stderr
+     * @return bool True once the stream is exhausted — an empty read at EOF —
+     *              so the caller may drop the descriptor from its select set.
      */
-    private function absorb($stream, $stderr): void
+    private function absorb($stream, $stderr): bool
     {
-        $chunk = fread($stream, 8192);
-        if ($chunk === false || $chunk === '') {
-            return;
+        $chunk = @fread($stream, 8192);
+        if ($chunk === false) {
+            // A failed read is a failure to report, not a quiet descriptor to
+            // keep selecting on. Reported as "not exhausted" it stayed in the
+            // select set, and a descriptor that still reports ready spun here
+            // until the deadline and mislabelled the I/O error as a TIMEOUT.
+            // The receive loop already answers a false read this way.
+            throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
+        }
+        if ($chunk === '') {
+            return self::isExhausted($stream, $chunk);
         }
         if ($stream === $stderr) {
             $this->appendStderr($chunk);
-            return;
+            return false;
         }
         $this->appendStdout($chunk);
+
+        return false;
+    }
+
+    /**
+     * Whether a drained descriptor is genuinely finished — an empty read *at
+     * EOF* — rather than merely quiet for one pass.
+     *
+     * Both conditions matter and in opposite directions. Drop a descriptor that
+     * is only quiet and the last words of a dying worker are lost, which is
+     * usually the only clue to why it died. Keep one that is exhausted and
+     * stream_select() reports it ready forever, turning the wait into a spin
+     * that pins a core until the deadline.
+     *
+     * Extracted so the rule lives once and can be pinned once: its two callers
+     * both reach it through stream_select(), and no in-process test can make
+     * select() report a descriptor ready that then yields an empty read while
+     * still open — the very case the feof() term exists for. Dropping that term
+     * therefore left the whole suite green.
+     *
+     * @param resource $stream
+     */
+    private static function isExhausted($stream, string $chunk): bool
+    {
+        return $chunk === '' && feof($stream);
     }
 
     /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Configuration;
 
 use Knossos\Discovery\DiscoveryException;
+use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\JsonConfig;
 use Knossos\Discovery\RootGuard;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
@@ -56,10 +57,16 @@ final class ProjectConfigurationLoader
 
         $ignores = self::stringList($data['ignores'] ?? [], 'ignores', 100);
         foreach ($ignores as $pattern) {
+            if (strlen($pattern) > 500) {
+                throw new DiscoveryException('PROJECT_CONFIG_UNSAFE: ignore patterns must be at most 500 bytes.');
+            }
             if (str_starts_with($pattern, '/') || str_contains($pattern, "\0") || in_array('..', explode('/', str_replace('\\', '/', $pattern)), true)) {
                 throw new DiscoveryException('PROJECT_CONFIG_UNSAFE: ignore patterns must be relative and may not contain parent traversal.');
             }
         }
+        // Compile now so an invalid pattern is attributed to the configuration
+        // file rather than surfacing mid-discovery on an arbitrary path.
+        new IgnoreMatcher($ignores);
         $limits = self::object($data['limits'] ?? [], 'limits');
         self::knownKeys($limits, ['max_files', 'max_file_bytes', 'worker_timeout_ms'], 'limits');
         $maxFiles = self::optionalInteger($limits, 'max_files', 1, 100_000);

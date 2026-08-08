@@ -54,9 +54,9 @@ final readonly class DoctorService
         foreach (['json', 'pdo', 'pdo_sqlite'] as $extension) {
             $this->check($checks, 'php.extension.' . $extension, static fn(): string => extension_loaded($extension) ? 'loaded' : throw new \RuntimeException('missing'));
         }
-        $this->check($checks, 'node.version', fn(): string => self::requirement('node')->verify($this->command(['node', '--version'])));
+        $this->check($checks, 'node.version', fn(): string => self::requirement('node')->verify($this->command(['node', '--version'], hardenGitConfig: false)));
         $this->check($checks, 'git.version', fn(): string => $this->command(['git', '--version']));
-        $this->check($checks, 'python.version', fn(): string => self::requirement('python')->verify($this->command(['python3', '--version'])));
+        $this->check($checks, 'python.version', fn(): string => self::requirement('python')->verify($this->command(['python3', '--version'], hardenGitConfig: false)));
         $this->check($checks, 'sqlite.integrity', function (): string {
             $result = (string) $this->pdo->query('PRAGMA quick_check')->fetchColumn();
             if ($result !== 'ok') {
@@ -123,10 +123,14 @@ final readonly class DoctorService
      * chatty or hung probe (e.g. one that floods stderr while stdout stays open)
      * cannot deadlock `doctor` the way sequential blocking pipe reads would.
      *
+     * `$hardenGitConfig` must be false for any binary other than `git` itself:
+     * the forced `-c key=value` overrides are Git syntax that other binaries
+     * (`node`, `python3`) do not understand.
+     *
      * @param non-empty-list<string> $command
      */
-    private function command(array $command): string
+    private function command(array $command, bool $hardenGitConfig = true): string
     {
-        return trim((new GitProcessRunner())->run($command, 5000, 'command probe'));
+        return trim((new GitProcessRunner(hardenGitConfig: $hardenGitConfig))->run($command, 5000, 'command probe'));
     }
 }

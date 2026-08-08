@@ -36,30 +36,20 @@ final class StableIdTest extends TestCase
         assertSame('scan_' . hash('sha256', $payload), $id);
     }
 
-    public function testSymbolWithoutSignatureReturnsFourPartHash(): void
+    public function testSymbolReturnsFourPartHash(): void
     {
-        // Default signature='' is OMITTED from the parts list (the source skips empty parts).
         $id = StableId::symbol('proj-1', 'php', 'class', 'App\\Foo');
 
         $payload = $this->payload(['proj-1', 'php', 'class', 'App\\Foo']);
         assertSame('symbol_' . hash('sha256', $payload), $id);
     }
 
-    public function testSymbolWithExplicitSignatureIncludesSignature(): void
+    public function testStableIdSymbolTakesNoSignature(): void
     {
-        $id = StableId::symbol('proj-1', 'php', 'class', 'App\\Foo', 'public function bar(): void');
-
-        $payload = $this->payload(['proj-1', 'php', 'class', 'App\\Foo', 'public function bar(): void']);
-        assertSame('symbol_' . hash('sha256', $payload), $id);
-    }
-
-    public function testSymbolWithEmptySignatureMatchesSymbolWithoutSignature(): void
-    {
-        // The source skips '' parts, so passing signature='' should equal not passing it.
-        $withEmpty = StableId::symbol('proj-1', 'php', 'class', 'App\\Foo', '');
-        $omitted = StableId::symbol('proj-1', 'php', 'class', 'App\\Foo');
-
-        assertSame($omitted, $withEmpty);
+        // A signature would produce a distinct id for two symbols that collide on
+        // nodes' UNIQUE (project_id, language, kind, canonical_name).
+        $parameters = (new \ReflectionMethod(StableId::class, 'symbol'))->getParameters();
+        assertSame(4, count($parameters));
     }
 
     public function testRouteSortsMethodsBeforeHashingSoOrderIsIrrelevant(): void

@@ -224,11 +224,134 @@ trait Fixtures
         return json_encode($graph, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
     }
 
+    /**
+     * A project whose graph is large enough that a row-by-row bound is observable.
+     *
+     * Seeds `$count + 1` chained nodes and `$count` `depends_on` edges on top of
+     * storeFixture(), so a traversal that streams its rows can be told apart
+     * from one that materialises them: the two produce the same envelope, and
+     * only the number of rows actually read separates them.
+     *
+     * @return array{0: PDO, 1: string} the connection and the project id
+     */
+    public function seedGraphWithEdges(int $count): array
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $pdo->beginTransaction();
+        $previous = null;
+        for ($index = 0; $index <= $count; ++$index) {
+            $name = sprintf('App\\Chain%05d', $index);
+            $node = StableId::symbol($ids['project'], 'php', 'class', $name);
+            $repository->saveNode(
+                $node,
+                $ids['project'],
+                'php',
+                'class',
+                $name,
+                sprintf('Chain%05d', $index),
+                null,
+                $ids['file'],
+                $index + 1,
+                $index + 2,
+                'ast',
+                'certain',
+                [],
+                'php:file:src/Checkout.php',
+                $ids['scan'],
+            );
+            if ($previous !== null) {
+                $repository->saveEdge(
+                    StableId::edge($ids['project'], 'depends_on', $previous, $node, (string) $index),
+                    $ids['project'],
+                    'depends_on',
+                    $previous,
+                    $node,
+                    $ids['file'],
+                    $index + 1,
+                    $index + 1,
+                    'ast',
+                    'certain',
+                    [],
+                    'php:file:src/Checkout.php',
+                    $ids['scan'],
+                );
+            }
+            $previous = $node;
+        }
+        $pdo->commit();
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        return [$pdo, $ids['project']];
+    }
+
     public function freshTestDatabase(): PDO
     {
         $pdo = SqliteConnection::open(':memory:');
         (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
         return $pdo;
+    }
+
+    /**
+     * Builds a real temp-directory project for StalenessProbe tests that need
+     * to mutate the filesystem (delete, add, or rewind an mtime) independently
+     * of the `files` row that was scanned, rather than running the actual
+     * scanners the way scanTempFixture() does.
+     *
+     * Writes each path under a fresh `knossos-stale-` temp root (the prefix
+     * removeTempTree() requires), inserts a `projects` row pointing at it, one
+     * `files` row per path stamped with that file's current on-disk mtime, and
+     * a completed `scans` row.
+     *
+     * Returns the connection and ids the caller needs rather than assigning
+     * them to test properties, the way the neighbouring seedGraphWithEdges()
+     * does: writing $this->pdo and $this->projectId made every caller declare
+     * two `protected` properties to satisfy a contract nothing in the
+     * signature stated.
+     *
+     * @param list<string> $relativePaths
+     * @return array{0: PDO, 1: string, 2: string} [pdo, projectId, temp root to mutate and pass to removeTempTree()]
+     */
+    public function seedProjectWithFiles(array $relativePaths): array
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        foreach ($relativePaths as $relativePath) {
+            $absolute = $root . '/' . $relativePath;
+            $directory = dirname($absolute);
+            if (!is_dir($directory)) {
+                mkdir($directory, 0o777, true);
+            }
+            file_put_contents($absolute, "<?php\n");
+        }
+
+        $pdo = $this->freshTestDatabase();
+        $projectId = StableId::project('stale-probe-' . bin2hex(random_bytes(6)));
+        $scanId = StableId::scan($projectId, 'scan-1');
+        $repository = new SqliteGraphRepository($pdo);
+        $repository->saveProject($projectId, 'Stale Probe Fixture', $root);
+        $repository->createScan($scanId, $projectId, 'full', hash('sha256', 'stale-probe'));
+        foreach ($relativePaths as $relativePath) {
+            $absolute = $root . '/' . $relativePath;
+            $repository->saveFile(
+                StableId::file($projectId, $relativePath),
+                $projectId,
+                $relativePath,
+                hash('sha256', (string) file_get_contents($absolute)),
+                (int) filesize($absolute),
+                (int) filemtime($absolute),
+                'php',
+                '0.1.0',
+                $scanId,
+            );
+        }
+        $repository->completeScan($projectId, $scanId);
+        // Backdate finished_at a few seconds into the past: completeScan()
+        // stamps it with second resolution, and a test that seeds a project
+        // then immediately mutates the tree can otherwise land in the same
+        // wall-clock second, making a strictly-later directory mtime
+        // indistinguishable from "no change" for addedSince().
+        self::backdateScanFinishedAt($pdo, $scanId);
+
+        return [$pdo, $projectId, $root];
     }
 
     /** @return array{0: PDO, 1: string, 2: string} [pdo, projectId, absoluteRoot] */
@@ -240,7 +363,19 @@ trait Fixtures
         $this->copyTree($src, $root);
         $pdo = $this->freshTestDatabase();
         $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+        // See TempTrees::backdateDirectories(): without this, a caller that
+        // probes staleness right after scanning (with no mutation at all) can
+        // intermittently see 'stale', because the directories copyTree() just
+        // created can read as being at or after the scan's own finished_at.
+        $this->backdateDirectories($root, 10);
         return [$pdo, $result->projectId, $root];
+    }
+
+    /** Backdates a scan's finished_at by 5 seconds; used by seedProjectWithFiles() to give a later mutation headroom against StalenessProbe::addedSince()'s directory-mtime comparison. */
+    private static function backdateScanFinishedAt(PDO $pdo, string $scanId): void
+    {
+        $pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
+            ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() - 5), 'id' => $scanId]);
     }
 
     /** @return array{0: ToolService, 1: string, 2: string, 3: PDO} [tools, projectId, absoluteRoot, pdo] */

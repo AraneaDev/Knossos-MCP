@@ -32,6 +32,9 @@ final readonly class ScanResultFactory
             static fn($diagnostic): string => sprintf('%s: %s', $diagnostic->code, $diagnostic->message),
             $plan->preparation->discovery->diagnostics,
         );
+        foreach ($language->workerDiagnostics as $diagnostic) {
+            $warnings[] = sprintf('%s: %s', $diagnostic['code'], $diagnostic['message']);
+        }
         $data = [
             'files' => $result->files,
             'nodes' => $result->nodes,
@@ -45,7 +48,11 @@ final readonly class ScanResultFactory
             'changed_files' => $language->changed,
             'deleted_files' => $plan->deletedFiles,
             'scanner_metadata' => $language->scannerMetadata,
-            'worker_execution' => $plan->preparation->executionPolicy->metadata(),
+            'degraded_languages' => array_values(array_unique(array_column($language->workerDiagnostics, 'owner'))),
+            // Batch bounds are reported per language rather than as one pair of
+            // numbers: they differ per language, and the source-byte budget can
+            // differ per scan once a worker's output cap forces it down.
+            'worker_execution' => $plan->preparation->executionPolicy->metadata() + ['scan_batches' => $language->batchBudgets],
             'configuration' => [
                 'source' => $plan->preparation->configuration->path,
                 'precedence' => 'explicit override > project configuration > built-in default',

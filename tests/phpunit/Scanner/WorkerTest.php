@@ -22,12 +22,11 @@ final class WorkerTest extends KnossosTestCase
     }
 
     #[Group('worker')]
-    public function testWorkerSupervisorInitializesDiscoversScansCancelsAndShutsDown(): void
+    public function testWorkerSupervisorInitializesScansCancelsAndShutsDown(): void
     {
         $client = $this->fakeWorkerClient('compliant');
         $manifest = $client->initialize();
         assertSame('knossos.fake', $manifest->id);
-        assertSame('/workspace', $client->discover(['root' => '/workspace'])['root']);
 
         $contributions = iterator_to_array($client->scan(['request_id' => 'scan-1']));
         assertSame(1, count($contributions));
@@ -36,12 +35,83 @@ final class WorkerTest extends KnossosTestCase
         assertContains('fake worker scan log', $client->stderr());
 
         $client->cancel('scan-2');
-        assertSame(['scan-2'], $client->discover(['root' => '/workspace'])['cancelled']);
+        // An empty scan is the cheapest round trip left now that discover is
+        // gone, and the fake worker echoes the ids it was told to cancel.
+        assertSame([], iterator_to_array($client->scan(['root' => '/workspace', 'files' => []])));
+        assertSame(['scan-2'], $client->lastScanResult()['cancelled']);
         $client->shutdown();
     }
 
+    /**
+     * Cancellation of a request that is still in flight.
+     *
+     * The test above only replays fake-worker state: it cancels an id after
+     * that scan has already completed, then reads the echo back on the next
+     * round trip. Nothing in it exercises the path that matters — a request
+     * with no reply coming, a cancellation callback that turns true while the
+     * host is still waiting, the notification that follows, and the worker
+     * being torn down rather than left running.
+     *
+     * The request id is also asserted to arrive as an int. The host numbers
+     * its own requests with integers, and a type-strict worker matching
+     * `request_id === $active` never matches a stringified copy, so a cancel
+     * that looked correct on the wire would silently cancel nothing.
+     */
     #[Group('worker')]
-    public function testWorkerSupervisorRejectsProtocolMismatchesBeforeDiscovery(): void
+    public function testCancellingAnActiveScanTerminatesTheWorkerAndSendsTheIntegerRequestId(): void
+    {
+        $record = sys_get_temp_dir() . '/knossos-blocked-scan-' . bin2hex(random_bytes(6));
+        $client = new ProcessScannerClient([
+            PHP_BINARY,
+            self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php',
+            'blocked_scan',
+            $record,
+        ]);
+        try {
+            $client->initialize();
+            $cancel = false;
+            $received = 0;
+            $error = captureThrows(
+                static function () use ($client, &$cancel, &$received): void {
+                    // The callback turns true only once a contribution has been
+                    // handed back, which is the deterministic point at which the
+                    // request is provably still active: the worker has answered
+                    // part of it and will never answer the rest.
+                    foreach ($client->scan(
+                        ['root' => '/workspace', 'files' => ['src/Checkout.ts']],
+                        // By reference: an arrow function would capture the flag
+                        // by value and never see the loop body set it.
+                        static function () use (&$cancel): bool {
+                            return $cancel;
+                        },
+                    ) as $contribution) {
+                        ++$received;
+                        $cancel = true;
+                    }
+                },
+                WorkerException::class,
+            );
+            assertSame('WORKER_CANCELLED', $error->diagnosticCode);
+            assertSame(1, $received);
+
+            $lines = array_values(array_filter(explode("\n", (string) file_get_contents($record))));
+            $workerPid = (int) $lines[0];
+            $cancel = json_decode($lines[1] ?? '', true, 512, JSON_THROW_ON_ERROR);
+            // initialize() took id 1, so the scan the host cancelled is 2.
+            assertSame(2, $cancel['request_id']);
+            assertSame('int', $cancel['type']);
+            if (!self::hasProcessStateProbe()) {
+                $this->markTestSkipped('Asserting the worker was terminated needs a process-state probe.');
+            }
+            assertSame(false, self::processIsAlive($workerPid));
+        } finally {
+            unset($client);
+            @unlink($record);
+        }
+    }
+
+    #[Group('worker')]
+    public function testWorkerSupervisorRejectsProtocolMismatchesBeforeAnyProjectInput(): void
     {
         $client = $this->fakeWorkerClient('mismatch');
         $error = captureThrows(fn() => $client->initialize(), WorkerException::class);

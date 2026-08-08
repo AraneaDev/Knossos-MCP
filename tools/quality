@@ -35,8 +35,11 @@ vendor/bin/phpstan analyse --no-progress --debug --memory-limit=512M
 npm run lint:js
 npm run format:check
 npm run lint:md
-ruff check workers/python/bin/worker.py
-ruff format --check workers/python/bin/worker.py
+# The tests are linted and formatted alongside the worker they exercise: a
+# gate that covered only bin/worker.py let workers/python/tests drift out of
+# `ruff format` shape with nothing to catch it.
+ruff check workers/python/bin/worker.py workers/python/tests
+ruff format --check workers/python/bin/worker.py workers/python/tests
 mypy workers/python/bin/worker.py
 python3 -m pytest workers/python
 php tools/repository-check.php

@@ -96,11 +96,17 @@ foreach ($interfaces as $interface) {
 $javascript = (string) file_get_contents($root . '/workers/typescript/src/scanner.js');
 $python = (string) file_get_contents($root . '/workers/python/bin/worker.py');
 $api .= "## Isolated worker APIs\n\n| Runtime | Contract | Responsibility |\n| --- | --- | --- |\n";
-foreach (['discover', 'scan'] as $method) {
-    preg_match('/\/\*\*(.*?)\*\/\s*' . $method . '\s*\(/s', $javascript, $documentation);
-    $api .= sprintf("| TypeScript | `TypeScriptScanner.%s` | %s |\n", $method, documentationSummary($documentation[1] ?? ''));
+// Each capture is bounded to a single docblock: `.*?` alone starts at the FIRST
+// `/**` in the file and swallows everything up to the declaration, so every row
+// borrowed the class summary instead of its own.
+foreach ([
+    'TypeScriptScanner.scan' => '/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*scan\s*\(/',
+    'discoverConfigFiles' => '/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export function discoverConfigFiles\s*\(/',
+] as $symbol => $pattern) {
+    preg_match($pattern, $javascript, $documentation);
+    $api .= sprintf("| TypeScript | `%s` | %s |\n", $symbol, documentationSummary($documentation[1] ?? ''));
 }
-foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'discover' => 'def', 'handle' => 'def'] as $symbol => $kind) {
+foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'handle' => 'def'] as $symbol => $kind) {
     preg_match('/^' . $kind . '\s+' . $symbol . '\b[^\n]*:\n\s+"""([^"\n]+)"""/m', $python, $documentation);
     $api .= sprintf("| Python | `%s` | %s |\n", $symbol, $documentation[1] ?? 'Missing documentation');
 }

@@ -32,6 +32,9 @@ final class GraphReconcilerTest extends TestCase
 {
     private FakeGraphRepository $repo;
 
+    /** The diagnostic code an unresolvable edge target now produces instead of an abort. */
+    private const UNRESOLVABLE_CODE = 'reconciler.unresolvable_edge_target';
+
     protected function setUp(): void
     {
         $this->repo = new FakeGraphRepository();
@@ -660,6 +663,35 @@ final class GraphReconcilerTest extends TestCase
         assertSame(null, $dArgs[3]);
         assertSame(null, $dArgs[7]);
         assertSame(null, $dArgs[8]);
+    }
+
+    public function testReconcileSavesWorkerFailuresAsFilelessErrorDiagnostics(): void
+    {
+        // A language whose worker died has no source file to point at, so the
+        // row must persist with a null file_id and null line range.
+        $request = $this->buildRequest([
+            'workerDiagnostics' => [
+                ['owner' => 'knossos.typescript', 'code' => 'WORKER_TIMEOUT', 'message' => 'typescript scanner failed: timed out.'],
+                ['owner' => 'knossos.python', 'code' => 'WORKER_FAILED', 'message' => 'python scanner failed: broken pipe.'],
+            ],
+        ]);
+        $reconciler = new GraphReconciler($this->repo);
+
+        $result = $reconciler->reconcile($request);
+
+        assertSame(2, $result->diagnostics);
+        $this->assertCount(2, $this->repo->diagnostics);
+        $first = $this->repo->diagnostics[0];
+        assertSame(null, $first[3]);
+        assertSame('error', $first[4]);
+        assertSame('WORKER_TIMEOUT', $first[5]);
+        assertSame('typescript scanner failed: timed out.', $first[6]);
+        assertSame(null, $first[7]);
+        assertSame(null, $first[8]);
+        assertSame('knossos.typescript', $first[9]);
+        assertSame('knossos.python', $this->repo->diagnostics[1][9]);
+        // Distinct ids: both rows are keyed on the running diagnostic sequence.
+        $this->assertNotSame($first[0], $this->repo->diagnostics[1][0]);
     }
 
     public function testReconcileSavesDiscoveryDiagnosticsAsOriginDiscovery(): void
@@ -1468,7 +1500,45 @@ final class GraphReconcilerTest extends TestCase
         assertContains('Edge evidence file was not discovered', $error->getMessage());
     }
 
-    public function testThrowsExternalNodeUnresolvableReferenceWithoutThreeParts(): void
+    public function testExternalNodeStillThrowsForAReferenceItsGuardWouldReject(): void
+    {
+        // resolveEdges() now drops an unresolvable reference via
+        // isResolvableReference() before ever reaching externalNode(), so
+        // externalNode()'s own throw is unreachable through the public
+        // reconcile() path. It is kept as the contract for any future
+        // caller that skips the guard, so it is invoked directly here via
+        // reflection — the only way left to pin it. The two are asserted
+        // to agree on the same inputs: if isResolvableReference() ever
+        // drifted from what externalNode() rejects, a reference the guard
+        // waved through would reach this throw and abort a whole reconcile
+        // again, exactly the failure mode Task 2 removed.
+        $isResolvable = new \ReflectionMethod(GraphReconciler::class, 'isResolvableReference');
+        $externalNode = new \ReflectionMethod(GraphReconciler::class, 'externalNode');
+        $reconciler = new GraphReconciler($this->repo);
+        $evidence = new Evidence('src/Foo.php', 1, 5);
+
+        foreach (['no_colons', ':empty_lang:class', 'php:class:', 'php::Foo'] as $reference) {
+            assertSame(false, $isResolvable->invoke(null, $reference));
+
+            $error = captureThrows(
+                fn() => $externalNode->invoke($reconciler, 'project-1', $reference, $evidence, 'owner', []),
+                ReconciliationException::class,
+            );
+
+            assertContains('Unresolvable edge target reference', $error->getMessage());
+            assertContains($reference, $error->getMessage());
+        }
+
+        // A reference the guard accepts must not throw, confirming the two
+        // checks agree in both directions rather than only rejecting.
+        $accepted = 'php:class:App\\Foo';
+        assertSame(true, $isResolvable->invoke(null, $accepted));
+        [$id, $node] = $externalNode->invoke($reconciler, 'project-1', $accepted, $evidence, 'owner', []);
+        assertContains('external_class', $node['kind']);
+        assertSame($id, $node['id']);
+    }
+
+    public function testDropsExternalNodeUnresolvableReferenceWithoutThreeParts(): void
     {
         $source = $this->minimalNode('php:class:App\\Foo');
         $edge = new EdgeFact(
@@ -1485,15 +1555,13 @@ final class GraphReconcilerTest extends TestCase
         ]);
         $reconciler = new GraphReconciler($this->repo);
 
-        $error = captureThrows(
-            fn() => $reconciler->reconcile($request),
-            ReconciliationException::class,
-        );
+        $result = $reconciler->reconcile($request);
 
-        assertContains('Unresolvable edge target reference', $error->getMessage());
+        assertSame(0, $result->edges);
+        assertSame(self::UNRESOLVABLE_CODE, $this->repo->diagnostics[0][5]);
     }
 
-    public function testThrowsExternalNodeUnresolvableReferenceWithEmptyPart(): void
+    public function testDropsExternalNodeUnresolvableReferenceWithEmptyPart(): void
     {
         $source = $this->minimalNode('php:class:App\\Foo');
         $edge = new EdgeFact(
@@ -1510,12 +1578,100 @@ final class GraphReconcilerTest extends TestCase
         ]);
         $reconciler = new GraphReconciler($this->repo);
 
-        $error = captureThrows(
-            fn() => $reconciler->reconcile($request),
-            ReconciliationException::class,
-        );
+        $result = $reconciler->reconcile($request);
 
-        assertContains('Unresolvable edge target reference', $error->getMessage());
+        assertSame(0, $result->edges);
+        assertSame(self::UNRESOLVABLE_CODE, $this->repo->diagnostics[0][5]);
+    }
+
+    public function testUnresolvableEdgeTargetIsDroppedWithADiagnostic(): void
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $edge = new EdgeFact(
+            kind: 'depends_on',
+            sourceReference: $source->localId,
+            targetReference: ':empty_lang:class',  // empty language segment
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 1, 5),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$source], [$edge])],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        // The graph survives: the source node is persisted, only the edge is lost.
+        assertSame(1, $result->nodes);
+        assertSame(0, $result->edges);
+        assertSame(1, $result->diagnostics);
+        $this->assertCount(1, $this->repo->diagnostics);
+        assertSame('warning', $this->repo->diagnostics[0][4]);
+        assertSame('reconciler.unresolvable_edge_target', $this->repo->diagnostics[0][5]);
+        $this->assertStringContainsString(':empty_lang:class', $this->repo->diagnostics[0][6]);
+    }
+
+    public function testUnresolvableEdgeTargetWarnsOncePerReference(): void
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $edge = static fn(int $line): EdgeFact => new EdgeFact(
+            kind: 'depends_on',
+            sourceReference: 'php:class:App\\Foo',
+            targetReference: 'php:namespaced_function:',
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', $line, $line),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$source], [$edge(1), $edge(2), $edge(3)])],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(0, $result->edges);
+        assertSame(1, $result->diagnostics);
+    }
+
+    /**
+     * Once per REFERENCE, not once per scan.
+     *
+     * The test above pins only that a repeated reference collapses to one
+     * diagnostic, which a dedup keyed on nothing at all — a single
+     * already-warned flag for the whole reconcile — satisfies just as well. It
+     * would also collapse three genuinely different malformed references into
+     * one report, hiding two scanner bugs behind the first. Three distinct
+     * unresolvable shapes, three diagnostics, each naming its own reference.
+     */
+    public function testEachDistinctUnresolvableReferenceGetsItsOwnDiagnostic(): void
+    {
+        $source = $this->minimalNode('php:class:App\\Foo');
+        $edge = static fn(string $target): EdgeFact => new EdgeFact(
+            kind: 'depends_on',
+            sourceReference: 'php:class:App\\Foo',
+            targetReference: $target,
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution(
+                [$source],
+                [$edge('php:namespaced_function:'), $edge(':empty_lang:class'), $edge('no_colons')],
+            )],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(0, $result->edges);
+        assertSame(3, $result->diagnostics);
+        $this->assertCount(3, $this->repo->diagnostics);
+        $messages = implode("\n", array_column($this->repo->diagnostics, 6));
+        $this->assertStringContainsString('php:namespaced_function:', $messages);
+        $this->assertStringContainsString(':empty_lang:class', $messages);
+        $this->assertStringContainsString('no_colons', $messages);
     }
 
     public function testThrowsClassificationTargetNotEmitted(): void
@@ -1769,12 +1925,13 @@ final class GraphReconcilerTest extends TestCase
      * and the global candidate. There is nothing to choose between here, so it
      * hands the reference back untouched rather than inventing
      * `php:function:` — a node whose canonical name would be the empty string.
-     * Nothing downstream can name that target either, so the scan fails loudly
-     * instead of persisting a nameless symbol: only a scanner bug can produce
-     * this, and a silent empty node would be far harder to trace back to it.
+     * Nothing downstream can name that target either, so the edge is dropped
+     * with a diagnostic instead of persisting a nameless symbol: only a
+     * scanner bug can produce this, and a silent empty node would be far
+     * harder to trace back to it.
      */
     #[Group('reconciliation')]
-    public function testAnUnqualifiedFunctionCallWithNoNameIsRefusedRatherThanNamedEmpty(): void
+    public function testAnUnqualifiedFunctionCallWithNoNameIsDroppedRatherThanNamedEmpty(): void
     {
         $caller = $this->minimalNode('php:function:App\\caller', 'App\\caller');
         $edge = new EdgeFact(
@@ -1790,12 +1947,11 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$caller], [$edge])],
         ]);
 
-        $error = captureThrows(
-            fn() => (new GraphReconciler($this->repo))->reconcile($request),
-            ReconciliationException::class,
-        );
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
-        assertSame('Unresolvable edge target reference: php:namespaced_function:', $error->getMessage());
+        assertSame(0, $result->edges);
+        assertSame(self::UNRESOLVABLE_CODE, $this->repo->diagnostics[0][5]);
+        $this->assertStringContainsString('php:namespaced_function:', $this->repo->diagnostics[0][6]);
     }
 
     /**
@@ -1855,6 +2011,7 @@ final class GraphReconcilerTest extends TestCase
             $args['boundaries'],
             $args['mode'] ?? 'full',
             $args['contributionCache'] ?? [],
+            $args['workerDiagnostics'] ?? [],
         );
     }
 

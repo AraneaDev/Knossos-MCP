@@ -89,3 +89,42 @@ for host access to that port. For custom ports/hosts, set `KNOSSOS_HTTP_ALLOWED_
 token in a URL. For non-loopback or multi-user access, put a TLS/OAuth-capable
 gateway in front, restrict the upstream network, and keep exact Host/Origin
 values rather than broad wildcards.
+
+## Git subprocesses
+
+`changed_files_impact`, `test_impact`, `review_diff`, and `change_impact` run
+`git` inside the scanned project. Git reads that repository's `.git/config`
+(and, for filters, its `.gitattributes`), either of which can name commands
+Git executes: `core.fsmonitor` during any index refresh, `core.hooksPath`
+for its hook scripts, `diff.external` during diff generation, and a
+`.gitattributes`-routed `filter.<name>.clean`/`.process`/`.smudge` or
+`diff.<name>.textconv` driver while `git diff` reads a changed path.
+`GitProcessRunner` forces the first three off via fixed `-c` overrides, and
+neutralises filter/textconv drivers per repository by first running
+`git config --list --includes --name-only -z` (which refreshes nothing and
+invokes no filter itself, so it runs with only the restricted environment
+below, not the `-c` overrides) and appending a blanking `-c` override for
+every driver name it finds. That query follows `include`/`includeIf`
+directives and, by not restricting itself to `--local`, also sees
+`extensions.worktreeConfig`-enabled per-worktree settings — either can define
+a driver a narrower query would miss, while `git diff` itself still resolves
+them. A driver name containing `=` cannot be expressed as a `-c` override at
+all (Git's own `-c` parser splits on the first `=`), so that case fails
+closed: the command is refused rather than run un-neutralised. A repository
+defining more filter/diff drivers than `GitProcessRunner::MAX_DRIVER_NAMES`
+fails closed the same way, rather than building an argv long enough to make
+`proc_open()` itself fail. Alongside the blanked `clean`/`process`/`smudge`,
+each filter also gets `required=false` forced: `required=true` is how
+Git-LFS's own `git lfs install --local` marks its filter (and how a hostile
+repository could otherwise turn a neutralised filter into a fatal error), and
+without this a blanked-but-required filter fails the whole command rather than
+being skipped. `core.pager` is neutralised separately, by `--no-pager` at each
+call site rather than by an override. The child also runs under an explicit
+environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+`HOME`/`GIT_ASKPASS` pointed at a nonexistent path); the only value carried
+over from the parent is `PATH` — which Git needs to find its helper binaries,
+and which falls back to `/usr/bin:/bin` when the parent has none.
+
+This matters whenever a repository directory arrives with its own `.git/`
+rather than from a fresh `clone`: CI artifacts, extracted archives, container
+volumes, restored backups.

@@ -7,7 +7,22 @@ namespace Knossos\Scan;
 /** One language's contributions and diagnostics from a scan. */
 final readonly class LanguageScanResult
 {
-    /** @param list<object> $manifests @param list<object> $contributions @param list<object> $cacheEntries @param array<string, mixed> $scannerMetadata @param array<string, float> $stageMilliseconds */
+    /**
+     * @param list<object> $manifests
+     * @param list<object> $contributions
+     * @param list<object> $cacheEntries
+     * @param array<string, mixed> $scannerMetadata
+     * @param array<string, float> $stageMilliseconds
+     * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
+     *        Languages whose worker failed. Not Diagnostic objects: a worker
+     *        failure has no source file to point at, and Evidence requires one.
+     * @param array<string, array{files: int, source_bytes: int, source_bytes_used: int}> $batchBudgets
+     *        The scan-request bounds each language ran under, keyed by owner
+     *        (`knossos.php`) to match $workerDiagnostics and $scannerMetadata.
+     *        `source_bytes_used` is the narrowest budget any of that language's
+     *        requests ran at, so a value below `source_bytes` means a batch
+     *        overflowed the worker's output cap and was re-split.
+     */
     public function __construct(
         public array $manifests,
         public array $contributions,
@@ -18,5 +33,7 @@ final readonly class LanguageScanResult
         public int $changed,
         public array $scannerMetadata,
         public array $stageMilliseconds,
+        public array $workerDiagnostics = [],
+        public array $batchBudgets = [],
     ) {}
 }

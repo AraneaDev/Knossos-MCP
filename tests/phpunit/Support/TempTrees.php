@@ -21,6 +21,32 @@ trait TempTrees
         }
     }
 
+    /**
+     * Pushes every directory under $root's mtime $seconds into the past.
+     *
+     * StalenessProbe::addedSince() flags an addition when a tracked file's
+     * directory mtime reads later than the scan's finished_at. Those are two
+     * separate clock reads (a later stat() vs. an earlier DB write) that are
+     * not guaranteed to agree on which integer second an instant rounds to,
+     * so a directory populated by copyTree() moments before a scan can read
+     * in the same second as, or after, that scan's own finished_at. Backdating
+     * directories (not finished_at) removes that ambiguity without moving the
+     * timestamp callers legitimately compare "now" against.
+     */
+    public function backdateDirectories(string $root, int $seconds): void
+    {
+        touch($root, filemtime($root) - $seconds);
+        foreach (scandir($root) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $root . '/' . $entry;
+            if (is_dir($path)) {
+                $this->backdateDirectories($path, $seconds);
+            }
+        }
+    }
+
     public function removeTempTree(string $root): void
     {
         $prefix = rtrim(sys_get_temp_dir(), '/') . '/knossos-stale-';

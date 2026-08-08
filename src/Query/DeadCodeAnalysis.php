@@ -56,10 +56,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
         $excludedInherited = 0;
-        $idsByCanonicalName = [];
-        foreach ($nodes as $nodeId => $nodeRow) {
-            $idsByCanonicalName[(string) $nodeRow['canonical_name']] = $nodeId;
-        }
+        $idsByCanonicalName = self::indexByCanonicalName($nodes);
         $excludedConstructors = 0;
         $excludedContracts = 0;
         $excludedEntryScripts = 0;
@@ -185,12 +182,11 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         if ($displayName !== self::CONSTRUCTOR_MEMBER_NAME && !str_starts_with($displayName, '__')) {
             return false;
         }
-        $canonical = (string) $node['canonical_name'];
-        $separator = strrpos($canonical, '::');
-        if ($separator === false || $separator === 0) {
+        $owner = self::owningTypeName((string) $node['canonical_name']);
+        if ($owner === null) {
             return false;
         }
-        $ownerId = $idsByCanonicalName[substr($canonical, 0, $separator)] ?? null;
+        $ownerId = $idsByCanonicalName[$owner] ?? null;
 
         return $ownerId !== null && ($metrics[$ownerId]['in_degree'] ?? 0) > 0;
     }
@@ -435,6 +431,119 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
+     * Undo, from the whole edge table, what a bounded graph walk under-counted.
+     *
+     * Two distinct things go wrong once the node/edge/time caps drop edges. A
+     * dropped inbound edge to a candidate makes a referenced symbol look
+     * unreferenced; those candidates are removed here. Less obviously, the
+     * exclusions in {@see self::classify()} read the DECLARING type's degrees —
+     * a constructor is only excused when its class is used somewhere, a contract
+     * method only when its type is used for something other than being
+     * implemented — so an under-counted owner promotes an ordinary constructor
+     * to a `probable` dead-code claim. Scanning this repository under the CLI's
+     * default 20,000-edge cap did exactly that to
+     * `LaravelContainerFactCollector::__construct`, which is instantiated one
+     * file away. Owner degrees are therefore re-read authoritatively too.
+     *
+     * @param array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int}> $provisional
+     * @param array<string, array<string, mixed>> $nodes
+     * @param list<string> $edgeKinds
+     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
+     * @param array<string, int> $inheritanceInDegree
+     *
+     * @return array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int}> the surviving candidates
+     */
+    public function reconcileBoundedWalk(string $projectId, array $provisional, array $nodes, array $edgeKinds, int $minConfidenceRank, array &$metrics, array &$inheritanceInDegree): array
+    {
+        foreach ($this->referencedNodes($projectId, array_keys($provisional), $edgeKinds, $minConfidenceRank) as $referencedId) {
+            unset($provisional[$referencedId]);
+        }
+        $idsByCanonicalName = self::indexByCanonicalName($nodes);
+        $owners = [];
+        foreach ($provisional as $candidate) {
+            $ownerId = $idsByCanonicalName[self::owningTypeName((string) $candidate['row']['canonical_name']) ?? ''] ?? null;
+            if ($ownerId !== null && isset($metrics[$ownerId]) && $metrics[$ownerId]['in_degree'] === 0) {
+                $owners[$ownerId] = $metrics[$ownerId];
+            }
+        }
+        foreach ($this->inboundDegrees($projectId, array_keys($owners), $edgeKinds, $minConfidenceRank) as $ownerId => $degrees) {
+            $metrics[$ownerId] = ['in_degree' => $degrees['in_degree']] + $owners[$ownerId];
+            $inheritanceInDegree[$ownerId] = $degrees['inheritance_in_degree'];
+        }
+
+        return $provisional;
+    }
+
+    /**
+     * The canonical name of the type a member belongs to, or null when the name
+     * is not a member name at all.
+     *
+     * The LAST `::` separates them: a canonical name may carry one earlier (a
+     * closure declared inside a method, for instance), and splitting on the
+     * first would name a type that does not exist.
+     */
+    private static function owningTypeName(string $canonicalName): ?string
+    {
+        $separator = strrpos($canonicalName, '::');
+
+        return $separator === false || $separator === 0 ? null : substr($canonicalName, 0, $separator);
+    }
+
+    /**
+     * Node ids keyed by canonical name, for resolving an owning type to its node.
+     *
+     * @param array<string, array<string, mixed>> $nodes
+     * @return array<string, string>
+     */
+    private static function indexByCanonicalName(array $nodes): array
+    {
+        $ids = [];
+        foreach ($nodes as $nodeId => $nodeRow) {
+            $ids[(string) $nodeRow['canonical_name']] = $nodeId;
+        }
+
+        return $ids;
+    }
+
+    /**
+     * Authoritative inbound-edge counts for the given nodes, read from the whole
+     * edge table rather than the slice a bounded walk managed to read.
+     *
+     * Inheritance is counted separately because the contract exclusion has to
+     * discount it: a type being implemented is not evidence that anything uses it.
+     *
+     * @param list<string> $nodeIds
+     * @param list<string> $edgeKinds
+     * @return array<string, array{in_degree: int, inheritance_in_degree: int}>
+     */
+    private function inboundDegrees(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank): array
+    {
+        $degrees = [];
+        foreach (array_chunk($nodeIds, 500) as $chunk) {
+            $targets = implode(',', array_fill(0, count($chunk), '?'));
+            $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
+            $statement = $this->pdo->prepare(
+                'SELECT target_id, kind, COUNT(*) AS edge_count FROM edges WHERE project_id = ? ' .
+                sprintf('AND kind IN (%s) ', $kinds) .
+                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+                sprintf('AND target_id IN (%s) GROUP BY target_id, kind', $targets),
+            );
+            $statement->execute([$projectId, ...$edgeKinds, $minConfidenceRank, ...$chunk]);
+            foreach ($statement->fetchAll() as $row) {
+                $id = (string) $row['target_id'];
+                $count = (int) $row['edge_count'];
+                $degrees[$id] ??= ['in_degree' => 0, 'inheritance_in_degree' => 0];
+                $degrees[$id]['in_degree'] += $count;
+                if (in_array((string) $row['kind'], ['implements', 'extends'], true)) {
+                    $degrees[$id]['inheritance_in_degree'] += $count;
+                }
+            }
+        }
+
+        return $degrees;
+    }
+
+    /**
      * Which of the given nodes have at least one inbound edge in the full edge
      * table, unconstrained by the scan's node/edge budget. Used to clear
      * dead-code candidates whose in-degree was only zero because the slice the
@@ -444,7 +553,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * @param list<string> $edgeKinds
      * @return list<string>
      */
-    public function referencedNodes(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank): array
+    private function referencedNodes(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank): array
     {
         $referenced = [];
         foreach (array_chunk($nodeIds, 500) as $chunk) {

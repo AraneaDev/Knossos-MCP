@@ -17,12 +17,12 @@ dependency graph remain independent from Knossos core.
 - [`golden.json`](../../tests/Fixtures/scanner-sdk/golden.json) records lifecycle,
   required fields, notification name, and stable incompatibility errors.
 - `tools/scanner-conformance` exercises initialization, capability negotiation,
-  discovery, an empty scan, contribution validation, and shutdown.
+  an empty scan, contribution validation, and shutdown.
 
 Run a worker conformance check with an argument-safe command after `--`:
 
 ```sh
-tools/scanner-conformance --require=discover -- python3 worker.py
+tools/scanner-conformance --require=partial_ast -- python3 worker.py
 ```
 
 The command prints JSON and exits nonzero for malformed manifests, unsupported
@@ -35,7 +35,7 @@ Workers declare their own semantic version independently. Core rejects a
 different protocol or output-schema major/minor before sending scan paths.
 Consumers may require named optional capabilities with
 `ProcessScannerClient::requireCapabilities()`; missing capabilities fail as
-`WORKER_CAPABILITY_MISMATCH` before discovery or scan. Unknown optional
+`WORKER_CAPABILITY_MISMATCH` before any scan. Unknown optional
 capabilities may be ignored unless a consumer explicitly requires them.
 
 Every contribution owns its facts through a stable `owner_key`. Re-emission

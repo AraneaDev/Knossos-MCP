@@ -96,6 +96,9 @@ final class NdjsonRpcChannelTest extends TestCase
 
             public bool $started = false;
 
+            /** Number of liveness probes, i.e. completed readMessage() loop iterations. */
+            public int $statusChecks = 0;
+
             public function start(): void
             {
                 $this->started = true;
@@ -127,6 +130,8 @@ final class NdjsonRpcChannelTest extends TestCase
             /** @return array{command: string, pid: int, running: bool, signaled: bool, stopped: bool, exitcode: int, termsig: int, stopsig: int} */
             public function status(): array
             {
+                ++$this->statusChecks;
+
                 return [
                     'command' => '',
                     'pid' => 0,
@@ -247,6 +252,42 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame(true, in_array($error->diagnosticCode, ['WORKER_TIMEOUT', 'WORKER_PIPE_BROKEN'], true));
 
         fclose($pair[1]);
+    }
+
+    public function testSendReportsAFailedReadInsteadOfKeepingTheDescriptor(): void
+    {
+        // A read that fails outright is an I/O failure, not a quiet
+        // descriptor. Answered as "not exhausted" the stream stayed in the
+        // select set, and one that still reports ready spun until the deadline
+        // and surfaced the error as a TIMEOUT.
+        //
+        // Reached through reflection because stream_select() will not hand
+        // send() a descriptor whose read fails: the one portable way to make
+        // fread() fail — a write-only handle — is exactly what select()
+        // reports as never readable.
+        $path = tempnam(sys_get_temp_dir(), 'knossos-absorb-');
+        $writeOnly = fopen($path, 'w');
+        $stderr = fopen('php://temp', 'r+');
+        if (@fread($writeOnly, 8) !== false) {
+            fclose($writeOnly);
+            fclose($stderr);
+            unlink($path);
+            $this->markTestSkipped('This platform does not fail reads on a write-only handle.');
+        }
+
+        $channel = new NdjsonRpcChannel($this->mockProcess(), new WorkerLimits());
+        $absorb = new \ReflectionMethod($channel, 'absorb');
+
+        $error = captureThrows(
+            static fn() => $absorb->invoke($channel, $writeOnly, $stderr),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_IO_FAILED', $error->diagnosticCode);
+
+        fclose($writeOnly);
+        fclose($stderr);
+        unlink($path);
     }
 
     public function testSendThrowsOnPipeBroken(): void
@@ -517,5 +558,259 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame('WORKER_EXITED', $error->diagnosticCode);
         // Must not have spun for anywhere near the 60s deadline.
         assertSame(true, $elapsedMs < 1_000);
+    }
+
+    // ----- exhausted stderr descriptor -----
+
+    /**
+     * A connected socket pair, or a skipped test where the platform lacks one.
+     *
+     * @return array{0: resource, 1: resource}
+     */
+    private function socketPair(): array
+    {
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if (!is_array($pair)) {
+            $this->markTestSkipped('stream_socket_pair is not available on this platform.');
+        }
+
+        return $pair;
+    }
+
+    public function testAnEofStderrDoesNotSpinTheReadLoop(): void
+    {
+        // A live worker that closed stderr leaves a permanently-ready
+        // descriptor: stream_select() returns instantly forever, the read
+        // yields '', and the liveness check never fires because the worker is
+        // alive. That pinned a core until the deadline.
+        $stdoutPair = $this->socketPair();
+        $stderrPair = $this->socketPair();
+        fclose($stderrPair[1]); // Worker closed its stderr; nothing was written.
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = fopen('php://temp', 'r+');
+        $process->stdoutPipe = $stdoutPair[0]; // Peer alive and silent: never readable.
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+
+        $error = captureThrows(
+            static fn() => $channel->readMessage(hrtime(true) + 200_000_000),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
+        // Each loop iteration probes liveness exactly once, so this counts the
+        // spin. Dropping the exhausted descriptor leaves a couple of passes.
+        assertSame(true, $process->statusChecks < 10);
+
+        fclose($stdoutPair[1]);
+    }
+
+    public function testStderrWrittenBeforeCloseIsStillReportedOnTimeout(): void
+    {
+        // The descriptor must be dropped only once genuinely exhausted, never
+        // on a single empty read, or the last words of a dying worker are lost.
+        $stdoutPair = $this->socketPair();
+        $stderrPair = $this->socketPair();
+        fwrite($stderrPair[1], 'ImportError: no module named knossos');
+        fclose($stderrPair[1]);
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = fopen('php://temp', 'r+');
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+
+        $error = captureThrows(
+            static fn() => $channel->readMessage(hrtime(true) + 200_000_000),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
+        assertSame(true, str_contains($error->getMessage(), 'ImportError: no module named knossos'));
+        assertSame('ImportError: no module named knossos', $channel->stderr());
+        assertSame(true, $process->statusChecks < 10);
+
+        fclose($stdoutPair[1]);
+    }
+
+    public function testAnEofStderrDoesNotSpinTheSendLoop(): void
+    {
+        // send() drains the worker's pipes while waiting for stdin to accept
+        // more bytes, and had the same permanently-ready-descriptor hazard.
+        $stdinPair = $this->socketPair();
+        stream_set_blocking($stdinPair[0], false);
+        @fwrite($stdinPair[0], str_repeat('x', 4_000_000)); // Fill it: never writable.
+        $stdoutPair = $this->socketPair();
+        $stderrPair = $this->socketPair();
+        fwrite($stderrPair[1], 'warming up');
+        fclose($stderrPair[1]);
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $stdinPair[0];
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 200));
+        $channel->beginRequest();
+
+        // The cancellation probe runs once per loop pass, so it counts the spin.
+        $passes = 0;
+        $error = captureThrows(
+            static function () use ($channel, &$passes): void {
+                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes): bool {
+                    ++$passes;
+
+                    return false;
+                });
+            },
+            WorkerException::class,
+        );
+
+        assertSame(true, in_array($error->diagnosticCode, ['WORKER_TIMEOUT', 'WORKER_PIPE_BROKEN'], true));
+        assertSame(true, $passes < 25);
+        assertSame('warming up', $channel->stderr());
+
+        fclose($stdinPair[1]);
+        fclose($stdoutPair[1]);
+    }
+
+    /**
+     * The exhaustion rule itself: empty AND at EOF, never either alone.
+     *
+     * Both callers reach this only through stream_select(), and nothing a test
+     * can do in-process makes select() report a descriptor ready that then
+     * yields an empty read while the peer is still open — which is exactly the
+     * case the feof() term defends against. Deleting that term therefore left
+     * every channel test green. It is asserted directly instead, the way
+     * GitProcessRunner's driver cap is.
+     */
+    public function testExhaustionRequiresEofAndNotMerelyAnEmptyRead(): void
+    {
+        $method = new \ReflectionMethod(NdjsonRpcChannel::class, 'isExhausted');
+        $method->setAccessible(true);
+        [$reader, $writer] = $this->socketPair();
+        stream_set_blocking($reader, false);
+
+        // Quiet but open: the peer is alive and may still write its last words.
+        assertSame(false, $method->invoke(null, $reader, ''));
+        // Data is data, whatever the descriptor's state.
+        assertSame(false, $method->invoke(null, $reader, 'ImportError'));
+
+        fclose($writer);
+        fread($reader, 8192);
+
+        assertSame(true, $method->invoke(null, $reader, ''));
+
+        fclose($reader);
+    }
+
+    /**
+     * Only stderr's exhaustion drops stderr from the select set.
+     *
+     * absorb() reports exhaustion for whichever descriptor it drained, so
+     * without the per-descriptor split a worker that closed its STDOUT first —
+     * an ordinary shutdown order — took stderr out of the select set with it,
+     * and every diagnostic written afterwards was lost. Here stdout is at EOF
+     * for the whole run and 'TAIL' is written to stderr once stdout's EOF has
+     * already been observed, so only a run that kept stderr selected ever sees
+     * it. "Once" and not "on the Nth pass": how many passes the loop makes is a
+     * property of the select set this test is meant to be independent of, so
+     * the write is gated on a flag rather than on a pass number.
+     */
+    public function testStdoutReachingEofDoesNotDropStderrFromTheSelectSet(): void
+    {
+        $stdinPair = $this->socketPair();
+        stream_set_blocking($stdinPair[0], false);
+        @fwrite($stdinPair[0], str_repeat('x', 4_000_000)); // Fill it: never writable.
+        $stdoutPair = $this->socketPair();
+        fclose($stdoutPair[1]); // Worker closed stdout: permanently ready, always empty.
+        $stderrPair = $this->socketPair();
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $stdinPair[0];
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 200));
+        $channel->beginRequest();
+
+        $passes = 0;
+        $announced = false;
+        captureThrows(
+            static function () use ($channel, &$passes, &$announced, $stderrPair): void {
+                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes, &$announced, $stderrPair): bool {
+                    // Any pass after the first: stdout's EOF has been observed
+                    // by then, so this is reachable only while stderr is still
+                    // in the select set. Written once, so the assertion below
+                    // pins the content and not the pass count.
+                    if (++$passes > 1 && !$announced) {
+                        $announced = true;
+                        fwrite($stderrPair[1], 'TAIL');
+                    }
+
+                    return false;
+                });
+            },
+            WorkerException::class,
+        );
+
+        assertSame('TAIL', $channel->stderr());
+
+        fclose($stdinPair[1]);
+        fclose($stderrPair[1]);
+    }
+
+    /**
+     * The other half of the same rule: an exhausted STDOUT leaves the select
+     * set too.
+     *
+     * A worker that closes stdout while the parent is still writing a large
+     * frame leaves a descriptor stream_select() reports ready on every pass
+     * and that yields nothing, so the send loop spun at full speed until the
+     * deadline. Only stderr's exhaustion was acted on, so this half was left
+     * open when the stderr half was fixed.
+     *
+     * Counted rather than timed: the wait is capped at 100 ms whenever a
+     * cancellation callback is supplied, so a loop that actually waits reaches
+     * a handful of passes inside a 200 ms deadline, while a spinning one
+     * reaches thousands. The bound below is two orders of magnitude clear of
+     * both.
+     */
+    public function testAnExhaustedStdoutStopsTheSendLoopFromSpinning(): void
+    {
+        $stdinPair = $this->socketPair();
+        stream_set_blocking($stdinPair[0], false);
+        @fwrite($stdinPair[0], str_repeat('x', 4_000_000)); // Fill it: never writable.
+        $stdoutPair = $this->socketPair();
+        fclose($stdoutPair[1]); // Worker closed stdout: permanently ready, always empty.
+        $stderrPair = $this->socketPair();
+
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $stdinPair[0];
+        $process->stdoutPipe = $stdoutPair[0];
+        $process->stderrPipe = $stderrPair[0];
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 200));
+        $channel->beginRequest();
+
+        $passes = 0;
+        captureThrows(
+            static function () use ($channel, &$passes): void {
+                $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes): bool {
+                    ++$passes;
+
+                    return false;
+                });
+            },
+            WorkerException::class,
+        );
+
+        self::assertLessThan(50, $passes, sprintf('send() made %d passes in 200 ms; the exhausted stdout is still selected', $passes));
+
+        fclose($stdinPair[1]);
+        fclose($stderrPair[1]);
     }
 }

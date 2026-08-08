@@ -69,7 +69,10 @@ final readonly class ToolService
         // key validation below rejects it as unknown.
         $verbosity = 'compact';
         if (in_array('verbosity', $declared, true) && array_key_exists('verbosity', $arguments)) {
-            $verbosity = $arguments['verbosity'];
+            // Through the same normalisation every other literal string
+            // argument gets: whitespace is invisible in a JSON payload, and
+            // this value is then matched literally against the allowed set.
+            $verbosity = self::normalized($arguments['verbosity']);
             unset($arguments['verbosity']);
             if ($verbosity !== 'compact' && $verbosity !== 'full') {
                 throw new ToolInputException('verbosity must be "compact" or "full".');
@@ -121,9 +124,10 @@ final readonly class ToolService
     }
 
     /**
-     * Central pre-dispatch key check: every remaining argument must be declared
-     * and every non-common required key present. Mirrors the per-handler keys()
-     * guard so an invalid request is rejected before refresh_if_stale runs.
+     * The only top-level key check: every remaining argument must be declared
+     * and every non-common required key present. Driven by ToolCatalog, so the
+     * advertised schema and the accepted arguments cannot drift apart, and run
+     * before refresh_if_stale so an invalid request triggers no rescan.
      *
      * @param array<string, mixed> $arguments
      * @param array{properties: list<string>, required: list<string>} $schema
@@ -154,8 +158,11 @@ final readonly class ToolService
      */
     private function refreshIfStale(array $arguments, ?CancellationToken $cancellation): array
     {
-        $projectId = $arguments['project_id'] ?? null;
-        if (!is_string($projectId) || $projectId === '') {
+        // Normalised for the same reason string() normalises: a padded id looks
+        // up no project, and silently skipping the refresh would leave the
+        // caller with a stale answer their refresh_if_stale asked to avoid.
+        $projectId = self::normalized($arguments['project_id'] ?? null);
+        if ($projectId === '') {
             return [];
         }
         $staleness = $this->queries->staleness($projectId);
@@ -230,7 +237,6 @@ final readonly class ToolService
      */
     private function serverInfo(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, [], []);
         $environment = $this->requireEnvironment('server_info');
         $info = $environment->describe();
         /** @var list<array{path: string, source: string, exists: bool}> $roots */
@@ -267,7 +273,6 @@ final readonly class ToolService
      */
     private function diagnoseRuntime(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, [], []);
         $result = $this->requireEnvironment('diagnose_runtime')->doctor()->run();
         $failed = array_values(array_filter($result['checks'], static fn(array $check): bool => $check['status'] !== 'ok'));
 
@@ -299,7 +304,6 @@ final readonly class ToolService
      */
     private function annotateComponent(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'component', 'kind'], ['value', 'remove', 'execute']);
         return $this->queries->annotateComponent(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'component'),
@@ -317,7 +321,6 @@ final readonly class ToolService
      */
     private function removeProject(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['execute']);
         return $this->maintenance->removeProject(
             self::string($arguments, 'project_id'),
             self::boolean($arguments, 'execute', false),
@@ -331,7 +334,6 @@ final readonly class ToolService
      */
     private function cleanupStaleScans(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['older_than_hours', 'execute']);
         return $this->maintenance->cleanupStaleScans(
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'older_than_hours', 24, 1, 8760),
@@ -346,7 +348,6 @@ final readonly class ToolService
      */
     private function maintainDatabase(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['action'], ['execute', 'backup_name']);
         return $this->maintenance->maintain(
             self::string($arguments, 'action'),
             self::boolean($arguments, 'execute', false),
@@ -361,7 +362,6 @@ final readonly class ToolService
      */
     private function projects(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, [], ['limit', 'offset', 'include_roots']);
         return $this->queries->listProjects(
             self::integer($arguments, 'limit', 50, 1, 100),
             self::integer($arguments, 'offset', 0, 0, 100_000),
@@ -376,7 +376,6 @@ final readonly class ToolService
      */
     private function snapshots(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['limit', 'offset']);
         return $this->queries->listSnapshots(
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'limit', 20, 1, 100),
@@ -391,7 +390,6 @@ final readonly class ToolService
      */
     private function snapshotDiff(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'from_snapshot'], ['to_snapshot', 'max_changes']);
         return $this->queries->snapshotDiff(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'from_snapshot'),
@@ -407,7 +405,6 @@ final readonly class ToolService
      */
     private function qualityGate(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'baseline_snapshot', 'budgets'], ['policies', 'sarif', 'propose_baseline']);
         $budgets = $arguments['budgets'];
         $policies = $arguments['policies'] ?? [];
         // An empty JSON object decodes to []; accept it as "no budgets" rather
@@ -432,7 +429,6 @@ final readonly class ToolService
      */
     private function architectureTrends(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['limit', 'release_from']);
         return $this->queries->architectureTrends(
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'limit', 10, 2, 20),
@@ -447,7 +443,6 @@ final readonly class ToolService
      */
     private function scan(array $arguments, ?CancellationToken $cancellation): ResultEnvelope
     {
-        self::keys($arguments, ['path'], ['name', 'mode', 'max_files', 'max_file_bytes', 'worker_timeout_ms', 'snapshot_retention', 'boundaries']);
         $path = self::string($arguments, 'path');
         $name = array_key_exists('name', $arguments) ? self::string($arguments, 'name') : null;
         $maxFiles = array_key_exists('max_files', $arguments) ? self::integer($arguments, 'max_files', 100_000, 1, 100_000) : null;
@@ -473,7 +468,6 @@ final readonly class ToolService
      */
     private function find(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'name'], ['limit']);
         return $this->queries->findComponent(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'name'),
@@ -488,7 +482,6 @@ final readonly class ToolService
      */
     private function inspect(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'component'], ['max_relationships', 'max_children', 'min_confidence']);
         return $this->queries->inspectComponent(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'component'),
@@ -505,7 +498,6 @@ final readonly class ToolService
      */
     private function listUsages(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'symbol'], ['edge_kinds', 'min_confidence', 'limit']);
         return $this->queries->listUsages(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'symbol'),
@@ -522,7 +514,6 @@ final readonly class ToolService
      */
     private function summary(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['limit']);
         return $this->queries->architectureSummary(
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'limit', 50, 1, 100),
@@ -536,7 +527,6 @@ final readonly class ToolService
      */
     private function exportAgentBrief(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['max_chars']);
         return $this->queries->exportAgentBrief(
             self::string($arguments, 'project_id'),
             self::integer($arguments, 'max_chars', 4000, 1000, 20_000),
@@ -550,7 +540,6 @@ final readonly class ToolService
      */
     private function fileMetrics(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['path_contains', 'language', 'sort_by', 'order', 'limit', 'offset']);
         return $this->queries->fileMetrics(
             self::string($arguments, 'project_id'),
             array_key_exists('path_contains', $arguments) ? self::string($arguments, 'path_contains') : null,
@@ -569,7 +558,6 @@ final readonly class ToolService
      */
     private function flow(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'from', 'to'], ['max_depth', 'max_paths', 'edge_kinds', 'min_confidence', 'timeout_ms']);
         return $this->queries->explainFlow(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'from'),
@@ -589,7 +577,6 @@ final readonly class ToolService
      */
     private function impact(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'symbol'], ['max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
         return $this->queries->impactAnalysis(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'symbol'),
@@ -608,7 +595,6 @@ final readonly class ToolService
      */
     private function cycles(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['edge_kinds', 'min_confidence', 'limit', 'max_nodes', 'max_edges', 'timeout_ms', 'include_self_loops']);
         return $this->queries->dependencyCycles(
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'edge_kinds'),
@@ -628,7 +614,6 @@ final readonly class ToolService
      */
     private function health(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['edge_kinds', 'min_confidence', 'limit', 'max_nodes', 'max_edges', 'timeout_ms', 'include_external', 'include_tests']);
         return $this->queries->architectureHealth(
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'edge_kinds'),
@@ -649,7 +634,6 @@ final readonly class ToolService
      */
     private function check(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'policies'], ['min_confidence', 'limit', 'max_edges', 'timeout_ms']);
         $policies = $arguments['policies'];
         if (!is_array($policies) || !array_is_list($policies)) {
             throw new InvalidArgumentException('policies must be a list.');
@@ -671,7 +655,6 @@ final readonly class ToolService
      */
     private function suggest(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'feature_description'], ['limit', 'max_members', 'max_edges', 'timeout_ms', 'ranking_mode']);
         return $this->queries->suggestLocation(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'feature_description'),
@@ -690,7 +673,6 @@ final readonly class ToolService
      */
     private function changeImpact(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'symbol'], ['since_days', 'max_commits', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
         return $this->queries->changeImpact(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'symbol'),
@@ -711,7 +693,6 @@ final readonly class ToolService
      */
     private function changedFilesImpact(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['files', 'working_tree', 'base_ref', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
         return $this->queries->changedFilesImpact(
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'files', 50),
@@ -732,7 +713,6 @@ final readonly class ToolService
      */
     private function testImpact(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['files', 'working_tree', 'base_ref', 'max_depth', 'limit', 'edge_kinds', 'min_confidence', 'timeout_ms']);
         return $this->queries->testImpact(
             self::string($arguments, 'project_id'),
             self::strings($arguments, 'files', 50),
@@ -753,7 +733,6 @@ final readonly class ToolService
      */
     private function reviewDiff(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['base_ref', 'files', 'policies', 'budgets', 'baseline_snapshot', 'max_depth', 'limit', 'min_confidence', 'timeout_ms']);
         $policies = $arguments['policies'] ?? null;
         if ($policies !== null && (!is_array($policies) || !array_is_list($policies))) {
             throw new InvalidArgumentException('policies must be a list.');
@@ -783,7 +762,6 @@ final readonly class ToolService
      */
     private function architectureContext(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['task_description', 'files', 'max_chars', 'timeout_ms', 'include_source']);
         return $this->queries->architectureContext(
             self::string($arguments, 'project_id'),
             array_key_exists('task_description', $arguments) ? self::string($arguments, 'task_description') : '',
@@ -801,7 +779,6 @@ final readonly class ToolService
      */
     private function diagram(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['format', 'boundary', 'edge_kinds', 'min_confidence', 'direction', 'max_nodes', 'max_edges']);
         return $this->queries->exportDiagram(
             self::string($arguments, 'project_id'),
             array_key_exists('format', $arguments) ? self::string($arguments, 'format') : 'mermaid',
@@ -821,7 +798,6 @@ final readonly class ToolService
      */
     private function boundaries(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['source', 'limit', 'offset']);
         return $this->queries->listBoundaries(
             self::string($arguments, 'project_id'),
             array_key_exists('source', $arguments) ? self::string($arguments, 'source') : null,
@@ -837,7 +813,6 @@ final readonly class ToolService
      */
     private function search(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id', 'query'], ['kinds', 'roles', 'boundary_ids', 'confidences', 'limit', 'offset']);
         return $this->queries->searchArchitecture(
             self::string($arguments, 'project_id'),
             self::string($arguments, 'query'),
@@ -857,7 +832,6 @@ final readonly class ToolService
      */
     private function listAnnotations(array $arguments): ResultEnvelope
     {
-        self::keys($arguments, ['project_id'], ['component', 'kind', 'limit', 'offset']);
         return $this->queries->listAnnotations(
             self::string($arguments, 'project_id'),
             array_key_exists('component', $arguments) ? self::string($arguments, 'component') : null,
@@ -868,7 +842,9 @@ final readonly class ToolService
     }
 
     /**
-     * Reject unknown or missing argument keys, so a mistyped parameter is an error rather than silently ignored.
+     * Reject unknown or missing keys in a nested object argument. The top-level
+     * argument check lives in {@see validateKeys()}, driven by ToolCatalog; this
+     * is for shapes the catalog does not describe, such as a boundary entry.
      *
      * @param array<string, mixed> $arguments @param list<string> $required @param list<string> $optional
      */
@@ -886,17 +862,38 @@ final readonly class ToolService
     }
 
     /**
-     * A required string argument, rejecting an empty value rather than treating it as absent.
+     * A required string argument, rejecting an empty value rather than treating
+     * it as absent, and returning it trimmed — surrounding whitespace matched
+     * no id in the database and surfaced as "not found" rather than "invalid".
      *
      * @param array<string, mixed> $arguments
      */
     private static function string(array $arguments, string $key): string
     {
-        $value = $arguments[$key] ?? null;
-        if (!is_string($value) || trim($value) === '') {
+        $value = self::normalized($arguments[$key] ?? null);
+        if ($value === '') {
             throw new InvalidArgumentException(sprintf('%s must be a non-empty string.', $key));
         }
         return $value;
+    }
+
+    /**
+     * The one place an incoming string argument is normalised.
+     *
+     * Every helper here routes through this rather than spelling out its own
+     * trim(): surrounding whitespace is invisible in a JSON payload, and every
+     * value these helpers produce is then matched literally — an id looked up
+     * in the database, an enum value, a path prefix — so ' proj_1' matched
+     * nothing and surfaced as "not found" rather than "invalid". The rule had
+     * been written out at four separate sites, with nothing structural stopping
+     * a fifth helper from omitting it.
+     *
+     * A non-string collapses to the empty string so each caller rejects it with
+     * its own message, which is what they did with the type check inline.
+     */
+    private static function normalized(mixed $value): string
+    {
+        return is_string($value) ? trim($value) : '';
     }
 
     /**
@@ -928,7 +925,10 @@ final readonly class ToolService
     }
 
     /**
-     * A list-of-strings argument, rejecting a bare string so a caller cannot pass one by mistake.
+     * A list-of-strings argument, rejecting a bare string so a caller cannot
+     * pass one by mistake. Entries are trimmed for the same reason {@see string()}
+     * trims: every list here holds enum values, ids, or paths matched literally,
+     * so a padded entry silently matched nothing instead of being rejected.
      *
      * @param array<string, mixed> $arguments @return list<string>
      */
@@ -938,16 +938,22 @@ final readonly class ToolService
         if (!is_array($value) || !array_is_list($value) || count($value) > $maximum) {
             throw new InvalidArgumentException(sprintf('%s must be a list of at most %d strings.', $key, $maximum));
         }
+        $trimmed = [];
         foreach ($value as $item) {
-            if (!is_string($item) || $item === '') {
+            $entry = self::normalized($item);
+            if ($entry === '') {
                 throw new InvalidArgumentException(sprintf('%s must contain non-empty strings.', $key));
             }
+            $trimmed[] = $entry;
         }
-        return $value;
+        return $trimmed;
     }
 
     /**
-     * Boundary definitions from the scan arguments, validated into the shape the planner expects.
+     * Boundary definitions from the scan arguments, validated into the shape the
+     * planner expects. The validated strings are written back rather than
+     * discarded: BoundaryInference matches a prefix literally, so a padded
+     * path_prefix would define a boundary that matches nothing.
      *
      * @param array<string, mixed> $arguments @return list<array<string, mixed>>
      */
@@ -957,18 +963,21 @@ final readonly class ToolService
         if (!is_array($values) || !array_is_list($values) || count($values) > 50) {
             throw new InvalidArgumentException('boundaries must be a list of at most 50 objects.');
         }
+        $normalized = [];
         foreach ($values as $value) {
             if (!is_array($value) || array_is_list($value)) {
                 throw new InvalidArgumentException('Each boundary must be an object.');
             }
             self::keys($value, ['name'], ['path_prefix', 'namespace_prefix']);
-            self::string($value, 'name');
+            $value['name'] = self::string($value, 'name');
             $matchers = (int) array_key_exists('path_prefix', $value) + (int) array_key_exists('namespace_prefix', $value);
             if ($matchers !== 1) {
                 throw new InvalidArgumentException('Each boundary requires exactly one matcher.');
             }
-            self::string($value, array_key_exists('path_prefix', $value) ? 'path_prefix' : 'namespace_prefix');
+            $matcher = array_key_exists('path_prefix', $value) ? 'path_prefix' : 'namespace_prefix';
+            $value[$matcher] = self::string($value, $matcher);
+            $normalized[] = $value;
         }
-        return $values;
+        return $normalized;
     }
 }

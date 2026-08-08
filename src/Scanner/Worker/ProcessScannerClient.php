@@ -7,7 +7,7 @@ namespace Knossos\Scanner\Worker;
 use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\ScannerClient;
 
-/** Drives a scanner running as a child process: initialize, discover, scan, shutdown. */
+/** Drives a scanner running as a child process: initialize, scan, cancel, shutdown. */
 final class ProcessScannerClient implements ScannerClient
 {
     private readonly ScannerProtocolSession $session;
@@ -52,19 +52,13 @@ final class ProcessScannerClient implements ScannerClient
     }
 
     /** {@inheritDoc} */
-    public function discover(array $project): array
-    {
-        return $this->session->discover($project);
-    }
-
-    /** {@inheritDoc} */
     public function scan(array $request, ?callable $cancelled = null): iterable
     {
         return $this->session->scan($request, $cancelled);
     }
 
     /** {@inheritDoc} */
-    public function cancel(string $requestId): void
+    public function cancel(int|string $requestId): void
     {
         $this->session->cancel($requestId);
     }

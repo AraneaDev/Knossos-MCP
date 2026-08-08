@@ -93,21 +93,40 @@ final class GitTest extends KnossosTestCase
         assertThrows(fn() => $query->changeImpact($ids['project'], $ids['invoice'], maxCommits: 0), InvalidArgumentException::class);
         assertThrows(fn() => $query->changeImpact($ids['project'], $ids['invoice'], maxCommits: 5001), InvalidArgumentException::class);
 
+    }
+
+    /**
+     * The only part of this file that needs a real `git` binary, split out so
+     * the rest keeps running where there is none.
+     *
+     * CI runs in a gitless container, and a suite that shells out to `git`
+     * unconditionally fails there for a reason that has nothing to do with the
+     * code under test. Skipping the way GitProcessRunnerHardeningTest does
+     * keeps the everything-else coverage above unconditional and reports this
+     * one honestly as skipped rather than passing on a host that never ran it.
+     */
+    #[Group('git')]
+    public function testProcessGitProvidersReadRealHistoryAndWorkingTreeChanges(): void
+    {
+        $git = self::locateGit();
+        if ($git === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
         $root = sys_get_temp_dir() . '/knossos-git-' . bin2hex(random_bytes(6));
         $plain = sys_get_temp_dir() . '/knossos-git-' . bin2hex(random_bytes(6));
         if (!mkdir($root . '/src', 0700, true) || !mkdir($plain, 0700, true)) {
             throw new RuntimeException('Unable to create Git fixtures.');
         }
         try {
-            $this->runFixtureCommand(['git', 'init', '--quiet', $root]);
-            $this->runFixtureCommand(['git', '-C', $root, 'config', 'user.name', 'Knossos Test']);
-            $this->runFixtureCommand(['git', '-C', $root, 'config', 'user.email', 'test@example.test']);
+            $this->runFixtureCommand([$git, 'init', '--quiet', $root]);
+            $this->runFixtureCommand([$git, '-C', $root, 'config', 'user.name', 'Knossos Test']);
+            $this->runFixtureCommand([$git, '-C', $root, 'config', 'user.email', 'test@example.test']);
             file_put_contents($root . '/src/example.php', "<?php\n");
-            $this->runFixtureCommand(['git', '-C', $root, 'add', 'src/example.php']);
-            $this->runFixtureCommand(['git', '-C', $root, 'commit', '--quiet', '-m', 'first']);
+            $this->runFixtureCommand([$git, '-C', $root, 'add', 'src/example.php']);
+            $this->runFixtureCommand([$git, '-C', $root, 'commit', '--quiet', '-m', 'first']);
             file_put_contents($root . '/src/example.php', "<?php\n// second\n");
-            $this->runFixtureCommand(['git', '-C', $root, 'add', 'src/example.php']);
-            $this->runFixtureCommand(['git', '-C', $root, 'commit', '--quiet', '-m', 'second']);
+            $this->runFixtureCommand([$git, '-C', $root, 'add', 'src/example.php']);
+            $this->runFixtureCommand([$git, '-C', $root, 'commit', '--quiet', '-m', 'second']);
             $history = (new ProcessGitHistoryProvider())->history($root, 30, 10, 2000);
             assertSame(2, $history['commits_examined']);
             assertSame(2, $history['files']['src/example.php']['commit_count']);

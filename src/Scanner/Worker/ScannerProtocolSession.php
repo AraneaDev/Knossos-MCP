@@ -90,17 +90,6 @@ final class ScannerProtocolSession
     }
 
     /**
-     * Ask the worker which of the offered files it claims.
-     *
-     * @param array<string, mixed> $project @return array<string, mixed>
-     */
-    public function discover(array $project): array
-    {
-        $this->initialize();
-        return $this->request(Protocol::METHOD_DISCOVER, $project);
-    }
-
-    /**
      * Send a scan request and decode the contribution it returns.
      *
      * @param array<string, mixed> $request @return iterable<ScanContribution>

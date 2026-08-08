@@ -4,13 +4,130 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Discovery;
 
+use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\IgnoreMatcher;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 #[Group('ignore-matcher')]
 final class IgnoreMatcherTest extends TestCase
 {
+    /**
+     * '[#]' used to terminate the '#'-delimited compiled pattern early:
+     * preg_match warned "Unknown modifier ']'" and returned false, so the
+     * pattern silently excluded nothing. Escaping the class body fixes the
+     * delimiter injection outright — the pattern now compiles and matches the
+     * literal '#' it names, rather than either throwing or vanishing.
+     */
+    public function testADelimiterCharacterInsideAClassMatchesLiterally(): void
+    {
+        $matcher = new IgnoreMatcher(['file[#]name']);
+
+        assertSame(true, $matcher->matches('file#name'));
+        assertSame(false, $matcher->matches('fileXname'));
+    }
+
+    /**
+     * '[a\]' used to leave the compiled character class unterminated: the
+     * scanner (unlike PCRE) does not treat '\' as an escape character, so it
+     * closed the class one character later than PCRE would once the body was
+     * copied verbatim, and PCRE saw the trailing '\]' as an escaped literal
+     * bracket rather than the terminator. Escaping the recovered body produces
+     * a class that compiles instead of silently matching nothing. (The class
+     * also names a literal backslash, but a backslash cannot appear in a
+     * segment to test that with: matches() normalises '\' to '/' as a path
+     * separator before segmenting, same as everywhere else in this class.)
+     */
+    public function testATrailingBackslashInAClassMatchesLiterally(): void
+    {
+        $matcher = new IgnoreMatcher(['[a\\]']);
+
+        assertSame(true, $matcher->matches('a'));
+        assertSame(false, $matcher->matches('b'));
+    }
+
+    public function testValidCharacterClassStillMatches(): void
+    {
+        $matcher = new IgnoreMatcher(['*.[oa]']);
+        self::assertTrue($matcher->matches('build/thing.o'));
+        self::assertFalse($matcher->matches('src/thing.php'));
+    }
+
+    /**
+     * Escaping the class body does not make every pattern compile: a
+     * descending range (start byte greater than end byte) has no valid PCRE
+     * interpretation and preg_match rejects it. The constructor now checks the
+     * compile result instead of silently matching nothing on every path, so
+     * this surfaces as a loud, attributable configuration error.
+     */
+    public function testAPatternWithAnInvalidCharacterRangeIsRejected(): void
+    {
+        $this->expectException(DiscoveryException::class);
+        new IgnoreMatcher(['[z-a]']);
+    }
+
+    /**
+     * characterClassEnd() skipped a leading '!' but not a leading '^' — the
+     * other gitignore/POSIX negation spelling — so '[^]x]' (a negated class
+     * whose first member is the literal ']') closed two characters early, at
+     * the ']' that is actually the class's own first member. Pre-fix that
+     * malformed regex failed to compile — loud, if unhelpful. Post one-line-fix
+     * but pre this round's correction it compiled to the wrong thing (`x]`
+     * taken as two trailing literals) and matched silently and incorrectly:
+     * a loud failure turned into a quiet wrong answer, which is worse than
+     * what was there before. fnmatch() is the oracle throughout, exactly as
+     * the reviewer verified it against a reflection-based call into the real
+     * toRegex().
+     *
+     * @return iterable<string, array{0: string, 1: string, 2: bool}>
+     */
+    public static function characterClassAgreesWithFnmatchProvider(): iterable
+    {
+        $cases = [
+            '[^]x]' => ['a', ']', 'x', '^', 'b'],
+            // Bare '[^]' has no member after the negation marker is stripped
+            // (the literal-first-']' special case consumes the only ']'
+            // available), so it is unterminated and falls back to matching its
+            // own literal text — same as '[!]' already did.
+            '[^]' => ['a', 'b', '^', ']', '[^]'],
+            // Embedded in a longer, slash-free pattern: the missing terminator
+            // makes the whole pattern literal, not just the bracket portion.
+            'x[^]y' => ['x[^]y', 'xay', 'x^y'],
+            '[!]x]' => ['a', ']', 'x', '!'],
+            '[]]' => [']', 'a'],
+            '[^x]' => ['a', 'x', '^'],
+            '[!x]' => ['a', 'x', '!'],
+            '[a-z]' => ['a', 'm', 'z', 'A'],
+            '*.[oa]' => ['thing.o', 'thing.a', 'thing.c'],
+            // POSIX classes. preg_quote()ing the body turned '[[:alpha:]]' into
+            // '[\[\:alpha\:\]]' — a class of the literal characters '[', ':',
+            // 'a', 'l', 'p', 'h' and ']' — which does not match 'a' but does
+            // match 'a]', so the wrong files were scanned and nothing said so.
+            '[[:alpha:]]' => ['a', 'Z', '1', '_', 'a]', 'ab'],
+            '[[:digit:]x]' => ['1', 'x', 'a', '1]', 'x]'],
+            '[^[:space:]]' => ['a', ' ', "\t", '^', ' ]'],
+            '[a-z[:digit:]]' => ['a', 'z', '5', 'A', '-', 'a]'],
+            // The class terminator has to be found past ':]', not at it: the
+            // scan used to stop inside the POSIX class and leave the real ']'
+            // to be read as a trailing literal.
+            '[[:upper:]]x' => ['Ax', 'ax', '1x', 'A]x'],
+        ];
+        foreach ($cases as $pattern => $candidates) {
+            foreach ($candidates as $candidate) {
+                yield "$pattern vs '$candidate'" => [$pattern, $candidate, (bool) fnmatch($pattern, $candidate)];
+            }
+        }
+    }
+
+    #[DataProvider('characterClassAgreesWithFnmatchProvider')]
+    public function testCharacterClassAgreesWithFnmatch(string $pattern, string $candidate, bool $expected): void
+    {
+        $matcher = new IgnoreMatcher([$pattern]);
+
+        assertSame($expected, $matcher->matches($candidate));
+    }
+
     public function testClassIsFinalAndReadonly(): void
     {
         $reflection = new \ReflectionClass(IgnoreMatcher::class);

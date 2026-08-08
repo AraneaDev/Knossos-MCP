@@ -51,8 +51,8 @@ final class GraphBundleDecoder
         if (!is_array($bundle) || array_is_list($bundle) || array_keys($bundle) !== ['manifest', 'payload']) {
             throw new InvalidArgumentException('Bundle root is invalid.');
         }
-        $manifest = $this->object($bundle['manifest'], 'manifest');
-        $payload = $this->object($bundle['payload'], 'payload');
+        $manifest = self::object($bundle['manifest'], 'manifest');
+        $payload = self::object($bundle['payload'], 'payload');
         $this->knownKeys($manifest, ['format', 'version', 'redaction', 'checksum', 'uncompressed_bytes', 'fact_count', 'created_at'], 'manifest');
         $this->knownKeys($payload, ['project_name', 'scan', 'files', 'nodes', 'edges', 'classifications', 'boundaries', 'memberships', 'diagnostics'], 'payload');
         if (($manifest['format'] ?? null) !== self::FORMAT || ($manifest['version'] ?? null) !== self::VERSION) {
@@ -110,9 +110,15 @@ final class GraphBundleDecoder
     /**
      * A required object field from untrusted bundle input.
      *
+     * Static and public because the shape rules for a bundle belong to the
+     * class that validates bundles: {@see PortableGraphImporter} carried a
+     * byte-identical private copy, which is one place for the two to disagree
+     * about what a malformed bundle is and one of the repository's cross-file
+     * duplicate blocks.
+     *
      * @return array<string, mixed>
      */
-    private function object(mixed $value, string $name): array
+    public static function object(mixed $value, string $name): array
     {
         if (!is_array($value) || array_is_list($value)) {
             throw new InvalidArgumentException('Bundle ' . $name . ' must be an object.');
