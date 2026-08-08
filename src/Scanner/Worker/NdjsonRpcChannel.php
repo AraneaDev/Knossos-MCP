@@ -198,7 +198,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             }
 
             foreach ($read as $stream) {
-                $chunk = fread($stream, 8192);
+                $chunk = @fread($stream, 8192);
                 if ($chunk === false) {
                     throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
                 }
@@ -255,9 +255,17 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      */
     private function absorb($stream, $stderr): bool
     {
-        $chunk = fread($stream, 8192);
-        if ($chunk === false || $chunk === '') {
-            return is_string($chunk) && self::isExhausted($stream, $chunk);
+        $chunk = @fread($stream, 8192);
+        if ($chunk === false) {
+            // A failed read is a failure to report, not a quiet descriptor to
+            // keep selecting on. Reported as "not exhausted" it stayed in the
+            // select set, and a descriptor that still reports ready spun here
+            // until the deadline and mislabelled the I/O error as a TIMEOUT.
+            // The receive loop already answers a false read this way.
+            throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
+        }
+        if ($chunk === '') {
+            return self::isExhausted($stream, $chunk);
         }
         if ($stream === $stderr) {
             $this->appendStderr($chunk);

@@ -254,6 +254,42 @@ final class NdjsonRpcChannelTest extends TestCase
         fclose($pair[1]);
     }
 
+    public function testSendReportsAFailedReadInsteadOfKeepingTheDescriptor(): void
+    {
+        // A read that fails outright is an I/O failure, not a quiet
+        // descriptor. Answered as "not exhausted" the stream stayed in the
+        // select set, and one that still reports ready spun until the deadline
+        // and surfaced the error as a TIMEOUT.
+        //
+        // Reached through reflection because stream_select() will not hand
+        // send() a descriptor whose read fails: the one portable way to make
+        // fread() fail — a write-only handle — is exactly what select()
+        // reports as never readable.
+        $path = tempnam(sys_get_temp_dir(), 'knossos-absorb-');
+        $writeOnly = fopen($path, 'w');
+        $stderr = fopen('php://temp', 'r+');
+        if (@fread($writeOnly, 8) !== false) {
+            fclose($writeOnly);
+            fclose($stderr);
+            unlink($path);
+            $this->markTestSkipped('This platform does not fail reads on a write-only handle.');
+        }
+
+        $channel = new NdjsonRpcChannel($this->mockProcess(), new WorkerLimits());
+        $absorb = new \ReflectionMethod($channel, 'absorb');
+
+        $error = captureThrows(
+            static fn() => $absorb->invoke($channel, $writeOnly, $stderr),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_IO_FAILED', $error->diagnosticCode);
+
+        fclose($writeOnly);
+        fclose($stderr);
+        unlink($path);
+    }
+
     public function testSendThrowsOnPipeBroken(): void
     {
         // Use stream_socket_pair to get a real socket pair where writing to
