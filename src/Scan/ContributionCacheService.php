@@ -78,6 +78,15 @@ final readonly class ContributionCacheService
         }
         $contributions = [];
         $entries = [];
+        $requested = [];
+        foreach ($files as $file) {
+            $requested[$manifest->id . ':file:' . $file->relativePath] = true;
+        }
+        // Owner keys the worker answered under that nobody asked for. Their
+        // nodes and edges are unusable — nothing maps them to a scanned file —
+        // and they are the reason some requested file has no contribution, so
+        // they are named in the diagnostic that file gets.
+        $unexpected = array_keys(array_diff_key($byOwner, $requested));
         foreach ($files as $file) {
             $owner = $manifest->id . ':file:' . $file->relativePath;
             $contribution = $byOwner[$owner] ?? null;
@@ -87,7 +96,7 @@ final readonly class ContributionCacheService
                 // is visible, rather than failing a scan whose other files have
                 // already produced facts. Deliberately not cached below: the
                 // next scan must retry this file from source.
-                $contributions[] = self::omittedContribution($owner, $file->relativePath);
+                $contributions[] = self::omittedContribution($owner, $file->relativePath, $unexpected);
                 continue;
             }
             $contributions[] = $contribution;
@@ -134,14 +143,35 @@ final readonly class ContributionCacheService
     /**
      * The contribution a worker owed for a file it never reported on, carrying
      * only the reason. Never cached, so the next scan re-analyses the file.
+     *
+     * Two different failures arrive here and they are not equally serious. A
+     * worker that simply skipped a file left nothing behind; a worker that
+     * answered under an owner key nobody asked for produced real nodes and
+     * edges that then had to be thrown away, because nothing maps them to a
+     * scanned file. The second is a bug in the worker's own bookkeeping rather
+     * than a gap in coverage, and reporting it under the same code as the
+     * first hid it behind the noisier, more ordinary failure. It gets its own.
+     *
+     * @param list<string> $unexpectedOwners owner keys the worker answered under
+     *     that were never requested; empty when the file was simply skipped
      */
-    private static function omittedContribution(string $owner, string $relativePath): ScanContribution
+    private static function omittedContribution(string $owner, string $relativePath, array $unexpectedOwners = []): ScanContribution
     {
+        $message = sprintf('The scanner returned no contribution for %s; the file contributed no facts.', $relativePath);
+        if ($unexpectedOwners !== []) {
+            $message = sprintf(
+                'The scanner returned no contribution for %s and answered under %d owner key(s) that were never requested (%s); those facts were discarded.',
+                $relativePath,
+                count($unexpectedOwners),
+                implode(', ', array_slice($unexpectedOwners, 0, 3)),
+            );
+        }
+
         return new ScanContribution($owner, [], [], [
             new Diagnostic(
                 'error',
-                'SCANNER_OMITTED_CONTRIBUTION',
-                sprintf('The scanner returned no contribution for %s; the file contributed no facts.', $relativePath),
+                $unexpectedOwners === [] ? 'SCANNER_OMITTED_CONTRIBUTION' : 'SCANNER_MISATTRIBUTED_CONTRIBUTION',
+                $message,
                 new Evidence($relativePath, 1, 1),
             ),
         ]);

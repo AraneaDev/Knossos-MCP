@@ -185,4 +185,31 @@ final class ContributionCacheServiceTest extends TestCase
         // Never cached: the next scan must retry the file from source.
         self::assertCount(1, $result['cache_entries']);
     }
+
+    /**
+     * A worker that answers under the wrong owner key is not the same failure
+     * as one that skips a file, and must not be reported as one.
+     *
+     * The misattributed contribution held real nodes and edges; nothing maps
+     * them to a scanned file, so they are discarded and the file they should
+     * have described comes back empty. Reporting that under
+     * SCANNER_OMITTED_CONTRIBUTION filed a bug in the worker's own bookkeeping
+     * under the ordinary, expected "that file produced nothing" code, where it
+     * reads as coverage noise rather than as the defect it is.
+     */
+    public function testAContributionUnderAnUnrequestedOwnerGetsItsOwnDiagnostic(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $file = $this->writeFile('b.php', "<?php // b\n");
+        $misattributed = new ScanContribution($manifest->id . ':file:not/asked/for.php');
+
+        $result = $service->entriesForScanned([$misattributed], [$file], $manifest, 'cfg');
+
+        self::assertCount(1, $result['contributions']);
+        $diagnostic = $result['contributions'][0]->diagnostics[0];
+        self::assertSame('SCANNER_MISATTRIBUTED_CONTRIBUTION', $diagnostic->code);
+        self::assertStringContainsString('not/asked/for.php', $diagnostic->message);
+        self::assertCount(0, $result['cache_entries']);
+    }
 }
