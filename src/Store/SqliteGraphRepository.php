@@ -271,6 +271,24 @@ final class SqliteGraphRepository implements GraphRepository
     }
 
     /**
+     * Restamp a completed scan's finished_at, recording that its graph was
+     * re-verified against the source without being rebuilt.
+     *
+     * finished_at is read as "when this graph last agreed with the tree", and it
+     * is what StalenessProbe compares directory mtimes against to notice added
+     * files. A scan that discovered no change has re-established that agreement,
+     * so leaving the timestamp where it was reports drift that no later scan
+     * could ever clear. Restricted to a complete scan: a running or terminal one
+     * has no completion to restate, and its timestamp means something else.
+     */
+    public function refreshScanCompletion(string $projectId, string $scanId): void
+    {
+        $this->prepare(
+            "UPDATE scans SET finished_at = :finished WHERE id = :id AND project_id = :project AND status = 'complete'",
+        )->execute(['finished' => self::now(), 'id' => $scanId, 'project' => $projectId]);
+    }
+
+    /**
      * Record a terminal failed/cancelled scan for diagnostics.
      *
      * Silently skips a project that was never persisted: the failure may have been

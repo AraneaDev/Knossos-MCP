@@ -50,6 +50,52 @@ final class FastPathTest extends KnossosTestCase
         }
     }
 
+    /**
+     * A directory-mtime bump that discovery cannot see -- a `__pycache__`
+     * appearing, a build artefact written, an editor swap file created and
+     * removed -- makes StalenessProbe report an addition, and the fast path is
+     * the only thing that can retract it: it creates no scan row, so unless it
+     * restamps the active scan's completion the project reads stale for ever and
+     * every `refresh_if_stale` call rescans the whole tree for nothing.
+     *
+     * Deliberately does not lean on scanTempFixture()'s directory backdating,
+     * which exists to keep a freshly copied tree from reading as stale and would
+     * otherwise be the only reason this passes: the scan's finished_at is pushed
+     * explicitly into the past and the directory is touched to now, so the
+     * "later than the scan" relation is established here rather than inherited.
+     */
+    #[Group('scan')]
+    public function testDirectoryMtimeBumpIsRetractedByTheFastPath(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $scanId = (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn();
+            $pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
+                ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() - 5), 'id' => $scanId]);
+            touch($root . '/src');
+
+            $probe = new StalenessProbe($pdo);
+            $before = $probe->probe($projectId);
+            assertSame('stale', $before['state']);
+            assertSame(1, $before['added_files_since']);
+
+            $result = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+
+            assertSame('no_change', $result->data['fast_path']);
+            $after = $probe->probe($projectId);
+            assertSame('fresh', $after['state']);
+            assertSame(0, $after['added_files_since']);
+
+            // Retracted by restamping the active scan, not by recording a new
+            // one: a new scan row would have to carry every graph row's
+            // last_scan_id forward, which is the work this path exists to skip.
+            assertSame(1, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn());
+            assertSame($scanId, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('scan')]
     public function testContentChangeOrFullModeSkipsFastPath(): void
     {
