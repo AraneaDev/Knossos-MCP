@@ -195,24 +195,3 @@ function declaredTypes(string $source): array
 
     return $types;
 }
-
-/**
- * The first sentence of a symbol's docblock, for generated reference tables.
- *
- * Returns null rather than a placeholder so a caller can decide how to render an
- * undocumented symbol.
- */
-function docblockSummaryLine(?string $documentation): ?string
-{
-    if ($documentation === null) {
-        return null;
-    }
-    foreach (preg_split('/\R/', $documentation) ?: [] as $line) {
-        $line = trim($line, " \t/*");
-        if ($line !== '' && !str_starts_with($line, '@')) {
-            return rtrim($line, '.');
-        }
-    }
-
-    return null;
-}
