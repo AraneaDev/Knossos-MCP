@@ -108,7 +108,8 @@ final class GitTest extends KnossosTestCase
     #[Group('git')]
     public function testProcessGitProvidersReadRealHistoryAndWorkingTreeChanges(): void
     {
-        if (self::locateGit() === null) {
+        $git = self::locateGit();
+        if ($git === null) {
             self::markTestSkipped('git is not available on this host.');
         }
         $root = sys_get_temp_dir() . '/knossos-git-' . bin2hex(random_bytes(6));
@@ -117,15 +118,15 @@ final class GitTest extends KnossosTestCase
             throw new RuntimeException('Unable to create Git fixtures.');
         }
         try {
-            $this->runFixtureCommand(['git', 'init', '--quiet', $root]);
-            $this->runFixtureCommand(['git', '-C', $root, 'config', 'user.name', 'Knossos Test']);
-            $this->runFixtureCommand(['git', '-C', $root, 'config', 'user.email', 'test@example.test']);
+            $this->runFixtureCommand([$git, 'init', '--quiet', $root]);
+            $this->runFixtureCommand([$git, '-C', $root, 'config', 'user.name', 'Knossos Test']);
+            $this->runFixtureCommand([$git, '-C', $root, 'config', 'user.email', 'test@example.test']);
             file_put_contents($root . '/src/example.php', "<?php\n");
-            $this->runFixtureCommand(['git', '-C', $root, 'add', 'src/example.php']);
-            $this->runFixtureCommand(['git', '-C', $root, 'commit', '--quiet', '-m', 'first']);
+            $this->runFixtureCommand([$git, '-C', $root, 'add', 'src/example.php']);
+            $this->runFixtureCommand([$git, '-C', $root, 'commit', '--quiet', '-m', 'first']);
             file_put_contents($root . '/src/example.php', "<?php\n// second\n");
-            $this->runFixtureCommand(['git', '-C', $root, 'add', 'src/example.php']);
-            $this->runFixtureCommand(['git', '-C', $root, 'commit', '--quiet', '-m', 'second']);
+            $this->runFixtureCommand([$git, '-C', $root, 'add', 'src/example.php']);
+            $this->runFixtureCommand([$git, '-C', $root, 'commit', '--quiet', '-m', 'second']);
             $history = (new ProcessGitHistoryProvider())->history($root, 30, 10, 2000);
             assertSame(2, $history['commits_examined']);
             assertSame(2, $history['files']['src/example.php']['commit_count']);
@@ -142,14 +143,6 @@ final class GitTest extends KnossosTestCase
             $this->removeGitFixture($root);
             $this->removeGitFixture($plain);
         }
-    }
-
-    /** The git binary, or null when the host has none. */
-    private static function locateGit(): ?string
-    {
-        $path = trim((string) @shell_exec('command -v git 2>/dev/null'));
-
-        return $path === '' ? null : $path;
     }
 
     #[Group('git')]

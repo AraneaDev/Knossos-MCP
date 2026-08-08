@@ -117,24 +117,4 @@ final class FaultInjectionTest extends KnossosTestCase
             @unlink($pidFile);
         }
     }
-
-    /**
-     * Whether a pid names a process that is still running, as opposed to one
-     * that has been killed and is waiting to be reaped.
-     *
-     * `/proc/<pid>` and `posix_kill($pid, 0)` both answer yes for a zombie, so
-     * neither distinguishes "the supervisor failed to kill it" from "the
-     * supervisor killed it and its new parent has not called wait() yet". Only
-     * the first is a defect.
-     */
-    private static function processIsAlive(int $pid): bool
-    {
-        $stat = @file_get_contents('/proc/' . $pid . '/stat');
-        $close = is_string($stat) ? strrpos($stat, ')') : false;
-        if (!is_string($stat) || $close === false) {
-            return false;
-        }
-
-        return substr($stat, $close + 2, 1) !== 'Z';
-    }
 }

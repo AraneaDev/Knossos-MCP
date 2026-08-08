@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Git;
 
 use Knossos\Git\GitProcessRunner;
+use Knossos\Tests\Phpunit\Support\Processes;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -15,6 +16,8 @@ use PHPUnit\Framework\TestCase;
 #[Group('git')]
 final class GitProcessRunnerHardeningTest extends TestCase
 {
+    use Processes;
+
     /** Every forced override is present, so no call site can omit one. */
     public function testForcedConfigDisablesRepositoryControlledCommandHooks(): void
     {
@@ -359,18 +362,75 @@ final class GitProcessRunnerHardeningTest extends TestCase
      * `proc_open()` is called under '@' because its warning would corrupt the
      * MCP stdout stream, and the reason was then dropped on the floor: every
      * cause — an argv past ARG_MAX, a missing binary, an exhausted process
-     * table — arrived as the same bare 'Unable to start Git.' A single
-     * over-long argument reproduces it without needing git, or a repository,
-     * or a real fork.
+     * table — arrived as the same bare 'Unable to start Git.' An oversized
+     * argv reproduces it without needing git, or a repository, or a real fork.
+     *
+     * The argv overruns the *total* limit rather than the per-argument one,
+     * because only the total is a limit every supported platform has. Linux's
+     * per-argument `MAX_ARG_STRLEN` was 128 KiB for years and is 6 MiB on
+     * current kernels, so a single 200,000-byte argument stopped failing where
+     * this test most often runs; macOS has no separate per-argument cap at
+     * all. The totals are bounded much lower and from above: macOS fixes
+     * `ARG_MAX` at 1 MiB, and Linux caps its stack-derived limit at 6 MiB. 256
+     * arguments of 64 KiB is 16 MiB — clear of both, with every individual
+     * argument small enough that no per-argument rule is what rejects it.
      */
     public function testAFailedSpawnCarriesTheReasonIntoTheException(): void
     {
         $method = new \ReflectionMethod(GitProcessRunner::class, 'execute');
         $method->setAccessible(true);
+        $command = ['/bin/true', ...array_fill(0, 256, str_repeat('x', 65_536))];
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessageMatches('/^Unable to start Git\\. .*[Aa]rgument list too long/');
-        $method->invoke(new GitProcessRunner(), ['/bin/true', str_repeat('x', 200_000)], 1_000, 'spawn failure test');
+        $method->invoke(new GitProcessRunner(), $command, 1_000, 'spawn failure test');
+    }
+
+    /**
+     * A hardening request for a binary that is not `git` is a contradiction,
+     * not a silent no-op.
+     *
+     * `harden()` used to return the command unchanged in that case, so a
+     * future call site passing a wrapper name (`git-wrapper`, a vendored
+     * `git2`) with the default `hardenGitConfig: true` ran with no hardening
+     * at all and nothing anywhere said so. Only `hardenGitConfig: false` — the
+     * caller stating that this is not a Git command — turns hardening off.
+     */
+    public function testHardeningAWrapperBinaryIsRefusedRatherThanSilentlySkipped(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/is not git/');
+        (new GitProcessRunner())->run(['/usr/bin/git-wrapper', 'diff'], 1_000, 'wrapper probe');
+    }
+
+    /**
+     * `-C` is read from the leading option region only, and only once.
+     *
+     * The root this resolves is the repository whose filter and diff drivers
+     * get enumerated and neutralised. A whole-argv search read the first `-C`
+     * anywhere, so a pathspec or an option value that happened to be the two
+     * characters `-C` — repository-controlled data in a `git diff` — decided
+     * which config was enumerated. Repeated `-C` options are refused rather
+     * than resolved, because Git composes them relative to one another, so the
+     * directory this method returns would not be the one the caller's command
+     * actually runs in.
+     */
+    public function testTheRepositoryRootIsReadFromTheLeadingOptionRegionOnly(): void
+    {
+        $method = new \ReflectionMethod(GitProcessRunner::class, 'repositoryRoot');
+        $method->setAccessible(true);
+
+        // The production history argv: `-c <value>` must not end the walk.
+        self::assertSame('/repo', $method->invoke(null, [
+            'git', '-c', 'core.quotePath=false', '--no-optional-locks', '--no-pager', '-C', '/repo', 'log', '--',
+        ]));
+        // A pathspec that spells `-C` belongs to the subcommand, not to Git.
+        self::assertNull($method->invoke(null, ['git', '--no-pager', 'diff', '--', '-C', '/attacker/tree']));
+        self::assertSame('/repo', $method->invoke(null, ['git', '-C', '/repo', 'diff', '--', '-C', '/attacker/tree']));
+        // Composed roots resolve to something this method cannot report.
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/only one -C option/');
+        $method->invoke(null, ['git', '-C', '/repo', '-C', 'nested', 'diff']);
     }
 
     /**
@@ -384,14 +444,6 @@ final class GitProcessRunnerHardeningTest extends TestCase
     private static function diffCommand(string $git, string $root): array
     {
         return [$git, '--no-optional-locks', '--no-pager', '-C', $root, 'diff', '--name-status', '-z', '--no-ext-diff', '--find-renames', 'HEAD', '--'];
-    }
-
-    /** The git binary, or null when the host has none. */
-    private static function locateGit(): ?string
-    {
-        $path = trim((string) @shell_exec('command -v git 2>/dev/null'));
-
-        return $path === '' ? null : $path;
     }
 
     /**

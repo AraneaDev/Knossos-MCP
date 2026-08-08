@@ -6,12 +6,15 @@ namespace Knossos\Tests\Phpunit\Scanner\Worker;
 
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerProcessSupervisor;
+use Knossos\Tests\Phpunit\Support\Processes;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 #[Group('scanner-worker')]
 final class WorkerProcessSupervisorTest extends TestCase
 {
+    use Processes;
+
     /** Read one newline-terminated line from a non-blocking stream within a deadline. */
     private function readLine($stream, float $timeoutSeconds = 5.0): string
     {
@@ -175,7 +178,7 @@ final class WorkerProcessSupervisorTest extends TestCase
      */
     public function testWorkerLeadsItsOwnProcessGroup(): void
     {
-        if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_getpgid') || !is_executable('/usr/bin/setsid')) {
+        if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_getpgid') || !self::hasSetsid()) {
             $this->markTestSkipped('A dedicated process group needs POSIX and setsid.');
         }
         $supervisor = new WorkerProcessSupervisor([PHP_BINARY, '-r', 'sleep(5);']);
@@ -204,7 +207,7 @@ final class WorkerProcessSupervisorTest extends TestCase
      */
     public function testCloseReapsDescendantsOrphanedByAnAlreadyExitedWorker(): void
     {
-        if (PHP_OS_FAMILY !== 'Linux' || !function_exists('posix_kill') || !is_executable('/usr/bin/setsid')) {
+        if (PHP_OS_FAMILY !== 'Linux' || !function_exists('posix_kill') || !self::hasSetsid()) {
             $this->markTestSkipped('Reaping an orphaned descendant needs Linux, POSIX signals, and setsid.');
         }
         $childScript = '$p = proc_open(["sleep", "30"], [["pipe","r"],["pipe","w"],["pipe","w"]], $pipes);'
@@ -226,25 +229,6 @@ final class WorkerProcessSupervisorTest extends TestCase
         @posix_kill($grandchildPid, 9); // Never leak a real process out of a test.
 
         assertSame('gone', $state);
-    }
-
-    /**
-     * A process's scheduler state letter, or 'gone'.
-     *
-     * `posix_kill($pid, 0)` and `/proc/$pid` both still report a zombie as
-     * present, so neither can answer "was it terminated" — only "has its parent
-     * got round to reaping it". The state letter separates the two.
-     */
-    private static function processState(int $pid): string
-    {
-        $stat = @file_get_contents('/proc/' . $pid . '/stat');
-        $close = is_string($stat) ? strrpos($stat, ')') : false;
-        if (!is_string($stat) || $close === false) {
-            return 'gone';
-        }
-        $state = substr($stat, $close + 2, 1);
-
-        return $state === 'Z' ? 'gone' : $state;
     }
 
     public function testStatusReturnsInertShapeBeforeStart(): void
