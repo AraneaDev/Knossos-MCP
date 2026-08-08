@@ -69,7 +69,10 @@ final readonly class ToolService
         // key validation below rejects it as unknown.
         $verbosity = 'compact';
         if (in_array('verbosity', $declared, true) && array_key_exists('verbosity', $arguments)) {
-            $verbosity = $arguments['verbosity'];
+            // Through the same normalisation every other literal string
+            // argument gets: whitespace is invisible in a JSON payload, and
+            // this value is then matched literally against the allowed set.
+            $verbosity = self::normalized($arguments['verbosity']);
             unset($arguments['verbosity']);
             if ($verbosity !== 'compact' && $verbosity !== 'full') {
                 throw new ToolInputException('verbosity must be "compact" or "full".');

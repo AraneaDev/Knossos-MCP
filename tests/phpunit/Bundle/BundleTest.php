@@ -209,6 +209,21 @@ final class BundleTest extends KnossosTestCase
     }
 
     #[Group('bundle')]
+    public function testToolserviceNormalisesTheVerbosityArgumentLikeEveryOtherStringArgument(): void
+    {
+        // Surrounding whitespace is invisible in a JSON payload, and every other
+        // literal string argument is trimmed before it is matched. Reading
+        // verbosity straight out of $arguments made ' full ' an input error.
+        [$tools, $projectId, $root] = $this->buildToolServiceWithScan('php-scanner');
+        try {
+            $json = $tools->call('architecture_summary', ['project_id' => $projectId, 'verbosity' => "  full\n"])->jsonSerialize();
+            assertSame('full', $json['meta']['verbosity']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('bundle')]
     public function testToolserviceEnrichesQueryResultsWithStalenessAndMeta(): void
     {
         [$tools, $projectId, $root] = $this->buildToolServiceWithScan('php-scanner');
