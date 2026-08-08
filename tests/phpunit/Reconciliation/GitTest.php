@@ -93,6 +93,24 @@ final class GitTest extends KnossosTestCase
         assertThrows(fn() => $query->changeImpact($ids['project'], $ids['invoice'], maxCommits: 0), InvalidArgumentException::class);
         assertThrows(fn() => $query->changeImpact($ids['project'], $ids['invoice'], maxCommits: 5001), InvalidArgumentException::class);
 
+    }
+
+    /**
+     * The only part of this file that needs a real `git` binary, split out so
+     * the rest keeps running where there is none.
+     *
+     * CI runs in a gitless container, and a suite that shells out to `git`
+     * unconditionally fails there for a reason that has nothing to do with the
+     * code under test. Skipping the way GitProcessRunnerHardeningTest does
+     * keeps the everything-else coverage above unconditional and reports this
+     * one honestly as skipped rather than passing on a host that never ran it.
+     */
+    #[Group('git')]
+    public function testProcessGitProvidersReadRealHistoryAndWorkingTreeChanges(): void
+    {
+        if (self::locateGit() === null) {
+            self::markTestSkipped('git is not available on this host.');
+        }
         $root = sys_get_temp_dir() . '/knossos-git-' . bin2hex(random_bytes(6));
         $plain = sys_get_temp_dir() . '/knossos-git-' . bin2hex(random_bytes(6));
         if (!mkdir($root . '/src', 0700, true) || !mkdir($plain, 0700, true)) {
@@ -124,6 +142,14 @@ final class GitTest extends KnossosTestCase
             $this->removeGitFixture($root);
             $this->removeGitFixture($plain);
         }
+    }
+
+    /** The git binary, or null when the host has none. */
+    private static function locateGit(): ?string
+    {
+        $path = trim((string) @shell_exec('command -v git 2>/dev/null'));
+
+        return $path === '' ? null : $path;
     }
 
     #[Group('git')]
