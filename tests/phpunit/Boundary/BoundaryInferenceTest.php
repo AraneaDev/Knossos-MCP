@@ -331,9 +331,15 @@ final class BoundaryInferenceTest extends TestCase
         // the display name (kind:declaredName, unaffected by this fix) disagree on
         // order. Rules are keyed on config path — never on the declared name, which is
         // exactly this task's fix — so ordering follows the path, not the name.
+        //
+        // The b-dir unit is declared FIRST for a third reason: with a-dir first,
+        // the expected order was also the insertion order, so removing the
+        // ksort() altogether left the assertion passing. Declaring b-dir first
+        // makes insertion order, declared-name order, and config-path order
+        // three different orders, and only the last one satisfies the assertion.
         $units = [
-            $this->makeUnit('composer', 'a-dir/composer.json', ['name' => 'zzz-package']),
             $this->makeUnit('composer', 'b-dir/composer.json', ['name' => 'aaa-package']),
+            $this->makeUnit('composer', 'a-dir/composer.json', ['name' => 'zzz-package']),
         ];
 
         $facts = (new BoundaryInference())->infer($units, [], []);
@@ -341,7 +347,7 @@ final class BoundaryInferenceTest extends TestCase
         $names = array_map(static fn (BoundaryFact $f): string => $f->name, $facts);
         // Key order is "composer:a-dir/composer.json" before "composer:b-dir/composer.json",
         // so the a-dir unit's boundary (declared name "zzz-package") comes first even
-        // though its name sorts after "aaa-package" alphabetically.
+        // though it was declared second and its name sorts after "aaa-package".
         assertSame(['composer:zzz-package', 'composer:aaa-package'], $names);
     }
 
