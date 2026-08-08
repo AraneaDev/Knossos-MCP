@@ -212,4 +212,51 @@ final class ContributionCacheServiceTest extends TestCase
         self::assertStringContainsString('not/asked/for.php', $diagnostic->message);
         self::assertCount(0, $result['cache_entries']);
     }
+
+    /**
+     * An unrequested owner key was only ever reported through the requested
+     * file that went missing because of it. A worker that answers for every
+     * file it was asked about *and* adds a stray owner leaves no such file
+     * behind, so its discarded nodes and edges went unrecorded entirely.
+     */
+    public function testAnUnrequestedOwnerIsReportedEvenWhenEveryRequestedFileWasAnswered(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $file = $this->writeFile('b.php', "<?php // b\n");
+        $answered = new ScanContribution($manifest->id . ':file:b.php');
+        $stray = new ScanContribution($manifest->id . ':file:not/asked/for.php');
+
+        $result = $service->entriesForScanned([$answered, $stray], [$file], $manifest, 'cfg');
+
+        self::assertCount(2, $result['contributions']);
+        $report = $result['contributions'][1];
+        self::assertSame($manifest->id . ':scan', $report->ownerKey);
+        self::assertSame('SCANNER_MISATTRIBUTED_CONTRIBUTION', $report->diagnostics[0]->code);
+        self::assertStringContainsString('not/asked/for.php', $report->diagnostics[0]->message);
+        // The answered file is legitimate and still cached.
+        self::assertCount(1, $result['cache_entries']);
+    }
+
+    /**
+     * Two contributions under one owner key silently overwrote each other in
+     * the lookup index, so the earlier one's facts vanished and the survivor
+     * — picked by arrival order — was cached as if it were authoritative.
+     */
+    public function testADuplicateOwnerKeyIsReportedAndKeepsTheFileOutOfTheCache(): void
+    {
+        $service = new ContributionCacheService();
+        $manifest = $this->manifest();
+        $file = $this->writeFile('b.php', "<?php // b\n");
+        $first = new ScanContribution($manifest->id . ':file:b.php');
+        $second = new ScanContribution($manifest->id . ':file:b.php');
+
+        $result = $service->entriesForScanned([$first, $second], [$file], $manifest, 'cfg');
+
+        self::assertCount(1, $result['contributions']);
+        $diagnostic = $result['contributions'][0]->diagnostics[0];
+        self::assertSame('SCANNER_DUPLICATE_CONTRIBUTION', $diagnostic->code);
+        self::assertStringContainsString('b.php', $diagnostic->message);
+        self::assertCount(0, $result['cache_entries']);
+    }
 }

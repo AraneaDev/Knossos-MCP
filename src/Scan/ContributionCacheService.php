@@ -73,7 +73,14 @@ final readonly class ContributionCacheService
     public function entriesForScanned(array $scanned, array $files, ScannerManifest $manifest, string $configurationHash): array
     {
         $byOwner = [];
+        $duplicated = [];
         foreach ($scanned as $contribution) {
+            // Last write wins, which is what this index did silently before:
+            // a worker that answered twice under one owner key had the earlier
+            // answer's nodes and edges dropped with nothing recording it.
+            if (isset($byOwner[$contribution->ownerKey])) {
+                $duplicated[$contribution->ownerKey] = true;
+            }
             $byOwner[$contribution->ownerKey] = $contribution;
         }
         $contributions = [];
@@ -83,10 +90,13 @@ final readonly class ContributionCacheService
             $requested[$manifest->id . ':file:' . $file->relativePath] = true;
         }
         // Owner keys the worker answered under that nobody asked for. Their
-        // nodes and edges are unusable — nothing maps them to a scanned file —
-        // and they are the reason some requested file has no contribution, so
-        // they are named in the diagnostic that file gets.
+        // nodes and edges are unusable — nothing maps them to a scanned file.
+        // When they explain why a requested file has no contribution they are
+        // named in the diagnostic that file gets; when every requested file
+        // *was* answered they used to be discarded in silence, which is the
+        // case self::misattributionContribution() below exists for.
         $unexpected = array_keys(array_diff_key($byOwner, $requested));
+        $omitted = false;
         foreach ($files as $file) {
             $owner = $manifest->id . ':file:' . $file->relativePath;
             $contribution = $byOwner[$owner] ?? null;
@@ -97,6 +107,17 @@ final readonly class ContributionCacheService
                 // already produced facts. Deliberately not cached below: the
                 // next scan must retry this file from source.
                 $contributions[] = self::omittedContribution($owner, $file->relativePath, $unexpected);
+                $omitted = true;
+                continue;
+            }
+            if (isset($duplicated[$owner])) {
+                // Only the last answer survived the index above, so the facts
+                // of every earlier one are already gone and nothing here can
+                // tell which answer was the intended one. Report it against
+                // the file and leave the entry uncached, so the next scan
+                // rebuilds this file from source rather than persisting a
+                // choice made by arrival order.
+                $contributions[] = self::duplicatedContribution($contribution, $file->relativePath);
                 continue;
             }
             $contributions[] = $contribution;
@@ -110,6 +131,9 @@ final readonly class ContributionCacheService
             if ($this->contentStillMatchesDiscovery($file)) {
                 $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution);
             }
+        }
+        if ($unexpected !== [] && !$omitted) {
+            $contributions[] = self::misattributionContribution($manifest, $unexpected);
         }
         return ['contributions' => $contributions, 'cache_entries' => $entries];
     }
@@ -173,6 +197,58 @@ final readonly class ContributionCacheService
                 $unexpectedOwners === [] ? 'SCANNER_OMITTED_CONTRIBUTION' : 'SCANNER_MISATTRIBUTED_CONTRIBUTION',
                 $message,
                 new Evidence($relativePath, 1, 1),
+            ),
+        ]);
+    }
+
+    /**
+     * The file's surviving contribution, carrying the record that it was not
+     * the only answer for that owner key.
+     *
+     * The facts kept here are whichever answer arrived last. That is not a
+     * decision this service is in a position to make correctly, so it is
+     * recorded rather than hidden, and {@see self::entriesForScanned()}
+     * declines to cache it.
+     */
+    private static function duplicatedContribution(ScanContribution $contribution, string $relativePath): ScanContribution
+    {
+        return new ScanContribution($contribution->ownerKey, $contribution->nodes, $contribution->edges, [
+            ...$contribution->diagnostics,
+            new Diagnostic(
+                'error',
+                'SCANNER_DUPLICATE_CONTRIBUTION',
+                sprintf(
+                    'The scanner returned more than one contribution for %s; only the last was kept and the file was not cached.',
+                    $relativePath,
+                ),
+                new Evidence($relativePath, 1, 1),
+            ),
+        ]);
+    }
+
+    /**
+     * A scan-level record that the worker answered under owner keys nobody
+     * asked for, used when every requested file *was* answered.
+     *
+     * There is no file to hang this on — that is exactly the problem being
+     * reported — so it carries no evidence and is owned by the scanner rather
+     * than by a path. Without it, a worker that returns every requested
+     * contribution plus a stray one has the stray one's nodes and edges
+     * dropped with nothing anywhere saying so.
+     *
+     * @param list<string> $unexpectedOwners
+     */
+    private static function misattributionContribution(ScannerManifest $manifest, array $unexpectedOwners): ScanContribution
+    {
+        return new ScanContribution($manifest->id . ':scan', [], [], [
+            new Diagnostic(
+                'error',
+                'SCANNER_MISATTRIBUTED_CONTRIBUTION',
+                sprintf(
+                    'The scanner answered under %d owner key(s) that were never requested (%s); those facts were discarded.',
+                    count($unexpectedOwners),
+                    implode(', ', array_slice($unexpectedOwners, 0, 3)),
+                ),
             ),
         ]);
     }
