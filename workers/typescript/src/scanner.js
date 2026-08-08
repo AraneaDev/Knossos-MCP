@@ -51,8 +51,8 @@ const EXCLUDED_DIRECTORIES = new Set([
 const MAX_CACHED_PROGRAMS = 2;
 
 /**
- * Performs bounded compiler-backed discovery and scanning without executing
- * target modules. Instances retain TypeScript programs for incremental reuse.
+ * Performs bounded compiler-backed scanning without executing target modules.
+ * Instances retain TypeScript programs for incremental reuse.
  */
 export class TypeScriptScanner {
     constructor() {
@@ -1360,7 +1360,7 @@ function walk(root, directory, onFile) {
         entries = fs.readdirSync(directory, { withFileTypes: true });
     } catch {
         // An unreadable directory (EACCES/EPERM) must not fail the whole
-        // discover/scan walk; skip it and continue, matching Python's os.walk.
+        // tsconfig walk; skip it and continue, matching Python's os.walk.
         return;
     }
     for (const entry of entries) {
