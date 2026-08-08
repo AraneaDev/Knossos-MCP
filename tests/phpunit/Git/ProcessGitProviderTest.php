@@ -282,6 +282,31 @@ final class ProcessGitProviderTest extends KnossosTestCase
         $this->assertArrayNotHasKey('src/skipped_path.php', $result['files']);
     }
 
+    public function testAMalformedHeaderAfterAValidCommitDoesNotAttributeItsPathsToThatCommit(): void
+    {
+        // Ordering that a first-position malformed header cannot reach: a valid
+        // commit, then a malformed header, then a path. If the parser keeps the
+        // preceding commit active across the malformed header, the orphaned path
+        // is credited to it — silent per-file attribution corruption in
+        // change_impact rather than a dropped record.
+        $gitLog = implode("\n", [
+            "KNOSSOS_COMMIT\x1fdef456\x1f2026-07-19T09:00:00+00:00\x1f1784451600\x1fb@test.dev",
+            'src/valid.php',
+            '',
+            // Short line — only 3 parts instead of 5.
+            "KNOSSOS_COMMIT\x1fabc123\x1f2026-07-20T10:00:00+00:00",
+            'src/orphaned_path.php',
+            '',
+        ]);
+        $provider = new ProcessGitHistoryProvider(runner: $this->mockRunner($gitLog));
+        $result = $provider->history($this->existingDir, 30, 10, 100);
+
+        assertSame(1, $result['commits_examined']);
+        $this->assertArrayHasKey('src/valid.php', $result['files']);
+        $this->assertArrayNotHasKey('src/orphaned_path.php', $result['files']);
+        assertSame(1, $result['files']['src/valid.php']['commit_count']);
+    }
+
     public function testHistoryDisablesGitPathQuotingSoNonAsciiPathsSurvive(): void
     {
         // With git's default core.quotePath=true, paths with bytes >0x7F are

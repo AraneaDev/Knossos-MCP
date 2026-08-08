@@ -61,6 +61,11 @@ final readonly class ProcessGitHistoryProvider implements GitHistoryProvider
             if (str_starts_with($line, 'KNOSSOS_COMMIT' . "\x1f")) {
                 $parts = explode("\x1f", $line, 5);
                 if (count($parts) !== 5) {
+                    // Drop the active commit as well as the malformed header:
+                    // the paths that follow belong to the commit this header
+                    // failed to describe, so leaving $current set would
+                    // attribute them to the preceding commit instead.
+                    $current = null;
                     continue;
                 }
                 $commits[] = [
