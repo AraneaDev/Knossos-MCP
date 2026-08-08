@@ -80,11 +80,10 @@
   // can otherwise let stale path/class maps through to coverage
   // collection and produce "No line of code was executed during tests"
   // on freshly added files. The canonical PHPUnit 12.5.31 option; the
-  // legacy `--no-cache` is rejected. Top-level schema-valid key for
-  // Infection 0.31.9 (the nested `phpUnit.executeCommand` /
-  // `phpUnit.extraOptions` keys accepted by 0.33+/0.34+ are rejected
-  // by the 0.31.9 schema validator pinned in composer.lock).
-  testFrameworkOptions: "--do-not-cache-result",
+  // legacy `--no-cache` is rejected. Spelled `testFrameworkExtraArgs`
+  // since Infection 0.34: the older `testFrameworkOptions` still
+  // validates but is marked deprecated in the vendored schema.
+  testFrameworkExtraArgs: "--do-not-cache-result",
   // Floor set from the last FULL-src measurement on 2026-07-20: 8782 mutants,
   // 4640 killed, 4098 escaped, 44 timeouts -> MSI 53.34% in 1h20m. Rounded down
   // to 53 per the migration plan (never set above what was actually measured on
