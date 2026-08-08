@@ -18,16 +18,17 @@ use RuntimeException;
 final class PythonScannerTest extends KnossosTestCase
 {
     #[Group('python-scanner')]
-    public function testPythonWorkerDiscoversPackagesAndExtractsStaticArchitectureWithoutImports(): void
+    public function testPythonWorkerExtractsStaticArchitectureWithoutImports(): void
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/python';
         $client = $this->pythonWorkerClient();
         $manifest = $client->initialize();
         assertSame('knossos.python', $manifest->id);
         assertSame(['python'], $manifest->languages);
-        assertSame([
-            'pyproject.toml',
-        ], $client->discover(['root' => $root])['config_files']);
+        // A cancel capability is deliberately absent: handle() returns at once
+        // and the process is blocked inside scan(), so a cancel frame is not
+        // read until the scan it names has already finished.
+        assertSame(['partial_ast'], $manifest->capabilities);
 
         $contributions = iterator_to_array($client->scan([
             'root' => $root,
@@ -192,8 +193,8 @@ final class PythonScannerTest extends KnossosTestCase
                 json_encode(['id' => 1, 'params' => (object) []], JSON_THROW_ON_ERROR),
                 json_encode(['id' => 2, 'method' => 'cancel', 'params' => (object) []], JSON_THROW_ON_ERROR),
                 json_encode(['id' => 3, 'method' => 'unknown', 'params' => (object) []], JSON_THROW_ON_ERROR),
-                json_encode(['id' => 4, 'method' => 'discover', 'params' => ['root' => '']], JSON_THROW_ON_ERROR),
-                json_encode(['id' => 5, 'method' => 'discover', 'params' => ['root' => $root . '/notes.txt']], JSON_THROW_ON_ERROR),
+                json_encode(['id' => 4, 'method' => 'scan', 'params' => ['root' => '', 'files' => []]], JSON_THROW_ON_ERROR),
+                json_encode(['id' => 5, 'method' => 'scan', 'params' => ['root' => $root . '/notes.txt', 'files' => []]], JSON_THROW_ON_ERROR),
                 json_encode(['id' => 6, 'method' => 'scan', 'params' => ['root' => $root, 'files' => 'edge.py']], JSON_THROW_ON_ERROR),
                 json_encode(['id' => 7, 'method' => 'scan', 'params' => ['root' => $root, 'files' => ['bad\\path.py']]], JSON_THROW_ON_ERROR),
                 json_encode(['id' => 8, 'method' => 'scan', 'params' => ['root' => $root, 'files' => ['notes.txt']]], JSON_THROW_ON_ERROR),

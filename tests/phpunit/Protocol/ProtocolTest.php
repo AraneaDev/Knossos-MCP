@@ -44,7 +44,7 @@ final class ProtocolTest extends KnossosTestCase
             'output_schema_version' => Protocol::OUTPUT_SCHEMA_VERSION,
             'languages' => ['typescript'],
             'file_extensions' => ['ts', 'tsx'],
-            'capabilities' => ['discover', 'cancel'],
+            'capabilities' => ['project_program', 'cancel'],
         ]);
 
         $decoded = json_decode(json_encode($manifest, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR);

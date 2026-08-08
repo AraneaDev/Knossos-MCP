@@ -44,23 +44,18 @@ final class StableId
     /**
      * A declared symbol: class, method, function, and so on.
      *
-     * @param string $signature include only where the canonical name alone is
-     *        ambiguous (overloads); an empty value is omitted from the identity so
-     *        adding it later would not rewrite existing ids
+     * Identity is exactly (project, language, kind, canonical name) — the same
+     * tuple `nodes` enforces as UNIQUE since migration 010. Adding a
+     * discriminator here without widening that index would produce two ids for
+     * one row and abort the scan on the constraint.
      */
     public static function symbol(
         string $projectId,
         string $language,
         string $kind,
         string $canonicalName,
-        string $signature = '',
     ): string {
-        $parts = [$projectId, $language, $kind, $canonicalName];
-        if ($signature !== '') {
-            $parts[] = $signature;
-        }
-
-        return self::make('symbol', $parts);
+        return self::make('symbol', [$projectId, $language, $kind, $canonicalName]);
     }
 
     /**

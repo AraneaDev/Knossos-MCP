@@ -16,12 +16,18 @@ limits before accepting contributions.
 
 1. Core starts a worker with a clean argument list and controlled environment.
 2. Core calls `initialize` and validates protocol and output schema versions.
-3. Core may call `discover` and then `scan` one or more times.
+3. Core may call `scan` one or more times.
 4. Core may send `cancel` for an active request.
 5. Core calls `shutdown`; it terminates an unresponsive worker after a grace
    period.
 
 ## Methods
+
+The worker protocol has four methods: `initialize`, `scan`, `cancel`, and
+`shutdown`. `cancel` is advisory and best-effort — the workers are
+single-threaded and blocked inside `scan` when it arrives, so the host
+terminates the process rather than waiting. No worker advertises a `cancel`
+capability.
 
 ### `initialize`
 
@@ -36,18 +42,11 @@ scanner manifest:
     "output_schema_version": "1.0",
     "languages": ["typescript", "javascript"],
     "file_extensions": ["ts", "tsx", "mts", "cts"],
-    "capabilities": ["discover", "incremental", "cancel"]
+    "capabilities": ["project_program", "partial_ast"]
 }
 ```
 
 Version mismatch is fatal and occurs before project paths are sent.
-
-### `discover`
-
-Accepts an allowed canonical project root, project-relative configuration
-paths, ignore rules, and resource limits. It returns recognized project units,
-configuration inputs, and eligible project-relative files. All returned paths
-must remain relative to the supplied root.
 
 ### `scan`
 
@@ -93,8 +92,11 @@ and confidence is `certain`, `probable`, or `possible`.
 
 ### `cancel`
 
-Accepts the active scan request ID. A worker stops producing contributions and
-returns a cancellation error/result. The core discards uncommitted output.
+Accepts the active scan request ID, sent verbatim so an integer id is never
+stringified. It is a notification with no reply: a single-threaded worker is
+blocked inside `scan` and will not read the frame until that scan has finished,
+so the core discards uncommitted output and terminates the process rather than
+waiting for cooperation.
 
 ### `shutdown`
 

@@ -48,18 +48,11 @@ while (($line = fgets(STDIN)) !== false) {
         continue;
     }
 
-    if ($method === 'discover') {
-        respond($id, [
-            'units' => [],
-            'cancelled' => $cancelled,
-            'root' => $request['params']['root'] ?? null,
-        ]);
-        continue;
-    }
-
     if ($method === 'scan') {
         if (($request['params']['files'] ?? null) === []) {
-            respond($id, ['count' => 0]);
+            // Echoed back so a test can observe which ids the host cancelled
+            // without a discover round trip, which the protocol no longer has.
+            respond($id, ['count' => 0, 'cancelled' => $cancelled]);
             continue;
         }
         if ($mode === 'slow_scan') {
@@ -176,7 +169,7 @@ function manifest(string $protocol): array
         'output_schema_version' => '1.0',
         'languages' => ['typescript'],
         'file_extensions' => ['ts'],
-        'capabilities' => ['discover', 'cancel'],
+        'capabilities' => ['cancel'],
     ];
 }
 

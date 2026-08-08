@@ -14,7 +14,7 @@ use Throwable;
  */
 final class WorkerServer
 {
-    public const VERSION = '0.5.0';
+    public const VERSION = '0.6.0';
 
     /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
     private const SHEBANG_PROBE_BYTES = 256;
@@ -67,7 +67,6 @@ final class WorkerServer
 
         $result = match ($method) {
             'initialize' => $this->initialize($params),
-            'discover' => $this->discover($params),
             'scan' => $this->scan($params),
             'shutdown' => ['status' => 'bye'],
             default => throw new WorkerInputException(sprintf('Unknown method: %s', $method)),
@@ -93,24 +92,7 @@ final class WorkerServer
             'output_schema_version' => '1.0',
             'languages' => ['php'],
             'file_extensions' => ['php'],
-            'capabilities' => ['discover', 'partial_ast'],
-        ];
-    }
-
-    /**
-     * Report which of the offered files this scanner claims.
-     *
-     * @param array<string, mixed> $params @return array<string, mixed>
-     */
-    private function discover(array $params): array
-    {
-        $root = $this->validatedRoot($params);
-
-        return [
-            'root' => $root,
-            'languages' => ['php'],
-            'file_extensions' => ['php'],
-            'config_files' => $this->relativeComposerFiles($root),
+            'capabilities' => ['partial_ast'],
         ];
     }
 
@@ -298,17 +280,6 @@ final class WorkerServer
         }
 
         return str_starts_with($first, '#!') && preg_match('#\b(php)[0-9.]*\b#i', $first) === 1;
-    }
-
-    /**
-     * Composer manifests among the requested files, which drive PSR-4 resolution.
-     *
-     * @return list<string>
-     */
-    private function relativeComposerFiles(string $root): array
-    {
-        $path = $root . '/composer.json';
-        return is_file($path) ? ['composer.json'] : [];
     }
 
     /**

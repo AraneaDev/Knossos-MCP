@@ -130,19 +130,11 @@ final class TypescriptScannerTest extends KnossosTestCase
     }
 
     #[Group('typescript-scanner')]
-    public function testTypescriptWorkerDiscoversConfigsAndExtractsCrossProjectArchitecture(): void
+    public function testTypescriptWorkerExtractsCrossProjectArchitecture(): void
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/typescript-scanner';
         $client = $this->typescriptWorkerClient();
         assertSame('knossos.typescript', $client->initialize()->id);
-        $discovery = $client->discover(['root' => $root]);
-        assertSame([
-            'packages/app/tsconfig.json',
-            'packages/shared/tsconfig.json',
-            'tsconfig.base.json',
-            'tsconfig.json',
-        ], $discovery['config_files']);
-        assertSame(3, count($discovery['package_files']));
 
         $contributions = iterator_to_array($client->scan([
             'root' => $root,

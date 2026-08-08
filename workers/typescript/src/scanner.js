@@ -60,32 +60,6 @@ export class TypeScriptScanner {
     }
 
     /**
-     * Return sorted TypeScript configuration and package inputs below a validated root.
-     *
-     * @param {{root: unknown}} params
-     * @returns {{root: string, config_files: string[], package_files: string[]}}
-     */
-    discover(params) {
-        const root = validateRoot(params.root);
-        const configs = [];
-        const packages = [];
-        walk(root, root, (absolute, relative) => {
-            const basename = path.basename(relative).toLowerCase();
-            if (basename === "package.json") packages.push(relative);
-            if (
-                basename === "tsconfig.json" ||
-                (basename.startsWith("tsconfig.") && basename.endsWith(".json"))
-            ) {
-                configs.push(relative);
-            }
-        });
-
-        configs.sort();
-        packages.sort();
-        return { root, config_files: configs, package_files: packages };
-    }
-
-    /**
      * Stream deterministic owned contributions for the requested source files.
      *
      * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown}} params
@@ -1149,7 +1123,31 @@ function configFilesForScan(root, requested) {
             normalize(path.relative(root, validatedInside(root, item))),
         );
     }
-    return new TypeScriptScanner().discover({ root }).config_files;
+    return discoverConfigFiles(root);
+}
+
+/**
+ * Return sorted project-relative tsconfig paths below a validated root.
+ *
+ * Walking is the fallback, not the norm: the core names `config_files` on every
+ * scan it plans, so this runs only for a request that supplied none.
+ *
+ * @param {string} root Absolute, already-validated project root.
+ * @returns {string[]} Project-relative tsconfig paths, sorted.
+ */
+export function discoverConfigFiles(root) {
+    const configs = [];
+    walk(root, root, (absolute, relative) => {
+        const basename = path.basename(relative).toLowerCase();
+        if (
+            basename === "tsconfig.json" ||
+            (basename.startsWith("tsconfig.") && basename.endsWith(".json"))
+        ) {
+            configs.push(relative);
+        }
+    });
+
+    return configs.sort();
 }
 
 function maxFileBytesFrom(limits) {

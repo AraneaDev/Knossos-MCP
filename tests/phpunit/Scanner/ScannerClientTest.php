@@ -26,9 +26,21 @@ final class ScannerClientTest extends TestCase
         );
 
         assertArrayContains('initialize', $methods);
-        assertArrayContains('discover', $methods);
         assertArrayContains('scan', $methods);
         assertArrayContains('cancel', $methods);
         assertArrayContains('shutdown', $methods);
+    }
+
+    public function testScannerClientDeclaresNoDiscoverMethod(): void
+    {
+        // The scan pipeline discovers files itself; the worker-side discover was
+        // three implementations with no caller.
+        self::assertFalse(method_exists(ScannerClient::class, 'discover'));
+    }
+
+    public function testCancelAcceptsAnIntegerRequestId(): void
+    {
+        $parameter = (new \ReflectionMethod(ScannerClient::class, 'cancel'))->getParameters()[0];
+        self::assertStringContainsString('int', (string) $parameter->getType());
     }
 }

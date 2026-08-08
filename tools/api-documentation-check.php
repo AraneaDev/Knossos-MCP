@@ -49,25 +49,31 @@ foreach ($sourceFiles as $file) {
 }
 
 $javascript = (string) file_get_contents($root . '/workers/typescript/src/scanner.js');
+// `(?:(?!\*\/)[\s\S])*?` keeps each capture inside ONE docblock, for the same
+// reason the PHP branch above stopped at the immediately preceding one: a bare
+// `.*?` starts at the first `/**` in the file, so an undocumented declaration
+// would borrow the class summary and pass.
 foreach ([
-    'TypeScriptScanner' => '/\/\*\*(.*?)\*\/\s*export class TypeScriptScanner/s',
-    'TypeScriptScanner.discover' => '/\/\*\*(.*?)\*\/\s*discover\s*\(/s',
-    'TypeScriptScanner.scan' => '/\/\*\*(.*?)\*\/\s*scan\s*\(/s',
+    'TypeScriptScanner' => '/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export class TypeScriptScanner/',
+    'TypeScriptScanner.scan' => '/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*scan\s*\(/',
+    'discoverConfigFiles' => '/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export function discoverConfigFiles\s*\(/',
 ] as $symbol => $pattern) {
     if (preg_match($pattern, $javascript, $documentation) !== 1 || !hasSummary($documentation[1])) {
         $failures[] = $symbol . ' requires a descriptive JSDoc summary';
     }
     $checked[] = 'javascript:' . $symbol;
 }
-foreach (['TypeScriptScanner.discover', 'TypeScriptScanner.scan'] as $symbol) {
-    $method = substr($symbol, strrpos($symbol, '.') + 1);
-    if (preg_match('/\/\*\*(.*?)\*\/\s*' . preg_quote($method, '/') . '\s*\(/s', $javascript, $documentation) !== 1 || !str_contains($documentation[1], '@param') || !str_contains($documentation[1], '@returns')) {
+foreach ([
+    'TypeScriptScanner.scan' => '/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*scan\s*\(/',
+    'discoverConfigFiles' => '/\/\*\*((?:(?!\*\/)[\s\S])*?)\*\/\s*export function discoverConfigFiles\s*\(/',
+] as $symbol => $pattern) {
+    if (preg_match($pattern, $javascript, $documentation) !== 1 || !str_contains($documentation[1], '@param') || !str_contains($documentation[1], '@returns')) {
         $failures[] = $symbol . ' requires JSDoc parameter and return contracts';
     }
 }
 
 $python = (string) file_get_contents($root . '/workers/python/bin/worker.py');
-foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'discover' => 'def', 'handle' => 'def'] as $symbol => $kind) {
+foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'handle' => 'def'] as $symbol => $kind) {
     $pattern = '/^' . $kind . '\s+' . preg_quote($symbol, '/') . '\b[^\n]*:\n\s+"""[^"\n]+"""/m';
     if (preg_match($pattern, $python) !== 1) {
         $failures[] = $symbol . ' requires an immediate Python docstring summary';

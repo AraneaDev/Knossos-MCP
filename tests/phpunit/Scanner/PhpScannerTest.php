@@ -14,12 +14,11 @@ use ReflectionMethod;
 final class PhpScannerTest extends KnossosTestCase
 {
     #[Group('php-scanner')]
-    public function testPhpWorkerDiscoversComposerAndExtractsLabelledArchitecture(): void
+    public function testPhpWorkerExtractsLabelledArchitecture(): void
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
         $client = $this->phpWorkerClient();
         assertSame('knossos.php', $client->initialize()->id);
-        assertSame(['composer.json'], $client->discover(['root' => $root])['config_files']);
 
         $contributions = iterator_to_array($client->scan([
             'root' => $root,
@@ -277,8 +276,8 @@ final class PhpScannerTest extends KnossosTestCase
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => [], 'frameworks' => 'invalid']],
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => [], 'limits' => ['max_files' => 0]]],
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => [1]]],
-            ['method' => 'discover', 'params' => []],
-            ['method' => 'discover', 'params' => ['root' => $root . '/missing']],
+            ['method' => 'scan', 'params' => []],
+            ['method' => 'scan', 'params' => ['root' => $root . '/missing', 'files' => []]],
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['src//Architecture.php']]],
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['../composer.json']]],
             ['method' => 'scan', 'params' => ['root' => $root, 'files' => ['/etc/passwd']]],

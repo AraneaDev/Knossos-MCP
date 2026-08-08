@@ -22,12 +22,11 @@ final class WorkerTest extends KnossosTestCase
     }
 
     #[Group('worker')]
-    public function testWorkerSupervisorInitializesDiscoversScansCancelsAndShutsDown(): void
+    public function testWorkerSupervisorInitializesScansCancelsAndShutsDown(): void
     {
         $client = $this->fakeWorkerClient('compliant');
         $manifest = $client->initialize();
         assertSame('knossos.fake', $manifest->id);
-        assertSame('/workspace', $client->discover(['root' => '/workspace'])['root']);
 
         $contributions = iterator_to_array($client->scan(['request_id' => 'scan-1']));
         assertSame(1, count($contributions));
@@ -36,12 +35,15 @@ final class WorkerTest extends KnossosTestCase
         assertContains('fake worker scan log', $client->stderr());
 
         $client->cancel('scan-2');
-        assertSame(['scan-2'], $client->discover(['root' => '/workspace'])['cancelled']);
+        // An empty scan is the cheapest round trip left now that discover is
+        // gone, and the fake worker echoes the ids it was told to cancel.
+        assertSame([], iterator_to_array($client->scan(['root' => '/workspace', 'files' => []])));
+        assertSame(['scan-2'], $client->lastScanResult()['cancelled']);
         $client->shutdown();
     }
 
     #[Group('worker')]
-    public function testWorkerSupervisorRejectsProtocolMismatchesBeforeDiscovery(): void
+    public function testWorkerSupervisorRejectsProtocolMismatchesBeforeAnyProjectInput(): void
     {
         $client = $this->fakeWorkerClient('mismatch');
         $error = captureThrows(fn() => $client->initialize(), WorkerException::class);

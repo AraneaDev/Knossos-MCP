@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import fs, { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { TypeScriptScanner } from "../scanner.js";
+import { TypeScriptScanner, discoverConfigFiles } from "../scanner.js";
 
 const created = [];
 
@@ -24,20 +24,19 @@ afterEach(() => {
     }
 });
 
-describe("TypeScriptScanner.discover", () => {
-    it("returns sorted tsconfig and package inputs, skipping node_modules", () => {
+describe("discoverConfigFiles", () => {
+    it("discovers tsconfig files below the root when none are supplied", () => {
         const root = fixture({
-            "package.json": "{}",
-            "tsconfig.json": "{}",
-            "src/index.ts": "export const x = 1;\n",
-            "node_modules/dep/package.json": "{}",
-            "node_modules/dep/tsconfig.json": "{}",
+            "tsconfig.json": "{}\n",
+            "packages/app/tsconfig.build.json": "{}\n",
+            "node_modules/dep/tsconfig.json": "{}\n",
+            "a.ts": "export const a = 1;\n",
         });
 
-        const result = new TypeScriptScanner().discover({ root });
-
-        expect(result.config_files).toEqual(["tsconfig.json"]);
-        expect(result.package_files).toEqual(["package.json"]);
+        expect(discoverConfigFiles(root).sort()).toEqual([
+            "packages/app/tsconfig.build.json",
+            "tsconfig.json",
+        ]);
     });
 });
 

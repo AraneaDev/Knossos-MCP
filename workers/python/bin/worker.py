@@ -5,14 +5,13 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import re
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 EXCLUDED = {
     ".git",
     ".knossos",
@@ -1010,23 +1009,6 @@ def _unscannable_contribution(relative: str, message: str) -> dict[str, Any]:
     }
 
 
-def discover(params: dict[str, Any]) -> dict[str, Any]:
-    """Discover sorted Python configuration and package markers below a safe root."""
-
-    root = safe_root(params.get("root"))
-    configs, packages = [], []
-    for directory, names, files in os.walk(root):
-        names[:] = sorted(name for name in names if name not in EXCLUDED)
-        relative_directory = Path(directory).relative_to(root)
-        for filename in sorted(files):
-            relative = (relative_directory / filename).as_posix()
-            if filename == "pyproject.toml":
-                configs.append(relative)
-            if filename == "__init__.py":
-                packages.append(relative)
-    return {"root": root.as_posix(), "config_files": configs, "package_files": packages}
-
-
 def handle(request: dict[str, Any]) -> None:
     """Validate and dispatch one NDJSON JSON-RPC worker request."""
 
@@ -1044,10 +1026,8 @@ def handle(request: dict[str, Any]) -> None:
             "output_schema_version": "1.0",
             "languages": ["python"],
             "file_extensions": ["py", "pyi"],
-            "capabilities": ["discover", "partial_ast", "cancel"],
+            "capabilities": ["partial_ast"],
         }
-    elif method == "discover":
-        result = discover(params)
     elif method == "scan":
         result = scan(
             params,

@@ -16,7 +16,6 @@ final class ProtocolTest extends TestCase
         assertSame('1.0', Protocol::VERSION);
         assertSame('1.0', Protocol::OUTPUT_SCHEMA_VERSION);
         assertSame('initialize', Protocol::METHOD_INITIALIZE);
-        assertSame('discover', Protocol::METHOD_DISCOVER);
         assertSame('scan', Protocol::METHOD_SCAN);
         assertSame('cancel', Protocol::METHOD_CANCEL);
         assertSame('shutdown', Protocol::METHOD_SHUTDOWN);
