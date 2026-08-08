@@ -125,8 +125,17 @@ final class WorkerExecutionPolicyTest extends TestCase
         // version of this test asserted the default budget against 4x while its
         // own docblock claimed 15.9x, so it validated nothing.
         $cap = (new WorkerLimits())->maxOutputBytes;
-        foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
-            $expansion = self::measuredExpansion()[$descriptor->key];
+        foreach (self::packagedDescriptors() as $key => $descriptor) {
+            // Asserted before it is read. A language added later has no entry
+            // here, and reading the missing key yielded null, so $projected
+            // became 0 and the assertion below passed without checking
+            // anything — the exact failure this test exists to prevent.
+            $expansion = self::measuredExpansion()[$key] ?? null;
+            assertSame(
+                true,
+                $expansion !== null,
+                sprintf('%s has no measured expansion factor; measure it before packaging the descriptor.', $key),
+            );
             $projected = $descriptor->scanBatchSourceBytes * $expansion;
 
             assertSame(
@@ -150,10 +159,7 @@ final class WorkerExecutionPolicyTest extends TestCase
         // helper the runner tests use. Without this, deleting the override
         // silently returns a dense TypeScript project to WORKER_OUTPUT_LIMIT
         // with a fully green suite.
-        $descriptors = [];
-        foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
-            $descriptors[$descriptor->key] = $descriptor;
-        }
+        $descriptors = self::packagedDescriptors();
 
         assertSame(2_000, $descriptors['typescript']->scanBatchFiles);
         assertSame(3_000_000, $descriptors['typescript']->scanBatchSourceBytes);
@@ -168,13 +174,27 @@ final class WorkerExecutionPolicyTest extends TestCase
     {
         // TypeScript pays a whole-program cost per request rather than per file,
         // so its file cap must stay above the default or a normal project is
-        // split into requests that each repeat that cost.
+        // split into requests that each repeat that cost. Only the relation is
+        // asserted here; the exact values are pinned once, above, and repeating
+        // them as an inequality said nothing the exact pin does not already say.
+        $descriptors = self::packagedDescriptors();
+
+        assertSame(true, $descriptors['typescript']->scanBatchFiles > WorkerExecutionPolicy::SCAN_BATCH_FILES);
+    }
+
+    /**
+     * The packaged descriptors, keyed by language, as both tests above need
+     * them.
+     *
+     * @return array<string, LanguageDescriptor>
+     */
+    private static function packagedDescriptors(): array
+    {
         $descriptors = [];
         foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
             $descriptors[$descriptor->key] = $descriptor;
         }
 
-        assertSame(true, $descriptors['typescript']->scanBatchFiles > WorkerExecutionPolicy::SCAN_BATCH_FILES);
-        assertSame(true, $descriptors['typescript']->scanBatchSourceBytes >= 3_000_000);
+        return $descriptors;
     }
 }

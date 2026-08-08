@@ -347,17 +347,16 @@ final class StoreTest extends KnossosTestCase
     }
 
     /**
-     * MigrationRunner::migrate() checksums the whole file — comments
-     * included (see migrations/README.md) — and throws if an applied
-     * migration's checksum ever changes. That makes every already-applied
-     * migration immutable: corrections belong in migrations/README.md, not
-     * in the file. This enforces the invariant against the real
-     * migrations/ directory: re-running migrate() over an already-migrated
-     * database applies nothing and leaves every file on disk byte-for-byte
-     * unchanged.
+     * Re-running migrate() over an already-migrated database applies nothing
+     * and leaves every file on disk byte-for-byte unchanged.
+     *
+     * This is idempotence only. It says nothing about the immutability rule,
+     * because the file it checksums the second time is the same file it
+     * checksummed the first: the mismatch branch is never reached. The test
+     * below is the one that reaches it.
      */
     #[Group('store')]
-    public function testAppliedMigrationsAreImmutable(): void
+    public function testRerunningMigrationsIsANoOpAgainstTheRealMigrationDirectory(): void
     {
         $pdo = $this->freshTestDatabase();
         $directory = self::repositoryRoot() . '/migrations';
@@ -366,5 +365,42 @@ final class StoreTest extends KnossosTestCase
 
         assertSame([], (new MigrationRunner($pdo, $directory))->migrate(), 'a second run must be a no-op');
         assertSame($before, array_map($sha256File, glob($directory . '/*.sql') ?: []));
+    }
+
+    /**
+     * MigrationRunner::migrate() checksums the whole file — comments included
+     * (see migrations/README.md) — and throws if an applied migration's
+     * checksum ever changes. That makes every already-applied migration
+     * immutable: corrections belong in migrations/README.md, not in the file.
+     *
+     * Exercised against a temporary migration, because the invariant cannot be
+     * exercised against the real migrations/ directory at all: proving the
+     * throw requires editing an applied migration, and editing one of those is
+     * exactly what the rule forbids. Both halves of the branch are covered —
+     * an edit that changes only a comment still throws, since the checksum
+     * covers the whole file rather than the statements it parses.
+     */
+    #[Group('store')]
+    public function testEditingAnAppliedMigrationIsRefused(): void
+    {
+        $directory = sys_get_temp_dir() . '/knossos-migration-immutability-' . bin2hex(random_bytes(6));
+        mkdir($directory, 0700);
+        $migration = $directory . '/001_temporary.sql';
+        file_put_contents($migration, "-- a temporary migration\nCREATE TABLE temporary_probe (id TEXT PRIMARY KEY);\n");
+        try {
+            $pdo = SqliteConnection::open(':memory:');
+            assertSame(['001_temporary'], (new MigrationRunner($pdo, $directory))->migrate());
+
+            // A comment-only edit: no statement changes, and it is still refused.
+            file_put_contents($migration, "-- a temporary migration, corrected\nCREATE TABLE temporary_probe (id TEXT PRIMARY KEY);\n");
+            $error = captureThrows(
+                static fn() => (new MigrationRunner($pdo, $directory))->migrate(),
+                RuntimeException::class,
+            );
+            assertSame('Applied migration checksum changed: 001_temporary', $error->getMessage());
+        } finally {
+            @unlink($migration);
+            @rmdir($directory);
+        }
     }
 }

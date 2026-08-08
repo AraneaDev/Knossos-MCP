@@ -392,5 +392,15 @@ describe("TypeScriptScanner.scan backstop", () => {
         );
         expect(emitted).toHaveLength(Object.keys(files).length);
         expect(summary.files_scanned).toBe(Object.keys(files).length);
+        // The keys, not just the count: emitting one owner_key twice and
+        // another not at all keeps both counts correct while breaking the
+        // one-contribution-per-file invariant the PHP side relies on.
+        expect(
+            emitted.map((contribution) => contribution.owner_key).sort(),
+        ).toEqual(
+            Object.keys(files)
+                .map((file) => `knossos.typescript:file:${file}`)
+                .sort(),
+        );
     });
 });

@@ -31,8 +31,16 @@ final class LanguageScanRunnerTest extends TestCase
 
     protected function tearDown(): void
     {
-        if ($this->recordPath !== null && is_file($this->recordPath)) {
-            unlink($this->recordPath);
+        // The sibling marker too: the `per_file_overflow_once` fixture writes
+        // `<record>.overflowed` next to the record, so deleting only the record
+        // left one file in the system temp directory per run of
+        // testAReducedBudgetDoesNotPinTheRestOfTheLanguage().
+        if ($this->recordPath !== null) {
+            foreach ([$this->recordPath, $this->recordPath . '.overflowed'] as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
         }
         $this->recordPath = null;
     }
