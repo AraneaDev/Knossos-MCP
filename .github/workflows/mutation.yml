@@ -21,7 +21,25 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build pinned quality image
         run: docker build --target quality -t knossos-mcp:quality .
+      # memory_limit is raised from the image's stock 128M because that ceiling
+      # belongs to the Infection master process, which holds the parsed source
+      # and prints each mutant from it. The 2026-08-03 run died at ~3,600
+      # mutants with "Allowed memory size of 134217728 bytes exhausted" inside
+      # the pretty-printer — gradual growth across a full-src pass, not one
+      # pathological file, so the limit is the thing that has to move. It stays
+      # a real ceiling rather than -1 so a genuine runaway still fails loudly.
+      # Only the master is affected; the PHPUnit children keep the image
+      # default.
+      # E_DEPRECATED is dropped because the image runs PHP 8.5 and Infection
+      # 0.31 still calls SplObjectStorage::contains(), deprecated in 8.5. The
+      # notice fires once per traversed node, which buries the mutant progress
+      # and any real failure under tens of thousands of identical lines. It is
+      # a dependency's deprecation, not this project's: the visitor was
+      # restructured upstream in 0.34, so the durable fix is that upgrade, and
+      # that is a dev-dependency bump with its own MSI-baseline consequences
+      # rather than part of a workflow fix. display_errors stays on — the
+      # fatal-error text is how the previous failure was diagnosed.
       - name: Run Infection over src
         run: |
           docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos-mcp:quality \
-            -c 'php -d pcov.enabled=1 vendor/bin/infection --no-interaction --no-progress --threads=4'
+            -c 'php -d pcov.enabled=1 -d memory_limit=2G -d error_reporting="E_ALL & ~E_DEPRECATED" vendor/bin/infection --no-interaction --no-progress --threads=4'
