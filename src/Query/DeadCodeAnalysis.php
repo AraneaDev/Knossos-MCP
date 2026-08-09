@@ -192,13 +192,19 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
+     * Node kinds an unreferenced-code candidate can be. Anything else — a route,
+     * a config value, a file — is not a unit anyone deletes on this evidence.
+     */
+    private const CANDIDATE_KINDS = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
+
+    /**
      * Whether nothing references a node. Absence of evidence, not proof: reflection is invisible here.
      *
      * @param array<string, mixed> $node @param list<array<string, mixed>> $roles
      */
     public function isCandidate(array $node, array $roles): bool
     {
-        if (!in_array($node['kind'], ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'], true)) {
+        if (!in_array($node['kind'], self::CANDIDATE_KINDS, true)) {
             return false;
         }
         if (ReportableComponent::isExternal((string) $node['kind'], $node['origin'])) {
@@ -206,6 +212,40 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
 
         return !ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
+    }
+
+    /**
+     * Whether a node was kept out of the candidate set ONLY because a role marks
+     * it as reached by convention — a controller, command, listener, job, entry
+     * point, test, or config.
+     *
+     * Exists so that exclusion can be COUNTED. {@link isCandidate} runs before
+     * {@link classify}, so anything it turns away never reaches the tallies
+     * `classify` returns: a role-excluded node was dropped in silence, and
+     * `bounds` reported a set of reasons that did not add up to the nodes
+     * actually removed. `excluded_entry_scripts` looked like it covered this and
+     * did not — that counter is driven by
+     * {@link ReportableComponent::isExecutableScript}, which keys off a scanner's
+     * `executable` ATTRIBUTE, a different signal from these ROLES. A project
+     * whose entry point is marked by role rather than by attribute therefore
+     * reported zero exclusions while excluding one.
+     *
+     * Deliberately mirrors `isCandidate`'s earlier guards rather than assuming
+     * them: a node of an unreportable kind, or an external one, was not turned
+     * away for THIS reason and must not be counted here.
+     *
+     * @param array<string, mixed> $node @param list<array<string, mixed>> $roles
+     */
+    public function isConventionExcluded(array $node, array $roles): bool
+    {
+        if (!in_array($node['kind'], self::CANDIDATE_KINDS, true)) {
+            return false;
+        }
+        if (ReportableComponent::isExternal((string) $node['kind'], $node['origin'])) {
+            return false;
+        }
+
+        return ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
     }
     /**
      * Member names declared by the internal types that implement or extend

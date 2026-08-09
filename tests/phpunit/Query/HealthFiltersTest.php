@@ -299,6 +299,9 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(false, in_array('bin/console', $names, true));
         assertSame(true, in_array('src/orphan.ts', $names, true));
         assertSame(1, $data['bounds']['excluded_entry_scripts']);
+        // The ATTRIBUTE-driven exclusion must not be double-counted as a
+        // role-driven one: they are separate signals and separate tallies.
+        assertSame(0, $data['bounds']['excluded_convention_discovered']);
     }
 
     /**
@@ -448,5 +451,55 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(false, in_array('App\\InvoiceService', $names, true));
         // The genuinely unreferenced class is still reported.
         assertArrayContains('App\\Reporter', $names);
+    }
+
+    /**
+     * Role-based exclusions are COUNTED, not dropped in silence.
+     *
+     * `isCandidate` turns a convention-discovered node away BEFORE `classify`
+     * runs, and `classify` owns every other exclusion tally — so the node
+     * vanished from the candidate set while `bounds` reported a set of reasons
+     * that did not account for it. `excluded_entry_scripts` looked like it
+     * covered this and did not: that counter is driven by the scanner's
+     * `executable` ATTRIBUTE, which is a different signal from the
+     * `application.entry_point` ROLE. A project whose entry point is marked by
+     * role therefore reported zero exclusions while excluding one.
+     */
+    #[Group('query')]
+    public function testDeadCodeCountsConventionDiscoveredExclusions(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        $entry = StableId::symbol($ids['project'], 'typescript', 'module', 'scripts/release.mjs');
+        $repository->saveNode($entry, $ids['project'], 'typescript', 'module', 'scripts/release.mjs', 'release.mjs', null, $ids['file'], 1, 20, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveClassification(
+            StableId::classification($ids['project'], $entry, 'application.entry_point', 'core.entry.points.v1'),
+            $ids['project'],
+            $entry,
+            'application.entry_point',
+            'derived',
+            'probable',
+            'core.entry.points.v1',
+            $ids['file'],
+            1,
+            20,
+            [],
+            $ids['scan'],
+        );
+        // An orphan carrying no role stays reportable, and is not counted as an
+        // exclusion — the counter must track the drop, not every unreferenced node.
+        $orphan = StableId::symbol($ids['project'], 'typescript', 'module', 'src/orphan.ts');
+        $repository->saveNode($orphan, $ids['project'], 'typescript', 'module', 'src/orphan.ts', 'orphan.ts', null, $ids['file'], 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('scripts/release.mjs', $names, true));
+        assertSame(true, in_array('src/orphan.ts', $names, true));
+        assertSame(1, $data['bounds']['excluded_convention_discovered']);
+        // And it is NOT folded into the attribute-driven counter, which would
+        // mislabel a controller, a listener or a config as an "entry script".
+        assertSame(0, $data['bounds']['excluded_entry_scripts']);
     }
 }

@@ -345,7 +345,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $deadCode = new DeadCodeAnalysis($this->pdo, $this->clock);
         $hubs = $hotspots = $deadCandidates = [];
         $provisional = [];
-        $excludedExternal = $excludedTests = 0;
+        $excludedExternal = $excludedTests = $excludedConventionDiscovered = 0;
         foreach ($nodes as $id => $row) {
             $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
             $component = [
@@ -369,8 +369,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     ];
                 }
             }
-            if ($metrics[$id]['in_degree'] === 0 && $deadCode->isCandidate($row, $roles[$id] ?? [])) {
-                $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
+            if ($metrics[$id]['in_degree'] === 0) {
+                if ($deadCode->isCandidate($row, $roles[$id] ?? [])) {
+                    $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
+                } elseif ($deadCode->isConventionExcluded($row, $roles[$id] ?? [])) {
+                    // Counted HERE because `isCandidate` runs before `classify`,
+                    // and `classify` owns every other exclusion tally. Without
+                    // this the drop was silent and `bounds` listed reasons that
+                    // did not account for it.
+                    ++$excludedConventionDiscovered;
+                }
             }
         }
         // The in-degree above only counts edges from the slice actually read, so
@@ -430,6 +438,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'excluded_contract_methods' => $excluded['contracts'],
                     'excluded_constructors' => $excluded['constructors'],
                     'excluded_entry_scripts' => $excluded['entry_scripts'],
+                    'excluded_convention_discovered' => $excludedConventionDiscovered,
                     'suppressed_candidates' => $excluded['suppressed'],
                     'annotated_false_positives' => $excluded['annotated_false_positives'],
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
