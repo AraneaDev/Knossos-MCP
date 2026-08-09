@@ -70,9 +70,19 @@ jobs:
           # property of the whole tree, and the shard holding the thinly-tested
           # files would fail against a global floor the tree as a whole clears.
           # The msi-gate job enforces it on the aggregate instead.
+          #
+          # display_errors is set rather than assumed: the image loads no
+          # php.ini, so it would otherwise fall back to whatever the pinned
+          # base image's built-in default happens to be. The 2026-08-03 OOM was
+          # diagnosed from a fatal-error message, so this is the one diagnostic
+          # the run cannot afford to have silently turned off by a base image
+          # bump. stderr, so it is never mistaken for Infection's own output.
+          # Only the master is affected; the PHPUnit children are separate
+          # invocations that keep the image defaults, which is what keeps the
+          # initial test run quiet on stderr.
           status=0
           docker run --name "infection-$SHARD" -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos-mcp:quality \
-            -c "php -d pcov.enabled=1 -d memory_limit=4G vendor/bin/infection \
+            -c "php -d pcov.enabled=1 -d memory_limit=4G -d display_errors=stderr vendor/bin/infection \
                   --no-interaction --no-progress --threads=4 \
                   --min-msi=0 --min-covered-msi=0 \
                   --filter='$files'" || status=$?
