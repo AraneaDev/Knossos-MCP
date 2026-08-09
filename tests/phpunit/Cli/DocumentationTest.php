@@ -107,12 +107,18 @@ final class DocumentationTest extends KnossosTestCase
     public function testDocumentationLinkCheckSkipsGitIgnoredFiles(): void
     {
         $root = self::repositoryRoot();
-        $directory = $root . '/docs/superpowers';
-        $fixture = $directory . '/link-check-fixture.md';
-        $createdDirectory = !is_dir($directory);
-        if ($createdDirectory && !mkdir($directory, 0o777, true) && !is_dir($directory)) {
+        // Its OWN subdirectory: the sibling fixture in RepositoryCheckTest lives
+        // under the same ignored parent, and sharing one directory means either
+        // test's teardown can remove the other's ground.
+        $parent = $root . '/docs/superpowers';
+        $directory = $parent . '/link-check-fixture';
+        $fixture = $directory . '/broken.md';
+        $createdParent = !is_dir($parent);
+        if (!is_dir($directory) && !mkdir($directory, 0o777, true) && !is_dir($directory)) {
             throw new RuntimeException('Unable to create ' . $directory);
         }
+        // Never write over something a developer already has there.
+        self::assertFileDoesNotExist($fixture);
 
         try {
             file_put_contents($fixture, "[a link that does not resolve](./nowhere.md)\n");
@@ -129,8 +135,9 @@ final class DocumentationTest extends KnossosTestCase
             assertContains('Documentation links passed:', $output);
         } finally {
             @unlink($fixture);
-            if ($createdDirectory) {
-                @rmdir($directory);
+            @rmdir($directory);
+            if ($createdParent) {
+                @rmdir($parent);
             }
         }
     }

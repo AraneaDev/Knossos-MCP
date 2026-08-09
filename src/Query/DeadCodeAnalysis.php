@@ -615,6 +615,31 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         return $referenced;
     }
+
+    /**
+     * Which of `$ids` nothing references in the WHOLE edge table.
+     *
+     * The counterpart to {@link reconcileBoundedWalk} for callers that need the
+     * same correction without the candidate bookkeeping. A zero in-degree
+     * measured against a bounded slice is provisional — a node, edge or time
+     * limit drops edges, and a dropped inbound edge makes a referenced symbol
+     * look unreferenced — so any tally drawn from that zero has to be re-checked
+     * against the full table before it is reported as fact.
+     *
+     * @param list<string> $ids
+     * @param list<string> $edgeKinds
+     * @return list<string>
+     */
+    public function unreferenced(string $projectId, array $ids, array $edgeKinds, int $minConfidenceRank): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+        $referenced = array_flip($this->referencedNodes($projectId, $ids, $edgeKinds, $minConfidenceRank));
+
+        return array_values(array_filter($ids, static fn(string $id): bool => !isset($referenced[$id])));
+    }
+
     /**
      * Canonical names the project's own configuration suppresses, exactly or by prefix.
      *

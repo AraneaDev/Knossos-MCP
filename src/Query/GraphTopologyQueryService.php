@@ -349,14 +349,21 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $provisional = $ranked['provisional'];
         $excludedExternal = $ranked['excluded_external'];
         $excludedTests = $ranked['excluded_tests'];
-        $excludedConventionDiscovered = $ranked['excluded_convention_discovered'];
         // The in-degree above only counts edges from the slice actually read, so
         // a zero is provisional: node/edge/time limits drop edges, and a dropped
         // inbound edge makes a referenced symbol look unreferenced. Re-check the
-        // survivors against the whole edge table before calling anything dead.
-        if ($provisional !== [] && array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== []) {
+        // survivors against the whole edge table before calling anything dead —
+        // and before COUNTING anything excluded, because both lists were drawn
+        // from the same provisional zero.
+        $boundedScan = array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== [];
+        if ($provisional !== [] && $boundedScan) {
             $provisional = $deadCode->reconcileBoundedWalk($projectId, $provisional, $nodes, $edgeKinds, $confidenceRank[$minConfidence], $metrics, $inheritanceInDegree);
         }
+        $conventionExcluded = $ranked['convention_excluded'];
+        if ($conventionExcluded !== [] && $boundedScan) {
+            $conventionExcluded = $deadCode->unreferenced($projectId, $conventionExcluded, $edgeKinds, $confidenceRank[$minConfidence]);
+        }
+        $excludedConventionDiscovered = count($conventionExcluded);
         $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree);
         $deadCandidates = $classified['candidates'];
         $excluded = $classified['excluded'];
@@ -437,6 +444,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * before classify() ever sees the node, so a node dropped for its role would
      * otherwise vanish without appearing in any count.
      *
+     * Those role exclusions come back as a list of IDS rather than a count. Like
+     * `provisional`, they are selected on a zero in-degree measured against the
+     * bounded slice, so under truncation the set can hold a node whose only
+     * inbound edge was dropped. Only the caller knows whether the scan was
+     * bounded, so only the caller can reconcile the set and count what survives.
+     *
      * @param array<string, array<string, mixed>> $nodes id => node row
      * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
      * @param array<string, list<array<string, mixed>>> $roles
@@ -448,13 +461,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *     provisional: array<string, array<string, mixed>>,
      *     excluded_external: int,
      *     excluded_tests: int,
-     *     excluded_convention_discovered: int,
+     *     convention_excluded: list<string>,
      * }
      */
     private function rankNodes(array $nodes, array $metrics, array $roles, array $boundaries, array $cycleMembers, DeadCodeAnalysis $deadCode, bool $includeExternal, bool $includeTests): array
     {
-        $hubs = $hotspots = $provisional = [];
-        $excludedExternal = $excludedTests = $excludedConventionDiscovered = 0;
+        $hubs = $hotspots = $provisional = $conventionExcluded = [];
+        $excludedExternal = $excludedTests = 0;
         foreach ($nodes as $id => $row) {
             $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
             $component = [
@@ -482,7 +495,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 if ($deadCode->isCandidate($row, $roles[$id] ?? [])) {
                     $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
                 } elseif ($deadCode->isConventionExcluded($row, $roles[$id] ?? [])) {
-                    ++$excludedConventionDiscovered;
+                    $conventionExcluded[] = (string) $id;
                 }
             }
         }
@@ -490,7 +503,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return [
             'hubs' => $hubs, 'hotspots' => $hotspots, 'provisional' => $provisional,
             'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests,
-            'excluded_convention_discovered' => $excludedConventionDiscovered,
+            'convention_excluded' => $conventionExcluded,
         ];
     }
 
