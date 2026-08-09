@@ -8,20 +8,20 @@ $root = dirname(__DIR__);
 $errors = [];
 $files = repositoryFiles($root);
 foreach ($files as $relative) {
-    $file = new SplFileInfo($root . '/' . $relative);
-    if ($file->getSize() > 2_000_000 && $relative !== 'docs/Architecture-MCP-Project-Plan.docx') {
+    $path = $root . '/' . $relative;
+    if (filesize($path) > 2_000_000 && $relative !== 'docs/Architecture-MCP-Project-Plan.docx') {
         $errors[] = "$relative exceeds the 2 MB repository limit";
     }
     $extension = strtolower(pathinfo($relative, PATHINFO_EXTENSION));
     if ($extension === 'json' && !str_starts_with(basename($relative), 'tsconfig')) {
         try {
-            json_decode((string) file_get_contents($file->getPathname()), true, 512, JSON_THROW_ON_ERROR);
+            json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException $error) {
             $errors[] = "$relative is invalid JSON: {$error->getMessage()}";
         }
     }
     if (in_array($extension, ['php', 'js', 'py', 'md', 'json', 'jsonc', 'yaml', 'yml', 'sh'], true)) {
-        $contents = (string) file_get_contents($file->getPathname());
+        $contents = (string) file_get_contents($path);
         if (str_contains($contents, "\r")) {
             $errors[] = "$relative contains CR line endings";
         }

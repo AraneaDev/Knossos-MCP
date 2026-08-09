@@ -50,9 +50,7 @@ function gitIgnoredPaths(string $root, array $paths): array
     if (!is_resource($process)) {
         return [];
     }
-    fwrite($pipes[0], implode("\0", $paths) . "\0");
-    fclose($pipes[0]);
-    $output = (string) stream_get_contents($pipes[1]);
+    $output = gitIgnoreExchange($pipes[0], $pipes[1], implode("\0", $paths) . "\0");
     fclose($pipes[1]);
     $exit = proc_close($process);
     if ($exit > 1) {
@@ -66,4 +64,71 @@ function gitIgnoredPaths(string $root, array $paths): array
     }
 
     return $ignored;
+}
+
+/**
+ * Feed `$input` to a child's stdin while draining its stdout, and return what it
+ * wrote.
+ *
+ * Writing the whole request first and only then reading the reply deadlocks: a
+ * pipe holds 64 KiB on Linux, so once the request exceeds that AND the reply
+ * does too, the parent blocks in fwrite() waiting for the child to read, while
+ * the child blocks writing a reply nobody is reading. Neither side can move and
+ * there is no timeout — the gate hangs until CI kills the job.
+ *
+ * That is not hypothetical for this caller. `git check-ignore` echoes back every
+ * path that matched, so a repository with enough ignored paths makes the reply as
+ * large as the request: 6,000 paths (252 KB) hangs forever, and the walk in
+ * tools/repository-check.php already feeds it every file in the tree.
+ *
+ * Both ends are non-blocking and selected on together, so whichever side has room
+ * moves first. Writing stops on a hard error rather than spinning — a child that
+ * exited early breaks the pipe, and the caller reads its exit status to decide
+ * what that means.
+ *
+ * @param resource $stdin
+ * @param resource $stdout
+ */
+function gitIgnoreExchange(mixed $stdin, mixed $stdout, string $input): string
+{
+    stream_set_blocking($stdin, false);
+    stream_set_blocking($stdout, false);
+    $output = '';
+    $sent = 0;
+    $sending = true;
+    while (true) {
+        $read = [$stdout];
+        $write = $sending ? [$stdin] : [];
+        $except = null;
+        if (@stream_select($read, $write, $except, null) === false) {
+            break;
+        }
+        if ($write !== []) {
+            $bytes = @fwrite($stdin, substr($input, $sent, 65536));
+            // false is a broken pipe; 0 is a full one, which select will report
+            // again once it drains. Only the first ends the conversation.
+            if ($bytes === false) {
+                $sending = false;
+                fclose($stdin);
+            } else {
+                $sent += $bytes;
+                if ($sent >= strlen($input)) {
+                    $sending = false;
+                    fclose($stdin);
+                }
+            }
+        }
+        if ($read !== []) {
+            $chunk = fread($stdout, 65536);
+            if ($chunk === false || ($chunk === '' && feof($stdout))) {
+                break;
+            }
+            $output .= $chunk;
+        }
+    }
+    if ($sending) {
+        fclose($stdin);
+    }
+
+    return $output;
 }
