@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require __DIR__ . '/lib/git-ignore.php';
+
 $root = dirname(__DIR__);
 $checkExternal = in_array('--external', $argv, true);
 $paths = array_merge([$root . '/README.md'], documentationFiles($root . '/docs'));
@@ -91,52 +93,6 @@ function documentationFiles(string $directory): array
     $ignored = gitIgnoredPaths(dirname($directory), $files);
 
     return array_values(array_filter($files, static fn(string $path): bool => !isset($ignored[$path])));
-}
-
-/**
- * Which of `$paths` git ignores, as a set keyed by path.
- *
- * Returns an EMPTY set when git cannot answer — no binary, no repository (an
- * archive download), or a non-zero exit that is not the documented "nothing
- * matched". Failing open keeps the check running everywhere it ran before:
- * losing the filter costs a false failure on a local scratch file, while
- * failing closed would skip every document and silently pass.
- *
- * `git check-ignore` exits 0 when at least one path matched, 1 when none did,
- * and >1 on a real error — so 1 is success with an empty answer, not a fault.
- *
- * @param list<string> $paths
- * @return array<string, true>
- */
-function gitIgnoredPaths(string $root, array $paths): array
-{
-    if ($paths === []) {
-        return [];
-    }
-    $process = @proc_open(
-        ['git', '-C', $root, 'check-ignore', '--stdin', '-z'],
-        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']],
-        $pipes,
-    );
-    if (!is_resource($process)) {
-        return [];
-    }
-    fwrite($pipes[0], implode("\0", $paths) . "\0");
-    fclose($pipes[0]);
-    $output = (string) stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    $exit = proc_close($process);
-    if ($exit > 1) {
-        return [];
-    }
-    $ignored = [];
-    foreach (explode("\0", $output) as $path) {
-        if ($path !== '') {
-            $ignored[str_replace('\\', '/', $path)] = true;
-        }
-    }
-
-    return $ignored;
 }
 
 /** A path shown relative to the repository root, so failures name what a reader can find. */
