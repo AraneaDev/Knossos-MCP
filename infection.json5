@@ -36,9 +36,33 @@
     // -> 1048575 needs either a megabyte-sized fixture per assertion or a test
     // that restates the constant. Scoped to declaration defaults so index and
     // offset arithmetic is still mutated.
+    // A `break N;` level is not a value, it is a count of enclosing loops, and
+    // every one of the three in src is `break 2;` at a nesting depth of exactly
+    // two. Raising it emits `break 3;`, which PHP rejects at COMPILE time —
+    // "Cannot 'break' 3 levels" — so the mutant can never run, let alone be
+    // killed by a test. Measured: the 2026-08-09 full-src run reported exactly
+    // one `error` mutant, IncrementInteger on
+    // AbstractArchitectureQueryService.php:240.
+    //
+    // It has to be excluded rather than tolerated because Infection counts an
+    // errored mutant as DETECTED, so leaving it in credits the suite for a
+    // mutant no test could ever have caught and pushes MSI up by a hair. A
+    // metric that drifts upward on impossible mutants is the wrong kind of
+    // wrong.
+    //
+    // Scoped to IncrementInteger, and NOT mirrored into DecrementInteger below:
+    // `break 2;` -> `break 1;` compiles and changes behaviour — it escapes only
+    // the inner loop — which is a real mutant worth killing. `continue` is
+    // included though none exists today: the mechanism is identical, and its
+    // absence would show up as a silently inflated score rather than a failure
+    // anyone would notice.
+    //
+    // The pattern is matched by Infection as `^-\s*<regex>$` against the
+    // mutant's diff, so it targets the original line.
     IncrementInteger: {
       ignoreSourceCodeByRegex: [
         ".*(?:private|protected|public)[^;{]*int \\$[A-Za-z_]\\w* = \\d[\\d_]{3,}.*",
+        "(?:break|continue) \\d+;",
       ],
     },
     DecrementInteger: {
