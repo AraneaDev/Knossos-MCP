@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.4](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.3...v0.10.4) (2026-08-09)
+
+
+### Bug Fixes
+
+* **docs:** stop link-checking git-ignored working-copy files ([53f9881](https://github.com/AraneaDev/Knossos-MCP/commit/53f988119df7337c7d9204a72402e117c249862a))
+* **health:** count role-based dead-code exclusions and stop gates scanning git-ignored files ([aed63a4](https://github.com/AraneaDev/Knossos-MCP/commit/aed63a47dc1eb208b079e63b919030ef7f0d61a8))
+* **health:** count role-based dead-code exclusions instead of dropping them silently ([548f41c](https://github.com/AraneaDev/Knossos-MCP/commit/548f41c3ad986e9dd6020b5f24003660bdf0315c))
+* **health:** reconcile convention exclusions before counting them ([518165a](https://github.com/AraneaDev/Knossos-MCP/commit/518165a77f95445823b8c3f59eef06f8015f6e91))
+* **mutation:** stop crediting the suite for an impossible break-level mutant ([cf02215](https://github.com/AraneaDev/Knossos-MCP/commit/cf02215acdcd689e9d63dffbda73967425dcfecf))
+* **tools:** stop repository checks from inspecting git-ignored files ([4150f85](https://github.com/AraneaDev/Knossos-MCP/commit/4150f856e0a0d87d5eb17c0b5b85cce95791011f))
+* **tools:** stop the git-ignore filter deadlocking on a large path list ([6a738a5](https://github.com/AraneaDev/Knossos-MCP/commit/6a738a50ffbc0b2c14fb3e29a77bd215f43a3055))
+
 ## [0.10.3](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.2...v0.10.3) (2026-08-08)
 
 
