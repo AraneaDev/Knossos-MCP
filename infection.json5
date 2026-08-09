@@ -84,22 +84,32 @@
   // since Infection 0.34: the older `testFrameworkOptions` still
   // validates but is marked deprecated in the vendored schema.
   testFrameworkExtraArgs: "--do-not-cache-result",
-  // Floor set from the last FULL-src measurement on 2026-07-20: 8782 mutants,
-  // 4640 killed, 4098 escaped, 44 timeouts -> MSI 53.34% in 1h20m. Rounded down
-  // to 53 per the migration plan (never set above what was actually measured on
-  // the full source tree). Mutation Code Coverage is 100%, so MSI and Covered
-  // MSI are the same number here: the escaped mutants are executed by the suite
-  // but not asserted against.
+  // Floor set from the last FULL-src measurement, on 2026-08-08 (CI run
+  // 31266003157, Infection 0.34): 14256 mutants generated, 115 of them ignored
+  // by the rules below, leaving 14141 tested -- 8970 killed, 74 timed out, 1
+  // error, 1 syntax error, 5095 escaped -> MSI 63.97% in 5h 56m. Rounded down
+  // to 63 per the standing rule: never set above what was actually measured on
+  // the full source tree. Mutation Code Coverage is 100%, so MSI and Covered MSI are
+  // the same number here -- the escaped mutants are executed by the suite but
+  // not asserted against.
   //
-  // The floor was previously ratcheted 53 -> 60 -> 65 -> 76 off per-file
-  // Infection samples of ~10 files, but no full-src run ever validated those
-  // higher numbers, so a full run would have failed the gate. Reverted to the
-  // last honestly-measured full-src value (53) until a full-src Infection run
-  // lands and justifies raising it. .github/workflows/mutation.yml now runs
-  // weekly (plus workflow_dispatch), so this floor is actually exercised and
-  // can be ratcheted upward against measured full-src results over time.
-  minMsi: 53,
-  minCoveredMsi: 53,
+  // The previous floor of 53 came from a 2026-07-20 run under Infection 0.31
+  // (8782 mutants, MSI 53.34%). The jump to 63 is not the suite improving:
+  // 0.34 generates ~62% more mutants and a different mix of them, so the two
+  // percentages are not comparable. It is the first honest measurement of the
+  // current mutator set.
+  //
+  // Before that, the floor had been ratcheted 53 -> 60 -> 65 -> 76 off per-file
+  // samples of ~10 files, which no full-src run ever validated -- a full run
+  // would have failed the gate. Hence the rule.
+  //
+  // .github/workflows/mutation.yml shards the weekly run across four jobs and
+  // passes --min-msi=0 to each, because a shard holding the thinly-tested files
+  // would fail a global floor that the tree as a whole clears. Its msi-gate job
+  // reads the number below and enforces it on the aggregate. A local full run
+  // (vendor/bin/infection) still enforces it straight from here.
+  minMsi: 63,
+  minCoveredMsi: 63,
   ignoreMsiWithNoMutations: true,
   tmpDir: "coverage/infection/tmp",
 }

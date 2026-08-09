@@ -1,10 +1,19 @@
 name: Mutation
 
-# A full-src Infection run takes ~80 minutes, so it is not wired into the
-# Quality workflow or any tools/quality profile. It runs on a weekly schedule so
-# the mutation floor in infection.json5 is actually exercised against the full
-# source tree (and can be ratcheted upward honestly against measured results),
-# and can also be triggered from the Actions tab on demand.
+# Mutation testing over all of src, so the floor in infection.json5 is exercised
+# against the full source tree rather than against a hand-picked sample. It is
+# not wired into the Quality workflow or any tools/quality profile.
+#
+# The run is sharded because it no longer fits in one job. Measured on
+# 2026-08-08 (run 31266003157, Infection 0.34, full src in a single job):
+# 14,256 mutants in 5h 56m against a 6-hour GitHub job limit -- it finished with
+# 1.7 minutes to spare. 0.34 generates ~62% more mutants than the 0.31 those
+# numbers were first measured under, and a job killed at the cap reads as an
+# infrastructure flake rather than as a signal, so one job is not a safe place
+# to put this.
+#
+# Four shards of ~39 files each land near 1h30m, which absorbs a shard running
+# twice as slow as average without approaching the limit.
 on:
   workflow_dispatch:
   schedule:
@@ -14,32 +23,141 @@ on:
 permissions:
   contents: read
 
+env:
+  # Stated once: the matrix below, the awk stride that assigns files to shards,
+  # and the gate's completeness check all have to agree, and a mismatch would
+  # silently drop a slice of src from the measurement.
+  SHARD_COUNT: 4
+
 jobs:
   infection:
     runs-on: ubuntu-latest
+    strategy:
+      # A failing shard must not cancel the others: the gate needs every shard's
+      # counts to compute an aggregate, and one shard's failure should still
+      # leave the rest reported.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v5
       - name: Build pinned quality image
         run: docker build --target quality -t knossos-mcp:quality .
-      # memory_limit is raised from the image's stock 128M because that ceiling
-      # belongs to the Infection master process, which holds the parsed source
-      # and prints each mutant from it. The 2026-08-03 run died at ~3,600
-      # mutants with "Allowed memory size of 134217728 bytes exhausted" inside
-      # the pretty-printer — gradual growth across a full-src pass, not one
-      # pathological file, so the limit is the thing that has to move. It stays
-      # a real ceiling rather than -1 so a genuine runaway still fails loudly.
-      # Only the master is affected; the PHPUnit children keep the image
-      # default.
-      # E_DEPRECATED is dropped because the image runs PHP 8.5 and Infection
-      # 0.31 still calls SplObjectStorage::contains(), deprecated in 8.5. The
-      # notice fires once per traversed node, which buries the mutant progress
-      # and any real failure under tens of thousands of identical lines. It is
-      # a dependency's deprecation, not this project's: the visitor was
-      # restructured upstream in 0.34, so the durable fix is that upgrade, and
-      # that is a dev-dependency bump with its own MSI-baseline consequences
-      # rather than part of a workflow fix. display_errors stays on — the
-      # fatal-error text is how the previous failure was diagnosed.
-      - name: Run Infection over src
+      - name: Run Infection over shard ${{ matrix.shard }}
+        env:
+          SHARD: ${{ matrix.shard }}
         run: |
-          docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos-mcp:quality \
-            -c 'php -d pcov.enabled=1 -d memory_limit=2G -d error_reporting="E_ALL & ~E_DEPRECATED" vendor/bin/infection --no-interaction --no-progress --threads=4'
+          set -o pipefail
+          # Round-robin over the sorted file list rather than splitting by
+          # directory: per-file mutant counts vary by an order of magnitude, and
+          # contiguous slices put whole subsystems -- and their heaviest files --
+          # into one shard.
+          files=$(find src -name '*.php' | sort | awk -v s="$SHARD" -v n="$SHARD_COUNT" 'NR % n == s' | paste -sd,)
+          if [ -z "$files" ]; then
+            echo "Shard $SHARD matched no files -- the stride and the matrix disagree." >&2
+            exit 1
+          fi
+          echo "Shard $SHARD: $(printf '%s' "$files" | tr ',' '\n' | wc -l) files"
+
+          # memory_limit is 4G because the master holds the parsed source and
+          # prints each mutant from it: the 2026-08-03 run died at the image's
+          # stock 128M, and the single-job 0.34 run peaked at 1.91G, 95% of the
+          # 2G that replaced it. A shard needs far less, but the ceiling is
+          # sized so that moving a shard boundary cannot reintroduce the OOM. It
+          # stays finite so a genuine runaway still fails loudly.
+          #
+          # --min-msi/--min-covered-msi are 0 here on purpose. The floor is a
+          # property of the whole tree, and the shard holding the thinly-tested
+          # files would fail against a global floor the tree as a whole clears.
+          # The msi-gate job enforces it on the aggregate instead.
+          status=0
+          docker run --name "infection-$SHARD" -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos-mcp:quality \
+            -c "php -d pcov.enabled=1 -d memory_limit=4G vendor/bin/infection \
+                  --no-interaction --no-progress --threads=4 \
+                  --min-msi=0 --min-covered-msi=0 \
+                  --filter='$files'" || status=$?
+
+          # Copied out of a named container rather than bind-mounted: the image
+          # runs as its own user, and a mount would make the log's ownership a
+          # property of the runner's uid mapping.
+          if ! docker cp "infection-$SHARD:/opt/knossos/chaos-infection-log.json" "mutation-shard-$SHARD.json"; then
+            echo "Shard $SHARD produced no JSON log; Infection exited $status." >&2
+            docker rm "infection-$SHARD" >/dev/null 2>&1 || true
+            exit "$([ "$status" -eq 0 ] && echo 1 || echo "$status")"
+          fi
+          docker rm "infection-$SHARD" >/dev/null
+          exit "$status"
+      - name: Upload shard results
+        # Uploaded even when the shard fails, so the gate can name the missing
+        # shard instead of reporting a smaller tree as a passing one.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-shard-${{ matrix.shard }}
+          path: mutation-shard-${{ matrix.shard }}.json
+          if-no-files-found: warn
+
+  msi-gate:
+    needs: infection
+    # Runs even when a shard failed, so the outcome is "a shard is missing"
+    # rather than an aggregate computed over whatever happened to survive.
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: shards
+          pattern: mutation-shard-*
+          merge-multiple: true
+      - name: Enforce the MSI floor across all shards
+        run: |
+          set -o pipefail
+          found=$(find shards -name 'mutation-shard-*.json' | wc -l)
+          if [ "$found" -ne "$SHARD_COUNT" ]; then
+            echo "Expected $SHARD_COUNT shard logs, found $found." >&2
+            echo "An aggregate over a subset is not a measurement of the tree." >&2
+            exit 1
+          fi
+
+          # Infection's own arithmetic, transcribed from Calculator::fromMetrics
+          # in 0.34 rather than guessed at. Two parts are easy to get wrong and
+          # both inflate the score: syntax errors count as detected alongside
+          # errors, and the denominator is the *tested* population -- skipped
+          # and ignored mutants are excluded, not merely undetected.
+          #
+          #   detected = killed + killedByStaticAnalysis + errors + syntaxErrors + timeouts
+          #   tested   = total - skipped - ignored
+          #   MSI      = detected / tested
+          #   covered  = detected / (tested - notCovered)
+          #
+          # Checked against the single-job run of 2026-08-08: 8970 + 1 + 1 + 74
+          # over 14256 - 115 is 63.97%, which is the figure Infection printed.
+          totals=$(jq -s '[
+              (map(.stats.totalMutantsCount - .stats.skippedCount - .stats.ignoredCount) | add),
+              (map(.stats.notCoveredCount) | add),
+              (map(.stats.killedCount + .stats.killedByStaticAnalysisCount + .stats.errorCount + .stats.syntaxErrorCount + .stats.timeOutCount) | add)
+            ] | @tsv' -r shards/mutation-shard-*.json)
+          tested=$(printf '%s' "$totals" | cut -f1)
+          not_covered=$(printf '%s' "$totals" | cut -f2)
+          detected=$(printf '%s' "$totals" | cut -f3)
+
+          # Read from infection.json5 so a local full run and this gate cannot
+          # drift apart. Local runs still enforce it through the config; only
+          # the sharded runs above defer to this job.
+          floor=$(grep -E '^[[:space:]]*minMsi:' infection.json5 | grep -oE '[0-9]+(\.[0-9]+)?')
+          if [ -z "$floor" ]; then
+            echo "Could not read minMsi from infection.json5." >&2
+            exit 1
+          fi
+
+          msi=$(awk -v d="$detected" -v t="$tested" 'BEGIN { printf "%.2f", t ? d * 100 / t : 0 }')
+          covered=$(awk -v d="$detected" -v t="$tested" -v n="$not_covered" 'BEGIN { c = t - n; printf "%.2f", c ? d * 100 / c : 0 }')
+
+          printf 'Tested mutants: %s  detected: %s  not covered: %s\n' "$tested" "$detected" "$not_covered"
+          printf 'MSI: %s%%  Covered MSI: %s%%  floor: %s%%\n' "$msi" "$covered" "$floor"
+
+          if ! awk -v m="$msi" -v c="$covered" -v f="$floor" 'BEGIN { exit (m >= f && c >= f) ? 0 : 1 }'; then
+            echo "MSI is below the floor in infection.json5." >&2
+            exit 1
+          fi
