@@ -29,6 +29,12 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     private const CONSTRUCTOR_MEMBER_NAME = 'constructor';
 
     /**
+     * Node kinds an unreferenced-code candidate can be. Anything else — a route,
+     * a config value, a file — is not a unit anyone deletes on this evidence.
+     */
+    private const CANDIDATE_KINDS = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
+
+    /**
      * Classify provisionally unreferenced components, dropping the ones nothing
      * could act on and labelling the confidence of what remains.
      *
@@ -192,26 +198,14 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * Node kinds an unreferenced-code candidate can be. Anything else — a route,
-     * a config value, a file — is not a unit anyone deletes on this evidence.
-     */
-    private const CANDIDATE_KINDS = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
-
-    /**
      * Whether nothing references a node. Absence of evidence, not proof: reflection is invisible here.
      *
      * @param array<string, mixed> $node @param list<array<string, mixed>> $roles
      */
     public function isCandidate(array $node, array $roles): bool
     {
-        if (!in_array($node['kind'], self::CANDIDATE_KINDS, true)) {
-            return false;
-        }
-        if (ReportableComponent::isExternal((string) $node['kind'], $node['origin'])) {
-            return false;
-        }
-
-        return !ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
+        return self::isReportableUnit($node)
+            && !ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
     }
 
     /**
@@ -230,23 +224,32 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * whose entry point is marked by role rather than by attribute therefore
      * reported zero exclusions while excluding one.
      *
-     * Deliberately mirrors `isCandidate`'s earlier guards rather than assuming
-     * them: a node of an unreportable kind, or an external one, was not turned
-     * away for THIS reason and must not be counted here.
+     * This and {@link isCandidate} are the two halves of one partition, so they
+     * share {@link isReportableUnit} rather than restating its guards. Restating
+     * them is what let the original bug in: a node turned away for a DIFFERENT
+     * reason must not be counted here, and two copies of that test drift apart
+     * the moment one of them gains a guard.
      *
      * @param array<string, mixed> $node @param list<array<string, mixed>> $roles
      */
     public function isConventionExcluded(array $node, array $roles): bool
     {
-        if (!in_array($node['kind'], self::CANDIDATE_KINDS, true)) {
-            return false;
-        }
-        if (ReportableComponent::isExternal((string) $node['kind'], $node['origin'])) {
-            return false;
-        }
-
-        return ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
+        return self::isReportableUnit($node)
+            && ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
     }
+
+    /**
+     * Whether a node is the kind of thing this analysis reports on at all,
+     * before any question of who references it.
+     *
+     * @param array<string, mixed> $node
+     */
+    private static function isReportableUnit(array $node): bool
+    {
+        return in_array($node['kind'], self::CANDIDATE_KINDS, true)
+            && !ReportableComponent::isExternal((string) $node['kind'], $node['origin']);
+    }
+
     /**
      * Member names declared by the internal types that implement or extend
      * each of `$typeIds`.
