@@ -90,4 +90,55 @@ final class DocumentationTest extends KnossosTestCase
 
         assertSame([], $unknown);
     }
+
+    /**
+     * The link check has no claim on a working copy.
+     *
+     * `/docs/superpowers/` is git-ignored — .gitignore calls it "Local-only
+     * superpowers specs and plans" — but the checker walked the filesystem and
+     * validated it anyway. One stale link in a developer's private planning
+     * note therefore failed this suite for everyone who happened to have that
+     * file on disk, and the failure named a document no reviewer could see.
+     *
+     * The fixture below is deliberately BROKEN: it must be skipped because it is
+     * ignored, not because its link happens to resolve.
+     */
+    #[Group('documentation')]
+    public function testDocumentationLinkCheckSkipsGitIgnoredFiles(): void
+    {
+        $root = self::repositoryRoot();
+        // Its OWN subdirectory: the sibling fixture in RepositoryCheckTest lives
+        // under the same ignored parent, and sharing one directory means either
+        // test's teardown can remove the other's ground.
+        $parent = $root . '/docs/superpowers';
+        $directory = $parent . '/link-check-fixture';
+        $fixture = $directory . '/broken.md';
+        $createdParent = !is_dir($parent);
+        if (!is_dir($directory) && !mkdir($directory, 0o777, true) && !is_dir($directory)) {
+            throw new RuntimeException('Unable to create ' . $directory);
+        }
+        // Never write over something a developer already has there.
+        self::assertFileDoesNotExist($fixture);
+
+        try {
+            file_put_contents($fixture, "[a link that does not resolve](./nowhere.md)\n");
+            // Guard: without git the checker fails OPEN and validates everything,
+            // which would make this assert something the fix never promised.
+            [$ignoreExit] = $this->runFixtureCommandOutput(['git', '-C', $root, 'check-ignore', '-q', $fixture]);
+            if ($ignoreExit !== 0) {
+                self::markTestSkipped('git cannot report ignore status here.');
+            }
+
+            [$exit, $output] = $this->runFixtureCommandOutput([PHP_BINARY, $root . '/tools/documentation-check.php']);
+
+            assertSame(0, $exit);
+            assertContains('Documentation links passed:', $output);
+        } finally {
+            @unlink($fixture);
+            @rmdir($directory);
+            if ($createdParent) {
+                @rmdir($parent);
+            }
+        }
+    }
 }

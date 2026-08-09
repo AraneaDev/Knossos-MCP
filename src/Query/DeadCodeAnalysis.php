@@ -29,6 +29,12 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     private const CONSTRUCTOR_MEMBER_NAME = 'constructor';
 
     /**
+     * Node kinds an unreferenced-code candidate can be. Anything else — a route,
+     * a config value, a file — is not a unit anyone deletes on this evidence.
+     */
+    private const CANDIDATE_KINDS = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
+
+    /**
      * Classify provisionally unreferenced components, dropping the ones nothing
      * could act on and labelling the confidence of what remains.
      *
@@ -198,15 +204,52 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      */
     public function isCandidate(array $node, array $roles): bool
     {
-        if (!in_array($node['kind'], ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'], true)) {
-            return false;
-        }
-        if (ReportableComponent::isExternal((string) $node['kind'], $node['origin'])) {
-            return false;
-        }
-
-        return !ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
+        return self::isReportableUnit($node)
+            && !ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
     }
+
+    /**
+     * Whether a node was kept out of the candidate set ONLY because a role marks
+     * it as reached by convention — a controller, command, listener, job, entry
+     * point, test, or config.
+     *
+     * Exists so that exclusion can be COUNTED. {@link isCandidate} runs before
+     * {@link classify}, so anything it turns away never reaches the tallies
+     * `classify` returns: a role-excluded node was dropped in silence, and
+     * `bounds` reported a set of reasons that did not add up to the nodes
+     * actually removed. `excluded_entry_scripts` looked like it covered this and
+     * did not — that counter is driven by
+     * {@link ReportableComponent::isExecutableScript}, which keys off a scanner's
+     * `executable` ATTRIBUTE, a different signal from these ROLES. A project
+     * whose entry point is marked by role rather than by attribute therefore
+     * reported zero exclusions while excluding one.
+     *
+     * This and {@link isCandidate} are the two halves of one partition, so they
+     * share {@link isReportableUnit} rather than restating its guards. Restating
+     * them is what let the original bug in: a node turned away for a DIFFERENT
+     * reason must not be counted here, and two copies of that test drift apart
+     * the moment one of them gains a guard.
+     *
+     * @param array<string, mixed> $node @param list<array<string, mixed>> $roles
+     */
+    public function isConventionExcluded(array $node, array $roles): bool
+    {
+        return self::isReportableUnit($node)
+            && ReportableComponent::isDiscoveredByConvention(array_column($roles, 'role'));
+    }
+
+    /**
+     * Whether a node is the kind of thing this analysis reports on at all,
+     * before any question of who references it.
+     *
+     * @param array<string, mixed> $node
+     */
+    private static function isReportableUnit(array $node): bool
+    {
+        return in_array($node['kind'], self::CANDIDATE_KINDS, true)
+            && !ReportableComponent::isExternal((string) $node['kind'], $node['origin']);
+    }
+
     /**
      * Member names declared by the internal types that implement or extend
      * each of `$typeIds`.
@@ -572,6 +615,31 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         return $referenced;
     }
+
+    /**
+     * Which of `$ids` nothing references in the WHOLE edge table.
+     *
+     * The counterpart to {@link reconcileBoundedWalk} for callers that need the
+     * same correction without the candidate bookkeeping. A zero in-degree
+     * measured against a bounded slice is provisional — a node, edge or time
+     * limit drops edges, and a dropped inbound edge makes a referenced symbol
+     * look unreferenced — so any tally drawn from that zero has to be re-checked
+     * against the full table before it is reported as fact.
+     *
+     * @param list<string> $ids
+     * @param list<string> $edgeKinds
+     * @return list<string>
+     */
+    public function unreferenced(string $projectId, array $ids, array $edgeKinds, int $minConfidenceRank): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+        $referenced = array_flip($this->referencedNodes($projectId, $ids, $edgeKinds, $minConfidenceRank));
+
+        return array_values(array_filter($ids, static fn(string $id): bool => !isset($referenced[$id])));
+    }
+
     /**
      * Canonical names the project's own configuration suppresses, exactly or by prefix.
      *

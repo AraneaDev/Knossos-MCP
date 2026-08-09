@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+require __DIR__ . '/lib/git-ignore.php';
+
 $root = dirname(__DIR__);
 $checkExternal = in_array('--external', $argv, true);
 $paths = array_merge([$root . '/README.md'], documentationFiles($root . '/docs'));
@@ -61,7 +63,18 @@ if ($failures !== []) {
 printf("Documentation links passed: %d files, %d external%s.\n", count($paths), count($external), $checkExternal ? ' checked' : ' syntax-checked');
 
 /**
- * Every Markdown file under docs/.
+ * Every Markdown file under docs/ that this repository actually carries.
+ *
+ * Git-ignored files are skipped. `/docs/superpowers/` is ignored on purpose —
+ * ".gitignore" calls it "Local-only superpowers specs and plans" — so a
+ * developer's private planning notes used to be link-checked as though they
+ * were published documentation, and one stale link in a scratch file failed the
+ * whole suite for everyone who happened to have that file on disk. The check
+ * exists to keep SHIPPED docs honest; it has no claim on a working copy.
+ *
+ * Untracked-but-not-ignored files are still checked: a doc added in the working
+ * tree and not yet committed is on its way into the repository, and skipping it
+ * would let a broken link land.
  *
  * @return list<string>
  */
@@ -77,8 +90,9 @@ function documentationFiles(string $directory): array
         $files[] = $path;
     }
     sort($files, SORT_STRING);
+    $ignored = gitIgnoredPaths(dirname($directory), $files);
 
-    return $files;
+    return array_values(array_filter($files, static fn(string $path): bool => !isset($ignored[$path])));
 }
 
 /** A path shown relative to the repository root, so failures name what a reader can find. */

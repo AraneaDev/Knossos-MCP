@@ -299,6 +299,9 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(false, in_array('bin/console', $names, true));
         assertSame(true, in_array('src/orphan.ts', $names, true));
         assertSame(1, $data['bounds']['excluded_entry_scripts']);
+        // The ATTRIBUTE-driven exclusion must not be double-counted as a
+        // role-driven one: they are separate signals and separate tallies.
+        assertSame(0, $data['bounds']['excluded_convention_discovered']);
     }
 
     /**
@@ -448,5 +451,109 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(false, in_array('App\\InvoiceService', $names, true));
         // The genuinely unreferenced class is still reported.
         assertArrayContains('App\\Reporter', $names);
+    }
+
+    /**
+     * Role-based exclusions are COUNTED, not dropped in silence.
+     *
+     * `isCandidate` turns a convention-discovered node away BEFORE `classify`
+     * runs, and `classify` owns every other exclusion tally — so the node
+     * vanished from the candidate set while `bounds` reported a set of reasons
+     * that did not account for it. `excluded_entry_scripts` looked like it
+     * covered this and did not: that counter is driven by the scanner's
+     * `executable` ATTRIBUTE, which is a different signal from the
+     * `application.entry_point` ROLE. A project whose entry point is marked by
+     * role therefore reported zero exclusions while excluding one.
+     */
+    #[Group('query')]
+    public function testDeadCodeCountsConventionDiscoveredExclusions(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        $entry = StableId::symbol($ids['project'], 'typescript', 'module', 'scripts/release.mjs');
+        $repository->saveNode($entry, $ids['project'], 'typescript', 'module', 'scripts/release.mjs', 'release.mjs', null, $ids['file'], 1, 20, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveClassification(
+            StableId::classification($ids['project'], $entry, 'application.entry_point', 'core.entry.points.v1'),
+            $ids['project'],
+            $entry,
+            'application.entry_point',
+            'derived',
+            'probable',
+            'core.entry.points.v1',
+            $ids['file'],
+            1,
+            20,
+            [],
+            $ids['scan'],
+        );
+        // An orphan carrying no role stays reportable, and is not counted as an
+        // exclusion — the counter must track the drop, not every unreferenced node.
+        $orphan = StableId::symbol($ids['project'], 'typescript', 'module', 'src/orphan.ts');
+        $repository->saveNode($orphan, $ids['project'], 'typescript', 'module', 'src/orphan.ts', 'orphan.ts', null, $ids['file'], 1, 1, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('scripts/release.mjs', $names, true));
+        assertSame(true, in_array('src/orphan.ts', $names, true));
+        assertSame(1, $data['bounds']['excluded_convention_discovered']);
+        // And it is NOT folded into the attribute-driven counter, which would
+        // mislabel a controller, a listener or a config as an "entry script".
+        assertSame(0, $data['bounds']['excluded_entry_scripts']);
+    }
+
+    /**
+     * The role-exclusion tally is drawn from a PROVISIONAL zero in-degree, so a
+     * bounded scan must not be allowed to inflate it.
+     *
+     * In-degree is measured against the slice the walk actually read. A node,
+     * edge or time limit drops edges, and a dropped inbound edge makes a
+     * referenced symbol look unreferenced — which is exactly why the candidate
+     * list is re-checked against the whole edge table before anything is called
+     * dead. The counter was not given the same treatment: a convention-discovered
+     * node whose only caller fell outside the bound was counted as an exclusion
+     * even though something references it.
+     *
+     * The bound here is deterministic rather than incidental. Nodes are read
+     * `ORDER BY canonical_name`, so a caller named `zzz-caller` sorts last and is
+     * the one the limit drops; its edge is then skipped for having an unknown
+     * source, and the entry point it calls falls to a zero in-degree it does not
+     * deserve.
+     */
+    #[Group('query')]
+    public function testConventionExclusionsAreReconciledBeforeBeingCounted(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        $entry = StableId::symbol($ids['project'], 'typescript', 'module', 'scripts/release.mjs');
+        $repository->saveNode($entry, $ids['project'], 'typescript', 'module', 'scripts/release.mjs', 'release.mjs', null, $ids['file'], 1, 20, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveClassification(
+            StableId::classification($ids['project'], $entry, 'application.entry_point', 'core.entry.points.v1'),
+            $ids['project'],
+            $entry,
+            'application.entry_point',
+            'derived',
+            'probable',
+            'core.entry.points.v1',
+            $ids['file'],
+            1,
+            20,
+            [],
+            $ids['scan'],
+        );
+        $caller = StableId::symbol($ids['project'], 'php', 'class', 'zzz-caller');
+        $repository->saveNode($caller, $ids['project'], 'php', 'class', 'zzz-caller', 'zzz-caller', null, $ids['file'], 30, 40, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'calls', $caller, $entry, 'z:1'), $ids['project'], 'calls', $caller, $entry, $ids['file'], 31, 31, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        // Four nodes; a budget of three cuts `zzz-caller` and with it the only
+        // edge that proves the entry point is reached.
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], maxNodes: 3);
+
+        assertSame(true, in_array('node_limit', $result->data['bounds']['truncation_reasons'], true));
+        // Something DOES reference it, so nothing was excluded for its role. The
+        // unreconciled counter reported 1 here — an exclusion that never happened.
+        assertSame(0, $result->data['bounds']['excluded_convention_discovered']);
     }
 }

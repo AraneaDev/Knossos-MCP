@@ -343,43 +343,27 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
 
         $deadCode = new DeadCodeAnalysis($this->pdo, $this->clock);
-        $hubs = $hotspots = $deadCandidates = [];
-        $provisional = [];
-        $excludedExternal = $excludedTests = 0;
-        foreach ($nodes as $id => $row) {
-            $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
-            $component = [
-                'id' => $id, 'kind' => $row['kind'], 'canonical_name' => $row['canonical_name'],
-                'display_name' => $row['display_name'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
-                'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
-            ];
-            if ($degree > 0) {
-                $externalNode = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
-                $testNode = ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'));
-                if (!$includeExternal && $externalNode) {
-                    ++$excludedExternal;
-                } elseif (!$includeTests && $testNode) {
-                    ++$excludedTests;
-                } else {
-                    $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
-                    $hotspots[] = [
-                        'component' => $component,
-                        'factors' => $metrics[$id] + ['cycle_participant' => isset($cycleMembers[$id])],
-                        'score' => $degree + (2 * $metrics[$id]['cross_boundary_degree']) + (isset($cycleMembers[$id]) ? 3 : 0),
-                    ];
-                }
-            }
-            if ($metrics[$id]['in_degree'] === 0 && $deadCode->isCandidate($row, $roles[$id] ?? [])) {
-                $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
-            }
-        }
+        $ranked = $this->rankNodes($nodes, $metrics, $roles, $boundaries, $cycleMembers, $deadCode, $includeExternal, $includeTests);
+        $hubs = $ranked['hubs'];
+        $hotspots = $ranked['hotspots'];
+        $provisional = $ranked['provisional'];
+        $excludedExternal = $ranked['excluded_external'];
+        $excludedTests = $ranked['excluded_tests'];
         // The in-degree above only counts edges from the slice actually read, so
         // a zero is provisional: node/edge/time limits drop edges, and a dropped
         // inbound edge makes a referenced symbol look unreferenced. Re-check the
-        // survivors against the whole edge table before calling anything dead.
-        if ($provisional !== [] && array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== []) {
+        // survivors against the whole edge table before calling anything dead —
+        // and before COUNTING anything excluded, because both lists were drawn
+        // from the same provisional zero.
+        $boundedScan = array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== [];
+        if ($provisional !== [] && $boundedScan) {
             $provisional = $deadCode->reconcileBoundedWalk($projectId, $provisional, $nodes, $edgeKinds, $confidenceRank[$minConfidence], $metrics, $inheritanceInDegree);
         }
+        $conventionExcluded = $ranked['convention_excluded'];
+        if ($conventionExcluded !== [] && $boundedScan) {
+            $conventionExcluded = $deadCode->unreferenced($projectId, $conventionExcluded, $edgeKinds, $confidenceRank[$minConfidence]);
+        }
+        $excludedConventionDiscovered = count($conventionExcluded);
         $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree);
         $deadCandidates = $classified['candidates'];
         $excluded = $classified['excluded'];
@@ -430,6 +414,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'excluded_contract_methods' => $excluded['contracts'],
                     'excluded_constructors' => $excluded['constructors'],
                     'excluded_entry_scripts' => $excluded['entry_scripts'],
+                    'excluded_convention_discovered' => $excludedConventionDiscovered,
                     'suppressed_candidates' => $excluded['suppressed'],
                     'annotated_false_positives' => $excluded['annotated_false_positives'],
                     'cycle_scan_truncated' => $cycleScanTruncated, 'truncation_reasons' => $truncationReasons,
@@ -442,6 +427,84 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             ],
             $truncated,
         );
+    }
+
+    /**
+     * One pass over the node slice, sorting each component into the three things
+     * architecture_health reports on: hubs, static hotspots, and provisional
+     * unreferenced-code candidates.
+     *
+     * Extracted from architectureHealth for length, and it is the natural seam:
+     * everything before it gathers the slice and its degrees, everything after it
+     * ranks, reconciles and renders. Nothing here reads the database.
+     *
+     * The two exclusion counters returned alongside are the ones this loop owns.
+     * Every OTHER exclusion tally comes from DeadCodeAnalysis::classify(), which
+     * runs later — but `isCandidate()` rejects convention-discovered roles here,
+     * before classify() ever sees the node, so a node dropped for its role would
+     * otherwise vanish without appearing in any count.
+     *
+     * Those role exclusions come back as a list of IDS rather than a count. Like
+     * `provisional`, they are selected on a zero in-degree measured against the
+     * bounded slice, so under truncation the set can hold a node whose only
+     * inbound edge was dropped. Only the caller knows whether the scan was
+     * bounded, so only the caller can reconcile the set and count what survives.
+     *
+     * @param array<string, array<string, mixed>> $nodes id => node row
+     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
+     * @param array<string, list<array<string, mixed>>> $roles
+     * @param array<string, list<array<string, mixed>>> $boundaries
+     * @param array<string, true> $cycleMembers
+     * @return array{
+     *     hubs: list<array<string, mixed>>,
+     *     hotspots: list<array<string, mixed>>,
+     *     provisional: array<string, array<string, mixed>>,
+     *     excluded_external: int,
+     *     excluded_tests: int,
+     *     convention_excluded: list<string>,
+     * }
+     */
+    private function rankNodes(array $nodes, array $metrics, array $roles, array $boundaries, array $cycleMembers, DeadCodeAnalysis $deadCode, bool $includeExternal, bool $includeTests): array
+    {
+        $hubs = $hotspots = $provisional = $conventionExcluded = [];
+        $excludedExternal = $excludedTests = 0;
+        foreach ($nodes as $id => $row) {
+            $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
+            $component = [
+                'id' => $id, 'kind' => $row['kind'], 'canonical_name' => $row['canonical_name'],
+                'display_name' => $row['display_name'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
+                'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
+            ];
+            if ($degree > 0) {
+                $externalNode = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
+                $testNode = ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'));
+                if (!$includeExternal && $externalNode) {
+                    ++$excludedExternal;
+                } elseif (!$includeTests && $testNode) {
+                    ++$excludedTests;
+                } else {
+                    $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
+                    $hotspots[] = [
+                        'component' => $component,
+                        'factors' => $metrics[$id] + ['cycle_participant' => isset($cycleMembers[$id])],
+                        'score' => $degree + (2 * $metrics[$id]['cross_boundary_degree']) + (isset($cycleMembers[$id]) ? 3 : 0),
+                    ];
+                }
+            }
+            if ($metrics[$id]['in_degree'] === 0) {
+                if ($deadCode->isCandidate($row, $roles[$id] ?? [])) {
+                    $provisional[$id] = ['component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [], 'out_degree' => $metrics[$id]['out_degree']];
+                } elseif ($deadCode->isConventionExcluded($row, $roles[$id] ?? [])) {
+                    $conventionExcluded[] = (string) $id;
+                }
+            }
+        }
+
+        return [
+            'hubs' => $hubs, 'hotspots' => $hotspots, 'provisional' => $provisional,
+            'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests,
+            'convention_excluded' => $conventionExcluded,
+        ];
     }
 
     /**
