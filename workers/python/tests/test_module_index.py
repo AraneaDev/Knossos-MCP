@@ -28,6 +28,23 @@ def test_source_roots_include_bare_root_and_non_package_dirs(worker: ModuleType,
     assert ("pkg",) not in index.prefixes
 
 
+def test_source_roots_exclude_the_knossos_namespace(worker: ModuleType, project) -> None:
+    # Only the exact ".knossos" segment was excluded, so a CI checkout of the
+    # analyzer parked beside the project under the same naming convention became
+    # a source root and renamed the project's own modules.
+    root = project(
+        {
+            "src/app/__init__.py": "",
+            ".knossos-src/workers/python/bin/worker.py": "",
+            ".knossos-ci/scratch/thing.py": "",
+        }
+    )
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    assert ("src",) in index.prefixes
+    assert (".knossos-src",) not in index.prefixes
+    assert (".knossos-ci",) not in index.prefixes
+
+
 def test_module_for_prefers_deepest_source_root(worker: ModuleType, project) -> None:
     root = project(
         {

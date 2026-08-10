@@ -41,6 +41,20 @@ describe("discoverConfigFiles", () => {
             "tsconfig.json",
         ]);
     });
+
+    // A CI job that checks this analyzer out beside the project it scans names
+    // that directory in our own namespace, and only the exact ".knossos"
+    // segment was excluded. Its configs were then discovered as the project's
+    // own, which is how a scan ends up describing the analyzer.
+    it("skips directories in the .knossos namespace, not just .knossos itself", () => {
+        const root = fixture({
+            "tsconfig.json": "{}\n",
+            ".knossos-src/tsconfig.json": "{}\n",
+            ".knossos-ci/tsconfig.json": "{}\n",
+        });
+
+        expect(discoverConfigFiles(root)).toEqual(["tsconfig.json"]);
+    });
 });
 
 describe("TypeScriptScanner.scan", () => {

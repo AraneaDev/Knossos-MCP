@@ -29,6 +29,18 @@ EXCLUDED = {
     "build",
     "dist",
 }
+# Name prefixes for the namespace this tool owns, kept in sync with the PHP
+# IgnoreMatcher. ".knossos" alone is in the set above; a CI job parks a checkout
+# of the analyzer or its snapshot database beside the project under the same
+# convention, and neither is a source root of the project being scanned.
+EXCLUDED_PREFIXES = (".knossos-",)
+
+
+def is_excluded(name: str) -> bool:
+    """Whether a directory name is excluded from discovery."""
+    return name in EXCLUDED or name.startswith(EXCLUDED_PREFIXES)
+
+
 # Bytes read when probing an extensionless file's shebang; one short line is enough.
 SHEBANG_PROBE_BYTES = 256
 # The UTF-8 byte-order mark, spelled out rather than reached for through
@@ -165,7 +177,7 @@ class ProjectModuleIndex:
         prefixes: list[tuple[str, ...]] = [()]
         try:
             for child in sorted(self.root.iterdir()):
-                if child.name in EXCLUDED or not child.is_dir():
+                if is_excluded(child.name) or not child.is_dir():
                     continue
                 if not (child / "__init__.py").is_file():
                     prefixes.append((child.name,))

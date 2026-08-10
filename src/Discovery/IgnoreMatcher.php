@@ -36,6 +36,17 @@ final readonly class IgnoreMatcher
         'dist',
     ];
 
+    /**
+     * Segment prefixes, for directories this tool and its wrappers own the
+     * naming of. '.knossos' alone is an exact segment above; a CI job that needs
+     * somewhere to put a checkout of the analyzer or its snapshot database names
+     * it '.knossos-src' or '.knossos-ci' by the same convention, and those were
+     * scanned as if they were the project's own source.
+     */
+    private const EXCLUDED_SEGMENT_PREFIXES = [
+        '.knossos-',
+    ];
+
     private const EXCLUDED_PREFIXES = [
         'public/build',
         'storage/framework',
@@ -95,6 +106,11 @@ final readonly class IgnoreMatcher
         foreach ($segments as $segment) {
             if (in_array($segment, self::EXCLUDED_SEGMENTS, true)) {
                 return true;
+            }
+            foreach (self::EXCLUDED_SEGMENT_PREFIXES as $prefix) {
+                if (str_starts_with($segment, $prefix)) {
+                    return true;
+                }
             }
         }
 

@@ -40,6 +40,20 @@ const EXCLUDED_DIRECTORIES = new Set([
     "dist",
 ]);
 
+// Directory-name prefixes, for the namespace this tool owns. ".knossos" alone
+// is in the set above; a CI job parks a checkout of the analyzer or its snapshot
+// database beside the project under the same convention, and those must not be
+// discovered as the project's own source.
+const EXCLUDED_DIRECTORY_PREFIXES = [".knossos-"];
+
+/** Whether a directory entry is excluded from discovery by name alone. */
+function isExcludedDirectoryName(name) {
+    return (
+        EXCLUDED_DIRECTORIES.has(name) ||
+        EXCLUDED_DIRECTORY_PREFIXES.some((prefix) => name.startsWith(prefix))
+    );
+}
+
 // Each retained ts.Program holds its own parsed default library and type
 // checker (~100-120MB). A repo with many tsconfigs builds one program per
 // config within a single scan; retaining them all at once exhausts the
@@ -1364,7 +1378,7 @@ function walk(root, directory, onFile) {
         return;
     }
     for (const entry of entries) {
-        if (EXCLUDED_DIRECTORIES.has(entry.name)) continue;
+        if (isExcludedDirectoryName(entry.name)) continue;
         const absolute = path.join(directory, entry.name);
         const relative = normalize(path.relative(root, absolute));
         if (entry.isSymbolicLink()) continue;
