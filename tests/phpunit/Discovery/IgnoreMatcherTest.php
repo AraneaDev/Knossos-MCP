@@ -477,6 +477,18 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(false, $matcher->matches('.knossosaurus/src/main.ts'));
     }
 
+    /**
+     * Built-in exclusions are applied before user patterns and a '!' cannot undo
+     * them, which the configuration guide now states. Pinned here so the claim
+     * and the behaviour cannot drift apart.
+     */
+    public function testANamespacedKnossosSegmentCannotBeReIncludedByANegation(): void
+    {
+        $matcher = new IgnoreMatcher(['!.knossos-src/keep.php']);
+
+        assertSame(true, $matcher->matches('.knossos-src/keep.php'));
+    }
+
     public function testMatchesPathInsideCoverageSegment(): void
     {
         $matcher = new IgnoreMatcher([]);
