@@ -442,6 +442,53 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('.knossos/cache.json'));
     }
 
+    /**
+     * '.knossos' was matched as an exact segment, so anything the tool or a CI
+     * wrapper parked beside it under the same namespace was scanned as project
+     * source. A workflow that checks this analyzer out to '.knossos-src' to
+     * build its image, and then scans the directory containing it, produced a
+     * graph four fifths of which was the analyzer; archiving a snapshot that
+     * size exhausted the memory limit. The namespace is ours, so everything in
+     * it is excluded.
+     */
+    public function testMatchesPathInsideANamespacedKnossosSegment(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('.knossos-src/src/Store/SqliteGraphRepository.php'));
+    }
+
+    public function testMatchesANamespacedKnossosSegmentAtAnyDepth(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('tools/.knossos-ci/knossos.sqlite'));
+    }
+
+    /**
+     * The hyphen is the namespace boundary. Without it the rule is a bare string
+     * prefix, and a project directory that merely starts with the same letters
+     * would vanish from its own graph.
+     */
+    public function testDoesNotMatchASegmentThatMerelyStartsWithKnossos(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(false, $matcher->matches('.knossosaurus/src/main.ts'));
+    }
+
+    /**
+     * Built-in exclusions are applied before user patterns and a '!' cannot undo
+     * them, which the configuration guide now states. Pinned here so the claim
+     * and the behaviour cannot drift apart.
+     */
+    public function testANamespacedKnossosSegmentCannotBeReIncludedByANegation(): void
+    {
+        $matcher = new IgnoreMatcher(['!.knossos-src/keep.php']);
+
+        assertSame(true, $matcher->matches('.knossos-src/keep.php'));
+    }
+
     public function testMatchesPathInsideCoverageSegment(): void
     {
         $matcher = new IgnoreMatcher([]);
