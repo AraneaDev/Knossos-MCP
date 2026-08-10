@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.5](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.4...v0.10.5) (2026-08-10)
+
+
+### Bug Fixes
+
+* **discovery:** exclude the whole .knossos namespace from discovery ([93c0d23](https://github.com/AraneaDev/Knossos-MCP/commit/93c0d23aeff320254f0aaafadf1e5ca1a63b4f51))
+* **discovery:** exclude the whole .knossos namespace from discovery ([4259bfd](https://github.com/AraneaDev/Knossos-MCP/commit/4259bfd57d7a4604e2d5cc82110781a98ce9ef40))
+
 ## [0.10.4](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.3...v0.10.4) (2026-08-09)
 
 
