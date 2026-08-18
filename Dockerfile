@@ -18,7 +18,15 @@ LABEL org.opencontainers.image.title="Knossos MCP" \
 # them, so the runtime image fails the HIGH/CRITICAL gate for something it cannot
 # be exploited through. Purge the build deps once the extension is compiled, the
 # way the quality stage already does.
+# `apt-get upgrade` (DL3005) is deliberate, for the same reason DL3008 is ignored: the
+# supply-chain gate scans this image with `--ignore-unfixed --severity HIGH,CRITICAL
+# --exit-code 1`, so the build fails the moment Debian ships a fix the digest-pinned base
+# has not been rebuilt against. That is not hypothetical -- CVE-2026-53615 (util-linux)
+# was fixed in 2.41.5-0+deb13u1 while `php:8.5-cli-trixie` still carried 2.41-5, in the
+# newest tag as well as in the pinned digest. Upgrading here lets a rebuild pick the fix
+# up on its own instead of needing a per-CVE package pin every time.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install --no-install-recommends -y git libatomic1 libsqlite3-dev python3 unzip \
     && docker-php-ext-install pdo_sqlite \
     && apt-get purge -y --auto-remove libsqlite3-dev libc6-dev $PHPIZE_DEPS \

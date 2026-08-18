@@ -9,6 +9,10 @@ ignored:
   - DL3059
   # PHPIZE_DEPS is intentionally expanded into an apt package list.
   - SC2086
+  # The runtime stage upgrades its base packages on purpose. The supply-chain gate fails
+  # on any fixed HIGH/CRITICAL CVE, and the digest-pinned base is not rebuilt on Debian's
+  # security cadence, so pinning apt revisions instead would mean a per-CVE edit each time.
+  - DL3005
   # Building pcov from its pinned tarball needs phpize/configure to run inside
   # the extracted source tree. A WORKDIR would leak that directory into later
   # instructions, so the build cds within its own layer and cds back out.
