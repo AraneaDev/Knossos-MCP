@@ -336,6 +336,29 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         assertSame(true, str_ends_with($written, PHP_EOL));
     }
 
+    public function testHelpRendererDefaultsToStdoutWhenNoStreamIsInjected(): void
+    {
+        // Mirrors testErrorRendererDefaultsToStderrWhenNoStreamIsInjected: every
+        // test above injects a stream, so a mutant that dropped the `?? STDOUT`
+        // fallback would survive. Read back by reflection rather than by calling
+        // render(), which would dump the whole help text into the test output.
+        $stream = new \ReflectionProperty(CliHelpRenderer::class, 'stream');
+
+        assertSame(STDOUT, $stream->getValue(new CliHelpRenderer()));
+        assertSame(STDOUT, $stream->getValue(new CliHelpRenderer(null)));
+    }
+
+    public function testHelpRendererKeepsAnInjectedStreamOverTheStdoutDefault(): void
+    {
+        $injected = fopen('php://memory', 'w+');
+        assertSame(true, is_resource($injected));
+
+        $stream = new \ReflectionProperty(CliHelpRenderer::class, 'stream');
+
+        assertSame($injected, $stream->getValue(new CliHelpRenderer($injected)));
+        fclose($injected);
+    }
+
     // ===== CliErrorRenderer ================================================
     //
     // render() is given an in-memory stream in every test below. Two reasons:
