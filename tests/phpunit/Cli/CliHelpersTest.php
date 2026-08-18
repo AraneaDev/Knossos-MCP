@@ -313,13 +313,27 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
 
     public function testHelpRendererRendersSuccessfully(): void
     {
-        // render() writes the help text to STDOUT via fwrite. The I/O side
-        // effect cannot be reliably captured at the userland ob_get_clean
-        // boundary under PHPUnit's CLI stream capture, and the source has
-        // no return value to observe. Smoke test — render() must run to
-        // completion without throwing.
-        (new CliHelpRenderer())->render();
-        assertSame(true, true); // sentinel (assertTrue is not in Support/Assertions.php)
+        // render() fwrite's to a stream, which bypasses ob_start(); the stream
+        // is injectable (like CliErrorRenderer's) so the emitted help text is
+        // directly assertable rather than only "did not throw".
+        $stream = fopen('php://memory', 'w+');
+        assertSame(true, is_resource($stream));
+
+        (new CliHelpRenderer($stream))->render();
+
+        rewind($stream);
+        $written = stream_get_contents($stream);
+        fclose($stream);
+        $written = $written === false ? '' : $written;
+
+        // The help text is the source of docs/reference/cli.md, so its shape is
+        // a contract: a title, the Usage block, and every documented command.
+        assertSame(true, str_starts_with($written, 'Knossos architecture intelligence'));
+        assertSame(true, str_contains($written, 'Usage:'));
+        foreach (['knossos version', 'knossos doctor', 'knossos scan <path>', 'knossos serve'] as $command) {
+            assertSame(true, str_contains($written, $command));
+        }
+        assertSame(true, str_ends_with($written, PHP_EOL));
     }
 
     // ===== CliErrorRenderer ================================================
@@ -515,19 +529,27 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
 
     public function testCommandContextOutputRunsWithoutError(): void
     {
-        // output() fwrite's to STDOUT; that I/O side-effect cannot be reliably
-        // captured at the userland ob_get_clean boundary under PHPUnit CLI
-        // capture. The source has no return value. Smoke test — exercises
-        // both branches (json=false and json=true) and verifies no throw.
+        // output() echoes, which *does* pass through PHP's output buffering, so
+        // both branches (json=false -> the text argument, json=true -> the
+        // JSON-encoded structure) are assertable rather than smoke-tested.
         $context = new CliCommandContext(
             new CliOptionParser(),
             new CliInputLoader(),
             new RuntimeFactory(self::repositoryRoot()),
             ':memory:',
         );
+
+        ob_start();
         $context->output(['k' => 'v'], false, 'plain text');
-        $context->output(['k' => 'v'], true, 'unused');
-        assertSame(true, true); // sentinel — both calls returned without throwing
+        $plain = ob_get_clean();
+
+        ob_start();
+        $context->output(['k' => 'v/w'], true, 'unused');
+        $json = ob_get_clean();
+
+        assertSame('plain text' . PHP_EOL, $plain);
+        // JSON_UNESCAPED_SLASHES: the slash in the value stays a literal '/'.
+        assertSame('{"k":"v/w"}' . PHP_EOL, $json);
     }
 
     public function testCommandContextDatabasePathFallsBackToRuntimeDefaultWhenNull(): void
@@ -565,8 +587,9 @@ final class CliHelpersTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         // $handleTermination=true branch that registers a SIGTERM handler
         // in addition to SIGINT. Only runs if pcntl is available.
         if (!function_exists('pcntl_async_signals')) {
-            assertSame(true, true);
-            return;
+            // A sentinel assertion here would report a green test that proved
+            // nothing; skipping states honestly that the branch went unrun.
+            self::markTestSkipped('ext-pcntl is not loaded; the SIGTERM branch cannot be exercised.');
         }
         $context = new CliCommandContext(
             new CliOptionParser(),

@@ -12,10 +12,30 @@ namespace Knossos\Cli;
  */
 final class CliHelpRenderer
 {
+    /** @var resource */
+    private $stream;
+
+    /**
+     * @param resource|null $stream Destination for the help text; defaults to
+     *                              the process STDOUT.
+     *
+     * Injectable for the same reason CliErrorRenderer's stream is: fwrite() to
+     * the STDOUT constant bypasses PHP's output buffering, so a test cannot
+     * capture it with ob_start(). Rendering into an in-memory stream makes the
+     * emitted text assertable instead of leaving render() covered by a smoke
+     * test that proves only "did not throw".
+     */
+    public function __construct($stream = null)
+    {
+        /** @var resource $target */
+        $target = $stream ?? STDOUT;
+        $this->stream = $target;
+    }
+
     /** Print the canonical help text, which is also the source of the generated CLI reference. */
     public function render(): void
     {
-        fwrite(STDOUT, <<<'TEXT'
+        fwrite($this->stream, <<<'TEXT'
 Knossos architecture intelligence
 
 Usage:
