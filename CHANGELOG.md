@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.6](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.5...v0.10.6) (2026-08-18)
+
+
+### Bug Fixes
+
+* **docker:** upgrade runtime base packages so the CVE gate can clear ([09dfca7](https://github.com/AraneaDev/Knossos-MCP/commit/09dfca7b26136709d6ef136132e95dc2128a566c))
+
 ## [0.10.5](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.4...v0.10.5) (2026-08-10)
 
 
