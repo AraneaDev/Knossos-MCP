@@ -29,6 +29,16 @@ jobs:
         run: |
           docker cp knossos-quality:/opt/knossos/coverage ./coverage
           docker rm knossos-quality
+      - name: Upload coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          # All three languages, so the badge reports the whole project rather than the
+          # Node/Python workers alone. PHP is the bulk of the codebase.
+          files: ./coverage/php/clover.xml,./coverage/js/lcov.info,./coverage/python/coverage.xml
+          fail_ci_if_error: false
+
       - name: Upload coverage and benchmark reports
         if: always()
         uses: actions/upload-artifact@v4
