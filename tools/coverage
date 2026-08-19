@@ -38,6 +38,7 @@ node_modules/.bin/c8 report \
     --reporter=html \
     --reporter=lcov \
     --reporter=cobertura \
+    --reporter=json-summary \
     --all \
     --include='workers/typescript/bin/**/*.js' \
     --include='workers/typescript/src/**/*.js' \
@@ -51,4 +52,5 @@ coverage combine --data-file=coverage/python/.coverage
 coverage report --data-file=coverage/python/.coverage \
     --fail-under="$(node -p "require('./coverage-budgets.json').python.lines")"
 coverage xml --data-file=coverage/python/.coverage
+coverage json --data-file=coverage/python/.coverage -o coverage/python/coverage.json
 coverage html --data-file=coverage/python/.coverage --directory=coverage/python/html

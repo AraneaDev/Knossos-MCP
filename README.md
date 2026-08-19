@@ -4,12 +4,15 @@
 
 **The labyrinth mapped once, so nobody has to wander it again.**
 
-[![Release](https://img.shields.io/github/v/release/AraneaDev/Knossos-MCP)](https://github.com/AraneaDev/Knossos-MCP/releases)
-[![Quality](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml/badge.svg)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
-[![Coverage](https://img.shields.io/codecov/c/github/AraneaDev/Knossos-MCP)](https://codecov.io/gh/AraneaDev/Knossos-MCP)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
-[![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
-[![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#quick-start)
+[![Release](https://img.shields.io/github/v/release/AraneaDev/Knossos-MCP?label=release)](https://github.com/AraneaDev/Knossos-MCP/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/AraneaDev/Knossos-MCP/quality.yml?label=CI)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAraneaDev%2FKnossos-MCP%2Fgh-pages%2Fcoverage.json)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
+[![License](https://img.shields.io/github/license/AraneaDev/Knossos-MCP?label=license&color=yellow)](./LICENSE)
+[![Language](https://img.shields.io/github/languages/top/AraneaDev/Knossos-MCP)](https://github.com/AraneaDev/Knossos-MCP)
+[![Last commit](https://img.shields.io/github/last-commit/AraneaDev/Knossos-MCP?label=last%20commit)](https://github.com/AraneaDev/Knossos-MCP/commits/main)
+[![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
+[![MCP Observatory](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
+[![Status](https://img.shields.io/badge/status-in%20development-orange)](#quick-start)
 
 </div>
 
