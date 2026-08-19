@@ -1,23 +1,26 @@
-# Knossos MCP
+<div align="center">
 
-> Local-first architecture intelligence over MCP — scans a repository once and
-> answers architecture questions from an evidence-backed graph.
+# Knossos-MCP
+
+**The labyrinth mapped once, so nobody has to wander it again.**
 
 [![Release](https://img.shields.io/github/v/release/AraneaDev/Knossos-MCP)](https://github.com/AraneaDev/Knossos-MCP/releases)
-[![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Quality](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml/badge.svg)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
+[![Coverage](https://img.shields.io/codecov/c/github/AraneaDev/Knossos-MCP)](https://codecov.io/gh/AraneaDev/Knossos-MCP)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![MCP Observatory risk grade](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
 [![status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)](#quick-start)
 
-> **Pre-release / in active development.** Knossos is **not yet published to
-> Packagist or any container registry**. The source is public on
-> [GitHub](https://github.com/AraneaDev/Knossos-MCP) — build from source (see
-> [Quick start](#quick-start)). Image names such as `knossos-mcp:dev` in this
-> README are built locally by you; there is no `docker pull` to fetch them yet.
+</div>
 
-Knossos is a local-first MCP server that scans a repository once and answers
-architecture questions from an evidence-backed graph, so an agent stops
-re-reading the whole source tree to work out what depends on what.
+> **Knossos** (Κνωσός) is the Bronze Age palace at the heart of Minoan Crete, a complex so
+> sprawling that Greek myth remembered it as the Labyrinth: the maze Daedalus built for the
+> Minotaur, which no one could navigate without a thread to follow back out. Ariadne handed
+> Theseus that thread.
+
+Knossos-MCP is a local-first MCP server that scans a repository once and answers architecture
+questions from an evidence-backed graph, so an agent stops re-reading the whole source tree to
+work out what depends on what. It is the thread through your own labyrinth.
 
 Every fact points back to a file and a source location. Facts that static
 analysis cannot prove are labelled with their confidence and origin instead of
@@ -26,8 +29,15 @@ module, or boots an application framework. The Git-backed diff tools do invoke
 `git` inside the project, with repository-controlled command hooks
 (`core.fsmonitor`, `core.hooksPath`, `diff.external`, and any
 `.gitattributes` filter/textconv driver) forced off, `core.pager` neutralised
-by `--no-pager` at each call site, and a minimal environment — see [the HTTP
+by `--no-pager` at each call site, and a minimal environment. See [the HTTP
 threat model](docs/operations/http-threat-model.md).
+
+> **Status:** pre-release. Knossos-MCP is **not yet published to Packagist or any container
+> registry**. The source is public on [GitHub](https://github.com/AraneaDev/Knossos-MCP), so
+> build from source (see [Quick start](#quick-start)). Image names such as `knossos-mcp:dev`
+> in this README are built locally by you; there is no `docker pull` to fetch them yet.
+
+---
 
 ## What you can ask after one scan
 
@@ -111,9 +121,9 @@ rather than proven absence.
 ## Tools
 
 Thirty-three MCP tools, all but `server_info` with an equivalent CLI command. Read tools are
-annotated read-only and idempotent. The four write tools —
-`annotate_component`, `remove_project`, `cleanup_stale_scans`, and
-`maintain_database` — preview by default and only apply once called with
+annotated read-only and idempotent. The four write tools
+(`annotate_component`, `remove_project`, `cleanup_stale_scans`, and
+`maintain_database`) preview by default and only apply once called with
 `execute` set; `remove_project` and `cleanup_stale_scans` are additionally
 annotated destructive. The server also exposes
 per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
@@ -127,7 +137,7 @@ annotation removes that component from future dead-code candidates.
 
 | MCP tool           | CLI      | Answers                                                                                      |
 | ------------------ | -------- | -------------------------------------------------------------------------------------------- |
-| `server_info`      | —        | Which roots this server may read, the roots file to extend, and whether it is containerised. |
+| `server_info`      | –        | Which roots this server may read, the roots file to extend, and whether it is containerised. |
 | `diagnose_runtime` | `doctor` | Whether the runtimes, scanner workers, database, and migrations are healthy.                 |
 
 **Projects and history**
@@ -166,7 +176,7 @@ annotation removes that component from future dead-code candidates.
 | `check_architecture`   | `check-architecture`   | Which relationships violate declared boundary policies.            |
 | `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.        |
 | `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                  |
-| `changed_files_impact` | `changed-files-impact` | What a set of changed files — or your working tree — touches.      |
+| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches.        |
 | `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance. |
 | `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles.  |
 | `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.           |

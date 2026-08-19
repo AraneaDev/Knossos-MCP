@@ -68,6 +68,8 @@ $covered = 0;
 $executable = 0;
 $files = [];
 $components = [];
+/** @var array<string, array<int, int>> $cloverFiles per-file line hits for the Clover report */
+$cloverFiles = [];
 foreach ($merged as $file => $lines) {
     if ($file === $root . '/src/Application.php') {
         continue;
@@ -80,6 +82,7 @@ foreach ($merged as $file => $lines) {
     $covered += $fileCovered;
     $executable += $fileExecutable;
     $files[str_replace($root . '/', '', $file)] = [$fileCovered, $fileExecutable];
+    $cloverFiles[$file] = $lines;
     $relative = str_replace($root . '/', '', $file);
     $component = match (true) {
         str_starts_with($relative, 'src/Mcp/'), $relative === 'bin/http-router.php' => 'transport',
@@ -117,4 +120,35 @@ foreach ($components as $component => [$componentCovered, $componentExecutable])
 }
 $summary = ['lines' => ['covered' => $covered, 'valid' => $executable, 'percent' => round($percent, 2)], 'components' => $componentSummary, 'files' => $files];
 file_put_contents($coverageDirectory . '/summary.json', json_encode($summary, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR));
+
+// Clover XML alongside summary.json, because summary.json is our own shape and no coverage
+// service reads it. PHPUnit's --coverage-clover is not an option here: coverage is collected
+// out of band by tools/pcov-prepend.php so it also captures the subprocess test runs, which
+// PHPUnit's own driver never sees. Emitting from the merged data keeps the XML and the
+// aggregate percentage in agreement by construction, since both read $merged through the
+// same prefix filter.
+$timestamp = (string) time();
+$xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
+$xml .= sprintf("<coverage generated=\"%s\">\n  <project timestamp=\"%s\">\n", $timestamp, $timestamp);
+ksort($cloverFiles, SORT_STRING);
+foreach ($cloverFiles as $file => $lines) {
+    $fileCovered = count(array_filter($lines, static fn(int $hits): bool => $hits > 0));
+    $xml .= sprintf("    <file name=\"%s\">\n", htmlspecialchars($file, ENT_XML1 | ENT_QUOTES, 'UTF-8'));
+    ksort($lines, SORT_NUMERIC);
+    foreach ($lines as $line => $hits) {
+        $xml .= sprintf("      <line num=\"%d\" type=\"stmt\" count=\"%d\"/>\n", $line, max(0, $hits));
+    }
+    $xml .= sprintf(
+        "      <metrics statements=\"%d\" coveredstatements=\"%d\"/>\n    </file>\n",
+        count($lines),
+        $fileCovered,
+    );
+}
+$xml .= sprintf(
+    "    <metrics files=\"%d\" statements=\"%d\" coveredstatements=\"%d\"/>\n  </project>\n</coverage>\n",
+    count($cloverFiles),
+    $executable,
+    $covered,
+);
+file_put_contents($coverageDirectory . '/clover.xml', $xml);
 exit($percent >= (float) ($budgets['php']['aggregate_lines'] ?? 90.0) && $componentPassed ? 0 : 1);
