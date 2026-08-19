@@ -11,6 +11,8 @@ permissions:
 jobs:
   quality:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # publishes the coverage badge to the gh-pages branch
     steps:
       - uses: actions/checkout@v5
       - name: Build pinned quality image
@@ -29,15 +31,28 @@ jobs:
         run: |
           docker cp knossos-quality:/opt/knossos/coverage ./coverage
           docker rm knossos-quality
-      - name: Upload coverage to Codecov
-        if: always()
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          # All three languages, so the badge reports the whole project rather than the
-          # Node/Python workers alone. PHP is the bulk of the codebase.
-          files: ./coverage/php/clover.xml,./coverage/js/lcov.info,./coverage/python/coverage.xml
-          fail_ci_if_error: false
+      # Self-hosted coverage badge: the percentage is published as a shields endpoint on an
+      # orphan `gh-pages` branch, force-pushed so it stays a single commit and never grows
+      # history. Only on main, because a pull request must not be able to move the badge.
+      # The script sums all three languages; PHP alone is the bulk of the code.
+      - name: Publish coverage badge
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/badge
+          node tools/coverage-badge.mjs > /tmp/badge/coverage.json
+          cat /tmp/badge/coverage.json
+          cd /tmp/badge
+          git init -q
+          git checkout -q -b gh-pages
+          git add coverage.json
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m 'chore: publish coverage badge'
+          git push -q --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
 
       - name: Upload coverage and benchmark reports
         if: always()
