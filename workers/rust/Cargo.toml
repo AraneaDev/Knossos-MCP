@@ -8,8 +8,10 @@ description = "Knossos scanner worker for Rust projects"
 license = "MIT"
 
 [dependencies]
-# `span-locations` is REQUIRED, not an optimisation. Without it every
-# `Span::start()` returns line 0 and all evidence is silently useless.
+# `span-locations` is REQUIRED, not an optimisation. Without it,
+# `Span::start()`/`end()` are gated behind `#[cfg(span_locations)]` in the
+# pinned proc-macro2, so dropping the feature is a compile error here, not a
+# silent runtime bug.
 proc-macro2 = { version = "1", features = ["span-locations"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

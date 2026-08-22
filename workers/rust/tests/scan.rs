@@ -64,8 +64,10 @@ fn a_file_becomes_a_module_node_at_its_real_first_line() {
 
 #[test]
 fn spans_report_real_line_numbers_not_zero() {
-    // Regression guard for the proc-macro2 `span-locations` feature. Without it
-    // every span collapses to line 0 and all evidence is silently useless.
+    // Regression guard for the proc-macro2 `span-locations` feature: the pinned
+    // proc-macro2 gates `Span::start()`/`end()` behind `#[cfg(span_locations)]`,
+    // so dropping the feature is a compile error, not a silent line-0 span.
+    // This test guards the feature staying enabled and evidence staying real.
     let source = "// one\n// two\nfn third_line() {}\n";
     let contributions = scan_fixture("span-lines", &[("src/lib.rs", source)]);
     let nodes = contributions[0]["nodes"].as_array().unwrap();

@@ -61,10 +61,11 @@ impl Facts {
 
     /// Evidence spanning from `start` to `end`, clamped to one-based lines.
     ///
-    /// `Span::start()` reports line 0 when `proc-macro2` lacks the
-    /// `span-locations` feature, so the clamp keeps a misconfigured build from
-    /// emitting facts the schema rejects. The regression test in
-    /// `tests/scan.rs` is what actually catches that case.
+    /// The pinned `proc-macro2` gates `Span::start()`/`end()` behind
+    /// `#[cfg(span_locations)]`, so building without the `span-locations`
+    /// feature is a compile error here, not a line-0 span at runtime. The
+    /// clamp is defensive: it keeps `start_line`/`end_line` within the schema's
+    /// one-based contract regardless of what a span reports.
     #[must_use]
     pub fn evidence(&self, start: Span, end: Span) -> Evidence {
         let first = start.start().line.max(1);

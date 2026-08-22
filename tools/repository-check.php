@@ -75,8 +75,10 @@ printf("Repository JSON, size, line-ending, and secret checks passed: %d files.\
  *
  * They pay for themselves where git IS available too: a populated `target/` adds
  * 2,721 paths to the 1,127 the walk otherwise yields, every one of them handed to
- * `git check-ignore` only to come back ignored. On a cold cache that is 11.14s
- * against 1.84s, for a byte-identical list of files.
+ * `git check-ignore` only to come back ignored, for a byte-identical list of
+ * files. The wall-clock cost of that varies with `target/`'s size and page-cache
+ * state and is not asserted here; the path counts above are the deterministic
+ * part of the argument.
  *
  * Untracked-but-not-ignored files are still checked: a file added in the working
  * tree and not yet committed is on its way in, and skipping it would let a secret
