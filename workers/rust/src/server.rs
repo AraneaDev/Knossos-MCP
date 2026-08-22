@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
+use crate::facts::Facts;
 use crate::protocol::{Contribution, Manifest};
+use crate::resolve::module_path;
 
 /// Default cap on one scanned file, overridden by `params.limits.max_file_bytes`.
 const DEFAULT_MAX_FILE_BYTES: u64 = 2_000_000;
@@ -117,9 +119,74 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     Ok(json!({"files_scanned": scanned, "parser": "rust.syn"}))
 }
 
-/// Facts for one file. Task 2 replaces the empty body with a real parse.
-fn scan_one(_root: &Path, relative: &str, _max_file_bytes: u64) -> Contribution {
-    Contribution::for_file(relative)
+/// Facts for one file: read it, parse it, and walk it.
+///
+/// Every failure is per file. Aborting the request would discard the facts every
+/// other file in the batch contributes, so one unreadable or unparsable file
+/// costs only its own contribution.
+fn scan_one(root: &Path, relative: &str, max_file_bytes: u64) -> Contribution {
+    let mut facts = Facts::new(relative);
+    let joined = root.join(relative);
+    // Mirrors `safe_file` in `workers/python/bin/worker.py`: `assert_scannable_path`
+    // only checked the path's shape, so a symlink inside the project that points
+    // outside it would otherwise sail through untouched. Canonicalising and
+    // re-checking containment here, at the point the file is first opened, is
+    // what actually catches that. `root` is already canonical (`safe_root`
+    // canonicalises it), so a plain `starts_with` comparison is enough.
+    let canonical = match std::fs::canonicalize(&joined) {
+        Ok(canonical) => canonical,
+        Err(error) => {
+            facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
+            return facts.finish();
+        }
+    };
+    if !canonical.starts_with(root) {
+        facts.diagnostic(
+            "error",
+            "RS_UNSCANNABLE_FILE",
+            "Scan path escapes the project root.",
+            1,
+        );
+        return facts.finish();
+    }
+    match std::fs::metadata(&canonical) {
+        Ok(metadata) if metadata.len() > max_file_bytes => {
+            facts.diagnostic(
+                "error",
+                "RS_UNSCANNABLE_FILE",
+                "File exceeds the scan byte limit.",
+                1,
+            );
+            return facts.finish();
+        }
+        Ok(_) => {}
+        Err(error) => {
+            facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
+            return facts.finish();
+        }
+    }
+    let source = match std::fs::read_to_string(&canonical) {
+        Ok(source) => source,
+        Err(error) => {
+            facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
+            return facts.finish();
+        }
+    };
+    let parsed = match syn::parse_file(&source) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let line = error.span().start().line.max(1);
+            facts.diagnostic("error", "RS_SYNTAX_ERROR", &error.to_string(), line);
+            return facts.finish();
+        }
+    };
+    let module = module_path(relative);
+    let display = module.rsplit("::").next().unwrap_or(&module).to_owned();
+    let span = proc_macro2::Span::call_site();
+    facts.node(&module, "module", &module, &display, span, span);
+    crate::visit::walk(&mut facts, &module, &parsed);
+
+    facts.finish()
 }
 
 /// The scan root as an existing, canonical, absolute directory.
