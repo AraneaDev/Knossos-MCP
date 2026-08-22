@@ -550,3 +550,61 @@ pub struct Outer;
     assert!(imports("rust:module:crate::net::inner::deep::Thing"));
     assert!(imports("rust:module:crate::net::Outer"));
 }
+
+#[test]
+fn calls_resolve_through_the_import_map() {
+    let source = r#"
+use crate::net::http;
+
+pub struct Engine;
+
+impl Engine {
+    pub fn start(&self) {
+        http::get();
+        helper();
+        Engine::stop();
+    }
+
+    pub fn stop() {}
+}
+
+pub fn helper() {}
+"#;
+    let contributions = scan_fixture("calls", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let calls: Vec<(&str, &str)> = edges
+        .iter()
+        .filter(|edge| edge["kind"] == "calls")
+        .map(|edge| {
+            (
+                edge["source"].as_str().unwrap(),
+                edge["target"].as_str().unwrap(),
+            )
+        })
+        .collect();
+
+    assert!(calls.contains(&(
+        "rust:method:crate::Engine::start",
+        "rust:function:crate::net::http::get"
+    )));
+    assert!(calls.contains(&(
+        "rust:method:crate::Engine::start",
+        "rust:function:crate::helper"
+    )));
+    assert!(calls.contains(&(
+        "rust:method:crate::Engine::start",
+        "rust:method:crate::Engine::stop"
+    )));
+}
+
+#[test]
+fn a_method_call_on_an_unknown_receiver_emits_no_edge() {
+    // `value.run()` names no resolvable target: the worker has no type
+    // information, so an edge here would be a guess. Dropping it is the
+    // documented behaviour.
+    let source = "pub fn go(value: Thing) { value.run(); }\n";
+    let contributions = scan_fixture("unknown-receiver", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(!edges.iter().any(|edge| edge["kind"] == "calls"));
+}

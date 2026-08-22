@@ -5,6 +5,7 @@
 //! parent and a visitor's callbacks do not carry one.
 
 use syn::spanned::Spanned;
+use syn::visit::Visit;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
@@ -128,13 +129,14 @@ impl Walk<'_> {
                 );
             }
             Item::Fn(node) => {
-                self.declare(
+                let canonical = self.declare(
                     container,
                     container_kind,
                     &node.sig.ident.to_string(),
                     "function",
                     item.span(),
                 );
+                self.walk_body(&reference("function", &canonical), &node.block);
             }
             Item::Trait(node) => {
                 let canonical = self.declare(
@@ -162,13 +164,18 @@ impl Walk<'_> {
                 }
                 for member in &node.items {
                     if let TraitItem::Fn(method) = member {
-                        self.declare(
+                        let method_canonical = self.declare(
                             &canonical,
                             "interface",
                             &method.sig.ident.to_string(),
                             "method",
                             member.span(),
                         );
+                        // A trait method with no default body has no block to
+                        // walk: `default` is `None` for a signature-only member.
+                        if let Some(block) = &method.default {
+                            self.walk_body(&reference("method", &method_canonical), block);
+                        }
                     }
                 }
             }
@@ -200,13 +207,14 @@ impl Walk<'_> {
                 }
                 for member in &node.items {
                     if let ImplItem::Fn(method) = member {
-                        self.declare(
+                        let method_canonical = self.declare(
                             &target,
                             "class",
                             &method.sig.ident.to_string(),
                             "method",
                             member.span(),
                         );
+                        self.walk_body(&reference("method", &method_canonical), &method.block);
                     }
                 }
             }
@@ -333,5 +341,111 @@ impl Walk<'_> {
         };
 
         self.path_target(container, &path.path)
+    }
+
+    /// Emit a `calls` edge for every resolvable call in one function body.
+    ///
+    /// `enclosing` is the full `rust:<kind>:<canonical>` reference of the
+    /// function or method whose block this is, exactly as `declare` returned
+    /// it wrapped in [`reference`] — its kind is already known for certain at
+    /// the call site, unlike a call target's, so it is never guessed.
+    ///
+    /// Only `Expr::Call` with a path callee resolves. A method call
+    /// (`value.run()`) names no type the worker can see, and a call through a
+    /// closure or function pointer names no declaration at all, so both are
+    /// dropped rather than guessed. That matches the Python worker: an
+    /// unresolved target produces no edge instead of a wrong one.
+    fn walk_body(&mut self, enclosing: &str, block: &syn::Block) {
+        for statement in &block.stmts {
+            self.walk_statement(enclosing, statement);
+        }
+    }
+
+    /// Walk one statement for calls, descending into nested expressions.
+    fn walk_statement(&mut self, enclosing: &str, statement: &syn::Stmt) {
+        let mut visitor = Calls {
+            walk: self,
+            enclosing: enclosing.to_owned(),
+        };
+        visitor.visit_stmt(statement);
+    }
+}
+
+/// A `syn` visitor that emits a `calls` edge for every resolvable call
+/// expression it walks through.
+///
+/// Kept as a small, separate `Visit` implementation (rather than inline
+/// closures in `Walk::walk_statement`) so the call-resolution logic stays a
+/// single, shallow method — `visit_expr_call` below — instead of growing the
+/// cognitive complexity of a larger function.
+struct Calls<'a, 'b> {
+    /// The walk collecting facts.
+    walk: &'a mut Walk<'b>,
+    /// Full `rust:<kind>:<canonical>` reference of the function or method
+    /// whose body this is; the source of every `calls` edge emitted while
+    /// walking it.
+    enclosing: String,
+}
+
+impl syn::visit::Visit<'_> for Calls<'_, '_> {
+    fn visit_expr_call(&mut self, node: &syn::ExprCall) {
+        if let syn::Expr::Path(path) = node.func.as_ref() {
+            let container = self.walk.module.clone();
+            if let Some(target) = self.walk.path_target(&container, &path.path) {
+                let kind = call_kind(&target);
+                self.walk.facts.edge(
+                    "calls",
+                    &self.enclosing,
+                    &reference(kind, &target),
+                    "probable",
+                    node.span(),
+                );
+            }
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+}
+
+/// Guess whether a resolved call target names a free function or a
+/// method/associated function on a type.
+///
+/// `path_target` only resolves *where* a path points, not *what kind of
+/// item* it names — that would require type information this worker does
+/// not have. This falls back to Rust's own naming convention instead: types
+/// are UpperCamelCase and modules are snake_case by near-universal
+/// convention, so the segment immediately before the final one carries the
+/// same signal a human reader would use. `crate::Engine::stop` guesses
+/// `method` because `Engine` starts uppercase; `crate::net::http::get`
+/// guesses `function` because `http` does not.
+///
+/// A convention-breaking crate can fool this guess. That cost is accepted
+/// deliberately: a wrong guess builds a reference of the wrong kind, which
+/// then matches no declared node, and the reconciler synthesises a phantom
+/// external node for it rather than crashing — call targets are never
+/// filtered the way edge sources are (see `Facts::finish`). So a bad guess
+/// costs a spurious node in the graph, not a failed scan.
+fn call_kind(canonical: &str) -> &'static str {
+    let segments: Vec<&str> = canonical.split("::").collect();
+    let owner = segments.len().checked_sub(2).and_then(|i| segments.get(i));
+    match owner {
+        Some(segment) if segment.starts_with(char::is_uppercase) => "method",
+        _ => "function",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::call_kind;
+
+    #[test]
+    fn a_snake_case_owner_segment_guesses_a_free_function() {
+        assert_eq!("function", call_kind("crate::helper"));
+        assert_eq!("function", call_kind("crate::net::http::get"));
+    }
+
+    #[test]
+    fn an_upper_camel_case_owner_segment_guesses_a_method() {
+        assert_eq!("method", call_kind("crate::Engine::stop"));
+        assert_eq!("method", call_kind("crate::net::Engine::stop"));
     }
 }
