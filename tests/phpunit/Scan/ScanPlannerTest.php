@@ -238,6 +238,34 @@ final class ScanPlannerTest extends TestCase
         }
     }
 
+    /**
+     * `Cargo.toml` is a recorded unit (kind `cargo`) and must feed the Rust
+     * configuration hash the same way `composer.json` feeds PHP's and
+     * `package.json` feeds TypeScript's — editing it should invalidate a
+     * cached Rust contribution.
+     */
+    public function testPrepareCargoManifestChangesTheRustConfigurationHash(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-cargo-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
+            $withoutCargo = $planner->prepare($dir, null, null, null, null, null, null);
+
+            file_put_contents($dir . '/Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+            $withCargo = $planner->prepare($dir, null, null, null, null, null, null);
+
+            $this->assertNotSame(
+                $withoutCargo->configurationHashes['rust'],
+                $withCargo->configurationHashes['rust'],
+            );
+        } finally {
+            @unlink($dir . '/Cargo.toml');
+            rmdir($dir);
+        }
+    }
+
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void
     {
         $pdo = $this->createSchema();

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Discovery;
 
+use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\ProjectDiscoverer;
@@ -573,6 +574,49 @@ TOML
         $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root, new CancellationToken());
 
         $this->assertCount(1, $result->files);
+    }
+
+    // ── Rust / Cargo ────────────────────────────────────────────────
+
+    public function testDiscoverClassifiesRustSourcesAndCargoManifests(): void
+    {
+        mkdir($this->root . '/src', 0700, true);
+        file_put_contents($this->root . '/Cargo.toml', "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        file_put_contents($this->root . '/src/lib.rs', "pub fn go() {}\n");
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $rust = array_values(array_filter(
+            $result->files,
+            static fn(DiscoveredFile $file): bool => $file->relativePath === 'src/lib.rs',
+        ));
+        assertSame(1, count($rust));
+        assertSame('rust', $rust[0]->language);
+
+        $cargo = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'cargo'));
+        assertSame(1, count($cargo));
+        assertSame('Cargo.toml', $cargo[0]->configPath);
+    }
+
+    /**
+     * `ENTRY_POINT_EXTENSIONS` is what lets a manifest-declared path be
+     * recognised as a real source file. A `.rs` path named by a `bin` field
+     * was silently dropped before `rs` was added to that list — extension
+     * filtering happens before the value is ever compared against emitted
+     * nodes, so the loss was invisible downstream.
+     */
+    public function testDiscoverRecognisesARustPathNamedByAManifestBinField(): void
+    {
+        file_put_contents($this->root . '/package.json', json_encode([
+            'name' => 'test/rust-bin',
+            'bin' => 'src/main.rs',
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $nodeUnits = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'node'));
+        $this->assertNotEmpty($nodeUnits);
+        assertSame(['src/main.rs'], $nodeUnits[0]->metadata['entry_points']);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

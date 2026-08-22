@@ -252,6 +252,7 @@ final readonly class PortableGraphImporter
             'knossos.php' => 'php',
             'knossos.typescript' => 'ts',
             'knossos.python' => 'py',
+            'knossos.rust' => 'rs',
             default => $scanner !== '' ? $scanner : 'unknown',
         };
     }

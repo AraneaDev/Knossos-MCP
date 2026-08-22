@@ -214,7 +214,12 @@ final readonly class ProjectDiscoverer
             return null;
         }
 
-        if ($kind === 'python') {
+        // Cargo.toml is TOML, not JSON, exactly like pyproject.toml — feeding
+        // either to JsonConfig::decode() below would fail to parse and drop
+        // the unit as DISCOVERY_CONFIG_INVALID. Neither gets a real parser;
+        // both settle for the same bare regex, and nothing downstream reads
+        // more than that yet.
+        if ($kind === 'python' || $kind === 'cargo') {
             $name = null;
             if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $contents, $matches) === 1) {
                 $name = $matches[1];
@@ -257,7 +262,7 @@ final readonly class ProjectDiscoverer
 
     /** Extensions a scanner emits nodes for; anything else cannot be matched later. */
     private const ENTRY_POINT_EXTENSIONS = [
-        'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'py', 'pyi',
+        'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'py', 'pyi', 'rs',
     ];
 
     /**
@@ -523,6 +528,9 @@ final readonly class ProjectDiscoverer
         }
         if ($basename === 'tsconfig.json' || (str_starts_with($basename, 'tsconfig.') && str_ends_with($basename, '.json'))) {
             return 'typescript';
+        }
+        if ($basename === 'cargo.toml') {
+            return 'cargo';
         }
 
         return null;
