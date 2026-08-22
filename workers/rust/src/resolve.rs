@@ -36,6 +36,58 @@ pub fn module_path(relative: &str) -> String {
     segments.join("::")
 }
 
+/// Rebase a `self`- or `super`-rooted path against `module`, the module the
+/// path was written in.
+///
+/// `self::foo` names `foo` in `module` itself: `crate::net`, `self::foo` is
+/// `crate::net::foo`. `super::foo` names `foo` in `module`'s parent, and each
+/// leading `super` segment strips one more segment from `module` before the
+/// rest is appended: `crate::net::http`, `super::foo` is `crate::net::foo`,
+/// and `super::super::foo` is `crate::foo`. A path with neither prefix is
+/// returned unchanged.
+///
+/// `module` always starts with a `crate` segment (see [`module_path`]), and
+/// that segment has no parent of its own, so a `super` that would strip it —
+/// directly, or through a chain longer than the module has segments to give
+/// up — escapes the crate root and names nothing resolvable. `None` marks
+/// that case rather than inventing a path.
+#[must_use]
+pub fn rebase(module: &str, path: &str) -> Option<String> {
+    if path == "self" {
+        return Some(module.to_owned());
+    }
+    if let Some(rest) = path.strip_prefix("self::") {
+        return Some(format!("{module}::{rest}"));
+    }
+
+    let mut base: Vec<&str> = module.split("::").collect();
+    let mut rest = path;
+    let mut stripped_any = false;
+    while let Some(tail) =
+        rest.strip_prefix("super::")
+            .or(if rest == "super" { Some("") } else { None })
+    {
+        if base.len() <= 1 {
+            return None;
+        }
+        base.pop();
+        stripped_any = true;
+        rest = tail;
+        if rest.is_empty() {
+            break;
+        }
+    }
+
+    if !stripped_any {
+        return Some(path.to_owned());
+    }
+    if rest.is_empty() {
+        Some(base.join("::"))
+    } else {
+        Some(format!("{}::{rest}", base.join("::")))
+    }
+}
+
 use std::collections::BTreeMap;
 
 /// The names one file brought into scope with `use`.
@@ -261,5 +313,50 @@ mod tests {
         aliases.insert("Widget".to_owned(), "foo::Widget".to_owned());
 
         assert_eq!(Some("foo::Widget"), aliases.resolve("Widget"));
+    }
+
+    #[test]
+    fn a_path_with_neither_prefix_is_returned_unchanged() {
+        assert_eq!(
+            Some("crate::net::Engine".to_owned()),
+            super::rebase("crate::net", "crate::net::Engine")
+        );
+    }
+
+    #[test]
+    fn a_self_prefix_rebases_against_its_own_module() {
+        assert_eq!(
+            Some("crate::net::inner::Thing".to_owned()),
+            super::rebase("crate::net", "self::inner::Thing")
+        );
+    }
+
+    #[test]
+    fn a_super_prefix_rebases_against_the_parent_module() {
+        assert_eq!(
+            Some("crate::net::Parent".to_owned()),
+            super::rebase("crate::net::http", "super::Parent")
+        );
+    }
+
+    #[test]
+    fn a_super_chain_strips_one_segment_per_super() {
+        assert_eq!(
+            Some("crate::Parent".to_owned()),
+            super::rebase("crate::net::http", "super::super::Parent")
+        );
+    }
+
+    #[test]
+    fn a_super_chain_escaping_the_crate_root_resolves_to_nothing() {
+        assert_eq!(
+            None,
+            super::rebase("crate::net", "super::super::Unreachable")
+        );
+    }
+
+    #[test]
+    fn super_from_the_crate_root_itself_resolves_to_nothing() {
+        assert_eq!(None, super::rebase("crate", "super::Unreachable"));
     }
 }

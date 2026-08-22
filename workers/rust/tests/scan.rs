@@ -335,3 +335,102 @@ mod inner {
             && edge["target"] == "rust:module:serde::Serialize"
     }));
 }
+
+#[test]
+fn impl_blocks_and_supertraits_become_inheritance_edges() {
+    let source = r#"
+use std::fmt::Display;
+
+pub trait Named: Display {
+    fn name(&self) -> String;
+}
+
+pub struct Engine;
+
+impl Named for Engine {
+    fn name(&self) -> String { String::new() }
+}
+"#;
+    let contributions = scan_fixture("inheritance", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let has = |kind: &str, source: &str, target: &str| {
+        edges.iter().any(|edge| {
+            edge["kind"] == kind && edge["source"] == source && edge["target"] == target
+        })
+    };
+
+    assert!(has(
+        "implements",
+        "rust:class:crate::Engine",
+        "rust:interface:crate::Named"
+    ));
+    assert!(has(
+        "extends",
+        "rust:interface:crate::Named",
+        "rust:interface:std::fmt::Display"
+    ));
+}
+
+#[test]
+fn an_implements_edge_sourced_from_an_undeclared_type_is_dropped() {
+    // Same drop mechanism `Facts::finish` already applies to `contains` edges
+    // (see `an_impl_for_an_undeclared_type_emits_methods_but_no_contains_edge`),
+    // exercised here for `implements`: `Elsewhere` is never declared in this
+    // file, so an edge sourced from it cannot survive.
+    let source = r#"
+pub trait Named {
+    fn name(&self) -> String;
+}
+
+impl Named for Elsewhere {
+    fn name(&self) -> String { String::new() }
+}
+"#;
+    let contributions = scan_fixture("implements-undeclared-source", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(
+        !edges.iter().any(|edge| edge["kind"] == "implements"),
+        "an implements edge whose source type was never declared here must be dropped"
+    );
+}
+
+#[test]
+fn a_use_self_import_is_rebased_against_the_current_module() {
+    let source = r#"
+use self::inner::Thing;
+
+pub mod inner {
+    pub struct Thing;
+}
+"#;
+    let contributions = scan_fixture("use-self-rebased", &[("src/net.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "imports"
+            && edge["source"] == "rust:module:crate::net"
+            && edge["target"] == "rust:module:crate::net::inner::Thing"
+    }));
+}
+
+#[test]
+fn a_use_super_import_is_rebased_against_the_parent_module() {
+    let source = "use super::Parent;\n";
+    let contributions = scan_fixture("use-super-rebased", &[("src/net/http.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "imports"
+            && edge["source"] == "rust:module:crate::net::http"
+            && edge["target"] == "rust:module:crate::net::Parent"
+    }));
+}
+
+#[test]
+fn a_super_chain_escaping_the_crate_root_emits_no_import_edge() {
+    let source = "use super::super::super::Unreachable;\n";
+    let contributions = scan_fixture("use-super-escapes-root", &[("src/net.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(
+        !edges.iter().any(|edge| edge["kind"] == "imports"),
+        "a super chain longer than the module path names nothing resolvable"
+    );
+}

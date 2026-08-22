@@ -8,7 +8,7 @@ use syn::spanned::Spanned;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
-use crate::resolve::{flatten_use, Aliases};
+use crate::resolve::{flatten_use, rebase, Aliases};
 
 /// A walk in progress: the facts being built plus the names in scope.
 struct Walk<'a> {
@@ -51,6 +51,13 @@ impl Walk<'_> {
     /// lines in different modules that import different full paths under the
     /// same local name collide. See `Aliases::insert` for how that collision
     /// is handled without ever emitting a silently wrong edge.
+    ///
+    /// `flatten_use` renders a `self`- or `super`-rooted leaf literally
+    /// (`self::foo`, `super::foo`); [`rebase`] resolves that against
+    /// `container`, the module the `use` line actually appears in, before the
+    /// leaf becomes an edge target or an alias. A leaf `rebase` cannot place —
+    /// a `super` chain longer than `container` has segments to give up —
+    /// contributes neither an edge nor an alias.
     fn collect_uses(&mut self, container: &str, items: &[Item]) {
         for item in items {
             match item {
@@ -59,6 +66,9 @@ impl Walk<'_> {
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
                     for (alias, full) in leaves {
+                        let Some(full) = rebase(container, &full) else {
+                            continue;
+                        };
                         let target = reference("module", &full);
                         self.facts
                             .edge("imports", &source, &target, "certain", item.span());
@@ -134,6 +144,22 @@ impl Walk<'_> {
                     "interface",
                     item.span(),
                 );
+                // A supertrait bound (`trait Named: Display`) names a trait the
+                // declared trait extends. Only a plain trait bound is handled;
+                // a lifetime bound (`trait Named: 'static`) names no node.
+                for supertrait in &node.supertraits {
+                    if let syn::TypeParamBound::Trait(bound) = supertrait {
+                        if let Some(target) = self.path_target(container, &bound.path) {
+                            self.facts.edge(
+                                "extends",
+                                &reference("interface", &canonical),
+                                &reference("interface", &target),
+                                "probable",
+                                item.span(),
+                            );
+                        }
+                    }
+                }
                 for member in &node.items {
                     if let TraitItem::Fn(method) = member {
                         self.declare(
@@ -157,6 +183,21 @@ impl Walk<'_> {
                 let Some(target) = type_path(container, &node.self_ty) else {
                     return;
                 };
+                // `impl Trait for Type` names both endpoints explicitly, so the
+                // `implements` edge is `certain`. The trait name is resolved the
+                // same way any other path is, through `use` and the `self`/`super`/
+                // `crate` prefixes.
+                if let Some((_, trait_path, _)) = &node.trait_ {
+                    if let Some(interface) = self.path_target(container, trait_path) {
+                        self.facts.edge(
+                            "implements",
+                            &reference("class", &target),
+                            &reference("interface", &interface),
+                            "certain",
+                            item.span(),
+                        );
+                    }
+                }
                 for member in &node.items {
                     if let ImplItem::Fn(method) = member {
                         self.declare(
@@ -233,6 +274,45 @@ impl Walk<'_> {
         );
 
         canonical
+    }
+
+    /// The canonical target a syntactic path names, resolved through `use`.
+    ///
+    /// A path rooted at `::` or `crate` is absolute and taken as written. A path
+    /// rooted at `self` or `super` is relative to `container` and is rebased
+    /// through [`rebase`] — `self::foo` in `crate::net` names `crate::net::foo`,
+    /// and `super::foo` in `crate::net::http` names `crate::net::foo`. A bare or
+    /// aliased head is expanded through the import map. Anything the map cannot
+    /// place is attributed to `container`, which is where an unqualified name
+    /// declared in the same file lives.
+    ///
+    /// Returns `None` for an empty path, or for a `super` chain longer than
+    /// `container` has segments to give up — see [`rebase`].
+    fn path_target(&self, container: &str, path: &syn::Path) -> Option<String> {
+        let rendered = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        if rendered.is_empty() {
+            return None;
+        }
+        if path.leading_colon.is_some() || rendered == "crate" || rendered.starts_with("crate::") {
+            return Some(rendered.trim_start_matches("::").to_owned());
+        }
+        if rendered == "self"
+            || rendered.starts_with("self::")
+            || rendered == "super"
+            || rendered.starts_with("super::")
+        {
+            return rebase(container, &rendered);
+        }
+        if let Some(expanded) = self.aliases.expand(&rendered) {
+            return Some(expanded);
+        }
+
+        Some(format!("{container}::{rendered}"))
     }
 }
 
