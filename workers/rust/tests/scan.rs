@@ -859,13 +859,65 @@ fn an_oversized_file_is_refused_by_the_byte_limit() {
 
 #[test]
 fn files_scanned_counts_this_request_only() {
-    let contributions = scan_fixture(
-        "counting",
-        &[
-            ("src/a.rs", "pub fn a() {}\n"),
-            ("src/b.rs", "pub fn b() {}\n"),
-        ],
-    );
+    // The core splits one language's work into batches and sends them as
+    // separate `scan` requests over the *same* session, summing each
+    // request's `files_scanned` into a running total. A worker that reset
+    // its counter per process instead of per request (a cumulative total)
+    // would only be exposed by a second request in that same session — a
+    // single-request test cannot distinguish "counts this request" from
+    // "counts everything the process has ever scanned". Two files in the
+    // first request and one in the second also rules out a coincidental
+    // match against a hardcoded or otherwise-wrong constant.
+    let root = std::env::temp_dir().join("knossos-rust-counting-two-requests");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.rs"), "pub fn a() {}\n").unwrap();
+    std::fs::write(root.join("src/b.rs"), "pub fn b() {}\n").unwrap();
+    std::fs::write(root.join("src/c.rs"), "pub fn c() {}\n").unwrap();
+    let canonical_root = std::fs::canonicalize(&root).unwrap();
+    let canonical_root = canonical_root.to_str().unwrap();
 
-    assert_eq!(2, contributions.len());
+    let first = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "scan",
+        "params": {
+            "root": canonical_root,
+            "files": ["src/a.rs", "src/b.rs"],
+        },
+    });
+    let second = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "scan",
+        "params": {
+            "root": canonical_root,
+            "files": ["src/c.rs"],
+        },
+    });
+    let mut input = first.to_string();
+    input.push('\n');
+    input.push_str(&second.to_string());
+    input.push('\n');
+
+    let mut output: Vec<u8> = Vec::new();
+    knossos_rust_worker::server::run(Cursor::new(input.into_bytes()), &mut output).unwrap();
+    let text = String::from_utf8(output).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    let results: Vec<Value> = text
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|reply| reply.get("result").is_some())
+        .collect();
+    assert_eq!(2, results.len(), "one result reply per request");
+    assert_eq!(
+        2, results[0]["result"]["files_scanned"],
+        "first request scans two files"
+    );
+    assert_eq!(
+        1, results[1]["result"]["files_scanned"],
+        "second request scans one file; a cumulative counter would report 3"
+    );
 }
