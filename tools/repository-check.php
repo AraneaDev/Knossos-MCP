@@ -60,6 +60,24 @@ printf("Repository JSON, size, line-ending, and secret checks passed: %d files.\
  * `.git` is there because someone hit a false failure. Deferring to git means the
  * next generated artifact needs no edit here.
  *
+ * `workers/rust/target/` and `workers/rust/bin/` are the one exception where this
+ * list IS load-bearing for correctness, not just cost: the quality container
+ * builds and runs the crate (`cargo test`, `cargo llvm-cov`) before this gate
+ * runs, but carries the source without a `.git` directory, so gitIgnoredPaths()
+ * below cannot see them and fails open. Without the walk filter, every full
+ * quality run fails here on its own build output — `workers/rust/target/debug/…`
+ * and `workers/rust/bin/knossos-rust-worker` both exceed 2 MB. They are matched
+ * by full relative path rather than by bare directory name the way the entries
+ * above are, because `bin` is not a unique basename in this repository (`bin/`,
+ * `workers/php/bin/`, `workers/python/bin/`, `workers/typescript/bin/` are all
+ * tracked source directories); a basename match would silently stop walking
+ * those too.
+ *
+ * They pay for themselves where git IS available too: a populated `target/` adds
+ * 2,721 paths to the 1,127 the walk otherwise yields, every one of them handed to
+ * `git check-ignore` only to come back ignored. On a cold cache that is 11.14s
+ * against 1.84s, for a byte-identical list of files.
+ *
  * Untracked-but-not-ignored files are still checked: a file added in the working
  * tree and not yet committed is on its way in, and skipping it would let a secret
  * land in exactly the window this gate exists to cover.
@@ -69,6 +87,8 @@ printf("Repository JSON, size, line-ending, and secret checks passed: %d files.\
 function repositoryFiles(string $root): array
 {
     $skippedDirectories = ['.git', 'node_modules', 'vendor', 'coverage', '.knossos', '.mypy_cache', '.ruff_cache'];
+    // Matched by full relative path, not bare basename -- see the docblock above.
+    $skippedPathPrefixes = ['workers/rust/target/', 'workers/rust/bin/'];
     $paths = [];
     $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
     foreach ($iterator as $file) {
@@ -78,6 +98,11 @@ function repositoryFiles(string $root): array
         $relative = str_replace('\\', '/', substr($file->getPathname(), strlen($root) + 1));
         if (array_intersect(explode('/', $relative), $skippedDirectories) !== []) {
             continue;
+        }
+        foreach ($skippedPathPrefixes as $prefix) {
+            if (str_starts_with($relative, $prefix)) {
+                continue 2;
+            }
         }
         $paths[] = $relative;
     }

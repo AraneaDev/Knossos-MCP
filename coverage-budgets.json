@@ -21,5 +21,8 @@
   },
   "python": {
     "lines": 90
+  },
+  "rust": {
+    "lines": 90.7
   }
 }
