@@ -9,6 +9,8 @@ vendor
 node_modules
 workers/php/vendor
 workers/typescript/node_modules
+workers/rust/target
+workers/rust/bin
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

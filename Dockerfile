@@ -4,6 +4,14 @@ RUN npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
 
 FROM composer:2@sha256:629d4ef35e75349d452851637d37a40ac33a09d6ac010139020603d79713d9bf AS composer_runtime
 
+# The Rust worker is compiled here and copied in as a binary, so the shipped
+# runtime image carries no Rust toolchain. Same Debian release as the runtime
+# stage, so the glibc the binary links against is the one it runs on.
+FROM rust:1-slim-trixie@sha256:cc0448b41c3b7b7fea44f5dc50eacba729a56db365b65b7bd5e8a82d5b3db078 AS rust_builder
+WORKDIR /build
+COPY workers/rust ./
+RUN cargo build --release --locked
+
 FROM php:8.5-cli-trixie@sha256:f5d2b71350cdc3c2fc807d6679f5bdac2898d7558945105e46308e4659fb37ac AS runtime
 
 # x-release-please-start-version
@@ -73,6 +81,8 @@ COPY workers/typescript/bin ./workers/typescript/bin
 
 COPY workers/python/bin ./workers/python/bin
 
+COPY --from=rust_builder /build/target/release/knossos-rust-worker ./workers/rust/bin/
+
 COPY bin ./bin
 COPY src ./src
 COPY migrations ./migrations
@@ -82,6 +92,7 @@ RUN chmod 0755 \
     /opt/knossos/workers/php/bin/worker \
     /opt/knossos/workers/typescript/bin/worker.js \
     /opt/knossos/workers/python/bin/worker.py \
+    /opt/knossos/workers/rust/bin/knossos-rust-worker \
     && mkdir -p /data \
     && chown -R www-data:www-data /data /opt/knossos \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
@@ -178,6 +189,45 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 RUN npm --prefix workers/typescript ci --ignore-scripts --no-audit --no-fund
 COPY workers/typescript/vitest.config.js ./workers/typescript/
 
+# The quality profile runs cargo fmt, clippy, the crate's tests, and llvm-cov, so
+# this stage needs the toolchain the runtime stage deliberately does not ship.
+COPY --from=rust_builder /usr/local/rustup /usr/local/rustup
+COPY --from=rust_builder /usr/local/cargo /usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo PATH=/usr/local/cargo/bin:$PATH
+COPY workers/rust ./workers/rust
+
+# cargo-llvm-cov and cargo-audit are fetched as checksum-pinned GitHub release
+# binaries, the same way Trivy and cosign are above. llvm-tools-preview is the
+# rustup component cargo-llvm-cov instruments coverage with. gcc/libc6-dev give
+# the toolchain a linker: `cargo test`/`clippy` need to actually build the
+# crate (including proc-macro build scripts), unlike the runtime stage's
+# rust_builder, which links its release binary inside its own base image.
+# Unlike the pcov build's $PHPIZE_DEPS above, this is not purged afterwards --
+# the quality profile needs a working linker for the lifetime of the container.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --location --silent --show-error \
+        --output /tmp/llvm-cov.tar.gz \
+        https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz \
+    && printf '%s  %s\n' b068f7c98841aacb9c4f382b4a0c184ae82f49b56a32d442b429b2961c73be15 /tmp/llvm-cov.tar.gz \
+        > /tmp/llvm-cov.sha256 \
+    && sha256sum --check --strict /tmp/llvm-cov.sha256 \
+    && tar -xzf /tmp/llvm-cov.tar.gz -C /usr/local/cargo/bin cargo-llvm-cov \
+    && chmod 0755 /usr/local/cargo/bin/cargo-llvm-cov \
+    && rm -f /tmp/llvm-cov.tar.gz /tmp/llvm-cov.sha256 \
+    && curl --fail --location --silent --show-error \
+        --output /tmp/cargo-audit.tar.gz \
+        https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.2/cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz \
+    && printf '%s  %s\n' ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39 /tmp/cargo-audit.tar.gz \
+        > /tmp/cargo-audit.sha256 \
+    && sha256sum --check --strict /tmp/cargo-audit.sha256 \
+    && tar -xzf /tmp/cargo-audit.tar.gz -C /usr/local/cargo/bin --strip-components=1 \
+        cargo-audit-x86_64-unknown-linux-gnu-v0.22.2/cargo-audit \
+    && chmod 0755 /usr/local/cargo/bin/cargo-audit \
+    && rm -f /tmp/cargo-audit.tar.gz /tmp/cargo-audit.sha256 \
+    && rustup component add clippy rustfmt llvm-tools-preview
+
 RUN composer install \
     --no-interaction \
     --no-progress \
@@ -208,8 +258,12 @@ RUN chmod 0755 tools/quality tools/quality-container tools/install-hooks tools/c
 # suite runs as root, so those branches would never execute. tools/quality drops
 # to this dedicated non-root user for `composer test` (see run_test_suite there),
 # which owns the tree so PHPUnit's cache and coverage output stay writable.
+# /usr/local/cargo and /usr/local/rustup are chowned too: they arrived via
+# COPY --from=rust_builder as root-owned, but `cargo audit` needs to write its
+# advisory-db clone under CARGO_HOME, and `cargo test`/clippy/llvm-cov all run
+# as this user.
 RUN useradd --system --create-home --home-dir /home/knossos --shell /usr/sbin/nologin knossos \
-    && chown -R knossos:knossos /opt/knossos /home/knossos
+    && chown -R knossos:knossos /opt/knossos /home/knossos /usr/local/cargo /usr/local/rustup
 
 ENV KNOSSOS_QUALITY_CONTAINER=1
 ENV DOCKER_API_VERSION=1.44
