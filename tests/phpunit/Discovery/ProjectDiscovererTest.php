@@ -597,6 +597,58 @@ TOML
         assertSame('Cargo.toml', $cargo[0]->configPath);
     }
 
+    private function cargoUnitName(string $toml): ?string
+    {
+        file_put_contents($this->root . '/Cargo.toml', $toml);
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $cargo = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'cargo'));
+        $this->assertNotEmpty($cargo);
+
+        return $cargo[0]->metadata['name'];
+    }
+
+    public function testDiscoverReadsCargoPackageName(): void
+    {
+        assertSame('demo', $this->cargoUnitName("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"));
+    }
+
+    /**
+     * `[[bin]]` naming a binary before `[package]` must not be mistaken for
+     * the crate name — a bare first-match regex over the whole file picks
+     * this up as `mytool` instead of the crate's own `demo`. This is the
+     * assertion that catches an unscoped regex.
+     */
+    public function testDiscoverIgnoresABinNameDeclaredBeforePackage(): void
+    {
+        assertSame('demo', $this->cargoUnitName(
+            "[[bin]]\nname = \"mytool\"\npath = \"src/main.rs\"\n\n[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        ));
+    }
+
+    /** A dependency table's own `name` key, appearing before `[package]`, must not leak in either. */
+    public function testDiscoverIgnoresADependencyNameDeclaredBeforePackage(): void
+    {
+        assertSame('demo', $this->cargoUnitName(
+            "[dependencies.foo]\nname = \"foo-real\"\nversion = \"1\"\n\n[package]\nname = \"demo\"\n",
+        ));
+    }
+
+    /**
+     * A virtual workspace manifest has no `[package]` table. A `[[test]]`
+     * target's `name` must not be read as the (nonexistent) crate name.
+     */
+    public function testDiscoverReturnsNullNameForTestTargetInVirtualWorkspace(): void
+    {
+        $this->assertNull($this->cargoUnitName(
+            "[workspace]\nmembers = [\"a\"]\n\n[[test]]\nname = \"integration\"\npath = \"tests/it.rs\"\n",
+        ));
+    }
+
+    public function testDiscoverReturnsNullNameForWorkspaceOnlyManifestWithoutAnyName(): void
+    {
+        $this->assertNull($this->cargoUnitName("[workspace]\nmembers = [\"a\", \"b\"]\n"));
+    }
+
     /**
      * `ENTRY_POINT_EXTENSIONS` is what lets a manifest-declared path be
      * recognised as a real source file. A `.rs` path named by a `bin` field

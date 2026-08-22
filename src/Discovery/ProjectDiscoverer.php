@@ -216,15 +216,16 @@ final readonly class ProjectDiscoverer
 
         // Cargo.toml is TOML, not JSON, exactly like pyproject.toml — feeding
         // either to JsonConfig::decode() below would fail to parse and drop
-        // the unit as DISCOVERY_CONFIG_INVALID. Neither gets a real parser;
-        // both settle for the same bare regex, and nothing downstream reads
-        // more than that yet.
-        if ($kind === 'python' || $kind === 'cargo') {
+        // the unit as DISCOVERY_CONFIG_INVALID. Neither gets a real parser.
+        if ($kind === 'python') {
             $name = null;
             if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $contents, $matches) === 1) {
                 $name = $matches[1];
             }
             return new ProjectUnit($kind, $relative, $contentHash, ['name' => $name]);
+        }
+        if ($kind === 'cargo') {
+            return new ProjectUnit($kind, $relative, $contentHash, ['name' => self::cargoPackageName($contents)]);
         }
 
         try {
@@ -258,6 +259,36 @@ final readonly class ProjectDiscoverer
         };
 
         return new ProjectUnit($kind, $relative, $contentHash, $metadata);
+    }
+
+    /**
+     * The crate name from a Cargo.toml's `[package]` table, or null when
+     * there is none — a virtual workspace manifest declares no `[package]`
+     * table at all, and null is the correct answer for it.
+     *
+     * Deliberately scoped to that one table: Cargo.toml can carry other
+     * `name = "..."` keys under `[[bin]]`, `[[test]]`, `[dependencies.foo]`,
+     * and similar tables, anywhere in the file, in any order relative to
+     * `[package]`. An unscoped first-match regex — the shape reused from
+     * pyproject.toml, which has no such competing keys — picks up whichever
+     * one happens to appear first, not the crate's own name.
+     */
+    private static function cargoPackageName(string $contents): ?string
+    {
+        if (preg_match('/^[ \t]*\[package\][ \t]*(?:#.*)?$/m', $contents, $header, PREG_OFFSET_CAPTURE) !== 1) {
+            return null;
+        }
+        $rest = substr($contents, $header[0][1] + strlen($header[0][0]));
+        $tableEnd = preg_match('/^[ \t]*\[/m', $rest, $next, PREG_OFFSET_CAPTURE) === 1
+            ? $next[0][1]
+            : strlen($rest);
+        $table = substr($rest, 0, $tableEnd);
+
+        if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $table, $matches) === 1) {
+            return $matches[1];
+        }
+
+        return null;
     }
 
     /** Extensions a scanner emits nodes for; anything else cannot be matched later. */
