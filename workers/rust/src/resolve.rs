@@ -44,22 +44,55 @@ use std::collections::BTreeMap;
 /// makes a call target in one file nameable as a path in another. It is
 /// per-file by construction: `use` has no effect outside the module it appears
 /// in.
+///
+/// The map is flat across the whole file rather than scoped per `mod` block
+/// (see `Walk::collect_uses`), so two `use` lines in different modules that
+/// import different full paths under the same local name collide. Letting
+/// the later insert silently win would misattribute a call resolved against
+/// the earlier module's alias to the later module's import — a wrong edge,
+/// not a missing one. This worker's stated principle is that an unresolved
+/// target is dropped rather than guessed, and a colliding alias is exactly
+/// that: unresolved. So a collision poisons the key instead: `resolve`
+/// returns `None` for it from then on, permanently, even if a later insert
+/// would have resolved unambiguously on its own. Losing an edge is
+/// recoverable; a wrong edge actively misleads whoever reads the graph.
+/// Re-inserting the *same* full path under a key is not a collision — that
+/// happens legitimately when the same `use` line is collected from two
+/// nested modules — so it stays resolvable.
 #[derive(Debug, Default)]
 pub struct Aliases {
-    /// Local name to fully qualified path.
-    entries: BTreeMap<String, String>,
+    /// Local name to fully qualified path, or `None` when the local name is
+    /// poisoned: two different full paths were imported under it.
+    entries: BTreeMap<String, Option<String>>,
 }
 
 impl Aliases {
     /// Record one imported name.
+    ///
+    /// Inserting a full path that differs from what this alias already
+    /// resolved to poisons it (see the struct docs). Inserting the same full
+    /// path again, or inserting into an alias that is already poisoned, is a
+    /// no-op.
     pub fn insert(&mut self, alias: String, full_path: String) {
-        self.entries.insert(alias, full_path);
+        match self.entries.get(&alias) {
+            Some(Some(existing)) if existing != &full_path => {
+                self.entries.insert(alias, None);
+            }
+            Some(_) => {}
+            None => {
+                self.entries.insert(alias, Some(full_path));
+            }
+        }
     }
 
     /// The full path a local name stands for.
+    ///
+    /// Returns `None` both when the name was never imported and when it was
+    /// imported ambiguously — two different full paths under the same local
+    /// name — since neither case names a full path this worker can vouch for.
     #[must_use]
     pub fn resolve(&self, path: &str) -> Option<&str> {
-        self.entries.get(path).map(String::as_str)
+        self.entries.get(path).and_then(|full| full.as_deref())
     }
 
     /// A path with its leading segment expanded through the map.
@@ -86,7 +119,12 @@ impl Aliases {
 ///
 /// `use a::{b, c as d};` yields `("b", "a::b")` and `("d", "a::c")`. A glob
 /// contributes nothing: it names no symbol, so there is no alias to record and
-/// guessing one would produce edges to names the file never mentions.
+/// guessing one would produce edges to names the file never mentions. A `self`
+/// leaf names the prefix itself rather than a `prefix::self` path that does
+/// not exist: `use crate::foo::{self, bar};` yields `("foo", "crate::foo")`
+/// (the prefix, under its own last segment as the local name) alongside
+/// `("bar", "crate::foo::bar")`. A bare `use self;` with no prefix names
+/// nothing and is skipped rather than emitting an empty path.
 pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<(String, String)>) {
     let join = |segment: &str| {
         if prefix.is_empty() {
@@ -97,6 +135,15 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<(String, Str
     };
     match tree {
         syn::UseTree::Path(path) => flatten_use(&path.tree, &join(&path.ident.to_string()), out),
+        syn::UseTree::Name(name) if name.ident == "self" => {
+            if let Some(local) = prefix
+                .rsplit("::")
+                .next()
+                .filter(|segment| !segment.is_empty())
+            {
+                out.push((local.to_owned(), prefix.to_owned()));
+            }
+        }
         syn::UseTree::Name(name) => {
             let ident = name.ident.to_string();
             out.push((ident.clone(), join(&ident)));
@@ -172,5 +219,47 @@ mod tests {
             ],
             out
         );
+    }
+
+    #[test]
+    fn a_self_leaf_names_its_prefix_under_the_prefixes_last_segment() {
+        let tree: syn::UseTree = syn::parse_str("crate::foo::{self, bar}").unwrap();
+        let mut out = Vec::new();
+        super::flatten_use(&tree, "", &mut out);
+
+        assert_eq!(
+            vec![
+                ("foo".to_owned(), "crate::foo".to_owned()),
+                ("bar".to_owned(), "crate::foo::bar".to_owned()),
+            ],
+            out
+        );
+    }
+
+    #[test]
+    fn a_bare_use_self_with_no_prefix_names_nothing() {
+        let tree: syn::UseTree = syn::parse_str("self").unwrap();
+        let mut out = Vec::new();
+        super::flatten_use(&tree, "", &mut out);
+
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn colliding_aliases_for_different_paths_become_unresolvable() {
+        let mut aliases = super::Aliases::default();
+        aliases.insert("Widget".to_owned(), "foo::Widget".to_owned());
+        aliases.insert("Widget".to_owned(), "bar::Widget".to_owned());
+
+        assert_eq!(None, aliases.resolve("Widget"));
+    }
+
+    #[test]
+    fn repeated_inserts_of_the_same_path_stay_resolvable() {
+        let mut aliases = super::Aliases::default();
+        aliases.insert("Widget".to_owned(), "foo::Widget".to_owned());
+        aliases.insert("Widget".to_owned(), "foo::Widget".to_owned());
+
+        assert_eq!(Some("foo::Widget"), aliases.resolve("Widget"));
     }
 }

@@ -319,3 +319,19 @@ pub fn go() {}
         );
     }
 }
+
+#[test]
+fn a_use_inside_a_nested_mod_is_attributed_to_the_files_own_module() {
+    let source = r#"
+mod inner {
+    use serde::Serialize;
+}
+"#;
+    let contributions = scan_fixture("nested-mod-imports", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "imports"
+            && edge["source"] == "rust:module:crate"
+            && edge["target"] == "rust:module:serde::Serialize"
+    }));
+}

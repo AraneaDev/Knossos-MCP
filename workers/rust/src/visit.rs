@@ -37,11 +37,20 @@ impl Walk<'_> {
     /// Imports are collected before declarations are walked, because a call in
     /// the first function may name something imported at the bottom of the file.
     ///
-    /// A nested `mod` block's `use` lines are collected into the same map. That
-    /// is wider than Rust's own scoping, which would hide them from the outer
-    /// module, and it is the deliberate trade: this worker resolves names to
-    /// emit edges, and a name that resolves in the file it appears in produces a
-    /// true edge whichever block declared it.
+    /// `container` only drives recursion into nested `mod` blocks — it builds
+    /// the canonical path passed to a further-nested `collect_uses` call — and
+    /// never the edge source, which is always `self.module`, the file's own
+    /// module, regardless of how deep the `use` line is nested.
+    ///
+    /// A nested `mod` block's `use` lines are still collected into the same
+    /// file-wide alias map. That is wider than Rust's own scoping, which would
+    /// hide them from the outer module, and it is the deliberate trade: this
+    /// worker resolves names to emit edges, and a name that resolves in the
+    /// file it appears in produces a true edge whichever block declared it.
+    /// That flatness has a cost the map itself owns up to: two different `use`
+    /// lines in different modules that import different full paths under the
+    /// same local name collide. See `Aliases::insert` for how that collision
+    /// is handled without ever emitting a silently wrong edge.
     fn collect_uses(&mut self, container: &str, items: &[Item]) {
         for item in items {
             match item {
