@@ -7,12 +7,12 @@ namespace Knossos\Tests\Phpunit\Runtime;
 use Knossos\Runtime\DoctorService;
 use Knossos\Runtime\RuntimeVersionRequirement;
 use Knossos\Store\SqliteConnection;
+use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
 
 #[Group('doctor-service')]
-final class DoctorServiceTest extends TestCase
+final class DoctorServiceTest extends KnossosTestCase
 {
     private PDO $pdo;
     private string $installationRoot;
@@ -422,18 +422,48 @@ final class DoctorServiceTest extends TestCase
 
     public function testRunOkIsUnaffectedByASkippedCheck(): void
     {
-        // worker.rust is 'skipped' on the empty installationRoot from setUp().
-        // ok must reflect only 'error' checks, so a report containing nothing
-        // but 'ok' and 'skipped' checks is healthy.
-        $service = new DoctorService($this->pdo, $this->installationRoot, ':memory:');
+        // Recomputing ok from $result['checks'] with the same formula run()
+        // uses is tautological: it passes for any production formula,
+        // including a broken one that folds 'skipped' into the error count.
+        // The only way to pin the real invariant is a fixture where every
+        // check genuinely passes except worker.rust, and a literal
+        // assertTrue($result['ok']) — so a regression that starts treating
+        // 'skipped' as unhealthy actually flips the assertion.
+        // Same "command -v" probe as Processes::locateGit(), inlined here
+        // because only this one test needs node/python3 rather than git.
+        if (trim((string) @shell_exec('command -v node 2>/dev/null')) === '') {
+            self::markTestSkipped('node is not on PATH.');
+        }
+        if (trim((string) @shell_exec('command -v python3 2>/dev/null')) === '') {
+            self::markTestSkipped('python3 is not on PATH.');
+        }
+        $rustBinary = self::repositoryRoot() . '/workers/rust/bin/knossos-rust-worker';
+        if (is_file($rustBinary)) {
+            self::markTestSkipped('A Rust worker binary is present; worker.rust cannot be observed as skipped.');
+        }
+
+        // The repository root's own packaged php/typescript/python worker
+        // binaries genuinely exist, so those three checks report 'ok' rather
+        // than 'error'. schema_migrations is seeded the same way
+        // testRunSqliteMigrationsCheckPassesWhenSixMigrationsApplied does, so
+        // sqlite.migrations passes too; sqlite.integrity and
+        // sqlite.foreign_keys already pass on a fresh in-memory database.
+        $this->pdo->exec('CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)');
+        for ($i = 1; $i <= 6; $i++) {
+            $this->pdo->prepare('INSERT INTO schema_migrations (version) VALUES (:v)')->execute(['v' => "m{$i}"]);
+        }
+
+        $service = new DoctorService($this->pdo, self::repositoryRoot(), ':memory:');
 
         $result = $service->run();
+
+        $errors = array_filter($result['checks'], static fn(array $check): bool => $check['status'] === 'error');
+        assertSame([], array_column($errors, 'name'), 'no check should report error in this fixture');
 
         $rust = $this->findCheck($result, 'worker.rust');
         assertSame('skipped', $rust['status']);
 
-        $withoutErrors = array_filter($result['checks'], static fn(array $check): bool => $check['status'] === 'error');
-        assertSame(count($withoutErrors) === 0, $result['ok'], 'ok must depend only on the presence of error checks, not skipped ones');
+        self::assertTrue($result['ok'], 'a report with only ok and skipped checks must be healthy');
     }
 
     // ----- helpers -----
