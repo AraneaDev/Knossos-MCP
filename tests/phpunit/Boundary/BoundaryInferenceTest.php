@@ -81,6 +81,45 @@ final class BoundaryInferenceTest extends TestCase
         assertSame('python:core-lib', $facts[0]->name);
     }
 
+    public function testInferWithSingleCargoUnitCreatesCargoBoundary(): void
+    {
+        // ProjectDiscoverer records a Cargo.toml as a 'cargo' unit and parses its
+        // [package] name into metadata, but this class is the only thing that ever
+        // reads that name. Leaving 'cargo' out of the manifest kinds meant a Rust
+        // crate produced no inferred boundary at all, so the parsed name fed nothing.
+        $units = [$this->makeUnit('cargo', 'Cargo.toml', ['name' => 'demo-crate'])];
+
+        $facts = (new BoundaryInference())->infer($units, [], []);
+
+        assertSame(1, count($facts));
+        assertSame('cargo:demo-crate', $facts[0]->name);
+        assertSame('inferred', $facts[0]->source);
+        assertSame(['type' => 'path_prefix', 'value' => ''], $facts[0]->matcher);
+    }
+
+    public function testInferCargoUnitInSubdirectoryPrefixesOnItsOwnDirectory(): void
+    {
+        $units = [$this->makeUnit('cargo', 'workers/rust/Cargo.toml', ['name' => 'knossos-rust-worker'])];
+
+        $facts = (new BoundaryInference())->infer($units, [], []);
+
+        assertSame(1, count($facts));
+        assertSame('cargo:knossos-rust-worker', $facts[0]->name);
+        assertSame(['type' => 'path_prefix', 'value' => 'workers/rust/'], $facts[0]->matcher);
+    }
+
+    public function testInferCargoUnitFallsBackToRootLabelWhenPackageNameMissing(): void
+    {
+        // A virtual workspace manifest carries no [package] name, so cargoPackageName
+        // returns null and the boundary falls back to its path label like any other kind.
+        $units = [$this->makeUnit('cargo', 'Cargo.toml', ['name' => null])];
+
+        $facts = (new BoundaryInference())->infer($units, [], []);
+
+        assertSame(1, count($facts));
+        assertSame('cargo:root', $facts[0]->name);
+    }
+
     public function testInferWithUnknownUnitKindProducesNoBoundary(): void
     {
         $units = [$this->makeUnit('mystery', 'config.yml', [])];

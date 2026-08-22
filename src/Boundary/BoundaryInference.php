@@ -39,7 +39,7 @@ final class BoundaryInference
             }
         }
         $rules = [];
-        $manifestKinds = ['composer' => true, 'node' => true, 'python' => true, 'typescript' => true];
+        $manifestKinds = ['cargo' => true, 'composer' => true, 'node' => true, 'python' => true, 'typescript' => true];
         $legacyIdentityCounts = [];
         foreach ($units as $unit) {
             if (!isset($manifestKinds[$unit->kind])) {
