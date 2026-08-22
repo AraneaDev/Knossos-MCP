@@ -35,6 +35,14 @@ pub struct Facts {
     /// target, which it tolerates), so `finish()` enforces that invariant here
     /// rather than letting a bad source reach the core.
     declared: HashSet<String>,
+    /// `calls` edges recorded through [`Facts::conditional_edge`] whose
+    /// target is a guess that only counts as real when this same file turns
+    /// out to declare it. Held separately from `edges` because that can't be
+    /// known until the whole file has been walked — a call may appear before
+    /// the function it names, since items are walked in source order — so
+    /// `finish()` validates each of these against the completed `declared`
+    /// set instead of trusting it at the point the call was seen.
+    pending_calls: Vec<Edge>,
 }
 
 impl Facts {
@@ -47,6 +55,7 @@ impl Facts {
             edges: Vec::new(),
             diagnostics: Vec::new(),
             declared: HashSet::new(),
+            pending_calls: Vec::new(),
         }
     }
 
@@ -113,6 +122,31 @@ impl Facts {
         });
     }
 
+    /// Record one `calls` edge whose target is a bare, unqualified name
+    /// guessed against the enclosing container rather than resolved through
+    /// an import — `Walk::path_target`'s container-relative fallback.
+    ///
+    /// Unlike [`Facts::edge`], this is not trusted outright: Rust cannot call
+    /// an unqualified name from outside its own module without importing it,
+    /// so a guessed target for a name that was *not* imported is only a real
+    /// call when the guess actually lands on something this file declares —
+    /// a local closure or function-pointer binding satisfies neither, and
+    /// would otherwise produce a phantom edge to a target that names no
+    /// declaration at all. `finish()` checks that once the whole file's
+    /// declarations are known.
+    pub fn conditional_edge(&mut self, source: &str, target: &str, span: Span) {
+        let evidence = self.evidence(span, span);
+        self.pending_calls.push(Edge {
+            kind: "calls".to_owned(),
+            source: source.to_owned(),
+            target: target.to_owned(),
+            origin: "ast",
+            confidence: "probable",
+            evidence,
+            attributes: BTreeMap::new(),
+        });
+    }
+
     /// Record one problem.
     pub fn diagnostic(&mut self, severity: &'static str, code: &str, message: &str, line: usize) {
         self.diagnostics.push(Diagnostic {
@@ -138,10 +172,22 @@ impl Facts {
     /// that (it may resolve elsewhere, or become an external node), but it
     /// throws outright on an unresolved edge source, which would fail the
     /// whole scan rather than just this file's facts.
+    ///
+    /// A pending `calls` edge from [`Facts::conditional_edge`] additionally
+    /// requires its *target* to be declared here — the one case where a
+    /// missing target does get filtered, because unlike a genuinely external
+    /// call (which is always qualified, and always trusted as written) an
+    /// unqualified guess is only trustworthy when it lands on a real
+    /// declaration in this same file.
     #[must_use]
     pub fn finish(mut self) -> Contribution {
         let declared = self.declared;
         self.edges.retain(|edge| declared.contains(&edge.source));
+        self.edges.extend(
+            self.pending_calls
+                .into_iter()
+                .filter(|edge| declared.contains(&edge.source) && declared.contains(&edge.target)),
+        );
         self.edges.sort_by(|a, b| {
             (&a.kind, &a.source, &a.target, a.evidence.start_line).cmp(&(
                 &b.kind,

@@ -136,7 +136,7 @@ impl Walk<'_> {
                     "function",
                     item.span(),
                 );
-                self.walk_body(&reference("function", &canonical), &node.block);
+                self.walk_body(&reference("function", &canonical), container, &node.block);
             }
             Item::Trait(node) => {
                 let canonical = self.declare(
@@ -174,7 +174,11 @@ impl Walk<'_> {
                         // A trait method with no default body has no block to
                         // walk: `default` is `None` for a signature-only member.
                         if let Some(block) = &method.default {
-                            self.walk_body(&reference("method", &method_canonical), block);
+                            self.walk_body(
+                                &reference("method", &method_canonical),
+                                container,
+                                block,
+                            );
                         }
                     }
                 }
@@ -214,7 +218,11 @@ impl Walk<'_> {
                             "method",
                             member.span(),
                         );
-                        self.walk_body(&reference("method", &method_canonical), &method.block);
+                        self.walk_body(
+                            &reference("method", &method_canonical),
+                            container,
+                            &method.block,
+                        );
                     }
                 }
             }
@@ -359,23 +367,36 @@ impl Walk<'_> {
     /// function or method whose block this is, exactly as `declare` returned
     /// it wrapped in [`reference`] — its kind is already known for certain at
     /// the call site, unlike a call target's, so it is never guessed.
+    /// `container` is the module `enclosing` itself is declared in (the same
+    /// value `walk_item` was called with, never an `impl` block's type path),
+    /// and is what an unqualified call inside the body resolves against —
+    /// see [`Walk::path_target`].
     ///
     /// Only `Expr::Call` with a path callee resolves. A method call
-    /// (`value.run()`) names no type the worker can see, and a call through a
-    /// closure or function pointer names no declaration at all, so both are
-    /// dropped rather than guessed. That matches the Python worker: an
-    /// unresolved target produces no edge instead of a wrong one.
-    fn walk_body(&mut self, enclosing: &str, block: &syn::Block) {
+    /// (`value.run()`) names no type the worker can see, and is dropped. A
+    /// qualified path callee (`http::get()`, `Engine::stop()`) is trusted as
+    /// [`Walk::path_target`] resolves it, same as any other path in this
+    /// worker. A *bare*, single-segment callee (`helper()`) is trickier: it
+    /// is indistinguishable at the syntax level from a call through a local
+    /// closure or function-pointer binding, which names no declaration at
+    /// all. Rust requires such a name to either be imported or declared in
+    /// the same file to be callable unqualified, so a bare callee is only
+    /// emitted when the alias map resolves it or the guessed target turns
+    /// out to be declared in this file — see `Facts::conditional_edge`. Both
+    /// branches match the Python worker's principle: an unresolved target
+    /// produces no edge instead of a wrong one.
+    fn walk_body(&mut self, enclosing: &str, container: &str, block: &syn::Block) {
         for statement in &block.stmts {
-            self.walk_statement(enclosing, statement);
+            self.walk_statement(enclosing, container, statement);
         }
     }
 
     /// Walk one statement for calls, descending into nested expressions.
-    fn walk_statement(&mut self, enclosing: &str, statement: &syn::Stmt) {
+    fn walk_statement(&mut self, enclosing: &str, container: &str, statement: &syn::Stmt) {
         let mut visitor = Calls {
             walk: self,
             enclosing: enclosing.to_owned(),
+            container: container.to_owned(),
         };
         visitor.visit_stmt(statement);
     }
@@ -395,21 +416,86 @@ struct Calls<'a, 'b> {
     /// whose body this is; the source of every `calls` edge emitted while
     /// walking it.
     enclosing: String,
+    /// The module `enclosing` is declared in — never an `impl` block's type
+    /// path, since free functions and modules, the only things an
+    /// unqualified call can name, live in module scope. Passed to
+    /// [`Walk::path_target`] as the container an unqualified or relative
+    /// path resolves against.
+    container: String,
+}
+
+impl Calls<'_, '_> {
+    /// Resolve and emit a call whose callee path has two or more segments
+    /// (`http::get`, `Engine::stop`, `crate::helper`, `<Engine as
+    /// Named>::name`, …).
+    ///
+    /// A qualified path is trusted as [`Walk::path_target`] resolves it,
+    /// exactly like any other path this worker resolves (an `implements`
+    /// target, a supertrait bound): there is no ambiguity to guard against
+    /// here the way there is for a bare name, since Rust requires a
+    /// qualified callee to actually name something reachable from where it
+    /// is written.
+    fn visit_qualified_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        if let Some(target) = self.walk.path_target(&self.container, path) {
+            let kind = call_kind(&target);
+            self.walk.facts.edge(
+                "calls",
+                &self.enclosing,
+                &reference(kind, &target),
+                "probable",
+                span,
+            );
+        }
+    }
+
+    /// Resolve a call whose callee path is exactly one segment: a bare,
+    /// unqualified identifier such as `helper()` or `f()`.
+    ///
+    /// This shape is exactly what a call through a local closure or
+    /// function-pointer binding also looks like — `syn` cannot tell them
+    /// apart, since a callee like this is just a path, and a binding to a
+    /// callable value is invisible to a syntax-only worker. Rust makes an
+    /// *unqualified* free-function call legitimate in exactly two ways: the
+    /// name was imported (the alias map expands it), or it names something
+    /// declared in this same file. The former is checked immediately; the
+    /// latter cannot be checked yet — the declaration this call names may
+    /// come later in the file, since `walk_items` proceeds in source order —
+    /// so it is recorded through [`Facts::conditional_edge`] and verified
+    /// once the whole file's declarations are known, in `Facts::finish`. A
+    /// local closure or function-pointer binding satisfies neither and is
+    /// dropped there.
+    fn visit_bare_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        let Some(segment) = path.segments.first() else {
+            return;
+        };
+        let name = segment.ident.to_string();
+        if let Some(expanded) = self.walk.aliases.expand(&name) {
+            let kind = call_kind(&expanded);
+            self.walk.facts.edge(
+                "calls",
+                &self.enclosing,
+                &reference(kind, &expanded),
+                "probable",
+                span,
+            );
+            return;
+        }
+        if let Some(target) = self.walk.path_target(&self.container, path) {
+            let kind = call_kind(&target);
+            self.walk
+                .facts
+                .conditional_edge(&self.enclosing, &reference(kind, &target), span);
+        }
+    }
 }
 
 impl syn::visit::Visit<'_> for Calls<'_, '_> {
     fn visit_expr_call(&mut self, node: &syn::ExprCall) {
         if let syn::Expr::Path(path) = node.func.as_ref() {
-            let container = self.walk.module.clone();
-            if let Some(target) = self.walk.path_target(&container, &path.path) {
-                let kind = call_kind(&target);
-                self.walk.facts.edge(
-                    "calls",
-                    &self.enclosing,
-                    &reference(kind, &target),
-                    "probable",
-                    node.span(),
-                );
+            if path.path.segments.len() == 1 {
+                self.visit_bare_call(&path.path, node.span());
+            } else {
+                self.visit_qualified_call(&path.path, node.span());
             }
         }
         syn::visit::visit_expr_call(self, node);

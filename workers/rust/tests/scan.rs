@@ -608,3 +608,155 @@ fn a_method_call_on_an_unknown_receiver_emits_no_edge() {
 
     assert!(!edges.iter().any(|edge| edge["kind"] == "calls"));
 }
+
+#[test]
+fn an_ambiguous_alias_emits_no_calls_edge_rather_than_guessing() {
+    // `Thing` is bound to two different full paths by two different `use`
+    // lines, so `Aliases::resolve` is poisoned for it (see resolve.rs). A
+    // call naming it must be dropped, not guessed against the container.
+    let source = r#"
+mod a {
+    pub use crate::first::Thing;
+}
+mod b {
+    pub use crate::second::Thing;
+}
+
+pub fn caller() {
+    Thing::go();
+}
+"#;
+    let contributions = scan_fixture("ambiguous-alias-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(!edges.iter().any(|edge| {
+        edge["kind"] == "calls" && edge["target"].as_str().unwrap().contains("Thing")
+    }));
+}
+
+#[test]
+fn an_unambiguous_alias_still_resolves_a_calls_edge() {
+    let source = r#"
+use crate::first::Thing;
+
+pub fn caller() {
+    Thing::go();
+}
+"#;
+    let contributions = scan_fixture("unambiguous-alias-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"] == "rust:function:crate::caller"
+            && edge["target"] == "rust:method:crate::first::Thing::go"
+    }));
+}
+
+#[test]
+fn a_call_through_a_local_closure_binding_emits_no_edge() {
+    let source = "pub fn go() { let f = || {}; f(); }\n";
+    let contributions = scan_fixture("closure-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(!edges.iter().any(|edge| edge["kind"] == "calls"));
+}
+
+#[test]
+fn a_call_through_a_local_fn_pointer_binding_emits_no_edge() {
+    let source = "fn helper() {}\npub fn go() { let f: fn() = helper; f(); }\n";
+    let contributions = scan_fixture("fn-pointer-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(!edges.iter().any(|edge| edge["kind"] == "calls"));
+}
+
+#[test]
+fn a_bare_call_to_a_function_declared_later_in_the_file_still_resolves() {
+    let source = "pub fn caller() { helper(); }\n\nfn helper() {}\n";
+    let contributions = scan_fixture("forward-declared-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"] == "rust:function:crate::caller"
+            && edge["target"] == "rust:function:crate::helper"
+    }));
+}
+
+#[test]
+fn calls_inside_a_nested_mod_resolve_against_their_own_module() {
+    let source = r#"
+fn helper() {}
+
+mod inner {
+    fn helper() {}
+    fn caller() {
+        helper();
+    }
+}
+"#;
+    let contributions = scan_fixture("nested-mod-call-container", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"] == "rust:function:crate::inner::caller"
+            && edge["target"] == "rust:function:crate::inner::helper"
+    }));
+    assert!(!edges.iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"] == "rust:function:crate::inner::caller"
+            && edge["target"] == "rust:function:crate::helper"
+    }));
+}
+
+#[test]
+fn a_qualified_path_call_resolves_to_the_traits_declared_method() {
+    let source = r#"
+pub trait Named {
+    fn name() -> &'static str;
+}
+
+pub struct Engine;
+
+impl Named for Engine {
+    fn name() -> &'static str {
+        "engine"
+    }
+}
+
+pub fn describe() {
+    <Engine as Named>::name();
+}
+"#;
+    let contributions = scan_fixture("qualified-path-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"] == "rust:function:crate::describe"
+            && edge["target"] == "rust:method:crate::Named::name"
+    }));
+}
+
+#[test]
+fn a_call_inside_a_trait_default_body_resolves() {
+    let source = r#"
+pub fn helper() {}
+
+pub trait Greeter {
+    fn greet(&self) {
+        helper();
+    }
+}
+"#;
+    let contributions = scan_fixture("trait-default-body-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"] == "rust:method:crate::Greeter::greet"
+            && edge["target"] == "rust:function:crate::helper"
+    }));
+}
