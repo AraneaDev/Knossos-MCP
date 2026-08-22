@@ -1,7 +1,7 @@
 //! The newline-delimited JSON-RPC loop. Mirrors `workers/php/src/WorkerServer.php`.
 
 use std::io::{BufRead, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -142,28 +142,40 @@ fn limit_of(limits: Option<&Value>, key: &str, fallback: u64) -> Result<u64, Str
     }
 }
 
-/// A requested path, refused unless it is relative and free of `..` segments.
+/// A requested path, refused unless it is a normalized, project-relative path.
 ///
 /// This is the trust boundary. The core sends project-relative paths; anything
-/// absolute or upward-traversing is a caller that is broken or hostile, and
-/// neither is served by scanning it.
+/// absolute, NUL-containing, or backslash-containing is a caller that is broken
+/// or hostile, and neither is served by scanning it. Backslashes are refused
+/// outright rather than translated to `/`: on this platform `\` is not a path
+/// separator, so `Path::components()` would parse `..\escape.rs` as one opaque
+/// `Normal` segment, passing every structural check, and only turn into a real
+/// `../escape.rs` traversal once the caller normalizes it afterwards. For the
+/// same reason the segment check below splits the raw string itself rather than
+/// walking `Path::components()`: that iterator silently collapses a leading
+/// `./` and a doubled `/` before a `.` or empty segment would ever be seen,
+/// which would let `./x` and `x//y` slip past unnoticed. This mirrors
+/// `assert_scannable_path` in `workers/python/bin/worker.py`: the two workers
+/// must refuse exactly the same shapes.
 fn assert_scannable_path(value: &Value) -> Result<String, String> {
     let raw = value
         .as_str()
         .filter(|text| !text.is_empty())
         .ok_or_else(|| "A scan path must be a non-empty string.".to_owned())?;
-    let path = Path::new(raw);
-    if path.is_absolute() {
+    if raw.contains('\0') || raw.contains('\\') {
+        return Err(format!("Refusing an unnormalized scan path: {raw}"));
+    }
+    if Path::new(raw).is_absolute() {
         return Err(format!("Refusing an absolute scan path: {raw}"));
     }
-    for component in path.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            _ => return Err(format!("Refusing a traversing scan path: {raw}")),
-        }
+    if raw
+        .split('/')
+        .any(|segment| matches!(segment, "" | "." | ".."))
+    {
+        return Err(format!("Refusing an unsafe scan path: {raw}"));
     }
 
-    Ok(raw.replace('\\', "/"))
+    Ok(raw.to_owned())
 }
 
 /// A JSON-RPC error reply carrying the caller's id.

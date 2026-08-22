@@ -85,3 +85,53 @@ fn a_scan_outside_the_root_is_refused() {
 
     assert_eq!(-32602, replies[0]["error"]["code"]);
 }
+
+/// Assert that scanning `file` yields a JSON-RPC error, not a contribution.
+///
+/// A `\` is not a path separator on this platform, so a naive check that walks
+/// `Path::components()` after the fact parses `..\escape.rs` as one opaque,
+/// harmless-looking segment and only becomes a real `../escape.rs` traversal
+/// once something downstream normalizes the backslash. Each case here is a
+/// shape the worker must refuse outright, matching
+/// `workers/python/bin/worker.py`'s `assert_scannable_path`.
+fn assert_scan_path_refused(id: i64, file: &str) {
+    let root = std::env::temp_dir();
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "scan",
+        "params": {"root": root.to_str().unwrap(), "files": [file]},
+    });
+    let replies = exchange(&[&request.to_string()]);
+
+    assert_eq!(
+        -32602, replies[0]["error"]["code"],
+        "expected {file:?} to be refused, got {:?}",
+        replies[0]
+    );
+}
+
+#[test]
+fn a_backslash_traversing_path_is_refused() {
+    assert_scan_path_refused(7, "..\\escape.rs");
+}
+
+#[test]
+fn a_plain_backslash_path_is_refused() {
+    assert_scan_path_refused(8, "src\\lib.rs");
+}
+
+#[test]
+fn a_path_containing_a_nul_byte_is_refused() {
+    assert_scan_path_refused(9, "src/lib\0.rs");
+}
+
+#[test]
+fn a_dot_component_path_is_refused() {
+    assert_scan_path_refused(10, "./src/lib.rs");
+}
+
+#[test]
+fn an_empty_component_path_is_refused() {
+    assert_scan_path_refused(11, "src//lib.rs");
+}
