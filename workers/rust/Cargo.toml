@@ -1,0 +1,20 @@
+[package]
+name = "knossos-rust-worker"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+publish = false
+description = "Knossos scanner worker for Rust projects"
+license = "MIT"
+
+[dependencies]
+# `span-locations` is REQUIRED, not an optimisation. Without it every
+# `Span::start()` returns line 0 and all evidence is silently useless.
+proc-macro2 = { version = "1", features = ["span-locations"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syn = { version = "2", features = ["full", "visit", "extra-traits"] }
+
+[profile.release]
+opt-level = 2
+strip = true
