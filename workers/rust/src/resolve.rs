@@ -147,6 +147,22 @@ impl Aliases {
         self.entries.get(path).and_then(|full| full.as_deref())
     }
 
+    /// Whether `head` names a local alias that was imported ambiguously —
+    /// two different full paths under the same local name — as opposed to
+    /// simply never having been imported at all.
+    ///
+    /// `resolve` and `expand` collapse both cases to `None`, which is right
+    /// for them: neither can vouch for a full path either way. A caller that
+    /// falls back to guessing when a name is *unknown* must not take that
+    /// same fallback when the name is *known and poisoned* — see
+    /// `Walk::path_target`, whose container-relative guess is only ever
+    /// correct for a name nobody imported, never for one two conflicting
+    /// imports fought over.
+    #[must_use]
+    pub fn is_ambiguous(&self, head: &str) -> bool {
+        matches!(self.entries.get(head), Some(None))
+    }
+
     /// A path with its leading segment expanded through the map.
     ///
     /// `http::get` becomes `crate::net::http::get` when `http` was imported.

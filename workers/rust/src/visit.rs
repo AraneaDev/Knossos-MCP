@@ -292,7 +292,13 @@ impl Walk<'_> {
     /// and `super::foo` in `crate::net::http` names `crate::net::foo`. A bare or
     /// aliased head is expanded through the import map. Anything the map cannot
     /// place is attributed to `container`, which is where an unqualified name
-    /// declared in the same file lives.
+    /// declared in the same file lives — unless the head names an alias that
+    /// was imported ambiguously (two different `use` lines bound the same
+    /// local name to two different full paths). That case is not "unknown";
+    /// it is known and poisoned, and guessing a target for it would silently
+    /// prefer one of the two conflicting imports over the other with no
+    /// basis for the choice, so it returns `None` instead of falling through
+    /// to the container guess — see `Aliases::is_ambiguous`.
     ///
     /// Returns `None` for an empty path, or for a `super` chain longer than
     /// `container` has segments to give up — see [`rebase`].
@@ -318,6 +324,10 @@ impl Walk<'_> {
         }
         if let Some(expanded) = self.aliases.expand(&rendered) {
             return Some(expanded);
+        }
+        let head = rendered.split("::").next().unwrap_or(&rendered);
+        if self.aliases.is_ambiguous(head) {
+            return None;
         }
 
         Some(format!("{container}::{rendered}"))
