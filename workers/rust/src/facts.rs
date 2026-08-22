@@ -123,18 +123,19 @@ impl Facts {
         });
     }
 
-    /// Record one `calls` edge whose target is a bare, unqualified name
-    /// guessed against the enclosing container rather than resolved through
-    /// an import — `Walk::path_target`'s container-relative fallback.
+    /// Record one `calls` edge whose target was guessed against the enclosing
+    /// container rather than rooted by the source or resolved through an
+    /// import — `Walk::resolve_path`'s container-relative fallback.
     ///
-    /// Unlike [`Facts::edge`], this is not trusted outright: Rust cannot call
-    /// an unqualified name from outside its own module without importing it,
-    /// so a guessed target for a name that was *not* imported is only a real
-    /// call when the guess actually lands on something this file declares —
-    /// a local closure or function-pointer binding satisfies neither, and
-    /// would otherwise produce a phantom edge to a target that names no
-    /// declaration at all. `finish()` checks that once the whole file's
-    /// declarations are known.
+    /// Unlike [`Facts::edge`], this is not trusted outright: Rust cannot name
+    /// anything from outside the current module without importing it or
+    /// rooting the path, so a guessed target is only a real call when the
+    /// guess actually lands on something this file declares. A local closure
+    /// or function-pointer binding (`helper()`) satisfies neither, and neither
+    /// does a prelude or external type reached by a bare head
+    /// (`String::from()`); both would otherwise produce a phantom edge to a
+    /// target that names no declaration at all. `finish()` checks that once
+    /// the whole file's declarations are known.
     pub fn conditional_edge(&mut self, source: &str, target: &str, span: Span) {
         let evidence = self.evidence(span, span);
         self.pending_calls.push(Edge {

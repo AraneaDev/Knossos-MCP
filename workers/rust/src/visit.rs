@@ -341,6 +341,23 @@ impl Walk<'_> {
     /// Returns `None` for an empty path, or for a `super` chain longer than
     /// `container` has segments to give up — see [`rebase`].
     fn path_target(&self, container: &str, path: &syn::Path) -> Option<String> {
+        self.resolve_path(container, path).map(|(target, _)| target)
+    }
+
+    /// [`Walk::path_target`], plus whether the answer was a guess.
+    ///
+    /// The second element is `true` only for the container-relative fallback:
+    /// the path was neither rooted (`crate`, `::`, `self`, `super`) nor
+    /// expandable through the import map, so the target was assembled by
+    /// assuming the name is declared alongside the code that writes it. Every
+    /// other branch names a path the source states outright.
+    ///
+    /// Callers that can afford a guess (an `impl` self type, which only ever
+    /// attaches methods to a path this same file also declares) take
+    /// [`Walk::path_target`] and ignore the flag. A `calls` edge cannot: its
+    /// target reaches the reconciler as-is, and a guess that names nothing
+    /// becomes a fabricated external node. See [`Calls::visit_call`].
+    fn resolve_path(&self, container: &str, path: &syn::Path) -> Option<(String, bool)> {
         let rendered = path
             .segments
             .iter()
@@ -351,24 +368,24 @@ impl Walk<'_> {
             return None;
         }
         if path.leading_colon.is_some() || rendered == "crate" || rendered.starts_with("crate::") {
-            return Some(rendered.trim_start_matches("::").to_owned());
+            return Some((rendered.trim_start_matches("::").to_owned(), false));
         }
         if rendered == "self"
             || rendered.starts_with("self::")
             || rendered == "super"
             || rendered.starts_with("super::")
         {
-            return rebase(container, &rendered);
+            return rebase(container, &rendered).map(|target| (target, false));
         }
         if let Some(expanded) = self.aliases.expand(&rendered) {
-            return Some(expanded);
+            return Some((expanded, false));
         }
         let head = rendered.split("::").next().unwrap_or(&rendered);
         if self.aliases.is_ambiguous(head) {
             return None;
         }
 
-        Some(format!("{container}::{rendered}"))
+        Some((format!("{container}::{rendered}"), true))
     }
 
     /// The canonical path of an `impl` block's self type, when it names one.
@@ -404,17 +421,15 @@ impl Walk<'_> {
     ///
     /// Only `Expr::Call` with a path callee resolves. A method call
     /// (`value.run()`) names no type the worker can see, and is dropped. A
-    /// qualified path callee (`http::get()`, `Engine::stop()`) is trusted as
-    /// [`Walk::path_target`] resolves it, same as any other path in this
-    /// worker. A *bare*, single-segment callee (`helper()`) is trickier: it
-    /// is indistinguishable at the syntax level from a call through a local
-    /// closure or function-pointer binding, which names no declaration at
-    /// all. Rust requires such a name to either be imported or declared in
-    /// the same file to be callable unqualified, so a bare callee is only
-    /// emitted when the alias map resolves it or the guessed target turns
-    /// out to be declared in this file — see `Facts::conditional_edge`. Both
-    /// branches match the Python worker's principle: an unresolved target
-    /// produces no edge instead of a wrong one.
+    /// callee the source roots explicitly (`crate::helper()`, `self::go()`)
+    /// or heads with an imported name (`http::get()`) is trusted as
+    /// [`Walk::resolve_path`] resolves it, same as any other path in this
+    /// worker. A callee whose head is neither — `helper()`, `String::from()` —
+    /// is only a guess, and is emitted solely when it lands on a declaration
+    /// this same file makes; see [`Calls::visit_call`] and
+    /// `Facts::conditional_edge`. Both branches match the Python worker's
+    /// principle: an unresolved target produces no edge instead of a wrong
+    /// one.
     fn walk_body(&mut self, enclosing: &str, container: &str, block: &syn::Block) {
         for statement in &block.stmts {
             self.walk_statement(enclosing, container, statement);
@@ -437,8 +452,8 @@ impl Walk<'_> {
 ///
 /// Kept as a small, separate `Visit` implementation (rather than inline
 /// closures in `Walk::walk_statement`) so the call-resolution logic stays a
-/// single, shallow method — `visit_expr_call` below — instead of growing the
-/// cognitive complexity of a larger function.
+/// single, shallow method — [`Calls::visit_call`] below — instead of growing
+/// the cognitive complexity of a larger function.
 struct Calls<'a, 'b> {
     /// The walk collecting facts.
     walk: &'a mut Walk<'b>,
@@ -455,78 +470,56 @@ struct Calls<'a, 'b> {
 }
 
 impl Calls<'_, '_> {
-    /// Resolve and emit a call whose callee path has two or more segments
-    /// (`http::get`, `Engine::stop`, `crate::helper`, `<Engine as
-    /// Named>::name`, …).
+    /// Resolve and emit a call, deferring the check when the target is a guess.
     ///
-    /// A qualified path is trusted as [`Walk::path_target`] resolves it,
-    /// exactly like any other path this worker resolves (an `implements`
-    /// target, a supertrait bound): there is no ambiguity to guard against
-    /// here the way there is for a bare name, since Rust requires a
-    /// qualified callee to actually name something reachable from where it
-    /// is written.
-    fn visit_qualified_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
-        if let Some(target) = self.walk.path_target(&self.container, path) {
-            let kind = call_kind(&target);
-            self.walk.facts.edge(
-                "calls",
-                &self.enclosing,
-                &reference(kind, &target),
-                "probable",
-                span,
-            );
-        }
-    }
-
-    /// Resolve a call whose callee path is exactly one segment: a bare,
-    /// unqualified identifier such as `helper()` or `f()`.
+    /// A callee path resolves through [`Walk::resolve_path`] like every other
+    /// path this worker sees. What the flag it returns decides is whether the
+    /// resulting edge can be trusted on the spot.
     ///
-    /// This shape is exactly what a call through a local closure or
-    /// function-pointer binding also looks like — `syn` cannot tell them
-    /// apart, since a callee like this is just a path, and a binding to a
-    /// callable value is invisible to a syntax-only worker. Rust makes an
-    /// *unqualified* free-function call legitimate in exactly two ways: the
-    /// name was imported (the alias map expands it), or it names something
-    /// declared in this same file. The former is checked immediately; the
-    /// latter cannot be checked yet — the declaration this call names may
-    /// come later in the file, since `walk_items` proceeds in source order —
-    /// so it is recorded through [`Facts::conditional_edge`] and verified
-    /// once the whole file's declarations are known, in `Facts::finish`. A
-    /// local closure or function-pointer binding satisfies neither and is
-    /// dropped there.
-    fn visit_bare_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
-        let Some(segment) = path.segments.first() else {
+    /// A path the source states outright — rooted at `crate`, at `::`, at
+    /// `self`/`super`, or headed by a name the import map expands — is emitted
+    /// immediately. Its target is where the author said it is, and an external
+    /// target is a genuine external symbol.
+    ///
+    /// A path whose head is neither rooted nor imported is a guess, and it is
+    /// the one shape that must not be trusted. Rust makes such a head legal in
+    /// exactly two ways: the name was imported, or it is declared in this same
+    /// file. Nothing else is callable that way. So a guess is real only when it
+    /// lands on a declaration this contribution makes, which cannot be known
+    /// yet — the declaration may come later in the file, since `walk_items`
+    /// proceeds in source order — and is checked in `Facts::finish` through
+    /// [`Facts::conditional_edge`].
+    ///
+    /// That covers both a bare `helper()`, which is indistinguishable at the
+    /// syntax level from a call through a local closure or function-pointer
+    /// binding, and a qualified head such as `String::from()` or
+    /// `serde_json::to_value()`. Trusting the latter used to attribute it to
+    /// the enclosing module, so `String::from` in `crate::net::http` became
+    /// `crate::net::http::String::from`: a `crate::`-rooted name no crate
+    /// member ever declares, which the reconciler then materialised as a
+    /// fabricated external node. Dropping it loses no legitimate edge, because
+    /// a legitimate one would have been imported or declared here.
+    fn visit_call(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        let Some((target, guessed)) = self.walk.resolve_path(&self.container, path) else {
             return;
         };
-        let name = segment.ident.to_string();
-        if let Some(expanded) = self.walk.aliases.expand(&name) {
-            let kind = call_kind(&expanded);
-            self.walk.facts.edge(
-                "calls",
-                &self.enclosing,
-                &reference(kind, &expanded),
-                "probable",
-                span,
-            );
-            return;
-        }
-        if let Some(target) = self.walk.path_target(&self.container, path) {
-            let kind = call_kind(&target);
+        let endpoint = reference(call_kind(&target), &target);
+        if guessed {
             self.walk
                 .facts
-                .conditional_edge(&self.enclosing, &reference(kind, &target), span);
+                .conditional_edge(&self.enclosing, &endpoint, span);
+            return;
         }
+        self.walk
+            .facts
+            .edge("calls", &self.enclosing, &endpoint, "probable", span);
     }
 }
 
 impl syn::visit::Visit<'_> for Calls<'_, '_> {
     fn visit_expr_call(&mut self, node: &syn::ExprCall) {
         if let syn::Expr::Path(path) = node.func.as_ref() {
-            if path.path.segments.len() == 1 {
-                self.visit_bare_call(&path.path, node.span());
-            } else {
-                self.visit_qualified_call(&path.path, node.span());
-            }
+            self.visit_call(&path.path, node.span());
         }
         syn::visit::visit_expr_call(self, node);
     }
@@ -546,10 +539,13 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
 ///
 /// A convention-breaking crate can fool this guess. That cost is accepted
 /// deliberately: a wrong guess builds a reference of the wrong kind, which
-/// then matches no declared node, and the reconciler synthesises a phantom
-/// external node for it rather than crashing — call targets are never
-/// filtered the way edge sources are (see `Facts::finish`). So a bad guess
-/// costs a spurious node in the graph, not a failed scan.
+/// then matches no declared node. For a target the source rooted or imported,
+/// the reconciler synthesises an external node for it rather than crashing —
+/// call targets are never filtered the way edge sources are (see
+/// `Facts::finish`). For a guessed target it costs the edge instead, since
+/// `Facts::finish` requires a pending call to match a declaration exactly.
+/// Either way a bad guess costs one edge or one spurious node, not a failed
+/// scan.
 fn call_kind(canonical: &str) -> &'static str {
     let segments: Vec<&str> = canonical.split("::").collect();
     let owner = segments.len().checked_sub(2).and_then(|i| segments.get(i));

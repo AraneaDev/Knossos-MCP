@@ -669,6 +669,43 @@ pub fn helper() {}
 }
 
 #[test]
+fn an_unresolved_qualified_call_head_is_dropped_rather_than_guessed() {
+    // `String` is a prelude type: neither imported nor declared here. Building
+    // the target from the enclosing container produced
+    // `crate::net::http::String::from`, a `crate::`-rooted name no crate member
+    // declares, which the reconciler materialised as a fabricated external
+    // node. Valid Rust requires a bare multi-segment head to be imported or
+    // locally declared, so dropping it loses no legitimate edge. `Engine::stop`
+    // in the same file is exactly such a legitimate head, and must survive.
+    let source = r#"
+pub struct Engine;
+
+impl Engine {
+    pub fn start(&self) {
+        String::from("x");
+        serde_json::to_value(1);
+        Engine::stop();
+    }
+
+    pub fn stop() {}
+}
+"#;
+    let contributions = scan_fixture("unresolved-qualified-call", &[("src/net/http.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let targets: Vec<&str> = edges
+        .iter()
+        .filter(|edge| edge["kind"] == "calls")
+        .map(|edge| edge["target"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(
+        vec!["rust:method:crate::net::http::Engine::stop"],
+        targets,
+        "only a head this file declares survives"
+    );
+}
+
+#[test]
 fn a_method_call_on_an_unknown_receiver_emits_no_edge() {
     // `value.run()` names no resolvable target: the worker has no type
     // information, so an edge here would be a guess. Dropping it is the
