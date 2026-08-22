@@ -51,6 +51,10 @@ exists. The Python worker splits the two the same way.
 - Generic instantiation is not resolved.
 - A method call on a value, such as `value.run()`, produces no edge: the
   worker has no type information for the receiver.
+- A call through a qualified self, such as `<Widget>::default()`, produces no
+  edge either. The parser renders that callee as the bare word `default`, which
+  names no path the worker can confirm. The same holds for a call through an
+  `Fn` receiver, `self()`.
 - A call target's kind is inferred from Rust's naming convention: an
   uppercase segment before the final one means a method, anything else means
   a function. A module or type named against that convention produces a
@@ -59,6 +63,18 @@ exists. The Python worker splits the two the same way.
   resolves to nothing, so no edge is emitted for it.
 - A bare `mod foo;` declaration emits only a containment edge; the module's
   own node comes from the file that defines it.
+- A call qualified by a child module, such as `sign::any_supported_type(&key)`
+  where the same file declares `pub mod sign;`, produces no edge. The target is
+  real, but confirming it needs the child module's node, and that node belongs
+  to the file that defines the module rather than to the file making the call.
+  Writing the call as `self::sign::any_supported_type(&key)` roots the path and
+  emits the edge.
+- A `use` leaf that already names a module resolves to the module's parent, so
+  `use core::fmt;` emits `imports` to `core` and `use crate::token;` emits it
+  to `crate`. The worker cannot tell a module leaf from a type leaf without a
+  crate-wide view, so it truncates every multi-segment leaf the same way, which
+  is also what the Python worker does. A single-segment `use foo;` and a `self`
+  leaf are the two shapes that keep their full path.
 - An `impl` block for a type declared in a different file emits its method
   nodes but no edges at all: no `implements`, and no `contains` linking the
   methods to their type. The worker sees one file at a time, so it cannot tell

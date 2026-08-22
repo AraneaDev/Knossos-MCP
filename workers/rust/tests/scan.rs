@@ -706,6 +706,59 @@ impl Engine {
 }
 
 #[test]
+fn a_qself_rooted_call_emits_no_edge_for_its_bare_callee() {
+    // `syn` renders `<Widget>::default()` as the bare path `default` with
+    // `leading_colon` set, because the qualified self takes position 0. Read
+    // literally that is an absolute path, and trusting it emitted a `calls`
+    // edge to `rust:function:default`, which the reconciler materialised as an
+    // external node whose canonical name is the single word `default`. A
+    // single-segment callee is never trusted outright, so this resolves to
+    // nothing this file declares and is dropped.
+    let source = r#"
+pub struct Widget;
+
+pub fn build() {
+    <Widget>::default();
+}
+"#;
+    let contributions = scan_fixture("qself-bare-callee", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(
+        !edges.iter().any(|edge| edge["kind"] == "calls"),
+        "a bare qself callee names no declaration here: {edges:?}"
+    );
+}
+
+#[test]
+fn a_call_through_an_fn_receiver_emits_no_edge() {
+    // `self()` calls the `Fn` receiver itself. The path is the single segment
+    // `self`, which rebases to the enclosing module, so trusting it emitted a
+    // `rust:function:` edge to a path that names a declared MODULE — an
+    // `external_function` twin of a real node. A single-segment callee is
+    // never trusted outright, and `crate` is declared as a module rather than
+    // a function, so the deferred check drops it.
+    let source = r#"
+pub trait Handler {
+    fn handle(self);
+}
+
+impl<F: Fn()> Handler for F {
+    fn handle(self) {
+        self();
+    }
+}
+"#;
+    let contributions = scan_fixture("fn-receiver-call", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+
+    assert!(
+        !edges.iter().any(|edge| edge["kind"] == "calls"),
+        "calling the receiver names no declaration here: {edges:?}"
+    );
+}
+
+#[test]
 fn a_method_call_on_an_unknown_receiver_emits_no_edge() {
     // `value.run()` names no resolvable target: the worker has no type
     // information, so an edge here would be a guess. Dropping it is the

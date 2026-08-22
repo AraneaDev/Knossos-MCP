@@ -123,19 +123,20 @@ impl Facts {
         });
     }
 
-    /// Record one `calls` edge whose target was guessed against the enclosing
-    /// container rather than rooted by the source or resolved through an
-    /// import — `Walk::resolve_path`'s container-relative fallback.
+    /// Record one `calls` edge whose target this file has yet to confirm:
+    /// `Walk::resolve_path`'s container-relative fallback, or a single-segment
+    /// callee, which `syn` can render as a rooted path without it naming one.
     ///
     /// Unlike [`Facts::edge`], this is not trusted outright: Rust cannot name
     /// anything from outside the current module without importing it or
-    /// rooting the path, so a guessed target is only a real call when the
-    /// guess actually lands on something this file declares. A local closure
-    /// or function-pointer binding (`helper()`) satisfies neither, and neither
-    /// does a prelude or external type reached by a bare head
-    /// (`String::from()`); both would otherwise produce a phantom edge to a
-    /// target that names no declaration at all. `finish()` checks that once
-    /// the whole file's declarations are known.
+    /// rooting the path, so such a target is only a real call when it lands on
+    /// something this file declares. A local closure or function-pointer
+    /// binding (`helper()`) satisfies neither, nor does a prelude or external
+    /// type reached by a bare head (`String::from()`), nor the bare `default`
+    /// of `<Widget>::default()` or the lone `self` of a call through an `Fn`
+    /// receiver; all would otherwise produce a phantom edge to a target that
+    /// names no declaration at all. `finish()` checks that once the whole
+    /// file's declarations are known.
     pub fn conditional_edge(&mut self, source: &str, target: &str, span: Span) {
         let evidence = self.evidence(span, span);
         self.pending_calls.push(Edge {
@@ -179,7 +180,7 @@ impl Facts {
     /// requires its *target* to be declared here — the one case where a
     /// missing target does get filtered, because unlike a genuinely external
     /// call (which is always qualified, and always trusted as written) an
-    /// unqualified guess is only trustworthy when it lands on a real
+    /// unqualified target is only trustworthy when it lands on a real
     /// declaration in this same file.
     #[must_use]
     pub fn finish(mut self) -> Contribution {
