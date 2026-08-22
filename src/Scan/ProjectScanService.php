@@ -34,7 +34,7 @@ final class ProjectScanService implements ProjectScanner
         $this->planner = new ScanPlanner($pdo, $allowedRoots);
         $this->workerPool = new LanguageWorkerPool();
         $this->languageRunner = new LanguageScanRunner(
-            LanguageDescriptor::defaults($installationRoot),
+            LanguageDescriptor::installed($installationRoot),
             $this->workerPool,
             new ContributionCacheService(),
         );

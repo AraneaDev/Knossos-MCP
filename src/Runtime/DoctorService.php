@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Runtime;
 
 use Knossos\Git\GitProcessRunner;
+use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use PDO;
 use Throwable;
@@ -75,9 +76,16 @@ final readonly class DoctorService
         if ($this->databasePath !== ':memory:') {
             $this->check($checks, 'data.writable', fn(): string => is_writable(dirname($this->databasePath)) ? dirname($this->databasePath) : throw new \RuntimeException('Data directory is not writable.'));
         }
-        $this->worker($checks, 'worker.php', [PHP_BINARY, '-d', 'memory_limit=512M', $this->installationRoot . '/workers/php/bin/worker'], 'knossos.php');
-        $this->worker($checks, 'worker.typescript', ['node', '--max-old-space-size=512', $this->installationRoot . '/workers/typescript/bin/worker.js'], 'knossos.typescript');
-        $this->worker($checks, 'worker.python', ['python3', '-I', '-B', $this->installationRoot . '/workers/python/bin/worker.py'], 'knossos.python');
+        // Sourced from LanguageDescriptor rather than repeated here, so scan and
+        // doctor cannot disagree about a worker's command or its availability.
+        // An optional worker that is not installed is skipped rather than
+        // reported as an error: its absence is expected on most installations.
+        foreach (LanguageDescriptor::defaults($this->installationRoot) as $descriptor) {
+            if ($descriptor->optional && !$descriptor->isInstalled()) {
+                continue;
+            }
+            $this->worker($checks, 'worker.' . $descriptor->key, $descriptor->command, 'knossos.' . $descriptor->key);
+        }
 
         return ['ok' => count(array_filter($checks, static fn(array $check): bool => $check['status'] === 'error')) === 0, 'checks' => $checks];
     }

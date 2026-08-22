@@ -462,6 +462,7 @@ final readonly class ProjectDiscoverer
             'ts', 'tsx', 'mts', 'cts' => 'typescript',
             'js', 'jsx', 'mjs', 'cjs' => 'javascript',
             'py', 'pyi' => 'python',
+            'rs' => 'rust',
             default => null,
         };
         if ($byExtension !== null || $extension !== '' || $absolutePath === null) {

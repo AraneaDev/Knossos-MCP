@@ -80,6 +80,10 @@ final readonly class ScanPlanner
             'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v3'),
             'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'knossos'], 'typescript-analysis-v2'),
             'python' => $this->configurationHash($discovery->units, ['python', 'knossos'], 'python-analysis-v2'),
+            // No dedicated Cargo manifest unit exists yet, so only the project's
+            // own `knossos.json` overrides can invalidate a Rust contribution's
+            // cache entry.
+            'rust' => $this->configurationHash($discovery->units, ['knossos'], 'rust-analysis-v1'),
         ];
 
         return new ScanPreparation(
