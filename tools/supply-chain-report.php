@@ -9,7 +9,7 @@ if ($argc !== 4) {
 
 $root = dirname(__DIR__);
 $materials = [];
-foreach (['Dockerfile', 'composer.lock', 'package-lock.json', 'workers/php/composer.lock', 'workers/typescript/package-lock.json'] as $path) {
+foreach (['Dockerfile', 'composer.lock', 'package-lock.json', 'workers/php/composer.lock', 'workers/typescript/package-lock.json', 'workers/rust/Cargo.lock'] as $path) {
     $materials[] = ['uri' => $path, 'digest' => ['sha256' => hash_file('sha256', $root . '/' . $path)]];
 }
 $statement = [

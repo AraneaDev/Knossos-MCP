@@ -67,6 +67,14 @@ if [ ! -d "$ROOT/workers/typescript/node_modules" ]; then
     log "installing TypeScript worker dependencies"
     npm --prefix "$ROOT/workers/typescript" ci --ignore-scripts --no-audit --no-fund
 fi
+if command -v cargo >/dev/null 2>&1; then
+    log "building the Rust worker"
+    (cd "$ROOT/workers/rust" && cargo build --release --locked)
+    mkdir -p "$ROOT/workers/rust/bin"
+    cp "$ROOT/workers/rust/target/release/knossos-rust-worker" "$ROOT/workers/rust/bin/"
+else
+    log "cargo not found; Rust scanning will be unavailable (install Rust 1.82+ to enable it)"
+fi
 log "workers ready"
 
 echo "Running doctor..."
