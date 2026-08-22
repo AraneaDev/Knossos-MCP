@@ -31,9 +31,17 @@ call expression.
 A node's `local_id` and both of an edge's endpoints are built as
 `rust:<kind>:<canonical>`; `canonical_name` itself carries no prefix.
 
-`implements` is `certain`, because both endpoints are named explicitly.
-`extends` and `calls` are `probable`. When a target cannot be resolved, the
-worker emits no edge rather than a guess.
+`implements` is `certain`, because both endpoints are named explicitly, though
+an `impl` block whose type lives in another file emits no edge at all. See
+[limits](#limits). `extends` and `calls` are `probable`. When a target cannot be
+resolved, the worker emits no edge rather than a guess.
+
+An `imports` edge points at the module the imported name lives in, not at the
+name itself. `use a::b::C;` records `C` as a local alias, so a call written as
+`C::go()` resolves to `a::b::C::go`, and emits its edge to the module `a::b`.
+A `use` names a struct, trait, or function far more often than a module, and
+pointing the edge at the symbol's own path would claim a module node that never
+exists. The Python worker splits the two the same way.
 
 ## Limits
 
@@ -51,6 +59,15 @@ worker emits no edge rather than a guess.
   resolves to nothing, so no edge is emitted for it.
 - A bare `mod foo;` declaration emits only a containment edge; the module's
   own node comes from the file that defines it.
+- An `impl` block for a type declared in a different file emits its method
+  nodes but no edges at all: no `implements`, and no `contains` linking the
+  methods to their type. The worker sees one file at a time, so it cannot tell
+  a type declared elsewhere in the project from a type that is declared
+  nowhere. An edge whose source names nothing at all makes reconciliation
+  throw, which fails the whole scan across every language, so the worker drops
+  such an edge rather than risk that. Split an `impl` from its `struct` and you
+  get orphan method nodes. Keeping both halves in one file gives you the full
+  set of edges.
 - No framework enrichment. Axum, Actix, and Rocket routes are not
   recognised.
 - The worker emits no crate-level container node. A Rust graph has no
@@ -59,3 +76,8 @@ worker emits no edge rather than a guess.
   outermost Rust nodes.
 - Rust is optional on a native install. Without cargo, there is no Rust
   worker. The container always has one.
+- A scan of a project holding `.rs` files with no Rust worker installed
+  degrades silently. The files are discovered, they contribute nothing, the
+  graph gains no Rust nodes, `degraded_languages` stays empty, and the scan
+  reports success. Run `doctor` to see whether the worker is there; that is the
+  only place the absence shows up.
