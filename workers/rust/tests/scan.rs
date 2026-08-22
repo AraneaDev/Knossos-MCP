@@ -760,3 +760,112 @@ pub trait Greeter {
             && edge["target"] == "rust:function:crate::helper"
     }));
 }
+
+#[test]
+fn a_syntax_error_costs_only_its_own_file() {
+    let contributions = scan_fixture(
+        "syntax-error",
+        &[
+            ("src/broken.rs", "pub fn ( {\n"),
+            ("src/good.rs", "pub fn fine() {}\n"),
+        ],
+    );
+
+    assert_eq!(2, contributions.len(), "every file gets a contribution");
+    let broken = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/broken.rs")
+        .unwrap();
+    assert_eq!("RS_SYNTAX_ERROR", broken["diagnostics"][0]["code"]);
+    assert_eq!("error", broken["diagnostics"][0]["severity"]);
+    assert!(
+        broken["diagnostics"][0]["evidence"]["start_line"]
+            .as_u64()
+            .unwrap()
+            >= 1
+    );
+
+    let good = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/good.rs")
+        .unwrap();
+    assert!(good["diagnostics"].as_array().unwrap().is_empty());
+    assert!(!good["nodes"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn a_missing_file_is_a_diagnostic_not_a_failed_request() {
+    let contributions = scan_fixture("missing", &[("src/present.rs", "pub fn here() {}\n")]);
+    assert_eq!(1, contributions.len());
+
+    // Scan a path the fixture never wrote, through the same request shape.
+    let root = std::env::temp_dir().join("knossos-rust-missing-only");
+    std::fs::create_dir_all(&root).unwrap();
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "scan",
+        "params": {
+            "root": std::fs::canonicalize(&root).unwrap().to_str().unwrap(),
+            "files": ["src/absent.rs"],
+        },
+    });
+    let mut output: Vec<u8> = Vec::new();
+    knossos_rust_worker::server::run(Cursor::new(request.to_string().into_bytes()), &mut output)
+        .unwrap();
+    let text = String::from_utf8(output).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(text.contains("RS_UNSCANNABLE_FILE"));
+    // Parse each reply rather than substring-matching: the diagnostic itself
+    // legitimately carries `"severity":"error"`, so a blind search for the
+    // word "error" would fire on that and could never pass. What actually
+    // matters is that no reply is a JSON-RPC error object.
+    let replies: Vec<Value> = text
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).expect("worker wrote non-JSON stdout"))
+        .collect();
+    assert!(
+        replies.iter().all(|reply| reply.get("error").is_none()),
+        "a missing file must not fail the request",
+    );
+}
+
+#[test]
+fn an_oversized_file_is_refused_by_the_byte_limit() {
+    let root = std::env::temp_dir().join("knossos-rust-oversized");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/big.rs"), "pub fn big() {}\n".repeat(100)).unwrap();
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "scan",
+        "params": {
+            "root": std::fs::canonicalize(&root).unwrap().to_str().unwrap(),
+            "files": ["src/big.rs"],
+            "limits": {"max_file_bytes": 10},
+        },
+    });
+    let mut output: Vec<u8> = Vec::new();
+    knossos_rust_worker::server::run(Cursor::new(request.to_string().into_bytes()), &mut output)
+        .unwrap();
+    let text = String::from_utf8(output).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert!(text.contains("File exceeds the scan byte limit."));
+}
+
+#[test]
+fn files_scanned_counts_this_request_only() {
+    let contributions = scan_fixture(
+        "counting",
+        &[
+            ("src/a.rs", "pub fn a() {}\n"),
+            ("src/b.rs", "pub fn b() {}\n"),
+        ],
+    );
+
+    assert_eq!(2, contributions.len());
+}
