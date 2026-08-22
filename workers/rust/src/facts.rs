@@ -182,6 +182,16 @@ impl Facts {
     /// call (which is always qualified, and always trusted as written) an
     /// unqualified target is only trustworthy when it lands on a real
     /// declaration in this same file.
+    ///
+    /// Edges are then collapsed to the persistence identity the scanner SDK
+    /// states (`docs/reference/scanner-sdk.md`): one row per
+    /// kind/source/target within one owner, the same collapse `add_edge` in
+    /// `workers/python/bin/worker.py` performs by keying its edge map. A module
+    /// importing many symbols from one module, a function calling the same
+    /// target from three branches, and a `use` group repeated across nested
+    /// `mod` blocks all render the identical row otherwise. The collapse runs
+    /// after the sort, so the surviving row is always the one with the earliest
+    /// evidence line rather than whichever the walk happened to reach first.
     #[must_use]
     pub fn finish(mut self) -> Contribution {
         let declared = self.declared;
@@ -199,6 +209,8 @@ impl Facts {
                 b.evidence.start_line,
             ))
         });
+        self.edges
+            .dedup_by(|a, b| a.kind == b.kind && a.source == b.source && a.target == b.target);
 
         Contribution {
             owner_key: format!("knossos.rust:file:{}", self.relative),

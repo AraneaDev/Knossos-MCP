@@ -73,9 +73,13 @@ impl Walk<'_> {
     /// [`parent_module`]), and a `self` leaf already names its prefix module
     /// (see [`crate::resolve::UseLeaf::names_module`]).
     ///
-    /// One `use` line naming several symbols from the same module emits one
-    /// edge, not one per symbol — again matching the Python worker, which
-    /// emits a single `imports` edge per `from` statement.
+    /// Several symbols imported from the same module produce one edge, not one
+    /// per symbol, matching the Python worker, which emits a single `imports`
+    /// edge per `from` statement. `Facts::finish` performs that collapse for the
+    /// whole contribution rather than per `use` line, so a module importing from
+    /// the same place on ten separate lines still stores one row: the scanner
+    /// SDK's persistence identity is kind/source/target within one owner, and
+    /// every one of those rows is identical.
     fn collect_uses(&mut self, container: &str, items: &[Item]) {
         for item in items {
             match item {
@@ -83,7 +87,6 @@ impl Walk<'_> {
                     let mut leaves = Vec::new();
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
-                    let mut targeted: Vec<String> = Vec::new();
                     for leaf in leaves {
                         let Some(full) = rebase(container, &leaf.full) else {
                             continue;
@@ -93,16 +96,13 @@ impl Walk<'_> {
                         } else {
                             parent_module(&full).to_owned()
                         };
-                        if !targeted.contains(&module) {
-                            self.facts.edge(
-                                "imports",
-                                &source,
-                                &reference("module", &module),
-                                "certain",
-                                item.span(),
-                            );
-                            targeted.push(module);
-                        }
+                        self.facts.edge(
+                            "imports",
+                            &source,
+                            &reference("module", &module),
+                            "certain",
+                            item.span(),
+                        );
                         self.aliases.insert(leaf.alias, full);
                     }
                 }

@@ -706,6 +706,49 @@ impl Engine {
 }
 
 #[test]
+fn repeated_edges_collapse_to_one_row_per_kind_source_target() {
+    // The scanner SDK stores one edge per kind/source/target within an owner
+    // (docs/reference/scanner-sdk.md), and the Python worker keys its edge map
+    // the same way. Every symbol imported from one module renders the identical
+    // `imports` row, and a call repeated in two branches renders the identical
+    // `calls` row, so the contribution collapses them instead of shipping the
+    // duplicates.
+    let source = r#"
+use crate::net::http::{get, post};
+use crate::net::http::head;
+
+pub fn caller(flag: bool) {
+    if flag {
+        crate::helper();
+    } else {
+        crate::helper();
+    }
+}
+"#;
+    let contributions = scan_fixture("collapsed-edges", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let rows: Vec<(&str, &str)> = edges
+        .iter()
+        .filter(|edge| edge["kind"] == "imports" || edge["kind"] == "calls")
+        .map(|edge| {
+            (
+                edge["kind"].as_str().unwrap(),
+                edge["target"].as_str().unwrap(),
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        vec![
+            ("calls", "rust:function:crate::helper"),
+            ("imports", "rust:module:crate::net::http"),
+        ],
+        rows,
+        "three imported symbols and two identical calls collapse to one row each"
+    );
+}
+
+#[test]
 fn a_qself_rooted_call_emits_no_edge_for_its_bare_callee() {
     // `syn` renders `<Widget>::default()` as the bare path `default` with
     // `leading_colon` set, because the qualified self takes position 0. Read
