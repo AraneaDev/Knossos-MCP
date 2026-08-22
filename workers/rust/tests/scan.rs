@@ -290,3 +290,32 @@ impl Engine {
             && edge["target"] == "rust:method:crate::Engine::start"
     }));
 }
+
+#[test]
+fn use_declarations_become_import_edges() {
+    let source = r#"
+use std::collections::HashMap;
+use serde::{Serialize, Deserialize as De};
+use crate::net::http;
+
+pub fn go() {}
+"#;
+    let contributions = scan_fixture("imports", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let imports: Vec<&str> = edges
+        .iter()
+        .filter(|edge| edge["kind"] == "imports")
+        .map(|edge| edge["target"].as_str().unwrap())
+        .collect();
+
+    assert!(imports.contains(&"rust:module:std::collections::HashMap"));
+    assert!(imports.contains(&"rust:module:serde::Serialize"));
+    assert!(imports.contains(&"rust:module:serde::Deserialize"));
+    assert!(imports.contains(&"rust:module:crate::net::http"));
+    for edge in edges.iter().filter(|edge| edge["kind"] == "imports") {
+        assert_eq!(
+            "rust:module:crate", edge["source"],
+            "imports are owned by the module"
+        );
+    }
+}
