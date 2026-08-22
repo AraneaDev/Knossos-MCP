@@ -63,7 +63,6 @@ fn a_file_becomes_a_module_node_at_its_real_first_line() {
 }
 
 #[test]
-#[ignore = "function nodes arrive in Task 3"]
 fn spans_report_real_line_numbers_not_zero() {
     // Regression guard for the proc-macro2 `span-locations` feature. Without it
     // every span collapses to line 0 and all evidence is silently useless.
@@ -123,4 +122,72 @@ fn a_symlink_escaping_the_root_is_unscannable() {
     assert!(diagnostics
         .iter()
         .any(|diagnostic| diagnostic["code"] == "RS_UNSCANNABLE_FILE"));
+}
+
+#[test]
+fn declarations_become_nodes_with_containment_edges() {
+    let source = r#"
+pub struct Engine {
+    pub name: String,
+}
+
+pub enum Mode {
+    Fast,
+}
+
+pub trait Runner {
+    fn run(&self);
+}
+
+impl Engine {
+    pub fn start(&self) {}
+}
+
+pub fn boot() {}
+
+pub mod inner {
+    pub fn nested() {}
+}
+"#;
+    let contributions = scan_fixture("declarations", &[("src/engine.rs", source)]);
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    let kind_of = |name: &str| {
+        nodes
+            .iter()
+            .find(|node| node["canonical_name"] == name)
+            .unwrap_or_else(|| panic!("missing node {name}"))["kind"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    assert_eq!("class", kind_of("crate::engine::Engine"));
+    assert_eq!("class", kind_of("crate::engine::Mode"));
+    assert_eq!("interface", kind_of("crate::engine::Runner"));
+    assert_eq!("method", kind_of("crate::engine::Engine::start"));
+    assert_eq!("method", kind_of("crate::engine::Runner::run"));
+    assert_eq!("function", kind_of("crate::engine::boot"));
+    assert_eq!("module", kind_of("crate::engine::inner"));
+    assert_eq!("function", kind_of("crate::engine::inner::nested"));
+
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let contains = |source: &str, target: &str| {
+        edges.iter().any(|edge| {
+            edge["kind"] == "contains" && edge["source"] == source && edge["target"] == target
+        })
+    };
+    assert!(contains("crate::engine", "crate::engine::Engine"));
+    assert!(contains("crate::engine", "crate::engine::inner"));
+    assert!(contains(
+        "crate::engine::inner",
+        "crate::engine::inner::nested"
+    ));
+    assert!(contains(
+        "crate::engine::Engine",
+        "crate::engine::Engine::start"
+    ));
+    assert!(contains(
+        "crate::engine::Runner",
+        "crate::engine::Runner::run"
+    ));
 }
