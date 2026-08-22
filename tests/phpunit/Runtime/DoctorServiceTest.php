@@ -26,12 +26,36 @@ final class DoctorServiceTest extends KnossosTestCase
 
     protected function tearDown(): void
     {
-        if (is_dir($this->installationRoot)) {
-            foreach (glob($this->installationRoot . '/*') ?: [] as $f) {
-                @unlink($f);
-            }
-            @rmdir($this->installationRoot);
+        $this->removeInstallationRoot($this->installationRoot);
+    }
+
+    /**
+     * Recursively removes $this->installationRoot, including any nested
+     * directories a test built inside it (e.g. testRunOkIsUnaffectedByASkippedCheck's
+     * `workers/` symlink farm).
+     *
+     * A symlink is unlinked, never traversed: RecursiveDirectoryIterator
+     * follows symlinked directories by default, which would otherwise walk
+     * into and delete the real `workers/<language>` trees those symlinks
+     * point at.
+     */
+    private function removeInstallationRoot(string $root): void
+    {
+        if (!is_dir($root)) {
+            return;
         }
+        foreach (scandir($root) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $root . '/' . $entry;
+            if (!is_link($path) && is_dir($path)) {
+                $this->removeInstallationRoot($path);
+            } else {
+                @unlink($path);
+            }
+        }
+        @rmdir($root);
     }
 
     // ----- shape -----
@@ -429,6 +453,19 @@ final class DoctorServiceTest extends KnossosTestCase
         // check genuinely passes except worker.rust, and a literal
         // assertTrue($result['ok']) — so a regression that starts treating
         // 'skipped' as unhealthy actually flips the assertion.
+        //
+        // That fixture must not be the repository root itself: Task 12 copies
+        // a compiled Rust binary into the `quality` container image, so
+        // "no Rust binary" stops being true there the moment it lands, and
+        // this assertion would go permanently unobserved in the one
+        // environment whose green result is actually trusted. Instead,
+        // symlink installationRoot's php/typescript/python worker
+        // directories at the repository's real ones (so LanguageDescriptor's
+        // `$installationRoot . '/workers/<language>/...'` paths resolve to
+        // real, dependency-installed workers and genuinely report 'ok'), and
+        // deliberately never create workers/rust. "No Rust binary" is then a
+        // property of this fixture, true regardless of whether this checkout
+        // — or the container image built from it — ever ran `cargo build`.
         // Same "command -v" probe as Processes::locateGit(), inlined here
         // because only this one test needs node/python3 rather than git.
         if (trim((string) @shell_exec('command -v node 2>/dev/null')) === '') {
@@ -437,14 +474,13 @@ final class DoctorServiceTest extends KnossosTestCase
         if (trim((string) @shell_exec('command -v python3 2>/dev/null')) === '') {
             self::markTestSkipped('python3 is not on PATH.');
         }
-        $rustBinary = self::repositoryRoot() . '/workers/rust/bin/knossos-rust-worker';
-        if (is_file($rustBinary)) {
-            self::markTestSkipped('A Rust worker binary is present; worker.rust cannot be observed as skipped.');
+
+        mkdir($this->installationRoot . '/workers', 0777, true);
+        foreach (['php', 'typescript', 'python'] as $language) {
+            symlink(self::repositoryRoot() . '/workers/' . $language, $this->installationRoot . '/workers/' . $language);
         }
 
-        // The repository root's own packaged php/typescript/python worker
-        // binaries genuinely exist, so those three checks report 'ok' rather
-        // than 'error'. schema_migrations is seeded the same way
+        // schema_migrations is seeded the same way
         // testRunSqliteMigrationsCheckPassesWhenSixMigrationsApplied does, so
         // sqlite.migrations passes too; sqlite.integrity and
         // sqlite.foreign_keys already pass on a fresh in-memory database.
@@ -453,7 +489,7 @@ final class DoctorServiceTest extends KnossosTestCase
             $this->pdo->prepare('INSERT INTO schema_migrations (version) VALUES (:v)')->execute(['v' => "m{$i}"]);
         }
 
-        $service = new DoctorService($this->pdo, self::repositoryRoot(), ':memory:');
+        $service = new DoctorService($this->pdo, $this->installationRoot, ':memory:');
 
         $result = $service->run();
 
