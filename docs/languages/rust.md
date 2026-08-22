@@ -8,21 +8,21 @@ against the scanned project.
 ## Discovered inputs
 
 - `.rs` files
-- `Cargo.toml`, recorded as a `cargo` unit. Its contents are not parsed beyond
-  the `[package]` name, the same treatment `pyproject.toml` gets.
+- `Cargo.toml`, recorded as a `cargo` unit that participates in cache
+  invalidation. Its contents are not parsed beyond the `[package]` name, the
+  same treatment `pyproject.toml` gets, and it produces no graph node.
 
 ## Emitted facts
 
 Nodes:
 
-| Source construct                  | Node kind   |
-| --------------------------------- | ----------- |
-| Cargo package or workspace member | `package`   |
-| File, or a `mod` block            | `module`    |
-| `struct`, `enum`, or `union`      | `class`     |
-| `trait`                           | `interface` |
-| `fn` inside an `impl`             | `method`    |
-| Free `fn`                         | `function`  |
+| Source construct             | Node kind   |
+| ---------------------------- | ----------- |
+| File, or a `mod` block       | `module`    |
+| `struct`, `enum`, or `union` | `class`     |
+| `trait`                      | `interface` |
+| `fn` inside an `impl`        | `method`    |
+| Free `fn`                    | `function`  |
 
 Edges: `contains` for nesting, `imports` from `use`, `implements` for
 `impl Trait for Type`, `extends` for supertraits, and `calls` for a resolved
@@ -53,5 +53,9 @@ worker emits no edge rather than a guess.
   own node comes from the file that defines it.
 - No framework enrichment. Axum, Actix, and Rocket routes are not
   recognised.
+- The worker emits no crate-level container node. A Rust graph has no
+  equivalent of the `package` nodes the Python scanner produces; a query for
+  package-level structure returns nothing for Rust. Modules are the
+  outermost Rust nodes.
 - Rust is optional on a native install. Without cargo, there is no Rust
   worker. The container always has one.
