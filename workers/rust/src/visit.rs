@@ -9,7 +9,7 @@ use syn::visit::Visit;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
-use crate::resolve::{flatten_use, rebase, Aliases};
+use crate::resolve::{flatten_use, parent_module, rebase, Aliases};
 
 /// A walk in progress: the facts being built plus the names in scope.
 struct Walk<'a> {
@@ -59,6 +59,23 @@ impl Walk<'_> {
     /// leaf becomes an edge target or an alias. A leaf `rebase` cannot place —
     /// a `super` chain longer than `container` has segments to give up —
     /// contributes neither an edge nor an alias.
+    ///
+    /// The edge points at the MODULE the imported name lives in, not at the
+    /// name itself: `use a::b::C;` emits `imports` to `rust:module:a::b`, and
+    /// `C` goes into the alias map, exactly as `visit_ImportFrom` in
+    /// `workers/python/bin/worker.py` splits the two. A `use` overwhelmingly
+    /// names a struct, trait, or function, whose real node kind is `class`,
+    /// `interface`, or `function`, so targeting `rust:module:a::b::C` resolved
+    /// against nothing and made the reconciler synthesise an external module
+    /// that shadowed the very symbol the file had already declared. The module
+    /// is a node the graph genuinely holds. Two shapes need no truncation: a
+    /// single-segment `use foo;` already names a module (see
+    /// [`parent_module`]), and a `self` leaf already names its prefix module
+    /// (see [`crate::resolve::UseLeaf::names_module`]).
+    ///
+    /// One `use` line naming several symbols from the same module emits one
+    /// edge, not one per symbol — again matching the Python worker, which
+    /// emits a single `imports` edge per `from` statement.
     fn collect_uses(&mut self, container: &str, items: &[Item]) {
         for item in items {
             match item {
@@ -66,14 +83,27 @@ impl Walk<'_> {
                     let mut leaves = Vec::new();
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
-                    for (alias, full) in leaves {
-                        let Some(full) = rebase(container, &full) else {
+                    let mut targeted: Vec<String> = Vec::new();
+                    for leaf in leaves {
+                        let Some(full) = rebase(container, &leaf.full) else {
                             continue;
                         };
-                        let target = reference("module", &full);
-                        self.facts
-                            .edge("imports", &source, &target, "certain", item.span());
-                        self.aliases.insert(alias, full);
+                        let module = if leaf.names_module {
+                            full.clone()
+                        } else {
+                            parent_module(&full).to_owned()
+                        };
+                        if !targeted.contains(&module) {
+                            self.facts.edge(
+                                "imports",
+                                &source,
+                                &reference("module", &module),
+                                "certain",
+                                item.span(),
+                            );
+                            targeted.push(module);
+                        }
+                        self.aliases.insert(leaf.alias, full);
                     }
                 }
                 Item::Mod(node) => {

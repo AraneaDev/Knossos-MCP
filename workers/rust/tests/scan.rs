@@ -294,32 +294,79 @@ impl Engine {
 }
 
 #[test]
-fn use_declarations_become_import_edges() {
+fn use_declarations_become_import_edges_pointing_at_the_containing_module() {
+    // A `use` names a struct, trait, or function, whose node kind is `class`,
+    // `interface`, or `function` — never `module`. Targeting the symbol's own
+    // path as a module therefore resolved against nothing, and made the
+    // reconciler synthesise an external module twinning the very symbol the
+    // project had already declared. The edge points at the module that holds
+    // the symbol instead, which is a node the graph really has, and the symbol
+    // keeps going into the alias map. `workers/python/bin/worker.py` splits the
+    // two the same way.
     let source = r#"
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize as De};
 use crate::net::http;
+use serde_json;
 
 pub fn go() {}
 "#;
     let contributions = scan_fixture("imports", &[("src/lib.rs", source)]);
     let edges = contributions[0]["edges"].as_array().unwrap();
-    let imports: Vec<&str> = edges
+    let mut imports: Vec<&str> = edges
         .iter()
         .filter(|edge| edge["kind"] == "imports")
         .map(|edge| edge["target"].as_str().unwrap())
         .collect();
+    imports.sort_unstable();
 
-    assert!(imports.contains(&"rust:module:std::collections::HashMap"));
-    assert!(imports.contains(&"rust:module:serde::Serialize"));
-    assert!(imports.contains(&"rust:module:serde::Deserialize"));
-    assert!(imports.contains(&"rust:module:crate::net::http"));
+    // An exact set, not a containment check: it pins that the symbol's own
+    // path is NOT emitted (a target built from the full path would read
+    // `rust:module:std::collections::HashMap`), and that one `use` line
+    // naming two symbols from one module emits one edge, not two.
+    assert_eq!(
+        vec![
+            "rust:module:crate::net",
+            "rust:module:serde",
+            "rust:module:serde_json",
+            "rust:module:std::collections",
+        ],
+        imports
+    );
     for edge in edges.iter().filter(|edge| edge["kind"] == "imports") {
         assert_eq!(
             "rust:module:crate", edge["source"],
             "imports are owned by the module"
         );
     }
+}
+
+#[test]
+fn an_imported_symbol_still_resolves_a_call_through_its_alias() {
+    // The companion to the test above: retargeting the EDGE must leave the
+    // alias map alone, so an imported name still resolves a `calls` target to
+    // the symbol's own full path, not to the module the edge points at.
+    let source = r#"
+use crate::net::http::get;
+use crate::net::client as remote;
+
+pub fn go() {
+    get();
+    remote::fetch();
+}
+"#;
+    let contributions = scan_fixture("import-aliases", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let calls = |target: &str| {
+        edges.iter().any(|edge| {
+            edge["kind"] == "calls"
+                && edge["source"] == "rust:function:crate::go"
+                && edge["target"] == target
+        })
+    };
+
+    assert!(calls("rust:function:crate::net::http::get"));
+    assert!(calls("rust:function:crate::net::client::fetch"));
 }
 
 #[test]
@@ -334,7 +381,7 @@ mod inner {
     assert!(edges.iter().any(|edge| {
         edge["kind"] == "imports"
             && edge["source"] == "rust:module:crate"
-            && edge["target"] == "rust:module:serde::Serialize"
+            && edge["target"] == "rust:module:serde"
     }));
 }
 
@@ -397,6 +444,28 @@ impl Named for Elsewhere {
 }
 
 #[test]
+fn a_self_leaf_imports_the_prefix_module_itself() {
+    // `use crate::foo::{self, bar};` binds `foo` to the module `crate::foo`,
+    // not to a symbol inside it, so that leaf's edge points at `crate::foo`
+    // while `bar`'s points at the module holding it — the same `crate::foo`.
+    // One edge covers both.
+    let source = r#"
+use crate::foo::{self, bar};
+
+pub fn go() {}
+"#;
+    let contributions = scan_fixture("use-self-leaf", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let imports: Vec<&str> = edges
+        .iter()
+        .filter(|edge| edge["kind"] == "imports")
+        .map(|edge| edge["target"].as_str().unwrap())
+        .collect();
+
+    assert_eq!(vec!["rust:module:crate::foo"], imports);
+}
+
+#[test]
 fn a_use_self_import_is_rebased_against_the_current_module() {
     let source = r#"
 use self::inner::Thing;
@@ -410,7 +479,7 @@ pub mod inner {
     assert!(edges.iter().any(|edge| {
         edge["kind"] == "imports"
             && edge["source"] == "rust:module:crate::net"
-            && edge["target"] == "rust:module:crate::net::inner::Thing"
+            && edge["target"] == "rust:module:crate::net::inner"
     }));
 }
 
@@ -422,7 +491,7 @@ fn a_use_super_import_is_rebased_against_the_parent_module() {
     assert!(edges.iter().any(|edge| {
         edge["kind"] == "imports"
             && edge["source"] == "rust:module:crate::net::http"
-            && edge["target"] == "rust:module:crate::net::Parent"
+            && edge["target"] == "rust:module:crate::net"
     }));
 }
 
@@ -549,8 +618,8 @@ pub struct Outer;
         })
     };
 
-    assert!(imports("rust:module:crate::net::inner::deep::Thing"));
-    assert!(imports("rust:module:crate::net::Outer"));
+    assert!(imports("rust:module:crate::net::inner::deep"));
+    assert!(imports("rust:module:crate::net"));
 }
 
 #[test]

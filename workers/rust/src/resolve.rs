@@ -88,6 +88,21 @@ pub fn rebase(module: &str, path: &str) -> Option<String> {
     }
 }
 
+/// The module path that contains `path`, the enclosing scope a `use` line
+/// imports its symbol *from*.
+///
+/// `use a::b::C;` names the symbol `C` living in the module `a::b`, so the
+/// module is everything before the final segment. A single-segment path names
+/// a module in its own right (`use serde;`) and has no prefix to strip, so it
+/// is returned unchanged rather than collapsed to nothing.
+#[must_use]
+pub fn parent_module(path: &str) -> &str {
+    match path.rsplit_once("::") {
+        Some((parent, _)) => parent,
+        None => path,
+    }
+}
+
 use std::collections::BTreeMap;
 
 /// The names one file brought into scope with `use`.
@@ -183,17 +198,35 @@ impl Aliases {
     }
 }
 
-/// Flatten one `use` tree into `(local name, full path)` pairs, one per leaf.
+/// One leaf of a flattened `use` tree: a single name the line brings into scope.
+#[derive(Debug, PartialEq, Eq)]
+pub struct UseLeaf {
+    /// The local name this file can write to mean [`UseLeaf::full`].
+    pub alias: String,
+    /// The fully qualified path the local name stands for.
+    pub full: String,
+    /// Whether `full` already names a module rather than a symbol inside one.
+    ///
+    /// Only a `self` leaf sets this: `use crate::foo::{self, bar};` binds `foo`
+    /// to the module `crate::foo` itself, where every other leaf binds a name
+    /// declared *inside* a module. The distinction is invisible in `full`
+    /// alone — `use crate::foo;` produces exactly the same pair — and it
+    /// decides which module an `imports` edge should point at, so the leaf
+    /// carries it rather than leaving the caller to guess.
+    pub names_module: bool,
+}
+
+/// Flatten one `use` tree into one [`UseLeaf`] per leaf.
 ///
-/// `use a::{b, c as d};` yields `("b", "a::b")` and `("d", "a::c")`. A glob
-/// contributes nothing: it names no symbol, so there is no alias to record and
-/// guessing one would produce edges to names the file never mentions. A `self`
-/// leaf names the prefix itself rather than a `prefix::self` path that does
-/// not exist: `use crate::foo::{self, bar};` yields `("foo", "crate::foo")`
-/// (the prefix, under its own last segment as the local name) alongside
-/// `("bar", "crate::foo::bar")`. A bare `use self;` with no prefix names
-/// nothing and is skipped rather than emitting an empty path.
-pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<(String, String)>) {
+/// `use a::{b, c as d};` yields `b` bound to `a::b` and `d` bound to `a::c`. A
+/// glob contributes nothing: it names no symbol, so there is no alias to record
+/// and guessing one would produce edges to names the file never mentions. A
+/// `self` leaf names the prefix itself rather than a `prefix::self` path that
+/// does not exist: `use crate::foo::{self, bar};` yields `foo` bound to
+/// `crate::foo` (the prefix, under its own last segment as the local name)
+/// alongside `bar` bound to `crate::foo::bar`. A bare `use self;` with no
+/// prefix names nothing and is skipped rather than emitting an empty path.
+pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
     let join = |segment: &str| {
         if prefix.is_empty() {
             segment.to_owned()
@@ -209,15 +242,27 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<(String, Str
                 .next()
                 .filter(|segment| !segment.is_empty())
             {
-                out.push((local.to_owned(), prefix.to_owned()));
+                out.push(UseLeaf {
+                    alias: local.to_owned(),
+                    full: prefix.to_owned(),
+                    names_module: true,
+                });
             }
         }
         syn::UseTree::Name(name) => {
             let ident = name.ident.to_string();
-            out.push((ident.clone(), join(&ident)));
+            out.push(UseLeaf {
+                alias: ident.clone(),
+                full: join(&ident),
+                names_module: false,
+            });
         }
         syn::UseTree::Rename(rename) => {
-            out.push((rename.rename.to_string(), join(&rename.ident.to_string())));
+            out.push(UseLeaf {
+                alias: rename.rename.to_string(),
+                full: join(&rename.ident.to_string()),
+                names_module: false,
+            });
         }
         syn::UseTree::Group(group) => {
             for item in &group.items {
@@ -282,8 +327,16 @@ mod tests {
 
         assert_eq!(
             vec![
-                ("Serialize".to_owned(), "serde::Serialize".to_owned()),
-                ("De".to_owned(), "serde::Deserialize".to_owned()),
+                super::UseLeaf {
+                    alias: "Serialize".to_owned(),
+                    full: "serde::Serialize".to_owned(),
+                    names_module: false,
+                },
+                super::UseLeaf {
+                    alias: "De".to_owned(),
+                    full: "serde::Deserialize".to_owned(),
+                    names_module: false,
+                },
             ],
             out
         );
@@ -297,8 +350,16 @@ mod tests {
 
         assert_eq!(
             vec![
-                ("foo".to_owned(), "crate::foo".to_owned()),
-                ("bar".to_owned(), "crate::foo::bar".to_owned()),
+                super::UseLeaf {
+                    alias: "foo".to_owned(),
+                    full: "crate::foo".to_owned(),
+                    names_module: true,
+                },
+                super::UseLeaf {
+                    alias: "bar".to_owned(),
+                    full: "crate::foo::bar".to_owned(),
+                    names_module: false,
+                },
             ],
             out
         );
@@ -329,6 +390,17 @@ mod tests {
         aliases.insert("Widget".to_owned(), "foo::Widget".to_owned());
 
         assert_eq!(Some("foo::Widget"), aliases.resolve("Widget"));
+    }
+
+    #[test]
+    fn a_symbol_path_yields_the_module_that_declares_it() {
+        assert_eq!("a::b", super::parent_module("a::b::C"));
+        assert_eq!("crate::net", super::parent_module("crate::net::http"));
+    }
+
+    #[test]
+    fn a_single_segment_path_is_its_own_module() {
+        assert_eq!("serde", super::parent_module("serde"));
     }
 
     #[test]
