@@ -73,7 +73,7 @@ pub struct Evidence {
 pub struct Node {
     /// Contribution-local identifier, referenced by edge endpoints.
     pub local_id: String,
-    /// Node kind: `package`, `module`, `class`, `interface`, `function`, `method`.
+    /// Node kind: `module`, `class`, `interface`, `function`, `method`.
     pub kind: String,
     /// Fully qualified name, stable across scans.
     pub canonical_name: String,
@@ -133,17 +133,4 @@ pub struct Contribution {
     pub edges: Vec<Edge>,
     /// Problems.
     pub diagnostics: Vec<Diagnostic>,
-}
-
-impl Contribution {
-    /// An empty contribution owning one file.
-    #[must_use]
-    pub fn for_file(relative: &str) -> Self {
-        Self {
-            owner_key: format!("knossos.rust:file:{relative}"),
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            diagnostics: Vec::new(),
-        }
-    }
 }
