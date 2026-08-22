@@ -183,7 +183,7 @@ fn scan_one(root: &Path, relative: &str, max_file_bytes: u64) -> Contribution {
     let module = module_path(relative);
     let display = module.rsplit("::").next().unwrap_or(&module).to_owned();
     let span = proc_macro2::Span::call_site();
-    facts.node(&module, "module", &module, &display, span, span);
+    facts.node("module", &module, &display, span, span);
     crate::visit::walk(&mut facts, &module, &parsed);
 
     facts.finish()

@@ -176,18 +176,117 @@ pub mod inner {
             edge["kind"] == "contains" && edge["source"] == source && edge["target"] == target
         })
     };
-    assert!(contains("crate::engine", "crate::engine::Engine"));
-    assert!(contains("crate::engine", "crate::engine::inner"));
     assert!(contains(
-        "crate::engine::inner",
-        "crate::engine::inner::nested"
+        "rust:module:crate::engine",
+        "rust:class:crate::engine::Engine"
     ));
     assert!(contains(
-        "crate::engine::Engine",
-        "crate::engine::Engine::start"
+        "rust:module:crate::engine",
+        "rust:module:crate::engine::inner"
     ));
     assert!(contains(
-        "crate::engine::Runner",
-        "crate::engine::Runner::run"
+        "rust:module:crate::engine::inner",
+        "rust:function:crate::engine::inner::nested"
     ));
+    assert!(contains(
+        "rust:class:crate::engine::Engine",
+        "rust:method:crate::engine::Engine::start"
+    ));
+    assert!(contains(
+        "rust:interface:crate::engine::Runner",
+        "rust:method:crate::engine::Runner::run"
+    ));
+}
+
+#[test]
+fn a_bare_mod_declaration_does_not_duplicate_the_module_node() {
+    // `pub mod foo;` in lib.rs and the module actually declared in `foo.rs` both
+    // canonicalise to `crate::foo`. Declaring a node for both would give the
+    // reconciler two nodes with the same stable id but different evidence
+    // paths, which is not exempt from `reconciler.duplicate_symbol_evidence`
+    // the way `package`/`external_*` kinds are — so lib.rs must contribute only
+    // the `contains` edge, not a second node.
+    let contributions = scan_fixture(
+        "mod-declaration",
+        &[
+            ("src/lib.rs", "pub mod foo;\n"),
+            ("src/foo.rs", "pub fn hello() {}\n"),
+        ],
+    );
+
+    let lib = contributions
+        .iter()
+        .find(|contribution| contribution["owner_key"] == "knossos.rust:file:src/lib.rs")
+        .expect("missing src/lib.rs contribution");
+    let lib_nodes = lib["nodes"].as_array().unwrap();
+    assert!(
+        !lib_nodes
+            .iter()
+            .any(|node| node["canonical_name"] == "crate::foo"),
+        "lib.rs must not declare a second node for a bare `mod foo;`"
+    );
+    let lib_edges = lib["edges"].as_array().unwrap();
+    assert!(lib_edges.iter().any(|edge| {
+        edge["kind"] == "contains"
+            && edge["source"] == "rust:module:crate"
+            && edge["target"] == "rust:module:crate::foo"
+    }));
+
+    let foo = contributions
+        .iter()
+        .find(|contribution| contribution["owner_key"] == "knossos.rust:file:src/foo.rs")
+        .expect("missing src/foo.rs contribution");
+    let foo_nodes = foo["nodes"].as_array().unwrap();
+    assert!(
+        foo_nodes
+            .iter()
+            .any(|node| node["canonical_name"] == "crate::foo" && node["kind"] == "module"),
+        "foo.rs must declare the module node crate::foo itself"
+    );
+}
+
+#[test]
+fn an_impl_for_an_undeclared_type_emits_methods_but_no_contains_edge() {
+    // `Elsewhere` is never declared in this file (it might live in another
+    // module entirely), so the type's canonical path was never emitted as a
+    // node here. `GraphReconciler::resolveEdges` throws when an edge's source
+    // is not in the node map, so `Facts::finish` must drop this edge rather
+    // than let it reach the core. The method node itself is still legitimate
+    // evidence and stays.
+    let source = r#"
+impl Elsewhere {
+    pub fn go(&self) {}
+}
+"#;
+    let contributions = scan_fixture("impl-undeclared-type", &[("src/lib.rs", source)]);
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    assert!(nodes.iter().any(|node| {
+        node["canonical_name"] == "crate::Elsewhere::go" && node["kind"] == "method"
+    }));
+
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(
+        !edges.iter().any(|edge| {
+            edge["kind"] == "contains" && edge["target"] == "rust:method:crate::Elsewhere::go"
+        }),
+        "no contains edge should survive with an undeclared source"
+    );
+}
+
+#[test]
+fn an_impl_for_a_declared_type_still_emits_its_contains_edge() {
+    let source = r#"
+pub struct Engine;
+
+impl Engine {
+    pub fn start(&self) {}
+}
+"#;
+    let contributions = scan_fixture("impl-declared-type", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "contains"
+            && edge["source"] == "rust:class:crate::Engine"
+            && edge["target"] == "rust:method:crate::Engine::start"
+    }));
 }
