@@ -180,7 +180,7 @@ impl Walk<'_> {
                 // in this file, `Facts::finish` drops the resulting `contains` edge
                 // (its source was never emitted as a node here) while the method
                 // nodes themselves still stand.
-                let Some(target) = type_path(container, &node.self_ty) else {
+                let Some(target) = self.type_path(container, &node.self_ty) else {
                     return;
                 };
                 // `impl Trait for Type` names both endpoints explicitly, so the
@@ -314,17 +314,24 @@ impl Walk<'_> {
 
         Some(format!("{container}::{rendered}"))
     }
-}
 
-/// The canonical path of an `impl` block's self type, when it names one.
-///
-/// Only a plain path is handled. `impl Trait for &T`, tuples, and slices name no
-/// declared type in this file, so attributing methods to them would invent a node.
-fn type_path(container: &str, ty: &Type) -> Option<String> {
-    let Type::Path(path) = ty else {
-        return None;
-    };
-    let last = path.path.segments.last()?;
+    /// The canonical path of an `impl` block's self type, when it names one.
+    ///
+    /// Only a plain path is handled. `impl Trait for &T`, tuples, and slices name
+    /// no declared type in this file, so attributing methods to them would invent
+    /// a node. A path that does name a type is resolved through [`Walk::path_target`]
+    /// like any other path — through `use`, `crate`/`self`/`super`, and the
+    /// local-container fallback — rather than by keeping only its last segment.
+    /// Keeping only the last segment previously collapsed a qualified self type
+    /// such as `other::Engine` down to `crate::Engine`: a node that can genuinely
+    /// exist under a different name in the same file, so the resulting edge would
+    /// silently point at the wrong type instead of being dropped or resolved
+    /// correctly.
+    fn type_path(&self, container: &str, ty: &Type) -> Option<String> {
+        let Type::Path(path) = ty else {
+            return None;
+        };
 
-    Some(format!("{container}::{}", last.ident))
+        self.path_target(container, &path.path)
+    }
 }

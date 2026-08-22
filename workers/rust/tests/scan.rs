@@ -434,3 +434,119 @@ fn a_super_chain_escaping_the_crate_root_emits_no_import_edge() {
         "a super chain longer than the module path names nothing resolvable"
     );
 }
+
+#[test]
+fn an_impl_for_a_qualified_type_resolves_the_correct_struct() {
+    // Two `Engine`s exist in this file: one at the crate root, one nested in
+    // `mod other`. `impl Named for other::Engine` names the nested one
+    // specifically. `type_path` used to take only the self type's last path
+    // segment, which collapses `other::Engine` to `crate::Engine` — a node
+    // that genuinely exists here, so the Task 3 "edge source never declared"
+    // filter cannot catch the misattribution. The implements edge must source
+    // from the nested struct, never the unrelated top-level one.
+    let source = r#"
+pub trait Named {
+    fn name(&self) -> String;
+}
+
+pub struct Engine;
+
+mod other {
+    pub struct Engine;
+}
+
+impl Named for other::Engine {
+    fn name(&self) -> String { String::new() }
+}
+"#;
+    let contributions = scan_fixture("impl-qualified-self-type", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "implements"
+            && edge["source"] == "rust:class:crate::other::Engine"
+            && edge["target"] == "rust:interface:crate::Named"
+    }));
+    assert!(
+        !edges.iter().any(|edge| {
+            edge["kind"] == "implements" && edge["source"] == "rust:class:crate::Engine"
+        }),
+        "the implements edge must not be misattributed to the unrelated top-level Engine"
+    );
+}
+
+#[test]
+fn a_bare_same_file_impl_still_attaches_methods_to_its_own_type() {
+    // Regression lock for the `type_path` -> `path_target` refactor: an
+    // unqualified, unaliased self type must resolve exactly as before.
+    let source = r#"
+pub struct Engine;
+
+impl Engine {
+    pub fn start(&self) {}
+}
+"#;
+    let contributions = scan_fixture("impl-bare-self-type", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "contains"
+            && edge["source"] == "rust:class:crate::Engine"
+            && edge["target"] == "rust:method:crate::Engine::start"
+    }));
+}
+
+#[test]
+fn an_impl_for_an_aliased_type_resolves_through_the_alias_map() {
+    let source = r#"
+use crate::net::Engine;
+
+impl Engine {
+    pub fn start(&self) {}
+}
+
+pub mod net {
+    pub struct Engine;
+}
+"#;
+    let contributions = scan_fixture("impl-aliased-self-type", &[("src/lib.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "contains"
+            && edge["source"] == "rust:class:crate::net::Engine"
+            && edge["target"] == "rust:method:crate::net::Engine::start"
+    }));
+}
+
+#[test]
+fn self_and_super_use_leaves_inside_a_nested_mod_rebase_against_the_nested_module() {
+    // The edge SOURCE is always the file's own module (`crate::net`), per
+    // `collect_uses`'s design note, regardless of nesting. But what a
+    // `self::`/`super::` path itself MEANS is a different question: Rust
+    // resolves those against the module the `use` line lexically appears in
+    // — here, the nested `inner` module, not the file's own module. A
+    // refactor that flattened rebasing to `self.module` would look plausible
+    // and would break this silently without a dedicated test.
+    let source = r#"
+mod inner {
+    use self::deep::Thing;
+    use super::Outer;
+
+    pub mod deep {
+        pub struct Thing;
+    }
+}
+
+pub struct Outer;
+"#;
+    let contributions = scan_fixture("nested-mod-self-super-rebase", &[("src/net.rs", source)]);
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    let imports = |target: &str| {
+        edges.iter().any(|edge| {
+            edge["kind"] == "imports"
+                && edge["source"] == "rust:module:crate::net"
+                && edge["target"] == target
+        })
+    };
+
+    assert!(imports("rust:module:crate::net::inner::deep::Thing"));
+    assert!(imports("rust:module:crate::net::Outer"));
+}
