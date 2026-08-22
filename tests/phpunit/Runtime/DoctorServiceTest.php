@@ -93,11 +93,13 @@ final class DoctorServiceTest extends TestCase
             $this->assertIsString($check['name']);
             $this->assertIsString($check['status']);
             $this->assertIsString($check['detail']);
-            // Status is exactly 'ok' or 'error' (no other values).
-            $this->assertContains($check['status'], ['ok', 'error']);
+            // Status is exactly 'ok', 'error', or 'skipped' (no other values).
+            // 'skipped' reports an optional worker (Rust) whose binary is not
+            // installed — visible in doctor output without counting as a fault.
+            $this->assertContains($check['status'], ['ok', 'error', 'skipped']);
         }
 
-        // The 13 checks fired when databasePath is ':memory:' (data.writable
+        // The 14 checks fired when databasePath is ':memory:' (data.writable
         // is conditional and excluded in this mode) — verifies both shape
         // AND the exact set of named checks in a single run() call.
         $names = array_column($result['checks'], 'name');
@@ -106,12 +108,12 @@ final class DoctorServiceTest extends TestCase
             'php.extension.json', 'php.extension.pdo', 'php.extension.pdo_sqlite',
             'node.version', 'git.version', 'python.version',
             'sqlite.integrity', 'sqlite.foreign_keys', 'sqlite.migrations',
-            'worker.php', 'worker.typescript', 'worker.python',
+            'worker.php', 'worker.typescript', 'worker.python', 'worker.rust',
         ];
         foreach ($expected as $name) {
             $this->assertContains($name, $names, "missing check: {$name}");
         }
-        assertSame(13, count($names));
+        assertSame(14, count($names));
     }
 
     public function testRunSkipsDataWritableWhenDatabasePathIsInMemory(): void
@@ -385,6 +387,53 @@ final class DoctorServiceTest extends TestCase
             assertSame((new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify($reported), $check['detail'], $name);
             assertSame('ok', $check['status'], $name);
         }
+    }
+
+    // ----- optional worker (Rust) -----
+
+    public function testAnAbsentOptionalWorkerIsSkippedRatherThanFailed(): void
+    {
+        // setUp() creates an empty temporary installation root, so no worker binary
+        // exists under it. The Rust worker cannot run, and that must not make an
+        // otherwise healthy installation unhealthy.
+        $report = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();
+        $rust = null;
+        foreach ($report['checks'] as $check) {
+            if ($check['name'] === 'worker.rust') {
+                $rust = $check;
+            }
+        }
+
+        self::assertNotNull($rust, 'doctor must report the Rust worker.');
+        self::assertSame('skipped', $rust['status']);
+        self::assertStringContainsString('workers/rust/bin/knossos-rust-worker', $rust['detail']);
+    }
+
+    public function testDoctorProbesOneWorkerPerPackagedDescriptor(): void
+    {
+        $report = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();
+        $names = array_values(array_filter(
+            array_column($report['checks'], 'name'),
+            static fn(string $name): bool => str_starts_with($name, 'worker.'),
+        ));
+
+        self::assertSame(['worker.php', 'worker.typescript', 'worker.python', 'worker.rust'], $names);
+    }
+
+    public function testRunOkIsUnaffectedByASkippedCheck(): void
+    {
+        // worker.rust is 'skipped' on the empty installationRoot from setUp().
+        // ok must reflect only 'error' checks, so a report containing nothing
+        // but 'ok' and 'skipped' checks is healthy.
+        $service = new DoctorService($this->pdo, $this->installationRoot, ':memory:');
+
+        $result = $service->run();
+
+        $rust = $this->findCheck($result, 'worker.rust');
+        assertSame('skipped', $rust['status']);
+
+        $withoutErrors = array_filter($result['checks'], static fn(array $check): bool => $check['status'] === 'error');
+        assertSame(count($withoutErrors) === 0, $result['ok'], 'ok must depend only on the presence of error checks, not skipped ones');
     }
 
     // ----- helpers -----
