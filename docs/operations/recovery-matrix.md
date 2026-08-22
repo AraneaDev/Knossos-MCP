@@ -106,7 +106,7 @@ vendor/bin/phpunit --group=fault-injection
 On Linux, Knossos enumerates the supervised worker's `/proc` descendants before
 termination and sends graceful then forced signals. Other operating systems
 still terminate the direct worker; third-party scanners must not detach child
-processes. The bundled PHP, TypeScript, and Python scanners do not spawn
+processes. The bundled PHP, TypeScript, Python, and Rust scanners do not spawn
 analysis children.
 
 For database damage, use `maintain-database integrity` and restore a backup as
