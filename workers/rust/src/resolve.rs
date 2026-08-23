@@ -258,11 +258,21 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
             });
         }
         syn::UseTree::Rename(rename) => {
-            out.push(UseLeaf {
-                alias: rename.rename.to_string(),
-                full: join(&rename.ident.to_string()),
-                names_module: false,
-            });
+            if rename.ident == "self" {
+                if !prefix.is_empty() {
+                    out.push(UseLeaf {
+                        alias: rename.rename.to_string(),
+                        full: prefix.join("::"),
+                        names_module: true,
+                    });
+                }
+            } else {
+                out.push(UseLeaf {
+                    alias: rename.rename.to_string(),
+                    full: join(&rename.ident.to_string()),
+                    names_module: false,
+                });
+            }
         }
         syn::UseTree::Group(group) => {
             for item in &group.items {

@@ -58,6 +58,8 @@ reviewed configuration change.
   `coverage/js/cobertura-coverage.xml`, and `coverage/js/index.html`.
 - Python: `coverage/python/cobertura.xml` and
   `coverage/python/html/index.html`.
+- Rust: `coverage/rust/coverage.json`, `coverage/rust/lcov.info`, and
+  `coverage/rust/html/index.html`.
 
 Add regression tests at the lowest useful layer, then run `composer test` for
 fast feedback and the container coverage profile before pushing. `composer test`

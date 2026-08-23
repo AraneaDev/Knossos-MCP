@@ -612,6 +612,11 @@ TOML
         assertSame('demo', $this->cargoUnitName("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n"));
     }
 
+    public function testDiscoverAcceptsCargoPackageNameWithCRLF(): void
+    {
+        assertSame('demo', $this->cargoUnitName("[package]\r\nname = \"demo\"\r\nversion = \"0.1.0\"\r\n"));
+    }
+
     /**
      * `[[bin]]` naming a binary before `[package]` must not be mistaken for
      * the crate name — a bare first-match regex over the whole file picks

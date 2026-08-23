@@ -3,8 +3,7 @@
 The fast quality profile publishes `coverage/quality/maintainability.json` and
 fails when any checked-in budget in `maintainability-budgets.json` regresses.
 The report covers all first-party PHP, TypeScript/JavaScript, and Python runtime
-sources. The Rust worker is the one first-party runtime outside it: Clippy runs
-with `-D warnings` over the whole crate, tests included, and gates it instead.
+sources. The Rust worker is the one first-party runtime outside it: `tools/quality` runs formatting, Clippy with `-D warnings`, and tests only when `cargo` is available; missing Cargo skips these checks outside the quality container, while the quality container treats its absence as a failure.
 
 Current monotonic budgets are:
 

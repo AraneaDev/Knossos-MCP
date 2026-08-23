@@ -275,7 +275,7 @@ final readonly class ProjectDiscoverer
      */
     private static function cargoPackageName(string $contents): ?string
     {
-        if (preg_match('/^[ \t]*\[package\][ \t]*(?:#.*)?$/m', $contents, $header, PREG_OFFSET_CAPTURE) !== 1) {
+        if (preg_match('/^[ \t]*\[package\][ \t]*(?:#.*)?\r?$/m', $contents, $header, PREG_OFFSET_CAPTURE) !== 1) {
             return null;
         }
         $rest = substr($contents, $header[0][1] + strlen($header[0][0]));

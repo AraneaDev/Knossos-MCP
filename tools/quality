@@ -50,8 +50,8 @@ mypy workers/python/bin/worker.py
 python3 -m pytest workers/python
 if command -v cargo >/dev/null 2>&1; then
     cargo fmt --manifest-path workers/rust/Cargo.toml --check
-    cargo clippy --manifest-path workers/rust/Cargo.toml --all-targets -- -D warnings
-    cargo test --manifest-path workers/rust/Cargo.toml
+    cargo clippy --locked --manifest-path workers/rust/Cargo.toml --all-targets -- -D warnings
+    cargo test --locked --manifest-path workers/rust/Cargo.toml
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "cargo is required in the quality container" >&2
     exit 1
