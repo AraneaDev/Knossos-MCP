@@ -567,9 +567,19 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         if let Some((target, unconfirmed)) = self.walk.resolve_path(&self.container, &node.path) {
             let endpoint = crate::visit::reference("class", &target);
             if unconfirmed {
-                self.walk.facts.conditional_edge(&self.enclosing, &endpoint, syn::spanned::Spanned::span(node));
+                self.walk.facts.conditional_edge(
+                    &self.enclosing,
+                    &endpoint,
+                    syn::spanned::Spanned::span(node),
+                );
             } else {
-                self.walk.facts.edge("calls", &self.enclosing, &endpoint, "probable", syn::spanned::Spanned::span(node));
+                self.walk.facts.edge(
+                    "calls",
+                    &self.enclosing,
+                    &endpoint,
+                    "probable",
+                    syn::spanned::Spanned::span(node),
+                );
             }
         }
         syn::visit::visit_expr_struct(self, node);

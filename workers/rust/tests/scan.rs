@@ -1128,32 +1128,56 @@ fn files_scanned_counts_this_request_only() {
 
 #[test]
 fn an_expr_struct_instantiation_emits_a_calls_edge() {
-    let facts = scan_fixture("exprstruct", &[("src/lib.rs", "
+    let facts = scan_fixture(
+        "exprstruct",
+        &[(
+            "src/lib.rs",
+            "
         struct Widget {}
         fn factory() {
             Widget {};
         }
-    ")]);
+    ",
+        )],
+    );
     let edges = facts[0]["edges"].as_array().unwrap();
     let edge = edges.iter().find(|e| {
-        e["kind"] == "calls" && e["source"] == "rust:function:crate::factory" && e["target"] == "rust:class:crate::Widget"
+        e["kind"] == "calls"
+            && e["source"] == "rust:function:crate::factory"
+            && e["target"] == "rust:class:crate::Widget"
     });
-    assert!(edge.is_some(), "missing calls edge to Widget. Edges: {:?}", edges);
+    assert!(
+        edge.is_some(),
+        "missing calls edge to Widget. Edges: {:?}",
+        edges
+    );
 }
 
 #[test]
 fn self_in_impl_block_resolves_to_the_impl_type() {
-    let facts = scan_fixture("selfimpl", &[("src/lib.rs", "
+    let facts = scan_fixture(
+        "selfimpl",
+        &[(
+            "src/lib.rs",
+            "
         struct Widget {}
         impl Widget {
             fn factory() {
                 Self {};
             }
         }
-    ")]);
+    ",
+        )],
+    );
     let edges = facts[0]["edges"].as_array().unwrap();
     let edge = edges.iter().find(|e| {
-        e["kind"] == "calls" && e["source"] == "rust:method:crate::Widget::factory" && e["target"] == "rust:class:crate::Widget"
+        e["kind"] == "calls"
+            && e["source"] == "rust:method:crate::Widget::factory"
+            && e["target"] == "rust:class:crate::Widget"
     });
-    assert!(edge.is_some(), "missing calls edge from factory to Widget using Self. Edges: {:?}", edges);
+    assert!(
+        edge.is_some(),
+        "missing calls edge from factory to Widget using Self. Edges: {:?}",
+        edges
+    );
 }
