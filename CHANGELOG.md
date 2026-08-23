@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.11.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.6...v0.11.0) (2026-08-23)
+
+
+### Features
+
+* **discovery:** classify Rust sources and Cargo manifests ([a60d42c](https://github.com/AraneaDev/Knossos-MCP/commit/a60d42cdb0dc3771001a75710975af0b604946f6))
+* **doctor:** report an absent optional worker as skipped, not silent ([4cc32ea](https://github.com/AraneaDev/Knossos-MCP/commit/4cc32ea065a5648e877f73a0b2837805616c19cc))
+* **rust:** add the Rust scanner worker protocol skeleton ([3be8c0e](https://github.com/AraneaDev/Knossos-MCP/commit/3be8c0eeed198c0648ce8a2e2cd968eb6edb2988))
+* **rust:** emit a module node per scanned file ([f48e8dd](https://github.com/AraneaDev/Knossos-MCP/commit/f48e8dd2948937a43b08b6be5a36b2c9a6a73e5b))
+* **rust:** emit declaration nodes and containment edges ([0812767](https://github.com/AraneaDev/Knossos-MCP/commit/081276756f8f429cc4d47294f7b7e23a3db51caf))
+* **rust:** emit implements and supertrait edges ([abbab90](https://github.com/AraneaDev/Knossos-MCP/commit/abbab906bad1467ff2c61510aa14bc0136674e1d))
+* **rust:** resolve call expressions into calls edges ([de0bb34](https://github.com/AraneaDev/Knossos-MCP/commit/de0bb344c94e9406e1fe082f362498b0aac9bb16))
+* **rust:** resolve use declarations into import edges ([9ac4159](https://github.com/AraneaDev/Knossos-MCP/commit/9ac41596840eeed35ed0e8ca204e03941a0f3546))
+* **scan:** add a Rust scanner worker ([730e7d0](https://github.com/AraneaDev/Knossos-MCP/commit/730e7d0e32c8e0ab2cbb00831122b2fc4c0efb13))
+* **scan:** register Rust as an optional packaged language ([2af0a60](https://github.com/AraneaDev/Knossos-MCP/commit/2af0a60e96002855e7af30cbf85fdaca3c75b742))
+
+
+### Bug Fixes
+
+* **boundary:** infer a boundary for a cargo manifest ([180e271](https://github.com/AraneaDev/Knossos-MCP/commit/180e2716bbafb4d78a253dee64c75ede97fbcd8d))
+* **discovery:** scope the Cargo package-name regex to the [package] table ([aee7847](https://github.com/AraneaDev/Knossos-MCP/commit/aee78479b717781456a0a6dd847df4eeace14408))
+* narrowly suppress false-positive shellcheck findings in tools/install ([d10705c](https://github.com/AraneaDev/Knossos-MCP/commit/d10705ca9104b863fd8d20114b877220cd660485))
+* resolve rust compilation and update CI node version ([46bde69](https://github.com/AraneaDev/Knossos-MCP/commit/46bde69d2d1ef4067b300f832344f0c72c1a4252))
+* **rust:** add missing docstring for current_impl_target ([fe18409](https://github.com/AraneaDev/Knossos-MCP/commit/fe184098cc79b1bd0c4fdc851819ac8859391693))
+* **rust:** collapse repeated edges to the persistence identity ([6746ee3](https://github.com/AraneaDev/Knossos-MCP/commit/6746ee32ea1e61bd6f2137ecd4142b947346f869))
+* **rust:** drop an unresolved qualified call target instead of guessing ([c9872df](https://github.com/AraneaDev/Knossos-MCP/commit/c9872df223925bb4f32d38bbf25e6ce6e0d8e4f8))
+* **rust:** namespace local ids, stop duplicating mod nodes, drop dangling source edges ([f7bef9a](https://github.com/AraneaDev/Knossos-MCP/commit/f7bef9a43514b9d6c2cb21340b9e3bb7001860e7))
+* **rust:** never trust a single-segment call target ([d938a23](https://github.com/AraneaDev/Knossos-MCP/commit/d938a23baa81f0b1ab58d4d568e49f5411542d67))
+* **rust:** point imports edges at the module holding the symbol ([1495dbc](https://github.com/AraneaDev/Knossos-MCP/commit/1495dbcb5e9d5a438b03024afc773edc66539131))
+* **rust:** poison colliding aliases and resolve `self` leaves correctly ([fa17396](https://github.com/AraneaDev/Knossos-MCP/commit/fa1739678fb23462c3216b8d071ca3c32fdf16ef))
+* **rust:** refuse backslash, NUL, dot, and empty scan path segments ([e043be9](https://github.com/AraneaDev/Knossos-MCP/commit/e043be98bf9001bc24955b7da38945289766c099))
+* **rust:** resolve calls against their own container, drop closure/fn-pointer phantoms ([fee34b8](https://github.com/AraneaDev/Knossos-MCP/commit/fee34b83dfc44e43c7de6a48885dc3e7e4bcba33))
+* **rust:** resolve ExprStruct and Self inside impl blocks ([3751bd7](https://github.com/AraneaDev/Knossos-MCP/commit/3751bd77ebad82472003264caa57e035db01c8bf))
+* **rust:** resolve impl self types through path_target ([2263433](https://github.com/AraneaDev/Knossos-MCP/commit/22634331f9b627c901436f54871d7f802c7cba97))
+* **rust:** stop path_target guessing through a poisoned alias ([c0db4f8](https://github.com/AraneaDev/Knossos-MCP/commit/c0db4f805298d4475e204c1698f9b42ce33c80f2))
+
 ## [0.10.6](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.5...v0.10.6) (2026-08-18)
 
 
