@@ -262,7 +262,7 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
                 if !prefix.is_empty() {
                     out.push(UseLeaf {
                         alias: rename.rename.to_string(),
-                        full: prefix.join("::"),
+                        full: prefix.to_owned(),
                         names_module: true,
                     });
                 }
