@@ -19,6 +19,7 @@ set -eu
 #   KNOSSOS_ROOTS_FILE  the allow-list file itself       (default: <data dir>/roots.json)
 #   KNOSSOS_SEED_SCAN   1 to seed an initial scan, 0 to skip      (default: 1)
 
+# shellcheck disable=SC1007 # deliberate: CDPATH= clears CDPATH for this one `cd`, not a typo'd assignment.
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 NAME="${KNOSSOS_MCP_NAME:-knossos}"
 SCOPE="${KNOSSOS_MCP_SCOPE:-user}"
@@ -67,6 +68,14 @@ if [ ! -d "$ROOT/workers/typescript/node_modules" ]; then
     log "installing TypeScript worker dependencies"
     npm --prefix "$ROOT/workers/typescript" ci --ignore-scripts --no-audit --no-fund
 fi
+if command -v cargo >/dev/null 2>&1; then
+    log "building the Rust worker"
+    (cd "$ROOT/workers/rust" && cargo build --release --locked)
+    mkdir -p "$ROOT/workers/rust/bin"
+    cp "$ROOT/workers/rust/target/release/knossos-rust-worker" "$ROOT/workers/rust/bin/"
+else
+    log "cargo not found; Rust scanning will be unavailable (install Rust 1.82+ to enable it)"
+fi
 log "workers ready"
 
 echo "Running doctor..."
@@ -76,6 +85,7 @@ else
     # Doctor is advisory here: an unsupported-but-working runtime (e.g. a newer
     # Node than the tested matrix) should warn, not block a local install.
     echo "  doctor reported non-blocking warnings; continuing:" >&2
+    # shellcheck disable=SC2016 # $d/$c below are PHP variables inside `php -r`; the shell must not expand them.
     KNOSSOS_DATA_DIR="$DATA_DIR" "$ROOT/bin/knossos" doctor --json 2>/dev/null \
         | php -r '$d = json_decode(stream_get_contents(STDIN), true) ?: []; foreach ($d["checks"] ?? [] as $c) { if (($c["status"] ?? "") !== "ok") { fwrite(STDERR, "    - " . $c["name"] . ": " . $c["detail"] . "\n"); } }' || true
 fi
@@ -87,6 +97,7 @@ mkdir -p "$DATA_DIR"
 mkdir -p "$(dirname -- "$ROOTS_FILE")"
 # Merge rather than overwrite: re-running the installer from a second project
 # must add that project, not silently revoke the first one.
+# shellcheck disable=SC2016 # the $-prefixed names in this php -r program are PHP variables, not shell ones.
 KNOSSOS_ROOTS_FILE="$ROOTS_FILE" KNOSSOS_NEW_ROOT="$ALLOW_ROOT" php -r '
 $file = getenv("KNOSSOS_ROOTS_FILE");
 $new = rtrim(getenv("KNOSSOS_NEW_ROOT"), "/");

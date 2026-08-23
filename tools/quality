@@ -7,6 +7,12 @@ if [ "$profile" != "fast" ] && [ "$profile" != "full" ]; then
     exit 64
 fi
 
+# scanner-conformance exits 127 on a relative binary path: WorkerProcessSupervisor
+# pins the child's working directory to the system temp dir, so a path relative
+# to this script's cwd would not resolve there. Derive an absolute root instead
+# of assuming this script runs from the repository root.
+root=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
+
 # Run the PHPUnit suite. In the quality container the tooling is installed as
 # root, but the permission-error tests (Doctor unwritable-data-dir, MigrationRunner
 # unreadable-migration, ProjectDiscoverer permission-denied) skip themselves when
@@ -42,12 +48,26 @@ ruff check workers/python/bin/worker.py workers/python/tests
 ruff format --check workers/python/bin/worker.py workers/python/tests
 mypy workers/python/bin/worker.py
 python3 -m pytest workers/python
+if command -v cargo >/dev/null 2>&1; then
+    cargo fmt --manifest-path workers/rust/Cargo.toml --check
+    cargo clippy --locked --manifest-path workers/rust/Cargo.toml --all-targets -- -D warnings
+    cargo test --locked --manifest-path workers/rust/Cargo.toml
+elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
+    echo "cargo is required in the quality container" >&2
+    exit 1
+fi
 php tools/repository-check.php
 php tools/generate-reference.php --check
 php tools/documentation-check.php
 php tools/maintainability-report.php
 php tools/docstring-report.php
 php tools/api-documentation-check.php
+if [ -x "$root/workers/rust/bin/knossos-rust-worker" ]; then
+    tools/scanner-conformance --require=partial_ast -- "$root/workers/rust/bin/knossos-rust-worker"
+elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
+    echo "the Rust worker binary is required in the quality container" >&2
+    exit 1
+fi
 if command -v pre-commit >/dev/null 2>&1; then
     pre-commit validate-config .pre-commit-config.yaml
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
@@ -57,7 +77,7 @@ fi
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark \
-        tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain
+        tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1
@@ -84,6 +104,12 @@ if [ "$profile" = "full" ]; then
     composer audit --locked --no-interaction
     npm audit --audit-level=high
     npm --prefix workers/typescript audit --audit-level=high
+    if command -v cargo-audit >/dev/null 2>&1; then
+        cargo audit --file workers/rust/Cargo.lock
+    elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
+        echo "cargo-audit is required in the quality container" >&2
+        exit 1
+    fi
     php tools/documentation-check.php --external
     npm_config_cache=/tmp/knossos-inspector-cache npx -y @modelcontextprotocol/inspector@0.21.2 --cli \
         php /opt/knossos/bin/knossos serve --allow-root=/opt/knossos \

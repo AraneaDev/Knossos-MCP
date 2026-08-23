@@ -65,6 +65,29 @@ trait WorkerClients
         );
     }
 
+    /** Where the compiled Rust worker lives once tools/install or the image build has run. */
+    public static function rustWorkerBinary(): string
+    {
+        return self::repositoryRoot() . '/workers/rust/bin/knossos-rust-worker';
+    }
+
+    /**
+     * A client for the compiled Rust worker.
+     *
+     * No coverage wrapper: unlike the PHP, JS, and Python workers, whose coverage
+     * is captured off the subprocess this suite drives, Rust coverage comes from
+     * `cargo llvm-cov` over the crate's own test suite. Instrumenting the
+     * subprocess here would measure the same code twice and report neither
+     * honestly.
+     */
+    public function rustWorkerClient(): ProcessScannerClient
+    {
+        return new ProcessScannerClient(
+            [self::rustWorkerBinary()],
+            new WorkerLimits(requestTimeoutMs: 10_000, maxLineBytes: 2_000_000, maxOutputBytes: 30_000_000),
+        );
+    }
+
     /** @return non-empty-list<string> */
     public function pythonWorkerCommand(): array
     {

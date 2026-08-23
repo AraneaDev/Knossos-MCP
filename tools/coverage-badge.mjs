@@ -7,14 +7,15 @@
  * silently go stale behind an unconfigured integration the way a Codecov badge reads
  * "unknown" until someone activates the repository.
  *
- * Knossos is three languages in one repository, so the badge sums them rather than reporting
+ * Knossos is four languages in one repository, so the badge sums them rather than reporting
  * whichever one is easiest to read. PHP is the bulk of the code; a badge showing only the
- * Node and Python workers would look like a project number while describing a small corner of
- * it. Every source is a line count, so they add up directly:
+ * Node, Python, and Rust workers would look like a project number while describing a small
+ * corner of it. Every source is a line count, so they add up directly:
  *
  *   - PHP    `coverage/php/summary.json`            (tools/pcov-report.php)
  *   - JS     `coverage/js/coverage-summary.json`    (c8 --reporter=json-summary)
  *   - Python `coverage/python/coverage.json`        (coverage json)
+ *   - Rust   `coverage/rust/coverage.json`          (cargo llvm-cov --json)
  *
  * A missing or unreadable source is a hard failure, not a skipped term. Silently dropping one
  * would publish a number that looks like whole-project coverage while quietly excluding a
@@ -22,6 +23,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import process from 'node:process';
 
 const ROOT = process.cwd();
 
@@ -41,7 +43,7 @@ function read(relative) {
     return JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
     process.stderr.write(`coverage-badge: cannot read ${path}: ${error.message}\n`);
-    process.stderr.write('Run tools/coverage first; it writes all three language summaries.\n');
+    process.stderr.write('Run tools/coverage first; it writes all four language summaries.\n');
     process.exit(1);
   }
 }
@@ -58,17 +60,19 @@ function linesOf(label, covered, valid) {
 const php = read('coverage/php/summary.json');
 const js = read('coverage/js/coverage-summary.json');
 const python = read('coverage/python/coverage.json');
+const rust = read('coverage/rust/coverage.json');
 
 const parts = [
   linesOf('php', php.lines?.covered, php.lines?.valid),
   linesOf('js', js.total?.lines?.covered, js.total?.lines?.total),
   linesOf('python', python.totals?.covered_lines, python.totals?.num_statements),
+  linesOf('rust', rust.data?.[0]?.totals?.lines?.covered, rust.data?.[0]?.totals?.lines?.count),
 ];
 
 const covered = parts.reduce((sum, [c]) => sum + c, 0);
 const valid = parts.reduce((sum, [, v]) => sum + v, 0);
 if (valid === 0) {
-  process.stderr.write('coverage-badge: no measurable lines across the three languages\n');
+  process.stderr.write('coverage-badge: no measurable lines across the four languages\n');
   process.exit(1);
 }
 

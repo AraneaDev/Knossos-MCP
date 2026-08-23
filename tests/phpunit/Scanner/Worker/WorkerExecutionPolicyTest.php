@@ -115,6 +115,8 @@ final class WorkerExecutionPolicyTest extends TestCase
             'php' => 2.24,
             // This repository's Python worker and its tests at 1.88x.
             'python' => 1.88,
+            // serde-rs/serde (208 files / 1.2 MB of real hand-written Rust) at 2.59x.
+            'rust' => 2.59,
         ];
     }
 

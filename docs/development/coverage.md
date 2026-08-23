@@ -17,11 +17,14 @@ CI uploads that directory as the `coverage-reports` artifact.
 | PHP core and PHP scanner | 91%                  | n/a          | 91.04% lines                  |
 | TypeScript/JavaScript    | 94.6%                | 79.2%        | 94.68% lines, 79.27% branches |
 | Python scanner           | 96%                  | tracked      | 96% combined report           |
+| Rust scanner             | 90.7%                | n/a          | cargo llvm-cov lines          |
 
 PHP uses PCOV, which records executable-line coverage but not branch coverage.
 The JavaScript V8 report therefore carries the explicit ratcheted branch floor;
 Python branch data is collected and included in coverage.py's enforced total.
-A well-covered runtime cannot hide another because all three gates must pass.
+Rust is measured by `cargo llvm-cov`, whose line floor comes from
+`coverage-budgets.json`. A well-covered runtime cannot hide another because all
+four gates must pass.
 
 PHP additionally enforces checked-in component floors from
 `coverage-budgets.json`. The current floors are 87% bundle/Git/watch, 87.5%
@@ -55,6 +58,8 @@ reviewed configuration change.
   `coverage/js/cobertura-coverage.xml`, and `coverage/js/index.html`.
 - Python: `coverage/python/cobertura.xml` and
   `coverage/python/html/index.html`.
+- Rust: `coverage/rust/coverage.json`, `coverage/rust/lcov.info`, and
+  `coverage/rust/html/index.html`.
 
 Add regression tests at the lowest useful layer, then run `composer test` for
 fast feedback and the container coverage profile before pushing. `composer test`

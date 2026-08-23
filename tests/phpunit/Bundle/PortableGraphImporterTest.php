@@ -352,6 +352,25 @@ final class PortableGraphImporterTest extends TestCase
         }
     }
 
+    /**
+     * A node row carries no explicit `language` field; when absent, the
+     * importer derives it from the `owner_key` scanner prefix — the same
+     * migration-010 fallback that maps `knossos.php` to `php` and
+     * `knossos.python` to `py` must map `knossos.rust` to `rs`.
+     */
+    public function testImportDerivesRustLanguageFromKnossosRustOwnerKey(): void
+    {
+        $row = $this->nodeRowWith('n1', ['owner_key' => 'knossos.rust:file:src/main.rs']);
+        $payload = $this->payloadWith(['nodes' => [$row]]);
+        $manifest = $this->manifestWith([]);
+
+        $this->callImport($payload, $manifest);
+
+        $row = $this->pdo->query('SELECT language FROM nodes LIMIT 1')->fetch();
+        $this->assertNotFalse($row);
+        assertSame('rs', $row['language']);
+    }
+
     public function testImportFillsParentIdAfterAllInserts(): void
     {
         // parent_id references another node; insertNodes inserts all rows first,

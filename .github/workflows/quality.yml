@@ -35,6 +35,11 @@ jobs:
       # orphan `gh-pages` branch, force-pushed so it stays a single commit and never grows
       # history. Only on main, because a pull request must not be able to move the badge.
       # The script sums all three languages; PHP alone is the bulk of the code.
+      - name: Setup Node LTS
+        if: github.ref == 'refs/heads/main'
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
       - name: Publish coverage badge
         if: github.ref == 'refs/heads/main'
         env:
@@ -56,7 +61,7 @@ jobs:
 
       - name: Upload coverage and benchmark reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: quality-reports
           path: coverage/

@@ -296,13 +296,14 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         assertSame('scanner_ruby', $descriptor->stage);
     }
 
-    public function testLanguageDescriptorDefaultsReturnsThreeBuiltInDescriptors(): void
+    public function testLanguageDescriptorDefaultsReturnsFourBuiltInDescriptors(): void
     {
         $defaults = LanguageDescriptor::defaults('/opt/knossos');
 
-        assertSame(3, count($defaults));
+        // Four since Task 8 registered Rust as an optional packaged language.
+        assertSame(4, count($defaults));
         $keys = array_map(static fn($d) => $d->key, $defaults);
-        assertSame(['php', 'typescript', 'python'], $keys);
+        assertSame(['php', 'typescript', 'python', 'rust'], $keys);
     }
 
     public function testLanguageDescriptorDefaultsPhpDescriptorHasExpectedShape(): void
@@ -405,5 +406,66 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         // `'/workers/...' . $root`). Checks the exact combined string exists
         // exactly as expected.
         assertSame('/opt/knossos/workers/python/bin/worker.py', $lastArg);
+    }
+
+    // ===== Rust: optional-language registration (Task 8) ==================
+
+    public function testRustIsRegisteredAsAnOptionalLanguage(): void
+    {
+        $rust = null;
+        foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
+            if ($descriptor->key === 'rust') {
+                $rust = $descriptor;
+            }
+        }
+
+        self::assertNotNull($rust, 'Rust must be a packaged descriptor.');
+        self::assertSame(['rust'], $rust->languages);
+        self::assertSame(['/opt/knossos/workers/rust/bin/knossos-rust-worker'], $rust->command);
+        self::assertSame('scanner_rust', $rust->stage);
+        self::assertTrue($rust->optional);
+    }
+
+    public function testEveryPackagedLanguageExceptRustIsMandatory(): void
+    {
+        foreach (LanguageDescriptor::defaults('/opt/knossos') as $descriptor) {
+            self::assertSame($descriptor->key === 'rust', $descriptor->optional, $descriptor->key);
+        }
+    }
+
+    public function testAnAbsentOptionalWorkerIsFilteredFromTheInstalledSet(): void
+    {
+        $keys = array_column(LanguageDescriptor::installed('/no/such/installation'), 'key');
+
+        self::assertSame(['php', 'typescript', 'python'], $keys);
+    }
+
+    public function testAPresentOptionalWorkerIsIncludedInTheInstalledSet(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-installed-' . bin2hex(random_bytes(6));
+        mkdir($root . '/workers/rust/bin', 0o700, true);
+        touch($root . '/workers/rust/bin/knossos-rust-worker');
+        try {
+            $keys = array_column(LanguageDescriptor::installed($root), 'key');
+        } finally {
+            unlink($root . '/workers/rust/bin/knossos-rust-worker');
+            // Remove the tree the test made, deepest first.
+            foreach (['/workers/rust/bin', '/workers/rust', '/workers', ''] as $suffix) {
+                @rmdir($root . $suffix);
+            }
+        }
+
+        self::assertContains('rust', $keys);
+    }
+
+    public function testAMandatoryDescriptorIsInstalledWithoutTouchingTheFilesystem(): void
+    {
+        // Only optional descriptors are probed. A scripted worker's command[0] is
+        // an interpreter name, not a path, so probing it would always fail.
+        foreach (LanguageDescriptor::defaults('/no/such/installation') as $descriptor) {
+            if (!$descriptor->optional) {
+                self::assertTrue($descriptor->isInstalled(), $descriptor->key);
+            }
+        }
     }
 }

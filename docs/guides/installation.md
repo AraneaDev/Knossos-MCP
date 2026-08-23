@@ -148,6 +148,12 @@ Desktop or WSL2; native Windows process/path behavior is not yet in the tested
 matrix. `doctor` verifies the effective runtime, workers, protocol, database,
 migrations, and data-directory writability.
 
+Cargo 1.82 or newer is optional. When it is present, `tools/install` builds the
+Rust worker and Rust scanning is available; when it is absent, `doctor` reports
+`worker.rust` as `skipped` rather than an error, and every other language keeps
+working. The Docker image needs nothing extra: it always carries a built Rust
+worker.
+
 ## Operational safety
 
 - Scanning never installs dependencies, executes project code, or boots Laravel.

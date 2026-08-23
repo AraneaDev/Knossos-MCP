@@ -2,7 +2,7 @@
 set -eu
 
 php tools/reset-coverage.php
-mkdir -p coverage/php coverage/js/tmp coverage/python
+mkdir -p coverage/php coverage/js/tmp coverage/python coverage/rust
 
 export KNOSSOS_PHP_COVERAGE_DIR=/opt/knossos/coverage/php
 export KNOSSOS_JS_COVERAGE_DIR=/opt/knossos/coverage/js/tmp
@@ -54,3 +54,16 @@ coverage report --data-file=coverage/python/.coverage \
 coverage xml --data-file=coverage/python/.coverage
 coverage json --data-file=coverage/python/.coverage -o coverage/python/coverage.json
 coverage html --data-file=coverage/python/.coverage --directory=coverage/python/html
+
+# --fail-under-lines signals a shortfall with exit status alone; cargo-llvm-cov
+# prints no message at all. `set -e` at the top turns that into an aborted run, so
+# when this step stops without saying anything, the figure it refused is in
+# `cargo llvm-cov report --manifest-path workers/rust/Cargo.toml`.
+cargo llvm-cov --manifest-path workers/rust/Cargo.toml \
+    --fail-under-lines "$(node -p "require('./coverage-budgets.json').rust.lines")" \
+    --json --output-path coverage/rust/coverage.json
+# llvm-cov appends its own `html/` to --output-dir, so this writes coverage/rust/html/
+# -- the same shape as coverage/python/html and coverage/js/lcov-report. Passing
+# coverage/rust/html here would nest it as coverage/rust/html/html.
+cargo llvm-cov report --manifest-path workers/rust/Cargo.toml --html --output-dir coverage/rust
+cargo llvm-cov report --manifest-path workers/rust/Cargo.toml --lcov --output-path coverage/rust/lcov.info

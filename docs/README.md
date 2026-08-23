@@ -52,6 +52,7 @@ Each page documents one query surface, its CLI and MCP forms, and its limits.
 - [PHP and Symfony](languages/php-symfony.md)
 - [TypeScript and JavaScript](languages/typescript.md)
 - [Python](languages/python.md)
+- [Rust](languages/rust.md)
 
 ## Reference
 

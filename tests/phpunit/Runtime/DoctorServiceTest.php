@@ -7,12 +7,12 @@ namespace Knossos\Tests\Phpunit\Runtime;
 use Knossos\Runtime\DoctorService;
 use Knossos\Runtime\RuntimeVersionRequirement;
 use Knossos\Store\SqliteConnection;
+use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
-use PHPUnit\Framework\TestCase;
 
 #[Group('doctor-service')]
-final class DoctorServiceTest extends TestCase
+final class DoctorServiceTest extends KnossosTestCase
 {
     private PDO $pdo;
     private string $installationRoot;
@@ -26,12 +26,36 @@ final class DoctorServiceTest extends TestCase
 
     protected function tearDown(): void
     {
-        if (is_dir($this->installationRoot)) {
-            foreach (glob($this->installationRoot . '/*') ?: [] as $f) {
-                @unlink($f);
-            }
-            @rmdir($this->installationRoot);
+        $this->removeInstallationRoot($this->installationRoot);
+    }
+
+    /**
+     * Recursively removes $this->installationRoot, including any nested
+     * directories a test built inside it (e.g. testRunOkIsUnaffectedByASkippedCheck's
+     * `workers/` symlink farm).
+     *
+     * A symlink is unlinked, never traversed: RecursiveDirectoryIterator
+     * follows symlinked directories by default, which would otherwise walk
+     * into and delete the real `workers/<language>` trees those symlinks
+     * point at.
+     */
+    private function removeInstallationRoot(string $root): void
+    {
+        if (!is_dir($root)) {
+            return;
         }
+        foreach (scandir($root) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $path = $root . '/' . $entry;
+            if (!is_link($path) && is_dir($path)) {
+                $this->removeInstallationRoot($path);
+            } else {
+                @unlink($path);
+            }
+        }
+        @rmdir($root);
     }
 
     // ----- shape -----
@@ -93,11 +117,13 @@ final class DoctorServiceTest extends TestCase
             $this->assertIsString($check['name']);
             $this->assertIsString($check['status']);
             $this->assertIsString($check['detail']);
-            // Status is exactly 'ok' or 'error' (no other values).
-            $this->assertContains($check['status'], ['ok', 'error']);
+            // Status is exactly 'ok', 'error', or 'skipped' (no other values).
+            // 'skipped' reports an optional worker (Rust) whose binary is not
+            // installed — visible in doctor output without counting as a fault.
+            $this->assertContains($check['status'], ['ok', 'error', 'skipped']);
         }
 
-        // The 13 checks fired when databasePath is ':memory:' (data.writable
+        // The 14 checks fired when databasePath is ':memory:' (data.writable
         // is conditional and excluded in this mode) — verifies both shape
         // AND the exact set of named checks in a single run() call.
         $names = array_column($result['checks'], 'name');
@@ -106,12 +132,12 @@ final class DoctorServiceTest extends TestCase
             'php.extension.json', 'php.extension.pdo', 'php.extension.pdo_sqlite',
             'node.version', 'git.version', 'python.version',
             'sqlite.integrity', 'sqlite.foreign_keys', 'sqlite.migrations',
-            'worker.php', 'worker.typescript', 'worker.python',
+            'worker.php', 'worker.typescript', 'worker.python', 'worker.rust',
         ];
         foreach ($expected as $name) {
             $this->assertContains($name, $names, "missing check: {$name}");
         }
-        assertSame(13, count($names));
+        assertSame(14, count($names));
     }
 
     public function testRunSkipsDataWritableWhenDatabasePathIsInMemory(): void
@@ -385,6 +411,95 @@ final class DoctorServiceTest extends TestCase
             assertSame((new RuntimeVersionRequirement($runtime, $pattern, $minimum))->verify($reported), $check['detail'], $name);
             assertSame('ok', $check['status'], $name);
         }
+    }
+
+    // ----- optional worker (Rust) -----
+
+    public function testAnAbsentOptionalWorkerIsSkippedRatherThanFailed(): void
+    {
+        // setUp() creates an empty temporary installation root, so no worker binary
+        // exists under it. The Rust worker cannot run, and that must not make an
+        // otherwise healthy installation unhealthy.
+        $report = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();
+        $rust = null;
+        foreach ($report['checks'] as $check) {
+            if ($check['name'] === 'worker.rust') {
+                $rust = $check;
+            }
+        }
+
+        self::assertNotNull($rust, 'doctor must report the Rust worker.');
+        self::assertSame('skipped', $rust['status']);
+        self::assertStringContainsString('workers/rust/bin/knossos-rust-worker', $rust['detail']);
+    }
+
+    public function testDoctorProbesOneWorkerPerPackagedDescriptor(): void
+    {
+        $report = (new DoctorService($this->pdo, $this->installationRoot, ':memory:'))->run();
+        $names = array_values(array_filter(
+            array_column($report['checks'], 'name'),
+            static fn(string $name): bool => str_starts_with($name, 'worker.'),
+        ));
+
+        self::assertSame(['worker.php', 'worker.typescript', 'worker.python', 'worker.rust'], $names);
+    }
+
+    public function testRunOkIsUnaffectedByASkippedCheck(): void
+    {
+        // Recomputing ok from $result['checks'] with the same formula run()
+        // uses is tautological: it passes for any production formula,
+        // including a broken one that folds 'skipped' into the error count.
+        // The only way to pin the real invariant is a fixture where every
+        // check genuinely passes except worker.rust, and a literal
+        // assertTrue($result['ok']) — so a regression that starts treating
+        // 'skipped' as unhealthy actually flips the assertion.
+        //
+        // That fixture must not be the repository root itself: Task 12 copies
+        // a compiled Rust binary into the `quality` container image, so
+        // "no Rust binary" stops being true there the moment it lands, and
+        // this assertion would go permanently unobserved in the one
+        // environment whose green result is actually trusted. Instead,
+        // symlink installationRoot's php/typescript/python worker
+        // directories at the repository's real ones (so LanguageDescriptor's
+        // `$installationRoot . '/workers/<language>/...'` paths resolve to
+        // real, dependency-installed workers and genuinely report 'ok'), and
+        // deliberately never create workers/rust. "No Rust binary" is then a
+        // property of this fixture, true regardless of whether this checkout
+        // — or the container image built from it — ever ran `cargo build`.
+        // Same "command -v" probe as Processes::locateGit(), inlined here
+        // because only this one test needs node/python3 rather than git.
+        if (trim((string) @shell_exec('command -v node 2>/dev/null')) === '') {
+            self::markTestSkipped('node is not on PATH.');
+        }
+        if (trim((string) @shell_exec('command -v python3 2>/dev/null')) === '') {
+            self::markTestSkipped('python3 is not on PATH.');
+        }
+
+        mkdir($this->installationRoot . '/workers', 0777, true);
+        foreach (['php', 'typescript', 'python'] as $language) {
+            symlink(self::repositoryRoot() . '/workers/' . $language, $this->installationRoot . '/workers/' . $language);
+        }
+
+        // schema_migrations is seeded the same way
+        // testRunSqliteMigrationsCheckPassesWhenSixMigrationsApplied does, so
+        // sqlite.migrations passes too; sqlite.integrity and
+        // sqlite.foreign_keys already pass on a fresh in-memory database.
+        $this->pdo->exec('CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)');
+        for ($i = 1; $i <= 6; $i++) {
+            $this->pdo->prepare('INSERT INTO schema_migrations (version) VALUES (:v)')->execute(['v' => "m{$i}"]);
+        }
+
+        $service = new DoctorService($this->pdo, $this->installationRoot, ':memory:');
+
+        $result = $service->run();
+
+        $errors = array_filter($result['checks'], static fn(array $check): bool => $check['status'] === 'error');
+        assertSame([], array_column($errors, 'name'), 'no check should report error in this fixture');
+
+        $rust = $this->findCheck($result, 'worker.rust');
+        assertSame('skipped', $rust['status']);
+
+        self::assertTrue($result['ok'], 'a report with only ok and skipped checks must be healthy');
     }
 
     // ----- helpers -----

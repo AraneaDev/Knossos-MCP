@@ -95,6 +95,19 @@ foreach (['PythonAstFactCollector' => 'class', 'scan' => 'def', 'handle' => 'def
     $checked[] = 'python:' . $symbol;
 }
 
+// The wire DTOs the module doc calls out ("Serde mirrors of the DTOs under
+// src/Scanner/Protocol"). Each is a single `///` line directly above a derive
+// attribute directly above `pub struct Name`, so the pattern tolerates exactly
+// one attribute line between the doc comment and the declaration.
+$rust = (string) file_get_contents($root . '/workers/rust/src/protocol.rs');
+foreach (['Manifest', 'Evidence', 'Node', 'Edge', 'Diagnostic', 'Contribution'] as $symbol) {
+    $pattern = '/\/\/\/[^\n]+\n#\[[^\n]*]\n\s*pub struct ' . preg_quote($symbol, '/') . '\b/';
+    if (preg_match($pattern, $rust) !== 1) {
+        $failures[] = $symbol . ' requires an immediate Rust doc comment summary';
+    }
+    $checked[] = 'rust:' . $symbol;
+}
+
 $report = ['schema_version' => 1, 'documented_contracts' => count($checked) - count($failures), 'checked_contracts' => count($checked), 'failures' => $failures, 'contracts' => $checked];
 $reportDirectory = $root . '/coverage/quality';
 if (!is_dir($reportDirectory) && !mkdir($reportDirectory, 0775, true) && !is_dir($reportDirectory)) {
@@ -105,7 +118,7 @@ if ($failures !== []) {
     fwrite(STDERR, implode(PHP_EOL, $failures) . PHP_EOL);
     exit(1);
 }
-printf("API documentation passed: %d PHP/JavaScript/Python contracts.\n", count($checked));
+printf("API documentation passed: %d PHP/JavaScript/Python/Rust contracts.\n", count($checked));
 /** Whether a docblock says anything beyond annotations. Mirrored in tools/docstring-report.php, deliberately: two gates disagreeing about what counts as documented would make both untrustworthy. */
 
 function hasSummary(string $documentation): bool

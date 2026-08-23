@@ -3,7 +3,7 @@
 The fast quality profile publishes `coverage/quality/maintainability.json` and
 fails when any checked-in budget in `maintainability-budgets.json` regresses.
 The report covers all first-party PHP, TypeScript/JavaScript, and Python runtime
-sources.
+sources. The Rust worker is the one first-party runtime outside it: `tools/quality` runs formatting, Clippy with `-D warnings`, and tests only when `cargo` is available; missing Cargo skips these checks outside the quality container, while the quality container treats its absence as a failure.
 
 Current monotonic budgets are:
 
@@ -31,9 +31,9 @@ These maxima are ratchets, not design targets. New or changed functions should
 stay substantially below them. Further decomposition of the large query
 algorithms should lower the checked-in limits again; raising a limit requires
 before/after evidence and an explicit review. PHPStan, ESLint,
-Ruff/mypy, and compiler syntax gates run before the report, so unused variables,
-unreachable Python paths, and invalid typed dependencies cannot be hidden by
-the metric report.
+Ruff/mypy, Clippy, and compiler syntax gates run before the report, so unused
+variables, unreachable Python paths, and invalid typed dependencies cannot be
+hidden by the metric report.
 
 Generated dependencies, fixtures, and tests are excluded from product-code
 metrics. Duplicate blocks shorter than eight logical lines or 160 normalized

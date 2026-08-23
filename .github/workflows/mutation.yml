@@ -101,7 +101,7 @@ jobs:
         # Uploaded even when the shard fails, so the gate can name the missing
         # shard instead of reporting a smaller tree as a passing one.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: mutation-shard-${{ matrix.shard }}
           path: mutation-shard-${{ matrix.shard }}.json

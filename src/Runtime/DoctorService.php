@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Runtime;
 
 use Knossos\Git\GitProcessRunner;
+use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use PDO;
 use Throwable;
@@ -75,9 +76,11 @@ final readonly class DoctorService
         if ($this->databasePath !== ':memory:') {
             $this->check($checks, 'data.writable', fn(): string => is_writable(dirname($this->databasePath)) ? dirname($this->databasePath) : throw new \RuntimeException('Data directory is not writable.'));
         }
-        $this->worker($checks, 'worker.php', [PHP_BINARY, '-d', 'memory_limit=512M', $this->installationRoot . '/workers/php/bin/worker'], 'knossos.php');
-        $this->worker($checks, 'worker.typescript', ['node', '--max-old-space-size=512', $this->installationRoot . '/workers/typescript/bin/worker.js'], 'knossos.typescript');
-        $this->worker($checks, 'worker.python', ['python3', '-I', '-B', $this->installationRoot . '/workers/python/bin/worker.py'], 'knossos.python');
+        // Sourced from LanguageDescriptor rather than repeated here, so scan and
+        // doctor cannot disagree about a worker's command or its availability.
+        foreach (LanguageDescriptor::defaults($this->installationRoot) as $descriptor) {
+            $this->worker($checks, $descriptor);
+        }
 
         return ['ok' => count(array_filter($checks, static fn(array $check): bool => $check['status'] === 'error')) === 0, 'checks' => $checks];
     }
@@ -97,12 +100,32 @@ final readonly class DoctorService
     }
 
     /**
-     * Start a language worker and confirm its identity and protocol version.
+     * Start one language worker and confirm its identity and protocol version.
      *
-     * @param list<array{name: string, status: string, detail: string}> $checks @param non-empty-list<string> $command
+     * An optional worker that is not installed reports `skipped`, not `error`:
+     * a language whose toolchain the operator never installed is a capability
+     * they do not have, not a fault in the installation they do. Reporting it
+     * as `skipped` rather than omitting the check entirely keeps that
+     * capability visible in `doctor` output, so an operator can tell "not
+     * installed" apart from "not a thing". `run()` counts only `error` checks
+     * when deciding overall health, and the CLI renderer prints whatever
+     * status it is given, so neither needed a change for the new status value.
+     *
+     * The command and expected id both come from the descriptor, so this
+     * cannot drift from what a scan actually launches. The id convention is
+     * `knossos.<key>`, which every packaged worker follows.
+     *
+     * @param list<array{name: string, status: string, detail: string}> $checks
      */
-    private function worker(array &$checks, string $name, array $command, string $expectedId): void
+    private function worker(array &$checks, LanguageDescriptor $descriptor): void
     {
+        $name = 'worker.' . $descriptor->key;
+        if (!$descriptor->isInstalled()) {
+            $checks[] = ['name' => $name, 'status' => 'skipped', 'detail' => 'not installed: ' . $descriptor->command[0]];
+            return;
+        }
+        $command = $descriptor->command;
+        $expectedId = 'knossos.' . $descriptor->key;
         $this->check($checks, $name, static function () use ($command, $expectedId): string {
             $client = new ProcessScannerClient($command);
             try {
