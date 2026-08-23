@@ -19,6 +19,7 @@ struct Walk<'a> {
     module: String,
     /// Names this file brought into scope.
     aliases: Aliases,
+    current_impl_target: Option<String>,
 }
 
 /// Walk every item in a parsed file, attributing each to `module`.
@@ -27,6 +28,7 @@ pub fn walk(facts: &mut Facts, module: &str, file: &syn::File) {
         facts,
         module: module.to_owned(),
         aliases: Aliases::default(),
+        current_impl_target: None,
     };
     walker.collect_uses(module, &file.items);
     walker.walk_items(module, "module", &file.items);
@@ -224,6 +226,7 @@ impl Walk<'_> {
                 let Some(target) = self.type_path(container, &node.self_ty) else {
                     return;
                 };
+                let old_target = self.current_impl_target.replace(target.clone());
                 // `impl Trait for Type` names both endpoints explicitly, so the
                 // `implements` edge is `certain`. The trait name is resolved the
                 // same way any other path is, through `use` and the `self`/`super`/
@@ -255,6 +258,7 @@ impl Walk<'_> {
                         );
                     }
                 }
+                self.current_impl_target = old_target;
             }
             Item::Mod(node) => self.walk_mod(container, container_kind, node, item.span()),
             _ => {}
@@ -387,6 +391,11 @@ impl Walk<'_> {
         let single_segment = path.segments.len() == 1;
         if path.leading_colon.is_some() || rendered == "crate" || rendered.starts_with("crate::") {
             return Some((rendered.trim_start_matches("::").to_owned(), single_segment));
+        }
+        if rendered == "Self" || rendered.starts_with("Self::") {
+            if let Some(target) = &self.current_impl_target {
+                return Some((rendered.replacen("Self", target, 1), single_segment));
+            }
         }
         if rendered == "self"
             || rendered.starts_with("self::")
@@ -552,6 +561,18 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
             self.visit_call(&path.path, node.span());
         }
         syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_struct(&mut self, node: &syn::ExprStruct) {
+        if let Some((target, unconfirmed)) = self.walk.resolve_path(&self.container, &node.path) {
+            let endpoint = crate::visit::reference("class", &target);
+            if unconfirmed {
+                self.walk.facts.conditional_edge(&self.enclosing, &endpoint, syn::spanned::Spanned::span(node));
+            } else {
+                self.walk.facts.edge("calls", &self.enclosing, &endpoint, "probable", syn::spanned::Spanned::span(node));
+            }
+        }
+        syn::visit::visit_expr_struct(self, node);
     }
 }
 
