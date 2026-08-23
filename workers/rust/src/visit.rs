@@ -19,6 +19,7 @@ struct Walk<'a> {
     module: String,
     /// Names this file brought into scope.
     aliases: Aliases,
+    /// Target type of the current impl block, for resolving `Self`.
     current_impl_target: Option<String>,
 }
 
