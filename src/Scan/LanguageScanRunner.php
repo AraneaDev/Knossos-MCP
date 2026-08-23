@@ -143,6 +143,14 @@ final readonly class LanguageScanRunner
                 static fn($unit): string => $unit->configPath,
                 array_filter($plan->preparation->discovery->units, static fn($unit): bool => $unit->kind === 'typescript'),
             ));
+        } elseif ($descriptor->key === 'python') {
+            $request['frameworks'] = $plan->preparation->pythonFrameworks;
+        } elseif ($descriptor->key === 'rust') {
+            $request['frameworks'] = $plan->preparation->rustFrameworks;
+            $request['config_files'] = array_values(array_map(
+                static fn($unit): string => $unit->configPath,
+                array_filter($plan->preparation->discovery->units, static fn($unit): bool => $unit->kind === 'cargo'),
+            ));
         }
         // One request per batch: ScannerProtocolSession::scan() calls
         // beginRequest() per invocation, which resets both the cumulative
@@ -169,14 +177,19 @@ final readonly class LanguageScanRunner
                     $received[] = $contribution;
                 }
             } catch (WorkerException $error) {
-                // WORKER_OUTPUT_LIMIT is the one failure this loop can answer,
-                // because it says the batch was too big rather than that the
-                // worker is broken. Everything else — a crash, a timeout, and
-                // above all a cancellation — keeps the per-language behaviour it
-                // already had: rethrow, and let run() degrade or propagate it.
-                // A single file cannot be split any further, so retrying it
-                // would only burn the remaining attempts and worker restarts.
-                if ($error->diagnosticCode !== 'WORKER_OUTPUT_LIMIT'
+                // WORKER_OUTPUT_LIMIT, WORKER_FRAME_TOO_LARGE, and
+                // WORKER_REQUEST_TOO_LARGE all say the batch was too big rather
+                // than that the worker is broken — split the batch and retry.
+                // TypeScript heap exhaustion is the same in principle: a compiler
+                // that hit a V8 ceiling on the current batch size.
+                // Everything else — a crash, a timeout, and above all a
+                // cancellation — keeps the per-language behaviour it already had:
+                // rethrow, and let run() degrade or propagate it. A single file
+                // cannot be split any further, so retrying it would only burn
+                // the remaining attempts and worker restarts.
+                $retryable = in_array($error->diagnosticCode, ['WORKER_OUTPUT_LIMIT', 'WORKER_FRAME_TOO_LARGE', 'WORKER_REQUEST_TOO_LARGE'], true)
+                    || self::isTypeScriptHeapExhaustion($descriptor, $error, $request);
+                if (!$retryable
                     || count($item['files']) <= 1
                     || $item['halvings'] >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
                     || $cancellation->isCancelled()) {
@@ -227,6 +240,26 @@ final readonly class LanguageScanRunner
             'milliseconds' => self::elapsedMilliseconds($started),
         ];
     }
+    /**
+     * Whether a TypeScript worker explicitly died from V8 heap exhaustion.
+     *
+     * An ordinary worker exit is a real failure and is not retried. Node's
+     * stable stderr signature lets a large batch be treated like an output
+     * overflow: split only that batch and give the language a fresh worker.
+     */
+    private static function isTypeScriptHeapExhaustion(LanguageDescriptor $descriptor, WorkerException $error, array $request): bool
+    {
+        if ($descriptor->key !== 'typescript'
+            || $error->diagnosticCode !== 'WORKER_EXITED'
+            || ($request['config_files'] ?? []) !== []) {
+            return false;
+        }
+        $message = strtolower($error->getMessage());
+
+        return str_contains($message, 'javascript heap out of memory')
+            || str_contains($message, 'ineffective mark-compacts near heap limit');
+    }
+
     /**
      * Split the files a language must scan into scan requests.
      *

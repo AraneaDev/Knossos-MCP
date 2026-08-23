@@ -110,6 +110,7 @@ final class WatchTest extends KnossosTestCase
                     ?CancellationToken $cancellation = null,
                     ?int $snapshotRetention = null,
                     ?int $workerTimeoutMs = null,
+                    ?int $workerMemoryMb = null,
                 ): ResultEnvelope {
                     $index = $this->calls;
                     ++$this->calls;

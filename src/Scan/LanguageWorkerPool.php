@@ -32,7 +32,8 @@ class LanguageWorkerPool
     public function client(LanguageDescriptor $descriptor, WorkerExecutionPolicy $policy): ProcessScannerClient
     {
         $this->prepare($policy);
-        return $this->clients[$descriptor->key] ??= new ProcessScannerClient($descriptor->command, $policy->limits());
+        $adjusted = $descriptor->withMemoryMb($policy->workerMemoryMb);
+        return $this->clients[$descriptor->key] ??= new ProcessScannerClient($adjusted->command, $policy->limits());
     }
 
     /**

@@ -21,7 +21,7 @@ final class ScanCommand implements CliCommand
     /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
-        return ['db', 'json', 'name', 'max-files', 'max-file-bytes', 'boundary', 'mode', 'snapshot-retention', 'worker-timeout-ms'];
+        return ['db', 'json', 'name', 'max-files', 'max-file-bytes', 'boundary', 'mode', 'snapshot-retention', 'worker-timeout-ms', 'worker-memory-mb'];
     }
 
     /** {@inheritDoc} */
@@ -38,6 +38,7 @@ final class ScanCommand implements CliCommand
             $context->cancellationToken(),
             isset($options['snapshot-retention']) ? $context->options->integer($options, 'snapshot-retention', 5, 0, 20) : null,
             isset($options['worker-timeout-ms']) ? $context->options->integer($options, 'worker-timeout-ms', 30_000, 1_000, 120_000) : null,
+            isset($options['worker-memory-mb']) ? $context->options->integer($options, 'worker-memory-mb', 1024, 64, 65536) : null,
         );
         $context->output($result->jsonSerialize(), $context->options->flag($options, 'json'), $result->summary . "\nProject: " . $result->projectId . "\nSnapshot: " . $result->snapshotId);
         return 0;

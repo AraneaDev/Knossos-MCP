@@ -127,6 +127,25 @@ while (($line = fgets(STDIN)) !== false) {
             if ($mode === 'per_file_exit' && count($requested) > $threshold) {
                 exit(3);
             }
+            if ($mode === 'per_file_frame_too_large_once'
+                && count($requested) > $threshold
+                && !file_exists($pidFile . '.framed')) {
+                file_put_contents($pidFile . '.framed', '1');
+                // A frame that exceeds the client's maxLineBytes without a
+                // terminating newline, mimicking a worker that streams a
+                // contribution too large for one NDJSON frame.
+                fwrite(STDOUT, str_repeat('x', 150_000));
+                fflush(STDOUT);
+                exit(0);
+            }
+            if ($mode === 'per_file_oom_once'
+                && count($requested) > $threshold
+                && !file_exists($pidFile . '.oomed')) {
+                file_put_contents($pidFile . '.oomed', '1');
+                fwrite(STDERR, "FATAL ERROR: Ineffective mark-compacts near heap limit\nJavaScript heap out of memory\n");
+                fflush(STDERR);
+                exit(1);
+            }
             // Overflows the FIRST oversized request only, so a caller that
             // re-widened its budget afterwards can be told apart from one that
             // stayed pinned at the reduced value.

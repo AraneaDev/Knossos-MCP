@@ -73,6 +73,74 @@ final class ScanPlannerTest extends TestCase
         );
     }
 
+    public function testPrepareDetectsPythonAndRustFrameworksFromManifests(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-planner-frameworks-' . bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        try {
+            file_put_contents($root . '/pyproject.toml', <<<'TOML'
+[project]
+name = "demo"
+dependencies = ["fastapi", "requests"]
+TOML);
+            file_put_contents($root . '/Cargo.toml', <<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+axum = "0.7"
+serde = "1"
+TOML);
+
+            $planner = new ScanPlanner($this->createSchema(), [$root]);
+            $preparation = $planner->prepare($root, null, null, null, 'auto', 0, null);
+
+            assertSame(['fastapi'], $preparation->pythonFrameworks);
+            assertSame(['axum'], $preparation->rustFrameworks);
+        } finally {
+            @unlink($root . '/pyproject.toml');
+            @unlink($root . '/Cargo.toml');
+            @rmdir($root);
+        }
+    }
+
+    public function testPrepareDetectsPythonFrameworksFromRequirementsTxt(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-planner-req-' . bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        try {
+            file_put_contents($root . '/requirements.txt', "flask==3.0\nrequests==2.31\n");
+            $planner = new ScanPlanner($this->createSchema(), [$root]);
+            $preparation = $planner->prepare($root, null, null, null, 'auto', 0, null);
+            assertSame(['flask'], $preparation->pythonFrameworks);
+        } finally {
+            @unlink($root . '/requirements.txt');
+            @rmdir($root);
+        }
+    }
+
+    public function testPrepareAcceptsConfiguredFrameworkHintsWithoutManifestDeps(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-planner-hints-' . bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        try {
+            file_put_contents($root . '/knossos.json', json_encode([
+                'version' => 1,
+                'frameworks' => ['flask', 'rocket'],
+            ], JSON_THROW_ON_ERROR));
+
+            $planner = new ScanPlanner($this->createSchema(), [$root]);
+            $preparation = $planner->prepare($root, null, null, null, 'auto', 0, null);
+
+            assertSame(['flask'], $preparation->pythonFrameworks);
+            assertSame(['rocket'], $preparation->rustFrameworks);
+        } finally {
+            @unlink($root . '/knossos.json');
+            @rmdir($root);
+        }
+    }
+
     public function testFinalizeReturnsFullModeWhenNoExistingProject(): void
     {
         $pdo = $this->createSchema();

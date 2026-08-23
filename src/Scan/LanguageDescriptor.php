@@ -20,6 +20,7 @@ final readonly class LanguageDescriptor
      * @param int $scanBatchFiles most files in one scan request, guarding the deadline
      * @param int $scanBatchSourceBytes most source bytes in one scan request, guarding the output-byte cap
      * @param bool $optional whether a missing worker binary is tolerated
+     * @param ?int $workerMemoryMb heap/memory cap in mebibytes, or null when the runtime decides
      */
     public function __construct(
         public string $key,
@@ -29,6 +30,7 @@ final readonly class LanguageDescriptor
         public int $scanBatchFiles = WorkerExecutionPolicy::SCAN_BATCH_FILES,
         public int $scanBatchSourceBytes = WorkerExecutionPolicy::SCAN_BATCH_SOURCE_BYTES,
         public bool $optional = false,
+        public ?int $workerMemoryMb = null,
     ) {}
 
     /**
@@ -74,14 +76,15 @@ final readonly class LanguageDescriptor
     public static function defaults(string $installationRoot): array
     {
         return [
-            new self('php', ['php'], [PHP_BINARY, '-d', 'memory_limit=512M', $installationRoot . '/workers/php/bin/worker'], 'scanner_php'),
+            new self('php', ['php'], [PHP_BINARY, '-d', 'memory_limit=512M', $installationRoot . '/workers/php/bin/worker'], 'scanner_php', workerMemoryMb: 512),
             new self(
                 'typescript',
                 ['typescript', 'javascript'],
-                ['node', '--max-old-space-size=512', $installationRoot . '/workers/typescript/bin/worker.js'],
+                ['node', '--max-old-space-size=1024', $installationRoot . '/workers/typescript/bin/worker.js'],
                 'scanner_typescript',
                 scanBatchFiles: 2_000,
                 scanBatchSourceBytes: 3_000_000,
+                workerMemoryMb: 1024,
             ),
             new self('python', ['python'], ['python3', '-I', '-B', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python'),
             new self(
@@ -93,6 +96,56 @@ final readonly class LanguageDescriptor
                 optional: true,
             ),
         ];
+    }
+
+    /**
+     * Return a copy with the runtime's memory cap adjusted to the given
+     * mebibytes, leaving scan-batch and other settings unchanged. A null
+     * argument or null $workerMemoryMb returns the descriptor unchanged.
+     *
+     * Only typescript and php encode their cap in the command array. Python
+     * and Rust are runtime- or compile-time managed and have no flag to
+     * adjust, so the descriptor is returned unmodified.
+     */
+    public function withMemoryMb(?int $mb): self
+    {
+        if ($mb === null || $this->workerMemoryMb === null) {
+            return $this;
+        }
+        if ($mb === $this->workerMemoryMb) {
+            return $this;
+        }
+        $command = $this->command;
+        if ($this->key === 'typescript') {
+            // replace '--max-old-space-size=N' in place
+            foreach ($command as $i => $arg) {
+                if (str_starts_with($arg, '--max-old-space-size=')) {
+                    $command[$i] = "--max-old-space-size={$mb}";
+                    break;
+                }
+            }
+        } elseif ($this->key === 'php') {
+            // replace 'memory_limit=NM' in place
+            foreach ($command as $i => $arg) {
+                if (str_starts_with($arg, '-d') && ($command[$i + 1] ?? '') !== '') {
+                    $next = $command[$i + 1];
+                    if (str_starts_with($next, 'memory_limit=')) {
+                        $command[$i + 1] = "memory_limit={$mb}M";
+                        break;
+                    }
+                }
+            }
+        }
+        return new self(
+            $this->key,
+            $this->languages,
+            $command,
+            $this->stage,
+            scanBatchFiles: $this->scanBatchFiles,
+            scanBatchSourceBytes: $this->scanBatchSourceBytes,
+            optional: $this->optional,
+            workerMemoryMb: $mb,
+        );
     }
 
     /**

@@ -68,6 +68,9 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "the Rust worker binary is required in the quality container" >&2
     exit 1
 fi
+# The Python worker is mandatory, so its protocol conformance is checked
+# unconditionally, not behind an existence probe like the optional Rust one.
+tools/scanner-conformance --require=partial_ast -- python3 -I -B "$root/workers/python/bin/worker.py"
 if command -v pre-commit >/dev/null 2>&1; then
     pre-commit validate-config .pre-commit-config.yaml
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then

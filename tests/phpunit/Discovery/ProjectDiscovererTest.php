@@ -8,6 +8,7 @@ use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Discovery\ProjectUnit;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -503,6 +504,85 @@ TOML
         $this->assertNull($pyUnits[0]->metadata['name']);
     }
 
+    // ── Python / pyproject.toml ──────────────────────────────────────
+
+    private function pythonUnit(string $toml): ProjectUnit
+    {
+        file_put_contents($this->root . '/pyproject.toml', $toml);
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'python'));
+        $this->assertNotEmpty($units);
+
+        return $units[0];
+    }
+
+    public function testDiscoverReadsPythonDependenciesAndOptionalGroups(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[project]
+name = "demo"
+dependencies = [
+    "Django>=4.2",
+    "fastapi[all]",
+    "requests @ https://example.com/requests.whl",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+docs = ["sphinx"]
+TOML
+        );
+        $requires = $unit->metadata['requires'];
+        assertSame(['django', 'fastapi', 'pytest', 'requests', 'sphinx'], array_keys($requires));
+    }
+
+    public function testDiscoverReadsPythonScriptsAsEntryPoints(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[project]
+name = "demo"
+
+[project.scripts]
+cli = "demo.cli:main"
+worker = "demo.jobs.worker:run"
+TOML
+);
+        assertSame(['demo/cli.py', 'demo/jobs/worker.py'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverReadsPoetryMetadataAsPythonFallback(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[tool.poetry]
+name = "poetry-demo"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.110"
+
+[tool.poetry.scripts]
+cli = "poetry_demo.main:cli"
+TOML);
+
+        assertSame('poetry-demo', $unit->metadata['name']);
+        assertSame(['poetry_demo/main.py'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverReadsPipRequirementsAsUnit(): void
+    {
+        file_put_contents($this->root . '/requirements.txt', <<<'TXT'
+# comment
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+-e ./local-pkg
+psutil>=7.2 ; python_version >= "3.11"
+TXT);
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'requirements'));
+        $this->assertNotEmpty($units);
+        assertSame(['fastapi', 'psutil', 'uvicorn'], array_keys($units[0]->metadata['requires']));
+    }
+
     // ── Knossos config ───────────────────────────────────────────────
 
     public function testDiscoverReadsKnossosJsoncConfig(): void
@@ -652,6 +732,68 @@ TOML
     public function testDiscoverReturnsNullNameForWorkspaceOnlyManifestWithoutAnyName(): void
     {
         $this->assertNull($this->cargoUnitName("[workspace]\nmembers = [\"a\", \"b\"]\n"));
+    }
+
+    private function cargoUnit(string $toml): ProjectUnit
+    {
+        file_put_contents($this->root . '/Cargo.toml', $toml);
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'cargo'));
+        $this->assertNotEmpty($units);
+
+        return $units[0];
+    }
+
+    public function testDiscoverReadsCargoDependencies(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"
+axum = { version = "0.7", features = ["macros"] }
+
+[dev-dependencies]
+tokio = "1"
+
+[build-dependencies]
+cc = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+TOML);
+        assertSame(['axum', 'cc', 'libc', 'serde', 'tokio'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsCargoBinPathsAsEntryPoints(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[bin]]
+name = "mytool"
+path = "tools/mytool.rs"
+
+[[bin]]
+name = "other"
+TOML);
+        assertSame(['src/bin/other.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverInfersImplicitCargoBinaryPath(): void
+    {
+        $unit = $this->cargoUnit("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        assertSame(['src/main.rs'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverLeavesVirtualWorkspaceWithoutEntryPoints(): void
+    {
+        $unit = $this->cargoUnit("[workspace]\nmembers = [\"a\", \"b\"]\n");
+        assertSame([], $unit->metadata['entry_points']);
     }
 
     /**

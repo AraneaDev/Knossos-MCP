@@ -46,7 +46,7 @@ final class ScanAnalysisPipelineTest extends TestCase
             executionPolicy: new WorkerExecutionPolicy(),
             laravel: $laravel,
             symfony: $symfony,
-            configurationHashes: ['php' => '', 'typescript' => '', 'python' => ''],
+            configurationHashes: ['php' => '', 'typescript' => '', 'python' => '', 'rust' => ''],
             configurationMilliseconds: 0.0,
             discoveryMilliseconds: 0.0,
             planningMilliseconds: 0.0,
@@ -142,6 +142,38 @@ final class ScanAnalysisPipelineTest extends TestCase
         assertSame(true, $analysis instanceof ScanAnalysis);
         assertSame(true, is_array($analysis->classifications));
         assertSame(true, is_array($analysis->boundaries));
+    }
+
+    public function testAnalyzeTagsRustRouteHandlersAsClassifications(): void
+    {
+        $pipeline = new ScanAnalysisPipeline();
+        $plan = new ScanPlan(
+            preparation: $this->makePreparation(),
+            projectId: 'plan-rust-route',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+        $node = new NodeFact(
+            'rust:function:crate::health',
+            'function',
+            'crate::health',
+            'health',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('src/routes.rs', 4, 4),
+            ['rust_framework_roles' => ['rust.route_handler']],
+        );
+
+        $analysis = $pipeline->analyze($plan, [new ScanContribution('knossos.rust', [$node])]);
+
+        $facts = array_values(array_filter(
+            $analysis->classifications,
+            static fn(ClassificationFact $fact): bool => $fact->role === 'rust.route_handler',
+        ));
+        assertSame(1, count($facts));
+        assertSame('rust:function:crate::health', $facts[0]->nodeReference);
+        assertSame('rust.framework.ast.v1', $facts[0]->ruleId);
     }
 
     /**

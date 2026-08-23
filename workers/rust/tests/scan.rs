@@ -1,13 +1,13 @@
 //! Scanning tests driving the worker against real files on disk.
 
 use std::io::Cursor;
-use std::path::Path;
 
 use knossos_rust_worker::server::run;
 use serde_json::Value;
 
-/// Write `files` into a fresh temporary root and scan them, returning contributions.
-pub fn scan_fixture(name: &str, files: &[(&str, &str)]) -> Vec<Value> {
+/// Write `files` into a fresh temporary root and run a scan request with
+/// `params` merged over the base (`root`, `files`), returning contributions.
+pub fn scan_fixture_with(name: &str, files: &[(&str, &str)], params: &Value) -> Vec<Value> {
     let root = std::env::temp_dir().join(format!("knossos-rust-{name}"));
     let _ = std::fs::remove_dir_all(&root);
     for (relative, source) in files {
@@ -15,14 +15,19 @@ pub fn scan_fixture(name: &str, files: &[(&str, &str)]) -> Vec<Value> {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, source).unwrap();
     }
+    let base = serde_json::json!({
+        "root": std::fs::canonicalize(&root).unwrap().to_str().unwrap(),
+        "files": files.iter().map(|(relative, _)| *relative).collect::<Vec<_>>(),
+    });
+    let mut merged = base.as_object().unwrap().clone();
+    for (key, value) in params.as_object().unwrap() {
+        merged.insert(key.clone(), value.clone());
+    }
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "scan",
-        "params": {
-            "root": std::fs::canonicalize(&root).unwrap().to_str().unwrap(),
-            "files": files.iter().map(|(relative, _)| *relative).collect::<Vec<_>>(),
-        },
+        "params": merged,
     });
     let mut output: Vec<u8> = Vec::new();
     run(Cursor::new(request.to_string().into_bytes()), &mut output).unwrap();
@@ -32,13 +37,346 @@ pub fn scan_fixture(name: &str, files: &[(&str, &str)]) -> Vec<Value> {
         .filter(|line| !line.is_empty())
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let _ = std::fs::remove_dir_all(Path::new(&root));
+    let _ = std::fs::remove_dir_all(&root);
 
     replies
         .into_iter()
         .filter(|reply| reply["method"] == "scan/contribution")
         .map(|reply| reply["params"].clone())
         .collect()
+}
+
+/// Write `files` into a fresh temporary root and scan them, returning contributions.
+pub fn scan_fixture(name: &str, files: &[(&str, &str)]) -> Vec<Value> {
+    scan_fixture_with(name, files, &serde_json::json!({}))
+}
+
+#[test]
+fn a_crate_root_main_marks_the_module_executable() {
+    let contributions = scan_fixture("executable-main", &[("src/main.rs", "fn main() {}\n")]);
+    let module = contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["kind"] == "module")
+        .unwrap();
+    assert_eq!(serde_json::json!(true), module["attributes"]["executable"]);
+}
+
+#[test]
+fn a_library_file_without_main_is_not_executable() {
+    let contributions = scan_fixture("not-executable", &[("src/lib.rs", "pub fn go() {}\n")]);
+    let module = contributions[0]["nodes"].as_array().unwrap()[0].clone();
+    assert_eq!(serde_json::json!({}), module["attributes"]);
+}
+
+#[test]
+fn axum_routes_become_route_nodes_and_edges() {
+    let source = r#"
+use axum::Router;
+use axum::routing::get;
+
+fn handler() {}
+
+fn app() -> Router {
+    Router::new().route("/health", get(handler))
+}
+"#;
+    let contributions = scan_fixture_with(
+        "axum-routes",
+        &[("src/lib.rs", source)],
+        &serde_json::json!({ "frameworks": ["axum"] }),
+    );
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    let route = nodes
+        .iter()
+        .find(|node| node["kind"] == "route")
+        .expect("axum route node missing");
+    assert_eq!("GET /health => crate::handler", route["canonical_name"]);
+    assert_eq!("axum", route["attributes"]["framework"]);
+    assert_eq!("/health", route["attributes"]["path"]);
+
+    let edges = contributions[0]["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "routes_to"
+            && edge["source"] == "rust:route:GET /health => crate::handler"
+            && edge["target"] == "rust:function:crate::handler"
+    }));
+}
+
+#[test]
+fn axum_routes_are_diagnosed_when_framework_not_requested() {
+    let source = r#"
+use axum::Router;
+use axum::routing::get;
+
+fn handler() {}
+
+fn app() -> Router {
+    Router::new().route("/health", get(handler))
+}
+"#;
+    let contributions = scan_fixture("axum-unrequested", &[("src/lib.rs", source)]);
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    assert!(
+        !nodes.iter().any(|node| node["kind"] == "route"),
+        "no route without the axum framework hint"
+    );
+}
+
+#[test]
+fn actix_attribute_routes_are_recorded() {
+    let source = r#"
+#[get("/ping")]
+#[route("/pong", method = "PUT")]
+fn ping() {}
+"#;
+    let contributions = scan_fixture_with(
+        "actix-attrs",
+        &[("src/lib.rs", source)],
+        &serde_json::json!({ "frameworks": ["actix"] }),
+    );
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    let routes: Vec<&Value> = nodes
+        .iter()
+        .filter(|node| node["kind"] == "route")
+        .collect();
+    assert_eq!(2, routes.len());
+    assert!(routes
+        .iter()
+        .any(|route| route["canonical_name"] == "GET /ping => crate::ping"));
+    assert!(routes
+        .iter()
+        .any(|route| route["canonical_name"] == "PUT /pong => crate::ping"));
+    let handler = nodes
+        .iter()
+        .find(|node| node["canonical_name"] == "crate::ping")
+        .unwrap();
+    assert_eq!(
+        serde_json::json!(["rust.route_handler"]),
+        handler["attributes"]["rust_framework_roles"]
+    );
+}
+
+#[test]
+fn actix_call_routes_are_recorded() {
+    let source = r#"
+fn handler() {}
+
+fn app() {
+    web::resource("/health").route(web::get().to(handler));
+}
+"#;
+    let contributions = scan_fixture_with(
+        "actix-call-route",
+        &[("src/routes.rs", source)],
+        &serde_json::json!({ "frameworks": ["actix"] }),
+    );
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    assert!(nodes.iter().any(|node| {
+        node["kind"] == "route" && node["canonical_name"] == "GET /health => crate::routes::handler"
+    }));
+    assert!(contributions[0]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|edge| {
+            edge["kind"] == "routes_to" && edge["target"] == "rust:function:crate::routes::handler"
+        }));
+}
+
+#[test]
+fn axum_dynamic_route_path_is_diagnosed_not_guessed() {
+    let source = r#"
+use axum::Router;
+use axum::routing::get;
+
+fn handler() {}
+
+fn app() -> Router {
+    Router::new().route("/users/:id", get(handler))
+}
+"#;
+    let contributions = scan_fixture_with(
+        "axum-dynamic-route",
+        &[("src/lib.rs", source)],
+        &serde_json::json!({ "frameworks": ["axum"] }),
+    );
+    assert!(!contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["kind"] == "route"));
+    assert!(contributions[0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "RS_DYNAMIC_ROUTE_PATH"));
+}
+
+#[test]
+fn rocket_attribute_routes_are_recorded() {
+    let source = r#"
+#[get("/world")]
+fn world() {}
+"#;
+    let contributions = scan_fixture_with(
+        "rocket-attrs",
+        &[("src/lib.rs", source)],
+        &serde_json::json!({ "frameworks": ["rocket"] }),
+    );
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    assert!(nodes
+        .iter()
+        .any(|node| node["kind"] == "route"
+            && node["canonical_name"] == "GET /world => crate::world"));
+}
+
+#[test]
+fn a_dynamic_route_path_is_diagnosed_not_guessed() {
+    let source = r#"
+#[get("/users/<id>")]
+fn user() {}
+"#;
+    let contributions = scan_fixture_with(
+        "dynamic-route",
+        &[("src/lib.rs", source)],
+        &serde_json::json!({ "frameworks": ["rocket"] }),
+    );
+    let nodes = contributions[0]["nodes"].as_array().unwrap();
+    assert!(!nodes.iter().any(|node| node["kind"] == "route"));
+    let diagnostics = contributions[0]["diagnostics"].as_array().unwrap();
+    assert!(diagnostics
+        .iter()
+        .any(|diag| diag["code"] == "RS_DYNAMIC_ROUTE_PATH"));
+}
+
+#[test]
+fn a_crate_manifest_adds_a_package_node_to_the_crate_root() {
+    let contributions = scan_fixture_with(
+        "crate-package",
+        &[
+            ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+            ("src/main.rs", "fn main() {}\n"),
+        ],
+        &serde_json::json!({ "config_files": ["Cargo.toml"] }),
+    );
+    let main_contribution = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/main.rs")
+        .unwrap();
+    let nodes = main_contribution["nodes"].as_array().unwrap();
+    let package = nodes
+        .iter()
+        .find(|node| node["kind"] == "package")
+        .expect("crate package node missing");
+    assert_eq!("demo", package["canonical_name"]);
+    let edges = main_contribution["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "contains"
+            && edge["source"] == "rust:package:demo"
+            && edge["target"] == "rust:module:crate"
+    }));
+}
+
+#[test]
+fn a_package_with_library_and_binary_roots_keeps_the_roots_distinct() {
+    let contributions = scan_fixture_with(
+        "crate-library-and-binary",
+        &[
+            (
+                "Cargo.toml",
+                "[package]\nname = \"demo\"\n\n[lib]\nname = \"demo\"\n",
+            ),
+            ("src/lib.rs", "pub struct Library;\n"),
+            ("src/main.rs", "fn main() {}\n"),
+        ],
+        &serde_json::json!({ "config_files": ["Cargo.toml"] }),
+    );
+    let library = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/lib.rs")
+        .unwrap();
+    let binary = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/main.rs")
+        .unwrap();
+    assert!(library["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| { node["kind"] == "module" && node["canonical_name"] == "crate" }));
+    assert!(binary["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| { node["kind"] == "module" && node["canonical_name"] == "crate::main" }));
+    assert!(binary["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| { node["kind"] == "package" && node["canonical_name"] == "demo" }));
+    assert!(binary["edges"].as_array().unwrap().iter().any(|edge| {
+        edge["kind"] == "contains"
+            && edge["source"] == "rust:package:demo"
+            && edge["target"] == "rust:module:crate::main"
+    }));
+}
+
+#[test]
+fn an_impl_for_a_type_in_another_file_keeps_its_edges() {
+    // The Phase 3 cross-file index: the declaring file is in the same
+    // request, so the `implements` and `contains` edges sourced from
+    // `crate::model::Engine` survive instead of orphaning the methods. The
+    // class node itself lives in model.rs's contribution.
+    let contributions = scan_fixture(
+        "cross-file-impl",
+        &[
+            ("src/lib.rs", "pub mod model;\n"),
+            ("src/model.rs", "pub struct Engine;\n"),
+            (
+                "src/engine.rs",
+                "use crate::model::Engine;\n\nimpl Engine {\n    pub fn start(&self) {}\n}\n",
+            ),
+        ],
+    );
+    let engine = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/engine.rs")
+        .unwrap();
+    let edges = engine["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "contains"
+            && edge["source"] == "rust:class:crate::model::Engine"
+            && edge["target"] == "rust:method:crate::model::Engine::start"
+    }));
+}
+
+#[test]
+fn a_child_module_call_resolves_through_the_scan_wide_index() {
+    // `sign::any_supported_type` was a documented false negative: the child
+    // module's declaration lives in another file, which the per-file walk
+    // could not see. The scan-wide index resolves it.
+    let contributions = scan_fixture(
+        "child-module-call",
+        &[
+            (
+                "src/lib.rs",
+                "pub mod sign;\n\npub fn go() {\n    sign::any_supported_type();\n}\n",
+            ),
+            ("src/sign.rs", "pub fn any_supported_type() {}\n"),
+        ],
+    );
+    let lib = contributions
+        .iter()
+        .find(|c| c["owner_key"] == "knossos.rust:file:src/lib.rs")
+        .unwrap();
+    let edges = lib["edges"].as_array().unwrap();
+    assert!(edges.iter().any(|edge| {
+        edge["kind"] == "calls"
+            && edge["source"] == "rust:function:crate::go"
+            && edge["target"] == "rust:function:crate::sign::any_supported_type"
+    }));
 }
 
 #[test]

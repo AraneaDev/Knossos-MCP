@@ -34,6 +34,7 @@ final class WatchScanAttemptTest extends TestCase
                 ?CancellationToken $cancellation = null,
                 ?int $snapshotRetention = null,
                 ?int $workerTimeoutMs = null,
+                ?int $workerMemoryMb = null,
             ): ResultEnvelope {
                 return new ResultEnvelope('project-1', 'snapshot-1', 'ok', ['parsed_files' => 7]);
             }
@@ -57,6 +58,7 @@ final class WatchScanAttemptTest extends TestCase
                 ?CancellationToken $cancellation = null,
                 ?int $snapshotRetention = null,
                 ?int $workerTimeoutMs = null,
+                ?int $workerMemoryMb = null,
             ): ResultEnvelope {
                 throw $this->error;
             }
@@ -117,6 +119,7 @@ final class WatchScanAttemptTest extends TestCase
                 ?CancellationToken $cancellation = null,
                 ?int $snapshotRetention = null,
                 ?int $workerTimeoutMs = null,
+                ?int $workerMemoryMb = null,
             ): ResultEnvelope {
                 ++$this->invocations;
 

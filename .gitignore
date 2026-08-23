@@ -16,6 +16,9 @@ __pycache__/
 # Rust worker build output; the binary is produced by tools/install or the image build.
 /workers/rust/target/
 /workers/rust/bin/
+
+# cargo-mutants writes its run output here; it is a local report, not repo content.
+/workers/rust/mutants.out/
 .claude/settings.local.json
 .claude/settings.local.json.*
 .superpowers/

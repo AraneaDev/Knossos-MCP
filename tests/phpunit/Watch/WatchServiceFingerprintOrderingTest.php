@@ -43,6 +43,7 @@ final class WatchServiceFingerprintOrderingTest extends TestCase
                 ?CancellationToken $cancellation = null,
                 ?int $snapshotRetention = null,
                 ?int $workerTimeoutMs = null,
+                ?int $workerMemoryMb = null,
             ): ResultEnvelope {
                 ++$this->calls;
                 if ($this->calls === 1) {

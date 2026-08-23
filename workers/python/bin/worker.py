@@ -383,9 +383,13 @@ class PythonFrameworkRoleEnricher:
             roles.append("django.middleware")
         if any(decorator_short(name) == "AsgiMiddleware" for name in decorators):
             roles.append("django.middleware")
+        if any(base_name.endswith("MethodView") for base_name in (dotted(base) or "" for base in node.bases)):
+            roles.append("flask.view")
         return sorted(set(roles))
 
-    def function_roles(self, decorators: list[str], has_fastapi_route: bool) -> list[str]:
+    def function_roles(
+        self, decorators: list[str], has_fastapi_route: bool = False, has_flask_route: bool = False
+    ) -> list[str]:
         roles: list[str] = []
         framework_decorators = [decorator_short(name) for name in decorators]
         if any(name in {"api_view", "action"} for name in framework_decorators):
@@ -394,6 +398,8 @@ class PythonFrameworkRoleEnricher:
             roles.append("python.task")
         if has_fastapi_route:
             roles.append("fastapi.route_handler")
+        if has_flask_route:
+            roles.append("flask.route_handler")
         return sorted(set(roles))
 
 
@@ -415,7 +421,7 @@ class FastApiFactEnricher:
         self.resolve_name = resolve_name
         self.framework_objects: dict[str, tuple[str, str]] = {}
 
-    def register_assignment(self, variable: str, value: ast.AST) -> None:
+    def register_assignment(self, variable: str, value: ast.AST | None) -> None:
         if not isinstance(value, ast.Call):
             return
         called = dotted(value.func)
@@ -581,6 +587,147 @@ class DjangoFactEnricher:
         return value if isinstance(value, (str, int, float, bool, list, tuple, dict, type(None))) else None
 
 
+class FlaskFactEnricher:
+    """Add Flask route and blueprint facts.
+
+    Flask's primary wiring is `@app.route("/path", methods=[...])` on a
+    `Flask` or `Blueprint` instance, so unlike FastAPI it names one path per
+    decorator but may carry several verbs. A dynamic path (`<id>`) is a plain
+    string to the parser and would make a route node that no request ever
+    matches, so it is diagnosed rather than guessed, mirroring
+    `PY_DYNAMIC_ROUTE_PATH`.
+    """
+
+    def __init__(
+        self,
+        facts: PythonFactAccumulator,
+        module: str,
+        module_id: str,
+        aliases: dict[str, str],
+        resolve_name: Callable[[str, str], str | None],
+    ) -> None:
+        self.facts = facts
+        self.module = module
+        self.module_id = module_id
+        self.aliases = aliases
+        self.resolve_name = resolve_name
+        self.framework_objects: dict[str, tuple[str, str]] = {}
+
+    def register_assignment(self, variable: str, value: ast.AST | None) -> None:
+        if not isinstance(value, ast.Call):
+            return
+        called = dotted(value.func)
+        resolved = self.aliases.get(called or "", "")
+        if resolved.endswith("flask.Flask") or resolved.endswith("flask.Blueprint"):
+            prefix = keyword_string(value, "url_prefix") or ""
+            self.framework_objects[variable] = ("flask", prefix)
+
+    def route_decorators(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str, ast.AST]]:
+        result: list[tuple[str, str, ast.AST]] = []
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call) or not isinstance(decorator.func, ast.Attribute):
+                continue
+            if decorator.func.attr != "route":
+                continue
+            owner = dotted(decorator.func.value)
+            if owner not in self.framework_objects:
+                continue
+            raw_path = positional_string(decorator, 0)
+            if raw_path is None or any(marker in raw_path for marker in ("<", ">")):
+                self.facts.add_diagnostic("PY_DYNAMIC_ROUTE_PATH", "Dynamic Flask route path was skipped.", decorator)
+                continue
+            prefix = self.framework_objects[owner][1]
+            path = "/" + "/".join(part.strip("/") for part in (prefix, raw_path) if part.strip("/"))
+            methods = self.methods_keyword(decorator)
+            if methods is None:
+                methods = ["GET"]  # Flask's default when `methods` is absent
+            for method in methods:
+                result.append((method.upper(), path or "/", decorator))
+        return result
+
+    @staticmethod
+    def methods_keyword(call: ast.Call) -> list[str] | None:
+        """The `methods` keyword as uppercase verb list, or None when absent."""
+
+        value = next((item.value for item in call.keywords if item.arg == "methods"), None)
+        if value is None:
+            return None
+        if not isinstance(value, (ast.List, ast.Tuple)):
+            return None
+        methods = []
+        for item in value.elts:
+            if isinstance(item, ast.Constant) and isinstance(item.value, str):
+                methods.append(item.value.strip().upper())
+        return methods
+
+    def enrich_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        local_id: str,
+        canonical: str,
+        route_decorators: list[tuple[str, str, ast.AST]],
+    ) -> None:
+        for method, path, decorator in route_decorators:
+            route_canonical = f"{method} {path} => {canonical}"
+            route_id = ref("route", route_canonical)
+            self.facts.add_node(
+                route_id,
+                "route",
+                route_canonical,
+                f"{method} {path}",
+                decorator,
+                {"framework": "flask", "methods": [method], "path": path},
+            )
+            self.facts.add_edge("routes_to", route_id, local_id, decorator)
+
+    def enrich_call(self, node: ast.Call, name: str | None) -> None:
+        if name and name.endswith(".register_blueprint") and node.args:
+            blueprint = dotted(node.args[0])
+            if blueprint:
+                self.facts.add_edge(
+                    "mounts",
+                    self.module_id,
+                    ref("router", f"{self.module}.{blueprint}"),
+                    node,
+                    {"prefix": keyword_string(node, "url_prefix") or ""},
+                )
+        if name and name.endswith(".add_url_rule"):
+            raw_path = positional_string(node, 0)
+            if raw_path is None or any(marker in raw_path for marker in ("<", ">")):
+                self.facts.add_diagnostic("PY_DYNAMIC_ROUTE_PATH", "Dynamic Flask URL rule was skipped.", node)
+                return
+            view_value = next((item.value for item in node.keywords if item.arg == "view_func"), None)
+            view = dotted(view_value) if view_value is not None else None
+            # Flask's positional signature is (rule, endpoint=None,
+            # view_func=None); the callable is the third argument when the
+            # endpoint is supplied.
+            if view is None and len(node.args) > 2:
+                view = dotted(node.args[2])
+            if view is None:
+                return  # a lambda or expression handler names nothing to resolve
+            target = self.resolve_name(view, "function")
+            if target is None:
+                return  # an unresolved handler would make a guessed route
+            methods = self.methods_keyword(node)
+            if methods is None:
+                methods = ["GET"]
+            if not methods:
+                return  # an explicit empty `methods=[]` rules out every verb
+            path = "/" + raw_path.lstrip("/") or "/"
+            for method in methods:
+                canonical = f"{method.upper()} {path} => {target.removeprefix('py:function:')}"
+                route_id = ref("route", canonical)
+                self.facts.add_node(
+                    route_id,
+                    "route",
+                    canonical,
+                    f"{method.upper()} {path}",
+                    node,
+                    {"framework": "flask", "methods": [method.upper()], "path": path},
+                )
+                self.facts.add_edge("routes_to", route_id, target, node)
+
+
 class PythonAstFactCollector(ast.NodeVisitor):
     """Coordinate one AST traversal and delegate fact enrichment."""
 
@@ -615,6 +762,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.roles = PythonFrameworkRoleEnricher()
         self.fastapi = FastApiFactEnricher(self.facts, self.module, self.module_id, self.aliases, self.resolve_name)
         self.django = DjangoFactEnricher(self.facts, self.module, self.module_id, self.aliases, self.resolve_name)
+        self.flask = FlaskFactEnricher(self.facts, self.module, self.module_id, self.aliases, self.resolve_name)
 
     def collect(self) -> dict[str, Any]:
         self.facts.add_node(
@@ -732,8 +880,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
             parent_id, kind, canonical = self.current(), "function", f"{self.module}.{node.name}"
         local_id = ref(kind, canonical)
         decorators = self.roles.decorators(node)
-        route_decorators = self.route_decorators(node)
-        roles = self.roles.function_roles(decorators, bool(route_decorators))
+        fastapi_routes = self.fastapi.route_decorators(node)
+        flask_routes = self.flask.route_decorators(node)
+        roles = self.roles.function_roles(decorators, bool(fastapi_routes), bool(flask_routes))
         self.facts.add_node(
             local_id,
             kind,
@@ -747,7 +896,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             },
         )
         self.facts.add_edge("contains", parent_id, local_id, node)
-        self.fastapi.enrich_function(node, local_id, canonical, route_decorators)
+        self.fastapi.enrich_function(node, local_id, canonical, fastapi_routes)
+        self.flask.enrich_function(node, local_id, canonical, flask_routes)
         self.containers.append((local_id, canonical, kind))
         self.local_function_scopes.append(self.local_function_declarations(node, canonical))
         self.local_variable_types.append({})
@@ -793,6 +943,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
             variable = node.targets[0].id
             self.fastapi.register_assignment(variable, node.value)
             self.django.enrich_assignment(variable, node.value, node)
+            self.flask.register_assignment(variable, node.value)
             self.remember_local(variable, node.value)
         if len(node.targets) == 1:
             attribute = self.self_attribute(node.targets[0])
@@ -806,6 +957,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             # An annotation states the type outright, which beats inferring it.
             self.remember_attribute(attribute, node.value, node.annotation)
         elif isinstance(node.target, ast.Name):
+            self.fastapi.register_assignment(node.target.id, node.value)
+            self.flask.register_assignment(node.target.id, node.value)
             self.remember_local(node.target.id, node.value, node.annotation)
         self.generic_visit(node)
 
@@ -898,10 +1051,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
         if target:
             self.facts.add_edge("calls", self.current(), target, node)
         self.fastapi.enrich_call(node, name)
+        self.flask.enrich_call(node, name)
         self.generic_visit(node)
-
-    def route_decorators(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str, ast.AST]]:
-        return self.fastapi.route_decorators(node)
 
 
 def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
