@@ -334,6 +334,38 @@ TOML);
         }
     }
 
+    /**
+     * Python framework gating reads `requirements.txt` as well as
+     * `pyproject.toml`, so the Python configuration hash has to cover both.
+     * Hashing only `pyproject.toml` let an incremental scan reuse Python
+     * contributions produced while framework enrichment was still switched
+     * off, leaving route facts and classifications permanently stale.
+     */
+    public function testPrepareRequirementsFileChangesThePythonConfigurationHash(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-requirements-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
+            $before = $planner->prepare($dir, null, null, null, null, null, null);
+            assertSame([], $before->pythonFrameworks);
+
+            file_put_contents($dir . '/requirements.txt', "fastapi==0.136.1
+");
+            $after = $planner->prepare($dir, null, null, null, null, null, null);
+
+            assertSame(['fastapi'], $after->pythonFrameworks);
+            $this->assertNotSame(
+                $before->configurationHashes['python'],
+                $after->configurationHashes['python'],
+            );
+        } finally {
+            @unlink($dir . '/requirements.txt');
+            rmdir($dir);
+        }
+    }
+
     public function testPrepareRejectsSnapshotRetentionOutOfRange(): void
     {
         $pdo = $this->createSchema();

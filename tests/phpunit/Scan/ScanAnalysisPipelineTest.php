@@ -177,6 +177,73 @@ final class ScanAnalysisPipelineTest extends TestCase
     }
 
     /**
+     * The Python worker emits both Flask roles, and docs/languages/python.md
+     * promises they are classified. They were absent from the rule's
+     * whitelist, so every Flask view and handler was dropped silently.
+     */
+    public function testAnalyzeTagsFlaskRolesAsClassifications(): void
+    {
+        $pipeline = new ScanAnalysisPipeline();
+        $plan = new ScanPlan(
+            preparation: $this->makePreparation(),
+            projectId: 'plan-flask-roles',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+        $handler = new NodeFact(
+            'python:function:app.index',
+            'function',
+            'app.index',
+            'index',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('app.py', 8, 8),
+            ['python_framework_roles' => ['flask.route_handler']],
+        );
+        $view = new NodeFact(
+            'python:class:app.UserView',
+            'class',
+            'app.UserView',
+            'UserView',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('app.py', 14, 20),
+            ['python_framework_roles' => ['flask.view']],
+        );
+
+        $analysis = $pipeline->analyze($plan, [new ScanContribution('knossos.python', [$handler, $view])]);
+
+        $roles = array_values(array_filter(
+            $analysis->classifications,
+            static fn(ClassificationFact $fact): bool => str_starts_with($fact->role, 'flask.'),
+        ));
+        assertSame(2, count($roles));
+        assertSame(
+            ['python:class:app.UserView' => 'flask.view', 'python:function:app.index' => 'flask.route_handler'],
+            self::rolesByNode($roles),
+        );
+        foreach ($roles as $fact) {
+            assertSame('python.framework.ast.v1', $fact->ruleId);
+        }
+    }
+
+    /**
+     * @param list<ClassificationFact> $facts
+     * @return array<string, string>
+     */
+    private static function rolesByNode(array $facts): array
+    {
+        $result = [];
+        foreach ($facts as $fact) {
+            $result[$fact->nodeReference] = $fact->role;
+        }
+        ksort($result, SORT_STRING);
+
+        return $result;
+    }
+
+    /**
      * Discovery is the only stage that reads a manifest, so the entry points it
      * recorded have to travel through the plan into the classification rule --
      * a scanner never sees them. A `npm run build` script carries an in-degree

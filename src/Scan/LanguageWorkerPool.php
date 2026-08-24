@@ -18,14 +18,26 @@ class LanguageWorkerPool
     /** @var array<string, ProcessScannerClient> */
     private array $clients = [];
     private ?int $timeoutMs = null;
+    private ?int $memoryMb = null;
+    private bool $policySeen = false;
 
-    /** Start the worker for a language if it is not already running. */
+    /**
+     * Discard workers started under a different execution policy.
+     *
+     * A ProjectScanService lives longer than one scan (the MCP server holds a
+     * single instance), so a cached worker can outlast the settings it was
+     * launched with. The memory cap is baked into the worker's command line by
+     * LanguageDescriptor::withMemoryMb(), so a changed cap only takes effect on
+     * a freshly spawned process.
+     */
     public function prepare(WorkerExecutionPolicy $policy): void
     {
-        if ($this->timeoutMs !== null && $this->timeoutMs !== $policy->requestTimeoutMs) {
+        if ($this->policySeen && ($this->timeoutMs !== $policy->requestTimeoutMs || $this->memoryMb !== $policy->workerMemoryMb)) {
             $this->shutdown();
         }
         $this->timeoutMs = $policy->requestTimeoutMs;
+        $this->memoryMb = $policy->workerMemoryMb;
+        $this->policySeen = true;
     }
 
     /** The running client for a language, started on demand. */
@@ -70,5 +82,7 @@ class LanguageWorkerPool
         }
         $this->clients = [];
         $this->timeoutMs = null;
+        $this->memoryMb = null;
+        $this->policySeen = false;
     }
 }

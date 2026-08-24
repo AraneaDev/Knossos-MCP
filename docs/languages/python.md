@@ -8,8 +8,10 @@ target project.
 
 ## Discovered inputs
 
-- `pyproject.toml` project units, names, dependencies, optional dependencies,
-  and `[project.scripts]` or Poetry `[tool.poetry.scripts]` entry points
+- `pyproject.toml` project units, names, PEP 621 dependencies and optional
+  dependencies, Poetry's `[tool.poetry.dependencies]`, `dev-dependencies`, and
+  `group.<name>.dependencies` tables, and `[project.scripts]` or Poetry
+  `[tool.poetry.scripts]` entry points
 - `requirements.txt` and `requirements-*.txt` dependency units for projects
   that keep dependencies outside `pyproject.toml`
 - `.py` implementation files and `.pyi` stub files

@@ -86,6 +86,7 @@ fn ping() {}
 fn world() {}
 RUST);
 
+        $client = null;
         try {
             $client = $this->rustWorkerClient();
             $contributions = iterator_to_array($client->scan([
@@ -93,7 +94,6 @@ RUST);
                 'files' => ['src/routes.rs'],
                 'frameworks' => ['actix'],
             ]));
-            $client->shutdown();
 
             $nodes = array_merge(...array_map(fn(ScanContribution $item): array => $item->nodes, $contributions));
             $routes = array_values(array_filter($nodes, fn(NodeFact $node): bool => $node->kind === 'route'));
@@ -106,6 +106,10 @@ RUST);
             $edges = array_merge(...array_map(fn(ScanContribution $item): array => $item->edges, $contributions));
             assertSame(2, count(array_filter($edges, fn(EdgeFact $edge): bool => $edge->kind === 'routes_to')));
         } finally {
+            // A worker that outlives a throwing scan() would linger for the
+            // rest of the suite, so the shutdown belongs here, not on the
+            // success path.
+            $client?->shutdown();
             @unlink($root . '/src/routes.rs');
             @rmdir($root . '/src');
             @rmdir($root);

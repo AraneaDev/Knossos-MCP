@@ -23,6 +23,8 @@ final readonly class PythonFrameworkRoleRule extends AbstractFrameworkRoleRule
             'django.model',
             'django.view',
             'fastapi.route_handler',
+            'flask.route_handler',
+            'flask.view',
             'python.task',
         ];
     }

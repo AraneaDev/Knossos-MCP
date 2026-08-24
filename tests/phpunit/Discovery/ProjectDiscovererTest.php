@@ -566,6 +566,49 @@ TOML);
 
         assertSame('poetry-demo', $unit->metadata['name']);
         assertSame(['poetry_demo/main.py'], $unit->metadata['entry_points']);
+        // Poetry states dependencies as a table, not a PEP 621 list. Missing
+        // them here left ScanPlanner unable to see fastapi and the worker's
+        // framework enrichment gated off for every Poetry project. `python` is
+        // the interpreter constraint, not a package.
+        assertSame(['fastapi'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsPoetryGroupAndSubTableDependencies(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[tool.poetry]
+name = "poetry-groups"
+
+[tool.poetry.dev-dependencies]
+pytest = "^8.0"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^7.0"
+
+[tool.poetry.dependencies.flask]
+version = "^3.0"
+extras = ["async"]
+TOML);
+
+        // The sub-table form names its package in the header; its body holds
+        // only that package's settings, so `version` and `extras` are not
+        // dependencies.
+        assertSame(['flask', 'pytest', 'sphinx'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsTopLevelScriptModuleAsEntryPoint(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[project]
+name = "demo"
+
+[project.scripts]
+cli = "app:main"
+TOML);
+
+        // A single-segment module is a real file. Dropping it left app.py with
+        // an in-degree of zero, reading as unreferenced code.
+        assertSame(['app.py'], $unit->metadata['entry_points']);
     }
 
     public function testDiscoverReadsPipRequirementsAsUnit(): void
@@ -765,6 +808,26 @@ cc = "1"
 libc = "0.2"
 TOML);
         assertSame(['axum', 'cc', 'libc', 'serde', 'tokio'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsCargoDependencySubTables(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies.axum]
+version = "0.7"
+features = ["macros"]
+
+[target.'cfg(unix)'.dev-dependencies.rocket]
+version = "0.5"
+TOML);
+        // A crate that takes a sub-table is declared by its header, so `axum`
+        // and `rocket` are dependencies while `version` and `features` are
+        // that crate's own settings.
+        assertSame(['axum', 'rocket'], array_keys($unit->metadata['requires']));
     }
 
     public function testDiscoverReadsCargoBinPathsAsEntryPoints(): void

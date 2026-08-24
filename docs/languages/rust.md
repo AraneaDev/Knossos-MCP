@@ -10,7 +10,8 @@ against the scanned project.
 - `.rs` files
 - `Cargo.toml`, recorded as a `cargo` unit that participates in cache
   invalidation
-- Cargo dependency tables, including target-scoped `*.dependencies` tables
+- Cargo dependency tables, including target-scoped `*.dependencies` tables and
+  a crate's own `[dependencies.<crate>]` sub-table
 - `[[bin]]` entries and Cargo's implicit `src/main.rs` binary path
 
 The manifest's `[package] name` becomes a Rust `package` node when the crate

@@ -367,7 +367,47 @@ final readonly class ProjectDiscoverer
                 $result[$name] = $raw;
             }
         }
+        foreach (self::poetryRequirements($contents) as $name => $raw) {
+            $result[$name] ??= $raw;
+        }
         ksort($result, SORT_STRING);
+
+        return $result;
+    }
+
+    /**
+     * Dependency names from Poetry's own tables.
+     *
+     * Poetry predates PEP 621 and states requirements as key/value tables
+     * rather than a list: `[tool.poetry.dependencies]`, the legacy
+     * `[tool.poetry.dev-dependencies]`, and
+     * `[tool.poetry.group.<name>.dependencies]`. A single dependency may also
+     * take its own sub-table, `[tool.poetry.dependencies.fastapi]`, where the
+     * header carries the name and the body holds only its settings.
+     *
+     * The `python` key states the interpreter constraint rather than a
+     * package, so it is not recorded as a requirement.
+     *
+     * @return array<string, string>
+     */
+    private static function poetryRequirements(string $contents): array
+    {
+        $tail = '(?:dependencies|dev-dependencies|group\.[^.\[\]]+\.dependencies)';
+        $result = [];
+        foreach (self::tomlHeaders($contents) as $header) {
+            $names = [];
+            if (preg_match('/^tool\.poetry\.' . $tail . '$/', $header) === 1) {
+                $block = self::tableBlock($contents, '[' . $header . ']');
+                $names = $block === null ? [] : self::tomlTableKeys($block);
+            } elseif (preg_match('/^tool\.poetry\.' . $tail . '\.["\']?([A-Za-z0-9_.-]+)["\']?$/', $header, $m) === 1) {
+                $names = [strtolower($m[1])];
+            }
+            foreach ($names as $name) {
+                if ($name !== '' && $name !== 'python') {
+                    $result[$name] = '1';
+                }
+            }
+        }
 
         return $result;
     }
@@ -405,8 +445,9 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * Cargo.toml dependencies: `[dependencies]`, `[dev-dependencies]`, and
-     * `[build-dependencies]` tables.
+     * Cargo.toml dependencies: the `[dependencies]`, `[dev-dependencies]`, and
+     * `[build-dependencies]` tables, their target-scoped variants, and each
+     * crate that takes a sub-table of its own.
      *
      * Keys are what matter; version constraints are not parsed.
      *
@@ -420,11 +461,12 @@ final readonly class ProjectDiscoverer
             if ($block === null) {
                 continue;
             }
-            if (preg_match_all('/^\s*([A-Za-z0-9_.-]+)\s*=\s*/m', $block, $pm) > 0) {
-                foreach ($pm[1] as $dep) {
-                    $result[strtolower($dep)] = '1';
-                }
+            foreach (self::tomlTableKeys($block) as $dep) {
+                $result[$dep] = '1';
             }
+        }
+        foreach (self::cargoDependencySubTableNames($contents) as $dep) {
+            $result[$dep] = '1';
         }
         ksort($result, SORT_STRING);
 
@@ -436,23 +478,76 @@ final readonly class ProjectDiscoverer
      *
      * Covers `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`,
      * and target-scoped tables such as `[target.'cfg(unix)'.dependencies]`.
-     * A `[dependencies.foo]` sub-table (an inline crate's own table) ends in
-     * the crate name, not `dependencies`, so it is excluded.
+     * A `[dependencies.foo]` sub-table ends in the crate name rather than
+     * `dependencies` and so is not one of these; its body holds version and
+     * feature settings, not dependencies. cargoDependencySubTableNames()
+     * reads the crate name out of that header instead.
      *
      * @return list<string>
      */
     private static function cargoDependencyHeaders(string $contents): array
     {
         $headers = [];
-        if (preg_match_all('/^[ \t]*\[([^\]]+)\][ \t]*(?:#.*)?\r?$/m', $contents, $m) > 0) {
-            foreach ($m[1] as $header) {
-                if (preg_match('/(?:^|[-.])(dependencies|dev-dependencies|build-dependencies)$/', $header) === 1) {
-                    $headers[] = '[' . $header . ']';
-                }
+        foreach (self::tomlHeaders($contents) as $header) {
+            if (preg_match('/(?:^|[-.])(dependencies|dev-dependencies|build-dependencies)$/', $header) === 1) {
+                $headers[] = '[' . $header . ']';
             }
         }
 
         return $headers;
+    }
+
+    /**
+     * Crate names declared by a dependency's own sub-table header.
+     *
+     * `[dependencies.axum]` and `[target.'cfg(unix)'.dev-dependencies.axum]`
+     * declare `axum` exactly as an `axum = "0.7"` line inside `[dependencies]`
+     * does. The name is in the header and the body carries only that crate's
+     * settings, so the body must not be read as a list of dependencies.
+     *
+     * @return list<string>
+     */
+    private static function cargoDependencySubTableNames(string $contents): array
+    {
+        $names = [];
+        foreach (self::tomlHeaders($contents) as $header) {
+            if (preg_match('/(?:^|[-.])(?:dependencies|dev-dependencies|build-dependencies)\.["\']?([A-Za-z0-9_-]+)["\']?$/', $header, $m) === 1) {
+                $names[] = strtolower($m[1]);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Every table header in a TOML document, without its brackets.
+     *
+     * @return list<string>
+     */
+    private static function tomlHeaders(string $contents): array
+    {
+        if (preg_match_all('/^[ \t]*\[([^\]]+)\][ \t]*(?:#.*)?\r?$/m', $contents, $m) < 1) {
+            return [];
+        }
+
+        return array_values(array_map(trim(...), $m[1]));
+    }
+
+    /**
+     * The lowercased `key = ...` names at the top level of a table block.
+     *
+     * @return list<string>
+     */
+    private static function tomlTableKeys(string $block): array
+    {
+        $keys = [];
+        if (preg_match_all('/^[ \t]*["\']?([A-Za-z0-9_.-]+)["\']?[ \t]*=/m', $block, $m) > 0) {
+            foreach ($m[1] as $key) {
+                $keys[] = strtolower($key);
+            }
+        }
+
+        return $keys;
     }
 
     /**
@@ -477,13 +572,13 @@ final readonly class ProjectDiscoverer
             if (preg_match_all('/^\s*["\']?([A-Za-z0-9_.-]+)["\']?\s*=\s*["\']([^"\']+)["\']/m', $block, $s) > 0) {
                 foreach ($s[2] as $target) {
                     $module = explode(':', $target, 2)[0];
-                    if ($module === '' || !str_contains($module, '.')) {
+                    // A single-segment module is the common `cli = "app:main"`
+                    // shape the docblock above promises; only an empty module
+                    // has no file to name.
+                    if ($module === '') {
                         continue;
                     }
-                    $rel = str_replace('.', '/', $module) . '.py';
-                    if ($rel !== '.py') {
-                        $scripts[] = $rel;
-                    }
+                    $scripts[] = str_replace('.', '/', $module) . '.py';
                 }
             }
         }

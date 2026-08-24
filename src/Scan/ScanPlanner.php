@@ -94,7 +94,11 @@ final readonly class ScanPlanner
         $configurationHashes = [
             'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v3'),
             'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'knossos'], 'typescript-analysis-v2'),
-            'python' => $this->configurationHash($discovery->units, ['python', 'knossos'], 'python-analysis-v2'),
+            // 'requirements' is in the hash because detectedFramework() reads
+            // requirements.txt for the Python framework gating above: without
+            // it, adding fastapi to requirements.txt would reuse contributions
+            // scanned with enrichment switched off.
+            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos'], 'python-analysis-v3'),
             // Cargo.toml is now a recorded unit (kind 'cargo'), so editing it
             // invalidates a Rust contribution's cache entry the same way
             // composer.json and package.json do for PHP and TypeScript.
