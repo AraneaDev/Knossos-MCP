@@ -170,7 +170,14 @@ final class DocumentationTest extends KnossosTestCase
         $excluded = $hostMatches[1];
 
         // Badge images are the `![alt](url)` inside a `[...](href)` wrapper.
-        preg_match_all('/\[!\[[^]]*]\((https:\/\/[^) ]+)\)]/', (string) file_get_contents($root . '/README.md'), $badges);
+        // The optional `"title"` is part of the form the checker itself
+        // accepts, so a titled badge would be fetched while a narrower
+        // pattern here left this guard blind to it.
+        preg_match_all(
+            '/\[!\[[^]]*]\((https:\/\/[^) ]+)(?:\s+"[^"]*")?\)]/',
+            (string) file_get_contents($root . '/README.md'),
+            $badges,
+        );
         $badgeHosts = array_values(array_unique(array_map(
             static fn(string $url): string => strtolower((string) parse_url($url, PHP_URL_HOST)),
             $badges[1],

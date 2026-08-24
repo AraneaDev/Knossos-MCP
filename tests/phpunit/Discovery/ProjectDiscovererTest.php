@@ -844,7 +844,58 @@ path = "tools/mytool.rs"
 [[bin]]
 name = "other"
 TOML);
-        assertSame(['src/bin/other.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
+        // src/main.rs is listed alongside the explicit targets: Cargo's
+        // auto-discovery runs in addition to `[[bin]]`, so a crate carrying
+        // both builds both. A crate without the file simply never matches an
+        // emitted node.
+        assertSame(['src/bin/other.rs', 'src/main.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverHonoursAutobinsFalse(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+autobins = false
+
+[[bin]]
+name = "mytool"
+path = "tools/mytool.rs"
+TOML);
+        // `autobins = false` is the one switch that turns file-system target
+        // discovery off, leaving only what the manifest declares.
+        assertSame(['tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    /**
+     * ManifestEntryPointRule matches on the exact project-relative path a
+     * scanner emitted. A nested manifest that reports `src/main.rs` instead of
+     * `services/api/src/main.rs` therefore matches nothing, and the entry
+     * point is lost without a diagnostic. composer.json and package.json have
+     * always anchored to their own directory; Cargo and pyproject did not.
+     */
+    public function testDiscoverAnchorsNestedManifestEntryPointsToTheirDirectory(): void
+    {
+        mkdir($this->root . '/services/api', 0o700, true);
+        file_put_contents($this->root . '/services/api/Cargo.toml', "[package]\nname = \"api\"\nversion = \"0.1.0\"\n");
+        file_put_contents($this->root . '/services/api/pyproject.toml', <<<'TOML'
+[project]
+name = "api"
+
+[project.scripts]
+cli = "app:main"
+worker = "api.jobs.worker:run"
+TOML);
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $byKind = [];
+        foreach ($result->units as $unit) {
+            $byKind[$unit->kind] = $unit->metadata['entry_points'] ?? null;
+        }
+
+        assertSame(['services/api/src/main.rs'], $byKind['cargo']);
+        assertSame(['services/api/api/jobs/worker.py', 'services/api/app.py'], $byKind['python']);
     }
 
     public function testDiscoverInfersImplicitCargoBinaryPath(): void

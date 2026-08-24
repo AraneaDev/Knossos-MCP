@@ -222,14 +222,14 @@ final readonly class ProjectDiscoverer
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'name' => self::tableString($contents, '[project]') ?? self::tableString($contents, '[tool.poetry]'),
                 'requires' => self::pythonRequirements($contents),
-                'entry_points' => self::pythonEntryPoints($contents),
+                'entry_points' => self::pythonEntryPoints($contents, $relative),
             ]);
         }
         if ($kind === 'cargo') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'name' => self::cargoPackageName($contents),
                 'requires' => self::cargoRequirements($contents),
-                'entry_points' => self::cargoEntryPoints($contents),
+                'entry_points' => self::cargoEntryPoints($contents, $relative),
             ]);
         }
         if ($kind === 'requirements') {
@@ -560,8 +560,9 @@ final readonly class ProjectDiscoverer
      *
      * @return list<string>
      */
-    private static function pythonEntryPoints(string $contents): array
+    private static function pythonEntryPoints(string $contents, string $configPath): array
     {
+        $directory = self::manifestDirectory($configPath);
         $scripts = [];
         foreach (['[project.scripts]', '[tool.poetry.scripts]'] as $header) {
             $block = self::tableBlock($contents, $header);
@@ -578,7 +579,10 @@ final readonly class ProjectDiscoverer
                     if ($module === '') {
                         continue;
                     }
-                    $scripts[] = str_replace('.', '/', $module) . '.py';
+                    $path = self::entryPointPath(str_replace('.', '/', $module) . '.py', $directory);
+                    if ($path !== null) {
+                        $scripts[] = $path;
+                    }
                 }
             }
         }
@@ -600,24 +604,48 @@ final readonly class ProjectDiscoverer
      *
      * @return list<string>
      */
-    private static function cargoEntryPoints(string $contents): array
+    private static function cargoEntryPoints(string $contents, string $configPath): array
     {
-        $bins = self::arrayTables($contents, '[[bin]]');
-        $paths = [];
-        foreach ($bins as $bin) {
+        $directory = self::manifestDirectory($configPath);
+        $candidates = [];
+        foreach (self::arrayTables($contents, '[[bin]]') as $bin) {
             if ($bin['path'] !== '') {
-                $paths[$bin['path']] = true;
+                $candidates[] = $bin['path'];
             } elseif ($bin['name'] !== '') {
-                $paths['src/bin/' . $bin['name'] . '.rs'] = true;
+                $candidates[] = 'src/bin/' . $bin['name'] . '.rs';
             }
         }
-        if ($bins === [] && self::tableBlock($contents, '[package]') !== null) {
-            $paths['src/main.rs'] = true;
+        // Cargo auto-discovers src/main.rs IN ADDITION to any explicit [[bin]]
+        // target, so a crate with both builds both. `autobins = false` is the
+        // one switch that turns that discovery off, leaving only the explicit
+        // targets. A virtual workspace has no [package] and so no binary.
+        if (self::cargoAutobins($contents) && self::tableBlock($contents, '[package]') !== null) {
+            $candidates[] = 'src/main.rs';
+        }
+        $paths = [];
+        foreach ($candidates as $candidate) {
+            $path = self::entryPointPath($candidate, $directory);
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
         }
         $paths = array_keys($paths);
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * Whether Cargo discovers binary targets from the file system.
+     *
+     * Defaults to true on the 2018 edition onwards; only an explicit
+     * `autobins = false` in `[package]` turns it off.
+     */
+    private static function cargoAutobins(string $contents): bool
+    {
+        $block = self::tableBlock($contents, '[package]');
+
+        return $block === null || preg_match('/^[ \t]*autobins[ \t]*=[ \t]*false\b/m', $block) !== 1;
     }
 
     /**
@@ -724,12 +752,7 @@ final readonly class ProjectDiscoverer
      */
     private static function manifestEntryPoints(array $manifest, string $configPath, array $fields): array
     {
-        // `dirname()` answers '.' for a manifest at the root. Only that exact
-        // answer means "no directory" — trimming dots off the string instead
-        // turned `.github/actions/setup` into `github/actions/setup`, a path
-        // that matches no emitted node, so the entry point was lost silently.
-        $directory = dirname($configPath);
-        $directory = in_array($directory, ['.', '', DIRECTORY_SEPARATOR, '/'], true) ? '' : $directory;
+        $directory = self::manifestDirectory($configPath);
         $candidates = [];
         foreach ($fields as $field) {
             $value = $manifest[$field] ?? null;
@@ -763,6 +786,25 @@ final readonly class ProjectDiscoverer
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * The directory a manifest's entry-point paths resolve against.
+     *
+     * `dirname()` answers '.' for a manifest at the root. Only that exact
+     * answer means "no directory" — trimming dots off the string instead
+     * turned `.github/actions/setup` into `github/actions/setup`, a path
+     * that matches no emitted node, so the entry point was lost silently.
+     *
+     * Every manifest reader needs this: ManifestEntryPointRule matches on the
+     * exact project-relative path a scanner emitted, so a nested manifest's
+     * `src/main.rs` has to be recorded as `services/api/src/main.rs`.
+     */
+    private static function manifestDirectory(string $configPath): string
+    {
+        $directory = dirname($configPath);
+
+        return in_array($directory, ['.', '', DIRECTORY_SEPARATOR, '/'], true) ? '' : $directory;
     }
 
     /**
