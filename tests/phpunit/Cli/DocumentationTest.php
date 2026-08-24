@@ -141,4 +141,42 @@ final class DocumentationTest extends KnossosTestCase
             }
         }
     }
+
+    /**
+     * A badge host must never gate the quality profile.
+     *
+     * mcpobservatory.com reset the connection to a GitHub runner and failed
+     * `tools/quality full` on a tree whose 2,274 tests had all passed. The
+     * `(?<!!)` guard in the link checker was supposed to leave images alone,
+     * but the nested `[![alt](image)](href)` form badges use defeats it: the
+     * outer bracket is not preceded by `!`, so every badge image was being
+     * fetched. UNFETCHED_HOSTS is what actually keeps them out now.
+     *
+     * This asserts the list still covers every host README.md draws a badge
+     * from, so adding a badge from a new service fails here instead of
+     * silently making CI depend on that service being up.
+     */
+    #[Group('documentation')]
+    public function testEveryBadgeHostIsExcludedFromExternalFetching(): void
+    {
+        $root = self::repositoryRoot();
+        $checker = (string) file_get_contents($root . '/tools/documentation-check.php');
+        self::assertSame(
+            1,
+            preg_match('/const UNFETCHED_HOSTS = \[([^\]]*)\];/', $checker, $listMatch),
+            'tools/documentation-check.php no longer declares UNFETCHED_HOSTS.',
+        );
+        preg_match_all("/'([^']+)'/", $listMatch[1], $hostMatches);
+        $excluded = $hostMatches[1];
+
+        // Badge images are the `![alt](url)` inside a `[...](href)` wrapper.
+        preg_match_all('/\[!\[[^]]*]\((https:\/\/[^) ]+)\)]/', (string) file_get_contents($root . '/README.md'), $badges);
+        $badgeHosts = array_values(array_unique(array_map(
+            static fn(string $url): string => strtolower((string) parse_url($url, PHP_URL_HOST)),
+            $badges[1],
+        )));
+
+        self::assertNotEmpty($badgeHosts, 'README.md declares no badges, so this guard has nothing to protect.');
+        self::assertSame([], array_values(array_diff($badgeHosts, $excluded)));
+    }
 }

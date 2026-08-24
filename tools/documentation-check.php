@@ -6,6 +6,21 @@ require __DIR__ . '/lib/git-ignore.php';
 
 $root = dirname(__DIR__);
 $checkExternal = in_array('--external', $argv, true);
+
+/**
+ * Hosts whose URLs are never fetched by --external.
+ *
+ * These serve status badges and the pages behind them. A badge is decoration
+ * whose liveness is the badge service's problem, not documentation a reader
+ * navigates to, so its availability must not decide whether this repository's
+ * quality gate passes. mcpobservatory.com reset the connection to a GitHub
+ * runner once and failed the whole gate on a green tree; img.shields.io serves
+ * eight more badges in README.md and is one outage away from doing the same.
+ *
+ * This skips the fetch only. Every URL is still collected and counted, and the
+ * link syntax around it is still checked.
+ */
+const UNFETCHED_HOSTS = ['img.shields.io', 'mcpobservatory.com'];
 $paths = array_merge([$root . '/README.md'], documentationFiles($root . '/docs'));
 $failures = [];
 $external = [];
@@ -42,8 +57,13 @@ foreach ($paths as $path) {
         }
     }
 }
+$fetched = array_values(array_filter(array_keys($external), static function (string $url): bool {
+    $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+    return !in_array($host, UNFETCHED_HOSTS, true);
+}));
 if ($checkExternal) {
-    foreach (array_keys($external) as $url) {
+    foreach ($fetched as $url) {
         $process = proc_open(['curl', '--silent', '--show-error', '--location', '--fail', '--head', '--max-time', '20', $url], [1 => ['file', '/dev/null', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (!is_resource($process)) {
             $failures[] = 'unable to start external link checker';
@@ -60,7 +80,15 @@ if ($failures !== []) {
     fwrite(STDERR, implode(PHP_EOL, $failures) . PHP_EOL);
     exit(1);
 }
-printf("Documentation links passed: %d files, %d external%s.\n", count($paths), count($external), $checkExternal ? ' checked' : ' syntax-checked');
+printf(
+    "Documentation links passed: %d files, %d external%s%s.\n",
+    count($paths),
+    count($external),
+    $checkExternal ? ' checked' : ' syntax-checked',
+    $checkExternal && count($fetched) !== count($external)
+        ? sprintf(' (%d badge-host URLs not fetched)', count($external) - count($fetched))
+        : '',
+);
 
 /**
  * Every Markdown file under docs/ that this repository actually carries.
