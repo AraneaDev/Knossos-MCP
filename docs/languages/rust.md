@@ -12,7 +12,10 @@ against the scanned project.
   invalidation
 - Cargo dependency tables, including target-scoped `*.dependencies` tables and
   a crate's own `[dependencies.<crate>]` sub-table
-- `[[bin]]` entries and Cargo's implicit `src/main.rs` binary path
+- `[[bin]]` entries, plus the targets Cargo discovers for itself: `src/main.rs`
+  and the binaries under `src/bin/`. Discovery follows Cargo's own rules, so
+  `autobins = false` disables it, and on the 2015 edition (the default when no
+  `edition` key is present) a hand-written `[[bin]]` disables it too
 
 The manifest's `[package] name` becomes a Rust `package` node when the crate
 root is part of the scan request. A declared binary path becomes an exact

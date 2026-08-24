@@ -229,7 +229,7 @@ final readonly class ProjectDiscoverer
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'name' => self::cargoPackageName($contents),
                 'requires' => self::cargoRequirements($contents),
-                'entry_points' => self::cargoEntryPoints($contents, $relative),
+                'entry_points' => self::cargoEntryPoints($contents, $relative, dirname($absolute)),
             ]);
         }
         if ($kind === 'requirements') {
@@ -604,7 +604,7 @@ final readonly class ProjectDiscoverer
      *
      * @return list<string>
      */
-    private static function cargoEntryPoints(string $contents, string $configPath): array
+    private static function cargoEntryPoints(string $contents, string $configPath, string $absoluteDirectory): array
     {
         $directory = self::manifestDirectory($configPath);
         $candidates = [];
@@ -615,12 +615,14 @@ final readonly class ProjectDiscoverer
                 $candidates[] = 'src/bin/' . $bin['name'] . '.rs';
             }
         }
-        // Cargo auto-discovers src/main.rs IN ADDITION to any explicit [[bin]]
-        // target, so a crate with both builds both. `autobins = false` is the
-        // one switch that turns that discovery off, leaving only the explicit
-        // targets. A virtual workspace has no [package] and so no binary.
+        // Auto-discovery finds src/main.rs and everything under src/bin/, and
+        // it runs alongside any explicit [[bin]] rather than instead of it.
+        // A virtual workspace has no [package] and so no binary of its own.
         if (self::cargoAutobins($contents) && self::tableBlock($contents, '[package]') !== null) {
             $candidates[] = 'src/main.rs';
+            foreach (self::cargoDiscoveredBinaries($absoluteDirectory) as $discovered) {
+                $candidates[] = $discovered;
+            }
         }
         $paths = [];
         foreach ($candidates as $candidate) {
@@ -638,14 +640,53 @@ final readonly class ProjectDiscoverer
     /**
      * Whether Cargo discovers binary targets from the file system.
      *
-     * Defaults to true on the 2018 edition onwards; only an explicit
-     * `autobins = false` in `[package]` turns it off.
+     * An explicit `autobins` decides it outright. Otherwise the edition does:
+     * "For packages with the 2015 edition, the default for auto-discovery is
+     * false if at least one target is manually defined in Cargo.toml.
+     * Beginning with the 2018 edition, the default is always true."
+     * An absent `edition` key means 2015.
+     *
+     * Only a hand-written `[[bin]]` is treated as that manual target, though
+     * the rule as documented covers every target kind. A 2015 crate that
+     * declares only `[lib]` therefore still reports `src/main.rs`, which errs
+     * towards naming a file that really is an entry point over dropping one.
      */
     private static function cargoAutobins(string $contents): bool
     {
         $block = self::tableBlock($contents, '[package]');
+        if ($block === null) {
+            return false;
+        }
+        if (preg_match('/^[ \t]*autobins[ \t]*=[ \t]*(true|false)\b/m', $block, $explicit) === 1) {
+            return $explicit[1] === 'true';
+        }
+        $edition = preg_match('/^[ \t]*edition[ \t]*=[ \t]*["\']([^"\']+)["\']/m', $block, $m) === 1 ? $m[1] : '2015';
 
-        return $block === null || preg_match('/^[ \t]*autobins[ \t]*=[ \t]*false\b/m', $block) !== 1;
+        return $edition !== '2015' || self::arrayTables($contents, '[[bin]]') === [];
+    }
+
+    /**
+     * Binaries Cargo finds under `src/bin/` without being told about them.
+     *
+     * Cargo reads these off the file system, so this does too: `src/bin/x.rs`
+     * and `src/bin/x/main.rs` are both binary targets. Only files that exist
+     * are returned, which is stricter than the inferred `src/main.rs` beside
+     * it and cannot invent an entry point.
+     *
+     * @return list<string>
+     */
+    private static function cargoDiscoveredBinaries(string $absoluteDirectory): array
+    {
+        $found = [];
+        foreach (glob($absoluteDirectory . '/src/bin/*.rs') ?: [] as $file) {
+            $found[] = 'src/bin/' . basename($file);
+        }
+        foreach (glob($absoluteDirectory . '/src/bin/*/main.rs') ?: [] as $file) {
+            $found[] = 'src/bin/' . basename(dirname($file)) . '/main.rs';
+        }
+        sort($found, SORT_STRING);
+
+        return $found;
     }
 
     /**

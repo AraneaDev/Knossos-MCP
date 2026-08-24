@@ -844,11 +844,26 @@ path = "tools/mytool.rs"
 [[bin]]
 name = "other"
 TOML);
-        // src/main.rs is listed alongside the explicit targets: Cargo's
-        // auto-discovery runs in addition to `[[bin]]`, so a crate carrying
-        // both builds both. A crate without the file simply never matches an
-        // emitted node.
-        assertSame(['src/bin/other.rs', 'src/main.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
+        // No `edition` key means the 2015 edition, where declaring a target by
+        // hand turns auto-discovery off. src/main.rs is therefore not a target
+        // of this manifest and must not be reported.
+        assertSame(['src/bin/other.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    /** From the 2018 edition on, auto-discovery runs alongside `[[bin]]`. */
+    public function testDiscoverAddsImplicitMainAlongsideBinFrom2018Onwards(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mytool"
+path = "tools/mytool.rs"
+TOML);
+        assertSame(['src/main.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
     }
 
     public function testDiscoverHonoursAutobinsFalse(): void
@@ -857,15 +872,47 @@ TOML);
 [package]
 name = "demo"
 version = "0.1.0"
+edition = "2021"
 autobins = false
 
 [[bin]]
 name = "mytool"
 path = "tools/mytool.rs"
 TOML);
-        // `autobins = false` is the one switch that turns file-system target
-        // discovery off, leaving only what the manifest declares.
+        // The edition would leave discovery on, so `autobins = false` is the
+        // only thing that can suppress src/main.rs here.
         assertSame(['tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    /**
+     * Cargo reads binaries under src/bin/ off the file system rather than the
+     * manifest, so discovery has to look there too. Both `src/bin/x.rs` and
+     * `src/bin/x/main.rs` are binary targets.
+     */
+    public function testDiscoverFindsBinariesUnderSrcBin(): void
+    {
+        mkdir($this->root . '/src/bin/nested', 0o700, true);
+        file_put_contents($this->root . '/src/bin/tool.rs', "fn main() {}\n");
+        file_put_contents($this->root . '/src/bin/nested/main.rs', "fn main() {}\n");
+        file_put_contents($this->root . '/src/lib.rs', "pub fn x() {}\n");
+
+        $unit = $this->cargoUnit("[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+
+        assertSame(
+            ['src/bin/nested/main.rs', 'src/bin/tool.rs', 'src/main.rs'],
+            $unit->metadata['entry_points'],
+        );
+    }
+
+    /** `autobins = false` stops the src/bin scan as well as the inferred main. */
+    public function testDiscoverSkipsSrcBinScanWhenAutobinsIsFalse(): void
+    {
+        mkdir($this->root . '/src/bin', 0o700, true);
+        file_put_contents($this->root . '/src/bin/tool.rs', "fn main() {}\n");
+
+        $unit = $this->cargoUnit("[package]\nname = \"demo\"\nversion = \"0.1.0\"\nautobins = false\n");
+
+        assertSame([], $unit->metadata['entry_points']);
     }
 
     /**
