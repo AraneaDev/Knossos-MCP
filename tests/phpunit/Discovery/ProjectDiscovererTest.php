@@ -878,6 +878,39 @@ TOML);
         assertSame(['src/bin/other.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
     }
 
+    /**
+     * The 2015 rule is per target kind. Cargo's prose says auto-discovery is
+     * off once "at least one target" is declared by hand, but `cargo metadata`
+     * on 1.94.1 still reports `src/main.rs` as a binary for a 2015 manifest
+     * declaring `[lib]` or `[[test]]`; only a `[[bin]]` stops it. Reading the
+     * prose literally would drop a real entry point, so this pins the
+     * behaviour cargo actually has.
+     */
+    public function testDiscoverKeepsImplicitMainWhenOnlyNonBinTargetsAreDeclared(): void
+    {
+        $withLib = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[lib]
+name = "demo"
+path = "src/lib.rs"
+TOML);
+        assertSame(['src/main.rs'], $withLib->metadata['entry_points']);
+
+        $withTest = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+TOML);
+        assertSame(['src/main.rs'], $withTest->metadata['entry_points']);
+    }
+
     /** From the 2018 edition on, auto-discovery runs alongside `[[bin]]`. */
     public function testDiscoverAddsImplicitMainAlongsideBinFrom2018Onwards(): void
     {

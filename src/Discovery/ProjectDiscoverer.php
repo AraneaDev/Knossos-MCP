@@ -681,10 +681,13 @@ final readonly class ProjectDiscoverer
      * Beginning with the 2018 edition, the default is always true."
      * An absent `edition` key means 2015.
      *
-     * Only a hand-written `[[bin]]` is treated as that manual target, though
-     * the rule as documented covers every target kind. A 2015 crate that
-     * declares only `[lib]` therefore still reports `src/main.rs`, which errs
-     * towards naming a file that really is an entry point over dropping one.
+     * The prose says "at least one target", but the behaviour is per target
+     * kind: only a hand-written `[[bin]]` turns binary discovery off. Verified
+     * against cargo 1.94.1 with `cargo metadata`, which on the 2015 edition
+     * still reports `src/main.rs` as a binary for a manifest declaring `[lib]`
+     * or `[[test]]`, and stops reporting it only once a `[[bin]]` is declared.
+     * `testDiscoverKeepsImplicitMainWhenOnlyNonBinTargetsAreDeclared` pins
+     * that, so the looser reading cannot be applied here by mistake.
      */
     private static function cargoAutobins(string $contents): bool
     {
