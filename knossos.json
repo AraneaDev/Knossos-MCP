@@ -7,6 +7,7 @@
     { "name": "php-worker", "path_prefix": "workers/php" },
     { "name": "typescript-worker", "path_prefix": "workers/typescript" },
     { "name": "python-worker", "path_prefix": "workers/python" },
+    { "name": "rust-worker", "path_prefix": "workers/rust" },
     { "name": "tooling", "path_prefix": "tools" },
     { "name": "tests", "path_prefix": "tests" }
   ],
@@ -23,6 +24,7 @@
         "php-worker",
         "typescript-worker",
         "python-worker",
+        "rust-worker",
         "tooling",
         "tests"
       ]
