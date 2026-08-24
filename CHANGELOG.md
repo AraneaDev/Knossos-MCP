@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.12.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.12.0...v0.12.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* **config:** give the Rust worker a boundary of its own ([2049a84](https://github.com/AraneaDev/Knossos-MCP/commit/2049a84caf5e5b3d77114efb1fe5c9ec5d5f3cdc))
+* **config:** give the Rust worker a boundary of its own ([b72757f](https://github.com/AraneaDev/Knossos-MCP/commit/b72757fd1a92f858d6aa7035f94a2de1ff6f00f9))
+
 ## [0.12.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.11.0...v0.12.0) (2026-08-24)
 
 
