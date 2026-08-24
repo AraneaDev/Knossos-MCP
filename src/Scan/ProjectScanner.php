@@ -27,5 +27,6 @@ interface ProjectScanner
         ?CancellationToken $cancellation = null,
         ?int $snapshotRetention = null,
         ?int $workerTimeoutMs = null,
+        ?int $workerMemoryMb = null,
     ): ResultEnvelope;
 }

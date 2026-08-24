@@ -76,6 +76,7 @@ final readonly class WorkerExecutionPolicy
 
     public function __construct(
         public int $requestTimeoutMs = self::DEFAULT_REQUEST_TIMEOUT_MS,
+        public ?int $workerMemoryMb = null,
     ) {
         if ($requestTimeoutMs < self::MIN_REQUEST_TIMEOUT_MS || $requestTimeoutMs > self::MAX_REQUEST_TIMEOUT_MS) {
             throw new InvalidArgumentException(sprintf(
@@ -83,6 +84,9 @@ final readonly class WorkerExecutionPolicy
                 self::MIN_REQUEST_TIMEOUT_MS,
                 self::MAX_REQUEST_TIMEOUT_MS,
             ));
+        }
+        if ($workerMemoryMb !== null && $workerMemoryMb < 64) {
+            throw new InvalidArgumentException('worker_memory_mb must be at least 64.');
         }
     }
     /** The resource caps applied to a worker process. */

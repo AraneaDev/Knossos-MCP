@@ -63,6 +63,7 @@ final class ProjectScanService implements ProjectScanner
         ?CancellationToken $cancellation = null,
         ?int $snapshotRetention = null,
         ?int $workerTimeoutMs = null,
+        ?int $workerMemoryMb = null,
     ): ResultEnvelope {
         $startedAt = hrtime(true);
         $cancellation ??= new CancellationToken();
@@ -75,6 +76,7 @@ final class ProjectScanService implements ProjectScanner
             $mode,
             $snapshotRetention,
             $workerTimeoutMs,
+            $workerMemoryMb,
         );
         $stageMilliseconds = [
             'configuration' => $preparation->configurationMilliseconds,

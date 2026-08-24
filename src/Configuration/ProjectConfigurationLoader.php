@@ -68,7 +68,7 @@ final class ProjectConfigurationLoader
         // file rather than surfacing mid-discovery on an arbitrary path.
         new IgnoreMatcher($ignores);
         $limits = self::object($data['limits'] ?? [], 'limits');
-        self::knownKeys($limits, ['max_files', 'max_file_bytes', 'worker_timeout_ms'], 'limits');
+        self::knownKeys($limits, ['max_files', 'max_file_bytes', 'worker_timeout_ms', 'worker_memory_mb'], 'limits');
         $maxFiles = self::optionalInteger($limits, 'max_files', 1, 100_000);
         $maxBytes = self::optionalInteger($limits, 'max_file_bytes', 1, 100_000_000);
         $workerTimeoutMs = self::optionalInteger(
@@ -77,10 +77,16 @@ final class ProjectConfigurationLoader
             WorkerExecutionPolicy::MIN_REQUEST_TIMEOUT_MS,
             WorkerExecutionPolicy::MAX_REQUEST_TIMEOUT_MS,
         );
+        $workerMemoryMb = self::optionalInteger(
+            $limits,
+            'worker_memory_mb',
+            64,
+            65536,
+        );
         $retention = self::optionalInteger($data, 'snapshot_retention', 0, 20);
         $frameworks = self::stringList($data['frameworks'] ?? [], 'frameworks', 20);
         foreach ($frameworks as $framework) {
-            if (!in_array($framework, ['laravel', 'symfony', 'django', 'fastapi', 'nextjs', 'nestjs', 'react', 'vue'], true)) {
+            if (!in_array($framework, ['laravel', 'symfony', 'django', 'fastapi', 'flask', 'nextjs', 'nestjs', 'react', 'vue', 'axum', 'actix', 'rocket'], true)) {
                 throw new DiscoveryException('PROJECT_CONFIG_INVALID: unsupported framework hint ' . $framework . '.');
             }
         }
@@ -134,7 +140,7 @@ final class ProjectConfigurationLoader
             $typedBudgets[$key] = $value;
         }
         $suppressions = self::stringList($data['dead_code_suppressions'] ?? [], 'dead_code_suppressions', 200);
-        return new ProjectConfiguration(basename($path), $ignores, $maxFiles, $maxBytes, $workerTimeoutMs, $boundaries, array_values(array_unique($frameworks)), $retention, $policies, $typedBudgets, $suppressions);
+        return new ProjectConfiguration(basename($path), $ignores, $maxFiles, $maxBytes, $workerTimeoutMs, $workerMemoryMb, $boundaries, array_values(array_unique($frameworks)), $retention, $policies, $typedBudgets, $suppressions);
     }
 
     /**

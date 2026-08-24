@@ -36,7 +36,7 @@ final class LanguageScanRunnerTest extends TestCase
         // left one file in the system temp directory per run of
         // testAReducedBudgetDoesNotPinTheRestOfTheLanguage().
         if ($this->recordPath !== null) {
-            foreach ([$this->recordPath, $this->recordPath . '.overflowed'] as $path) {
+            foreach ([$this->recordPath, $this->recordPath . '.overflowed', $this->recordPath . '.oomed', $this->recordPath . '.framed'] as $path) {
                 if (is_file($path)) {
                     unlink($path);
                 }
@@ -776,6 +776,58 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame(8, $result->scannerMetadata['knossos.fake']['files_scanned']);
         // The narrowest budget any request ran at is reported, not the start.
         assertSame(400_000, $result->batchBudgets['knossos.php']['source_bytes']);
+        assertSame(200_000, $result->batchBudgets['knossos.php']['source_bytes_used']);
+    }
+
+    public function testTypeScriptHeapExhaustionSplitsTheBatchAndRecovers(): void
+    {
+        $this->allocateRecordPath();
+        $descriptor = $this->descriptorFor('typescript', batchSourceBytes: 400_000);
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_oom_once', threshold: 2, tightCap: true),
+            $descriptor,
+        );
+
+        $files = array_fill_keys(array_keys($this->eightBigPhpFiles()), 'typescript');
+        $result = $runner->run($this->planForFiles($files, 100_000), new CancellationToken());
+
+        assertSame([4, 2, 2, 4], $this->recordedBatches());
+        assertSame([], $result->workerDiagnostics);
+        assertSame(8, $result->parsed);
+        assertSame(200_000, $result->batchBudgets['knossos.typescript']['source_bytes_used']);
+    }
+
+    public function testAnOrdinaryTypeScriptWorkerExitIsNotRetried(): void
+    {
+        $this->allocateRecordPath();
+        $descriptor = $this->descriptorFor('typescript', batchSourceBytes: 400_000);
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_exit', threshold: 2),
+            $descriptor,
+        );
+
+        $files = array_fill_keys(array_keys($this->eightBigPhpFiles()), 'typescript');
+        $result = $runner->run($this->planForFiles($files, 100_000), new CancellationToken());
+
+        assertSame([4], $this->recordedBatches());
+        assertSame('WORKER_EXITED', $result->workerDiagnostics[0]['code']);
+    }
+
+    public function testFrameTooLargeSplitsTheBatchAndRecovers(): void
+    {
+        $this->allocateRecordPath();
+        $descriptor = $this->descriptorFor('php', batchSourceBytes: 400_000);
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_frame_too_large_once', threshold: 2, tightCap: true),
+            $descriptor,
+        );
+
+        $files = array_fill_keys(array_keys($this->eightBigPhpFiles()), 'php');
+        $result = $runner->run($this->planForFiles($files, 100_000), new CancellationToken());
+
+        assertSame([4, 2, 2, 4], $this->recordedBatches());
+        assertSame([], $result->workerDiagnostics);
+        assertSame(8, $result->parsed);
         assertSame(200_000, $result->batchBudgets['knossos.php']['source_bytes_used']);
     }
 

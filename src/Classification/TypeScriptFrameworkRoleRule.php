@@ -5,24 +5,10 @@ declare(strict_types=1);
 namespace Knossos\Classification;
 
 use Knossos\Scanner\Protocol\Confidence;
-use Knossos\Scanner\Protocol\NodeFact;
-use Knossos\Scanner\Protocol\Origin;
 
-/** Infers roles from TypeScript framework conventions such as Angular and Express handlers. */
-final readonly class TypeScriptFrameworkRoleRule implements ClassificationRule
+/** Infers roles from TypeScript framework conventions such as Next.js, React, and Vue. */
+final readonly class TypeScriptFrameworkRoleRule extends AbstractFrameworkRoleRule
 {
-    private const ROLES = [
-        'nextjs.layout',
-        'nextjs.page',
-        'nextjs.route_handler',
-        'nextjs.server_action',
-        'react.component',
-        'react.hook',
-        'state.store',
-        'vue.component',
-        'vue.composable',
-    ];
-
     /** {@inheritDoc} */
     public function id(): string
     {
@@ -30,19 +16,36 @@ final readonly class TypeScriptFrameworkRoleRule implements ClassificationRule
     }
 
     /** {@inheritDoc} */
-    public function classify(NodeFact $node): array
+    protected function knownRoles(): array
     {
-        $roles = $node->attributes['typescript_framework_roles'] ?? [];
-        if (!is_array($roles)) {
-            return [];
-        }
-        $facts = [];
-        foreach (array_values(array_unique($roles)) as $role) {
-            if (!is_string($role) || !in_array($role, self::ROLES, true)) {
-                continue;
-            }
-            $facts[] = new ClassificationFact($node->localId, $role, $this->id(), Origin::FrameworkConvention, Confidence::Probable, $node->evidence, ['source' => 'compiler syntax and application convention']);
-        }
-        return $facts;
+        return [
+            'nextjs.layout',
+            'nextjs.page',
+            'nextjs.route_handler',
+            'nextjs.server_action',
+            'react.component',
+            'react.hook',
+            'state.store',
+            'vue.component',
+            'vue.composable',
+        ];
+    }
+
+    /** {@inheritDoc} */
+    protected function attributeKey(): string
+    {
+        return 'typescript_framework_roles';
+    }
+
+    /** {@inheritDoc} */
+    protected function confidence(): Confidence
+    {
+        return Confidence::Probable;
+    }
+
+    /** {@inheritDoc} */
+    protected function evidenceMeta(): array
+    {
+        return ['source' => 'compiler syntax and application convention'];
     }
 }

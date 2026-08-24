@@ -1,5 +1,6 @@
 //! The newline-delimited JSON-RPC loop. Mirrors `workers/php/src/WorkerServer.php`.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -7,7 +8,8 @@ use serde_json::{json, Value};
 
 use crate::facts::Facts;
 use crate::protocol::{Contribution, Manifest};
-use crate::resolve::module_path;
+use crate::resolve::{module_path, module_path_with_binary_root};
+use crate::visit::Declarations;
 
 /// Default cap on one scanned file, overridden by `params.limits.max_file_bytes`.
 const DEFAULT_MAX_FILE_BYTES: u64 = 2_000_000;
@@ -86,7 +88,29 @@ pub fn handle(request: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, St
     }
 }
 
+/// One file awaiting its walk: parsed successfully, or already reduced to a
+/// diagnostic-only contribution (unreadable, oversized, escaping, or
+/// unparsable — each failure costs only its own file).
+enum Prepared {
+    /// Read, validated, and parsed; ready to walk.
+    Parsed {
+        /// Project-relative path.
+        relative: String,
+        /// The parsed syntax tree.
+        parsed: syn::File,
+    },
+    /// A failed file, reduced to its final (diagnostic-only) contribution.
+    Err(Contribution),
+}
+
 /// Parse a bounded file set, emitting one owned contribution per input.
+///
+/// The request is scanned in three passes: every file is read and parsed
+/// first (so one unreadable file never aborts the batch), then the scan-wide
+/// declaration index is built from the successes — the cross-file view that
+/// lets `impl` blocks attach to types in other files and call targets resolve
+/// to their real module — and only then is each file walked and emitted, in
+/// the sorted order the batch was accepted in.
 fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     let root = safe_root(params.get("root"))?;
     let limits = params.get("limits");
@@ -104,14 +128,70 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     for value in files {
         // A malformed path stays fatal: it names no file, so there is nothing to
         // attribute a diagnostic to, and echoing it into a contribution would
-        // emit an owner key the graph rejects anyway.
+        // emit an owner id the graph rejects anyway.
         relatives.push(assert_scannable_path(value)?);
     }
     relatives.sort();
 
-    let mut scanned = 0_usize;
+    let frameworks = string_list(params.get("frameworks"), "frameworks")?;
+    let config_files = string_list(params.get("config_files"), "config_files")?;
+    for config in &config_files {
+        assert_scannable_str(config)?;
+    }
+    let crates = cargo_crates(&root, &config_files);
+    let has_library_root = crates
+        .iter()
+        .any(|(root_file, _)| root_file.ends_with("src/lib.rs"));
+
+    // Pass 1: read, validate, and parse every file.
+    let mut prepared: Vec<Prepared> = Vec::with_capacity(relatives.len());
     for relative in &relatives {
-        let contribution = scan_one(&root, relative, max_file_bytes);
+        prepared.push(prepare_one(&root, relative, max_file_bytes));
+    }
+
+    // Pass 2: the scan-wide declaration index, scoped to this request's
+    // files the same way the Python worker's module index is scoped to its
+    // batch. A cached (unrequested) file's declarations are simply absent,
+    // so a batch that excludes a type's declaring file degrades to the old
+    // per-file behaviour without ever guessing.
+    let mut declarations = Declarations::new();
+    for item in &prepared {
+        if let Prepared::Parsed { relative, parsed } = item {
+            let module = module_path_for_file(relative, has_library_root);
+            crate::visit::collect_declarations(&module, &parsed.items, &mut declarations);
+        }
+    }
+
+    // Pass 3: walk and emit, in the batch's sorted order.
+    let mut scanned = 0_usize;
+    for item in prepared {
+        let contribution = match item {
+            Prepared::Err(contribution) => contribution,
+            Prepared::Parsed { relative, parsed } => {
+                let module = module_path_for_file(&relative, has_library_root);
+                let display = module.rsplit("::").next().unwrap_or(&module).to_owned();
+                let mut facts = Facts::new(&relative);
+                let span = proc_macro2::Span::call_site();
+                facts.node("module", &module, &display, span, span);
+                crate::visit::walk(&mut facts, &module, &parsed, &frameworks, &declarations);
+                if let Some((_, crate_name)) =
+                    crates.iter().find(|(root_file, _)| root_file == &relative)
+                {
+                    facts.node_with_attributes(
+                        "package",
+                        crate_name,
+                        crate_name,
+                        span,
+                        span,
+                        BTreeMap::new(),
+                    );
+                    let package_id = crate::facts::reference("package", crate_name);
+                    let module_id = crate::facts::reference("module", &module);
+                    facts.edge("contains", &package_id, &module_id, "certain", span);
+                }
+                facts.finish()
+            }
+        };
         emit(&serde_json::to_value(&contribution).map_err(|e| e.to_string())?);
         scanned += 1;
     }
@@ -119,25 +199,25 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     Ok(json!({"files_scanned": scanned, "parser": "rust.syn"}))
 }
 
-/// Facts for one file: read it, parse it, and walk it.
+/// Read, validate, and parse one file into a [`Prepared`].
 ///
-/// Every failure is per file. Aborting the request would discard the facts every
-/// other file in the batch contributes, so one unreadable or unparsable file
-/// costs only its own contribution.
-fn scan_one(root: &Path, relative: &str, max_file_bytes: u64) -> Contribution {
+/// Every failure is per file. Aborting the request would discard the facts
+/// every other file in the batch contributes, so one unreadable or
+/// unparsable file costs only its own contribution.
+fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
     let mut facts = Facts::new(relative);
     let joined = root.join(relative);
     // Mirrors `safe_file` in `workers/python/bin/worker.py`: `assert_scannable_path`
     // only checked the path's shape, so a symlink inside the project that points
-    // outside it would otherwise sail through untouched. Canonicalising and
+    // outside it would otherwise be resolved untouched. Canonicalising and
     // re-checking containment here, at the point the file is first opened, is
-    // what actually catches that. `root` is already canonical (`safe_root`
-    // canonicalises it), so a plain `starts_with` comparison is enough.
+    // what actually catches that. `safe_root` canonicalises `root`, so a plain
+    // `starts_with` comparison is enough.
     let canonical = match std::fs::canonicalize(&joined) {
         Ok(canonical) => canonical,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return facts.finish();
+            return Prepared::Err(facts.finish());
         }
     };
     if !canonical.starts_with(root) {
@@ -147,7 +227,7 @@ fn scan_one(root: &Path, relative: &str, max_file_bytes: u64) -> Contribution {
             "Scan path escapes the project root.",
             1,
         );
-        return facts.finish();
+        return Prepared::Err(facts.finish());
     }
     match std::fs::metadata(&canonical) {
         Ok(metadata) if metadata.len() > max_file_bytes => {
@@ -157,36 +237,138 @@ fn scan_one(root: &Path, relative: &str, max_file_bytes: u64) -> Contribution {
                 "File exceeds the scan byte limit.",
                 1,
             );
-            return facts.finish();
+            return Prepared::Err(facts.finish());
         }
         Ok(_) => {}
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return facts.finish();
+            return Prepared::Err(facts.finish());
         }
     }
     let source = match std::fs::read_to_string(&canonical) {
         Ok(source) => source,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return facts.finish();
+            return Prepared::Err(facts.finish());
         }
     };
-    let parsed = match syn::parse_file(&source) {
-        Ok(parsed) => parsed,
+    match syn::parse_file(&source) {
+        Ok(parsed) => Prepared::Parsed {
+            relative: relative.to_owned(),
+            parsed,
+        },
         Err(error) => {
             let line = error.span().start().line.max(1);
             facts.diagnostic("error", "RS_SYNTAX_ERROR", &error.to_string(), line);
-            return facts.finish();
+            Prepared::Err(facts.finish())
         }
-    };
-    let module = module_path(relative);
-    let display = module.rsplit("::").next().unwrap_or(&module).to_owned();
-    let span = proc_macro2::Span::call_site();
-    facts.node("module", &module, &display, span, span);
-    crate::visit::walk(&mut facts, &module, &parsed);
+    }
+}
 
-    facts.finish()
+/// The crate roots and names declared by the request's manifest `config_files`.
+///
+/// The crate name comes from a `[package]` table, read without a TOML parser
+/// (the same leaf parse the PHP core gives Cargo.toml). The crate's package
+/// node is attached to its library root `src/lib.rs`, or its binary root
+/// `src/main.rs` when there is no library — the two files whose module path
+/// is `crate` — via ordinary filesystem existence, matching where the file
+/// vertices sit in the batch.
+fn cargo_crates(root: &Path, config_files: &[String]) -> Vec<(String, String)> {
+    let mut crates: Vec<(String, String)> = Vec::new();
+    for config in config_files {
+        let Ok(contents) = std::fs::read_to_string(root.join(config)) else {
+            continue;
+        };
+        let Some(name) = manifest_crate_name(&contents) else {
+            continue;
+        };
+        let directory = match config.rsplit_once('/') {
+            Some((directory, _)) => format!("{directory}/"),
+            None => String::new(),
+        };
+        for candidate in [
+            format!("{directory}src/lib.rs"),
+            format!("{directory}src/main.rs"),
+        ] {
+            if root.join(&candidate).is_file() {
+                crates.push((candidate, name.clone()));
+            }
+        }
+    }
+
+    crates
+}
+
+/// Resolve one requested file's module identity, disambiguating a binary
+/// root only when the same Cargo package also has a library root.
+fn module_path_for_file(relative: &str, has_library_root: bool) -> String {
+    let binary_root = has_library_root && relative == "src/main.rs";
+    if binary_root {
+        module_path_with_binary_root(relative, true)
+    } else {
+        module_path(relative)
+    }
+}
+
+/// The crate name from a Cargo.toml `[package]` table, or `None` for a
+/// virtual workspace manifest. Scoped to that one table so a `name` under
+/// `[[bin]]` or `[dependencies.foo]` is never mistaken for the crate's own.
+fn manifest_crate_name(contents: &str) -> Option<String> {
+    let mut in_package = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_package = trimmed.starts_with("[package]");
+            continue;
+        }
+        if !in_package {
+            continue;
+        }
+        let Some(after_name) = trimmed.strip_prefix("name") else {
+            continue;
+        };
+        let Some(value) = after_name.trim_start().strip_prefix('=') else {
+            continue;
+        };
+        let value = value.trim();
+        let name = value
+            .strip_prefix('"')
+            .and_then(|rest| rest.split('"').next())
+            .or_else(|| {
+                value
+                    .strip_prefix('\'')
+                    .and_then(|rest| rest.split('\'').next())
+            })
+            .unwrap_or("");
+        if !name.is_empty() {
+            return Some(name.to_owned());
+        }
+    }
+
+    None
+}
+
+/// A bounded list of non-empty strings from a params field.
+fn string_list(value: Option<&Value>, name: &str) -> Result<Vec<String>, String> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(items) = value.as_array() else {
+        return Err(format!("{name} must be a list of non-empty strings."));
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let text = item
+            .as_str()
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| format!("{name} must be a list of non-empty strings."))?;
+        out.push(text.to_owned());
+    }
+
+    Ok(out)
 }
 
 /// The scan root as an existing, canonical, absolute directory.
@@ -229,6 +411,13 @@ fn assert_scannable_path(value: &Value) -> Result<String, String> {
         .as_str()
         .filter(|text| !text.is_empty())
         .ok_or_else(|| "A scan path must be a non-empty string.".to_owned())?;
+
+    assert_scannable_str(raw)
+}
+
+/// The string form of [`assert_scannable_path`], for values already known to
+/// be strings.
+fn assert_scannable_str(raw: &str) -> Result<String, String> {
     if raw.contains('\0') || raw.contains('\\') {
         return Err(format!("Refusing an unnormalized scan path: {raw}"));
     }

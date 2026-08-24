@@ -329,6 +329,7 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         assertSame('scanner_typescript', $ts->stage);
         assertSame(true, count($ts->command) >= 3);
         assertSame('node', $ts->command[0]);
+        assertSame('--max-old-space-size=1024', $ts->command[1]);
         $lastArg = $ts->command[count($ts->command) - 1];
         assertSame(true, str_contains($lastArg, '/opt/knossos/workers/typescript/'));
     }
@@ -466,6 +467,92 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
             if (!$descriptor->optional) {
                 self::assertTrue($descriptor->isInstalled(), $descriptor->key);
             }
+        }
+    }
+
+    // ===== withMemoryMb (Round 6) =========================================
+
+    public function testWithMemoryMbReturnsSelfWhenValueIsNull(): void
+    {
+        $ts = LanguageDescriptor::defaults('/opt/knossos')[1];
+
+        $adjusted = $ts->withMemoryMb(null);
+
+        self::assertSame($ts, $adjusted);
+    }
+
+    public function testWithMemoryMbReturnsSelfWhenValueIsUnchanged(): void
+    {
+        $ts = LanguageDescriptor::defaults('/opt/knossos')[1];
+
+        $adjusted = $ts->withMemoryMb(1024);
+
+        self::assertSame($ts, $adjusted);
+    }
+
+    public function testWithMemoryMbReturnsSelfForNullWorkerMemoryMb(): void
+    {
+        $py = LanguageDescriptor::defaults('/opt/knossos')[2];
+
+        $adjusted = $py->withMemoryMb(512);
+
+        self::assertSame($py, $adjusted);
+    }
+
+    public function testWithMemoryMbAdjustsTypeScriptHeapFlag(): void
+    {
+        $ts = LanguageDescriptor::defaults('/opt/knossos')[1];
+
+        $adjusted = $ts->withMemoryMb(768);
+
+        self::assertNotSame($ts, $adjusted);
+        self::assertSame(768, $adjusted->workerMemoryMb);
+        // The old descriptor is unchanged.
+        self::assertSame(1024, $ts->workerMemoryMb);
+        // The command array carries the new value.
+        $flags = array_values(array_filter(
+            $adjusted->command,
+            static fn(string $arg): bool => str_starts_with($arg, '--max-old-space-size='),
+        ));
+        self::assertCount(1, $flags);
+        self::assertSame('--max-old-space-size=768', $flags[0]);
+        // All other fields are carried over.
+        self::assertSame($ts->key, $adjusted->key);
+        self::assertSame($ts->languages, $adjusted->languages);
+        self::assertSame($ts->stage, $adjusted->stage);
+        self::assertSame($ts->scanBatchFiles, $adjusted->scanBatchFiles);
+        self::assertSame($ts->scanBatchSourceBytes, $adjusted->scanBatchSourceBytes);
+        self::assertSame($ts->optional, $adjusted->optional);
+        // The command is identical after the memory flag slot.
+        self::assertSame(count($ts->command), count($adjusted->command));
+        foreach ($ts->command as $i => $arg) {
+            if (!str_starts_with($arg, '--max-old-space-size=')) {
+                self::assertSame($arg, $adjusted->command[$i], "command[$i] differs");
+            }
+        }
+    }
+
+    public function testWithMemoryMbAdjustsPhpMemoryLimit(): void
+    {
+        $php = LanguageDescriptor::defaults('/opt/knossos')[0];
+
+        $adjusted = $php->withMemoryMb(256);
+
+        self::assertNotSame($php, $adjusted);
+        self::assertSame(256, $adjusted->workerMemoryMb);
+        // The old descriptor is unchanged.
+        self::assertSame(512, $php->workerMemoryMb);
+        // memory_limit=256M is in the command array.
+        $has256 = false;
+        foreach ($adjusted->command as $arg) {
+            if ($arg === 'memory_limit=256M') {
+                $has256 = true;
+            }
+        }
+        self::assertTrue($has256, 'Command array must contain memory_limit=256M');
+        // The original 512M is gone.
+        foreach ($adjusted->command as $arg) {
+            self::assertNotSame('memory_limit=512M', $arg);
         }
     }
 }

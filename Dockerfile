@@ -101,7 +101,7 @@ RUN chmod 0755 \
 USER www-data
 
 ENV KNOSSOS_DATA_DIR=/data
-ENV NODE_OPTIONS=--max-old-space-size=512
+ENV NODE_OPTIONS=--max-old-space-size=1024
 
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

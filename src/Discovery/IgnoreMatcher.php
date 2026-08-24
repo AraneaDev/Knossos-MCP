@@ -15,6 +15,7 @@ final readonly class IgnoreMatcher
 {
     private const EXCLUDED_SEGMENTS = [
         '.git',
+        '.idea',
         '.knossos',
         'vendor',
         'node_modules',
@@ -45,11 +46,22 @@ final readonly class IgnoreMatcher
      */
     private const EXCLUDED_SEGMENT_PREFIXES = [
         '.knossos-',
+        // Laravel IDE Helper generated stubs have no architectural signal — they
+        // are enumerations of every class, method, and docblock in the project —
+        // and scanning them produces NDJSON frames large enough to overflow the
+        // worker's line limit on any non-trivial project.
+        '_ide_helper',
     ];
 
     private const EXCLUDED_PREFIXES = [
         'public/build',
         'storage/framework',
+        // Laravel writable directories that hold uploaded assets, debug dumps,
+        // and logs — never source code. Including them in discovery wastes
+        // worker time on binary/multi-MB files and can overflow frame limits.
+        'storage/attachments',
+        'storage/debugbar',
+        'storage/logs',
     ];
 
     /**

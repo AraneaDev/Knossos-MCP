@@ -14,6 +14,15 @@
 /// symbols with the library's.
 #[must_use]
 pub fn module_path(relative: &str) -> String {
+    module_path_with_binary_root(relative, false)
+}
+
+/// The canonical module path for a file, optionally under a binary root that
+/// shares a Cargo package with a library root. Cargo compiles `src/main.rs`
+/// and `src/lib.rs` as separate crates; the suffix keeps their graph identities
+/// distinct when both are present in one scan.
+#[must_use]
+pub fn module_path_with_binary_root(relative: &str, binary_root: bool) -> String {
     let trimmed = relative.strip_suffix(".rs").unwrap_or(relative);
     let mut segments: Vec<&str> = trimmed.split('/').filter(|part| !part.is_empty()).collect();
     let in_crate = segments.first() == Some(&"src");
@@ -27,7 +36,7 @@ pub fn module_path(relative: &str) -> String {
         segments.pop();
     }
     if in_crate {
-        segments.insert(0, "crate");
+        segments.insert(0, if binary_root { "crate::main" } else { "crate" });
     }
     if segments.is_empty() {
         return "crate".to_owned();
@@ -291,6 +300,14 @@ mod tests {
     fn lib_and_main_collapse_to_the_crate_root() {
         assert_eq!("crate", module_path("src/lib.rs"));
         assert_eq!("crate", module_path("src/main.rs"));
+    }
+
+    #[test]
+    fn a_binary_root_can_be_disambiguated_from_a_library_root() {
+        assert_eq!(
+            "crate::main",
+            super::module_path_with_binary_root("src/main.rs", true)
+        );
     }
 
     #[test]

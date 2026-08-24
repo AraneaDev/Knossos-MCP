@@ -46,7 +46,7 @@ final class ScanAnalysisPipelineTest extends TestCase
             executionPolicy: new WorkerExecutionPolicy(),
             laravel: $laravel,
             symfony: $symfony,
-            configurationHashes: ['php' => '', 'typescript' => '', 'python' => ''],
+            configurationHashes: ['php' => '', 'typescript' => '', 'python' => '', 'rust' => ''],
             configurationMilliseconds: 0.0,
             discoveryMilliseconds: 0.0,
             planningMilliseconds: 0.0,
@@ -142,6 +142,105 @@ final class ScanAnalysisPipelineTest extends TestCase
         assertSame(true, $analysis instanceof ScanAnalysis);
         assertSame(true, is_array($analysis->classifications));
         assertSame(true, is_array($analysis->boundaries));
+    }
+
+    public function testAnalyzeTagsRustRouteHandlersAsClassifications(): void
+    {
+        $pipeline = new ScanAnalysisPipeline();
+        $plan = new ScanPlan(
+            preparation: $this->makePreparation(),
+            projectId: 'plan-rust-route',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+        $node = new NodeFact(
+            'rust:function:crate::health',
+            'function',
+            'crate::health',
+            'health',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('src/routes.rs', 4, 4),
+            ['rust_framework_roles' => ['rust.route_handler']],
+        );
+
+        $analysis = $pipeline->analyze($plan, [new ScanContribution('knossos.rust', [$node])]);
+
+        $facts = array_values(array_filter(
+            $analysis->classifications,
+            static fn(ClassificationFact $fact): bool => $fact->role === 'rust.route_handler',
+        ));
+        assertSame(1, count($facts));
+        assertSame('rust:function:crate::health', $facts[0]->nodeReference);
+        assertSame('rust.framework.ast.v1', $facts[0]->ruleId);
+    }
+
+    /**
+     * The Python worker emits both Flask roles, and docs/languages/python.md
+     * promises they are classified. They were absent from the rule's
+     * whitelist, so every Flask view and handler was dropped silently.
+     */
+    public function testAnalyzeTagsFlaskRolesAsClassifications(): void
+    {
+        $pipeline = new ScanAnalysisPipeline();
+        $plan = new ScanPlan(
+            preparation: $this->makePreparation(),
+            projectId: 'plan-flask-roles',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+        $handler = new NodeFact(
+            'python:function:app.index',
+            'function',
+            'app.index',
+            'index',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('app.py', 8, 8),
+            ['python_framework_roles' => ['flask.route_handler']],
+        );
+        $view = new NodeFact(
+            'python:class:app.UserView',
+            'class',
+            'app.UserView',
+            'UserView',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('app.py', 14, 20),
+            ['python_framework_roles' => ['flask.view']],
+        );
+
+        $analysis = $pipeline->analyze($plan, [new ScanContribution('knossos.python', [$handler, $view])]);
+
+        $roles = array_values(array_filter(
+            $analysis->classifications,
+            static fn(ClassificationFact $fact): bool => str_starts_with($fact->role, 'flask.'),
+        ));
+        assertSame(2, count($roles));
+        assertSame(
+            ['python:class:app.UserView' => 'flask.view', 'python:function:app.index' => 'flask.route_handler'],
+            self::rolesByNode($roles),
+        );
+        foreach ($roles as $fact) {
+            assertSame('python.framework.ast.v1', $fact->ruleId);
+        }
+    }
+
+    /**
+     * @param list<ClassificationFact> $facts
+     * @return array<string, string>
+     */
+    private static function rolesByNode(array $facts): array
+    {
+        $result = [];
+        foreach ($facts as $fact) {
+            $result[$fact->nodeReference] = $fact->role;
+        }
+        ksort($result, SORT_STRING);
+
+        return $result;
     }
 
     /**

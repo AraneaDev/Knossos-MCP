@@ -343,3 +343,140 @@ def test_package_relative_import_still_emits_its_module_edge(worker: ModuleType,
     [contribution] = scan_collect(root, ["pkg/a.py"])
     assert ("imports", "py:module:pkg.a", "py:module:pkg") in _edges(contribution)
     assert "PY_UNRESOLVED_RELATIVE_IMPORT" not in _diag_codes(contribution)
+
+
+def test_flask_app_route_decorator_emits_route_nodes(worker: ModuleType, project, scan_collect) -> None:
+    root = project(
+        {
+            "app.py": (
+                "from flask import Flask\n"
+                "app = Flask(__name__)\n"
+                "@app.route('/health', methods=['GET'])\n"
+                "def health() -> dict:\n"
+                "    return {'ok': True}\n"
+            )
+        }
+    )
+    [contribution] = scan_collect(root, ["app.py"])
+    routes = [node for node in contribution["nodes"] if node["kind"] == "route"]
+    assert len(routes) == 1
+    assert routes[0]["canonical_name"] == "GET /health => app.health"
+    assert routes[0]["attributes"]["framework"] == "flask"
+    handler = next(
+        node for node in contribution["nodes"] if node["kind"] == "function" and node["canonical_name"] == "app.health"
+    )
+    assert "flask.route_handler" in handler["attributes"]["python_framework_roles"]
+    assert ("routes_to", routes[0]["local_id"], handler["local_id"]) in _edges(contribution)
+
+
+def test_flask_route_defaults_to_get_and_blueprint_prefix_applies(worker: ModuleType, project, scan_collect) -> None:
+    root = project(
+        {
+            "web.py": (
+                "from flask import Blueprint\n"
+                "bp = Blueprint('pages', __name__, url_prefix='/pages')\n"
+                "@bp.route('/about')\n"
+                "def about() -> str:\n"
+                "    return 'about'\n"
+            )
+        }
+    )
+    [contribution] = scan_collect(root, ["web.py"])
+    routes = [node for node in contribution["nodes"] if node["kind"] == "route"]
+    assert len(routes) == 1
+    assert routes[0]["canonical_name"] == "GET /pages/about => web.about"
+
+
+def test_flask_typed_app_blueprint_mount_and_route_methods(worker: ModuleType, project, scan_collect) -> None:
+    root = project(
+        {
+            "app.py": (
+                "from flask import Blueprint, Flask\n"
+                "app: Flask = Flask(__name__)\n"
+                "api: Blueprint = Blueprint('api', __name__, url_prefix='/api')\n"
+                "@api.route('/items', methods=('GET', 'POST'))\n"
+                "def items() -> str:\n"
+                "    return ''\n"
+                "app.register_blueprint(api, url_prefix='/v1')\n"
+            )
+        }
+    )
+    [contribution] = scan_collect(root, ["app.py"])
+    routes = {node["canonical_name"] for node in contribution["nodes"] if node["kind"] == "route"}
+    assert {"GET /api/items => app.items", "POST /api/items => app.items"} <= routes
+    assert ("mounts", "py:module:app", "py:router:app.api") in _edges(contribution)
+
+
+def test_flask_multiple_methods_and_add_url_rule(worker: ModuleType, project, scan_collect) -> None:
+    root = project(
+        {
+            "app.py": (
+                "from flask import Flask, request\n"
+                "app = Flask(__name__)\n"
+                "@app.route('/submit', methods=['POST', 'PUT'])\n"
+                "def submit() -> str:\n"
+                "    return ''\n"
+                "def render() -> str:\n"
+                "    return ''\n"
+                "app.add_url_rule('/raw', view_func=render)\n"
+            )
+        }
+    )
+    [contribution] = scan_collect(root, ["app.py"])
+    routes = {node["canonical_name"] for node in contribution["nodes"] if node["kind"] == "route"}
+    assert {"POST /submit => app.submit", "PUT /submit => app.submit", "GET /raw => app.render"} <= routes
+
+
+def test_flask_alias_and_positional_add_url_rule_are_resolved(worker: ModuleType, project, scan_collect) -> None:
+    root = project(
+        {
+            "app.py": (
+                "from flask import Flask as Application\n"
+                "app = Application(__name__)\n"
+                "def render() -> str:\n"
+                "    return ''\n"
+                "app.add_url_rule('/raw', 'raw', render)\n"
+            )
+        }
+    )
+    [contribution] = scan_collect(root, ["app.py"])
+    routes = {node["canonical_name"] for node in contribution["nodes"] if node["kind"] == "route"}
+    assert "GET /raw => app.render" in routes
+
+
+def test_flask_empty_methods_and_dynamic_add_url_rule_are_skipped(worker: ModuleType, project, scan_collect) -> None:
+    root = project(
+        {
+            "app.py": (
+                "from flask import Flask\n"
+                "app = Flask(__name__)\n"
+                "@app.route('/never', methods=[])\n"
+                "def never() -> str:\n"
+                "    return ''\n"
+                "def render() -> str:\n"
+                "    return ''\n"
+                "app.add_url_rule('/users/<id>', view_func=render)\n"
+            )
+        }
+    )
+    [contribution] = scan_collect(root, ["app.py"])
+    assert not any(node["kind"] == "route" for node in contribution["nodes"])
+    assert "PY_DYNAMIC_ROUTE_PATH" in _diag_codes(contribution)
+
+
+def test_flask_dynamic_route_path_is_diagnosed_not_guessed(worker: ModuleType, project, scan_collect) -> None:
+    root = project(
+        {
+            "app.py": (
+                "from flask import Flask\n"
+                "app = Flask(__name__)\n"
+                "@app.route('/users/<int:user_id>')\n"
+                "def user(user_id: int) -> str:\n"
+                "    return ''\n"
+            )
+        }
+    )
+    [contribution] = scan_collect(root, ["app.py"])
+    routes = [node for node in contribution["nodes"] if node["kind"] == "route"]
+    assert routes == []
+    assert "PY_DYNAMIC_ROUTE_PATH" in _diag_codes(contribution)

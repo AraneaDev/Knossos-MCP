@@ -48,6 +48,13 @@ node_modules/.bin/c8 report \
     --functions="$(node -p "require('./coverage-budgets.json').typescript.functions")" \
     --statements="$(node -p "require('./coverage-budgets.json').typescript.statements")"
 
+# The quality gate runs the Python unit suite separately from PHPUnit. Collect
+# it here too: the PHP integration tests exercise the real subprocess protocol,
+# while these tests cover the worker's pure collector and edge-case branches.
+coverage run --branch --parallel-mode \
+    --data-file="$KNOSSOS_PYTHON_COVERAGE_DIR/.coverage" \
+    --source="$(pwd)/workers/python/bin" \
+    -m pytest workers/python/tests -q
 coverage combine --data-file=coverage/python/.coverage
 coverage report --data-file=coverage/python/.coverage \
     --fail-under="$(node -p "require('./coverage-budgets.json').python.lines")"

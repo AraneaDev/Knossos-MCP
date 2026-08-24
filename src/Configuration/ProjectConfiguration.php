@@ -21,6 +21,7 @@ final readonly class ProjectConfiguration
         public ?int $maxFiles = null,
         public ?int $maxFileBytes = null,
         public ?int $workerTimeoutMs = null,
+        public ?int $workerMemoryMb = null,
         public array $boundaries = [],
         public array $frameworks = [],
         public ?int $snapshotRetention = null,

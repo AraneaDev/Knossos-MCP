@@ -216,16 +216,26 @@ final readonly class ProjectDiscoverer
 
         // Cargo.toml is TOML, not JSON, exactly like pyproject.toml — feeding
         // either to JsonConfig::decode() below would fail to parse and drop
-        // the unit as DISCOVERY_CONFIG_INVALID. Neither gets a real parser.
+        // the unit as DISCOVERY_CONFIG_INVALID. Neither gets a real parser;
+        // targeted regexes over the specific tables keep them self-contained.
         if ($kind === 'python') {
-            $name = null;
-            if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $contents, $matches) === 1) {
-                $name = $matches[1];
-            }
-            return new ProjectUnit($kind, $relative, $contentHash, ['name' => $name]);
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'name' => self::tableString($contents, '[project]') ?? self::tableString($contents, '[tool.poetry]'),
+                'requires' => self::pythonRequirements($contents),
+                'entry_points' => self::pythonEntryPoints($contents, $relative),
+            ]);
         }
         if ($kind === 'cargo') {
-            return new ProjectUnit($kind, $relative, $contentHash, ['name' => self::cargoPackageName($contents)]);
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'name' => self::cargoPackageName($contents),
+                'requires' => self::cargoRequirements($contents),
+                'entry_points' => self::cargoEntryPoints($contents, $relative, dirname($absolute)),
+            ]);
+        }
+        if ($kind === 'requirements') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'requires' => self::pipRequirements($contents),
+            ]);
         }
 
         try {
@@ -268,22 +278,29 @@ final readonly class ProjectDiscoverer
      *
      * Deliberately scoped to that one table: Cargo.toml can carry other
      * `name = "..."` keys under `[[bin]]`, `[[test]]`, `[dependencies.foo]`,
-     * and similar tables, anywhere in the file, in any order relative to
+     * and similar tables, anywhere in the file, and in any order relative to
      * `[package]`. An unscoped first-match regex — the shape reused from
      * pyproject.toml, which has no such competing keys — picks up whichever
      * one happens to appear first, not the crate's own name.
      */
     private static function cargoPackageName(string $contents): ?string
     {
-        if (preg_match('/^[ \t]*\[package\][ \t]*(?:#.*)?\r?$/m', $contents, $header, PREG_OFFSET_CAPTURE) !== 1) {
+        return self::tableString($contents, '[package]');
+    }
+
+    /**
+     * A string key from a `[header]` table's scope, or null.
+     */
+    private static function tableString(string $contents, string $header): ?string
+    {
+        if (preg_match('/^[ \t]*' . preg_quote($header, '/') . '[ \t]*(?:#.*)?\r?$/m', $contents, $m, PREG_OFFSET_CAPTURE) !== 1) {
             return null;
         }
-        $rest = substr($contents, $header[0][1] + strlen($header[0][0]));
-        $tableEnd = preg_match('/^[ \t]*\[/m', $rest, $next, PREG_OFFSET_CAPTURE) === 1
+        $rest = substr($contents, $m[0][1] + strlen($m[0][0]));
+        $end = preg_match('/^[ \t]*\[/m', $rest, $next, PREG_OFFSET_CAPTURE) === 1
             ? $next[0][1]
             : strlen($rest);
-        $table = substr($rest, 0, $tableEnd);
-
+        $table = substr($rest, 0, $end);
         if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $table, $matches) === 1) {
             return $matches[1];
         }
@@ -291,7 +308,503 @@ final readonly class ProjectDiscoverer
         return null;
     }
 
-    /** Extensions a scanner emits nodes for; anything else cannot be matched later. */
+    /**
+     * Extract [[bin]]/[[test]]/[[example]] array-of-table blocks from a TOML.
+     *
+     * @return list<array{name: string, path: string}>
+     */
+    private static function arrayTables(string $contents, string $header): array
+    {
+        $found = [];
+        $offset = 0;
+        $pattern = '/^[ \t]*' . preg_quote($header, '/') . '[ \t]*(?:#.*)?\r?$/m';
+        while (preg_match($pattern, $contents, $m, PREG_OFFSET_CAPTURE, $offset) === 1) {
+            $start = $m[0][1] + strlen($m[0][0]);
+            $next = preg_match('/^[ \t]*\[/m', $contents, $n, PREG_OFFSET_CAPTURE, $start) === 1
+                ? $n[0][1]
+                : strlen($contents);
+            $block = substr($contents, $start, $next - $start);
+            $name = $path = '';
+            if (preg_match('/^\s*name\s*=\s*["\']([^"\']+)["\']/m', $block, $nm) === 1) {
+                $name = $nm[1];
+            }
+            if (preg_match('/^\s*path\s*=\s*["\']([^"\']+)["\']/m', $block, $pm) === 1) {
+                $path = $pm[1];
+            }
+            $found[] = ['name' => $name, 'path' => $path];
+            $offset = $next;
+        }
+
+        return $found;
+    }
+
+    /**
+     * Dependency names from a PEP 621 `[project]` block: the `dependencies`
+     * and each `optional-dependencies.<group>` list.
+     *
+     * Keys are what matter; version constraints, extras, and markers are not
+     * parsed. `dependencies = ["Django>=4.2", "fastapi[all]"]` yields
+     * `django` and `fastapi`, matching how composer requires are consumed.
+     *
+     * @return array<string, string>
+     */
+    private static function pythonRequirements(string $contents): array
+    {
+        $result = [];
+        $lists = [];
+        $block = self::tableBlock($contents, '[project]');
+        if ($block !== null) {
+            $lists = array_merge($lists, self::tomlStringLists($block, ['dependencies']));
+        }
+        $block = self::tableBlock($contents, '[project.optional-dependencies]');
+        if ($block !== null) {
+            $lists = array_merge($lists, self::tomlStringLists($block, null));
+        }
+        foreach ($lists as $raw) {
+            // Name, before any version specifier, marker, extras, or "@ URL".
+            $name = strtolower(preg_split('/\s*[<>=!~;@\[\]]\s*/', $raw, 2)[0]);
+            if ($name !== '') {
+                $result[$name] = $raw;
+            }
+        }
+        foreach (self::poetryRequirements($contents) as $name => $raw) {
+            $result[$name] ??= $raw;
+        }
+        ksort($result, SORT_STRING);
+
+        return $result;
+    }
+
+    /**
+     * Dependency names from Poetry's own tables.
+     *
+     * Poetry predates PEP 621 and states requirements as key/value tables
+     * rather than a list: `[tool.poetry.dependencies]`, the legacy
+     * `[tool.poetry.dev-dependencies]`, and
+     * `[tool.poetry.group.<name>.dependencies]`. A single dependency may also
+     * take its own sub-table, `[tool.poetry.dependencies.fastapi]`, where the
+     * header carries the name and the body holds only its settings.
+     *
+     * The `python` key states the interpreter constraint rather than a
+     * package, so it is not recorded as a requirement.
+     *
+     * @return array<string, string>
+     */
+    private static function poetryRequirements(string $contents): array
+    {
+        $tail = '(?:dependencies|dev-dependencies|group\.[^.\[\]]+\.dependencies)';
+        $result = [];
+        foreach (self::tomlHeaders($contents) as $header) {
+            $names = [];
+            if (preg_match('/^tool\.poetry\.' . $tail . '$/', $header) === 1) {
+                $block = self::tableBlock($contents, '[' . $header . ']');
+                $names = $block === null ? [] : self::tomlTableKeys($block);
+            } elseif (preg_match('/^tool\.poetry\.' . $tail . '\.["\']?([A-Za-z0-9_.-]+)["\']?$/', $header, $m) === 1) {
+                $names = [strtolower($m[1])];
+            }
+            foreach ($names as $name) {
+                if ($name !== '' && $name !== 'python') {
+                    $result[$name] = '1';
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Requirement names from a pip requirements file.
+     *
+     * One name per non-comment, non-option line, before any version operator,
+     * extras, environment marker, or `--hash` value. `-r other.txt` includes
+     * are not followed (the file is analysed standalone); `-e` editable
+     * installs resolve to a path and are skipped.
+     *
+     * @return array<string, string>
+     */
+    private static function pipRequirements(string $contents): array
+    {
+        $result = [];
+        foreach (preg_split('/\R/', $contents) ?: [] as $line) {
+            $line = trim(preg_replace('/\s+#.*$/', '', $line) ?? $line);
+            if ($line === '' || str_starts_with($line, '#') || str_starts_with($line, '-') || str_starts_with($line, '--')) {
+                continue;
+            }
+            // Requirement specifiers: name, optional extras, version, marker.
+            if (preg_match('/^([A-Za-z0-9_.-]+)/', $line, $m) !== 1) {
+                continue;
+            }
+            $name = strtolower($m[1]);
+            if ($name !== '') {
+                $result[$name] = $line;
+            }
+        }
+        ksort($result, SORT_STRING);
+
+        return $result;
+    }
+
+    /**
+     * Cargo.toml dependencies: the `[dependencies]`, `[dev-dependencies]`, and
+     * `[build-dependencies]` tables, their target-scoped variants, and each
+     * crate that takes a sub-table of its own.
+     *
+     * Keys are what matter; version constraints are not parsed.
+     *
+     * @return array<string, string>
+     */
+    private static function cargoRequirements(string $contents): array
+    {
+        $result = [];
+        foreach (self::cargoDependencyHeaders($contents) as $header) {
+            $block = self::tableBlock($contents, $header);
+            if ($block === null) {
+                continue;
+            }
+            foreach (self::tomlTableKeys($block) as $dep) {
+                $result[$dep] = '1';
+            }
+            foreach (self::tomlInlinePackageNames($block) as $dep) {
+                $result[$dep] = '1';
+            }
+        }
+        foreach (self::cargoDependencySubTableNames($contents) as $dep) {
+            $result[$dep] = '1';
+        }
+        ksort($result, SORT_STRING);
+
+        return $result;
+    }
+
+    /**
+     * Every Cargo table header that holds dependencies.
+     *
+     * Covers `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`,
+     * and target-scoped tables such as `[target.'cfg(unix)'.dependencies]`.
+     * A `[dependencies.foo]` sub-table ends in the crate name rather than
+     * `dependencies` and so is not one of these; its body holds version and
+     * feature settings, not dependencies. cargoDependencySubTableNames()
+     * reads the crate name out of that header instead.
+     *
+     * @return list<string>
+     */
+    private static function cargoDependencyHeaders(string $contents): array
+    {
+        $headers = [];
+        foreach (self::tomlHeaders($contents) as $header) {
+            if (preg_match('/(?:^|[-.])(dependencies|dev-dependencies|build-dependencies)$/', $header) === 1) {
+                $headers[] = '[' . $header . ']';
+            }
+        }
+
+        return $headers;
+    }
+
+    /**
+     * Crate names declared by a dependency's own sub-table header.
+     *
+     * `[dependencies.axum]` and `[target.'cfg(unix)'.dev-dependencies.axum]`
+     * declare `axum` exactly as an `axum = "0.7"` line inside `[dependencies]`
+     * does. The name is in the header and the body carries only that crate's
+     * settings, so the body must not be read as a list of dependencies. The
+     * one key that does name a crate is `package`, which renames it:
+     * `[dependencies.rt]` with `package = "tokio"` depends on tokio, and both
+     * names are recorded.
+     *
+     * @return list<string>
+     */
+    private static function cargoDependencySubTableNames(string $contents): array
+    {
+        $names = [];
+        foreach (self::tomlHeaders($contents) as $header) {
+            if (preg_match('/(?:^|[-.])(?:dependencies|dev-dependencies|build-dependencies)\.["\']?([A-Za-z0-9_-]+)["\']?$/', $header, $m) !== 1) {
+                continue;
+            }
+            $names[] = strtolower($m[1]);
+            $block = self::tableBlock($contents, '[' . $header . ']');
+            if ($block !== null && preg_match('/^[ \t]*package[ \t]*=[ \t]*["\']([^"\']+)["\']/m', $block, $renamed) === 1) {
+                $names[] = strtolower($renamed[1]);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Crate names an inline dependency table renames with a `package` key.
+     *
+     * `web = { package = "actix-web", version = "4" }` depends on actix-web
+     * under the local name `web`. Both are recorded: the alias is what source
+     * code writes in a `use`, and the real crate name is what framework
+     * detection in ScanPlanner matches on, so keeping only the alias hides the
+     * dependency and silently gates worker enrichment off.
+     *
+     * @return list<string>
+     */
+    private static function tomlInlinePackageNames(string $block): array
+    {
+        $names = [];
+        $pattern = '/^[ \t]*["\']?[A-Za-z0-9_.-]+["\']?[ \t]*=[ \t]*\{[^}]*\bpackage[ \t]*=[ \t]*["\']([^"\']+)["\']/m';
+        if (preg_match_all($pattern, $block, $m) > 0) {
+            foreach ($m[1] as $name) {
+                $names[] = strtolower($name);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Every table header in a TOML document, without its brackets.
+     *
+     * @return list<string>
+     */
+    private static function tomlHeaders(string $contents): array
+    {
+        if (preg_match_all('/^[ \t]*\[([^\]]+)\][ \t]*(?:#.*)?\r?$/m', $contents, $m) < 1) {
+            return [];
+        }
+
+        return array_values(array_map(trim(...), $m[1]));
+    }
+
+    /**
+     * The lowercased `key = ...` names at the top level of a table block.
+     *
+     * @return list<string>
+     */
+    private static function tomlTableKeys(string $block): array
+    {
+        $keys = [];
+        if (preg_match_all('/^[ \t]*["\']?([A-Za-z0-9_.-]+)["\']?[ \t]*=/m', $block, $m) > 0) {
+            foreach ($m[1] as $key) {
+                $keys[] = strtolower($key);
+            }
+        }
+
+        return $keys;
+    }
+
+    /**
+     * pyproject.toml script entry points (`[project.scripts]` and Poetry's
+     * `[tool.poetry.scripts]`), mapped to a module path.
+     *
+     * `module:func` → `module.py`; `module.sub:func` → `module/sub.py`. Only
+     * entries whose path could name a real scanned file are kept — extension
+     * filtering happens later anyway.
+     *
+     * @return list<string>
+     */
+    private static function pythonEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $scripts = [];
+        foreach (['[project.scripts]', '[tool.poetry.scripts]'] as $header) {
+            $block = self::tableBlock($contents, $header);
+            if ($block === null) {
+                continue;
+            }
+            // Script tables are `name = "module:func"` pairs, not lists.
+            if (preg_match_all('/^\s*["\']?([A-Za-z0-9_.-]+)["\']?\s*=\s*["\']([^"\']+)["\']/m', $block, $s) > 0) {
+                foreach ($s[2] as $target) {
+                    $module = explode(':', $target, 2)[0];
+                    // A single-segment module is the common `cli = "app:main"`
+                    // shape the docblock above promises; only an empty module
+                    // has no file to name.
+                    if ($module === '') {
+                        continue;
+                    }
+                    $path = self::entryPointPath(str_replace('.', '/', $module) . '.py', $directory);
+                    if ($path !== null) {
+                        $scripts[] = $path;
+                    }
+                }
+            }
+        }
+
+        $scripts = array_values(array_unique($scripts));
+        sort($scripts, SORT_STRING);
+
+        return $scripts;
+    }
+
+    /**
+     * Cargo.toml [[bin]] entry points, plus Cargo's default paths.
+     *
+     * - A [[bin]] with a `path` maps to that path.
+     * - A [[bin]] without a `path` defaults to `src/bin/<name>.rs`.
+     * - A package with no [[bin]] at all has one implicit binary at
+     *   `src/main.rs`. A lib-only crate emits no such file, so the path
+     *   matches no node downstream and is dropped.
+     *
+     * @return list<string>
+     */
+    private static function cargoEntryPoints(string $contents, string $configPath, string $absoluteDirectory): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $candidates = [];
+        foreach (self::arrayTables($contents, '[[bin]]') as $bin) {
+            if ($bin['path'] !== '') {
+                $candidates[] = $bin['path'];
+            } elseif ($bin['name'] !== '') {
+                $candidates[] = 'src/bin/' . $bin['name'] . '.rs';
+            }
+        }
+        // Auto-discovery finds src/main.rs and everything under src/bin/, and
+        // it runs alongside any explicit [[bin]] rather than instead of it.
+        // A virtual workspace has no [package] and so no binary of its own.
+        if (self::cargoAutobins($contents) && self::tableBlock($contents, '[package]') !== null) {
+            $candidates[] = 'src/main.rs';
+            foreach (self::cargoDiscoveredBinaries($absoluteDirectory) as $discovered) {
+                $candidates[] = $discovered;
+            }
+        }
+        $paths = [];
+        foreach ($candidates as $candidate) {
+            $path = self::entryPointPath($candidate, $directory);
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
+        }
+        $paths = array_keys($paths);
+        sort($paths, SORT_STRING);
+
+        return $paths;
+    }
+
+    /**
+     * Whether Cargo discovers binary targets from the file system.
+     *
+     * An explicit `autobins` decides it outright. Otherwise the edition does:
+     * "For packages with the 2015 edition, the default for auto-discovery is
+     * false if at least one target is manually defined in Cargo.toml.
+     * Beginning with the 2018 edition, the default is always true."
+     * An absent `edition` key means 2015.
+     *
+     * The prose says "at least one target", but the behaviour is per target
+     * kind: only a hand-written `[[bin]]` turns binary discovery off. Verified
+     * against cargo 1.94.1 with `cargo metadata`, which on the 2015 edition
+     * still reports `src/main.rs` as a binary for a manifest declaring `[lib]`
+     * or `[[test]]`, and stops reporting it only once a `[[bin]]` is declared.
+     * `testDiscoverKeepsImplicitMainWhenOnlyNonBinTargetsAreDeclared` pins
+     * that, so the looser reading cannot be applied here by mistake.
+     */
+    private static function cargoAutobins(string $contents): bool
+    {
+        $block = self::tableBlock($contents, '[package]');
+        if ($block === null) {
+            return false;
+        }
+        if (preg_match('/^[ \t]*autobins[ \t]*=[ \t]*(true|false)\b/m', $block, $explicit) === 1) {
+            return $explicit[1] === 'true';
+        }
+        $edition = preg_match('/^[ \t]*edition[ \t]*=[ \t]*["\']([^"\']+)["\']/m', $block, $m) === 1 ? $m[1] : '2015';
+
+        return $edition !== '2015' || self::arrayTables($contents, '[[bin]]') === [];
+    }
+
+    /**
+     * Binaries Cargo finds under `src/bin/` without being told about them.
+     *
+     * Cargo reads these off the file system, so this does too: `src/bin/x.rs`
+     * and `src/bin/x/main.rs` are both binary targets. Only files that exist
+     * are returned, which is stricter than the inferred `src/main.rs` beside
+     * it and cannot invent an entry point.
+     *
+     * @return list<string>
+     */
+    private static function cargoDiscoveredBinaries(string $absoluteDirectory): array
+    {
+        $found = [];
+        foreach (glob($absoluteDirectory . '/src/bin/*.rs') ?: [] as $file) {
+            $found[] = 'src/bin/' . basename($file);
+        }
+        foreach (glob($absoluteDirectory . '/src/bin/*/main.rs') ?: [] as $file) {
+            $found[] = 'src/bin/' . basename(dirname($file)) . '/main.rs';
+        }
+        sort($found, SORT_STRING);
+
+        return $found;
+    }
+
+    /**
+     * The raw text after a `[header]` line until the next table header.
+     *
+     * @return non-empty-string|null
+     */
+    private static function tableBlock(string $contents, string $header): ?string
+    {
+        $pattern = '/^[ \t]*' . preg_quote($header, '/') . '[ \t]*(?:#.*)?\r?$/m';
+        if (preg_match($pattern, $contents, $m, PREG_OFFSET_CAPTURE) !== 1) {
+            return null;
+        }
+        $start = $m[0][1] + strlen($m[0][0]);
+        $end = preg_match('/^[ \t]*\[/m', $contents, $n, PREG_OFFSET_CAPTURE, $start) === 1
+            ? $n[0][1]
+            : strlen($contents);
+
+        return substr($contents, $start, $end - $start) . "\n";
+    }
+
+    /**
+     * The quoted strings inside `key = [...]` lists in a table block.
+     *
+     * Brackets are counted outside strings only, so a dependency like
+     * `fastapi[all]` does not end the list early. A null `$keys` accepts
+     * every list key in the block (needed for optional-dependency groups
+     * and script tables, whose group names are arbitrary).
+     *
+     * @param list<string>|null $keys
+     * @return list<string>
+     */
+    private static function tomlStringLists(string $block, ?array $keys): array
+    {
+        $result = [];
+        $offset = 0;
+        $length = strlen($block);
+        while ($offset < $length) {
+            $pattern = '/^[ \t]*([A-Za-z0-9_.-]+)[ \t]*=[ \t]*\[/m';
+            if (preg_match($pattern, $block, $m, PREG_OFFSET_CAPTURE, $offset) !== 1) {
+                break;
+            }
+            $key = $m[1][0];
+            if ($keys !== null && !in_array($key, $keys, true)) {
+                $offset = $m[0][1] + strlen($m[0][0]);
+                continue;
+            }
+            $open = $m[0][1] + strlen($m[0][0]) - 1; // position of '['
+            $depth = 0;
+            $inString = false;
+            $i = $open;
+            for (; $i < $length; ++$i) {
+                $c = $block[$i];
+                if ($c === '"' || $c === "'") {
+                    if ($i === 0 || $block[$i - 1] !== '\\') {
+                        $inString = !$inString;
+                    }
+                } elseif (!$inString) {
+                    if ($c === '[') {
+                        ++$depth;
+                    } elseif ($c === ']') {
+                        --$depth;
+                        if ($depth === 0) {
+                            ++$i; // stop just past the closing bracket
+                            break;
+                        }
+                    }
+                }
+            }
+            $list = substr($block, $open + 1, max(0, $i - $open - 2));
+            if (preg_match_all('/["\']([^"\']+)["\']/', $list, $pms) > 0) {
+                array_push($result, ...$pms[1]);
+            }
+            $offset = $i;
+        }
+
+        return $result;
+    }
+
+    /** Extensions a scanner emits nodes for (or anything else cannot be matched later). */
     private const ENTRY_POINT_EXTENSIONS = [
         'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'py', 'pyi', 'rs',
     ];
@@ -318,12 +831,7 @@ final readonly class ProjectDiscoverer
      */
     private static function manifestEntryPoints(array $manifest, string $configPath, array $fields): array
     {
-        // `dirname()` answers '.' for a manifest at the root. Only that exact
-        // answer means "no directory" — trimming dots off the string instead
-        // turned `.github/actions/setup` into `github/actions/setup`, a path
-        // that matches no emitted node, so the entry point was lost silently.
-        $directory = dirname($configPath);
-        $directory = in_array($directory, ['.', '', DIRECTORY_SEPARATOR, '/'], true) ? '' : $directory;
+        $directory = self::manifestDirectory($configPath);
         $candidates = [];
         foreach ($fields as $field) {
             $value = $manifest[$field] ?? null;
@@ -357,6 +865,25 @@ final readonly class ProjectDiscoverer
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * The directory a manifest's entry-point paths resolve against.
+     *
+     * `dirname()` answers '.' for a manifest at the root. Only that exact
+     * answer means "no directory" — trimming dots off the string instead
+     * turned `.github/actions/setup` into `github/actions/setup`, a path
+     * that matches no emitted node, so the entry point was lost silently.
+     *
+     * Every manifest reader needs this: ManifestEntryPointRule matches on the
+     * exact project-relative path a scanner emitted, so a nested manifest's
+     * `src/main.rs` has to be recorded as `services/api/src/main.rs`.
+     */
+    private static function manifestDirectory(string $configPath): string
+    {
+        $directory = dirname($configPath);
+
+        return in_array($directory, ['.', '', DIRECTORY_SEPARATOR, '/'], true) ? '' : $directory;
     }
 
     /**
@@ -556,6 +1083,14 @@ final readonly class ProjectDiscoverer
         }
         if ($basename === 'pyproject.toml') {
             return 'python';
+        }
+        // requirements.txt and its per-environment siblings (requirements-dev.txt,
+        // requirements-prod.txt) are the legacy Python dependency manifest — the
+        // pyproject.toml of projects that never migrated to PEP 621. Recorded as
+        // their own unit so an edit invalidates the analyzer cache the way a
+        // composer.json edit does.
+        if ($basename === 'requirements.txt' || (str_starts_with($basename, 'requirements-') && str_ends_with($basename, '.txt'))) {
+            return 'requirements';
         }
         if ($basename === 'tsconfig.json' || (str_starts_with($basename, 'tsconfig.') && str_ends_with($basename, '.json'))) {
             return 'typescript';

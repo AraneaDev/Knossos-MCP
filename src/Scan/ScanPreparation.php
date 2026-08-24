@@ -28,5 +28,20 @@ final readonly class ScanPreparation
         public float $configurationMilliseconds,
         public float $discoveryMilliseconds,
         public float $planningMilliseconds,
+        /**
+         * Frameworks declared or detected for the Python worker, by short
+         * name (`fastapi`, `django`, `flask`). Sent in the scan request so the
+         * worker can gate enrichment on what the project actually uses.
+         *
+         * @var list<string>
+         */
+        public array $pythonFrameworks = [],
+        /**
+         * Frameworks declared or detected for the Rust worker, by short name
+         * (`axum`, `actix`, `rocket`).
+         *
+         * @var list<string>
+         */
+        public array $rustFrameworks = [],
     ) {}
 }

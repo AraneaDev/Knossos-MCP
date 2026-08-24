@@ -6,33 +6,25 @@ namespace Knossos\Classification;
 
 use Knossos\Scanner\Protocol\Confidence;
 
-/** Infers roles from Django, FastAPI, Flask, and Celery conventions. */
-final readonly class PythonFrameworkRoleRule extends AbstractFrameworkRoleRule
+/** Infers the `rust.route_handler` role from worker-emitted attributes. */
+final readonly class RustFrameworkRoleRule extends AbstractFrameworkRoleRule
 {
     /** {@inheritDoc} */
     public function id(): string
     {
-        return 'python.framework.ast.v1';
+        return 'rust.framework.ast.v1';
     }
 
     /** {@inheritDoc} */
     protected function knownRoles(): array
     {
-        return [
-            'django.middleware',
-            'django.model',
-            'django.view',
-            'fastapi.route_handler',
-            'flask.route_handler',
-            'flask.view',
-            'python.task',
-        ];
+        return ['rust.route_handler'];
     }
 
     /** {@inheritDoc} */
     protected function attributeKey(): string
     {
-        return 'python_framework_roles';
+        return 'rust_framework_roles';
     }
 
     /** {@inheritDoc} */
@@ -44,6 +36,6 @@ final readonly class PythonFrameworkRoleRule extends AbstractFrameworkRoleRule
     /** {@inheritDoc} */
     protected function evidenceMeta(): array
     {
-        return ['source' => 'python AST decorator/base'];
+        return ['source' => 'rust AST framework route'];
     }
 }

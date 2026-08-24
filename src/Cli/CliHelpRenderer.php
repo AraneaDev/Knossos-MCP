@@ -58,6 +58,7 @@ Usage:
   knossos scan <path> [--mode=auto|full|incremental] [--name=NAME]
                       [--boundary=NAME:path:PREFIX] [--snapshot-retention=N]
                       [--worker-timeout-ms=N]
+                      [--worker-memory-mb=N]
                       [--db=PATH] [--json]
   knossos watch <path> [--poll-ms=N] [--debounce-ms=N] [--max-queue=N]
                        [--db=PATH] [--json]

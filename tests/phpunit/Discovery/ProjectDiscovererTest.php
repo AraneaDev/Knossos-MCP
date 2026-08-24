@@ -8,6 +8,7 @@ use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Discovery\ProjectUnit;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -503,6 +504,128 @@ TOML
         $this->assertNull($pyUnits[0]->metadata['name']);
     }
 
+    // ── Python / pyproject.toml ──────────────────────────────────────
+
+    private function pythonUnit(string $toml): ProjectUnit
+    {
+        file_put_contents($this->root . '/pyproject.toml', $toml);
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'python'));
+        $this->assertNotEmpty($units);
+
+        return $units[0];
+    }
+
+    public function testDiscoverReadsPythonDependenciesAndOptionalGroups(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[project]
+name = "demo"
+dependencies = [
+    "Django>=4.2",
+    "fastapi[all]",
+    "requests @ https://example.com/requests.whl",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+docs = ["sphinx"]
+TOML
+        );
+        $requires = $unit->metadata['requires'];
+        assertSame(['django', 'fastapi', 'pytest', 'requests', 'sphinx'], array_keys($requires));
+    }
+
+    public function testDiscoverReadsPythonScriptsAsEntryPoints(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[project]
+name = "demo"
+
+[project.scripts]
+cli = "demo.cli:main"
+worker = "demo.jobs.worker:run"
+TOML
+);
+        assertSame(['demo/cli.py', 'demo/jobs/worker.py'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverReadsPoetryMetadataAsPythonFallback(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[tool.poetry]
+name = "poetry-demo"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+fastapi = "^0.110"
+
+[tool.poetry.scripts]
+cli = "poetry_demo.main:cli"
+TOML);
+
+        assertSame('poetry-demo', $unit->metadata['name']);
+        assertSame(['poetry_demo/main.py'], $unit->metadata['entry_points']);
+        // Poetry states dependencies as a table, not a PEP 621 list. Missing
+        // them here left ScanPlanner unable to see fastapi and the worker's
+        // framework enrichment gated off for every Poetry project. `python` is
+        // the interpreter constraint, not a package.
+        assertSame(['fastapi'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsPoetryGroupAndSubTableDependencies(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[tool.poetry]
+name = "poetry-groups"
+
+[tool.poetry.dev-dependencies]
+pytest = "^8.0"
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "^7.0"
+
+[tool.poetry.dependencies.flask]
+version = "^3.0"
+extras = ["async"]
+TOML);
+
+        // The sub-table form names its package in the header; its body holds
+        // only that package's settings, so `version` and `extras` are not
+        // dependencies.
+        assertSame(['flask', 'pytest', 'sphinx'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsTopLevelScriptModuleAsEntryPoint(): void
+    {
+        $unit = $this->pythonUnit(<<<'TOML'
+[project]
+name = "demo"
+
+[project.scripts]
+cli = "app:main"
+TOML);
+
+        // A single-segment module is a real file. Dropping it left app.py with
+        // an in-degree of zero, reading as unreferenced code.
+        assertSame(['app.py'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverReadsPipRequirementsAsUnit(): void
+    {
+        file_put_contents($this->root . '/requirements.txt', <<<'TXT'
+# comment
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+-e ./local-pkg
+psutil>=7.2 ; python_version >= "3.11"
+TXT);
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'requirements'));
+        $this->assertNotEmpty($units);
+        assertSame(['fastapi', 'psutil', 'uvicorn'], array_keys($units[0]->metadata['requires']));
+    }
+
     // ── Knossos config ───────────────────────────────────────────────
 
     public function testDiscoverReadsKnossosJsoncConfig(): void
@@ -652,6 +775,247 @@ TOML
     public function testDiscoverReturnsNullNameForWorkspaceOnlyManifestWithoutAnyName(): void
     {
         $this->assertNull($this->cargoUnitName("[workspace]\nmembers = [\"a\", \"b\"]\n"));
+    }
+
+    private function cargoUnit(string $toml): ProjectUnit
+    {
+        file_put_contents($this->root . '/Cargo.toml', $toml);
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'cargo'));
+        $this->assertNotEmpty($units);
+
+        return $units[0];
+    }
+
+    public function testDiscoverReadsCargoDependencies(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+serde = "1"
+axum = { version = "0.7", features = ["macros"] }
+
+[dev-dependencies]
+tokio = "1"
+
+[build-dependencies]
+cc = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+TOML);
+        assertSame(['axum', 'cc', 'libc', 'serde', 'tokio'], array_keys($unit->metadata['requires']));
+    }
+
+    /**
+     * A renamed dependency states the real crate in a `package` key and uses
+     * the table key only as a local alias. Recording the alias alone hid the
+     * crate from ScanPlanner's framework detection, which matches on the real
+     * name, so worker enrichment was gated off for a crate that genuinely
+     * depended on the framework.
+     */
+    public function testDiscoverReadsRenamedCargoDependencies(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+web = { package = "actix-web", version = "4" }
+plain = "1"
+
+[dependencies.rt]
+package = "tokio"
+version = "1"
+TOML);
+        // Both names survive: the alias is what a `use` writes, the package is
+        // what framework detection matches.
+        assertSame(['actix-web', 'plain', 'rt', 'tokio', 'web'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsCargoDependencySubTables(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies.axum]
+version = "0.7"
+features = ["macros"]
+
+[target.'cfg(unix)'.dev-dependencies.rocket]
+version = "0.5"
+TOML);
+        // A crate that takes a sub-table is declared by its header, so `axum`
+        // and `rocket` are dependencies while `version` and `features` are
+        // that crate's own settings.
+        assertSame(['axum', 'rocket'], array_keys($unit->metadata['requires']));
+    }
+
+    public function testDiscoverReadsCargoBinPathsAsEntryPoints(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[bin]]
+name = "mytool"
+path = "tools/mytool.rs"
+
+[[bin]]
+name = "other"
+TOML);
+        // No `edition` key means the 2015 edition, where declaring a target by
+        // hand turns auto-discovery off. src/main.rs is therefore not a target
+        // of this manifest and must not be reported.
+        assertSame(['src/bin/other.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    /**
+     * The 2015 rule is per target kind. Cargo's prose says auto-discovery is
+     * off once "at least one target" is declared by hand, but `cargo metadata`
+     * on 1.94.1 still reports `src/main.rs` as a binary for a 2015 manifest
+     * declaring `[lib]` or `[[test]]`; only a `[[bin]]` stops it. Reading the
+     * prose literally would drop a real entry point, so this pins the
+     * behaviour cargo actually has.
+     */
+    public function testDiscoverKeepsImplicitMainWhenOnlyNonBinTargetsAreDeclared(): void
+    {
+        $withLib = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[lib]
+name = "demo"
+path = "src/lib.rs"
+TOML);
+        assertSame(['src/main.rs'], $withLib->metadata['entry_points']);
+
+        $withTest = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+TOML);
+        assertSame(['src/main.rs'], $withTest->metadata['entry_points']);
+    }
+
+    /** From the 2018 edition on, auto-discovery runs alongside `[[bin]]`. */
+    public function testDiscoverAddsImplicitMainAlongsideBinFrom2018Onwards(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mytool"
+path = "tools/mytool.rs"
+TOML);
+        assertSame(['src/main.rs', 'tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverHonoursAutobinsFalse(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+autobins = false
+
+[[bin]]
+name = "mytool"
+path = "tools/mytool.rs"
+TOML);
+        // The edition would leave discovery on, so `autobins = false` is the
+        // only thing that can suppress src/main.rs here.
+        assertSame(['tools/mytool.rs'], $unit->metadata['entry_points']);
+    }
+
+    /**
+     * Cargo reads binaries under src/bin/ off the file system rather than the
+     * manifest, so discovery has to look there too. Both `src/bin/x.rs` and
+     * `src/bin/x/main.rs` are binary targets.
+     */
+    public function testDiscoverFindsBinariesUnderSrcBin(): void
+    {
+        mkdir($this->root . '/src/bin/nested', 0o700, true);
+        file_put_contents($this->root . '/src/bin/tool.rs', "fn main() {}\n");
+        file_put_contents($this->root . '/src/bin/nested/main.rs', "fn main() {}\n");
+        file_put_contents($this->root . '/src/lib.rs', "pub fn x() {}\n");
+
+        $unit = $this->cargoUnit("[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+
+        assertSame(
+            ['src/bin/nested/main.rs', 'src/bin/tool.rs', 'src/main.rs'],
+            $unit->metadata['entry_points'],
+        );
+    }
+
+    /** `autobins = false` stops the src/bin scan as well as the inferred main. */
+    public function testDiscoverSkipsSrcBinScanWhenAutobinsIsFalse(): void
+    {
+        mkdir($this->root . '/src/bin', 0o700, true);
+        file_put_contents($this->root . '/src/bin/tool.rs', "fn main() {}\n");
+
+        $unit = $this->cargoUnit("[package]\nname = \"demo\"\nversion = \"0.1.0\"\nautobins = false\n");
+
+        assertSame([], $unit->metadata['entry_points']);
+    }
+
+    /**
+     * ManifestEntryPointRule matches on the exact project-relative path a
+     * scanner emitted. A nested manifest that reports `src/main.rs` instead of
+     * `services/api/src/main.rs` therefore matches nothing, and the entry
+     * point is lost without a diagnostic. composer.json and package.json have
+     * always anchored to their own directory; Cargo and pyproject did not.
+     */
+    public function testDiscoverAnchorsNestedManifestEntryPointsToTheirDirectory(): void
+    {
+        mkdir($this->root . '/services/api', 0o700, true);
+        file_put_contents($this->root . '/services/api/Cargo.toml', "[package]\nname = \"api\"\nversion = \"0.1.0\"\n");
+        file_put_contents($this->root . '/services/api/pyproject.toml', <<<'TOML'
+[project]
+name = "api"
+
+[project.scripts]
+cli = "app:main"
+worker = "api.jobs.worker:run"
+TOML);
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+        $byKind = [];
+        foreach ($result->units as $unit) {
+            $byKind[$unit->kind] = $unit->metadata['entry_points'] ?? null;
+        }
+
+        assertSame(['services/api/src/main.rs'], $byKind['cargo']);
+        assertSame(['services/api/api/jobs/worker.py', 'services/api/app.py'], $byKind['python']);
+    }
+
+    public function testDiscoverInfersImplicitCargoBinaryPath(): void
+    {
+        $unit = $this->cargoUnit("[package]\nname = \"demo\"\nversion = \"0.1.0\"\n");
+        assertSame(['src/main.rs'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverLeavesVirtualWorkspaceWithoutEntryPoints(): void
+    {
+        $unit = $this->cargoUnit("[workspace]\nmembers = [\"a\", \"b\"]\n");
+        assertSame([], $unit->metadata['entry_points']);
     }
 
     /**

@@ -73,6 +73,74 @@ final class ScanPlannerTest extends TestCase
         );
     }
 
+    public function testPrepareDetectsPythonAndRustFrameworksFromManifests(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-planner-frameworks-' . bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        try {
+            file_put_contents($root . '/pyproject.toml', <<<'TOML'
+[project]
+name = "demo"
+dependencies = ["fastapi", "requests"]
+TOML);
+            file_put_contents($root . '/Cargo.toml', <<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+axum = "0.7"
+serde = "1"
+TOML);
+
+            $planner = new ScanPlanner($this->createSchema(), [$root]);
+            $preparation = $planner->prepare($root, null, null, null, 'auto', 0, null);
+
+            assertSame(['fastapi'], $preparation->pythonFrameworks);
+            assertSame(['axum'], $preparation->rustFrameworks);
+        } finally {
+            @unlink($root . '/pyproject.toml');
+            @unlink($root . '/Cargo.toml');
+            @rmdir($root);
+        }
+    }
+
+    public function testPrepareDetectsPythonFrameworksFromRequirementsTxt(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-planner-req-' . bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        try {
+            file_put_contents($root . '/requirements.txt', "flask==3.0\nrequests==2.31\n");
+            $planner = new ScanPlanner($this->createSchema(), [$root]);
+            $preparation = $planner->prepare($root, null, null, null, 'auto', 0, null);
+            assertSame(['flask'], $preparation->pythonFrameworks);
+        } finally {
+            @unlink($root . '/requirements.txt');
+            @rmdir($root);
+        }
+    }
+
+    public function testPrepareAcceptsConfiguredFrameworkHintsWithoutManifestDeps(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-planner-hints-' . bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        try {
+            file_put_contents($root . '/knossos.json', json_encode([
+                'version' => 1,
+                'frameworks' => ['flask', 'rocket'],
+            ], JSON_THROW_ON_ERROR));
+
+            $planner = new ScanPlanner($this->createSchema(), [$root]);
+            $preparation = $planner->prepare($root, null, null, null, 'auto', 0, null);
+
+            assertSame(['flask'], $preparation->pythonFrameworks);
+            assertSame(['rocket'], $preparation->rustFrameworks);
+        } finally {
+            @unlink($root . '/knossos.json');
+            @rmdir($root);
+        }
+    }
+
     public function testFinalizeReturnsFullModeWhenNoExistingProject(): void
     {
         $pdo = $this->createSchema();
@@ -262,6 +330,68 @@ final class ScanPlannerTest extends TestCase
             );
         } finally {
             @unlink($dir . '/Cargo.toml');
+            rmdir($dir);
+        }
+    }
+
+    /**
+     * A Cargo dependency renamed with `package` states the real crate there
+     * and uses the table key as a local alias. Framework detection matches the
+     * real name, so recording only the alias left a crate that genuinely uses
+     * actix scanned with its enrichment switched off.
+     */
+    public function testPrepareDetectsAFrameworkBehindARenamedCargoDependency(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-rename-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            file_put_contents($dir . '/Cargo.toml', <<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+web = { package = "actix-web", version = "4" }
+TOML);
+            $preparation = (new ScanPlanner($pdo, [sys_get_temp_dir()]))->prepare($dir, null, null, null, null, null, null);
+
+            assertSame(['actix'], $preparation->rustFrameworks);
+        } finally {
+            @unlink($dir . '/Cargo.toml');
+            rmdir($dir);
+        }
+    }
+
+    /**
+     * Python framework gating reads `requirements.txt` as well as
+     * `pyproject.toml`, so the Python configuration hash has to cover both.
+     * Hashing only `pyproject.toml` let an incremental scan reuse Python
+     * contributions produced while framework enrichment was still switched
+     * off, leaving route facts and classifications permanently stale.
+     */
+    public function testPrepareRequirementsFileChangesThePythonConfigurationHash(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-requirements-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            $planner = new ScanPlanner($pdo, [sys_get_temp_dir()]);
+            $before = $planner->prepare($dir, null, null, null, null, null, null);
+            assertSame([], $before->pythonFrameworks);
+
+            file_put_contents($dir . '/requirements.txt', "fastapi==0.136.1
+");
+            $after = $planner->prepare($dir, null, null, null, null, null, null);
+
+            assertSame(['fastapi'], $after->pythonFrameworks);
+            $this->assertNotSame(
+                $before->configurationHashes['python'],
+                $after->configurationHashes['python'],
+            );
+        } finally {
+            @unlink($dir . '/requirements.txt');
             rmdir($dir);
         }
     }

@@ -9,8 +9,18 @@ against the scanned project.
 
 - `.rs` files
 - `Cargo.toml`, recorded as a `cargo` unit that participates in cache
-  invalidation. Its contents are not parsed beyond the `[package]` name, the
-  same treatment `pyproject.toml` gets, and it produces no graph node.
+  invalidation
+- Cargo dependency tables, including target-scoped `*.dependencies` tables and
+  a crate's own `[dependencies.<crate>]` sub-table
+- `[[bin]]` entries, plus the targets Cargo discovers for itself: `src/main.rs`
+  and the binaries under `src/bin/`. Discovery follows Cargo's own rules, so
+  `autobins = false` disables it, and on the 2015 edition (the default when no
+  `edition` key is present) a hand-written `[[bin]]` disables it too
+
+The manifest's `[package] name` becomes a Rust `package` node when the crate
+root is part of the scan request. A declared binary path becomes an exact
+manifest entry point for classification; no source node is invented when the
+path is absent.
 
 ## Emitted facts
 
@@ -19,35 +29,60 @@ Nodes:
 | Source construct             | Node kind   |
 | ---------------------------- | ----------- |
 | File, or a `mod` block       | `module`    |
+| Crate manifest `[package]`   | `package`   |
 | `struct`, `enum`, or `union` | `class`     |
 | `trait`                      | `interface` |
 | `fn` inside an `impl`        | `method`    |
 | Free `fn`                    | `function`  |
+| Framework route declaration  | `route`     |
 
 Edges: `contains` for nesting, `imports` from `use`, `implements` for
-`impl Trait for Type`, `extends` for supertraits, and `calls` for a resolved
-call expression.
+`impl Trait for Type`, `extends` for supertraits, `calls` for a resolved call
+expression, and `routes_to` from a route to its handler.
+
+A crate-root `fn main` marks its module `executable`, preventing the binary
+entry module from being treated as dead code. A `package` node contains the
+crate module. Manifest entry-point classification can additionally mark every
+node emitted from an exact binary path with `application.entry_point`.
 
 A node's `local_id` and both of an edge's endpoints are built as
 `rust:<kind>:<canonical>`; `canonical_name` itself carries no prefix.
 
-`implements` is `certain`, because both endpoints are named explicitly, though
-an `impl` block whose type lives in another file emits no edge at all. See
-[limits](#limits). `extends` and `calls` are `probable`. When a target cannot be
-resolved, the worker emits no edge rather than a guess.
+`implements` is `certain`, because both endpoints are named explicitly.
+`extends` and ordinary `calls` are `probable`. When a target cannot be
+resolved, the worker emits no edge rather than a guess. Repeated edges are
+collapsed to the persistence identity of kind, source, and target within one
+contribution, with the earliest evidence retained.
 
-An `imports` edge points at the module the imported name lives in, not at the
-name itself. `use a::b::C;` records `C` as a local alias, so a call written as
-`C::go()` resolves to `a::b::C::go`, and emits its edge to the module `a::b`.
-A `use` names a struct, trait, or function far more often than a module, and
-pointing the edge at the symbol's own path would claim a module node that never
-exists. The Python worker splits the two the same way.
+## Framework enrichment
 
-Repeated edges are collapsed to the persistence identity of kind, source, and
-target within one file, so a module importing twenty symbols from one place
-stores one `imports` row and a function calling the same target from three
-branches stores one `calls` row. The surviving row carries the earliest
-evidence line.
+The core detects Rust framework dependencies from Cargo manifests and sends
+semantic hints to the worker: `axum`, `actix`, and `rocket`. Explicit project
+configuration can provide the same hints. Route enrichment is only enabled for
+the requested framework names.
+
+- Axum `Router::route("/path", get(handler))`-style calls produce route nodes
+  and `routes_to` edges.
+- Actix route attributes such as `#[get("/path")]`, `#[post(...)]`, and
+  `#[route("/path", method = "PUT")]` are recognized, along with the
+  supported `web::resource(...).route(web::get().to(handler))` shape.
+- Rocket verb attributes such as `#[get("/path")]` are recognized when Rocket
+  is requested.
+- Handler functions receive the `rust_framework_roles` node attribute with
+  `rust.route_handler`.
+- Dynamic or non-literal route paths are skipped with the
+  `RS_DYNAMIC_ROUTE_PATH` warning instead of creating a misleading static
+  route. Literal framework markers such as `<id>`, `{id}`, and `:id` are
+  treated as dynamic too.
+
+## Cross-file resolution
+
+Each scan batch builds a declaration index before walking files. It lets
+cross-file `impl` blocks attach their methods to a uniquely declared type and
+lets resolvable child-module call targets point at declarations in another
+file. Ambiguous declarations are dropped rather than guessed. The index is
+request-scoped, so a file omitted from the request or served only from cache
+cannot be used as unverified evidence.
 
 ## Limits
 
@@ -58,48 +93,36 @@ evidence line.
 - A method call on a value, such as `value.run()`, produces no edge: the
   worker has no type information for the receiver.
 - A call through a qualified self, such as `<Widget>::default()`, produces no
-  edge either. The parser renders that callee as the bare word `default`, which
-  names no path the worker can confirm. The same holds for a call through an
-  `Fn` receiver, `self()`.
-- A call target's kind is inferred from Rust's naming convention: an
-  uppercase segment before the final one means a method, anything else means
-  a function. A module or type named against that convention produces a
-  target that matches no declared node.
-- An import name bound ambiguously to two different paths in one file
-  resolves to nothing, so no edge is emitted for it.
+  edge either. The parser renders that callee as the bare word `default`,
+  which names no path the worker can confirm. The same holds for a call through
+  an `Fn` receiver, `self()`.
+- A call target's kind is inferred from Rust's naming convention: an uppercase
+  segment before the final one means a method, anything else means a function.
+  A convention-breaking crate can therefore produce a target that matches no
+  declared node.
+- An import name bound ambiguously to two different paths in one file resolves
+  to nothing.
 - A bare `mod foo;` declaration emits only a containment edge; the module's
   own node comes from the file that defines it.
-- A call qualified by a child module, such as `sign::any_supported_type(&key)`
-  where the same file declares `pub mod sign;`, produces no edge. The target is
-  real, but confirming it needs the child module's node, and that node belongs
-  to the file that defines the module rather than to the file making the call.
-  Writing the call as `self::sign::any_supported_type(&key)` roots the path and
-  emits the edge.
 - A `use` leaf that already names a module resolves to the module's parent, so
   `use core::fmt;` emits `imports` to `core` and `use crate::token;` emits it
-  to `crate`. The worker cannot tell a module leaf from a type leaf without a
-  crate-wide view, so it truncates every multi-segment leaf the same way, which
-  is also what the Python worker does. A single-segment `use foo;` and a `self`
-  leaf are the two shapes that keep their full path.
-- An `impl` block for a type declared in a different file emits its method
-  nodes but no edges at all: no `implements`, and no `contains` linking the
-  methods to their type. The worker sees one file at a time, so it cannot tell
-  a type declared elsewhere in the project from a type that is declared
-  nowhere. An edge whose source names nothing at all makes reconciliation
-  throw, which fails the whole scan across every language, so the worker drops
-  such an edge rather than risk that. Split an `impl` from its `struct` and you
-  get orphan method nodes. Keeping both halves in one file gives you the full
-  set of edges.
-- No framework enrichment. Axum, Actix, and Rocket routes are not
-  recognised.
-- The worker emits no crate-level container node. A Rust graph has no
-  equivalent of the `package` nodes the Python scanner produces; a query for
-  package-level structure returns nothing for Rust. Modules are the
-  outermost Rust nodes.
-- Rust is optional on a native install. Without cargo, there is no Rust
-  worker. The container always has one.
-- A scan of a project holding `.rs` files with no Rust worker installed
-  degrades silently. The files are discovered, they contribute nothing, the
-  graph gains no Rust nodes, `degraded_languages` stays empty, and the scan
-  reports success. Run `doctor` to see whether the worker is there; that is the
-  only place the absence shows up.
+  to `crate`. The declaration index spans the whole request, but it records
+  types, traits, and functions rather than `mod` declarations, and import
+  collection does not consult it, so every multi-segment leaf other than an
+  explicit `self` is truncated the same way.
+- A crate with an `impl` target that is not declared in this scan batch keeps
+  its method nodes but drops `contains` and `implements` edges whose source
+  cannot be vouched for. This avoids fabricating a source node or failing graph
+  reconciliation; it is a deliberate false negative rather than a wrong fact.
+- The route recognizers cover the structural forms listed above, not macro
+  expansion, runtime router composition, or arbitrary framework wrappers.
+- Rust is optional on a native install. Without cargo, there is no Rust worker.
+  The container always has one.
+
+## Verification
+
+The worker is checked with `cargo fmt`, `cargo clippy`, `cargo test`, and the
+shared scanner-conformance protocol check. The repository's Rust integration
+suite drives the real worker process over NDJSON-RPC, and `/root/termaxa` was
+used as a dogfood target for Cargo manifest parsing, package/executable facts,
+entry-point classification, and cross-file edges.

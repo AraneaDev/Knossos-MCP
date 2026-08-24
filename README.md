@@ -246,12 +246,12 @@ Docker, native, and client-specific variants are in
 
 ## Supported languages
 
-| Language                                         | Extraction                                                             | Framework enrichment                                                               |
-| ------------------------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| PHP 8.3 or newer                                 | Declarations, inheritance, calls, construction, types, injection       | [Laravel](docs/languages/php-laravel.md), [Symfony](docs/languages/php-symfony.md) |
-| TypeScript/JavaScript                            | Compiler symbol resolution, imports, calls, types, project references  | [Next.js, React, Vue, stores, endpoints](docs/languages/typescript.md)             |
-| Python 3.11 or newer                             | Standard-library AST in an isolated interpreter; never imports modules | [FastAPI, Django, Celery](docs/languages/python.md)                                |
-| Rust 1.82 or newer, optional on a native install | `syn`-based parsing; never invokes cargo or rustc against the project  | [Details and limits](docs/languages/rust.md)                                       |
+| Language                                         | Extraction                                                                          | Framework enrichment                                                               |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| PHP 8.3 or newer                                 | Declarations, inheritance, calls, construction, types, injection                    | [Laravel](docs/languages/php-laravel.md), [Symfony](docs/languages/php-symfony.md) |
+| TypeScript/JavaScript                            | Compiler symbol resolution, imports, calls, types, project references               | [Next.js, React, Vue, stores, endpoints](docs/languages/typescript.md)             |
+| Python 3.11 or newer                             | Standard-library AST in an isolated interpreter; manifests, packages, calls, routes | [FastAPI, Django, Flask, Celery](docs/languages/python.md)                         |
+| Rust 1.82 or newer, optional on a native install | `syn` parsing; Cargo manifests, cross-file impls, routes; never invokes cargo/rustc | [Details and limits](docs/languages/rust.md)                                       |
 
 Mixed repositories reconcile into one graph. Third-party scanners plug in as
 isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.md).

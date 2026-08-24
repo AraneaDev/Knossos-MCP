@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashSet};
 
 use proc_macro2::Span;
+use serde_json::Value;
 
 use crate::protocol::{Contribution, Diagnostic, Edge, Evidence, Node};
 
@@ -42,7 +43,25 @@ pub struct Facts {
     /// the function it names, since items are walked in source order — so
     /// `finish()` validates each of these against the completed `declared`
     /// set instead of trusting it at the point the call was seen.
-    pending_calls: Vec<Edge>,
+    pending_edges: Vec<Edge>,
+    /// Node references this contribution uses as an edge source but does not
+    /// itself declare, which the scan-wide declaration index confirmed to
+    /// exist in another contribution of the same request. `finish()` keeps
+    /// edges whose source is in `declared` *or* here, so an `impl` block for a
+    /// type declared in another file keeps its `implements` and `contains`
+    /// edges instead of scattering orphan method nodes (those nodes still
+    /// live in the declaring file's contribution — nothing is duplicated).
+    external: HashSet<String>,
+    /// Attribute values to apply to already-emitted nodes in `finish()`,
+    /// keyed by canonical name. Needed when a role is only discovered after
+    /// the node was pushed (an axum handler named before its `fn` appears) or
+    /// when the value is derived at the end of the walk (a file's
+    /// `executable` flag lands on its module node).
+    pending_attributes: Vec<(String, String, Value)>,
+    /// Whether this file's crate-root module is an executable target — it
+    /// declares a top-level `fn main`, or (for an extensionless script) a
+    /// shebang. Applied to the module node in `finish()`.
+    executable: bool,
 }
 
 impl Facts {
@@ -55,7 +74,10 @@ impl Facts {
             edges: Vec::new(),
             diagnostics: Vec::new(),
             declared: HashSet::new(),
-            pending_calls: Vec::new(),
+            pending_edges: Vec::new(),
+            external: HashSet::new(),
+            pending_attributes: Vec::new(),
+            executable: false,
         }
     }
 
@@ -95,6 +117,68 @@ impl Facts {
             attributes: BTreeMap::new(),
         });
         self.declared.insert(local_id);
+    }
+
+    /// Record one declared symbol with attributes.
+    ///
+    /// The [`Facts::node`] shape plus attributes, for framework facts (a
+    /// route node carries its path and methods).
+    pub fn node_with_attributes(
+        &mut self,
+        kind: &str,
+        canonical: &str,
+        display: &str,
+        start: Span,
+        end: Span,
+        attributes: BTreeMap<String, Value>,
+    ) {
+        let local_id = reference(kind, canonical);
+        let evidence = self.evidence(start, end);
+        self.nodes.push(Node {
+            local_id: local_id.clone(),
+            kind: kind.to_owned(),
+            canonical_name: canonical.to_owned(),
+            display_name: display.to_owned(),
+            origin: "ast",
+            confidence: "certain",
+            evidence,
+            attributes,
+        });
+        self.declared.insert(local_id);
+    }
+
+    /// Add one attribute to an already-emitted node, or queue it for
+    /// `finish()` when the node has not been pushed yet.
+    ///
+    /// The canonical name, not the `local_id`, keys the lookup, matching how
+    /// the value is derived (a name resolved from a call site).
+    pub fn node_attribute(&mut self, canonical: &str, key: &str, value: Value) {
+        self.pending_attributes
+            .push((canonical.to_owned(), key.to_owned(), value));
+    }
+
+    /// Whether a node reference was declared in this contribution.
+    #[must_use]
+    pub fn declares(&self, id: &str) -> bool {
+        self.declared.contains(id)
+    }
+
+    /// Vouch for a node reference the scan-wide index confirmed, so edges
+    /// may use it as a source without this contribution declaring it.
+    ///
+    /// No-op when the reference was declared here after all, which is the
+    /// normal case for a same-file `impl` target.
+    pub fn external_unless_declared(&mut self, id: &str) {
+        if !self.declared.contains(id) {
+            self.external.insert(id.to_owned());
+        }
+    }
+
+    /// Mark this file as an executable script: its `fn main` or shebang makes
+    /// it something the runtime invokes rather than imports, which keeps it
+    /// off the dead-code report.
+    pub fn mark_executable(&mut self) {
+        self.executable = true;
     }
 
     /// Record one relationship.
@@ -138,13 +222,29 @@ impl Facts {
     /// names no declaration at all. `finish()` checks that once the whole
     /// file's declarations are known.
     pub fn conditional_edge(&mut self, source: &str, target: &str, span: Span) {
+        self.conditional_any_edge(source, target, span, "calls", "probable");
+    }
+
+    /// Record one edge whose source is trusted but whose target is a guess
+    /// that only counts as real when this file turns out to declare it — the
+    /// same deferral [`Facts::conditional_edge`] gives call targets, reused
+    /// by framework edges (e.g. an axum routing call naming a same-file
+    /// handler that may be declared later in the file).
+    pub fn conditional_any_edge(
+        &mut self,
+        source: &str,
+        target: &str,
+        span: Span,
+        kind: &str,
+        confidence: &'static str,
+    ) {
         let evidence = self.evidence(span, span);
-        self.pending_calls.push(Edge {
-            kind: "calls".to_owned(),
+        self.pending_edges.push(Edge {
+            kind: kind.to_owned(),
             source: source.to_owned(),
             target: target.to_owned(),
             origin: "ast",
-            confidence: "probable",
+            confidence,
             evidence,
             attributes: BTreeMap::new(),
         });
@@ -176,12 +276,12 @@ impl Facts {
     /// throws outright on an unresolved edge source, which would fail the
     /// whole scan rather than just this file's facts.
     ///
-    /// A pending `calls` edge from [`Facts::conditional_edge`] additionally
-    /// requires its *target* to be declared here — the one case where a
-    /// missing target does get filtered, because unlike a genuinely external
-    /// call (which is always qualified, and always trusted as written) an
-    /// unqualified target is only trustworthy when it lands on a real
-    /// declaration in this same file.
+    /// A pending edge from [`Facts::conditional_edge`] additionally requires
+    /// its *target* to be declared here — the one case where a missing target
+    /// does get filtered, because unlike a genuinely external call (which is
+    /// always qualified, and always trusted as written) an unqualified target
+    /// is only guessable when it lands on a real declaration in this same
+    /// file.
     ///
     /// Edges are then collapsed to the persistence identity the scanner SDK
     /// states (`docs/reference/scanner-sdk.md`): one row per
@@ -195,12 +295,29 @@ impl Facts {
     #[must_use]
     pub fn finish(mut self) -> Contribution {
         let declared = self.declared;
-        self.edges.retain(|edge| declared.contains(&edge.source));
+        self.edges
+            .retain(|edge| declared.contains(&edge.source) || self.external.contains(&edge.source));
         self.edges.extend(
-            self.pending_calls
+            self.pending_edges
                 .into_iter()
                 .filter(|edge| declared.contains(&edge.source) && declared.contains(&edge.target)),
         );
+        // Deferred attributes land before serialisation: the module node's
+        // `executable` flag and roles resolved after their node was pushed.
+        if self.executable {
+            let module = self.nodes[0].canonical_name.clone(); // the module node is always first
+            self.pending_attributes
+                .push((module, "executable".to_owned(), Value::Bool(true)));
+        }
+        for (canonical, key, value) in &self.pending_attributes {
+            if let Some(node) = self
+                .nodes
+                .iter_mut()
+                .find(|node| node.canonical_name == *canonical)
+            {
+                node.attributes.insert(key.clone(), value.clone());
+            }
+        }
         self.edges.sort_by(|a, b| {
             (&a.kind, &a.source, &a.target, a.evidence.start_line).cmp(&(
                 &b.kind,
