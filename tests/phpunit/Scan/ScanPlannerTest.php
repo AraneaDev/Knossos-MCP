@@ -335,6 +335,36 @@ TOML);
     }
 
     /**
+     * A Cargo dependency renamed with `package` states the real crate there
+     * and uses the table key as a local alias. Framework detection matches the
+     * real name, so recording only the alias left a crate that genuinely uses
+     * actix scanned with its enrichment switched off.
+     */
+    public function testPrepareDetectsAFrameworkBehindARenamedCargoDependency(): void
+    {
+        $pdo = $this->createSchema();
+        $dir = sys_get_temp_dir() . '/knossos-planner-rename-' . bin2hex(random_bytes(6));
+        mkdir($dir);
+        try {
+            file_put_contents($dir . '/Cargo.toml', <<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+web = { package = "actix-web", version = "4" }
+TOML);
+            $preparation = (new ScanPlanner($pdo, [sys_get_temp_dir()]))->prepare($dir, null, null, null, null, null, null);
+
+            assertSame(['actix'], $preparation->rustFrameworks);
+        } finally {
+            @unlink($dir . '/Cargo.toml');
+            rmdir($dir);
+        }
+    }
+
+    /**
      * Python framework gating reads `requirements.txt` as well as
      * `pyproject.toml`, so the Python configuration hash has to cover both.
      * Hashing only `pyproject.toml` let an incremental scan reuse Python

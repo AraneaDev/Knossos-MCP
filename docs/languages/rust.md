@@ -106,8 +106,10 @@ cannot be used as unverified evidence.
   own node comes from the file that defines it.
 - A `use` leaf that already names a module resolves to the module's parent, so
   `use core::fmt;` emits `imports` to `core` and `use crate::token;` emits it
-  to `crate`. The worker cannot tell a module leaf from a type leaf without a
-  crate-wide view, so it truncates every multi-segment leaf the same way.
+  to `crate`. The declaration index spans the whole request, but it records
+  types, traits, and functions rather than `mod` declarations, and import
+  collection does not consult it, so every multi-segment leaf other than an
+  explicit `self` is truncated the same way.
 - A crate with an `impl` target that is not declared in this scan batch keeps
   its method nodes but drops `contains` and `implements` edges whose source
   cannot be vouched for. This avoids fabricating a source node or failing graph

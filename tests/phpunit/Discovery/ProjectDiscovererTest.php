@@ -810,6 +810,34 @@ TOML);
         assertSame(['axum', 'cc', 'libc', 'serde', 'tokio'], array_keys($unit->metadata['requires']));
     }
 
+    /**
+     * A renamed dependency states the real crate in a `package` key and uses
+     * the table key only as a local alias. Recording the alias alone hid the
+     * crate from ScanPlanner's framework detection, which matches on the real
+     * name, so worker enrichment was gated off for a crate that genuinely
+     * depended on the framework.
+     */
+    public function testDiscoverReadsRenamedCargoDependencies(): void
+    {
+        $unit = $this->cargoUnit(<<<'TOML'
+[package]
+name = "demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+web = { package = "actix-web", version = "4" }
+plain = "1"
+
+[dependencies.rt]
+package = "tokio"
+version = "1"
+TOML);
+        // Both names survive: the alias is what a `use` writes, the package is
+        // what framework detection matches.
+        assertSame(['actix-web', 'plain', 'rt', 'tokio', 'web'], array_keys($unit->metadata['requires']));
+    }
+
     public function testDiscoverReadsCargoDependencySubTables(): void
     {
         $unit = $this->cargoUnit(<<<'TOML'

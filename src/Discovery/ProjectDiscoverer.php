@@ -464,6 +464,9 @@ final readonly class ProjectDiscoverer
             foreach (self::tomlTableKeys($block) as $dep) {
                 $result[$dep] = '1';
             }
+            foreach (self::tomlInlinePackageNames($block) as $dep) {
+                $result[$dep] = '1';
+            }
         }
         foreach (self::cargoDependencySubTableNames($contents) as $dep) {
             $result[$dep] = '1';
@@ -503,7 +506,10 @@ final readonly class ProjectDiscoverer
      * `[dependencies.axum]` and `[target.'cfg(unix)'.dev-dependencies.axum]`
      * declare `axum` exactly as an `axum = "0.7"` line inside `[dependencies]`
      * does. The name is in the header and the body carries only that crate's
-     * settings, so the body must not be read as a list of dependencies.
+     * settings, so the body must not be read as a list of dependencies. The
+     * one key that does name a crate is `package`, which renames it:
+     * `[dependencies.rt]` with `package = "tokio"` depends on tokio, and both
+     * names are recorded.
      *
      * @return list<string>
      */
@@ -511,8 +517,37 @@ final readonly class ProjectDiscoverer
     {
         $names = [];
         foreach (self::tomlHeaders($contents) as $header) {
-            if (preg_match('/(?:^|[-.])(?:dependencies|dev-dependencies|build-dependencies)\.["\']?([A-Za-z0-9_-]+)["\']?$/', $header, $m) === 1) {
-                $names[] = strtolower($m[1]);
+            if (preg_match('/(?:^|[-.])(?:dependencies|dev-dependencies|build-dependencies)\.["\']?([A-Za-z0-9_-]+)["\']?$/', $header, $m) !== 1) {
+                continue;
+            }
+            $names[] = strtolower($m[1]);
+            $block = self::tableBlock($contents, '[' . $header . ']');
+            if ($block !== null && preg_match('/^[ \t]*package[ \t]*=[ \t]*["\']([^"\']+)["\']/m', $block, $renamed) === 1) {
+                $names[] = strtolower($renamed[1]);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Crate names an inline dependency table renames with a `package` key.
+     *
+     * `web = { package = "actix-web", version = "4" }` depends on actix-web
+     * under the local name `web`. Both are recorded: the alias is what source
+     * code writes in a `use`, and the real crate name is what framework
+     * detection in ScanPlanner matches on, so keeping only the alias hides the
+     * dependency and silently gates worker enrichment off.
+     *
+     * @return list<string>
+     */
+    private static function tomlInlinePackageNames(string $block): array
+    {
+        $names = [];
+        $pattern = '/^[ \t]*["\']?[A-Za-z0-9_.-]+["\']?[ \t]*=[ \t]*\{[^}]*\bpackage[ \t]*=[ \t]*["\']([^"\']+)["\']/m';
+        if (preg_match_all($pattern, $block, $m) > 0) {
+            foreach ($m[1] as $name) {
+                $names[] = strtolower($name);
             }
         }
 
