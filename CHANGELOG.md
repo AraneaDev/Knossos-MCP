@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.12.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.11.0...v0.12.0) (2026-08-24)
+
+
+### Features
+
+* bring the Python and Rust workers to parity with PHP and TypeScript ([dbfdf81](https://github.com/AraneaDev/Knossos-MCP/commit/dbfdf81d805b3e27f7be93d7e69a1da9f9819165))
+* bring the Python and Rust workers to parity with PHP and TypeScript ([0544d21](https://github.com/AraneaDev/Knossos-MCP/commit/0544d212e967116c3a75f5dd295a4715b166b9b1))
+
+
+### Bug Fixes
+
+* **ci:** stop the quality gate depending on badge-host availability ([4b03dbf](https://github.com/AraneaDev/Knossos-MCP/commit/4b03dbf8e4606379dc13f1f9a4272ab98afcdd69))
+* close the manifest, classification, and cache gaps found in review ([c76ed97](https://github.com/AraneaDev/Knossos-MCP/commit/c76ed97af60cc06ab46edcc8d845499148e4c9f5))
+* **discovery:** anchor Python and Cargo entry points to their manifest ([0cb7aca](https://github.com/AraneaDev/Knossos-MCP/commit/0cb7acacc56580bbce41cc846e4f93d12af56169))
+* **discovery:** follow Cargo's own binary auto-discovery rules ([423ce41](https://github.com/AraneaDev/Knossos-MCP/commit/423ce413c90369ee15e051bf4b1bf587bd51441d))
+* **discovery:** record the real crate behind a renamed Cargo dependency ([a0284c3](https://github.com/AraneaDev/Knossos-MCP/commit/a0284c3bdd84fb3dabac09098641f9b09c959648))
+
 ## [0.11.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.10.6...v0.11.0) (2026-08-23)
 
 
