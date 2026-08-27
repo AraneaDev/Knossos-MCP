@@ -5,6 +5,7 @@
 **The labyrinth mapped once, so nobody has to wander it again.**
 
 [![Release](https://img.shields.io/github/v/release/AraneaDev/Knossos-MCP?label=release)](https://github.com/AraneaDev/Knossos-MCP/releases)
+[![Project page](https://img.shields.io/badge/project%20page-aranea--development.nl-0b7285)](https://aranea-development.nl/en/projects/knossos-mcp)
 [![CI](https://img.shields.io/github/actions/workflow/status/AraneaDev/Knossos-MCP/quality.yml?label=CI)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FAraneaDev%2FKnossos-MCP%2Fgh-pages%2Fcoverage.json)](https://github.com/AraneaDev/Knossos-MCP/actions/workflows/quality.yml)
 [![License](https://img.shields.io/github/license/AraneaDev/Knossos-MCP?label=license&color=yellow)](./LICENSE)
