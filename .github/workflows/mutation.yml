@@ -40,7 +40,7 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build pinned quality image
         run: docker build --target quality -t knossos-mcp:quality .
       - name: Run Infection over shard ${{ matrix.shard }}
@@ -101,7 +101,7 @@ jobs:
         # Uploaded even when the shard fails, so the gate can name the missing
         # shard instead of reporting a smaller tree as a passing one.
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-shard-${{ matrix.shard }}
           path: mutation-shard-${{ matrix.shard }}.json
@@ -114,8 +114,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
         with:
           path: shards
           pattern: mutation-shard-*
