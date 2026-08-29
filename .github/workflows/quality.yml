@@ -14,7 +14,7 @@ jobs:
     permissions:
       contents: write # publishes the coverage badge to the gh-pages branch
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Build pinned quality image
         run: docker build --target quality -t knossos-mcp:quality .
       # Reports are copied out of the container instead of bind-mounted back.
@@ -37,7 +37,7 @@ jobs:
       # The script sums all three languages; PHP alone is the bulk of the code.
       - name: Setup Node LTS
         if: github.ref == 'refs/heads/main'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: lts/*
       - name: Publish coverage badge
@@ -61,7 +61,7 @@ jobs:
 
       - name: Upload coverage and benchmark reports
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: quality-reports
           path: coverage/
