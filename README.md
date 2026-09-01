@@ -309,3 +309,7 @@ scanner.
 ## License
 
 [MIT](LICENSE).
+
+---
+
+Built by [Aranea Development](https://aranea-development.nl).
