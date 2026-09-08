@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# Tagged by commit so a lane can only run the image built for the commit it is
+# testing, and lowercased because a registry reference must be.
+env:
+  QUALITY_IMAGE: ghcr.io/araneadev/knossos-mcp:quality-${{ github.sha }}
+  RUNTIME_IMAGE: ghcr.io/araneadev/knossos-mcp:runtime-${{ github.sha }}
+
 # One run per branch. A second push cancels the first, because whoever pushed
 # again has already answered the question the running job was asked. The runs
 # long enough to be overtaken are the expensive ones, so this is worth more
@@ -25,18 +31,49 @@ jobs:
   image:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write # pushes the run's images to this repository's registry
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
-      - name: Build and cache the pinned quality image
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Pushed to the registry rather than exported to the Actions cache.
+      # Measured on the run before this change, every lane paid between 60 and
+      # 138 seconds to `load` this image, because buildx has to rebuild it
+      # from cached layers and import it into the daemon. In three of the five
+      # lanes that cost more than the lane's own work: the rust lane spent
+      # 119 seconds loading and 13 seconds working. A pull from a registry in
+      # the same datacentre moves bytes instead of reconstructing an image.
+      #
+      # Tagged by commit, so a lane can only ever run the image built for the
+      # commit it is testing.
+      - name: Build and push the pinned quality image
         uses: docker/build-push-action@v6
         with:
           context: .
           target: quality
-          tags: knossos-mcp:quality
+          tags: ${{ env.QUALITY_IMAGE }}
           cache-from: type=gha,scope=quality-image
           cache-to: type=gha,mode=max,scope=quality-image
-          outputs: type=cacheonly
+          push: true
+      # The release lane builds this target too, from inside the quality
+      # container against the host daemon, where buildx's cache does not
+      # reach. Publishing it here and pulling it there turns an uncached
+      # build into a pull: tools/quality only builds it when it is absent.
+      - name: Build and push the runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          tags: ${{ env.RUNTIME_IMAGE }}
+          cache-from: type=gha,scope=runtime-image
+          cache-to: type=gha,mode=max,scope=runtime-image
+          push: true
 
   lane:
     needs: image
@@ -72,25 +109,51 @@ jobs:
         lane:
           ${{ fromJSON(startsWith(github.head_ref, 'release-please--branches--') &&
           '["static"]' || '["static","tests","rust","release","coverage"]') }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v3
-      - name: Load the cached quality image
-        uses: docker/build-push-action@v6
+      - uses: docker/login-action@v3
         with:
-          context: .
-          target: quality
-          tags: knossos-mcp:quality
-          cache-from: type=gha,scope=quality-image
-          load: true
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Pull the pinned quality image
+        run: |
+          docker pull --quiet "$QUALITY_IMAGE"
+          docker tag "$QUALITY_IMAGE" knossos-mcp:quality
+      - name: Pull the runtime image
+        if: matrix.lane == 'release'
+        run: |
+          docker pull --quiet "$RUNTIME_IMAGE"
+          docker tag "$RUNTIME_IMAGE" knossos-mcp:quality-runtime
+      # Trivy downloads its vulnerability database on first use, and the lane
+      # container is thrown away after every run, so it downloaded the whole
+      # thing again each time. Cached on the host and mounted in.
+      #
+      # The key carries the date so the database is refreshed daily rather
+      # than pinned: a stale vulnerability database reports a clean image
+      # because it has not heard of the vulnerability yet, which is the one
+      # failure mode a security scan must not have.
+      - name: Restore the trivy vulnerability database
+        if: matrix.lane == 'release'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
       # Reports are copied out of the container instead of bind-mounted back.
       # A runner whose workspace is itself a container mount cannot bind host
       # paths that only exist inside the job, and Docker would silently create
       # an empty directory on the host instead of failing.
       - name: Run the ${{ matrix.lane }} lane
         run: |
+          mkdir -p "${{ runner.temp }}/trivy-cache"
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
+            -e TRIVY_CACHE_DIR=/tmp/trivy-cache \
             -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ runner.temp }}/trivy-cache:/tmp/trivy-cache" \
             knossos-mcp:quality full ${{ matrix.lane }}
       - name: Collect reports
         if: always() && matrix.lane == 'coverage'
