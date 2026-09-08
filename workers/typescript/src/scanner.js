@@ -1159,6 +1159,21 @@ function valueReferencePosition(node) {
         parent.tagName === node
     )
         return true;
+    // `mod.run` standing in any of the positions above: a facade republishing
+    // an imported function as its own field, `const run = mod.run`, or an
+    // object literal built the same way. Asked of the NAME half only, so the
+    // object being read cannot answer for the member.
+    //
+    // Without this a facade hid everything it republished. A client class
+    // assigning `getCustomers = customer.getCustomers` and imported by a dozen
+    // screens left every one of those functions reachable from nothing but its
+    // own test, which is the direction of wrongness that costs most: it invites
+    // deleting code the application runs.
+    //
+    // The recursion walks a chain like `a.b.c` up to whatever encloses it and
+    // ends there, because each step moves to the parent.
+    if (ts.isPropertyAccessExpression(parent) && parent.name === node)
+        return valueReferencePosition(parent);
 
     return false;
 }
