@@ -37,6 +37,19 @@ jobs:
           cache-from: type=gha,scope=quality-image
           cache-to: type=gha,mode=max,scope=quality-image
           outputs: type=cacheonly
+      # The release lane builds this target too, from inside the quality
+      # container against the host daemon, where buildx's cache does not
+      # reach. Caching it here and loading it there turns an uncached build
+      # into a load: tools/quality only builds it when it is absent.
+      - name: Build and cache the runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          tags: knossos-mcp:quality-runtime
+          cache-from: type=gha,scope=runtime-image
+          cache-to: type=gha,mode=max,scope=runtime-image
+          outputs: type=cacheonly
 
   lane:
     needs: image
@@ -83,14 +96,41 @@ jobs:
           tags: knossos-mcp:quality
           cache-from: type=gha,scope=quality-image
           load: true
+      - name: Load the cached runtime image
+        if: matrix.lane == 'release'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: runtime
+          tags: knossos-mcp:quality-runtime
+          cache-from: type=gha,scope=runtime-image
+          load: true
+      # Trivy downloads its vulnerability database on first use, and the lane
+      # container is thrown away after every run, so it downloaded the whole
+      # thing again each time. Cached on the host and mounted in.
+      #
+      # The key carries the date so the database is refreshed daily rather
+      # than pinned: a stale vulnerability database reports a clean image
+      # because it has not heard of the vulnerability yet, which is the one
+      # failure mode a security scan must not have.
+      - name: Restore the trivy vulnerability database
+        if: matrix.lane == 'release'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/trivy-cache
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
       # Reports are copied out of the container instead of bind-mounted back.
       # A runner whose workspace is itself a container mount cannot bind host
       # paths that only exist inside the job, and Docker would silently create
       # an empty directory on the host instead of failing.
       - name: Run the ${{ matrix.lane }} lane
         run: |
+          mkdir -p "${{ runner.temp }}/trivy-cache"
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
+            -e TRIVY_CACHE_DIR=/tmp/trivy-cache \
             -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${{ runner.temp }}/trivy-cache:/tmp/trivy-cache" \
             knossos-mcp:quality full ${{ matrix.lane }}
       - name: Collect reports
         if: always() && matrix.lane == 'coverage'
