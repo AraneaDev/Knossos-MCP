@@ -1020,6 +1020,13 @@ final readonly class ProjectDiscoverer
      * host path from its container path: both halves are offered and only the
      * half naming a real file can match.
      *
+     * Two anchors, because YAML does not have one path convention. A Compose
+     * bind mount is relative to the compose file's own directory; a CI
+     * workflow's `run:` step executes with the repository root as its working
+     * directory. Both readings are offered for every token and the one naming
+     * no emitted file falls away, which is the same bargain {@see self::webRootReadings()}
+     * strikes with a bundler's asset directories.
+     *
      * @return list<string>
      */
     private static function yamlPathEntryPoints(string $contents, string $configPath): array
@@ -1030,10 +1037,13 @@ final readonly class ProjectDiscoverer
             return [];
         }
         $paths = [];
+        $anchors = array_unique([$directory, '']);
         foreach ($matches[0] as $token) {
-            $path = self::entryPointPath($token, $directory);
-            if ($path !== null) {
-                $paths[$path] = true;
+            foreach ($anchors as $anchor) {
+                $path = self::entryPointPath($token, $anchor);
+                if ($path !== null) {
+                    $paths[$path] = true;
+                }
             }
         }
 

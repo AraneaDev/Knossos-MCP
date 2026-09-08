@@ -1240,7 +1240,9 @@ TOML);
         $this->assertNotEmpty($units);
         assertSame([
             'docker/local/frontend/vite.config.docker.ts',
+            'frontend/vite.config.docker.ts',
             'docker/local/app/vite.config.ts',
+            'app/vite.config.ts',
         ], $units[0]->metadata['entry_points']);
     }
 
@@ -1285,6 +1287,35 @@ TOML);
         $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
         $this->assertNotEmpty($units);
         assertSame(['app/loader.js'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A workflow `run:` step executes from the repository root, not from the
+     * directory holding the workflow. Anchoring only to the file's own
+     * directory resolved `node tools/coverage-badge.mjs` to
+     * `.github/workflows/tools/coverage-badge.mjs`, which names nothing, so the
+     * CI half of this reader did not work for any workflow below the root.
+     */
+    public function testDiscoverAnchorsAYamlPathToTheProjectRootAsWellAsItsOwnDirectory(): void
+    {
+        mkdir($this->root . '/.github/workflows', 0700, true);
+        file_put_contents($this->root . '/.github/workflows/quality.yml', implode("\n", [
+            'jobs:',
+            '  badge:',
+            '    steps:',
+            '      - run: node tools/coverage-badge.mjs',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([
+            '.github/workflows/tools/coverage-badge.mjs',
+            'tools/coverage-badge.mjs',
+        ], $units[0]->metadata['entry_points']);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────
