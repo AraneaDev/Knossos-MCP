@@ -45,12 +45,35 @@ export class FactAccumulator {
         const key = `${kind}\0${source}\0${target}`;
         const existing = this.edgesByKey.get(key);
         if (existing) {
-            if (kind === "imports" && "type_only" in attributes) {
+            // Both an `import` and a `re_export` statement can be type-only, and
+            // either kind can merge two occurrences into one edge (two
+            // `export ... from` statements between the same module pair, just
+            // like two `import` statements do). Restricting the merge to
+            // `imports` let a type-only re-export merge with a value one and
+            // have first-writer-wins decide `type_only` on the merged edge,
+            // silently erasing a real dependency — and any cycle it closed —
+            // depending on parse order alone.
+            //
+            // Checking either side's attributes for the key (rather than
+            // requiring both) matters because not every emitter that can merge
+            // into an `imports` edge marks `type_only` at all: a dynamic
+            // `import()` and a `require()` are runtime by definition, and a
+            // module can carry one of those alongside a type-only static
+            // import of the same specifier. Treating a missing marker as
+            // `false` — a value import — rather than skipping it means a
+            // future emitter that forgets to mark `type_only` still cannot
+            // erase the dependency; it can only fail to prove the OTHER side
+            // erased.
+            if (
+                (kind === "imports" || kind === "re_exports") &&
+                ("type_only" in attributes ||
+                    "type_only" in existing.attributes)
+            ) {
                 existing.attributes.type_only_variants = [
                     ...new Set([
-                        existing.attributes.type_only,
+                        existing.attributes.type_only ?? false,
                         ...(existing.attributes.type_only_variants ?? []),
-                        attributes.type_only,
+                        attributes.type_only ?? false,
                     ]),
                 ].sort();
             }

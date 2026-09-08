@@ -21,6 +21,7 @@ use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
+use ReflectionMethod;
 
 #[Group('scan-analysis')]
 final class ScanAnalysisPipelineTest extends TestCase
@@ -302,6 +303,37 @@ final class ScanAnalysisPipelineTest extends TestCase
 
         $roles = array_map(static fn(ClassificationFact $fact): string => $fact->role, $analysis->classifications);
         assertSame(false, in_array(ManifestEntryPointRule::ROLE, $roles, true));
+    }
+
+    /**
+     * Pins manifestEntryPoints()'s contract directly, since nothing else
+     * observes it: the map shape (entry-point path => path of the manifest
+     * naming it), first-claimant-wins when two units name the same path, and
+     * the ksort() that makes attribution deterministic regardless of the
+     * order units were discovered in.
+     */
+    public function testManifestEntryPointsMapsFirstClaimantAndSortsByPath(): void
+    {
+        $plan = new ScanPlan(
+            preparation: $this->makePreparation(units: [
+                new ProjectUnit('npm', 'package.json', 'hash-npm', ['entry_points' => ['scripts/build.mjs', 'bin/tool.js']]),
+                // Names the same path as the unit above; the FIRST claimant
+                // (package.json) must win the attribution.
+                new ProjectUnit('npm', 'packages/web/package.json', 'hash-web', ['entry_points' => ['scripts/build.mjs']]),
+            ]),
+            projectId: 'plan-manifest-entry-points',
+            effectiveMode: 'fast',
+            cacheByScannerPath: [],
+            deletedFiles: 0,
+        );
+
+        $paths = (new ReflectionMethod(ScanAnalysisPipeline::class, 'manifestEntryPoints'))->invoke(null, $plan);
+
+        assertSame('package.json', $paths['scripts/build.mjs']);
+        assertSame('package.json', $paths['bin/tool.js']);
+        // Sorted by path (ksort), not by unit/discovery order — 'bin/tool.js'
+        // sorts before 'scripts/build.mjs' even though it was named second.
+        assertSame(['bin/tool.js', 'scripts/build.mjs'], array_keys($paths));
     }
 
     private function makeModuleNode(string $relativePath): NodeFact

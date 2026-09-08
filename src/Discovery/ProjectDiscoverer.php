@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Discovery;
 
 use DirectoryIterator;
+use Knossos\Classification\ToolConfigModuleRule;
 use Knossos\Scan\CancellationToken;
 use Throwable;
 
@@ -237,6 +238,21 @@ final readonly class ProjectDiscoverer
                 'requires' => self::pipRequirements($contents),
             ]);
         }
+        if ($kind === 'html') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::htmlScriptEntryPoints($contents, $relative),
+            ]);
+        }
+        if ($kind === 'yaml') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+            ]);
+        }
+        if ($kind === 'tool_config') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::toolConfigEntryPoints($contents, $relative),
+            ]);
+        }
 
         try {
             $decoded = JsonConfig::decode($contents, in_array($kind, ['typescript', 'knossos'], true));
@@ -262,6 +278,9 @@ final readonly class ProjectDiscoverer
                 'type' => is_string($decoded['type'] ?? null) ? $decoded['type'] : null,
                 'workspaces' => self::workspaces($decoded['workspaces'] ?? []),
                 'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
+            ],
+            'azure_function' => [
+                'entry_points' => self::azureFunctionEntryPoints($decoded, $relative),
             ],
             'typescript' => self::typescriptMetadata($decoded),
             'knossos' => ['version' => $decoded['version'] ?? null],
@@ -810,6 +829,18 @@ final readonly class ProjectDiscoverer
     ];
 
     /**
+     * Config keys whose value names a file the tool LOADS.
+     *
+     * Deliberately a short allow-list rather than every key. A config also
+     * names files to exclude, and an excluded path is exactly the kind that
+     * turns out to be dead — suppressing it would hide the finding this
+     * analysis exists to produce.
+     */
+    private const CONFIG_REFERENCE_KEYS = [
+        'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
+    ];
+
+    /**
      * Collect the source files a package manifest names, anchored to the
      * project root.
      *
@@ -865,6 +896,322 @@ final readonly class ProjectDiscoverer
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * The handler an Azure Functions binding manifest points at, so it reaches
+     * {@see ManifestEntryPointRule} like any other manifest's entry points.
+     *
+     * The host runs exactly the file `scriptFile` names, which is what makes
+     * this worth reading: nothing in the project imports the handler, so its
+     * in-degree is zero however live it is. A directory holding both `index.js`
+     * and a stale `index.ts` made that visible — TypeScript's own module
+     * resolution answers a sibling's `require('../management')` with the `.ts`,
+     * leaving the `.js` the host actually executes looking like dead code.
+     * Reading the manifest settles which of the two is the entry point on the
+     * runtime's authority rather than the type checker's.
+     *
+     * @param array<string, mixed> $manifest
+     * @return list<string>
+     */
+    private static function azureFunctionEntryPoints(array $manifest, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $scriptFile = $manifest['scriptFile'] ?? null;
+        if (is_string($scriptFile)) {
+            $path = self::entryPointPath($scriptFile, $directory);
+
+            return $path === null ? [] : [$path];
+        }
+        // `scriptFile` is optional, and most manifests leave it out: the host
+        // then loads the conventional handler for the runtime from the
+        // manifest's own directory. Two thirds of the 69 manifests in the
+        // project that prompted this omit the key, so reading only the explicit
+        // form would have covered a third of the handlers and left the rest
+        // reported as reachable from nothing but their own tests.
+        //
+        // Gated on a non-empty `bindings` array, which is what makes a
+        // `function.json` an Azure one rather than some other tool's file with
+        // a generic name. Both conventional names are offered because matching
+        // is by exact project-relative path: whichever the directory does not
+        // hold matches nothing and costs nothing.
+        if (!is_array($manifest['bindings'] ?? null) || $manifest['bindings'] === []) {
+            return [];
+        }
+
+        return array_values(array_filter(array_map(
+            static fn(string $candidate): ?string => self::entryPointPath($candidate, $directory),
+            ['index.js', '__init__.py'],
+        ), static fn(?string $path): bool => $path !== null));
+    }
+
+    /**
+     * The scripts an HTML shell loads, in every project-relative form the
+     * reference could mean.
+     *
+     * A single-page application is entered through this tag and through nothing
+     * else: no module in the project imports `main.tsx`, so its in-degree is
+     * zero however live it is, and the same is true of a plain `<script>` that
+     * publishes runtime configuration onto `window`.
+     *
+     * A root-absolute `src` is resolved against the WEB root rather than the
+     * project root, and every common bundler serves a directory of untouched
+     * assets there — `public/` for Vite, Create React App, Next and Astro,
+     * `static/` for SvelteKit and Hugo. Which one applies cannot be known from
+     * the HTML, so all three readings are offered. Matching downstream is by
+     * exact path against something a scanner emitted, so the two that name no
+     * file cost nothing; guessing wrong in the other direction would lose the
+     * entry point silently.
+     *
+     * Deliberately only `<script src>`. A stylesheet or an image is not code
+     * and could not be a dead-code candidate anyway, and scraping every `href`
+     * would put ordinary prose links through the same suppression.
+     *
+     * @return list<string>
+     */
+    private static function htmlScriptEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        if (preg_match_all('/<script\b[^>]*?\bsrc\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'>]+))/i', $contents, $matches, PREG_SET_ORDER) === false) {
+            return [];
+        }
+        $paths = [];
+        foreach ($matches as $match) {
+            $source = $match[3] ?? '';
+            if (($match[1] ?? '') !== '') {
+                $source = $match[1];
+            } elseif (($match[2] ?? '') !== '') {
+                $source = $match[2];
+            }
+            foreach (self::webRootReadings($source) as $candidate) {
+                $path = self::entryPointPath($candidate, $directory);
+                if ($path !== null) {
+                    $paths[$path] = true;
+                }
+            }
+        }
+
+        return array_keys($paths);
+    }
+
+    /**
+     * The ways one web-root-absolute reference could name a file on disk.
+     *
+     * A relative source is already project-relative once anchored and gets a
+     * single reading. A leading slash means the web root, so the asset
+     * directories bundlers serve there are prefixed as well.
+     *
+     * @return list<string>
+     */
+    private static function webRootReadings(string $source): array
+    {
+        $source = trim($source);
+        if ($source === '' || !str_starts_with($source, '/')) {
+            return [$source];
+        }
+        $bare = ltrim($source, '/');
+
+        return [$bare, 'public/' . $bare, 'static/' . $bare];
+    }
+
+    /**
+     * Config keys under which a YAML value names files to EXCLUDE rather than
+     * load: `ignore:` in codecov.yml, `exclude:` in a pre-commit config,
+     * `paths-ignore:` in a GitHub Actions workflow trigger. A path appearing
+     * only under one of these is not read as an entry point — the same
+     * reasoning {@see self::CONFIG_REFERENCE_KEYS} applies to a tool's own
+     * config module, restated here as a deny-list because YAML's exclusion
+     * keys, unlike a tool config's load keys, are not enumerable in advance.
+     */
+    private const YAML_EXCLUSION_KEYS = ['exclude', 'ignore', 'paths-ignore', 'skip', 'exclude_paths', 'excludes'];
+
+    /**
+     * Every token in a YAML file shaped like a path to a source file.
+     *
+     * A Compose file mounts a config into a container, a CI workflow runs a
+     * script by name, a deployment manifest names an entry module. None of
+     * those is an import, so the file they name has an in-degree of zero while
+     * being the reason the thing runs at all.
+     *
+     * No YAML parser is used, and the file is scanned as text. That is the same
+     * bargain {@see self::manifestEntryPoints()} strikes with Composer's shell
+     * commands: what makes it safe is not the precision of the tokenising but
+     * the exactness of the matching. {@see ManifestEntryPointRule} compares
+     * against paths a scanner actually emitted, so a token naming nothing is
+     * inert, and the source-extension guard inside {@see self::entryPointPath()}
+     * keeps image tags, version strings and action references out.
+     *
+     * Two narrowings keep the blanket tokenising from reading too much in:
+     *
+     * - A `#`-comment tail is stripped from every line before tokenising. A
+     *   `#` inside a quoted scalar is not really a comment, but treating every
+     *   `#` as one is the conservative direction — it can only cause a real
+     *   path to be missed, never a wrongful suppression to be added.
+     * - A token on a line scoped by {@see self::YAML_EXCLUSION_KEYS} — see
+     *   {@see self::yamlExclusionLines()} — is dropped. YAML carries exclusion
+     *   lists at least as often as it carries genuine references, and a path
+     *   named only there is not loaded by anything; suppressing it would hide
+     *   the finding this analysis exists to produce. This is the same call
+     *   {@see self::toolConfigEntryPoints()} makes by being key-scoped outright.
+     *
+     * The character class stops at a colon, which is what splits a bind mount's
+     * host path from its container path: both halves are offered and only the
+     * half naming a real file can match.
+     *
+     * Two anchors, because YAML does not have one path convention. A Compose
+     * bind mount is relative to the compose file's own directory; a CI
+     * workflow's `run:` step executes with the repository root as its working
+     * directory. Both readings are offered for every token and the one naming
+     * no emitted file falls away, which is the same bargain {@see self::webRootReadings()}
+     * strikes with a bundler's asset directories.
+     *
+     * @return list<string>
+     */
+    private static function yamlPathEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $extensions = implode('|', array_map(preg_quote(...), self::ENTRY_POINT_EXTENSIONS));
+        $stripped = preg_replace('/#.*$/m', '', $contents) ?? $contents;
+        if (preg_match_all(sprintf('#[A-Za-z0-9_./-]+\.(?:%s)\b#', $extensions), $stripped, $matches, PREG_OFFSET_CAPTURE) === false) {
+            return [];
+        }
+        $excludedLines = self::yamlExclusionLines($stripped);
+        $paths = [];
+        $anchors = array_unique([$directory, '']);
+        // One pass over the newlines, so the line lookup below is a search
+        // rather than a rescan of the prefix for every matched token.
+        $lineStarts = [0];
+        for ($at = strpos($stripped, "\n"); $at !== false; $at = strpos($stripped, "\n", $at + 1)) {
+            $lineStarts[] = $at + 1;
+        }
+        foreach ($matches[0] as [$token, $offset]) {
+            if (isset($excludedLines[self::lineAt($lineStarts, $offset)])) {
+                continue;
+            }
+            foreach ($anchors as $anchor) {
+                $path = self::entryPointPath($token, $anchor);
+                if ($path !== null) {
+                    $paths[$path] = true;
+                }
+            }
+        }
+
+        return array_keys($paths);
+    }
+
+    /**
+     * The 0-indexed line an offset falls on, by binary search over the line starts.
+     *
+     * @param list<int> $lineStarts Byte offset of each line's first character.
+     */
+    private static function lineAt(array $lineStarts, int $offset): int
+    {
+        $low = 0;
+        $high = count($lineStarts) - 1;
+        while ($low < $high) {
+            $middle = intdiv($low + $high + 1, 2);
+            if ($lineStarts[$middle] <= $offset) {
+                $low = $middle;
+            } else {
+                $high = $middle - 1;
+            }
+        }
+        return $low;
+    }
+
+    /**
+     * Line numbers, 0-indexed to match `explode("\n", $contents)`, that fall
+     * under one of {@see self::YAML_EXCLUSION_KEYS}.
+     *
+     * Two shapes are recognised, and recognised is all this does: a single
+     * line carrying an inline value (`ignore: src/legacy/old.php`), and a
+     * block sequence that immediately follows a bare `key:` line, one level
+     * more indented (`ignore:` then `  - src/legacy/old.php`). An exclusion
+     * list nested under an unrelated parent key, or one that resumes after a
+     * blank or comment-only line breaks the sequence, is not tracked — a full
+     * YAML indentation model would cover those too, at a cost this reader,
+     * which does not otherwise parse YAML at all, is not paying.
+     *
+     * @return array<int, true>
+     */
+    private static function yamlExclusionLines(string $contents): array
+    {
+        $keys = implode('|', array_map(preg_quote(...), self::YAML_EXCLUSION_KEYS));
+        $excluded = [];
+        $blockIndent = null;
+        foreach (explode("\n", $contents) as $index => $line) {
+            if ($blockIndent !== null) {
+                if (preg_match('/^(\s*)-\s/', $line, $item) === 1 && strlen($item[1]) > $blockIndent) {
+                    $excluded[$index] = true;
+                    continue;
+                }
+                $blockIndent = null;
+            }
+            if (preg_match('/^(\s*)(?:' . $keys . ')\s*:(.*)$/', $line, $m) !== 1) {
+                continue;
+            }
+            $excluded[$index] = true;
+            if (trim($m[2]) === '') {
+                $blockIndent = strlen($m[1]);
+            }
+        }
+
+        return $excluded;
+    }
+
+    /**
+     * The files a tool's own config module tells it to load.
+     *
+     * Vitest reads `setupFiles` before every test file, Jest reads
+     * `setupFilesAfterEnv`, a bundler reads `entry`. Nothing in the project
+     * imports any of them, so each has an in-degree of zero while running on
+     * every invocation of the tool.
+     *
+     * The config module is scanned as ordinary source by the language worker
+     * as well; this reads the same file a second time for its string literals,
+     * which is cheaper and far narrower than teaching a worker which keys of
+     * which config objects hold paths.
+     *
+     * Unlike {@see self::yamlPathEntryPoints()} this does NOT tokenise the
+     * whole file, and the difference is the point. A config names files to
+     * exclude beside the files it loads — `exclude: ['src/legacy/old.ts']` is
+     * ordinary — and marking an excluded path as an entry point would suppress
+     * precisely the candidate worth reporting. Only the keys in
+     * {@see self::CONFIG_REFERENCE_KEYS} are read.
+     *
+     * The value may be one quoted string or an array of them, so the key match
+     * captures either shape and the quoted tokens are pulled out of whichever
+     * it turned out to be.
+     *
+     * @return list<string>
+     */
+    private static function toolConfigEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $keys = implode('|', array_map(preg_quote(...), self::CONFIG_REFERENCE_KEYS));
+        $matched = preg_match_all(
+            sprintf('/\b(?:%s)\s*:\s*(\[[^\]]*\]|[\'"`][^\'"`]*[\'"`])/', $keys),
+            $contents,
+            $matches,
+            PREG_SET_ORDER,
+        );
+        if ($matched === false) {
+            return [];
+        }
+        $paths = [];
+        foreach ($matches as $match) {
+            if (preg_match_all('/[\'"`]([^\'"`]+)[\'"`]/', $match[1], $tokens) === false) {
+                continue;
+            }
+            foreach ($tokens[1] as $token) {
+                $path = self::entryPointPath($token, $directory);
+                if ($path !== null) {
+                    $paths[$path] = true;
+                }
+            }
+        }
+
+        return array_keys($paths);
     }
 
     /**
@@ -1081,6 +1428,27 @@ final readonly class ProjectDiscoverer
         if ($basename === 'package.json') {
             return 'node';
         }
+        // An Azure Functions binding manifest. The basename is generic enough
+        // that another tool could own it, so the reader below asks for the
+        // `scriptFile` key rather than assuming the shape; a function.json that
+        // is something else contributes no entry points and costs one unit.
+        if ($basename === 'function.json') {
+            return 'azure_function';
+        }
+        // An HTML shell is the only thing that reaches a single-page
+        // application's entry module, and nothing in the project imports it.
+        // Read as a unit rather than as a file: it contributes entry points,
+        // not nodes, and no scanner parses HTML.
+        if (str_ends_with($basename, '.html') || str_ends_with($basename, '.htm')) {
+            return 'html';
+        }
+        // Compose files, CI workflows and deployment manifests all name source
+        // files by path. Read for those paths only; no YAML parser is involved
+        // and none is needed, for the same reason the Composer script reader
+        // tokenises shell commands crudely.
+        if (str_ends_with($basename, '.yml') || str_ends_with($basename, '.yaml')) {
+            return 'yaml';
+        }
         if ($basename === 'pyproject.toml') {
             return 'python';
         }
@@ -1097,6 +1465,14 @@ final readonly class ProjectDiscoverer
         }
         if ($basename === 'cargo.toml') {
             return 'cargo';
+        }
+
+        // A tool config is read TWICE: as an ordinary source module by the
+        // language worker, and as a unit here for the files it tells its tool
+        // to load. The two `if` blocks in discover() are independent, so one
+        // file may be both — which is why this needs no scanner change.
+        if (ToolConfigModuleRule::isToolConfigPath($relativePath)) {
+            return 'tool_config';
         }
 
         return null;

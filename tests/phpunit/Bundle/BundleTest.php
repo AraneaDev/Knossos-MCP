@@ -360,7 +360,13 @@ final class BundleTest extends KnossosTestCase
                     false,
                     str_contains($candidate['reason'], 'No selected inbound static dependency references this component.'),
                 );
-                assertContains('No inbound static reference was found', $candidate['reason']);
+                // Both reachability classes phrase the same absence: `test_only`
+                // names the references it DID find and says what they are not,
+                // rather than claiming there are none.
+                assertContains(
+                    $candidate['reachability'] === 'test_only' ? 'come from test code' : 'No inbound static reference was found',
+                    $candidate['reason'],
+                );
                 // Per-candidate uncertainty text was folded into a single method-level
                 // warning; candidates no longer carry their own uncertainty key.
                 assertSame(false, array_key_exists('uncertainty', $candidate));

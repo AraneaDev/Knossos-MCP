@@ -704,9 +704,16 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         // see ReportableComponent for why counting the rest made this budget
         // unusable rather than merely imprecise. Health layers further,
         // database-backed exclusions on top (inherited and contract members,
-        // annotations, suppressions), so this count is the larger of the two by
-        // design; what it may not do is count a component health drops for a
-        // reason this loop can see for itself.
+        // annotations, suppressions), so among components with NO inbound edge
+        // this count is the larger of the two by design; what it may not do is
+        // count a component health drops for a reason this loop can see for
+        // itself.
+        //
+        // Health also reports a class this budget deliberately does not charge
+        // for: a component reached only from test code is `test_only` there and
+        // referenced here. It is worth deleting, but it is not a regression the
+        // way a newly orphaned component is, and a budget that moved when a
+        // caller was replaced by a test would punish the wrong change.
         $candidateKinds = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
         $unreferenced = 0;
         foreach ($facts['nodes'] ?? [] as $node) {
@@ -716,12 +723,13 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             if (!in_array($node['kind'], $candidateKinds, true)) {
                 continue;
             }
-            // A constructor, an executable script's module, or a
-            // convention-discovered component has no inbound edge by
+            // A constructor, an executable script's module, a type declaration,
+            // or a convention-discovered component has no inbound edge by
             // construction, so counting it would charge the budget for
             // something no maintainer can act on.
             if (ReportableComponent::isConstructor((string) $node['kind'], (string) $node['display_name'])
                 || ReportableComponent::isExecutableScript((string) $node['kind'], $node['attributes_json'] ?? null)
+                || ReportableComponent::isTypeDeclaration($node['attributes_json'] ?? null)
                 || ReportableComponent::isDiscoveredByConvention($roles[$node['id']] ?? [])) {
                 continue;
             }

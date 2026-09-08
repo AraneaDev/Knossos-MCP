@@ -44,7 +44,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * in-degree of zero by construction, and reporting it as dead code trains a
      * reader to ignore the whole list.
      *
-     * @param array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int}> $provisional
+     * @param array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int, reachability: string}> $provisional
      * @param array<string, array<string, mixed>> $nodes
      * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
      * @param array<string, int> $inheritanceInDegree
@@ -66,6 +66,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $excludedConstructors = 0;
         $excludedContracts = 0;
         $excludedEntryScripts = 0;
+        $excludedTypeDeclarations = 0;
         $suppressions = $this->deadCodeSuppressions($projectId);
         $suppressedCount = 0;
         $annotationsByName = $this->componentAnnotations($projectId);
@@ -116,9 +117,20 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 ++$excludedEntryScripts;
                 continue;
             }
+            // A `.d.ts` declares what some other file implements. Its symbols
+            // have an in-degree of zero by construction — call sites resolve to
+            // the implementation — so reporting them is noise, and acting on
+            // the report would break the build.
+            if (ReportableComponent::isTypeDeclaration($candidate['row']['attributes_json'] ?? null)) {
+                ++$excludedTypeDeclarations;
+                continue;
+            }
             $dynamicRisk = $candidate['row']['origin'] !== 'ast' || $this->hasFrameworkRole($candidate['roles']);
             $confidence = $dynamicRisk ? 'possible' : 'probable';
-            $reason = 'No inbound static reference was found among the selected edge kinds.';
+            $reachability = $candidate['reachability'] ?? 'unreferenced';
+            $reason = $reachability === 'test_only'
+                ? 'The only inbound static references come from test code, so nothing the product runs reaches this.'
+                : 'No inbound static reference was found among the selected edge kinds.';
             if ($context['external_ancestor'] !== null) {
                 $confidence = 'possible';
                 $reason = sprintf(
@@ -128,6 +140,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             }
             $entry = [
                 'component' => $candidate['component'],
+                'reachability' => $reachability,
                 'confidence' => $confidence,
                 'reason' => $reason,
                 'out_degree' => $candidate['out_degree'],
@@ -145,6 +158,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'contracts' => $excludedContracts,
                 'constructors' => $excludedConstructors,
                 'entry_scripts' => $excludedEntryScripts,
+                'type_declarations' => $excludedTypeDeclarations,
                 'suppressed' => $suppressedCount,
                 'annotated_false_positives' => $annotatedFalsePositives,
             ],
@@ -488,17 +502,31 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * `LaravelContainerFactCollector::__construct`, which is instantiated one
      * file away. Owner degrees are therefore re-read authoritatively too.
      *
-     * @param array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int}> $provisional
+     * @param array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int, reachability: string}> $provisional
      * @param array<string, array<string, mixed>> $nodes
      * @param list<string> $edgeKinds
      * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
      * @param array<string, int> $inheritanceInDegree
      *
-     * @return array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int}> the surviving candidates
+     * @return array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int, reachability: string}> the surviving candidates
      */
     public function reconcileBoundedWalk(string $projectId, array $provisional, array $nodes, array $edgeKinds, int $minConfidenceRank, array &$metrics, array &$inheritanceInDegree): array
     {
-        foreach ($this->referencedNodes($projectId, array_keys($provisional), $edgeKinds, $minConfidenceRank) as $referencedId) {
+        // Each class is re-checked against the evidence that selected it. An
+        // `unreferenced` candidate is cleared by ANY inbound edge the bounded
+        // walk missed; a `test_only` one only by an inbound edge from outside
+        // the test suite, because the edges from inside it are exactly why the
+        // candidate is in this list rather than the other one. Reconciling both
+        // against the same query would clear every test_only candidate on the
+        // strength of the test edge that defines it.
+        $byClass = ['unreferenced' => [], 'test_only' => []];
+        foreach ($provisional as $id => $candidate) {
+            $byClass[($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 'test_only' : 'unreferenced'][] = (string) $id;
+        }
+        foreach ($this->referencedNodes($projectId, $byClass['unreferenced'], $edgeKinds, $minConfidenceRank) as $referencedId) {
+            unset($provisional[$referencedId]);
+        }
+        foreach ($this->referencedNodes($projectId, $byClass['test_only'], $edgeKinds, $minConfidenceRank, true) as $referencedId) {
             unset($provisional[$referencedId]);
         }
         $idsByCanonicalName = self::indexByCanonicalName($nodes);
@@ -594,11 +622,20 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      *
      * @param list<string> $nodeIds
      * @param list<string> $edgeKinds
+     * @param bool $productionOnly Ignore edges whose source is test code, so the
+     *        answer is "reached by something the product runs" rather than
+     *        "reached by anything at all".
      * @return list<string>
      */
-    private function referencedNodes(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank): array
+    private function referencedNodes(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank, bool $productionOnly = false): array
     {
         $referenced = [];
+        $testSource = $productionOnly
+            ? sprintf(
+                'AND NOT EXISTS (SELECT 1 FROM classifications c WHERE c.node_id = edges.source_id AND c.role = %s) ',
+                $this->pdo->quote(ReportableComponent::TEST_ROLE),
+            )
+            : '';
         foreach (array_chunk($nodeIds, 500) as $chunk) {
             $targets = implode(',', array_fill(0, count($chunk), '?'));
             $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
@@ -606,6 +643,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'SELECT DISTINCT target_id FROM edges WHERE project_id = ? ' .
                 sprintf('AND kind IN (%s) ', $kinds) .
                 "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+                $testSource .
                 sprintf('AND target_id IN (%s)', $targets),
             );
             $statement->execute([$projectId, ...$edgeKinds, $minConfidenceRank, ...$chunk]);
@@ -626,16 +664,22 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * look unreferenced — so any tally drawn from that zero has to be re-checked
      * against the full table before it is reported as fact.
      *
+     * `$productionOnly` asks the narrower question a `test_only` id needs: not
+     * "does anything reference this", which a test's own edge would always
+     * answer yes to, but "does anything the product runs". Passing it for an
+     * `unreferenced` id would be wrong in the other direction — it would clear
+     * on a test edge alone the very id that is unreferenced by production code.
+     *
      * @param list<string> $ids
      * @param list<string> $edgeKinds
      * @return list<string>
      */
-    public function unreferenced(string $projectId, array $ids, array $edgeKinds, int $minConfidenceRank): array
+    public function unreferenced(string $projectId, array $ids, array $edgeKinds, int $minConfidenceRank, bool $productionOnly = false): array
     {
         if ($ids === []) {
             return [];
         }
-        $referenced = array_flip($this->referencedNodes($projectId, $ids, $edgeKinds, $minConfidenceRank));
+        $referenced = array_flip($this->referencedNodes($projectId, $ids, $edgeKinds, $minConfidenceRank, $productionOnly));
 
         return array_values(array_filter($ids, static fn(string $id): bool => !isset($referenced[$id])));
     }

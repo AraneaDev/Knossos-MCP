@@ -18,7 +18,11 @@ namespace Knossos\Query;
  *
  * The predicates here are the exclusions both sides share. `architecture_health`
  * layers further, database-backed ones on top (inherited and contract members,
- * annotations, suppressions), so its candidate pool is a subset of the gate's.
+ * annotations, suppressions), so among components with no inbound edge at all
+ * its candidate pool is a subset of the gate's. It additionally reports
+ * components reached only from test code, which the gate counts as referenced —
+ * see {@see \Knossos\Query\ProjectCatalogQueryService} for why that budget
+ * stays narrower.
  */
 final readonly class ReportableComponent
 {
@@ -81,6 +85,28 @@ final readonly class ReportableComponent
         }
         $decoded = json_decode($attributesJson, true);
         return is_array($decoded) && ($decoded['executable'] ?? false) === true;
+    }
+
+    /**
+     * A component declared in a type-declaration file (`.d.ts`, `.d.mts`).
+     *
+     * Such a file describes an implementation that lives elsewhere; it emits no
+     * behaviour of its own. Asking whether anything references
+     * `color-debt.d.mts#measureTree` therefore answers the wrong question — the
+     * unit anyone would delete is the `.mjs` the declaration describes, and that
+     * one is reported on its own merits. Deleting the declaration while the
+     * implementation stays would break every typed call site.
+     *
+     * Applies to any kind, not just modules, because both the module node and
+     * every symbol inside it are equally not-code.
+     */
+    public static function isTypeDeclaration(mixed $attributesJson): bool
+    {
+        if (!is_string($attributesJson)) {
+            return false;
+        }
+        $decoded = json_decode($attributesJson, true);
+        return is_array($decoded) && ($decoded['declaration_file'] ?? false) === true;
     }
 
     /**

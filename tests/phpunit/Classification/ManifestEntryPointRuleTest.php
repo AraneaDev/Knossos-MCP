@@ -28,7 +28,7 @@ final class ManifestEntryPointRuleTest extends TestCase
      */
     public function testClassifyTagsAFileNamedByTheManifest(): void
     {
-        $rule = new ManifestEntryPointRule(['scripts/build.mjs', 'bin/tool.js']);
+        $rule = new ManifestEntryPointRule(['scripts/build.mjs' => 'package.json', 'bin/tool.js' => 'package.json']);
 
         $facts = $rule->classify($this->makeNode('scripts/build.mjs'));
 
@@ -40,7 +40,7 @@ final class ManifestEntryPointRuleTest extends TestCase
 
     public function testClassifyIgnoresAFileTheManifestDoesNotName(): void
     {
-        $rule = new ManifestEntryPointRule(['scripts/build.mjs']);
+        $rule = new ManifestEntryPointRule(['scripts/build.mjs' => 'package.json']);
 
         assertSame([], $rule->classify($this->makeNode('src/index.ts')));
     }
@@ -48,7 +48,7 @@ final class ManifestEntryPointRuleTest extends TestCase
     /** A near-miss must not match: resolution is by exact path. */
     public function testClassifyDoesNotMatchOnASuffix(): void
     {
-        $rule = new ManifestEntryPointRule(['scripts/build.mjs']);
+        $rule = new ManifestEntryPointRule(['scripts/build.mjs' => 'package.json']);
 
         assertSame([], $rule->classify($this->makeNode('packages/web/scripts/build.mjs')));
     }
@@ -75,10 +75,40 @@ final class ManifestEntryPointRuleTest extends TestCase
             [],
         );
 
-        $facts = (new ManifestEntryPointRule(['scripts/build.mjs']))->classify($node);
+        $facts = (new ManifestEntryPointRule(['scripts/build.mjs' => 'package.json']))->classify($node);
 
         assertSame(1, count($facts));
         assertSame('js:function:scripts/build.mjs#main', $facts[0]->nodeReference);
+    }
+
+    /**
+     * An entry-point role suppresses a dead-code candidate without saying so
+     * anywhere a reader will look, and after HTML shells, YAML files and tool
+     * configs joined the manifest readers there are far more files that can
+     * claim one. Recording the claimant turns an unexplained absence into a
+     * traceable one.
+     */
+    #[Group('classification')]
+    public function testTheEntryPointRoleNamesTheFileThatClaimedIt(): void
+    {
+        $rule = new ManifestEntryPointRule(['frontend/src/main.tsx' => 'frontend/index.html']);
+        $node = new NodeFact(
+            'local-1',
+            'module',
+            'frontend/src/main.tsx',
+            'main.tsx',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('frontend/src/main.tsx', 1, 1),
+            [],
+        );
+
+        $facts = $rule->classify($node);
+
+        assertSame(1, count($facts));
+        assertSame('application.entry_point', $facts[0]->role);
+        assertSame('frontend/src/main.tsx', $facts[0]->attributes['matched_path']);
+        assertSame('frontend/index.html', $facts[0]->attributes['named_by']);
     }
 
     private function makeNode(string $relativePath): NodeFact

@@ -297,6 +297,96 @@ final class ProjectDiscovererTest extends KnossosTestCase
     }
 
     /**
+     * An Azure Functions handler is named by its binding manifest and imported
+     * by nothing, so `scriptFile` is the only record of what actually runs.
+     *
+     * The case that made this necessary had `index.js` and a stale `index.ts`
+     * side by side. TypeScript's module resolution answers a sibling's
+     * `require('../management')` with the `.ts`, so the graph credited the
+     * fossil with the dependency and reported the live 19 kB handler as dead
+     * code. The manifest settles it on the host's authority.
+     */
+    public function testDiscoverReadsAnAzureFunctionsHandlerFromItsBindingManifest(): void
+    {
+        mkdir($this->root . '/api/management', 0700, true);
+        file_put_contents($this->root . '/api/management/function.json', json_encode([
+            'scriptFile' => 'index.js',
+            'bindings' => [],
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame(['api/management/index.js'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * `scriptFile` is optional and usually omitted — 45 of the 69 manifests in
+     * the project that prompted this leave it out — and the host then loads the
+     * conventional handler from the manifest's own directory.
+     *
+     * Both conventional names are offered because matching downstream is by
+     * exact project-relative path, so the one the directory does not hold
+     * matches nothing.
+     */
+    public function testDiscoverFallsBackToTheConventionalHandlerWhenNoScriptFileIsNamed(): void
+    {
+        mkdir($this->root . '/api/me', 0700, true);
+        file_put_contents($this->root . '/api/me/function.json', json_encode([
+            'bindings' => [['type' => 'httpTrigger', 'direction' => 'in', 'name' => 'req']],
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame(['api/me/index.js', 'api/me/__init__.py'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The basename is generic enough that another tool could own it, so a
+     * `function.json` with neither a `scriptFile` nor bindings contributes
+     * nothing rather than guessing at a handler.
+     */
+    public function testDiscoverIgnoresAFunctionManifestThatIsNotAnAzureOne(): void
+    {
+        file_put_contents($this->root . '/function.json', json_encode([
+            'name' => 'something else entirely',
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * An explicit `scriptFile` wins over the convention, which is the whole
+     * point of the key: a directory holding both `index.js` and a stale
+     * `index.ts` needs the manifest to settle which one the host runs.
+     */
+    public function testDiscoverPrefersAnExplicitScriptFileOverTheConvention(): void
+    {
+        mkdir($this->root . '/api/legacy', 0700, true);
+        file_put_contents($this->root . '/api/legacy/function.json', json_encode([
+            'scriptFile' => 'handler.js',
+            'bindings' => [['type' => 'httpTrigger', 'direction' => 'in', 'name' => 'req']],
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame(['api/legacy/handler.js'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
      * `"bin": "./cli.js"` — the single-binary shorthand npm documents first,
      * and a different shape from the `{name: path}` map above.
      */
@@ -1038,6 +1128,358 @@ TOML);
         $nodeUnits = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'node'));
         $this->assertNotEmpty($nodeUnits);
         assertSame(['src/main.rs'], $nodeUnits[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A browser enters a single-page application through the `<script>` tag in
+     * its HTML shell, and nothing in the project imports that module, so its
+     * in-degree is zero however live it is.
+     */
+    public function testDiscoverReadsScriptSourcesFromAnHtmlShell(): void
+    {
+        mkdir($this->root . '/frontend', 0700, true);
+        file_put_contents($this->root . '/frontend/index.html', implode("\n", [
+            '<!doctype html>',
+            '<html><head>',
+            '  <link rel="icon" href="/vite.svg" />',
+            '  <script src="/config.js"></script>',
+            '</head><body>',
+            '  <script type="module" src="/src/main.tsx"></script>',
+            '</body></html>',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'html'));
+        $this->assertNotEmpty($units);
+        // `/config.js` is root-absolute against the WEB root, which a bundler
+        // serves out of `public/` or `static/`. Every reading is offered; the
+        // ones naming no emitted file match nothing downstream.
+        assertSame([
+            'frontend/config.js',
+            'frontend/public/config.js',
+            'frontend/static/config.js',
+            'frontend/src/main.tsx',
+            'frontend/public/src/main.tsx',
+            'frontend/static/src/main.tsx',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The icon and stylesheet links in the same shell are not code, so nothing
+     * about them should reach the entry-point list — the extension guard in
+     * {@see ProjectDiscoverer::entryPointPath()} is what keeps them out, and a
+     * reader that scraped every `href` would defeat it.
+     */
+    public function testDiscoverIgnoresNonScriptReferencesInHtml(): void
+    {
+        file_put_contents($this->root . '/index.html', implode("\n", [
+            '<link rel="stylesheet" href="/theme.css" />',
+            '<img src="/logo.png" />',
+            '<a href="/docs/guide.js">not a script</a>',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'html'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * Single quotes and an unquoted attribute are both legal HTML, and a shell
+     * written by hand uses whichever. A reader that only understood double
+     * quotes would silently drop the entry point.
+     */
+    public function testDiscoverReadsScriptSourcesRegardlessOfAttributeQuoting(): void
+    {
+        file_put_contents($this->root . '/index.html', implode("\n", [
+            "<script src='./a.js'></script>",
+            '<script src=b.js></script>',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'html'));
+        $this->assertNotEmpty($units);
+        // Relative sources are anchored to the file's own directory and get no
+        // web-root readings: they are already project-relative.
+        assertSame(['a.js', 'b.js'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A Compose file mounts a source file into a container by path, and a CI
+     * workflow runs one by name. Neither is an import, so the file looks
+     * orphaned while being the only reason the stack starts.
+     *
+     * The mount is one scalar holding a host path, a container path and a
+     * flag, colon-separated. Only the host side can name a file in this
+     * project; the container path resolves to nothing and falls away.
+     */
+    public function testDiscoverReadsPathLikeStringsFromYaml(): void
+    {
+        mkdir($this->root . '/docker/local', 0700, true);
+        file_put_contents($this->root . '/docker/local/docker-compose.yml', implode("\n", [
+            'services:',
+            '  frontend:',
+            '    volumes:',
+            '      - ./frontend/vite.config.docker.ts:/app/vite.config.ts:ro',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([
+            'docker/local/frontend/vite.config.docker.ts',
+            'frontend/vite.config.docker.ts',
+            'docker/local/app/vite.config.ts',
+            'app/vite.config.ts',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The tokenising is loose on purpose, so the guard that keeps it safe is
+     * the extension list: a YAML file is mostly keys, image names and version
+     * strings, and none of them may reach the entry-point list.
+     */
+    public function testDiscoverIgnoresYamlScalarsThatAreNotSourcePaths(): void
+    {
+        file_put_contents($this->root . '/ci.yml', implode("\n", [
+            'jobs:',
+            '  build:',
+            '    runs-on: ubuntu-24.04',
+            '    steps:',
+            '      - uses: actions/checkout@v5',
+            '      - run: npm ci && npm test',
+            '      - image: node:22.1.0',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A path climbing out of the project cannot name one of its files, and
+     * `entryPointPath()` already refuses it. Pinned here because a YAML file
+     * is the most likely place to find one.
+     *
+     * The container half of the bind mount (`/app/loader.js`) happens to
+     * survive the same guard, since nothing here can tell a container path
+     * from a project one from the text alone. That is not this test's point
+     * and is not asserted as desired behaviour — only that the host half,
+     * which unambiguously climbs out of the project, is rejected.
+     */
+    public function testDiscoverIgnoresYamlPathsThatClimbOutOfTheProject(): void
+    {
+        file_put_contents($this->root . '/mounts.yaml', "volumes:\n  - ../../secrets/loader.js:/app/loader.js\n");
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame(false, in_array('../../secrets/loader.js', $units[0]->metadata['entry_points'], true));
+    }
+
+    /**
+     * A `#` comment names a source path just as effectively as an executed
+     * line does — the tokeniser has no notion of YAML syntax, only of the
+     * text — so a path mentioned only in an explanatory comment must not
+     * suppress the finding this analysis exists to produce.
+     */
+    public function testDiscoverIgnoresYamlPathsNamedOnlyInAComment(): void
+    {
+        file_put_contents($this->root . '/notes.yaml', implode("\n", [
+            '# see src/legacy/notes.php for context',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: echo hello',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * `codecov.yml`'s `ignore:` block names paths to leave OUT of coverage,
+     * not files the project loads. Blanket tokenising, which is right for a
+     * genuine reference like a Compose bind mount, would suppress the exact
+     * candidate the exclusion list identifies as unused.
+     */
+    public function testDiscoverIgnoresYamlPathsInAnExclusionBlockSequence(): void
+    {
+        file_put_contents($this->root . '/codecov.yml', implode("\n", [
+            'ignore:',
+            '  - src/legacy/old.php',
+            'coverage:',
+            '  status:',
+            '    project: yes',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The exclusion block and the wanted path sit several lines apart, with
+     * blank lines between them, so resolving the wanted token's line number
+     * has to walk past more than one line boundary. Pinned to catch an
+     * off-by-one in the binary search that turns a byte offset into a line
+     * number: shifted by one, it would either pull the wanted token under the
+     * exclusion block or misplace the exclusion block itself.
+     */
+    public function testDiscoverKeepsAYamlPathSeveralLinesAfterAnExclusionBlock(): void
+    {
+        file_put_contents($this->root . '/pipeline.yml', implode("\n", [
+            'ignore:',
+            '  - src/legacy/excluded.php',
+            '',
+            '',
+            '',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: node tools/wanted.mjs',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame(['tools/wanted.mjs'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A workflow `run:` step executes from the repository root, not from the
+     * directory holding the workflow. Anchoring only to the file's own
+     * directory resolved `node tools/coverage-badge.mjs` to
+     * `.github/workflows/tools/coverage-badge.mjs`, which names nothing, so the
+     * CI half of this reader did not work for any workflow below the root.
+     */
+    public function testDiscoverAnchorsAYamlPathToTheProjectRootAsWellAsItsOwnDirectory(): void
+    {
+        mkdir($this->root . '/.github/workflows', 0700, true);
+        file_put_contents($this->root . '/.github/workflows/quality.yml', implode("\n", [
+            'jobs:',
+            '  badge:',
+            '    steps:',
+            '      - run: node tools/coverage-badge.mjs',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([
+            '.github/workflows/tools/coverage-badge.mjs',
+            'tools/coverage-badge.mjs',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * Vitest loads its setup file before every test and nothing imports it, so
+     * it read as dead code while running on every single test invocation.
+     *
+     * The value may be a bare string or an array of them; YCI writes the array
+     * form, and a reader that only understood one would miss the other.
+     */
+    public function testDiscoverReadsFilesATestRunnerConfigLoads(): void
+    {
+        mkdir($this->root . '/frontend', 0700, true);
+        file_put_contents($this->root . '/frontend/vite.config.ts', implode("\n", [
+            "import { defineConfig } from 'vite'",
+            "import react from '@vitejs/plugin-react'",
+            'export default defineConfig({',
+            '  test: {',
+            "    setupFiles: ['./src/test/setup.ts'],",
+            "    globalSetup: './src/test/global.ts',",
+            '  },',
+            '})',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'tool_config'));
+        $this->assertNotEmpty($units);
+        assertSame([
+            'frontend/src/test/setup.ts',
+            'frontend/src/test/global.ts',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The reason this reader is key-scoped rather than tokenising the whole
+     * file the way the YAML one does. A config names files to EXCLUDE as well
+     * as files to load, and an excluded path is exactly the kind of file that
+     * turns out to be dead. Marking it an entry point would hide the finding.
+     */
+    public function testDiscoverIgnoresPathsAConfigExcludesRatherThanLoads(): void
+    {
+        file_put_contents($this->root . '/vitest.config.ts', implode("\n", [
+            'export default {',
+            "  test: {",
+            "    setupFiles: ['./setup.ts'],",
+            "    exclude: ['src/legacy/old.ts'],",
+            "    coverage: { exclude: ['src/generated/client.ts'] },",
+            '  },',
+            '}',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'tool_config'));
+        $this->assertNotEmpty($units);
+        assertSame(['setup.ts'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * `config.ts` on its own is ordinary application source, not a tool's
+     * config, and reading its string literals as entry points would suppress
+     * dead code across the codebase. Discovery and classification share one
+     * predicate so the two can never disagree about which is which.
+     */
+    public function testDiscoverDoesNotTreatOrdinarySourceAsAToolConfig(): void
+    {
+        mkdir($this->root . '/src', 0700, true);
+        file_put_contents($this->root . '/src/config.ts', "export const paths = ['./src/legacy/old.ts'];\n");
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        assertSame([], array_values(array_filter($result->units, fn($u): bool => $u->kind === 'tool_config')));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

@@ -55,6 +55,57 @@ describe("FactAccumulator edges", () => {
         ]);
     });
 
+    it("merges type_only variants for duplicate re_export edges, either parse order", () => {
+        // `export type {A} from './x'` and `export {b} from './x'` are two
+        // re-export statements between the same module pair, and merge into
+        // one `re_exports` edge exactly as two `import` statements do. Both
+        // parse orders are checked: first-writer-wins on `type_only` would
+        // otherwise erase a real dependency (and any cycle it closes) whenever
+        // the type-only statement happened to come first.
+        const typeFirst = make();
+        typeFirst.addEdge("re_exports", "m", "t", {}, { type_only: true });
+        typeFirst.addEdge("re_exports", "m", "t", {}, { type_only: false });
+        expect(typeFirst.edges).toHaveLength(1);
+        expect(typeFirst.edges[0].attributes.type_only_variants).toEqual([
+            false,
+            true,
+        ]);
+
+        const valueFirst = make();
+        valueFirst.addEdge("re_exports", "m", "t", {}, { type_only: false });
+        valueFirst.addEdge("re_exports", "m", "t", {}, { type_only: true });
+        expect(valueFirst.edges).toHaveLength(1);
+        expect(valueFirst.edges[0].attributes.type_only_variants).toEqual([
+            false,
+            true,
+        ]);
+    });
+
+    it("treats a merge partner with no type_only marker at all as a value import", () => {
+        // A dynamic `import()` and a `require()` are runtime by definition but
+        // used to carry no `type_only` key at all. Merging one with a
+        // type-only static import of the same module must not erase the
+        // dependency just because the runtime side never mentioned the
+        // attribute, in EITHER parse order.
+        const typeFirst = make();
+        typeFirst.addEdge("imports", "m", "t", {}, { type_only: true });
+        typeFirst.addEdge("imports", "m", "t", {}, { dynamic: true });
+        expect(typeFirst.edges).toHaveLength(1);
+        expect(typeFirst.edges[0].attributes.type_only_variants).toEqual([
+            false,
+            true,
+        ]);
+
+        const dynamicFirst = make();
+        dynamicFirst.addEdge("imports", "m", "t", {}, { dynamic: true });
+        dynamicFirst.addEdge("imports", "m", "t", {}, { type_only: true });
+        expect(dynamicFirst.edges).toHaveLength(1);
+        expect(dynamicFirst.edges[0].attributes.type_only_variants).toEqual([
+            false,
+            true,
+        ]);
+    });
+
     it("merges attributes a later duplicate adds without dropping them", () => {
         const acc = make();
         acc.addEdge("imports", "m", "t", {}, {});

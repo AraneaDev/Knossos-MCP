@@ -119,6 +119,21 @@ final class ToolConfigModuleRuleTest extends TestCase
         assertSame('ts:function:vitest.config.ts#resolveAliases', $facts[0]->nodeReference);
     }
 
+    /**
+     * The convention is shared with discovery, which reads a config module for
+     * the files it loads. A drift between the two would mean one of them
+     * treating an ordinary module as configuration.
+     */
+    #[Group('classification')]
+    public function testTheToolConfigConventionIsPubliclyReadable(): void
+    {
+        assertSame(true, ToolConfigModuleRule::isToolConfigPath('frontend/vite.config.ts'));
+        assertSame(true, ToolConfigModuleRule::isToolConfigPath('.eslintrc.cjs'));
+        assertSame(true, ToolConfigModuleRule::isToolConfigPath('gulpfile.js'));
+        assertSame(false, ToolConfigModuleRule::isToolConfigPath('src/config.ts'));
+        assertSame(false, ToolConfigModuleRule::isToolConfigPath('frontend/staticwebapp.config.json'));
+    }
+
     private function makeNode(string $relativePath): NodeFact
     {
         return new NodeFact(

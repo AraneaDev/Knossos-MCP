@@ -44,6 +44,148 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(0, $included['bounds']['excluded_external_components']);
     }
 
+    /**
+     * A symbol its own test is the only caller of is neither dead nor healthy,
+     * and the report has to say which.
+     *
+     * Before this, an in-degree of one from a test file read exactly like an
+     * in-degree of one from a screen, so the symbol never appeared at all. On a
+     * 588-file React project that hid ten files — 908 lines of production code
+     * with 1,089 lines of test guarding them, still receiving maintenance,
+     * reachable from nothing anyone can open. That is the most expensive shape
+     * dead code takes, and it was the shape the report could not express.
+     */
+    #[Group('query')]
+    public function testASymbolReachedOnlyByTestCodeIsReportedAsTestOnly(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $orphan = StableId::symbol($ids['project'], 'php', 'class', 'App\\PdfExport');
+        $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\PdfExport', 'PdfExport', null, $ids['file'], 60, 90, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $suite = StableId::symbol($ids['project'], 'php', 'class', 'App\\PdfExportTest');
+        $repository->saveNode($suite, $ids['project'], 'php', 'class', 'App\\PdfExportTest', 'PdfExportTest', null, $ids['file'], 100, 140, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveClassification(StableId::classification($ids['project'], $suite, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $suite, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 100, 140, [], $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $suite, $orphan, 't:1'), $ids['project'], 'constructs', $suite, $orphan, $ids['file'], 105, 105, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        $candidates = [];
+        foreach ($queries->architectureHealth($ids['project'])->data['dead_code_candidates'] as $candidate) {
+            $candidates[$candidate['component']['canonical_name']] = $candidate['reachability'];
+        }
+        assertSame('test_only', $candidates['App\\PdfExport'] ?? null);
+        // The fixture's own caller is referenced by nothing, so the two classes
+        // are not being collapsed into whichever one was computed last.
+        assertSame('unreferenced', $candidates['App\\Checkout'] ?? null);
+    }
+
+    /**
+     * `limit` has to slice along the class boundary, not along the alphabet.
+     *
+     * On a real 588-file project 68 of 100 candidates were `test_only` and their
+     * names sorted first, so the default limit of 20 returned nothing but
+     * test-only findings and hid every component nothing referenced at all.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesAreRankedAheadOfTestOnlyOnes(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        // Named so that alphabetical order alone would put the test-only one first.
+        $testOnly = StableId::symbol($ids['project'], 'php', 'class', 'App\\AaaTestOnly');
+        $repository->saveNode($testOnly, $ids['project'], 'php', 'class', 'App\\AaaTestOnly', 'AaaTestOnly', null, $ids['file'], 60, 70, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $suite = StableId::symbol($ids['project'], 'php', 'class', 'App\\ZzzTest');
+        $repository->saveNode($suite, $ids['project'], 'php', 'class', 'App\\ZzzTest', 'ZzzTest', null, $ids['file'], 100, 140, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveClassification(StableId::classification($ids['project'], $suite, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $suite, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 100, 140, [], $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $suite, $testOnly, 't:1'), $ids['project'], 'constructs', $suite, $testOnly, $ids['file'], 105, 105, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], limit: 1)->data;
+
+        // One slot, and it goes to the stronger finding despite sorting later.
+        assertSame(1, count($health['dead_code_candidates']));
+        assertSame('unreferenced', $health['dead_code_candidates'][0]['reachability']);
+        assertSame('App\\Checkout', $health['dead_code_candidates'][0]['component']['canonical_name']);
+    }
+
+    /**
+     * The summary's "reached only by tests" tally has to survive `limit`
+     * slicing the candidate list down: candidates are ordered unreferenced
+     * first, so once there are enough of those to fill the limit on their own
+     * every test_only finding sits past the cut. On a real project this
+     * printed "20 unreferenced-code candidates, 0 of them reached only by
+     * tests" while 68 test-only candidates existed — the tally had been taken
+     * from the already-sliced list instead of the full one.
+     */
+    #[Group('query')]
+    public function testHealthSummaryCountsTestOnlyCandidatesBeforeTheLimitSlicesThemAway(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        // A second unreferenced class, so two candidates alone fill a limit of 2.
+        $secondOrphan = StableId::symbol($ids['project'], 'php', 'class', 'App\\SecondOrphan');
+        $repository->saveNode($secondOrphan, $ids['project'], 'php', 'class', 'App\\SecondOrphan', 'SecondOrphan', null, $ids['file'], 60, 70, 'ast', 'certain', [], $owner, $ids['scan']);
+        // Two test-only classes, reached by nothing but their own tests.
+        foreach (['First', 'Second'] as $label) {
+            $testOnly = StableId::symbol($ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnly');
+            $repository->saveNode($testOnly, $ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnly', $label . 'TestOnly', null, $ids['file'], 80, 90, 'ast', 'certain', [], $owner, $ids['scan']);
+            $suite = StableId::symbol($ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnlyTest');
+            $repository->saveNode($suite, $ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnlyTest', $label . 'TestOnlyTest', null, $ids['file'], 100, 110, 'ast', 'certain', [], $owner, $ids['scan']);
+            $repository->saveClassification(StableId::classification($ids['project'], $suite, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $suite, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 100, 110, [], $ids['scan']);
+            $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $suite, $testOnly, 't:' . $label), $ids['project'], 'constructs', $suite, $testOnly, $ids['file'], 105, 105, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], limit: 2);
+
+        // The limit hides both test_only findings behind the two unreferenced
+        // ones (App\Checkout, App\SecondOrphan) that alone fill it.
+        assertSame(2, count($result->data['dead_code_candidates']));
+        foreach ($result->data['dead_code_candidates'] as $candidate) {
+            assertSame('unreferenced', $candidate['reachability']);
+        }
+        assertSame(true, str_contains($result->summary, '2 of them reached only by tests'));
+    }
+
+    /**
+     * include_tests asks for test code to count as part of the architecture, so
+     * the class that exists only to separate it from production code goes away.
+     */
+    #[Group('query')]
+    public function testIncludingTestsCollapsesTheTestOnlyClass(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $orphan = StableId::symbol($ids['project'], 'php', 'class', 'App\\PdfExport');
+        $repository->saveNode($orphan, $ids['project'], 'php', 'class', 'App\\PdfExport', 'PdfExport', null, $ids['file'], 60, 90, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $suite = StableId::symbol($ids['project'], 'php', 'class', 'App\\PdfExportTest');
+        $repository->saveNode($suite, $ids['project'], 'php', 'class', 'App\\PdfExportTest', 'PdfExportTest', null, $ids['file'], 100, 140, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveClassification(StableId::classification($ids['project'], $suite, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $suite, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 100, 140, [], $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $suite, $orphan, 't:1'), $ids['project'], 'constructs', $suite, $orphan, $ids['file'], 105, 105, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $names = array_map(
+            static fn(array $candidate): string => $candidate['component']['canonical_name'],
+            (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], includeTests: true)->data['dead_code_candidates'],
+        );
+        assertSame(false, in_array('App\\PdfExport', $names, true));
+    }
+
+    /**
+     * A `.d.ts` describes an implementation rather than being one, so its
+     * symbols are excluded and counted rather than reported.
+     */
+    #[Group('query')]
+    public function testTypeDeclarationSymbolsAreExcludedFromDeadCodeCandidates(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $declared = StableId::symbol($ids['project'], 'typescript', 'function', 'scripts/color-debt.d.mts#measureTree');
+        $repository->saveNode($declared, $ids['project'], 'typescript', 'function', 'scripts/color-debt.d.mts#measureTree', 'measureTree', null, $ids['file'], 1, 1, 'ast', 'certain', ['declaration_file' => true], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $candidate): string => $candidate['component']['canonical_name'], $health['dead_code_candidates']);
+        assertSame(false, in_array('scripts/color-debt.d.mts#measureTree', $names, true));
+        assertSame(1, $health['bounds']['excluded_type_declarations']);
+    }
+
     #[Group('query')]
     public function testHealthFlagsPassThroughToolDispatch(): void
     {
@@ -501,6 +643,55 @@ final class HealthFiltersTest extends KnossosTestCase
         // And it is NOT folded into the attribute-driven counter, which would
         // mislabel a controller, a listener or a config as an "entry script".
         assertSame(0, $data['bounds']['excluded_entry_scripts']);
+    }
+
+    /**
+     * The convention-role exclusion has to be counted for a `test_only`
+     * component, not just an `unreferenced` one — the `elseif` branch that
+     * counts it used to be guarded on `reachability === 'unreferenced'`, so a
+     * component that was BOTH test_only and convention-discovered fell through
+     * without landing in the candidate list or in this tally, vanishing from
+     * both the findings and the audit trail the tally exists to provide.
+     */
+    #[Group('query')]
+    public function testDeadCodeCountsATestOnlyConventionRoleAsExcluded(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        $entry = StableId::symbol($ids['project'], 'typescript', 'module', 'scripts/release.mjs');
+        $repository->saveNode($entry, $ids['project'], 'typescript', 'module', 'scripts/release.mjs', 'release.mjs', null, $ids['file'], 1, 20, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveClassification(
+            StableId::classification($ids['project'], $entry, 'application.entry_point', 'core.entry.points.v1'),
+            $ids['project'],
+            $entry,
+            'application.entry_point',
+            'derived',
+            'probable',
+            'core.entry.points.v1',
+            $ids['file'],
+            1,
+            20,
+            [],
+            $ids['scan'],
+        );
+        // Reached only by a test, so the entry point's reachability class is
+        // `test_only` rather than `unreferenced`.
+        $suite = StableId::symbol($ids['project'], 'typescript', 'class', 'ReleaseTest');
+        $repository->saveNode($suite, $ids['project'], 'typescript', 'class', 'ReleaseTest', 'ReleaseTest', null, $ids['file'], 30, 40, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveClassification(StableId::classification($ids['project'], $suite, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $suite, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 30, 40, [], $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'calls', $suite, $entry, 't:1'), $ids['project'], 'calls', $suite, $entry, $ids['file'], 31, 31, 'ast', 'certain', [], $owner, $ids['scan']);
+        // The test-module role is itself convention-discovered, and the suite
+        // would otherwise be its own `unreferenced` convention exclusion,
+        // confounding the count this test is pinning. A production reference
+        // keeps it out of the count entirely.
+        $repository->saveEdge(StableId::edge($ids['project'], 'references', $ids['checkout'], $suite, 't:2'), $ids['project'], 'references', $ids['checkout'], $suite, $ids['file'], 5, 5, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('scripts/release.mjs', $names, true));
+        assertSame(1, $data['bounds']['excluded_convention_discovered']);
     }
 
     /**
