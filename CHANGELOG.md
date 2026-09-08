@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.13.0...v0.13.1) (2026-09-08)
+
+
+### Bug Fixes
+
+* **scanner:** reach a function republished through a facade ([#65](https://github.com/AraneaDev/Knossos-MCP/issues/65)) ([1d8a57a](https://github.com/AraneaDev/Knossos-MCP/commit/1d8a57abe3eade29a90792da84018c710f80353f)), closes [#64](https://github.com/AraneaDev/Knossos-MCP/issues/64)
+
 ## [0.13.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.12.1...v0.13.0) (2026-09-08)
 
 
