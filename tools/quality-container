@@ -2,9 +2,13 @@
 set -eu
 
 profile="${1:-fast}"
+# Second argument is the lane, so a CI lane failure can be reproduced here
+# rather than only in the workflow. Defaults to every lane in one pass, which
+# is what a local run wants.
+lane="${2:-all}"
 mkdir -p coverage
 docker build --target quality -t knossos-mcp:quality .
 docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 \
     -v /var/run/docker.sock:/var/run/docker.sock \
     -v "$PWD/coverage:/opt/knossos/coverage" \
-    knossos-mcp:quality "$profile"
+    knossos-mcp:quality "$profile" "$lane"
