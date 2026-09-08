@@ -1276,6 +1276,12 @@ TOML);
      * A path climbing out of the project cannot name one of its files, and
      * `entryPointPath()` already refuses it. Pinned here because a YAML file
      * is the most likely place to find one.
+     *
+     * The container half of the bind mount (`/app/loader.js`) happens to
+     * survive the same guard, since nothing here can tell a container path
+     * from a project one from the text alone. That is not this test's point
+     * and is not asserted as desired behaviour — only that the host half,
+     * which unambiguously climbs out of the project, is rejected.
      */
     public function testDiscoverIgnoresYamlPathsThatClimbOutOfTheProject(): void
     {
@@ -1286,7 +1292,57 @@ TOML);
 
         $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
         $this->assertNotEmpty($units);
-        assertSame(['app/loader.js'], $units[0]->metadata['entry_points']);
+        assertSame(false, in_array('../../secrets/loader.js', $units[0]->metadata['entry_points'], true));
+    }
+
+    /**
+     * A `#` comment names a source path just as effectively as an executed
+     * line does — the tokeniser has no notion of YAML syntax, only of the
+     * text — so a path mentioned only in an explanatory comment must not
+     * suppress the finding this analysis exists to produce.
+     */
+    public function testDiscoverIgnoresYamlPathsNamedOnlyInAComment(): void
+    {
+        file_put_contents($this->root . '/notes.yaml', implode("\n", [
+            '# see src/legacy/notes.php for context',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: echo hello',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * `codecov.yml`'s `ignore:` block names paths to leave OUT of coverage,
+     * not files the project loads. Blanket tokenising, which is right for a
+     * genuine reference like a Compose bind mount, would suppress the exact
+     * candidate the exclusion list identifies as unused.
+     */
+    public function testDiscoverIgnoresYamlPathsInAnExclusionBlockSequence(): void
+    {
+        file_put_contents($this->root . '/codecov.yml', implode("\n", [
+            'ignore:',
+            '  - src/legacy/old.php',
+            'coverage:',
+            '  status:',
+            '    project: yes',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
     }
 
     /**

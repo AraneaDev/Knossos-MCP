@@ -1015,6 +1015,17 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * Config keys under which a YAML value names files to EXCLUDE rather than
+     * load: `ignore:` in codecov.yml, `exclude:` in a pre-commit config,
+     * `paths-ignore:` in a GitHub Actions workflow trigger. A path appearing
+     * only under one of these is not read as an entry point — the same
+     * reasoning {@see self::CONFIG_REFERENCE_KEYS} applies to a tool's own
+     * config module, restated here as a deny-list because YAML's exclusion
+     * keys, unlike a tool config's load keys, are not enumerable in advance.
+     */
+    private const YAML_EXCLUSION_KEYS = ['exclude', 'ignore', 'paths-ignore', 'skip', 'exclude_paths', 'excludes'];
+
+    /**
      * Every token in a YAML file shaped like a path to a source file.
      *
      * A Compose file mounts a config into a container, a CI workflow runs a
@@ -1030,9 +1041,18 @@ final readonly class ProjectDiscoverer
      * inert, and the source-extension guard inside {@see self::entryPointPath()}
      * keeps image tags, version strings and action references out.
      *
-     * Blanket tokenising is right HERE and wrong for a tool's config module:
-     * see {@see self::toolConfigEntryPoints()}, which is key-scoped because a
-     * config names files to exclude as well as files to load.
+     * Two narrowings keep the blanket tokenising from reading too much in:
+     *
+     * - A `#`-comment tail is stripped from every line before tokenising. A
+     *   `#` inside a quoted scalar is not really a comment, but treating every
+     *   `#` as one is the conservative direction — it can only cause a real
+     *   path to be missed, never a wrongful suppression to be added.
+     * - A token on a line scoped by {@see self::YAML_EXCLUSION_KEYS} — see
+     *   {@see self::yamlExclusionLines()} — is dropped. YAML carries exclusion
+     *   lists at least as often as it carries genuine references, and a path
+     *   named only there is not loaded by anything; suppressing it would hide
+     *   the finding this analysis exists to produce. This is the same call
+     *   {@see self::toolConfigEntryPoints()} makes by being key-scoped outright.
      *
      * The character class stops at a colon, which is what splits a bind mount's
      * host path from its container path: both halves are offered and only the
@@ -1051,12 +1071,17 @@ final readonly class ProjectDiscoverer
     {
         $directory = self::manifestDirectory($configPath);
         $extensions = implode('|', array_map(preg_quote(...), self::ENTRY_POINT_EXTENSIONS));
-        if (preg_match_all(sprintf('#[A-Za-z0-9_./-]+\.(?:%s)\b#', $extensions), $contents, $matches) === false) {
+        $stripped = preg_replace('/#.*$/m', '', $contents) ?? $contents;
+        if (preg_match_all(sprintf('#[A-Za-z0-9_./-]+\.(?:%s)\b#', $extensions), $stripped, $matches, PREG_OFFSET_CAPTURE) === false) {
             return [];
         }
+        $excludedLines = self::yamlExclusionLines($stripped);
         $paths = [];
         $anchors = array_unique([$directory, '']);
-        foreach ($matches[0] as $token) {
+        foreach ($matches[0] as [$token, $offset]) {
+            if (isset($excludedLines[substr_count($stripped, "\n", 0, $offset)])) {
+                continue;
+            }
             foreach ($anchors as $anchor) {
                 $path = self::entryPointPath($token, $anchor);
                 if ($path !== null) {
@@ -1066,6 +1091,46 @@ final readonly class ProjectDiscoverer
         }
 
         return array_keys($paths);
+    }
+
+    /**
+     * Line numbers, 0-indexed to match `explode("\n", $contents)`, that fall
+     * under one of {@see self::YAML_EXCLUSION_KEYS}.
+     *
+     * Two shapes are recognised, and recognised is all this does: a single
+     * line carrying an inline value (`ignore: src/legacy/old.php`), and a
+     * block sequence that immediately follows a bare `key:` line, one level
+     * more indented (`ignore:` then `  - src/legacy/old.php`). An exclusion
+     * list nested under an unrelated parent key, or one that resumes after a
+     * blank or comment-only line breaks the sequence, is not tracked — a full
+     * YAML indentation model would cover those too, at a cost this reader,
+     * which does not otherwise parse YAML at all, is not paying.
+     *
+     * @return array<int, true>
+     */
+    private static function yamlExclusionLines(string $contents): array
+    {
+        $keys = implode('|', array_map(preg_quote(...), self::YAML_EXCLUSION_KEYS));
+        $excluded = [];
+        $blockIndent = null;
+        foreach (explode("\n", $contents) as $index => $line) {
+            if ($blockIndent !== null) {
+                if (preg_match('/^(\s*)-\s/', $line, $item) === 1 && strlen($item[1]) > $blockIndent) {
+                    $excluded[$index] = true;
+                    continue;
+                }
+                $blockIndent = null;
+            }
+            if (preg_match('/^(\s*)(?:' . $keys . ')\s*:(.*)$/', $line, $m) !== 1) {
+                continue;
+            }
+            $excluded[$index] = true;
+            if (trim($m[2]) === '') {
+                $blockIndent = strlen($m[1]);
+            }
+        }
+
+        return $excluded;
     }
 
     /**
