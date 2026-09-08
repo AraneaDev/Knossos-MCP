@@ -1130,6 +1130,89 @@ TOML);
         assertSame(['src/main.rs'], $nodeUnits[0]->metadata['entry_points']);
     }
 
+    /**
+     * A browser enters a single-page application through the `<script>` tag in
+     * its HTML shell, and nothing in the project imports that module, so its
+     * in-degree is zero however live it is.
+     */
+    public function testDiscoverReadsScriptSourcesFromAnHtmlShell(): void
+    {
+        mkdir($this->root . '/frontend', 0700, true);
+        file_put_contents($this->root . '/frontend/index.html', implode("\n", [
+            '<!doctype html>',
+            '<html><head>',
+            '  <link rel="icon" href="/vite.svg" />',
+            '  <script src="/config.js"></script>',
+            '</head><body>',
+            '  <script type="module" src="/src/main.tsx"></script>',
+            '</body></html>',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'html'));
+        $this->assertNotEmpty($units);
+        // `/config.js` is root-absolute against the WEB root, which a bundler
+        // serves out of `public/` or `static/`. Every reading is offered; the
+        // ones naming no emitted file match nothing downstream.
+        assertSame([
+            'frontend/config.js',
+            'frontend/public/config.js',
+            'frontend/static/config.js',
+            'frontend/src/main.tsx',
+            'frontend/public/src/main.tsx',
+            'frontend/static/src/main.tsx',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The icon and stylesheet links in the same shell are not code, so nothing
+     * about them should reach the entry-point list — the extension guard in
+     * {@see ProjectDiscoverer::entryPointPath()} is what keeps them out, and a
+     * reader that scraped every `href` would defeat it.
+     */
+    public function testDiscoverIgnoresNonScriptReferencesInHtml(): void
+    {
+        file_put_contents($this->root . '/index.html', implode("\n", [
+            '<link rel="stylesheet" href="/theme.css" />',
+            '<img src="/logo.png" />',
+            '<a href="/docs/guide.js">not a script</a>',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'html'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * Single quotes and an unquoted attribute are both legal HTML, and a shell
+     * written by hand uses whichever. A reader that only understood double
+     * quotes would silently drop the entry point.
+     */
+    public function testDiscoverReadsScriptSourcesRegardlessOfAttributeQuoting(): void
+    {
+        file_put_contents($this->root . '/index.html', implode("\n", [
+            "<script src='./a.js'></script>",
+            '<script src=b.js></script>',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'html'));
+        $this->assertNotEmpty($units);
+        // Relative sources are anchored to the file's own directory and get no
+        // web-root readings: they are already project-relative.
+        assertSame(['a.js', 'b.js'], $units[0]->metadata['entry_points']);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private function rmrf(string $path): void
