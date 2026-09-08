@@ -297,6 +297,96 @@ final class ProjectDiscovererTest extends KnossosTestCase
     }
 
     /**
+     * An Azure Functions handler is named by its binding manifest and imported
+     * by nothing, so `scriptFile` is the only record of what actually runs.
+     *
+     * The case that made this necessary had `index.js` and a stale `index.ts`
+     * side by side. TypeScript's module resolution answers a sibling's
+     * `require('../management')` with the `.ts`, so the graph credited the
+     * fossil with the dependency and reported the live 19 kB handler as dead
+     * code. The manifest settles it on the host's authority.
+     */
+    public function testDiscoverReadsAnAzureFunctionsHandlerFromItsBindingManifest(): void
+    {
+        mkdir($this->root . '/api/management', 0700, true);
+        file_put_contents($this->root . '/api/management/function.json', json_encode([
+            'scriptFile' => 'index.js',
+            'bindings' => [],
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame(['api/management/index.js'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * `scriptFile` is optional and usually omitted — 45 of the 69 manifests in
+     * the project that prompted this leave it out — and the host then loads the
+     * conventional handler from the manifest's own directory.
+     *
+     * Both conventional names are offered because matching downstream is by
+     * exact project-relative path, so the one the directory does not hold
+     * matches nothing.
+     */
+    public function testDiscoverFallsBackToTheConventionalHandlerWhenNoScriptFileIsNamed(): void
+    {
+        mkdir($this->root . '/api/me', 0700, true);
+        file_put_contents($this->root . '/api/me/function.json', json_encode([
+            'bindings' => [['type' => 'httpTrigger', 'direction' => 'in', 'name' => 'req']],
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame(['api/me/index.js', 'api/me/__init__.py'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The basename is generic enough that another tool could own it, so a
+     * `function.json` with neither a `scriptFile` nor bindings contributes
+     * nothing rather than guessing at a handler.
+     */
+    public function testDiscoverIgnoresAFunctionManifestThatIsNotAnAzureOne(): void
+    {
+        file_put_contents($this->root . '/function.json', json_encode([
+            'name' => 'something else entirely',
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * An explicit `scriptFile` wins over the convention, which is the whole
+     * point of the key: a directory holding both `index.js` and a stale
+     * `index.ts` needs the manifest to settle which one the host runs.
+     */
+    public function testDiscoverPrefersAnExplicitScriptFileOverTheConvention(): void
+    {
+        mkdir($this->root . '/api/legacy', 0700, true);
+        file_put_contents($this->root . '/api/legacy/function.json', json_encode([
+            'scriptFile' => 'handler.js',
+            'bindings' => [['type' => 'httpTrigger', 'direction' => 'in', 'name' => 'req']],
+        ], JSON_THROW_ON_ERROR));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'azure_function'));
+        $this->assertNotEmpty($units);
+        assertSame(['api/legacy/handler.js'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
      * `"bin": "./cli.js"` — the single-binary shorthand npm documents first,
      * and a different shape from the `{name: path}` map above.
      */
