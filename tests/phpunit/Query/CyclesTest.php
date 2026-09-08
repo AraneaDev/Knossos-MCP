@@ -14,6 +14,104 @@ use PHPUnit\Framework\Attributes\Group;
 
 final class CyclesTest extends KnossosTestCase
 {
+    /**
+     * `import type` is erased at compile time, so a loop that runs over one is
+     * not a loop in anything that executes.
+     *
+     * Reported as a `certain` cycle, it asks for a deliberate improvement to be
+     * undone: splitting a component's variants into their own module and
+     * importing the variant TYPE back is how Vite's hot module replacement is
+     * kept intact, and the built bundle has one arrow between the two files,
+     * not two.
+     */
+    #[Group('cycles')]
+    public function testACycleClosedOnlyByAnErasedTypeImportIsNotReported(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->saveEdge(
+            StableId::edge($ids['project'], 'imports', $ids['checkout'], $ids['invoice'], 'value'),
+            $ids['project'],
+            'imports',
+            $ids['checkout'],
+            $ids['invoice'],
+            $ids['file'],
+            1,
+            1,
+            'ast',
+            'certain',
+            ['type_only' => false],
+            'php:file:src/Checkout.php',
+            $ids['scan'],
+        );
+        $repository->saveEdge(
+            StableId::edge($ids['project'], 'imports', $ids['invoice'], $ids['checkout'], 'type'),
+            $ids['project'],
+            'imports',
+            $ids['invoice'],
+            $ids['checkout'],
+            $ids['file'],
+            1,
+            1,
+            'ast',
+            'certain',
+            ['type_only' => true],
+            'php:file:src/Checkout.php',
+            $ids['scan'],
+        );
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $cycles = (new ArchitectureQueryService($pdo))->dependencyCycles($ids['project'], minConfidence: 'certain')->data['cycles'];
+        assertSame([], $cycles);
+    }
+
+    /**
+     * One value import among several statements between the same two modules is
+     * enough to make the dependency real.
+     *
+     * The scanner collapses them into a single edge and records the
+     * disagreement in `type_only_variants`; reading only `type_only` would take
+     * whichever statement happened to be parsed first as the whole truth.
+     */
+    #[Group('cycles')]
+    public function testACycleSurvivesWhenOneOfTheMergedImportsIsAValueImport(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->saveEdge(
+            StableId::edge($ids['project'], 'imports', $ids['checkout'], $ids['invoice'], 'value'),
+            $ids['project'],
+            'imports',
+            $ids['checkout'],
+            $ids['invoice'],
+            $ids['file'],
+            1,
+            1,
+            'ast',
+            'certain',
+            ['type_only' => false],
+            'php:file:src/Checkout.php',
+            $ids['scan'],
+        );
+        $repository->saveEdge(
+            StableId::edge($ids['project'], 'imports', $ids['invoice'], $ids['checkout'], 'mixed'),
+            $ids['project'],
+            'imports',
+            $ids['invoice'],
+            $ids['checkout'],
+            $ids['file'],
+            1,
+            1,
+            'ast',
+            'certain',
+            ['type_only' => true, 'type_only_variants' => [false, true]],
+            'php:file:src/Checkout.php',
+            $ids['scan'],
+        );
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $cycles = (new ArchitectureQueryService($pdo))->dependencyCycles($ids['project'], minConfidence: 'certain')->data['cycles'];
+        assertSame(1, count($cycles));
+    }
+
     #[Group('cycles')]
     public function testDependencyCyclesComputeDeterministicBoundedStronglyConnectedComponents(): void
     {

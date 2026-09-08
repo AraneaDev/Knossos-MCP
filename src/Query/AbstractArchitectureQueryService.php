@@ -35,6 +35,42 @@ abstract readonly class AbstractArchitectureQueryService
     ) {}
 
     /**
+     * Whether an edge exists only in the source and is gone from the built code.
+     *
+     * TypeScript erases `import type { T } from './x'` and `export type { T }`
+     * entirely, so a dependency recorded from one describes the type-checker's
+     * view rather than the program's. A cycle that runs over such an edge does
+     * not exist at runtime and has nothing to break: a React project split
+     * `Badge.tsx` from `badgeVariants.ts` deliberately, to keep Vite's hot
+     * module replacement intact, and `dependency_cycles` then reported the split
+     * as a certain cycle — asking for a considered improvement to be undone.
+     *
+     * The scanner records one edge per source/target pair, so several import
+     * statements between the same two modules collapse into one. When they
+     * disagree it leaves `type_only_variants` behind, and a single value import
+     * among them is enough to make the dependency real.
+     *
+     * @param array<string, mixed> $edge An edge row carrying `kind` and `attributes_json`.
+     */
+    protected static function isErasedTypeEdge(array $edge): bool
+    {
+        if (!in_array($edge['kind'] ?? null, ['imports', 're_exports'], true)) {
+            return false;
+        }
+        $attributes = $edge['attributes_json'] ?? null;
+        if (!is_string($attributes)) {
+            return false;
+        }
+        $decoded = json_decode($attributes, true);
+        if (!is_array($decoded) || ($decoded['type_only'] ?? false) !== true) {
+            return false;
+        }
+        $variants = $decoded['type_only_variants'] ?? null;
+
+        return !is_array($variants) || !in_array(false, $variants, true);
+    }
+
+    /**
      * Assert the project exists, so a bad project_id fails clearly rather than returning empty results.
      *
      * @return array<string, mixed>

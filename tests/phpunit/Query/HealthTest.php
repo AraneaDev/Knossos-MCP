@@ -202,10 +202,10 @@ final class HealthTest extends KnossosTestCase
         $whole = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project']);
 
         assertSame([], $bounded->data['hubs']);
-        assertSame(true, str_starts_with($bounded->summary, 'Ranked 0 hubs, 0 static hotspots, and 0 unreferenced-code candidates.'));
+        assertSame(true, str_starts_with($bounded->summary, 'Ranked 0 hubs, 0 static hotspots, and 0 unreferenced-code candidates, 0 of them reached only by tests.'));
         assertSame(true, str_contains($bounded->summary, 'The ranking was truncated (time_limit)'));
         assertSame(false, $whole->truncated);
-        assertSame('Ranked 2 hubs, 2 static hotspots, and 1 unreferenced-code candidates.', $whole->summary);
+        assertSame('Ranked 2 hubs, 2 static hotspots, and 1 unreferenced-code candidates, 0 of them reached only by tests.', $whole->summary);
     }
 
     /**

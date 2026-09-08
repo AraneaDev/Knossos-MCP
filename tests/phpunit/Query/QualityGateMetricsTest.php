@@ -69,6 +69,33 @@ final class QualityGateMetricsTest extends KnossosTestCase
     }
 
     /**
+     * A `.d.ts` declares what another file implements, so nothing imports it and
+     * nothing ever will. Counting its symbols charges a budget that no amount of
+     * cleanup can reclaim, the same way entry scripts once did.
+     *
+     * Both node kinds are covered here: unlike the executable-script exclusion
+     * this one is not restricted to modules, because a declaration file's
+     * symbols are as much not-code as the file itself.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesExcludeTypeDeclarationFilesAndTheirSymbols(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $this->addNode($repository, $ids, 'module', 'scripts/color-debt.d.mts', 'color-debt.d.mts', attributes: ['declaration_file' => true]);
+        $this->addNode($repository, $ids, 'function', 'scripts/color-debt.d.mts#measureTree', 'measureTree', attributes: ['declaration_file' => true]);
+        // The implementation the declaration describes is ordinary source and
+        // stays countable, so the exclusion is not swallowing the real signal.
+        $this->addNode($repository, $ids, 'module', 'scripts/color-debt.mjs', 'color-debt.mjs');
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // App\Checkout from the baseline plus the .mjs — neither declaration node.
+        assertSame(2, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
+    /**
      * The exclusion is for a *module* a scanner marked executable, and the kind
      * half of that guard carries the weight: the predicate is public, both call
      * sites hand it every node kind they walk, and a scanner or an imported
