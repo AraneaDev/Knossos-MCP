@@ -530,7 +530,16 @@ class TypeScriptLanguageFactCollector {
                     node,
                     { dynamic: true },
                 );
-            this.dynamicDefaultImport(node.arguments[0]);
+            // Only when the import resolved to a module INSIDE the project.
+            // `target` above is non-null for an external package too —
+            // moduleTarget() falls back to minting a `package` node for
+            // anything that isn't internal — so gating on it here would still
+            // let dynamicDefaultImport resolve a real default export an npm
+            // package happens to have, minting an external_function node and
+            // a references edge for what is, from this project, just an
+            // ordinary dependency.
+            if (this.internalModuleTarget(node.arguments[0]) !== null)
+                this.dynamicDefaultImport(node.arguments[0]);
             return;
         }
         if (
@@ -659,18 +668,8 @@ class TypeScriptLanguageFactCollector {
     }
 
     moduleTarget(specifier, location) {
-        const symbol = unalias(
-            this.checker,
-            this.checker.getSymbolAtLocation(location),
-        );
-        const declaration = symbol?.declarations?.find((item) =>
-            ts.isSourceFile(item),
-        );
-        if (declaration) {
-            const relative = relativeInside(this.root, declaration.fileName);
-            if (relative !== null && !relative.includes("/node_modules/"))
-                return reference("module", relative);
-        }
+        const internal = this.internalModuleTarget(location);
+        if (internal !== null) return internal;
 
         const packageName = externalPackageName(specifier);
         if (packageName !== null) {
@@ -681,6 +680,33 @@ class TypeScriptLanguageFactCollector {
             return id;
         }
         return null;
+    }
+
+    /**
+     * The module id when the specifier resolves to a real file inside this
+     * project, or null when it resolves outside it (an npm package's own
+     * source, or a node_modules copy) or not at all.
+     *
+     * Split out of {@link moduleTarget} so a caller — {@link callExpression}'s
+     * dynamic-import handling — can tell "resolved to a project module" apart
+     * from "resolved to SOMETHING", which `moduleTarget`'s own return does
+     * not: it falls back to minting an external `package` node for anything
+     * that isn't internal, so a non-null `moduleTarget` result does not mean
+     * an internal module.
+     */
+    internalModuleTarget(location) {
+        const symbol = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(location),
+        );
+        const declaration = symbol?.declarations?.find((item) =>
+            ts.isSourceFile(item),
+        );
+        if (!declaration) return null;
+        const relative = relativeInside(this.root, declaration.fileName);
+        if (relative === null || relative.includes("/node_modules/"))
+            return null;
+        return reference("module", relative);
     }
 
     symbolReference(input, hint = "class") {

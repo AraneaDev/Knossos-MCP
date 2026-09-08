@@ -313,6 +313,45 @@ describe("TypeScriptScanner.scan dynamic default imports", () => {
                 ),
         ).toBe(false);
     });
+
+    // A resolvable external package (one whose own type declarations TypeScript
+    // can find, e.g. bundled `types` under node_modules) is not a module inside
+    // this project — resolving its default export minted an `external_function`
+    // node and a `references` edge for every dynamic npm import that happened
+    // to have one.
+    it("emits no references edge or external node for a dynamic import of an external package", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false,"module":"esnext","moduleResolution":"bundler"},"include":["src"]}',
+            "src/node_modules/some-external-package/package.json":
+                '{"name":"some-external-package","types":"index.d.ts"}',
+            "src/node_modules/some-external-package/index.d.ts":
+                "export default function widget(): void;\n",
+            "src/load.ts":
+                "export const load = () => import('some-external-package');\n",
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/load.ts"] },
+            (c) => contributions.push(c),
+        );
+        const edges = contributions.flatMap((c) => c.edges);
+        const nodes = contributions.flatMap((c) => c.nodes);
+
+        expect(edges.some((e) => e.kind === "references")).toBe(false);
+        expect(nodes.some((n) => n.kind === "external_function")).toBe(false);
+        // The module-level dynamic import edge to the package is unaffected.
+        expect(
+            edges.some(
+                (e) =>
+                    e.kind === "imports" &&
+                    e.attributes.dynamic === true &&
+                    e.target === "ts:package:some-external-package",
+            ),
+        ).toBe(true);
+    });
 });
 
 // `import type` is erased before anything runs, so consumers need to be able to
