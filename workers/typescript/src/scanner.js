@@ -374,7 +374,14 @@ class TypeScriptLanguageFactCollector {
             canonical,
             descriptor.name,
             node,
-            descriptor.attributes,
+            // Carried down from the module node onto every declaration it
+            // holds. A `.d.ts` describes code rather than being it, so its
+            // symbols are not their own reachability question: the graph should
+            // ask whether the `.mjs` behind `color-debt.d.mts` is used, not
+            // whether anyone imports the declaration of it.
+            this.sourceFile.isDeclarationFile
+                ? { ...descriptor.attributes, declaration_file: true }
+                : descriptor.attributes,
         );
         this.addEdge("contains", parent.id, id, node);
         const nest = this.nest.declaration(node, id, canonical);
@@ -461,15 +468,8 @@ class TypeScriptLanguageFactCollector {
             node.moduleSpecifier,
         );
         if (target === null) return;
-        const typeOnly =
-            node.importClause?.isTypeOnly === true ||
-            (node.importClause?.namedBindings &&
-                ts.isNamedImports(node.importClause.namedBindings) &&
-                node.importClause.namedBindings.elements.every(
-                    (element) => element.isTypeOnly,
-                ));
         this.addEdge("imports", this.moduleId, target, node, {
-            type_only: typeOnly,
+            type_only: importIsTypeOnly(node.importClause),
         });
     }
 
@@ -530,6 +530,7 @@ class TypeScriptLanguageFactCollector {
                     node,
                     { dynamic: true },
                 );
+            this.dynamicDefaultImport(node.arguments[0]);
             return;
         }
         if (
@@ -573,6 +574,40 @@ class TypeScriptLanguageFactCollector {
                 "framework_convention",
             );
         this.application.call(node, source, calledName);
+    }
+
+    /**
+     * The default export of a module loaded with `import('./x')`, which no
+     * identifier in this file ever names.
+     *
+     * A static default import is reached at its USE site — `unalias()` resolves
+     * the local binding back to the exported declaration when the name is read.
+     * A dynamic import has no such site: `lazy(() => import('./pages/Admin'))`
+     * hands the module object straight to React, and the component is rendered
+     * from a variable holding the lazy wrapper. The module gets its `imports`
+     * edge and the component inside it gets nothing, so every route in a
+     * code-split application looked unreferenced — twenty of them on the project
+     * this comes from, each one a page the router serves.
+     *
+     * Only `default` is resolved. It is what a dynamic import is overwhelmingly
+     * used for, and a named export a caller destructures off the module object
+     * is a narrower question this deliberately leaves alone: missing an edge
+     * there costs a false candidate, while guessing at every export of every
+     * dynamically imported module would quietly mark real dead code as live.
+     */
+    dynamicDefaultImport(specifier) {
+        const moduleSymbol = this.checker.getSymbolAtLocation(specifier);
+        if (!moduleSymbol) return;
+        const exported = this.checker.tryGetMemberInModuleExports(
+            "default",
+            moduleSymbol,
+        );
+        const target = exported
+            ? this.symbolReference(exported, "function")
+            : null;
+        const source = this.currentSource();
+        if (source !== null && target !== null && source !== target)
+            this.addEdge("references", source, target, specifier);
     }
 
     typeReference(node) {
@@ -1050,8 +1085,16 @@ function referenceableDeclaration(node) {
  * specifiers and binding patterns can never reach the checker. Cost: this
  * predicate runs for every identifier in every file, and the checker call it
  * guards is the expensive part — a deny-list left the common cases (local reads,
- * property names, JSX) falling through to `getSymbolAtLocation`, which made a
- * full scan of a mid-sized project exceed the worker timeout.
+ * property names) falling through to `getSymbolAtLocation`, which made a full
+ * scan of a mid-sized project exceed the worker timeout.
+ *
+ * A JSX tag name is on the list because it is the ONLY way a React component is
+ * ever used. Without it a component was reached by nothing the graph could see:
+ * a scan of a 588-file React project reported fourteen live components as
+ * unreferenced, every one of them used solely as `<Component />`. An intrinsic
+ * tag like `<div>` resolves to a property signature in the DOM library, which
+ * {@link referenceableDeclaration} rejects, so the common case costs one
+ * checker call and emits nothing.
  */
 function valueReferencePosition(node) {
     const parent = node.parent;
@@ -1080,8 +1123,48 @@ function valueReferencePosition(node) {
     // `return handler;` and `() => handler`
     if (ts.isReturnStatement(parent) && parent.expression === node) return true;
     if (ts.isArrowFunction(parent) && parent.body === node) return true;
+    // `<Panel />` and `<Panel>…</Panel>` — a component rendered as a JSX
+    // element. Only the tag name, and only on the opening form: the closing tag
+    // names the same declaration and would resolve a second symbol for an edge
+    // the accumulator immediately de-duplicates.
+    if (
+        (ts.isJsxSelfClosingElement(parent) ||
+            ts.isJsxOpeningElement(parent)) &&
+        parent.tagName === node
+    )
+        return true;
 
     return false;
+}
+
+/**
+ * Whether an import clause brings in nothing but types, so the statement is
+ * erased before anything runs.
+ *
+ * Written out rather than inlined because the three ways to write one are easy
+ * to get wrong, and one of them was: the previous expression read
+ * `clause?.namedBindings && …`, which yields `undefined` — not `false` — for
+ * `import Panel from './Panel'`, and an undefined attribute is dropped on the
+ * way into the graph. Every default-only import therefore carried no
+ * `type_only` at all, so a consumer could not tell a value import from one that
+ * had never been marked.
+ *
+ * A default binding beside named type specifiers (`import D, { type T } from`)
+ * is a value import: `D` survives compilation. An empty named list is not
+ * type-only either, because `every()` on no elements is vacuously true and
+ * `import D, {} from` would otherwise be erased on paper while `D` still runs.
+ */
+function importIsTypeOnly(clause) {
+    if (clause === undefined) return false;
+    if (clause.isTypeOnly === true) return true;
+    const named = clause.namedBindings;
+    return (
+        clause.name === undefined &&
+        named !== undefined &&
+        ts.isNamedImports(named) &&
+        named.elements.length > 0 &&
+        named.elements.every((element) => element.isTypeOnly)
+    );
 }
 
 function callableKind(declaration) {

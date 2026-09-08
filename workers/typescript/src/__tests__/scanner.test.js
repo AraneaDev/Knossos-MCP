@@ -154,6 +154,257 @@ describe("TypeScriptScanner.scan", () => {
 // dispatch tables, registries, callbacks — from being read as dead code. The
 // cases below fix both directions: emitted where a use exists, and withheld
 // where the identifier is a declaration or is already covered by a calls edge.
+// A React component is only ever used as `<Component />`, a position no other
+// handler covers: it is not a call, not a `new`, not a type annotation. Without
+// a JSX clause in valueReferencePosition every component in a project has an
+// in-degree of zero — a scan of a 588-file React app reported fourteen live
+// components as unreferenced, all of them rendered and none of them called.
+describe("TypeScriptScanner.scan JSX references", () => {
+    it("emits a references edge for a component rendered as a JSX element", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false,"jsx":"react-jsx"},"include":["src"]}',
+            "src/page.tsx": [
+                "export function Panel() { return <span>panel</span>; }",
+                "function Footer() { return <i>footer</i>; }",
+                "function Unrendered() { return <b>no</b>; }",
+                "export function Page() {",
+                "  return <div><Panel /><Footer>x</Footer></div>;",
+                "}",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/page.tsx"] }, (c) =>
+            contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const edges = contributions.flatMap((c) => c.edges);
+
+        const idOf = (name) =>
+            nodes.find((n) => n.kind === "function" && n.display_name === name)
+                ?.local_id;
+        const referencesTo = (name) =>
+            edges.filter(
+                (e) => e.kind === "references" && e.target === idOf(name),
+            );
+
+        // Self-closing and paired tags are both uses.
+        expect(referencesTo("Panel").length).toBe(1);
+        expect(referencesTo("Footer").length).toBe(1);
+        // A component nobody renders keeps its zero, so the dead-code signal is
+        // not blanket-suppressed by the new clause.
+        expect(referencesTo("Unrendered")).toEqual([]);
+        // `<div>` resolves to a property signature in the DOM library, which is
+        // not a referenceable declaration — no edge, and no external node for
+        // every intrinsic tag in the codebase.
+        expect(
+            edges.some(
+                (e) =>
+                    e.kind === "references" && String(e.target).includes("div"),
+            ),
+        ).toBe(false);
+    });
+
+    it("counts a paired tag once rather than once per opening and closing tag", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false,"jsx":"react-jsx"},"include":["src"]}',
+            "src/twice.tsx": [
+                "function Card() { return <em>c</em>; }",
+                "export function List() {",
+                "  return <><Card>one</Card><Card>two</Card></>;",
+                "}",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/twice.tsx"] }, (c) =>
+            contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const edges = contributions.flatMap((c) => c.edges);
+        const card = nodes.find(
+            (n) => n.kind === "function" && n.display_name === "Card",
+        );
+
+        // Two renders of the same component collapse into one edge, and the
+        // closing tags contribute nothing: the accumulator keys on
+        // kind/source/target, so an edge per tag would be invisible here — the
+        // guard is that the closing tag never reaches the checker at all.
+        expect(
+            edges.filter(
+                (e) => e.kind === "references" && e.target === card.local_id,
+            ).length,
+        ).toBe(1);
+    });
+});
+
+// A code-split route hands the module object to React and never names the
+// component: `lazy(() => import('./pages/Admin'))`. The module gets its edge,
+// the component inside it gets nothing.
+describe("TypeScriptScanner.scan dynamic default imports", () => {
+    it("reaches the default export of a dynamically imported module", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false,"module":"esnext","moduleResolution":"bundler"},"include":["src"]}',
+            "src/pages/Admin.ts": [
+                "export default function Admin(): string { return 'admin'; }",
+                "export function helper(): string { return 'h'; }",
+                "",
+            ].join("\n"),
+            "src/routes.ts": [
+                "export const routes = [() => import('./pages/Admin')];",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/pages/Admin.ts", "src/routes.ts"] },
+            (c) => contributions.push(c),
+        );
+        const edges = contributions.flatMap((c) => c.edges);
+        const targets = edges
+            .filter((e) => e.kind === "references")
+            .map((e) => String(e.target));
+
+        const admin = contributions
+            .flatMap((c) => c.nodes)
+            .find((n) => n.display_name === "Admin");
+        expect(targets).toContain(admin.local_id);
+        // A named export the caller never destructures stays unreached: the
+        // resolution is for `default` only, so real dead code is not marked live.
+        const helper = contributions
+            .flatMap((c) => c.nodes)
+            .find((n) => n.display_name === "helper");
+        expect(targets).not.toContain(helper.local_id);
+    });
+
+    it("emits nothing for a dynamic import of a module with no default export", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false,"module":"esnext","moduleResolution":"bundler"},"include":["src"]}',
+            "src/named.ts": "export function only(): number { return 1; }\n",
+            "src/load.ts": "export const load = () => import('./named');\n",
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/named.ts", "src/load.ts"] },
+            (c) => contributions.push(c),
+        );
+        const only = contributions
+            .flatMap((c) => c.nodes)
+            .find((n) => n.display_name === "only");
+
+        expect(
+            contributions
+                .flatMap((c) => c.edges)
+                .some(
+                    (e) =>
+                        e.kind === "references" && e.target === only.local_id,
+                ),
+        ).toBe(false);
+    });
+});
+
+// `import type` is erased before anything runs, so consumers need to be able to
+// tell such an import from a value one. The attribute has to be PRESENT on
+// every import for that question to have an answer.
+describe("TypeScriptScanner.scan import type marking", () => {
+    it("marks each import form with whether it survives compilation", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false},"include":["src"]}',
+            "src/dep.ts": [
+                "export type Shape = { a: number };",
+                "export default function run(): number { return 1; }",
+                "export function helper(): number { return 2; }",
+                "",
+            ].join("\n"),
+            "src/whole.ts":
+                "import type { Shape } from './dep';\nexport type A = Shape;\n",
+            "src/specifier.ts":
+                "import { type Shape } from './dep';\nexport type B = Shape;\n",
+            "src/mixed.ts":
+                "import run, { type Shape } from './dep';\nexport const c: Shape = { a: run() };\n",
+            "src/default.ts":
+                "import run from './dep';\nexport const d = run();\n",
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            {
+                root,
+                files: [
+                    "src/dep.ts",
+                    "src/whole.ts",
+                    "src/specifier.ts",
+                    "src/mixed.ts",
+                    "src/default.ts",
+                ],
+            },
+            (c) => contributions.push(c),
+        );
+        const imports = Object.fromEntries(
+            contributions
+                .flatMap((c) => c.edges)
+                .filter((e) => e.kind === "imports")
+                .map((e) => [e.evidence.path, e.attributes.type_only]),
+        );
+
+        expect(imports["src/whole.ts"]).toBe(true);
+        expect(imports["src/specifier.ts"]).toBe(true);
+        // A default binding beside named type specifiers is a value import: the
+        // default survives compilation.
+        expect(imports["src/mixed.ts"]).toBe(false);
+        // Regression guard: this used to be `undefined`, which is dropped on the
+        // way into the graph, so a default-only import carried no marking at all.
+        expect(imports["src/default.ts"]).toBe(false);
+    });
+});
+
+// A `.d.ts` describes an implementation rather than being one. Its symbols have
+// an in-degree of zero by construction — call sites resolve to the .mjs behind
+// it — so they need to be distinguishable from code nothing uses.
+describe("TypeScriptScanner.scan declaration files", () => {
+    it("marks symbols declared in a .d.mts as belonging to a declaration file", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false,"allowJs":true},"include":["scripts"]}',
+            "scripts/color-debt.d.mts":
+                "export declare function measureTree(node: string): number;\n",
+            "scripts/tokens.ts":
+                "export function afstand(): number { return 1; }\n",
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["scripts/color-debt.d.mts", "scripts/tokens.ts"] },
+            (c) => contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const attributesOf = (name) =>
+            nodes.find((n) => n.display_name === name)?.attributes ?? {};
+
+        expect(attributesOf("measureTree").declaration_file).toBe(true);
+        // Carried from the module node down onto its declarations, and only
+        // there: an ordinary source file marks neither.
+        expect(attributesOf("color-debt.d.mts").declaration_file).toBe(true);
+        expect(attributesOf("afstand").declaration_file).toBeUndefined();
+        expect(attributesOf("tokens.ts").declaration_file).toBe(false);
+    });
+});
+
 describe("TypeScriptScanner.scan value references", () => {
     it("emits a references edge for a function used as a value in a registry array", () => {
         // Regression guard: functions that are never *called* at their use site —
