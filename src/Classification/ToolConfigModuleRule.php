@@ -56,7 +56,7 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
         // Evidence rejects a non-normalized path at construction, so the
         // separator here is always `/`.
         $path = $node->evidence->relativePath;
-        if (!$this->isToolConfigPath($path)) {
+        if (!self::isToolConfigPath($path)) {
             return [];
         }
 
@@ -72,9 +72,15 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
             ),
         ];
     }
-    /** Whether a path is tooling configuration rather than application code. */
-
-    private function isToolConfigPath(string $path): bool
+    /**
+     * Whether a path is tooling configuration rather than application code.
+     *
+     * Public because discovery reads the same files for the paths they name as
+     * setup or entry files, and two copies of a filename convention drift the
+     * moment one of them gains a case. The rule owns the convention; discovery
+     * asks it.
+     */
+    public static function isToolConfigPath(string $path): bool
     {
         $file = basename($path);
         $dot = strrpos($file, '.');

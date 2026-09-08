@@ -1318,6 +1318,83 @@ TOML);
         ], $units[0]->metadata['entry_points']);
     }
 
+    /**
+     * Vitest loads its setup file before every test and nothing imports it, so
+     * it read as dead code while running on every single test invocation.
+     *
+     * The value may be a bare string or an array of them; YCI writes the array
+     * form, and a reader that only understood one would miss the other.
+     */
+    public function testDiscoverReadsFilesATestRunnerConfigLoads(): void
+    {
+        mkdir($this->root . '/frontend', 0700, true);
+        file_put_contents($this->root . '/frontend/vite.config.ts', implode("\n", [
+            "import { defineConfig } from 'vite'",
+            "import react from '@vitejs/plugin-react'",
+            'export default defineConfig({',
+            '  test: {',
+            "    setupFiles: ['./src/test/setup.ts'],",
+            "    globalSetup: './src/test/global.ts',",
+            '  },',
+            '})',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'tool_config'));
+        $this->assertNotEmpty($units);
+        assertSame([
+            'frontend/src/test/setup.ts',
+            'frontend/src/test/global.ts',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The reason this reader is key-scoped rather than tokenising the whole
+     * file the way the YAML one does. A config names files to EXCLUDE as well
+     * as files to load, and an excluded path is exactly the kind of file that
+     * turns out to be dead. Marking it an entry point would hide the finding.
+     */
+    public function testDiscoverIgnoresPathsAConfigExcludesRatherThanLoads(): void
+    {
+        file_put_contents($this->root . '/vitest.config.ts', implode("\n", [
+            'export default {',
+            "  test: {",
+            "    setupFiles: ['./setup.ts'],",
+            "    exclude: ['src/legacy/old.ts'],",
+            "    coverage: { exclude: ['src/generated/client.ts'] },",
+            '  },',
+            '}',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'tool_config'));
+        $this->assertNotEmpty($units);
+        assertSame(['setup.ts'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * `config.ts` on its own is ordinary application source, not a tool's
+     * config, and reading its string literals as entry points would suppress
+     * dead code across the codebase. Discovery and classification share one
+     * predicate so the two can never disagree about which is which.
+     */
+    public function testDiscoverDoesNotTreatOrdinarySourceAsAToolConfig(): void
+    {
+        mkdir($this->root . '/src', 0700, true);
+        file_put_contents($this->root . '/src/config.ts', "export const paths = ['./src/legacy/old.ts'];\n");
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        assertSame([], array_values(array_filter($result->units, fn($u): bool => $u->kind === 'tool_config')));
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private function rmrf(string $path): void

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Discovery;
 
 use DirectoryIterator;
+use Knossos\Classification\ToolConfigModuleRule;
 use Knossos\Scan\CancellationToken;
 use Throwable;
 
@@ -245,6 +246,11 @@ final readonly class ProjectDiscoverer
         if ($kind === 'yaml') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+            ]);
+        }
+        if ($kind === 'tool_config') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::toolConfigEntryPoints($contents, $relative),
             ]);
         }
 
@@ -823,6 +829,18 @@ final readonly class ProjectDiscoverer
     ];
 
     /**
+     * Config keys whose value names a file the tool LOADS.
+     *
+     * Deliberately a short allow-list rather than every key. A config also
+     * names files to exclude, and an excluded path is exactly the kind that
+     * turns out to be dead — suppressing it would hide the finding this
+     * analysis exists to produce.
+     */
+    private const CONFIG_REFERENCE_KEYS = [
+        'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
+    ];
+
+    /**
      * Collect the source files a package manifest names, anchored to the
      * project root.
      *
@@ -1041,6 +1059,61 @@ final readonly class ProjectDiscoverer
         foreach ($matches[0] as $token) {
             foreach ($anchors as $anchor) {
                 $path = self::entryPointPath($token, $anchor);
+                if ($path !== null) {
+                    $paths[$path] = true;
+                }
+            }
+        }
+
+        return array_keys($paths);
+    }
+
+    /**
+     * The files a tool's own config module tells it to load.
+     *
+     * Vitest reads `setupFiles` before every test file, Jest reads
+     * `setupFilesAfterEnv`, a bundler reads `entry`. Nothing in the project
+     * imports any of them, so each has an in-degree of zero while running on
+     * every invocation of the tool.
+     *
+     * The config module is scanned as ordinary source by the language worker
+     * as well; this reads the same file a second time for its string literals,
+     * which is cheaper and far narrower than teaching a worker which keys of
+     * which config objects hold paths.
+     *
+     * Unlike {@see self::yamlPathEntryPoints()} this does NOT tokenise the
+     * whole file, and the difference is the point. A config names files to
+     * exclude beside the files it loads — `exclude: ['src/legacy/old.ts']` is
+     * ordinary — and marking an excluded path as an entry point would suppress
+     * precisely the candidate worth reporting. Only the keys in
+     * {@see self::CONFIG_REFERENCE_KEYS} are read.
+     *
+     * The value may be one quoted string or an array of them, so the key match
+     * captures either shape and the quoted tokens are pulled out of whichever
+     * it turned out to be.
+     *
+     * @return list<string>
+     */
+    private static function toolConfigEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $keys = implode('|', array_map(preg_quote(...), self::CONFIG_REFERENCE_KEYS));
+        $matched = preg_match_all(
+            sprintf('/\b(?:%s)\s*:\s*(\[[^\]]*\]|[\'"`][^\'"`]*[\'"`])/', $keys),
+            $contents,
+            $matches,
+            PREG_SET_ORDER,
+        );
+        if ($matched === false) {
+            return [];
+        }
+        $paths = [];
+        foreach ($matches as $match) {
+            if (preg_match_all('/[\'"`]([^\'"`]+)[\'"`]/', $match[1], $tokens) === false) {
+                continue;
+            }
+            foreach ($tokens[1] as $token) {
+                $path = self::entryPointPath($token, $directory);
                 if ($path !== null) {
                     $paths[$path] = true;
                 }
@@ -1301,6 +1374,14 @@ final readonly class ProjectDiscoverer
         }
         if ($basename === 'cargo.toml') {
             return 'cargo';
+        }
+
+        // A tool config is read TWICE: as an ordinary source module by the
+        // language worker, and as a unit here for the files it tells its tool
+        // to load. The two `if` blocks in discover() are independent, so one
+        // file may be both — which is why this needs no scanner change.
+        if (ToolConfigModuleRule::isToolConfigPath($relativePath)) {
+            return 'tool_config';
         }
 
         return null;
