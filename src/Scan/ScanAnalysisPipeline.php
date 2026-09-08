@@ -75,23 +75,32 @@ final readonly class ScanAnalysisPipeline
     }
 
     /**
-     * Every project-relative path the discovered manifests name as a binary,
-     * an entry module, or a script.
+     * Every project-relative path the discovered manifests name as a binary, an
+     * entry module, a script, or a reference from a non-code file, mapped to
+     * the manifest that named it.
      *
-     * @return list<string>
+     * The claimant travels with the path because the role it produces
+     * SUPPRESSES a dead-code candidate. Without it, a maintainer looking at a
+     * file nothing appears to use has no way to find out which of the
+     * project's manifests, HTML shells, YAML files or tool configs spoke for
+     * it.
+     *
+     * First claimant wins, and units arrive sorted by kind and path, so the
+     * attribution is deterministic across scans of the same tree.
+     *
+     * @return array<string, string> entry-point path => path of the file naming it
      */
     private static function manifestEntryPoints(ScanPlan $plan): array
     {
         $paths = [];
         foreach ($plan->preparation->discovery->units as $unit) {
             foreach ($unit->metadata['entry_points'] ?? [] as $path) {
-                if (is_string($path) && $path !== '') {
-                    $paths[$path] = true;
+                if (is_string($path) && $path !== '' && !isset($paths[$path])) {
+                    $paths[$path] = $unit->configPath;
                 }
             }
         }
-        $paths = array_keys($paths);
-        sort($paths, SORT_STRING);
+        ksort($paths, SORT_STRING);
 
         return $paths;
     }
