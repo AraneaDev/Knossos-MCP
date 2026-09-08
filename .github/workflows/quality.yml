@@ -53,7 +53,23 @@ jobs:
         # `release` the supply-chain and packaging checks, `coverage` the pcov
         # run and its budgets. The split is by independence, not by language:
         # see tools/quality for why coverage cannot be split per language.
-        lane: [static, tests, rust, release, coverage]
+        #
+        # A release-please pull request runs `static` alone. Its diff is
+        # version.txt, the manifest, a CHANGELOG entry and the version string
+        # in Dockerfile and Application.php, so every other lane re-verifies
+        # code byte-identical to the main it was cut from, which had just gone
+        # green. `static` still covers what such a pull request can break: the
+        # version strings agreeing across the four files, the changelog's
+        # markdown, and the one edited PHP line. The full matrix runs again on
+        # the push to main after it merges, so nothing reaches a tag unchecked.
+        #
+        # Keyed on the branch name release-please owns and force-pushes. A
+        # human pushing code to a branch of that name would skip the lanes,
+        # which is why the post-merge run on main is the backstop rather than
+        # this being the only gate.
+        lane:
+          ${{ fromJSON(github.head_ref == 'release-please--branches--main' &&
+          '["static"]' || '["static","tests","rust","release","coverage"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v3
