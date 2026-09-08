@@ -333,9 +333,8 @@ describe("TypeScriptScanner.scan dynamic default imports", () => {
         });
 
         const contributions = [];
-        new TypeScriptScanner().scan(
-            { root, files: ["src/load.ts"] },
-            (c) => contributions.push(c),
+        new TypeScriptScanner().scan({ root, files: ["src/load.ts"] }, (c) =>
+            contributions.push(c),
         );
         const edges = contributions.flatMap((c) => c.edges);
         const nodes = contributions.flatMap((c) => c.nodes);

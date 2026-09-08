@@ -53,7 +53,10 @@ export class FactAccumulator {
             // have first-writer-wins decide `type_only` on the merged edge,
             // silently erasing a real dependency — and any cycle it closed —
             // depending on parse order alone.
-            if ((kind === "imports" || kind === "re_exports") && "type_only" in attributes) {
+            if (
+                (kind === "imports" || kind === "re_exports") &&
+                "type_only" in attributes
+            ) {
                 existing.attributes.type_only_variants = [
                     ...new Set([
                         existing.attributes.type_only,
