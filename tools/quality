@@ -2,10 +2,31 @@
 set -eu
 
 profile="${1:-fast}"
+lane="${2:-all}"
 if [ "$profile" != "fast" ] && [ "$profile" != "full" ]; then
-    echo "usage: tools/quality [fast|full]" >&2
+    echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage]" >&2
     exit 64
 fi
+case "$lane" in
+    all | static | tests | rust | release | coverage) ;;
+    *)
+        echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage]" >&2
+        exit 64
+        ;;
+esac
+
+# Which lanes a run performs. `all` is the local default and keeps this script
+# a single linear gate; CI passes one lane per job so the five run in parallel.
+#
+# The split is drawn where the work is genuinely independent, and NOT by
+# language, because coverage cannot be split that way: tools/coverage runs
+# PHPUnit once under pcov and that one run produces the PHP, JavaScript AND
+# Python figures, the latter two from worker subprocesses it drives. Splitting
+# coverage per language would measure three suites that never run the workers
+# and report floors nothing earns.
+in_lane() {
+    [ "$lane" = "all" ] || [ "$lane" = "$1" ]
+}
 
 # scanner-conformance exits 127 on a relative binary path: WorkerProcessSupervisor
 # pins the child's working directory to the system temp dir, so a path relative
@@ -29,6 +50,7 @@ run_test_suite() {
     fi
 }
 
+if in_lane static; then
 composer validate --strict
 composer --working-dir=workers/php validate --strict
 composer install --dry-run --no-interaction --no-scripts
@@ -47,7 +69,13 @@ npm run lint:md
 ruff check workers/python/bin/worker.py workers/python/tests
 ruff format --check workers/python/bin/worker.py workers/python/tests
 mypy workers/python/bin/worker.py
+fi
+
+if in_lane tests; then
 python3 -m pytest workers/python
+fi
+
+if in_lane rust; then
 if command -v cargo >/dev/null 2>&1; then
     cargo fmt --manifest-path workers/rust/Cargo.toml --check
     cargo clippy --locked --manifest-path workers/rust/Cargo.toml --all-targets -- -D warnings
@@ -56,21 +84,32 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "cargo is required in the quality container" >&2
     exit 1
 fi
+fi
+
+if in_lane static; then
 php tools/repository-check.php
 php tools/generate-reference.php --check
 php tools/documentation-check.php
 php tools/maintainability-report.php
 php tools/docstring-report.php
 php tools/api-documentation-check.php
+fi
+
+if in_lane rust; then
 if [ -x "$root/workers/rust/bin/knossos-rust-worker" ]; then
     tools/scanner-conformance --require=partial_ast -- "$root/workers/rust/bin/knossos-rust-worker"
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "the Rust worker binary is required in the quality container" >&2
     exit 1
 fi
+fi
+if in_lane tests; then
 # The Python worker is mandatory, so its protocol conformance is checked
 # unconditionally, not behind an existence probe like the optional Rust one.
 tools/scanner-conformance --require=partial_ast -- python3 -I -B "$root/workers/python/bin/worker.py"
+fi
+
+if in_lane static; then
 if command -v pre-commit >/dev/null 2>&1; then
     pre-commit validate-config .pre-commit-config.yaml
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
@@ -99,11 +138,14 @@ elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "docker compose is required in the quality container" >&2
     exit 1
 fi
+fi
 
+if in_lane tests; then
 npm --prefix workers/typescript run check
 run_test_suite
+fi
 
-if [ "$profile" = "full" ]; then
+if [ "$profile" = "full" ] && in_lane release; then
     composer audit --locked --no-interaction
     npm audit --audit-level=high
     npm --prefix workers/typescript audit --audit-level=high
@@ -122,6 +164,12 @@ if [ "$profile" = "full" ]; then
     tools/release-lifecycle
     tools/supply-chain
     tools/benchmark
+fi
+
+# Coverage is its own lane because it re-runs the whole PHPUnit suite under
+# pcov. That second run already happened serially after the first; giving it a
+# lane lets the two run side by side instead.
+if [ "$profile" = "full" ] && in_lane coverage; then
     # Mutation testing is deliberately NOT part of any profile: a full-src
     # Infection run takes over an hour, which is far too slow to gate a push.
     # Run it on demand instead -- `.github/workflows/mutation.yml`
