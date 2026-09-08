@@ -142,6 +142,20 @@ project-relative path, so a token naming something no scanner emitted never
 matches anything. Files that do match are classified `application.entry_point`
 (rule `core.manifest.entrypoints.v1`).
 
+Discovery also reads every `.html` file for its `<script src>` attributes,
+every `.yml`/`.yaml` file for tokens shaped like a source path, and every tool
+config module for the keys naming files the tool loads. A single-page
+application is entered through its HTML shell, a Compose file mounts a config
+by path, and Vitest loads `setupFiles` before every test; none of those is an
+import, so each named file carried an in-degree of zero while being the reason
+the thing runs. A root-absolute `src` names the web root, so `public/` and
+`static/` readings are offered alongside the plain one, and YAML is tokenised
+as text rather than parsed. Both are loose on purpose and safe for the same
+reason the Composer script tokenising is: a token that names no file any
+scanner emitted matches nothing. A tool config is the exception and is read
+key by key, because it names files to exclude as well as files to load, and an
+excluded path is exactly the kind that turns out to be dead.
+
 `function.json` earns its place for a second reason. A handler directory
 holding both `index.js` and a stale `index.ts` resolves the wrong way: asked
 where a sibling's `require('../management')` points, TypeScript's own module
@@ -187,6 +201,11 @@ and stays reportable.
   run reports `truncated` with the reason, and its candidate list is partial.
 - `limit` caps the reported list; the counters in `bounds` describe the whole
   examined graph, not the reported slice.
-- A component reached only from a non-code file — an HTML `<script src>`, a
-  path in a Compose file or a CI workflow — is reported as `unreferenced`.
-  Nothing outside the scanned languages contributes edges.
+- A reference from a non-code file suppresses the candidate but contributes no
+  edge, so `list_usages` will not name the HTML shell, the Compose file or the
+  tool config as a dependant. The claiming file is recorded on the role as
+  `named_by`.
+- A tool config is read only for the keys that name files it loads
+  (`setupFiles`, `globalSetup`, `entry`, and their siblings). A path reached
+  some other way — built from a variable, or under a key not on that list — is
+  still invisible.
