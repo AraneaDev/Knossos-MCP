@@ -45,7 +45,15 @@ export class FactAccumulator {
         const key = `${kind}\0${source}\0${target}`;
         const existing = this.edgesByKey.get(key);
         if (existing) {
-            if (kind === "imports" && "type_only" in attributes) {
+            // Both an `import` and a `re_export` statement can be type-only, and
+            // either kind can merge two occurrences into one edge (two
+            // `export ... from` statements between the same module pair, just
+            // like two `import` statements do). Restricting the merge to
+            // `imports` let a type-only re-export merge with a value one and
+            // have first-writer-wins decide `type_only` on the merged edge,
+            // silently erasing a real dependency — and any cycle it closed —
+            // depending on parse order alone.
+            if ((kind === "imports" || kind === "re_exports") && "type_only" in attributes) {
                 existing.attributes.type_only_variants = [
                     ...new Set([
                         existing.attributes.type_only,
