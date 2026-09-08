@@ -81,6 +81,31 @@ describe("FactAccumulator edges", () => {
         ]);
     });
 
+    it("treats a merge partner with no type_only marker at all as a value import", () => {
+        // A dynamic `import()` and a `require()` are runtime by definition but
+        // used to carry no `type_only` key at all. Merging one with a
+        // type-only static import of the same module must not erase the
+        // dependency just because the runtime side never mentioned the
+        // attribute, in EITHER parse order.
+        const typeFirst = make();
+        typeFirst.addEdge("imports", "m", "t", {}, { type_only: true });
+        typeFirst.addEdge("imports", "m", "t", {}, { dynamic: true });
+        expect(typeFirst.edges).toHaveLength(1);
+        expect(typeFirst.edges[0].attributes.type_only_variants).toEqual([
+            false,
+            true,
+        ]);
+
+        const dynamicFirst = make();
+        dynamicFirst.addEdge("imports", "m", "t", {}, { dynamic: true });
+        dynamicFirst.addEdge("imports", "m", "t", {}, { type_only: true });
+        expect(dynamicFirst.edges).toHaveLength(1);
+        expect(dynamicFirst.edges[0].attributes.type_only_variants).toEqual([
+            false,
+            true,
+        ]);
+    });
+
     it("merges attributes a later duplicate adds without dropping them", () => {
         const acc = make();
         acc.addEdge("imports", "m", "t", {}, {});

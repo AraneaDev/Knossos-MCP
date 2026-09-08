@@ -410,6 +410,60 @@ describe("TypeScriptScanner.scan import type marking", () => {
     });
 });
 
+// Import edges are keyed by (kind, source, target): a static import and a
+// module-scope dynamic import of the same module collapse into ONE edge.
+// Neither the dynamic branch nor a bare `type_only: true` merge is allowed to
+// erase the fact that a value import is also present, in EITHER parse order,
+// or `dependency_cycles` would silently drop a real runtime dependency.
+describe("TypeScriptScanner.scan merges a type-only import with a dynamic import of the same module", () => {
+    it.each([
+        [
+            "type-only import first",
+            "src/type-then-dynamic.ts",
+            [
+                "import type { Foo } from './heavy';",
+                "export const load = () => import('./heavy');",
+                "export type UseFoo = Foo;",
+                "",
+            ].join("\n"),
+        ],
+        [
+            "dynamic import first",
+            "src/dynamic-then-type.ts",
+            [
+                "export const load = () => import('./heavy');",
+                "import type { Foo } from './heavy';",
+                "export type UseFoo = Foo;",
+                "",
+            ].join("\n"),
+        ],
+    ])("keeps the merged edge value-reachable (%s)", (_label, path, source) => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false,"module":"esnext","moduleResolution":"bundler"},"include":["src"]}',
+            "src/heavy.ts": [
+                "export type Foo = { a: number };",
+                "export function heavy(): number { return 1; }",
+                "",
+            ].join("\n"),
+            [path]: source,
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/heavy.ts", path] },
+            (c) => contributions.push(c),
+        );
+        const importEdges = contributions
+            .flatMap((c) => c.edges)
+            .filter((e) => e.kind === "imports" && e.evidence.path === path);
+
+        expect(importEdges).toHaveLength(1);
+        expect(importEdges[0].attributes.type_only_variants).toContain(false);
+    });
+});
+
 // A `.d.ts` describes an implementation rather than being one. Its symbols have
 // an in-degree of zero by construction — call sites resolve to the .mjs behind
 // it — so they need to be distinguishable from code nothing uses.

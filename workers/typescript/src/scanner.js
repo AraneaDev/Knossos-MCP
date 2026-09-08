@@ -528,7 +528,7 @@ class TypeScriptLanguageFactCollector {
                     this.currentSource() ?? this.moduleId,
                     target,
                     node,
-                    { dynamic: true },
+                    { dynamic: true, type_only: false },
                 );
             // Only when the import resolved to a module INSIDE the project.
             // `target` above is non-null for an external package too —
@@ -558,7 +558,7 @@ class TypeScriptLanguageFactCollector {
                     this.currentSource() ?? this.moduleId,
                     target,
                     node,
-                    { commonjs: true },
+                    { commonjs: true, type_only: false },
                 );
             return;
         }
