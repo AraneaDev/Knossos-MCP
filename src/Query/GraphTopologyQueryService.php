@@ -348,7 +348,17 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         $conventionExcluded = $ranked['convention_excluded'];
         if ($conventionExcluded !== [] && $boundedScan) {
-            $conventionExcluded = $deadCode->unreferenced($projectId, $conventionExcluded, $edgeKinds, $confidenceRank[$minConfidence]);
+            // Reconciled per reachability class, not as one list: an
+            // `unreferenced` id is cleared by ANY inbound edge the bounded walk
+            // missed, but a `test_only` id has inbound (test) edges by
+            // construction and would be wrongly cleared by that same check —
+            // it needs the production-only reading instead.
+            $unreferencedIds = array_keys(array_filter($conventionExcluded, static fn(string $reachability): bool => $reachability !== 'test_only'));
+            $testOnlyIds = array_keys(array_filter($conventionExcluded, static fn(string $reachability): bool => $reachability === 'test_only'));
+            $conventionExcluded = [
+                ...$deadCode->unreferenced($projectId, $unreferencedIds, $edgeKinds, $confidenceRank[$minConfidence]),
+                ...$deadCode->unreferenced($projectId, $testOnlyIds, $edgeKinds, $confidenceRank[$minConfidence], true),
+            ];
         }
         $excludedConventionDiscovered = count($conventionExcluded);
         $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree);
@@ -528,11 +538,17 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * before classify() ever sees the node, so a node dropped for its role would
      * otherwise vanish without appearing in any count.
      *
-     * Those role exclusions come back as a list of IDS rather than a count. Like
-     * `provisional`, they are selected on a zero in-degree measured against the
-     * bounded slice, so under truncation the set can hold a node whose only
-     * inbound edge was dropped. Only the caller knows whether the scan was
-     * bounded, so only the caller can reconcile the set and count what survives.
+     * Those role exclusions come back as ID => reachability rather than a
+     * count, and for BOTH reachability classes a node can fall into, not just
+     * `unreferenced`. Like `provisional`, they are selected on a zero
+     * (production) in-degree measured against the bounded slice, so under
+     * truncation the set can hold a node whose only inbound edge was dropped.
+     * Only the caller knows whether the scan was bounded, so only the caller
+     * can reconcile the set and count what survives — and the reachability
+     * travels along because the two classes reconcile differently: an
+     * `unreferenced` node is cleared by any inbound edge the bounded walk
+     * missed, but a `test_only` one has inbound (test) edges by construction
+     * and can only be cleared by a PRODUCTION one.
      *
      * @param array<string, array<string, mixed>> $nodes id => node row
      * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
@@ -546,7 +562,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *     provisional: array<string, array<string, mixed>>,
      *     excluded_external: int,
      *     excluded_tests: int,
-     *     convention_excluded: list<string>,
+     *     convention_excluded: array<string, string>,
      * }
      */
     private function rankNodes(array $nodes, array $metrics, array $productionInDegree, array $roles, array $boundaries, array $cycleMembers, DeadCodeAnalysis $deadCode, bool $includeExternal, bool $includeTests): array
@@ -592,8 +608,19 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                         'component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [],
                         'out_degree' => $metrics[$id]['out_degree'], 'reachability' => $reachability,
                     ];
-                } elseif ($reachability === 'unreferenced' && $deadCode->isConventionExcluded($row, $roles[$id] ?? [])) {
-                    $conventionExcluded[] = (string) $id;
+                } elseif ($deadCode->isConventionExcluded($row, $roles[$id] ?? [])) {
+                    // Kept for BOTH reachability classes, not just
+                    // `unreferenced`: a `test_only` node carrying a convention
+                    // role was previously turned away here without landing in
+                    // either list, vanishing from the candidates and from the
+                    // audit trail that is this branch's only reason to exist.
+                    // The reachability travels with the id because the two
+                    // classes need different reconciliation once the caller
+                    // re-checks a bounded scan's provisional zero — a
+                    // `test_only` node has inbound (test) edges by
+                    // construction, so it cannot be cleared by "any inbound
+                    // edge" the way an `unreferenced` one is.
+                    $conventionExcluded[(string) $id] = $reachability;
                 }
             }
         }

@@ -646,6 +646,55 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * The convention-role exclusion has to be counted for a `test_only`
+     * component, not just an `unreferenced` one — the `elseif` branch that
+     * counts it used to be guarded on `reachability === 'unreferenced'`, so a
+     * component that was BOTH test_only and convention-discovered fell through
+     * without landing in the candidate list or in this tally, vanishing from
+     * both the findings and the audit trail the tally exists to provide.
+     */
+    #[Group('query')]
+    public function testDeadCodeCountsATestOnlyConventionRoleAsExcluded(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        $entry = StableId::symbol($ids['project'], 'typescript', 'module', 'scripts/release.mjs');
+        $repository->saveNode($entry, $ids['project'], 'typescript', 'module', 'scripts/release.mjs', 'release.mjs', null, $ids['file'], 1, 20, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveClassification(
+            StableId::classification($ids['project'], $entry, 'application.entry_point', 'core.entry.points.v1'),
+            $ids['project'],
+            $entry,
+            'application.entry_point',
+            'derived',
+            'probable',
+            'core.entry.points.v1',
+            $ids['file'],
+            1,
+            20,
+            [],
+            $ids['scan'],
+        );
+        // Reached only by a test, so the entry point's reachability class is
+        // `test_only` rather than `unreferenced`.
+        $suite = StableId::symbol($ids['project'], 'typescript', 'class', 'ReleaseTest');
+        $repository->saveNode($suite, $ids['project'], 'typescript', 'class', 'ReleaseTest', 'ReleaseTest', null, $ids['file'], 30, 40, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveClassification(StableId::classification($ids['project'], $suite, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $suite, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 30, 40, [], $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'calls', $suite, $entry, 't:1'), $ids['project'], 'calls', $suite, $entry, $ids['file'], 31, 31, 'ast', 'certain', [], $owner, $ids['scan']);
+        // The test-module role is itself convention-discovered, and the suite
+        // would otherwise be its own `unreferenced` convention exclusion,
+        // confounding the count this test is pinning. A production reference
+        // keeps it out of the count entirely.
+        $repository->saveEdge(StableId::edge($ids['project'], 'references', $ids['checkout'], $suite, 't:2'), $ids['project'], 'references', $ids['checkout'], $suite, $ids['file'], 5, 5, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('scripts/release.mjs', $names, true));
+        assertSame(1, $data['bounds']['excluded_convention_discovered']);
+    }
+
+    /**
      * The role-exclusion tally is drawn from a PROVISIONAL zero in-degree, so a
      * bounded scan must not be allowed to inflate it.
      *

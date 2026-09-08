@@ -664,16 +664,22 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * look unreferenced — so any tally drawn from that zero has to be re-checked
      * against the full table before it is reported as fact.
      *
+     * `$productionOnly` asks the narrower question a `test_only` id needs: not
+     * "does anything reference this", which a test's own edge would always
+     * answer yes to, but "does anything the product runs". Passing it for an
+     * `unreferenced` id would be wrong in the other direction — it would clear
+     * on a test edge alone the very id that is unreferenced by production code.
+     *
      * @param list<string> $ids
      * @param list<string> $edgeKinds
      * @return list<string>
      */
-    public function unreferenced(string $projectId, array $ids, array $edgeKinds, int $minConfidenceRank): array
+    public function unreferenced(string $projectId, array $ids, array $edgeKinds, int $minConfidenceRank, bool $productionOnly = false): array
     {
         if ($ids === []) {
             return [];
         }
-        $referenced = array_flip($this->referencedNodes($projectId, $ids, $edgeKinds, $minConfidenceRank));
+        $referenced = array_flip($this->referencedNodes($projectId, $ids, $edgeKinds, $minConfidenceRank, $productionOnly));
 
         return array_values(array_filter($ids, static fn(string $id): bool => !isset($referenced[$id])));
     }
