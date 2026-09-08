@@ -171,20 +171,20 @@ annotation removes that component from future dead-code candidates.
 
 **Structure and change analysis**
 
-| MCP tool               | CLI                    | Answers                                                            |
-| ---------------------- | ---------------------- | ------------------------------------------------------------------ |
-| `impact_analysis`      | `impact-analysis`      | What depends on a symbol, with the edge that proves it.            |
-| `explain_flow`         | `explain-flow`         | How A reaches B, as ranked evidence-backed paths.                  |
-| `dependency_cycles`    | `dependency-cycles`    | Circular dependencies as bounded strongly connected groups.        |
-| `architecture_health`  | `architecture-health`  | Hubs, hotspots, and uncertainty-labelled dead-code candidates.     |
-| `check_architecture`   | `check-architecture`   | Which relationships violate declared boundary policies.            |
-| `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.        |
-| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                  |
-| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches.        |
-| `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance. |
-| `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles.  |
-| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.           |
-| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.                  |
+| MCP tool               | CLI                    | Answers                                                                                     |
+| ---------------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
+| `impact_analysis`      | `impact-analysis`      | What depends on a symbol, with the edge that proves it.                                     |
+| `explain_flow`         | `explain-flow`         | How A reaches B, as ranked evidence-backed paths.                                           |
+| `dependency_cycles`    | `dependency-cycles`    | Circular dependencies as bounded strongly connected groups.                                 |
+| `architecture_health`  | `architecture-health`  | Hubs, hotspots, and dead code split into what nothing references and what only tests reach. |
+| `check_architecture`   | `check-architecture`   | Which relationships violate declared boundary policies.                                     |
+| `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.                                 |
+| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                                           |
+| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches.                                 |
+| `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance.                          |
+| `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles.                           |
+| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.                                    |
+| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.                                           |
 
 **Maintenance**
 

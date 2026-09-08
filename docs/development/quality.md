@@ -9,6 +9,54 @@ tools/quality-container fast
 tools/quality-container full
 ```
 
+## Lanes
+
+The gate is one linear script, and locally it runs as one. CI splits it into
+five lanes that run at the same time, because most of the work does not depend
+on the rest of it. Both commands take an optional second argument naming a
+lane, so a lane that failed in CI can be reproduced here instead of only in the
+workflow:
+
+```sh
+tools/quality-container full release
+tools/quality full static
+```
+
+| lane       | holds                                                                                                     |
+| ---------- | --------------------------------------------------------------------------------------------------------- |
+| `static`   | linters, PHP-CS-Fixer, PHPStan, Ruff, mypy, ShellCheck, Hadolint, the documentation and repository checks |
+| `tests`    | the PHPUnit suite, the worker's vitest suite, pytest, scanner conformance                                 |
+| `rust`     | `cargo fmt`, `clippy` and `test`, which are slow and self-contained                                       |
+| `release`  | audits, supply chain, benchmark, release lifecycle, the runtime image                                     |
+| `coverage` | the pcov run and the coverage floors                                                                      |
+
+Omitting the argument runs every lane, which is the local default.
+
+The split is by independence and not by language, and coverage is why. A single
+PHPUnit run under pcov produces the PHP, JavaScript **and** Python figures, the
+latter two from worker subprocesses that run drives. Splitting coverage per
+language would measure three suites that never exercise the workers and report
+floors nothing earns.
+
+## How CI runs it
+
+One job builds the quality image and pushes it to the repository's registry,
+tagged by commit, and the five lanes pull it. An aggregating job named
+`quality` fails unless the whole matrix succeeded, which is the check branch
+protection requires: a lane that is skipped or cancelled fails it just as a red
+lane does.
+
+Measured on the run this arrangement replaced, the gate was a single job taking
+about ten minutes, of which every lane would have spent between 60 and 138
+seconds merely acquiring the image. Pulling from a registry in the same
+datacentre costs about 44.
+
+A release-please pull request runs `static` alone. Its diff is version files, a
+manifest and a changelog entry, so every other lane would re-verify code
+identical to the `main` it was cut from, which had just passed. The full matrix
+runs again on the push to `main` after it merges, so nothing reaches a tag
+unchecked.
+
 `fast` runs dependency/lock integrity, PHP syntax, PHP-CS-Fixer, PHPStan,
 ESLint, Prettier, markdownlint, Ruff, mypy, JSON/large-file/line-ending/secret
 checks, pre-commit configuration validation, ShellCheck, Hadolint, and all
@@ -87,8 +135,9 @@ tools/install-hooks
 ```
 
 The commit hook runs hygiene hooks and the fast profile. The pre-push hook runs
-the full profile. Developers without native tools can run the container-backed
-commands before committing; CI always uses the quality image.
+the full profile. Both run every lane. Developers without native tools can run
+the container-backed commands before committing; CI always uses the quality
+image.
 
 ## Maintenance
 
