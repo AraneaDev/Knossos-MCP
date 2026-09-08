@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.12.1...v0.13.0) (2026-09-08)
+
+
+### Features
+
+* **query:** classify dead code by reachability and stop reporting reachable code ([#59](https://github.com/AraneaDev/Knossos-MCP/issues/59)) ([113f2ea](https://github.com/AraneaDev/Knossos-MCP/commit/113f2ea9ae7ffd9805078c697453c1cd3df77345))
+
 ## [0.12.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.12.0...v0.12.1) (2026-08-24)
 
 
