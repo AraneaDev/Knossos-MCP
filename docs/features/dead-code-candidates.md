@@ -58,17 +58,18 @@ Several classes of component have a structurally zero in-degree and would drown
 the real signal. Each exclusion is counted in `bounds` so the filtering is
 auditable rather than invisible.
 
-| `bounds` counter                 | Excluded                                                                                                                               |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `excluded_external_components`   | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.             |
-| `excluded_test_components`       | Nodes classified `quality.test_module` — a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`. |
-| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.    |
-| `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                              |
-| `excluded_constructors`          | Engine-invoked members — constructors, destructors, magic/protocol methods — whose declaring type is referenced (see below).           |
-| `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts` (see below).                                                                      |
-| `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                    |
-| `excluded_convention_discovered` | Components carrying an entry-point role — a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).  |
-| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](annotations.md).                                                                   |
+| `bounds` counter                 | Excluded                                                                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `excluded_external_components`   | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.                             |
+| `excluded_test_components`       | Nodes classified `quality.test_module` — a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`.                 |
+| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.                    |
+| `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                              |
+| `excluded_constructors`          | Engine-invoked members — constructors, destructors, magic/protocol methods — whose declaring type is referenced (see below).                           |
+| `excluded_entry_scripts`         | Modules a scanner marked as executable scripts — a shebang, a `__main__` guard, PHP file-scope code — whose bodies something outside the graph enters. |
+| `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts` (see below).                                                                                      |
+| `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                                    |
+| `excluded_convention_discovered` | Components carrying an entry-point role — a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).                  |
+| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](annotations.md).                                                                                   |
 
 ### Why engine-invoked members are excluded
 
