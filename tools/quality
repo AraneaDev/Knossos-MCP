@@ -155,7 +155,14 @@ if [ "$profile" = "full" ] && in_lane release; then
         echo "cargo-audit is required in the quality container" >&2
         exit 1
     fi
-    php tools/documentation-check.php --external
+    # Skipped where a failure would block rather than inform. This check walks
+    # out to third-party URLs, so it goes red when someone else's server does:
+    # a pull request touching only documentation failed the gate because the
+    # site the README badge points at was down. Internal link checking is not
+    # affected, it runs in the static lane and is entirely ours to keep true.
+    if [ "${KNOSSOS_EXTERNAL_LINKS:-1}" = "1" ]; then
+        php tools/documentation-check.php --external
+    fi
     npm_config_cache=/tmp/knossos-inspector-cache npx -y @modelcontextprotocol/inspector@0.21.2 --cli \
         php /opt/knossos/bin/knossos serve --allow-root=/opt/knossos \
         --db=/tmp/knossos-inspector.sqlite --method tools/list
