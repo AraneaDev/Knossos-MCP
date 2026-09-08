@@ -370,6 +370,14 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $classRank = static fn(array $candidate): int => ($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 1 : 0;
         usort($deadCandidates, static fn(array $a, array $b): int => ($classRank($a) <=> $classRank($b))
             ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
+        // Tallied on the FULL list, before result_limit slices it away: ordering
+        // test_only last means truncation hides them first, and a summary built
+        // from the slice would then report 0 test-only findings whenever there
+        // were enough unreferenced ones to fill the limit on their own.
+        $testOnlyCandidates = count(array_filter(
+            $deadCandidates,
+            static fn(array $candidate): bool => ($candidate['reachability'] ?? null) === 'test_only',
+        ));
         foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
             if (count($items) > $limit) {
                 $truncated = true;
@@ -399,7 +407,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            self::healthSummary(count($hubs), count($hotspots), $deadCandidates, $truncationReasons),
+            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons),
             [
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
@@ -617,18 +625,23 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * of is finished work no product path reaches, and both it and the test
      * guarding it can go.
      *
-     * @param list<array<string, mixed>> $deadCandidates
+     * `$testOnlyCandidates` has to be counted by the caller BEFORE `limit`
+     * slices the candidate list, not passed in as the (already sliced) list
+     * itself: candidates are ordered unreferenced-first, so once there are
+     * enough of those to fill the limit on their own, every test_only finding
+     * sits past the cut and a tally taken from the slice reads as zero while
+     * the full list still has some.
+     *
      * @param list<string> $truncationReasons
      */
-    private static function healthSummary(int $hubs, int $hotspots, array $deadCandidates, array $truncationReasons): string
+    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons): string
     {
-        $testOnly = count(array_filter($deadCandidates, static fn(array $candidate): bool => ($candidate['reachability'] ?? null) === 'test_only'));
         $summary = sprintf(
             'Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates, %d of them reached only by tests.',
             $hubs,
             $hotspots,
-            count($deadCandidates),
-            $testOnly,
+            $deadCandidates,
+            $testOnlyCandidates,
         );
         if ($truncationReasons !== []) {
             $summary .= sprintf(' The ranking was truncated (%s), so components beyond that bound are not reported.', implode(', ', $truncationReasons));

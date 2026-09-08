@@ -107,6 +107,45 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * The summary's "reached only by tests" tally has to survive `limit`
+     * slicing the candidate list down: candidates are ordered unreferenced
+     * first, so once there are enough of those to fill the limit on their own
+     * every test_only finding sits past the cut. On a real project this
+     * printed "20 unreferenced-code candidates, 0 of them reached only by
+     * tests" while 68 test-only candidates existed — the tally had been taken
+     * from the already-sliced list instead of the full one.
+     */
+    #[Group('query')]
+    public function testHealthSummaryCountsTestOnlyCandidatesBeforeTheLimitSlicesThemAway(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        // A second unreferenced class, so two candidates alone fill a limit of 2.
+        $secondOrphan = StableId::symbol($ids['project'], 'php', 'class', 'App\\SecondOrphan');
+        $repository->saveNode($secondOrphan, $ids['project'], 'php', 'class', 'App\\SecondOrphan', 'SecondOrphan', null, $ids['file'], 60, 70, 'ast', 'certain', [], $owner, $ids['scan']);
+        // Two test-only classes, reached by nothing but their own tests.
+        foreach (['First', 'Second'] as $label) {
+            $testOnly = StableId::symbol($ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnly');
+            $repository->saveNode($testOnly, $ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnly', $label . 'TestOnly', null, $ids['file'], 80, 90, 'ast', 'certain', [], $owner, $ids['scan']);
+            $suite = StableId::symbol($ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnlyTest');
+            $repository->saveNode($suite, $ids['project'], 'php', 'class', 'App\\' . $label . 'TestOnlyTest', $label . 'TestOnlyTest', null, $ids['file'], 100, 110, 'ast', 'certain', [], $owner, $ids['scan']);
+            $repository->saveClassification(StableId::classification($ids['project'], $suite, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $suite, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 100, 110, [], $ids['scan']);
+            $repository->saveEdge(StableId::edge($ids['project'], 'constructs', $suite, $testOnly, 't:' . $label), $ids['project'], 'constructs', $suite, $testOnly, $ids['file'], 105, 105, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], limit: 2);
+
+        // The limit hides both test_only findings behind the two unreferenced
+        // ones (App\Checkout, App\SecondOrphan) that alone fill it.
+        assertSame(2, count($result->data['dead_code_candidates']));
+        foreach ($result->data['dead_code_candidates'] as $candidate) {
+            assertSame('unreferenced', $candidate['reachability']);
+        }
+        assertSame(true, str_contains($result->summary, '2 of them reached only by tests'));
+    }
+
+    /**
      * include_tests asks for test code to count as part of the architecture, so
      * the class that exists only to separate it from production code goes away.
      */
