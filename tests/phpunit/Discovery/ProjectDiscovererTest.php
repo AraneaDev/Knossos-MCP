@@ -1346,6 +1346,37 @@ TOML);
     }
 
     /**
+     * The exclusion block and the wanted path sit several lines apart, with
+     * blank lines between them, so resolving the wanted token's line number
+     * has to walk past more than one line boundary. Pinned to catch an
+     * off-by-one in the binary search that turns a byte offset into a line
+     * number: shifted by one, it would either pull the wanted token under the
+     * exclusion block or misplace the exclusion block itself.
+     */
+    public function testDiscoverKeepsAYamlPathSeveralLinesAfterAnExclusionBlock(): void
+    {
+        file_put_contents($this->root . '/pipeline.yml', implode("\n", [
+            'ignore:',
+            '  - src/legacy/excluded.php',
+            '',
+            '',
+            '',
+            'jobs:',
+            '  build:',
+            '    steps:',
+            '      - run: node tools/wanted.mjs',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame(['tools/wanted.mjs'], $units[0]->metadata['entry_points']);
+    }
+
+    /**
      * A workflow `run:` step executes from the repository root, not from the
      * directory holding the workflow. Anchoring only to the file's own
      * directory resolved `node tools/coverage-badge.mjs` to

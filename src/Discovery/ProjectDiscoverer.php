@@ -1078,8 +1078,14 @@ final readonly class ProjectDiscoverer
         $excludedLines = self::yamlExclusionLines($stripped);
         $paths = [];
         $anchors = array_unique([$directory, '']);
+        // One pass over the newlines, so the line lookup below is a search
+        // rather than a rescan of the prefix for every matched token.
+        $lineStarts = [0];
+        for ($at = strpos($stripped, "\n"); $at !== false; $at = strpos($stripped, "\n", $at + 1)) {
+            $lineStarts[] = $at + 1;
+        }
         foreach ($matches[0] as [$token, $offset]) {
-            if (isset($excludedLines[substr_count($stripped, "\n", 0, $offset)])) {
+            if (isset($excludedLines[self::lineAt($lineStarts, $offset)])) {
                 continue;
             }
             foreach ($anchors as $anchor) {
@@ -1091,6 +1097,26 @@ final readonly class ProjectDiscoverer
         }
 
         return array_keys($paths);
+    }
+
+    /**
+     * The 0-indexed line an offset falls on, by binary search over the line starts.
+     *
+     * @param list<int> $lineStarts Byte offset of each line's first character.
+     */
+    private static function lineAt(array $lineStarts, int $offset): int
+    {
+        $low = 0;
+        $high = count($lineStarts) - 1;
+        while ($low < $high) {
+            $middle = intdiv($low + $high + 1, 2);
+            if ($lineStarts[$middle] <= $offset) {
+                $low = $middle;
+            } else {
+                $high = $middle - 1;
+            }
+        }
+        return $low;
     }
 
     /**
