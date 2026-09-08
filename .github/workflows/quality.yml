@@ -17,29 +17,100 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_target' }}
 
 jobs:
-  quality:
+  # One build populates the layer cache the lanes then hit. Measured on the run
+  # this split replaced: 124s to build the image, 425s to run the gate inside
+  # it. Building once and reusing the layers keeps the first number off every
+  # lane, and running the lanes side by side turns the second into whichever
+  # lane is slowest.
+  image:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write # publishes the coverage badge to the gh-pages branch
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - name: Build pinned quality image
-        run: docker build --target quality -t knossos-mcp:quality .
+      - uses: docker/setup-buildx-action@v3
+      - name: Build and cache the pinned quality image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: quality
+          tags: knossos-mcp:quality
+          cache-from: type=gha,scope=quality-image
+          cache-to: type=gha,mode=max,scope=quality-image
+          outputs: type=cacheonly
+
+  lane:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # A failing lane must not cancel the others: a maintainer fixing a red
+      # gate wants every lane's verdict from one run, not the first one to go
+      # red and four cancellations.
+      fail-fast: false
+      matrix:
+        # `static` holds the linters and static analysis, `tests` the suites,
+        # `rust` the cargo toolchain because it is slow and self-contained,
+        # `release` the supply-chain and packaging checks, `coverage` the pcov
+        # run and its budgets. The split is by independence, not by language:
+        # see tools/quality for why coverage cannot be split per language.
+        lane: [static, tests, rust, release, coverage]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v3
+      - name: Load the cached quality image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: quality
+          tags: knossos-mcp:quality
+          cache-from: type=gha,scope=quality-image
+          load: true
       # Reports are copied out of the container instead of bind-mounted back.
       # A runner whose workspace is itself a container mount cannot bind host
       # paths that only exist inside the job, and Docker would silently create
       # an empty directory on the host instead of failing.
-      - name: Run full quality profile
+      - name: Run the ${{ matrix.lane }} lane
         run: |
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
             -v /var/run/docker.sock:/var/run/docker.sock \
-            knossos-mcp:quality full
+            knossos-mcp:quality full ${{ matrix.lane }}
       - name: Collect reports
-        if: always()
+        if: always() && matrix.lane == 'coverage'
         run: |
           docker cp knossos-quality:/opt/knossos/coverage ./coverage
           docker rm knossos-quality
+      - name: Upload coverage and benchmark reports
+        if: always() && matrix.lane == 'coverage'
+        uses: actions/upload-artifact@v7
+        with:
+          name: quality-reports
+          path: coverage/
+          if-no-files-found: error
+
+  # The name branch protection requires. Keeping it means the required check
+  # survives the split: a lane that goes red fails this job, and a lane that is
+  # skipped or cancelled fails it too, so a green `quality` still means every
+  # lane ran and passed.
+  quality:
+    needs: lane
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write # publishes the coverage badge to the gh-pages branch
+    steps:
+      - name: Require every lane to have passed
+        run: |
+          result='${{ needs.lane.result }}'
+          printf 'lane matrix result: %s\n' "$result"
+          [ "$result" = 'success' ] || exit 1
+      - uses: actions/checkout@v7
+        if: github.ref == 'refs/heads/main'
+      - uses: actions/download-artifact@v7
+        if: github.ref == 'refs/heads/main'
+        with:
+          name: quality-reports
+          path: coverage/
       # Self-hosted coverage badge: the percentage is published as a shields endpoint on an
       # orphan `gh-pages` branch, force-pushed so it stays a single commit and never grows
       # history. Only on main, because a pull request must not be able to move the badge.
@@ -67,11 +138,3 @@ jobs:
               commit -q -m 'chore: publish coverage badge'
           git push -q --force \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
-
-      - name: Upload coverage and benchmark reports
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: quality-reports
-          path: coverage/
-          if-no-files-found: error
