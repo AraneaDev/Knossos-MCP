@@ -29,9 +29,18 @@ env:
   # silently drop a slice of src from the measurement.
   SHARD_COUNT: 4
 
+# One run per branch. A second push cancels the first, because whoever pushed
+# again has already answered the question the running job was asked. The runs
+# long enough to be overtaken are the expensive ones, so this is worth more
+# than the share of runs it cancels suggests.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   infection:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     strategy:
       # A failing shard must not cancel the others: the gate needs every shard's
       # counts to compute an aggregate, and one shard's failure should still
@@ -113,6 +122,7 @@ jobs:
     # rather than an aggregate computed over whatever happened to survive.
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v7
