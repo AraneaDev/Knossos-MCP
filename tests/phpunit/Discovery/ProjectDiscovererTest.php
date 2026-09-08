@@ -1213,6 +1213,80 @@ TOML);
         assertSame(['a.js', 'b.js'], $units[0]->metadata['entry_points']);
     }
 
+    /**
+     * A Compose file mounts a source file into a container by path, and a CI
+     * workflow runs one by name. Neither is an import, so the file looks
+     * orphaned while being the only reason the stack starts.
+     *
+     * The mount is one scalar holding a host path, a container path and a
+     * flag, colon-separated. Only the host side can name a file in this
+     * project; the container path resolves to nothing and falls away.
+     */
+    public function testDiscoverReadsPathLikeStringsFromYaml(): void
+    {
+        mkdir($this->root . '/docker/local', 0700, true);
+        file_put_contents($this->root . '/docker/local/docker-compose.yml', implode("\n", [
+            'services:',
+            '  frontend:',
+            '    volumes:',
+            '      - ./frontend/vite.config.docker.ts:/app/vite.config.ts:ro',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([
+            'docker/local/frontend/vite.config.docker.ts',
+            'docker/local/app/vite.config.ts',
+        ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * The tokenising is loose on purpose, so the guard that keeps it safe is
+     * the extension list: a YAML file is mostly keys, image names and version
+     * strings, and none of them may reach the entry-point list.
+     */
+    public function testDiscoverIgnoresYamlScalarsThatAreNotSourcePaths(): void
+    {
+        file_put_contents($this->root . '/ci.yml', implode("\n", [
+            'jobs:',
+            '  build:',
+            '    runs-on: ubuntu-24.04',
+            '    steps:',
+            '      - uses: actions/checkout@v5',
+            '      - run: npm ci && npm test',
+            '      - image: node:22.1.0',
+            '',
+        ]));
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame([], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A path climbing out of the project cannot name one of its files, and
+     * `entryPointPath()` already refuses it. Pinned here because a YAML file
+     * is the most likely place to find one.
+     */
+    public function testDiscoverIgnoresYamlPathsThatClimbOutOfTheProject(): void
+    {
+        file_put_contents($this->root . '/mounts.yaml', "volumes:\n  - ../../secrets/loader.js:/app/loader.js\n");
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'yaml'));
+        $this->assertNotEmpty($units);
+        assertSame(['app/loader.js'], $units[0]->metadata['entry_points']);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────
 
     private function rmrf(string $path): void

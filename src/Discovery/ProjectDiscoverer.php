@@ -242,6 +242,11 @@ final readonly class ProjectDiscoverer
                 'entry_points' => self::htmlScriptEntryPoints($contents, $relative),
             ]);
         }
+        if ($kind === 'yaml') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+            ]);
+        }
 
         try {
             $decoded = JsonConfig::decode($contents, in_array($kind, ['typescript', 'knossos'], true));
@@ -992,6 +997,50 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * Every token in a YAML file shaped like a path to a source file.
+     *
+     * A Compose file mounts a config into a container, a CI workflow runs a
+     * script by name, a deployment manifest names an entry module. None of
+     * those is an import, so the file they name has an in-degree of zero while
+     * being the reason the thing runs at all.
+     *
+     * No YAML parser is used, and the file is scanned as text. That is the same
+     * bargain {@see self::manifestEntryPoints()} strikes with Composer's shell
+     * commands: what makes it safe is not the precision of the tokenising but
+     * the exactness of the matching. {@see ManifestEntryPointRule} compares
+     * against paths a scanner actually emitted, so a token naming nothing is
+     * inert, and the source-extension guard inside {@see self::entryPointPath()}
+     * keeps image tags, version strings and action references out.
+     *
+     * Blanket tokenising is right HERE and wrong for a tool's config module:
+     * see {@see self::toolConfigEntryPoints()}, which is key-scoped because a
+     * config names files to exclude as well as files to load.
+     *
+     * The character class stops at a colon, which is what splits a bind mount's
+     * host path from its container path: both halves are offered and only the
+     * half naming a real file can match.
+     *
+     * @return list<string>
+     */
+    private static function yamlPathEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $extensions = implode('|', array_map(preg_quote(...), self::ENTRY_POINT_EXTENSIONS));
+        if (preg_match_all(sprintf('#[A-Za-z0-9_./-]+\.(?:%s)\b#', $extensions), $contents, $matches) === false) {
+            return [];
+        }
+        $paths = [];
+        foreach ($matches[0] as $token) {
+            $path = self::entryPointPath($token, $directory);
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
+        }
+
+        return array_keys($paths);
+    }
+
+    /**
      * The directory a manifest's entry-point paths resolve against.
      *
      * `dirname()` answers '.' for a manifest at the root. Only that exact
@@ -1218,6 +1267,13 @@ final readonly class ProjectDiscoverer
         // not nodes, and no scanner parses HTML.
         if (str_ends_with($basename, '.html') || str_ends_with($basename, '.htm')) {
             return 'html';
+        }
+        // Compose files, CI workflows and deployment manifests all name source
+        // files by path. Read for those paths only; no YAML parser is involved
+        // and none is needed, for the same reason the Composer script reader
+        // tokenises shell commands crudely.
+        if (str_ends_with($basename, '.yml') || str_ends_with($basename, '.yaml')) {
+            return 'yaml';
         }
         if ($basename === 'pyproject.toml') {
             return 'python';
