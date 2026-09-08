@@ -51,6 +51,13 @@ about ten minutes, of which every lane would have spent between 60 and 138
 seconds merely acquiring the image. Pulling from a registry in the same
 datacentre costs about 44.
 
+External link checking is the one thing a pull request does not do. It walks
+out to third-party URLs, so it goes red when someone else's server does, and a
+pull request touching only documentation once failed because the site the
+README badge points at was down. It runs on `main` and on the schedule, where a
+failure informs rather than blocks. Internal link checking is unaffected: that
+runs in the `static` lane and is entirely ours to keep true.
+
 A release-please pull request runs `static` alone. Its diff is version files, a
 manifest and a changelog entry, so every other lane would re-verify code
 identical to the `main` it was cut from, which had just passed. The full matrix
