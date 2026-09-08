@@ -155,10 +155,12 @@ if [ "$profile" = "full" ] && in_lane release; then
         echo "cargo-audit is required in the quality container" >&2
         exit 1
     fi
-    # Skipped where a failure would block rather than inform. This check walks
-    # out to third-party URLs, so it goes red when someone else's server does:
-    # a pull request touching only documentation failed the gate because the
-    # site the README badge points at was down. Internal link checking is not
+    # Skipped where a failure would block rather than inform. This check asks
+    # whether a web server is answering right now, which is not a property of
+    # the change under review. A pull request touching only documentation
+    # failed the gate while the site the README badge points at was mid-deploy,
+    # and it was our own site: a link check on the critical path turns every
+    # deploy anywhere into a red build here. Internal link checking is not
     # affected, it runs in the static lane and is entirely ours to keep true.
     if [ "${KNOSSOS_EXTERNAL_LINKS:-1}" = "1" ]; then
         php tools/documentation-check.php --external
