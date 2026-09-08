@@ -63,12 +63,14 @@ jobs:
         # markdown, and the one edited PHP line. The full matrix runs again on
         # the push to main after it merges, so nothing reaches a tag unchecked.
         #
-        # Keyed on the branch name release-please owns and force-pushes. A
-        # human pushing code to a branch of that name would skip the lanes,
-        # which is why the post-merge run on main is the backstop rather than
-        # this being the only gate.
+        # Matched on the prefix release-please owns, not an exact name: a
+        # component-scoped repository calls the branch
+        # release-please--branches--main--components--<name>, and an equality
+        # test silently never fires there. A human pushing code to a branch of
+        # that shape would skip the lanes, which is why the post-merge run on
+        # main is the backstop rather than this being the only gate.
         lane:
-          ${{ fromJSON(github.head_ref == 'release-please--branches--main' &&
+          ${{ fromJSON(startsWith(github.head_ref, 'release-please--branches--') &&
           '["static"]' || '["static","tests","rust","release","coverage"]') }}
     steps:
       - uses: actions/checkout@v7
