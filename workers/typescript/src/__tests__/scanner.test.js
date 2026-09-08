@@ -353,6 +353,87 @@ describe("TypeScriptScanner.scan dynamic default imports", () => {
     });
 });
 
+// A facade republishes imported functions as its own members. Every screen
+// reaches them through it, and nothing names them directly, so before this they
+// were reachable from nothing but their own tests.
+describe("TypeScriptScanner.scan facade re-exports", () => {
+    it("reaches a function republished through a property access", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false},"include":["src"]}',
+            "src/customerApi.ts": [
+                "export function getCustomers(): string { return 'c'; }",
+                "export function neverRepublished(): string { return 'n'; }",
+                "",
+            ].join("\n"),
+            "src/apiClient.ts": [
+                "import * as customer from './customerApi';",
+                "export class ApiClient {",
+                "  getCustomers = customer.getCustomers;",
+                "}",
+                "export const alias = customer.getCustomers;",
+                "export const table = { fetch: customer.getCustomers };",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/customerApi.ts", "src/apiClient.ts"] },
+            (c) => contributions.push(c),
+        );
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const targets = contributions
+            .flatMap((c) => c.edges)
+            .filter((e) => e.kind === "references")
+            .map((e) => String(e.target));
+        const idOf = (name) =>
+            nodes.find((n) => n.display_name === name)?.local_id;
+
+        // The class field, the const, and the object-literal value all reach it.
+        expect(targets).toContain(idOf("getCustomers"));
+        // A sibling the facade does not republish stays unreached, so the
+        // clause has not turned every property read into an edge.
+        expect(targets).not.toContain(idOf("neverRepublished"));
+    });
+
+    it("does not emit a second reference for a function the facade calls", () => {
+        const root = fixture({
+            "package.json": '{"name":"fixture"}',
+            "tsconfig.json":
+                '{"compilerOptions":{"strict":false},"include":["src"]}',
+            "src/dep.ts": "export function run(): number { return 1; }\n",
+            "src/caller.ts": [
+                "import * as mod from './dep';",
+                "export function go(): number { return mod.run(); }",
+                "",
+            ].join("\n"),
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            { root, files: ["src/dep.ts", "src/caller.ts"] },
+            (c) => contributions.push(c),
+        );
+        const edges = contributions.flatMap((c) => c.edges);
+        const run = contributions
+            .flatMap((c) => c.nodes)
+            .find((n) => n.display_name === "run");
+
+        // `mod.run()` is a call site, and the callee is not an argument, so the
+        // access sits in no allowed position. It stays a `calls` edge alone.
+        expect(
+            edges.some((e) => e.kind === "calls" && e.target === run.local_id),
+        ).toBe(true);
+        expect(
+            edges.some(
+                (e) => e.kind === "references" && e.target === run.local_id,
+            ),
+        ).toBe(false);
+    });
+});
+
 // `import type` is erased before anything runs, so consumers need to be able to
 // tell such an import from a value one. The attribute has to be PRESENT on
 // every import for that question to have an answer.
