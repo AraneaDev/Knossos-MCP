@@ -159,7 +159,9 @@ final class RootsCommand implements CliCommand
      * rename() is atomic only within one filesystem, so the temporary file
      * must sit in the same directory; a write that fails partway (disk full,
      * for instance) then lands on the temporary name and never truncates the
-     * hand-edited file it would otherwise clobber.
+     * hand-edited file it would otherwise clobber. Every failure path here
+     * removes that temporary file before throwing, so a failed run leaves no
+     * litter beside the real one.
      *
      * @param list<string> $roots
      */
@@ -169,9 +171,24 @@ final class RootsCommand implements CliCommand
         if (!is_dir($directory) && !@mkdir($directory, 0o755, true)) {
             throw new InvalidArgumentException(sprintf('Unable to create %s.', $directory));
         }
+        // Captured before the temporary file is even written: rename() carries
+        // over the TEMPORARY file's mode, not the target's, so a file the
+        // operator deliberately chmod'd (0600, say) would otherwise silently
+        // widen to the umask default the moment it is replaced. A target that
+        // does not exist yet gets no mode forced onto it; the umask default is
+        // the ordinary behaviour for a file created for the first time.
+        $existingMode = is_file($configPath) ? (fileperms($configPath) & 0o777) : null;
+
         $encoded = json_encode(['roots' => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
         $temporary = $directory . '/.roots.json.' . bin2hex(random_bytes(8)) . '.tmp';
         if (file_put_contents($temporary, $encoded . PHP_EOL) === false) {
+            @unlink($temporary);
+            throw new InvalidArgumentException(sprintf('Unable to write %s.', $configPath));
+        }
+        // Set on the temporary file BEFORE the rename, not after, so the file
+        // is never in place, even briefly, with the wrong permissions.
+        if ($existingMode !== null && !@chmod($temporary, $existingMode)) {
+            @unlink($temporary);
             throw new InvalidArgumentException(sprintf('Unable to write %s.', $configPath));
         }
         if (!@rename($temporary, $configPath)) {

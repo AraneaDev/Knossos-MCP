@@ -151,6 +151,32 @@ final class RootsCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testExecutePreservesThePreExistingFilesPermissions(): void
+    {
+        // The atomic rename swaps in a freshly-created temporary file, whose
+        // mode comes from the umask default rather than the target's. A file
+        // an operator deliberately locked down must not silently widen just
+        // because a root was added to it.
+        $existing = $this->tempDir . '/existing';
+        $added = $this->tempDir . '/added';
+        mkdir($existing);
+        mkdir($added);
+        file_put_contents($this->rootsFile(), json_encode(['roots' => [$existing]], JSON_PRETTY_PRINT) . PHP_EOL);
+        chmod($this->rootsFile(), 0o600);
+
+        ob_start();
+        $status = (new RootsCommand())->run('allow-root', [$added], ['execute' => ['true']], $this->context());
+        ob_get_clean();
+
+        assertSame(0, $status);
+        assertSame('0600', substr(sprintf('%o', fileperms($this->rootsFile())), -4));
+        // Asserted alongside the mode so a fix that preserved permissions
+        // while corrupting the content could not pass.
+        $decoded = json_decode((string) file_get_contents($this->rootsFile()), true);
+        assertSame(['roots' => [$existing, $added]], $decoded);
+    }
+
+    #[Group('cli')]
     public function testRelativePathIsRejected(): void
     {
         $this->expectException(InvalidArgumentException::class);
