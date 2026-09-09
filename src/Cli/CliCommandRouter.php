@@ -11,6 +11,7 @@ use Knossos\Cli\Command\MetaCommand;
 use Knossos\Cli\Command\QueryCommand;
 use Knossos\Cli\Command\ScanCommand;
 use Knossos\Cli\Command\ServeCommand;
+use Knossos\Cli\Command\SessionCommand;
 use Knossos\Cli\Command\WatchCommand;
 use Knossos\Runtime\RuntimeFactory;
 
@@ -37,6 +38,7 @@ final class CliCommandRouter
             new WatchCommand(),
             new BundleCommand(),
             new QueryCommand(),
+            new SessionCommand(),
             new MaintenanceCommand(),
             new ServeCommand(),
         ];
