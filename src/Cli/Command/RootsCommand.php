@@ -1,0 +1,158 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Knossos\Cli\Command;
+
+use InvalidArgumentException;
+use JsonException;
+use Knossos\Cli\CliCommand;
+use Knossos\Cli\CliCommandContext;
+use Knossos\Discovery\AllowedRoots;
+
+/**
+ * Grants a project directory scan access, without hand-editing roots.json.
+ *
+ * `serve` refuses to scan anything outside its allowed roots, and the only
+ * remedy until now was editing that file directly. A running server re-reads
+ * it per request, which is what makes a CLI command for this worthwhile
+ * rather than a formality: the root it appends takes effect immediately,
+ * with no restart and no re-registration of the server.
+ *
+ * Preview by default, matching `annotate-component` and
+ * `install-agent-plugin`, because this command mutates a security-relevant
+ * allowlist: the set of directory trees the server may read.
+ */
+final class RootsCommand implements CliCommand
+{
+    /** {@inheritDoc} */
+    public function supports(string $command): bool
+    {
+        return $command === 'allow-root';
+    }
+
+    /** {@inheritDoc} */
+    public function allowedOptions(string $command): array
+    {
+        return ['db', 'json', 'execute'];
+    }
+
+    /** {@inheritDoc} */
+    public function run(string $command, array $positionals, array $options, CliCommandContext $context): int
+    {
+        $path = $positionals[0] ?? throw new InvalidArgumentException(
+            'Usage: knossos allow-root <path> [--execute] [--db=FILE] [--json]',
+        );
+        // Roots are compared as literal strings against the path a scan is
+        // asked to cover, so a relative one would never match anything and
+        // would silently grant nothing.
+        if (!str_starts_with($path, '/')) {
+            throw new InvalidArgumentException(sprintf(
+                '%s is not absolute. allow-root needs an absolute path so it can be compared against scan requests.',
+                $path,
+            ));
+        }
+        // A root that does not exist looks identical to a working one until
+        // something tries to scan it, which is the confusion this check
+        // prevents up front instead of at scan time.
+        if (!is_dir($path)) {
+            throw new InvalidArgumentException(sprintf('%s is not an existing directory.', $path));
+        }
+
+        $configPath = AllowedRoots::defaultConfigPath($context->databasePath());
+        $roots = self::readRoots($configPath);
+        $json = $context->options->flag($options, 'json');
+
+        if (in_array($path, $roots, true)) {
+            $context->output(
+                ['path' => $path, 'roots_file' => $configPath, 'added' => false],
+                $json,
+                sprintf('%s is already present in %s. Nothing to do.', $path, $configPath),
+            );
+            return 0;
+        }
+
+        $roots[] = $path;
+
+        if (!$context->options->flag($options, 'execute')) {
+            $context->output(
+                ['path' => $path, 'roots_file' => $configPath, 'added' => false, 'preview' => true],
+                $json,
+                sprintf(
+                    "Would add %s to %s.\nA running server re-reads that file per request, so the addition would take effect with no restart.\nRe-run with --execute to write it.",
+                    $path,
+                    $configPath,
+                ),
+            );
+            return 0;
+        }
+
+        self::writeRoots($configPath, $roots);
+        $context->output(
+            ['path' => $path, 'roots_file' => $configPath, 'added' => true],
+            $json,
+            sprintf(
+                "Added %s to %s.\nA running server re-reads that file per request, so this takes effect immediately with no restart.",
+                $path,
+                $configPath,
+            ),
+        );
+        return 0;
+    }
+
+    /**
+     * The roots already on disk, in file order.
+     *
+     * A malformed file throws rather than being treated as empty: silently
+     * proceeding would mean the next write replaces whatever a person hand-edited
+     * there with just the one root this call knows about, destroying it.
+     *
+     * @return list<string>
+     */
+    private static function readRoots(string $configPath): array
+    {
+        if (!is_file($configPath)) {
+            return [];
+        }
+        $contents = file_get_contents($configPath);
+        if ($contents === false) {
+            throw new InvalidArgumentException(sprintf('Unable to read %s.', $configPath));
+        }
+        try {
+            $decoded = json_decode($contents, true, 8, JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            throw new InvalidArgumentException(
+                sprintf('%s is not valid JSON (%s). Fix or remove it before retrying.', $configPath, $error->getMessage()),
+                previous: $error,
+            );
+        }
+        if (!is_array($decoded) || !is_array($decoded['roots'] ?? null)) {
+            throw new InvalidArgumentException(sprintf('%s does not have the expected {"roots": [...]} shape.', $configPath));
+        }
+        $roots = [];
+        foreach ($decoded['roots'] as $root) {
+            if (is_string($root)) {
+                $roots[] = $root;
+            }
+        }
+        return $roots;
+    }
+
+    /**
+     * Write the roots file, creating its parent directory when this is the
+     * first root ever granted for this database.
+     *
+     * @param list<string> $roots
+     */
+    private static function writeRoots(string $configPath, array $roots): void
+    {
+        $directory = dirname($configPath);
+        if (!is_dir($directory) && !@mkdir($directory, 0o755, true)) {
+            throw new InvalidArgumentException(sprintf('Unable to create %s.', $directory));
+        }
+        $encoded = json_encode(['roots' => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        if (file_put_contents($configPath, $encoded . PHP_EOL) === false) {
+            throw new InvalidArgumentException(sprintf('Unable to write %s.', $configPath));
+        }
+    }
+}

@@ -124,6 +124,7 @@ Usage:
   knossos serve [--allow-root=PATH]... [--db=PATH]
                 (roots also come from KNOSSOS_ALLOWED_ROOTS and the roots
                  file beside the database, re-read on every request)
+  knossos allow-root <path> [--execute]
 
 Docker supplies PHP, Node, Composer, and SQLite; mount source read-only at an
 allowed path and graph data read-write at /data.

@@ -10,6 +10,7 @@ use Knossos\Cli\Command\MaintenanceCommand;
 use Knossos\Cli\Command\MetaCommand;
 use Knossos\Cli\Command\PluginCommand;
 use Knossos\Cli\Command\QueryCommand;
+use Knossos\Cli\Command\RootsCommand;
 use Knossos\Cli\Command\ScanCommand;
 use Knossos\Cli\Command\ServeCommand;
 use Knossos\Cli\Command\SessionCommand;
@@ -40,6 +41,7 @@ final class CliCommandRouter
             new BundleCommand(),
             new QueryCommand(),
             new SessionCommand(),
+            new RootsCommand(),
             new PluginCommand(),
             new MaintenanceCommand(),
             new ServeCommand(),
