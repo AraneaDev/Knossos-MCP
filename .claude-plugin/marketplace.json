@@ -1,0 +1,12 @@
+{
+  "name": "knossos",
+  "owner": { "name": "AraneaDev", "url": "https://github.com/AraneaDev" },
+  "description": "The labyrinth mapped once, so nobody has to wander it again.",
+  "plugins": [
+    {
+      "name": "knossos",
+      "source": "./",
+      "description": "Session-start architecture orientation, plus a skill for when to ask the graph."
+    }
+  ]
+}

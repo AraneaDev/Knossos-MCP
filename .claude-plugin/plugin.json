@@ -1,0 +1,11 @@
+{
+  "name": "knossos",
+  "displayName": "Knossos",
+  "version": "0.0.0",
+  "description": "Orients each session on the repository's architecture, and says when to ask the graph instead of grepping.",
+  "author": { "name": "AraneaDev", "url": "https://github.com/AraneaDev" },
+  "homepage": "https://github.com/AraneaDev/Knossos-MCP",
+  "repository": "https://github.com/AraneaDev/Knossos-MCP",
+  "license": "MIT",
+  "keywords": ["architecture", "mcp", "orientation", "hooks", "context"]
+}
