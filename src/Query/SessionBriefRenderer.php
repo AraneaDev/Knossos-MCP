@@ -85,8 +85,20 @@ final readonly class SessionBriefRenderer
                 $brief->trackedFiles,
                 $this->age($brief->ageSeconds),
             ),
-            'missing' => sprintf('NO GRAPH. Run scan_project path=%s first.', $brief->path),
-            default => sprintf('NOT SCANNED. Run scan_project path=%s to map this repository.', $brief->path),
+            'missing' => $brief->pathAllowed
+                ? sprintf('NO GRAPH. Run scan_project path=%s first.', $brief->path)
+                : sprintf(
+                    'NO GRAPH, and %s is not an allowed root. Add it: knossos allow-root %s --execute',
+                    $brief->path,
+                    $brief->path,
+                ),
+            default => $brief->pathAllowed
+                ? sprintf('NOT SCANNED. Run scan_project path=%s to map this repository.', $brief->path)
+                : sprintf(
+                    'NOT SCANNED, and %s is not an allowed root. Add it: knossos allow-root %s --execute',
+                    $brief->path,
+                    $brief->path,
+                ),
         };
     }
 

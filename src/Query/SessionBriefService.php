@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use Knossos\Configuration\ProjectConfigurationLoader;
+use Knossos\Discovery\AllowedRoots;
+use Knossos\Discovery\DiscoveryException;
+use Knossos\Discovery\RootGuard;
 use PDO;
 use Throwable;
 
@@ -13,7 +16,10 @@ use Throwable;
  *
  * Read-only by contract: it never scans, writes, or executes project code. The
  * hook that calls it runs before the session does anything, so a side effect
- * here would be a side effect nobody asked for.
+ * here would be a side effect nobody asked for. That contract extends to the
+ * root-allowance check this service also performs: it only ever reads
+ * `roots.json` and reuses {@see RootGuard::resolve()}'s containment logic, so
+ * the check can never drift from what a real `scan_project` call would decide.
  *
  * Boundary rules are read from `knossos.json` on disk rather than from the copy
  * stored in `projects.config_json` at scan time, because a policy edited since
@@ -25,7 +31,16 @@ final readonly class SessionBriefService
     private const MAX_ENTRY_POINTS = 4;
     private const MAX_HUBS = 5;
 
-    public function __construct(private PDO $pdo) {}
+    /**
+     * @param string|null $databasePath where the database lives, used only to
+     *   locate `roots.json` beside it (see {@see AllowedRoots::defaultConfigPath()}).
+     *   Optional and nullable so callers that have no database path on hand
+     *   (or none at all, or only the ':memory:' sentinel) still work:
+     *   {@see self::pathAllowed()} then treats every path as allowed rather
+     *   than raising a warning it has no basis for. A missing database path
+     *   is not evidence of a missing root.
+     */
+    public function __construct(private PDO $pdo, private ?string $databasePath = null) {}
 
     /**
      * The gathered brief for whatever project contains this path.
@@ -47,7 +62,17 @@ final readonly class SessionBriefService
             // internally, so the verdict line can hand an agent a command it can
             // actually run. An MCP server has its own working directory and
             // allowed roots, so a relative argument here would be meaningless.
-            return new SessionBrief('unscanned', null, null, realpath($path) ?: $path, null, 0, 0);
+            $absolute = realpath($path) ?: $path;
+            return new SessionBrief(
+                'unscanned',
+                null,
+                null,
+                $absolute,
+                null,
+                0,
+                0,
+                pathAllowed: $this->pathAllowed($absolute),
+            );
         }
         $root = (string) $project['root_realpath'];
         $projectId = (string) $project['id'];
@@ -56,6 +81,10 @@ final readonly class SessionBriefService
         $drift = (int) ($probe['changed_files_since'] ?? 0)
             + (int) ($probe['added_files_since'] ?? 0)
             + (int) ($probe['deleted_files_since'] ?? 0);
+        // fresh/stale/unverified all imply a project that was already scanned,
+        // so its root was necessarily accepted before and the check has
+        // nothing to add; only 'missing' (no graph at all) needs it.
+        $pathAllowed = $state === 'missing' ? $this->pathAllowed($root) : true;
 
         return new SessionBrief(
             $state,
@@ -69,7 +98,45 @@ final readonly class SessionBriefService
             $this->notes($projectId),
             $state === 'fresh' ? $this->entryPoints($projectId) : [],
             $state === 'fresh' ? $this->hubs($projectId) : [],
+            $pathAllowed,
         );
+    }
+
+    /**
+     * Whether $absolutePath lies inside a root the CLI can see right now.
+     *
+     * Reuses {@see RootGuard::resolve()} rather than reimplementing
+     * containment, so this warning can never drift from the rejection a real
+     * `scan_project` call would produce. The sources mirror
+     * {@see \Knossos\Cli\Command\ServeCommand::resolveRoots()}: the
+     * `KNOSSOS_ALLOWED_ROOTS` environment variable, unioned with the roots
+     * file beside the database.
+     *
+     * Only {@see DiscoveryException} is caught: that is RootGuard's own
+     * "not allowed" signal, and nothing else may be silently read as one.
+     */
+    private function pathAllowed(string $absolutePath): bool
+    {
+        // ':memory:' is PDO's in-memory sentinel, not a filesystem path (the
+        // same reading DatabaseMaintenanceService and DoctorService give it
+        // elsewhere); there is no directory to find a roots file beside, so
+        // it is treated the same as no database path at all.
+        if ($this->databasePath === null || $this->databasePath === ':memory:') {
+            return true;
+        }
+        $staticRoots = [];
+        $configured = getenv('KNOSSOS_ALLOWED_ROOTS');
+        if (is_string($configured) && $configured !== '') {
+            $staticRoots = array_values(array_filter(explode(PATH_SEPARATOR, $configured)));
+        }
+        $allowedRoots = new AllowedRoots($staticRoots, AllowedRoots::defaultConfigPath($this->databasePath));
+        try {
+            (new RootGuard($allowedRoots))->resolve($absolutePath);
+
+            return true;
+        } catch (DiscoveryException) {
+            return false;
+        }
     }
 
     /** The rendered brief for whatever project contains this path. */

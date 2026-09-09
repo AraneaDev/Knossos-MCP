@@ -43,7 +43,8 @@ final class SessionCommand implements CliCommand
     {
         try {
             $path = $positionals[0] ?? getcwd();
-            $brief = (new ArchitectureQueryService($context->database()))->sessionBrief((string) $path);
+            $brief = (new ArchitectureQueryService($context->database()))
+                ->sessionBrief((string) $path, $context->databasePath());
             $context->output(['brief' => $brief], $context->options->flag($options, 'json'), $brief);
         } catch (Throwable) {
             return 0;

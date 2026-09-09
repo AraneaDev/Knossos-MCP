@@ -169,6 +169,67 @@ final class SessionBriefServiceTest extends KnossosTestCase
         }
     }
 
+    #[Group('query')]
+    public function testUnscannedPathOutsideEveryRootPointsAtAllowRoot(): void
+    {
+        // Paired with the mirror test below so this cannot pass for the wrong
+        // reason: an always-false flag would make this one pass too.
+        [$pdo, $root, $databasePath] = $this->rootsFileFixture(['roots' => []]);
+        try {
+            $text = (new SessionBriefService($pdo, $databasePath))->brief($root);
+
+            assertSame(true, str_contains($text, 'knossos allow-root'));
+            assertSame(true, str_contains($text, (string) realpath($root)));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testUnscannedPathInsideARootGetsTheOrdinaryScanWording(): void
+    {
+        // Mirror of the test above: same unscanned path, same absence of a
+        // scanned project, but the roots file now covers it. An always-true
+        // flag would make the test above fail to catch anything; this one
+        // guards the other direction.
+        [$pdo, $root, $databasePath] = $this->rootsFileFixture(null);
+        try {
+            $covering = (string) realpath($root);
+            file_put_contents(dirname($databasePath) . '/roots.json', json_encode(['roots' => [$covering]], JSON_THROW_ON_ERROR));
+
+            $text = (new SessionBriefService($pdo, $databasePath))->brief($root);
+
+            assertSame(true, str_contains($text, 'scan_project path='));
+            assertSame(false, str_contains($text, 'allow-root'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A real temp directory (so RootGuard's own existence check can pass or
+     * fail on its merits, not on a fixture path that was never created), a
+     * fresh database, and a roots.json seeded beside a database path that
+     * lives inside that same temp tree so removeTempTree() cleans up both.
+     *
+     * @param array{roots: list<string>}|null $rootsFile written verbatim as
+     *   JSON when given; omitted entirely (no file at all) when null.
+     * @return array{0: PDO, 1: string, 2: string} [pdo, project root, database path]
+     */
+    private function rootsFileFixture(?array $rootsFile): array
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o777, true);
+        $dbDir = $root . '/db';
+        mkdir($dbDir, 0o777, true);
+        $databasePath = $dbDir . '/knossos.sqlite';
+        if ($rootsFile !== null) {
+            file_put_contents($dbDir . '/roots.json', json_encode($rootsFile, JSON_THROW_ON_ERROR));
+        }
+
+        return [$this->freshTestDatabase(), $root, $databasePath];
+    }
+
     /**
      * A node whose kind qualifies as an entry point, and a second node that
      * is the target of edges, so entryPoints() and hubs() both have a

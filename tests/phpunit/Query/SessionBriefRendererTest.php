@@ -90,6 +90,58 @@ final class SessionBriefRendererTest extends TestCase
     }
 
     #[Group('query')]
+    public function testUnscannedNamesTheMissingRootWhenNotAllowed(): void
+    {
+        $brief = new SessionBrief('unscanned', null, null, '/root/Elsewhere', null, 0, 0, [], [], [], [], false);
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(
+            true,
+            str_contains(
+                $text,
+                'NOT SCANNED, and /root/Elsewhere is not an allowed root. Add it: knossos allow-root /root/Elsewhere --execute',
+            ),
+        );
+    }
+
+    #[Group('query')]
+    public function testUnscannedKeepsTodaysWordingWhenAllowed(): void
+    {
+        // Pinned so the plumbing that computes the flag cannot silently start
+        // warning on every allowed path without a test noticing.
+        $brief = new SessionBrief('unscanned', null, null, '/root/Elsewhere', null, 0, 0, [], [], [], [], true);
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(true, str_contains($text, 'NOT SCANNED. Run scan_project path=/root/Elsewhere to map this repository.'));
+        assertSame(false, str_contains($text, 'allow-root'));
+    }
+
+    #[Group('query')]
+    public function testMissingNamesTheMissingRootWhenNotAllowed(): void
+    {
+        $brief = new SessionBrief('missing', 'project_1b4f41', 'Knossos-MCP', '/root/Knossos-MCP', null, 0, 402, [], [], [], [], false);
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(
+            true,
+            str_contains(
+                $text,
+                'NO GRAPH, and /root/Knossos-MCP is not an allowed root. Add it: knossos allow-root /root/Knossos-MCP --execute',
+            ),
+        );
+    }
+
+    #[Group('query')]
+    public function testMissingKeepsTodaysWordingWhenAllowed(): void
+    {
+        $brief = new SessionBrief('missing', 'project_1b4f41', 'Knossos-MCP', '/root/Knossos-MCP', null, 0, 402, [], [], [], [], true);
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(true, str_contains($text, 'NO GRAPH. Run scan_project path=/root/Knossos-MCP first.'));
+        assertSame(false, str_contains($text, 'allow-root'));
+    }
+
+    #[Group('query')]
     public function testVerdictAndPointerSurviveEvenWhenTheVerdictAloneExceedsBudget(): void
     {
         // An unbounded project path can make the verdict line alone longer than

@@ -20,6 +20,17 @@ final readonly class SessionBrief
      * @param list<string> $notes annotations from earlier sessions
      * @param list<string> $entryPoints graph-derived, rendered only when fresh
      * @param list<string> $hubs graph-derived, rendered only when fresh
+     * @param bool $pathAllowed whether $path lies inside a root the CLI knows
+     *   about. Consulted only by the `unscanned` and `missing` verdicts: the
+     *   other three states imply a project that was already scanned, so its
+     *   root was necessarily accepted before, and the flag is not checked for
+     *   them. Advisory rather than definitive: a server started with
+     *   `--allow-root` flags has roots this check cannot see, so a false
+     *   value here can be a false positive. That is acceptable only because
+     *   the three root sources are unioned, so the fix the verdict names
+     *   (`knossos allow-root`) is a no-op when the root was already allowed
+     *   through one of those invisible sources. A false value must never be
+     *   read as proof that a scan will fail.
      */
     public function __construct(
         public string $state,
@@ -33,5 +44,6 @@ final readonly class SessionBrief
         public array $notes = [],
         public array $entryPoints = [],
         public array $hubs = [],
+        public bool $pathAllowed = true,
     ) {}
 }
