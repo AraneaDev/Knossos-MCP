@@ -263,16 +263,19 @@ This previews the two `claude` commands it would run
 `--execute` to actually run them, and `--scope=project` or `--scope=local`
 to install somewhere other than the default `user` scope.
 
-The plugin is never installed from a public marketplace, and that is
-deliberate rather than an oversight. `.claude-plugin/marketplace.json` is a
-**local** source descriptor: it only ever tells `claude plugin marketplace
-add` to look at a path on disk, which is why the install command points it
-at this checkout instead of at a URL. A marketplace clone of this repository
-would have no `vendor/`, so its own `bin/knossos` would not run, and because
-the `SessionStart` hook is designed to fail silent on any error, that broken
-install would produce nothing, forever, with nothing to diagnose. Sourcing
-the plugin from a checkout that is already running the server rules that
-failure mode out instead of merely warning against it.
+The supported install points at a checkout on disk.
+`.claude-plugin/marketplace.json` is a source descriptor for a **local**
+directory, which is why the install command hands
+`claude plugin marketplace add` the path to this checkout rather than a URL.
+
+The public route is open, and it produces a broken install. That descriptor
+ships at the root of a public repository, so
+`claude plugin marketplace add AraneaDev/Knossos-MCP` resolves and installs a
+clone that has no `vendor/`. Its own `bin/knossos` cannot run, and the
+`SessionStart` hook fails silent on every error, so that install produces
+nothing, forever, with nothing to diagnose. Install from a checkout that is
+already running the server, the one source that can supply the working binary
+the hook needs.
 
 MCP server registration is a separate step and stays that way: registering
 the server with an MCP client (see [quick start](#quick-start) above) does
