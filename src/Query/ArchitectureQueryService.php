@@ -389,4 +389,10 @@ final readonly class ArchitectureQueryService
     {
         return $this->annotationQueries->listAnnotations($projectId, $component, $kind, $limit, $offset);
     }
+
+    /** {@see SessionBriefService::brief()} */
+    public function sessionBrief(string $path): string
+    {
+        return (new SessionBriefService($this->pdo))->brief($path);
+    }
 }
