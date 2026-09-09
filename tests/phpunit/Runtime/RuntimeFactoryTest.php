@@ -10,6 +10,7 @@ use Knossos\Store\SqliteConnection;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 
 #[Group('runtime-factory')]
 final class RuntimeFactoryTest extends TestCase
@@ -159,6 +160,17 @@ final class RuntimeFactoryTest extends TestCase
         // Second call should be a no-op for migrations (already applied).
         $pdo = $factory->database($root . '/runtime.sqlite');
         $this->assertNotNull($pdo);
+    }
+
+    public function testDatabaseThrowsWhenTheParentDirectoryCannotBeCreated(): void
+    {
+        // /proc is a virtual filesystem: it cannot gain a new subdirectory, so
+        // mkdir() always fails here. The @ on that call (see RuntimeFactory)
+        // only silences the native PHP warning; the RuntimeException on the
+        // next line must still fire.
+        $this->expectException(RuntimeException::class);
+
+        (new RuntimeFactory(self::projectRoot()))->database('/proc/definitely-not-writable/knossos.sqlite');
     }
 
     public function testClassIsFinal(): void

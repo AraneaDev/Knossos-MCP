@@ -25,6 +25,23 @@ final class SessionBriefServiceTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testUnscannedRelativePathIsResolvedToAbsoluteInTheVerdict(): void
+    {
+        // Every other unscanned-path test above passes an already-absolute
+        // path, which is exactly why none of them would catch a relative one
+        // leaking into the verdict. `scan_project path=.` is not a command an
+        // MCP server can run: it has its own working directory and allowed
+        // roots, so the argument handed back must be absolute.
+        [$pdo] = $this->storeFixture();
+        $absolute = (string) realpath(self::repositoryRoot());
+
+        $text = (new SessionBriefService($pdo))->brief('.');
+
+        assertSame(true, str_contains($text, $absolute));
+        assertSame(false, str_contains($text, 'path=.'));
+    }
+
+    #[Group('query')]
     public function testScannedProjectCarriesItsIdAndAnyNotes(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

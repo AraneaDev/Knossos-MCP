@@ -43,7 +43,11 @@ final readonly class SessionBriefService
     {
         $project = (new ProjectPathResolver($this->pdo))->resolve($path);
         if ($project === null) {
-            return new SessionBrief('unscanned', null, null, $path, null, 0, 0);
+            // Resolve to an absolute path the same way ProjectPathResolver does
+            // internally, so the verdict line can hand an agent a command it can
+            // actually run. An MCP server has its own working directory and
+            // allowed roots, so a relative argument here would be meaningless.
+            return new SessionBrief('unscanned', null, null, realpath($path) ?: $path, null, 0, 0);
         }
         $root = (string) $project['root_realpath'];
         $projectId = (string) $project['id'];
