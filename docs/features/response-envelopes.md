@@ -170,3 +170,11 @@ whose results most often lead to an obvious next question (for example, an
 ambiguous `find_component` match set suggests `inspect_component` on the top
 candidate). They are suggestions, not instructions, and nothing is executed
 on the agent's behalf.
+
+One step is not a tool call. A `full` `scan_project` suggests installing the
+[session brief](session-brief.md) plugin, and that entry carries `shell` and
+`why` instead of `tool` and `args`, because it is a command a person runs in
+a terminal: it installs a Claude Code plugin into the user's own
+configuration, which is not the server's to do on anyone's behalf. A caller
+walking `next_steps` mechanically has to key on which of the two keys is
+present rather than assume `tool`.
