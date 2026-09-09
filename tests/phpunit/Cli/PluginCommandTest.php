@@ -120,4 +120,39 @@ final class PluginCommandTest extends KnossosTestCase
 
         unlink($out);
     }
+
+    #[Group('cli')]
+    public function testFailedEmitRemovesOnlyTheDirectoriesItCreated(): void
+    {
+        // Pre-create the target so that .claude-plugin already exists (and is
+        // therefore NOT tracked as created), but plugin.json is a DIRECTORY
+        // where emit() expects to copy() a file. mkdir() of hooks, hooks/scripts
+        // and skills/knossos all succeed and ARE tracked; the first copy() then
+        // fails on the pre-existing plugin.json directory. This exercises the
+        // rollback branch that removes a non-empty set of tracked directories,
+        // which the file-blocks-mkdir test above cannot reach.
+        $out = sys_get_temp_dir() . '/knossos-plugin-partial-' . bin2hex(random_bytes(4));
+        mkdir($out . '/.claude-plugin/plugin.json', 0o755, true);
+
+        try {
+            (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['out' => [$out], 'data' => ['/srv/knossos-data']],
+                $this->context(),
+            );
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException) {
+            // Expected: copy() cannot write a file over an existing directory.
+        }
+
+        // Every directory the command itself created is gone.
+        assertSame(false, is_dir($out . '/hooks'));
+        assertSame(false, is_dir($out . '/skills'));
+        // The one thing that was already there before the call survives untouched:
+        // cleanup removed only what the command made, not the whole target.
+        assertSame(true, is_dir($out . '/.claude-plugin/plugin.json'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
 }
