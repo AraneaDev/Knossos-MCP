@@ -20,7 +20,16 @@ namespace Knossos\Query;
  */
 final readonly class SessionBriefRenderer
 {
-    /** Hard output bounds per state. A brief that overruns its budget stops being read. */
+    /**
+     * Bounds on the optional sections per state, not on the whole output.
+     *
+     * The verdict line and the skill pointer sit below this budget as an
+     * irreducible floor: the verdict embeds the project path, which is
+     * unbounded, so "never exceed the budget" and "never drop the verdict or
+     * pointer" cannot both hold for every path. The floor wins, because the
+     * path must be verbatim or `scan_project path=...` is not a command
+     * anyone can run, and the pointer is what arms the skill.
+     */
     public const BUDGETS = [
         'fresh' => 1200,
         'stale' => 500,
@@ -31,7 +40,7 @@ final readonly class SessionBriefRenderer
 
     private const POINTER = 'Ask before grepping for structure: the `knossos` skill.';
 
-    /** The brief as injected text, never longer than its state's budget. */
+    /** The brief as injected text: optional sections kept within budget, verdict and pointer always present. */
     public function render(SessionBrief $brief): string
     {
         $budget = self::BUDGETS[$brief->state] ?? self::BUDGETS['unscanned'];
@@ -112,8 +121,12 @@ final readonly class SessionBriefRenderer
      * Assemble within budget, dropping whole sections rather than truncating.
      *
      * A list cut mid-entry reads as a complete list that happens to be wrong,
-     * which is worse than a shorter one. The verdict and the pointer are kept
-     * unconditionally: the pointer is what arms the skill.
+     * which is worse than a shorter one. The verdict and the pointer are the
+     * floor beneath the budget, not subject to it: dropping the pointer to
+     * honour the budget would silence the very thing that arms the skill, and
+     * truncating the verdict would hand back a `scan_project path=...` that
+     * nobody can run. Both are appended unconditionally, so an unusually long
+     * path can push the final output past its nominal budget.
      *
      * @param list<string> $lines the verdict first, then optional sections
      */
@@ -128,6 +141,6 @@ final readonly class SessionBriefRenderer
                 $out = $candidate;
             }
         }
-        return strlen($out) + strlen($tail) <= $budget ? $out . $tail : $out;
+        return $out . $tail;
     }
 }

@@ -90,6 +90,24 @@ final class SessionBriefRendererTest extends TestCase
     }
 
     #[Group('query')]
+    public function testVerdictAndPointerSurviveEvenWhenTheVerdictAloneExceedsBudget(): void
+    {
+        // An unbounded project path can make the verdict line alone longer than
+        // the state's budget. The floor still wins: the path must come through
+        // verbatim or `scan_project path=...` is not a command anyone can run,
+        // and the pointer is what arms the skill.
+        $path = '/root/' . str_repeat('a', 150);
+        $brief = new SessionBrief('unscanned', null, null, $path, null, 0, 0);
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(true, str_contains($text, '`knossos` skill'));
+        assertSame(
+            true,
+            str_contains($text, sprintf('NOT SCANNED. Run scan_project path=%s to map this repository.', $path)),
+        );
+    }
+
+    #[Group('query')]
     public function testOverlongSectionsAreDroppedWholeAndTheSkillPointerSurvives(): void
     {
         $huge = array_map(static fn(int $i): string => 'Hub' . $i . str_repeat('x', 80), range(1, 40));
