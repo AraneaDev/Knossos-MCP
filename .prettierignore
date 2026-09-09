@@ -15,3 +15,12 @@ docs/reference/api.md
 # Written by release-please. Reformatting it here would be reverted, and then
 # re-flagged, on the next release that regenerates the file.
 CHANGELOG.md
+
+# Hand-written with 2-space indentation and single quotes, matching neither
+# this project's own format glob (package.json's format:check covers
+# **/*.{js,json,jsonc,yaml,yml,md}) nor .editorconfig's 4-space/double-quote
+# default. These were never in scope; reformatting would rewrite 632 lines to
+# a style nobody chose for them.
+infection.json5
+tools/chaos-loop.mjs
+tools/coverage-badge.mjs
