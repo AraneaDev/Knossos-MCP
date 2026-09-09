@@ -118,7 +118,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `find_component`
 
-Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.
+Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates. Use before inspect_component when the name is ambiguous.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
