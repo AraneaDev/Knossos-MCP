@@ -11,14 +11,14 @@ the same structure by reading the same files.
 
 ## Route these questions to the graph
 
-| About to | Ask instead |
-| --- | --- |
-| grep for callers of a symbol | `list_usages`, exact call sites with line numbers |
-| guess what a change breaks | `impact_analysis`, dependants with confidence and evidence |
-| read several files to trace a request path | `explain_flow` |
-| decide where a new file belongs | `suggest_location` |
-| eyeball a diff for architectural risk | `review_diff` |
-| work out what a class is and what it touches | `find_component`, then `inspect_component` |
+| About to                                     | Ask instead                                                |
+| -------------------------------------------- | ---------------------------------------------------------- |
+| grep for callers of a symbol                 | `list_usages`, exact call sites with line numbers          |
+| guess what a change breaks                   | `impact_analysis`, dependants with confidence and evidence |
+| read several files to trace a request path   | `explain_flow`                                             |
+| decide where a new file belongs              | `suggest_location`                                         |
+| eyeball a diff for architectural risk        | `review_diff`                                              |
+| work out what a class is and what it touches | `find_component`, then `inspect_component`                 |
 
 Every project-scoped tool needs a `project_id`. The session brief puts it in
 context already. If it is not there, `list_projects` returns it.
