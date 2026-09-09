@@ -51,8 +51,8 @@ Write one when all three hold:
 
 Worth writing:
 
-- `ToolCatalog` — "the extension seam is here; `ToolService` is the dispatcher and should not grow arms"
-- `ProcessScannerClient` — "the worker boundary is process-enforced, not convention; in-process calls will pass tests and fail in production"
+- `ToolCatalog`, "the extension seam is here; `ToolService` is the dispatcher and should not grow arms"
+- `ProcessScannerClient`, "the worker boundary is process-enforced, not convention; in-process calls will pass tests and fail in production"
 
 Not worth writing, and actively harmful because they bury the ones above:
 

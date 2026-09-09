@@ -44,6 +44,15 @@ chmod +x "$tmp/knossos"
 expect_silent_success "hanging binary" \
     env KNOSSOS_BIN="$tmp/knossos" CLAUDE_PROJECT_DIR=/tmp sh "$HOOK"
 
+# Neither `timeout` nor `gtimeout` is resolvable (PATH emptied), and
+# KNOSSOS_BIN is an absolute path so it is still found without PATH. The
+# fallback path runs the binary unbounded, so use a binary that fails fast
+# rather than one that hangs, since nothing here would bound a hang.
+printf '#!/bin/sh\nexit 3\n' > "$tmp/knossos"
+chmod +x "$tmp/knossos"
+expect_silent_success "no timeout binary available" \
+    env KNOSSOS_BIN="$tmp/knossos" PATH=/nonexistent CLAUDE_PROJECT_DIR=/tmp "$SH_BIN" "$HOOK"
+
 rm -rf "$tmp"
 [ "$failures" -eq 0 ] || exit 1
 printf 'all hook failure modes silent\n'
