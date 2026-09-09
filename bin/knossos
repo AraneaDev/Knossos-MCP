@@ -5,6 +5,21 @@ declare(strict_types=1);
 
 use Knossos\Application;
 
+// Under the CLI SAPI a warning, notice or deprecation is written to STDOUT,
+// not to STDERR. The session-start hook discards only STDERR and injects
+// whatever reaches STDOUT straight into a session's context, so one
+// deprecation from a host with no php.ini (where the built-in default leaves
+// display_errors on) would prepend noise to the brief, and nothing downstream
+// can retract bytes already echoed. Routed to STDERR here, before the
+// autoloader is even required, so no code that could emit a diagnostic runs
+// first.
+//
+// This changes only where a diagnostic is written. Nothing is suppressed:
+// error_reporting is untouched, so warnings still surface on STDERR, and a
+// fatal error still terminates the process with its own non-zero status
+// exactly as before.
+ini_set('display_errors', 'stderr');
+
 $autoload = dirname(__DIR__) . '/vendor/autoload.php';
 
 if (!is_file($autoload)) {
