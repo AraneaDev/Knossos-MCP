@@ -176,8 +176,18 @@ final class RootsCommand implements CliCommand
         // operator deliberately chmod'd (0600, say) would otherwise silently
         // widen to the umask default the moment it is replaced. A target that
         // does not exist yet gets no mode forced onto it; the umask default is
-        // the ordinary behaviour for a file created for the first time.
-        $existingMode = is_file($configPath) ? (fileperms($configPath) & 0o777) : null;
+        // the ordinary behaviour for a file created for the first time. A
+        // target that exists but whose fileperms() call itself fails (a stat
+        // race, say) is treated the same way, with no mode forced: an unknown
+        // mode is not a reason to invent one, and `false & 0o777` would
+        // otherwise coerce to int 0, silently locking the file to mode 0000.
+        $existingMode = null;
+        if (is_file($configPath)) {
+            $stattedMode = fileperms($configPath);
+            if ($stattedMode !== false) {
+                $existingMode = $stattedMode & 0o777;
+            }
+        }
 
         $encoded = json_encode(['roots' => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
         $temporary = $directory . '/.roots.json.' . bin2hex(random_bytes(8)) . '.tmp';

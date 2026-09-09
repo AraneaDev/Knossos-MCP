@@ -86,6 +86,11 @@ final class RootsCommandTest extends KnossosTestCase
         assertSame(true, is_file($this->rootsFile()));
         $decoded = json_decode((string) file_get_contents($this->rootsFile()), true);
         assertSame(['roots' => [$target]], $decoded);
+        // Readable by its owner regardless of umask. A regression that forced
+        // mode 0000 onto a newly created file (the fileperms()-returns-false
+        // coercion this command must never fall into) would fail this even
+        // though the content assertion above still passed.
+        assertSame(true, (fileperms($this->rootsFile()) & 0o400) !== 0);
     }
 
     #[Group('cli')]
