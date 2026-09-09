@@ -8,6 +8,7 @@ use Knossos\Query\SessionBriefService;
 use Knossos\Store\SqliteGraphRepository;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
 final class SessionBriefServiceTest extends KnossosTestCase
@@ -83,108 +84,41 @@ final class SessionBriefServiceTest extends KnossosTestCase
     }
 
     #[Group('query')]
-    public function testNonFreshStateKeepsConfigAndNotesButOmitsGraphSections(): void
+    public function testFreshStateGathersEntryPointsAndHubs(): void
     {
         // storeFixture()'s root, /workspace/fixture-shop, does not exist on
         // disk, so StalenessProbe::changedFilesSince() always bails out to
         // null there and 'fresh' can never actually be observed. A real scan
-        // of a real temp checkout is needed so the fresh precondition below
-        // is genuine, not assumed.
+        // of a real temp checkout is needed so this positive case is genuine,
+        // not assumed. This is the counterpart to the negative case below:
+        // asserting an empty entryPoints/hubs on its own would also pass if
+        // the seeding were broken and there were never anything to find.
         [$pdo, $projectId, $root] = $this->scanTempFixture('php-scanner');
         try {
-            $repository = new SqliteGraphRepository($pdo);
-            $statement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
-            $statement->execute(['id' => $projectId]);
-            $scanId = (string) $statement->fetchColumn();
+            $this->seedRouteAndHub($pdo, $projectId);
 
-            // A node whose kind qualifies as an entry point, and a second node
-            // that is the target of edges, so entryPoints() and hubs() both
-            // have a candidate that would appear only by actually reading the
-            // graph. hubs() ranks by inbound edge count against the fixture's
-            // own graph (its densest real node, Ledger, sits at degree 8), so
-            // ten edges are wired in to make PaymentGateway win the ranking
-            // outright rather than relying on a tie the ORDER BY could break
-            // either way.
-            $route = StableId::symbol($projectId, 'php', 'route', 'App\\LoginRoute');
-            $repository->saveNode(
-                $route,
-                $projectId,
-                'php',
-                'route',
-                'App\\LoginRoute',
-                'LoginRoute',
-                null,
-                null,
-                null,
-                null,
-                'ast',
-                'certain',
-                [],
-                'test:session-brief-route',
-                $scanId,
-            );
-            $hub = StableId::symbol($projectId, 'php', 'class', 'App\\PaymentGateway');
-            $repository->saveNode(
-                $hub,
-                $projectId,
-                'php',
-                'class',
-                'App\\PaymentGateway',
-                'PaymentGateway',
-                null,
-                null,
-                null,
-                null,
-                'ast',
-                'certain',
-                [],
-                'test:session-brief-hub',
-                $scanId,
-            );
-            for ($i = 0; $i < 10; $i++) {
-                $source = StableId::symbol($projectId, 'php', 'class', "App\\Source{$i}");
-                $repository->saveNode(
-                    $source,
-                    $projectId,
-                    'php',
-                    'class',
-                    "App\\Source{$i}",
-                    "Source{$i}",
-                    null,
-                    null,
-                    null,
-                    null,
-                    'ast',
-                    'certain',
-                    [],
-                    "test:session-brief-src-{$i}",
-                    $scanId,
-                );
-                $edge = StableId::edge($projectId, 'calls', $source, $hub, "test:session-brief-edge-{$i}");
-                $repository->saveEdge(
-                    $edge,
-                    $projectId,
-                    'calls',
-                    $source,
-                    $hub,
-                    null,
-                    null,
-                    null,
-                    'ast',
-                    'certain',
-                    [],
-                    "test:session-brief-edge-{$i}",
-                    $scanId,
-                );
-            }
+            $brief = (new SessionBriefService($pdo))->gather($root);
 
-            // Precondition: unmutated, this project reads as fresh, and both
-            // candidates actually surface. If they did not, gating them off
-            // below would prove nothing.
-            $freshText = (new SessionBriefService($pdo))->brief($root);
-            assertSame(true, str_starts_with($freshText, 'FRESH'));
-            assertSame(true, str_contains($freshText, 'LoginRoute'));
-            assertSame(true, str_contains($freshText, 'PaymentGateway'));
+            assertSame('fresh', $brief->state);
+            assertSame(true, in_array('LoginRoute (route)', $brief->entryPoints, true));
+            assertSame(true, in_array('PaymentGateway', $brief->hubs, true));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testNonFreshStateKeepsConfigAndNotesButOmitsGraphSections(): void
+    {
+        // Rendered text cannot prove this: SessionBriefRenderer independently
+        // withholds entry points and hubs for any non-fresh state, so a check
+        // against `brief()`'s string masks whatever `gather()` actually did.
+        // Asserting on the gathered SessionBrief directly is what makes the
+        // service's own `$state === 'fresh'` gate (not the renderer's)
+        // observable.
+        [$pdo, $projectId, $root] = $this->scanTempFixture('php-scanner');
+        try {
+            $this->seedRouteAndHub($pdo, $projectId);
 
             // Force a non-fresh verdict without touching the filesystem: a
             // later scan attempt that never completed is exactly what
@@ -197,18 +131,114 @@ final class SessionBriefServiceTest extends KnossosTestCase
 
             $insert = $pdo->prepare(
                 'INSERT INTO annotations(project_id, canonical_name, kind, value, created_at, updated_at) ' .
-                "VALUES(:p, 'App\\\\Ops', 'note', 'stale graphs still carry their notes', :t, :t)",
+                'VALUES(:p, :n, :k, :v, :t, :t)',
             );
-            $insert->execute(['p' => $projectId, 't' => '2026-09-09T12:00:00+00:00']);
+            $insert->execute([
+                'p' => $projectId,
+                'n' => 'App\\Ops',
+                'k' => 'note',
+                'v' => 'stale graphs still carry their notes',
+                't' => '2026-09-09T12:00:00+00:00',
+            ]);
 
-            $text = (new SessionBriefService($pdo))->brief($root);
+            $brief = (new SessionBriefService($pdo))->gather($root);
 
-            assertSame(true, str_starts_with($text, 'STALE'));
-            assertSame(true, str_contains($text, 'stale graphs still carry their notes')); // annotation survives
-            assertSame(false, str_contains($text, 'LoginRoute'));      // entry points gated off
-            assertSame(false, str_contains($text, 'PaymentGateway')); // hubs gated off
+            assertSame('stale', $brief->state); // the state lever actually moved
+            assertSame([], $brief->entryPoints); // gated off
+            assertSame([], $brief->hubs); // gated off
+            assertSame(true, in_array('App\\Ops: stale graphs still carry their notes', $brief->notes, true));
         } finally {
             $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A node whose kind qualifies as an entry point, and a second node that
+     * is the target of edges, so entryPoints() and hubs() both have a
+     * candidate that would appear only by actually reading the graph.
+     * hubs() ranks by inbound edge count against the fixture's own graph
+     * (its densest real node, Ledger, sits at degree 8), so ten edges are
+     * wired in to make the seeded hub win the ranking outright rather than
+     * relying on a tie the ORDER BY could break either way.
+     */
+    private function seedRouteAndHub(PDO $pdo, string $projectId): void
+    {
+        $repository = new SqliteGraphRepository($pdo);
+        $statement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+        $scanId = (string) $statement->fetchColumn();
+
+        $route = StableId::symbol($projectId, 'php', 'route', 'App\\LoginRoute');
+        $repository->saveNode(
+            $route,
+            $projectId,
+            'php',
+            'route',
+            'App\\LoginRoute',
+            'LoginRoute',
+            null,
+            null,
+            null,
+            null,
+            'ast',
+            'certain',
+            [],
+            'test:session-brief-route',
+            $scanId,
+        );
+        $hub = StableId::symbol($projectId, 'php', 'class', 'App\\PaymentGateway');
+        $repository->saveNode(
+            $hub,
+            $projectId,
+            'php',
+            'class',
+            'App\\PaymentGateway',
+            'PaymentGateway',
+            null,
+            null,
+            null,
+            null,
+            'ast',
+            'certain',
+            [],
+            'test:session-brief-hub',
+            $scanId,
+        );
+        for ($i = 0; $i < 10; $i++) {
+            $source = StableId::symbol($projectId, 'php', 'class', "App\\Source{$i}");
+            $repository->saveNode(
+                $source,
+                $projectId,
+                'php',
+                'class',
+                "App\\Source{$i}",
+                "Source{$i}",
+                null,
+                null,
+                null,
+                null,
+                'ast',
+                'certain',
+                [],
+                "test:session-brief-src-{$i}",
+                $scanId,
+            );
+            $edge = StableId::edge($projectId, 'calls', $source, $hub, "test:session-brief-edge-{$i}");
+            $repository->saveEdge(
+                $edge,
+                $projectId,
+                'calls',
+                $source,
+                $hub,
+                null,
+                null,
+                null,
+                'ast',
+                'certain',
+                [],
+                "test:session-brief-edge-{$i}",
+                $scanId,
+            );
         }
     }
 }

@@ -27,13 +27,23 @@ final readonly class SessionBriefService
 
     public function __construct(private PDO $pdo) {}
 
-    /** The rendered brief for whatever project contains this path. */
-    public function brief(string $path): string
+    /**
+     * The gathered brief for whatever project contains this path.
+     *
+     * Public, and separate from {@see self::brief()}, because the rendered
+     * text cannot show whether graph sections were gathered and then dropped
+     * downstream, or never gathered at all: {@see SessionBriefRenderer}
+     * independently withholds entry points and hubs for any non-fresh state,
+     * so a check against rendered text cannot tell the two apart. Exposing
+     * this step is what makes the config-versus-graph split (rules and notes
+     * survive every state; entry points and hubs are fresh-only) observable
+     * on its own terms.
+     */
+    public function gather(string $path): SessionBrief
     {
-        $renderer = new SessionBriefRenderer();
         $project = (new ProjectPathResolver($this->pdo))->resolve($path);
         if ($project === null) {
-            return $renderer->render(new SessionBrief('unscanned', null, null, $path, null, 0, 0));
+            return new SessionBrief('unscanned', null, null, $path, null, 0, 0);
         }
         $root = (string) $project['root_realpath'];
         $projectId = (string) $project['id'];
@@ -43,7 +53,7 @@ final readonly class SessionBriefService
             + (int) ($probe['added_files_since'] ?? 0)
             + (int) ($probe['deleted_files_since'] ?? 0);
 
-        return $renderer->render(new SessionBrief(
+        return new SessionBrief(
             $state,
             $projectId,
             (string) $project['name'],
@@ -55,7 +65,13 @@ final readonly class SessionBriefService
             $this->notes($projectId),
             $state === 'fresh' ? $this->entryPoints($projectId) : [],
             $state === 'fresh' ? $this->hubs($projectId) : [],
-        ));
+        );
+    }
+
+    /** The rendered brief for whatever project contains this path. */
+    public function brief(string $path): string
+    {
+        return (new SessionBriefRenderer())->render($this->gather($path));
     }
 
     /** How many files the scan tracks, which is what makes the unverified verdict concrete. */
