@@ -55,14 +55,19 @@ this check has no way to see, since those never touch `roots.json` or
 `KNOSSOS_ALLOWED_ROOTS`. A path permitted only through such a flag is
 reported here as not allowed, which is a false positive.
 
-That blind spot is acceptable, and not merely tolerated, because the three
-root sources (`KNOSSOS_ALLOWED_ROOTS`, the roots file, and `--allow-root`
-flags) are unioned wherever access is actually decided. Advice that is wrong
-in this specific direction is still safe to act on: appending an
-already-allowed root to `roots.json` is a no-op, not a widening of anything.
-The check is not authoritative and the docs and the verdict text both treat
-it that way; it is a best-effort warning that only ever fires in the safe
-direction.
+That blind spot is acceptable, and not merely tolerated, because of how
+`serve` actually combines its sources. `--allow-root` flags and
+`KNOSSOS_ALLOWED_ROOTS` are not both consulted: the environment variable is
+read only when no `--allow-root` flag was passed, so exactly one of the two
+supplies the static roots for a given run. Whichever one that is, it is then
+unioned with the roots file, so `roots.json` always adds to whatever static
+roots are active rather than replacing them. That is what keeps the advice
+safe to act on even where the check is wrong: appending an already-permitted
+root to `roots.json` is a no-op, not a widening of anything, because the
+file was already being unioned with the active flags or environment
+variable before the addition. The check is not authoritative and the docs
+and the verdict text both treat it that way; it is a best-effort warning
+that only ever fires in the safe direction.
 
 Fresh, stale, and unverified states skip this check entirely. All three imply
 a project that was already scanned, which means its root was necessarily
