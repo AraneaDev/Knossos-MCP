@@ -103,9 +103,17 @@ final class RootsCommand implements CliCommand
     /**
      * The roots already on disk, in file order.
      *
-     * A malformed file throws rather than being treated as empty: silently
-     * proceeding would mean the next write replaces whatever a person hand-edited
-     * there with just the one root this call knows about, destroying it.
+     * Tolerates both `{"roots": [...]}` and a bare `[...]`, the same two shapes
+     * {@see AllowedRoots::parse()} accepts when a running server reads this
+     * file. Rejecting the bare form here would make this command call a file
+     * "corrupt" that the server itself reads and honours just fine, which is
+     * exactly the hand-editing dead end the command exists to remove.
+     *
+     * Invalid JSON is a different failure and still throws rather than being
+     * treated as empty: a reader that must never grant more than it should is
+     * right to fall back to nothing, but a writer must never silently replace
+     * content it could not understand with just the one root this call knows
+     * about.
      *
      * @return list<string>
      */
@@ -126,11 +134,12 @@ final class RootsCommand implements CliCommand
                 previous: $error,
             );
         }
-        if (!is_array($decoded) || !is_array($decoded['roots'] ?? null)) {
+        $decodedRoots = is_array($decoded) ? ($decoded['roots'] ?? $decoded) : null;
+        if (!is_array($decodedRoots)) {
             throw new InvalidArgumentException(sprintf('%s does not have the expected {"roots": [...]} shape.', $configPath));
         }
         $roots = [];
-        foreach ($decoded['roots'] as $root) {
+        foreach ($decodedRoots as $root) {
             if (is_string($root)) {
                 $roots[] = $root;
             }
@@ -142,6 +151,16 @@ final class RootsCommand implements CliCommand
      * Write the roots file, creating its parent directory when this is the
      * first root ever granted for this database.
      *
+     * Always writes the canonical `{"roots": [...]}` shape, so a bare-array
+     * file that readRoots() tolerated on the way in is normalised the first
+     * time a root is added through this command.
+     *
+     * Written to a temporary file beside the target and renamed into place.
+     * rename() is atomic only within one filesystem, so the temporary file
+     * must sit in the same directory; a write that fails partway (disk full,
+     * for instance) then lands on the temporary name and never truncates the
+     * hand-edited file it would otherwise clobber.
+     *
      * @param list<string> $roots
      */
     private static function writeRoots(string $configPath, array $roots): void
@@ -151,7 +170,12 @@ final class RootsCommand implements CliCommand
             throw new InvalidArgumentException(sprintf('Unable to create %s.', $directory));
         }
         $encoded = json_encode(['roots' => $roots], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-        if (file_put_contents($configPath, $encoded . PHP_EOL) === false) {
+        $temporary = $directory . '/.roots.json.' . bin2hex(random_bytes(8)) . '.tmp';
+        if (file_put_contents($temporary, $encoded . PHP_EOL) === false) {
+            throw new InvalidArgumentException(sprintf('Unable to write %s.', $configPath));
+        }
+        if (!@rename($temporary, $configPath)) {
+            @unlink($temporary);
             throw new InvalidArgumentException(sprintf('Unable to write %s.', $configPath));
         }
     }

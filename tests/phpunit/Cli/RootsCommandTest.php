@@ -128,6 +128,29 @@ final class RootsCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testBareArrayFileIsAcceptedAppendedAndNormalisedToCanonicalShape(): void
+    {
+        // AllowedRoots::parse() tolerates a bare [...] as well as
+        // {"roots": [...]}, and a running server honours a file in that shape.
+        // This command must not call such a file corrupt.
+        $existing = $this->tempDir . '/existing';
+        $added = $this->tempDir . '/added';
+        mkdir($existing);
+        mkdir($added);
+        file_put_contents($this->rootsFile(), json_encode([$existing]) . PHP_EOL);
+
+        ob_start();
+        $status = (new RootsCommand())->run('allow-root', [$added], ['execute' => ['true']], $this->context());
+        ob_get_clean();
+
+        assertSame(0, $status);
+        $decoded = json_decode((string) file_get_contents($this->rootsFile()), true);
+        // Normalised to the canonical shape, with the pre-existing path first
+        // and the newly added one appended after it.
+        assertSame(['roots' => [$existing, $added]], $decoded);
+    }
+
+    #[Group('cli')]
     public function testRelativePathIsRejected(): void
     {
         $this->expectException(InvalidArgumentException::class);
