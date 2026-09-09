@@ -26,14 +26,14 @@ knossos list-annotations project_... --json
 
 `kind` is one of:
 
-- `intended_boundary` — this component's placement is deliberate; do not
+- `intended_boundary`: this component's placement is deliberate; do not
   flag it as misplaced.
-- `confirmed_dead` — a human or agent has verified this component is unused,
+- `confirmed_dead`: a human or agent has verified this component is unused,
   beyond what static analysis alone can prove.
-- `false_positive` — this component was wrongly flagged (for example, by
+- `false_positive`: this component was wrongly flagged (for example, by
   `architecture_health`'s dead-code candidates); read surfaces that consume
   annotations use this to stop re-surfacing it.
-- `note` — a free-form annotation with no special read-side effect.
+- `note`: a free-form annotation with no special read-side effect.
 
 ## Survival across rescans
 
@@ -47,7 +47,7 @@ the project itself cascades the cleanup (`ON DELETE CASCADE` on `project_id`).
 
 `annotate_component` previews by default; pass `execute: true` to apply.
 `remove: true` deletes the `(component, kind)` pair instead of writing it.
-Writing the same `(component, kind)` again is an upsert — the existing value
+Writing the same `(component, kind)` again is an upsert: the existing value
 and `updated_at` are replaced, `created_at` is not. The response's `previous`
 field carries the annotation as it stood before the write (or `null`), so a
 caller can tell an upsert from a fresh insert.
@@ -55,8 +55,8 @@ caller can tell an upsert from a fresh insert.
 `component` resolves the same way as other component-accepting tools: an
 exact canonical or display name match, or a unique name prefix. An ambiguous
 prefix is rejected with candidates rather than silently picking one. A name
-that does not resolve to any node in the current graph is still accepted —
-the response carries a warning ("...not found...") because the target may be
+that does not resolve to any node in the current graph is still accepted. The
+response carries a warning ("...not found...") because the target may be
 a symbol the scanner does not see yet, or one that will exist after a
 planned change.
 

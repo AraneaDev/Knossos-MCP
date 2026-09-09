@@ -6,73 +6,73 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 
 ### `Knossos\Classification\ClassificationRule`
 
-- `id(): string` — Return the stable identifier recorded as classification provenance
-- `classify(Knossos\Scanner\Protocol\NodeFact $node): array` — Classify one graph node without mutating it
+- `id(): string`: Return the stable identifier recorded as classification provenance
+- `classify(Knossos\Scanner\Protocol\NodeFact $node): array`: Classify one graph node without mutating it
 
 ### `Knossos\Cli\CliCommand`
 
-- `supports(string $command): bool` — Reports whether this handler owns the requested CLI command name
-- `allowedOptions(string $command): array` — Returns the option names this handler accepts for the given command, so
-- `run(string $command, array $positionals, array $options, Knossos\Cli\CliCommandContext $context): int` — Executes a supported CLI command using parsed positional arguments and options
+- `supports(string $command): bool`: Reports whether this handler owns the requested CLI command name
+- `allowedOptions(string $command): array`: Returns the option names this handler accepts for the given command, so
+- `run(string $command, array $positionals, array $options, Knossos\Cli\CliCommandContext $context): int`: Executes a supported CLI command using parsed positional arguments and options
 
 ### `Knossos\Git\GitHistoryProvider`
 
-- `history(string $projectRoot, int $sinceDays, int $maxCommits, int $timeoutMs): array` — Return bounded, read-only change history for project-relative files
+- `history(string $projectRoot, int $sinceDays, int $maxCommits, int $timeoutMs): array`: Return bounded, read-only change history for project-relative files
 
 ### `Knossos\Git\GitProcessRunnerInterface`
 
-- `run(array $command, int $timeoutMs, string $operation): string` — Run a bounded, timeout-controlled Git command
+- `run(array $command, int $timeoutMs, string $operation): string`: Run a bounded, timeout-controlled Git command
 
 ### `Knossos\Git\GitWorkingTreeProvider`
 
-- `changes(string $projectRoot, ?string $baseRef, int $maxFiles, int $timeoutMs): array` — Return bounded changed paths and explicit renames without modifying Git
+- `changes(string $projectRoot, ?string $baseRef, int $maxFiles, int $timeoutMs): array`: Return bounded changed paths and explicit renames without modifying Git
 
 ### `Knossos\Query\SemanticRanker`
 
-- `id(): string` — Return the stable provider identifier included in ranking provenance
-- `rank(string $featureDescription, array $candidates, int $timeoutMs): array` — Score bounded candidate text without changing deterministic base factors
+- `id(): string`: Return the stable provider identifier included in ranking provenance
+- `rank(string $featureDescription, array $candidates, int $timeoutMs): array`: Score bounded candidate text without changing deterministic base factors
 
 ### `Knossos\Scan\ProjectScanner`
 
-- `scan(string $root, ?string $name = null, ?int $maxFiles = null, ?int $maxFileBytes = null, ?array $explicitBoundaries = null, ?string $mode = null, ?Knossos\Scan\CancellationToken $cancellation = null, ?int $snapshotRetention = null, ?int $workerTimeoutMs = null, ?int $workerMemoryMb = null): Knossos\Query\ResultEnvelope` — Build or refresh a project's graph and return the result envelope
+- `scan(string $root, ?string $name = null, ?int $maxFiles = null, ?int $maxFileBytes = null, ?array $explicitBoundaries = null, ?string $mode = null, ?Knossos\Scan\CancellationToken $cancellation = null, ?int $snapshotRetention = null, ?int $workerTimeoutMs = null, ?int $workerMemoryMb = null): Knossos\Query\ResultEnvelope`: Build or refresh a project's graph and return the result envelope
 
 ### `Knossos\Scanner\ScannerClient`
 
-- `initialize(): Knossos\Scanner\Protocol\ScannerManifest` — Negotiate the worker contract before any project input is sent
-- `scan(array $request): iterable` — Stream owned facts for a bounded, validated scan request
-- `cancel(string|int $requestId): void` — Request cooperative cancellation of an in-flight worker operation
-- `shutdown(): void` — Shut down the worker and release its complete process tree
+- `initialize(): Knossos\Scanner\Protocol\ScannerManifest`: Negotiate the worker contract before any project input is sent
+- `scan(array $request): iterable`: Stream owned facts for a bounded, validated scan request
+- `cancel(string|int $requestId): void`: Request cooperative cancellation of an in-flight worker operation
+- `shutdown(): void`: Shut down the worker and release its complete process tree
 
 ### `Knossos\Store\GraphRepository`
 
-- `transaction(callable $operation): mixed` — Execute an operation atomically and return its result
-- `bulkTransaction(callable $operation): mixed` — Execute a whole-graph rewrite atomically, checking referential integrity
-- `saveProject(string $id, string $name, string $rootRealpath, array $config = []): void` — Create or update project identity and non-secret configuration metadata
-- `findProject(string $id): ?array` — Find one project by stable ID
-- `createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void` — Record the start of a scan before graph reconciliation
-- `completeScan(string $projectId, string $scanId): void` — Atomically make a successfully reconciled scan active
-- `recordFailedScan(string $id, string $projectId, string $mode, string $status): void` — Persist a terminal (failed or cancelled) scan attempt so it is observable
-- `archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void` — Retain the active snapshot under the configured bounded history policy
-- `existingGraphIds(string $projectId): array` — The ids a project's graph currently holds, per table, before a scan writes its own
-- `pruneGraph(string $projectId, array $existing, array $desired): void` — Delete the graph rows a scan did not produce, leaving the rest untouched
-- `stampGraphScan(string $projectId, string $scanId): void` — Attribute every surviving graph row to the scan that just confirmed it
-- `clearProjectDiagnostics(string $projectId): void` — Drop a project's diagnostics, which belong to the scan that produced them
-- `saveFile(string $id, string $projectId, string $relativePath, string $contentHash, int $size, int $mtime, string $language, string $scannerVersion, string $scanId, int $lineCount = 0): void` — Persist one scanned file and its content/provenance fingerprints
-- `saveNode(string $id, string $projectId, string $language, string $kind, string $canonicalName, string $displayName, ?string $parentId, ?string $fileId, ?int $startLine, ?int $endLine, string $origin, string $confidence, array $attributes, string $ownerKey, string $scanId): void` — Persist one evidence-backed graph node
-- `saveEdge(string $id, string $projectId, string $kind, string $sourceId, string $targetId, ?string $fileId, ?int $startLine, ?int $endLine, string $origin, string $confidence, array $attributes, string $ownerKey, string $scanId): void` — Persist one occurrence-level, evidence-backed directed graph edge
-- `saveNodes(array $nodes, string $projectId, string $scanId): void` — Persist a batch of evidence-backed graph nodes as one multi-row upsert
-- `saveEdges(array $edges, string $projectId, string $scanId): void` — Persist a batch of occurrence-level, evidence-backed directed graph edges
-- `saveFiles(array $files, string $projectId, string $scanId): void` — Persist a batch of discovered files as one multi-row upsert
-- `saveClassifications(array $classifications, string $projectId, string $scanId): void` — Persist a batch of role classifications as one multi-row insert
-- `saveBoundaryMemberships(array $memberships, string $projectId, string $scanId): void` — Persist a batch of boundary memberships as one multi-row insert
-- `saveDiagnostic(string $id, string $projectId, string $scanId, ?string $fileId, string $severity, string $code, string $message, ?int $startLine, ?int $endLine, string $ownerKey): void` — Persist one bounded scanner or reconciliation diagnostic
-- `saveClassification(string $id, string $projectId, string $nodeId, string $role, string $origin, string $confidence, string $ruleId, ?string $fileId, ?int $startLine, ?int $endLine, array $attributes, string $scanId): void` — Persist one deterministic role classification with rule provenance
-- `saveBoundary(string $id, string $projectId, string $name, array $matcher, string $source, string $scanId): void` — Persist an explicit or inferred architecture boundary
-- `saveBoundaryMembership(string $boundaryId, string $projectId, string $nodeId, string $scanId): void` — Associate a node with one boundary for the active scan
-- `replaceContributionCache(string $projectId, array $entries): void` — Replace all incremental contribution-cache entries for a project
-- `findNodesByName(string $projectId, string $name, int $limit = 20): array` — Return bounded exact and display-name component matches
-- `outgoing(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array` — Return bounded outgoing adjacency rows for one node
-- `incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array` — Return bounded incoming adjacency rows for one node
+- `transaction(callable $operation): mixed`: Execute an operation atomically and return its result
+- `bulkTransaction(callable $operation): mixed`: Execute a whole-graph rewrite atomically, checking referential integrity
+- `saveProject(string $id, string $name, string $rootRealpath, array $config = []): void`: Create or update project identity and non-secret configuration metadata
+- `findProject(string $id): ?array`: Find one project by stable ID
+- `createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void`: Record the start of a scan before graph reconciliation
+- `completeScan(string $projectId, string $scanId): void`: Atomically make a successfully reconciled scan active
+- `recordFailedScan(string $id, string $projectId, string $mode, string $status): void`: Persist a terminal (failed or cancelled) scan attempt so it is observable
+- `archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void`: Retain the active snapshot under the configured bounded history policy
+- `existingGraphIds(string $projectId): array`: The ids a project's graph currently holds, per table, before a scan writes its own
+- `pruneGraph(string $projectId, array $existing, array $desired): void`: Delete the graph rows a scan did not produce, leaving the rest untouched
+- `stampGraphScan(string $projectId, string $scanId): void`: Attribute every surviving graph row to the scan that just confirmed it
+- `clearProjectDiagnostics(string $projectId): void`: Drop a project's diagnostics, which belong to the scan that produced them
+- `saveFile(string $id, string $projectId, string $relativePath, string $contentHash, int $size, int $mtime, string $language, string $scannerVersion, string $scanId, int $lineCount = 0): void`: Persist one scanned file and its content/provenance fingerprints
+- `saveNode(string $id, string $projectId, string $language, string $kind, string $canonicalName, string $displayName, ?string $parentId, ?string $fileId, ?int $startLine, ?int $endLine, string $origin, string $confidence, array $attributes, string $ownerKey, string $scanId): void`: Persist one evidence-backed graph node
+- `saveEdge(string $id, string $projectId, string $kind, string $sourceId, string $targetId, ?string $fileId, ?int $startLine, ?int $endLine, string $origin, string $confidence, array $attributes, string $ownerKey, string $scanId): void`: Persist one occurrence-level, evidence-backed directed graph edge
+- `saveNodes(array $nodes, string $projectId, string $scanId): void`: Persist a batch of evidence-backed graph nodes as one multi-row upsert
+- `saveEdges(array $edges, string $projectId, string $scanId): void`: Persist a batch of occurrence-level, evidence-backed directed graph edges
+- `saveFiles(array $files, string $projectId, string $scanId): void`: Persist a batch of discovered files as one multi-row upsert
+- `saveClassifications(array $classifications, string $projectId, string $scanId): void`: Persist a batch of role classifications as one multi-row insert
+- `saveBoundaryMemberships(array $memberships, string $projectId, string $scanId): void`: Persist a batch of boundary memberships as one multi-row insert
+- `saveDiagnostic(string $id, string $projectId, string $scanId, ?string $fileId, string $severity, string $code, string $message, ?int $startLine, ?int $endLine, string $ownerKey): void`: Persist one bounded scanner or reconciliation diagnostic
+- `saveClassification(string $id, string $projectId, string $nodeId, string $role, string $origin, string $confidence, string $ruleId, ?string $fileId, ?int $startLine, ?int $endLine, array $attributes, string $scanId): void`: Persist one deterministic role classification with rule provenance
+- `saveBoundary(string $id, string $projectId, string $name, array $matcher, string $source, string $scanId): void`: Persist an explicit or inferred architecture boundary
+- `saveBoundaryMembership(string $boundaryId, string $projectId, string $nodeId, string $scanId): void`: Associate a node with one boundary for the active scan
+- `replaceContributionCache(string $projectId, array $entries): void`: Replace all incremental contribution-cache entries for a project
+- `findNodesByName(string $projectId, string $name, int $limit = 20): array`: Return bounded exact and display-name component matches
+- `outgoing(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array`: Return bounded outgoing adjacency rows for one node
+- `incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array`: Return bounded incoming adjacency rows for one node
 
 ## Isolated worker APIs
 

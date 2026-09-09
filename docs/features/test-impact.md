@@ -3,7 +3,7 @@
 `test_impact` projects a changed-files blast radius (the same analysis behind
 `changed_files_impact`) onto the test files that statically reach the changed
 code, ranked by distance. Use it to run the relevant tests first in an
-edit-test loop; it is a lower bound, not a substitute for the full suite —
+edit-test loop; it is a lower bound, not a substitute for the full suite:
 data-driven tests, fixtures, and glob-only discovery are invisible to the
 graph.
 

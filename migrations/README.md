@@ -1,7 +1,7 @@
 # Migrations
 
 Applied migrations are checksummed by `MigrationRunner`, which compares a
-sha256 of the entire file — comments included — against the recorded value and
+sha256 of the entire file (comments included) against the recorded value and
 refuses to run when they differ. An applied migration is therefore immutable:
 corrections go here, not into the file.
 

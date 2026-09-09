@@ -5,7 +5,7 @@
 inbound edge among the selected edge kinds.
 
 These are **candidates, not findings**. A zero in-degree is absence of static
-evidence, not proof of absence — reflection, configuration, templates, registry
+evidence, not proof of absence: reflection, configuration, templates, registry
 arrays, callbacks, dispatch tables, and framework conventions all reference code
 without leaving a statically visible edge. The tool says so in its own
 `warnings`, and every candidate carries a `reachability`, a `confidence` and a
@@ -30,24 +30,24 @@ test-only findings are waiting behind a higher `limit`.
 may be waiting on a caller nobody has written yet; one whose own test is its
 only caller is finished work that no product path reaches, and it still costs
 review, refactors, and CI time. A scan of a 588-file React project found ten
-such files — 908 lines of production code and 1,089 lines of test, still
+such files: 908 lines of production code and 1,089 lines of test, still
 receiving maintenance a week earlier, reachable from no screen.
 
 Passing `include_tests` asks for test code to count as part of the architecture,
 which collapses the distinction: nothing is reported as `test_only`, and a
 component its test reaches is simply referenced.
 
-Components reached by convention rather than by an edge — controllers, commands,
-entry points, tool configuration — are excluded rather than given a class of
+Components reached by convention rather than by an edge (controllers, commands,
+entry points, tool configuration) are excluded rather than given a class of
 their own. They are counted in `bounds.excluded_convention_discovered`; see
 [what is excluded](#what-is-excluded-before-reporting) below.
 
 ## Confidence
 
-| Confidence | Meaning                                                                                                                                                                    |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                           |
-| `possible` | No inbound reference, but the component is reached in ways a scan cannot see — a non-`ast` origin, a framework role, or a member of a type extending an external ancestor. |
+| Confidence | Meaning                                                                                                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                          |
+| `possible` | No inbound reference, but the component is reached in ways a scan cannot see: a non-`ast` origin, a framework role, or a member of a type extending an external ancestor. |
 
 The `reason` field names the specific ground, so a caller never has to infer why
 a candidate was demoted.
@@ -58,24 +58,24 @@ Several classes of component have a structurally zero in-degree and would drown
 the real signal. Each exclusion is counted in `bounds` so the filtering is
 auditable rather than invisible.
 
-| `bounds` counter                 | Excluded                                                                                                                                               |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `excluded_external_components`   | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.                             |
-| `excluded_test_components`       | Nodes classified `quality.test_module` — a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`.                 |
-| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.                    |
-| `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                              |
-| `excluded_constructors`          | Engine-invoked members — constructors, destructors, magic/protocol methods — whose declaring type is referenced (see below).                           |
-| `excluded_entry_scripts`         | Modules a scanner marked as executable scripts — a shebang, a `__main__` guard, PHP file-scope code — whose bodies something outside the graph enters. |
-| `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts` (see below).                                                                                      |
-| `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                                    |
-| `excluded_convention_discovered` | Components carrying an entry-point role — a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).                  |
-| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](annotations.md).                                                                                   |
+| `bounds` counter                 | Excluded                                                                                                                                             |
+| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `excluded_external_components`   | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.                           |
+| `excluded_test_components`       | Nodes classified `quality.test_module`: a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`.                |
+| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.                  |
+| `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                            |
+| `excluded_constructors`          | Engine-invoked members (constructors, destructors, magic/protocol methods) whose declaring type is referenced (see below).                           |
+| `excluded_entry_scripts`         | Modules a scanner marked as executable scripts (a shebang, a `__main__` guard, PHP file-scope code) whose bodies something outside the graph enters. |
+| `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts` (see below).                                                                                    |
+| `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                                  |
+| `excluded_convention_discovered` | Components carrying an entry-point role: a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).                 |
+| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](annotations.md).                                                                                 |
 
 ### Why engine-invoked members are excluded
 
 Instantiating a type is recorded as a `constructs` edge to the **class**, never
 to its constructor. Every constructor in every graph therefore has an in-degree
-of zero, however heavily the class is used — on one 109-file TypeScript project,
+of zero, however heavily the class is used. On one 109-file TypeScript project,
 five of thirteen surviving candidates were constructors of classes the same
 graph showed being instantiated.
 
@@ -89,7 +89,7 @@ When the type itself is unreferenced, both stay reportable: the type is the
 unit worth deleting, and the member goes with it.
 
 Recognised names are `constructor` (TypeScript/JavaScript) and any member
-starting with `__` — the prefix PHP and Python both reserve for engine
+starting with `__`: the prefix PHP and Python both reserve for engine
 dispatch, covering `__construct`, `__init__`, and every magic or protocol
 method beside them. Ordinary members of the same type are unaffected.
 
@@ -97,7 +97,7 @@ method beside them. Ordinary members of the same type are unaffected.
 
 A `.d.ts` describes an implementation that lives elsewhere and emits nothing
 that runs. Call sites resolve to the `.mjs` behind it, so every symbol in the
-declaration file carries an in-degree of zero by construction — and acting on
+declaration file carries an in-degree of zero by construction. Acting on
 that report would delete the declaration while the implementation stays,
 breaking every typed call site.
 
@@ -111,7 +111,7 @@ with `declaration_file`, and both are excluded.
 A call edges to an interface method only when its receiver is typed as the
 interface. `foreach ($this->rules as $rule) { $rule->classify($node); }` types
 nothing, so the declaration carries an in-degree of zero while every
-implementation runs on every scan — this repository reported six such contracts
+implementation runs on every scan. This repository reported six such contracts
 at once.
 
 A candidate method is excluded when an internal type that implements or extends
@@ -119,7 +119,7 @@ the declaring type declares a member of the same name, and the declaring type
 is used by something other than those `implements`/`extends` edges. Being
 implemented is not evidence that a contract is used, so those edges are
 discounted; when nothing else references the type, the type and its members all
-stay reportable, on the same reasoning the constructor exclusion uses — the type
+stay reportable, on the same reasoning the constructor exclusion uses: the type
 is the unit worth deleting.
 
 This is the mirror of `excluded_inherited_methods`, which drops the override on
@@ -130,7 +130,7 @@ hierarchy once, through whichever end is genuinely unreachable.
 
 `npm run build` invokes `scripts/build.mjs` by name, and Composer invokes
 `bin/console` the same way. Nothing in the project imports either, so both
-carry an in-degree of zero however central they are — five of the eight
+carry an in-degree of zero however central they are. Five of the eight
 candidates on that same 111-file scan were scripts of this kind.
 
 Discovery reads each `package.json` and `composer.json` for the paths it names
@@ -164,22 +164,22 @@ resolution answers with the `.ts`, so the fossil absorbs the dependency and the
 handler the host actually executes is left looking dead. The manifest settles
 which of the two runs on the runtime's authority rather than the type checker's.
 
-A script the manifest does not name stays reportable — which is the useful
+A script the manifest does not name stays reportable, which is the useful
 signal: after this exclusion the same scan reported exactly one script, and it
 was a developer tool wired into nothing.
 
 ### Why tool configuration is excluded
 
 ESLint reads `eslint.config.js`, Vitest reads `vitest.config.ts`, pytest reads
-`conftest.py` — the tool finds each by filename and no project code imports it,
+`conftest.py`: the tool finds each by filename and no project code imports it,
 so its in-degree is zero in every project. A self-scan of a 111-file TypeScript
 project returned eight candidates and all eight were configuration of this
 shape.
 
 Such modules are classified `tooling.config` (rule `core.tooling.config.v1`)
 and, like test modules, are not reported. Recognition is by filename convention
-only — `<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
-`gruntfile`, or `conftest.py` — and deliberately narrow: a module that merely
+only (`<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
+`gruntfile`, or `conftest.py`) and deliberately narrow: a module that merely
 reads configuration, such as `src/utils/config-loader.ts`, is ordinary source
 and stays reportable.
 
@@ -191,8 +191,8 @@ and stays reportable.
 - Record `false_positive` when the component is reached in a way the scan cannot
   see. It is dropped from future candidate lists and the count moves to
   `bounds.annotated_false_positives`.
-- Use `dead_code_suppressions` for whole families of such components — a
-  generated namespace, a plugin directory — rather than annotating each one.
+- Use `dead_code_suppressions` for whole families of such components (a
+  generated namespace, a plugin directory) rather than annotating each one.
 
 ## Limits
 
@@ -208,5 +208,5 @@ and stays reportable.
   `named_by`.
 - A tool config is read only for the keys that name files it loads
   (`setupFiles`, `globalSetup`, `entry`, and their siblings). A path reached
-  some other way — built from a variable, or under a key not on that list — is
+  some other way (built from a variable, or under a key not on that list) is
   still invisible.

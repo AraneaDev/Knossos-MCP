@@ -49,7 +49,7 @@ knossos review-diff project_... --base-ref=origin/main --json
 ## Policies and budgets default to `knossos.json`
 
 If `policies` or `budgets` are omitted, `review_diff` reads them from the
-project's `knossos.json` (or `.jsonc`) at query time — no separate
+project's `knossos.json` (or `.jsonc`) at query time: no separate
 `check_architecture`/`quality_gate` call is needed to exercise the project's
 own declared rules. Pass either explicitly (as with `check_architecture` and
 `quality_gate`) to override the file, including passing `[]`/`{}` to opt out.
@@ -59,28 +59,28 @@ The CLI accepts `--policies=FILE` and `--budgets=FILE`, read the same way as
 ## Result shape
 
 Each of the four sections carries its own `status`, `'evaluated'` or
-`'not_evaluated'` (with a `reason` in the latter case) — a review with partial
+`'not_evaluated'` (with a `reason` in the latter case): a review with partial
 signal beats an error, so a missing config file, an unreadable project root,
 or the absence of a retained baseline snapshot degrades the affected section
 instead of failing the whole call:
 
-- `change` — the `changed_files_impact` result: `changed_files`,
+- `change`: the `changed_files_impact` result: `changed_files`,
   `unresolved_files`, `direct_components`, `impacted_components`, `git`.
-- `policy_check` — `policies_evaluated`, `total_violations`, and
+- `policy_check`: `policies_evaluated`, `total_violations`, and
   `violations_touching_change` (the subset of `check_architecture`'s
   violations whose source or target is a direct or impacted component of the
   change). `not_evaluated` when no policies are declared or supplied.
-- `quality_gate` — `passed`, `checks`, `baseline_snapshot`, computed against
+- `quality_gate`: `passed`, `checks`, `baseline_snapshot`, computed against
   the most recently retained non-active snapshot unless `baseline_snapshot` is
   given explicitly. `not_evaluated` when no budgets are declared or supplied,
   or when no retained baseline snapshot exists yet.
-- `cycles_touching_change` — the subset of `dependency_cycles`'s cycles with
+- `cycles_touching_change`: the subset of `dependency_cycles`'s cycles with
   at least one member among the change's direct or impacted components.
   `not_evaluated` (with a reason) if the cycle scan itself fails.
 
 `bounds` mirrors `changed_files_impact`'s bounds with `cycle_scan_limit`
 added. The envelope's evidence, warnings, and truncation flag are the union of
-the underlying calls' — evidence from `change`, the policy check (when
+the underlying calls': evidence from `change`, the policy check (when
 evaluated), the quality gate (when evaluated), and the cycle scan (when
 evaluated), capped at the first 100 rows; a section that degrades to
 `not_evaluated` contributes no evidence.

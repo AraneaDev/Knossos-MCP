@@ -246,7 +246,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'inspect_component',
                 'title' => 'Inspect component',
-                'description' => 'Get the full dossier for one component — its roles, boundary, containment, relationships, and evidence — in a single call. Faster than opening and cross-referencing several files by hand.',
+                'description' => 'Get the full dossier for one component (its roles, boundary, containment, relationships, and evidence) in a single call. Faster than opening and cross-referencing several files by hand.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -265,7 +265,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'list_usages',
                 'title' => 'List usages',
-                'description' => 'List every usage site of a symbol with file:line evidence — one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.',
+                'description' => 'List every usage site of a symbol with file:line evidence: one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -347,7 +347,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'explain_flow',
                 'title' => 'Explain flow',
-                'description' => 'Answer \'how does A reach B?\' Traces evidence-backed static paths between two components — more reliable than grepping call sites across layers.',
+                'description' => 'Answer \'how does A reach B?\' Traces evidence-backed static paths between two components, more reliable than grepping call sites across layers.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [
@@ -514,7 +514,7 @@ final readonly class ToolCatalog
             [
                 'name' => 'changed_files_impact',
                 'title' => 'Changed files impact',
-                'description' => 'Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches. Provide exactly one source: either files (an explicit list) or working_tree: true (let Git supply the changes). base_ref only applies with working_tree: true — it diffs the working tree against that ref; it cannot be combined with files.',
+                'description' => 'Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches. Provide exactly one source: either files (an explicit list) or working_tree: true (let Git supply the changes). base_ref only applies with working_tree: true. It diffs the working tree against that ref; it cannot be combined with files.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => [

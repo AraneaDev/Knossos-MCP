@@ -30,21 +30,21 @@ several requests rather than sent as one.
 The bounds are reported per language, under `worker_execution.scan_batches`,
 because they differ per language and the byte budget can differ per scan:
 
-- `files` — most files sent per worker request. This bound guards the deadline.
-- `source_bytes` — most source bytes sent per worker request. This bound guards
+- `files`: most files sent per worker request. This bound guards the deadline.
+- `source_bytes`: most source bytes sent per worker request. This bound guards
   `max_output_bytes`, because protocol output has a large per-file constant
   (roughly 0.8-1.8 KB) plus a term that scales with how much source the request
-  covers. Neither axis alone is sufficient — and neither is both together, since
+  covers. Neither axis alone is sufficient, and neither is both together, since
   how densely a file declares symbols also drives output and is not modelled at
   all. That unmodelled term is why the budget adapts rather than predicts.
-- `source_bytes_used` — the narrowest budget any of that language's requests ran
+- `source_bytes_used`: the narrowest budget any of that language's requests ran
   at. Lower than `source_bytes` means at least one batch overflowed and was
   re-split; see below.
 
 TypeScript uses a much larger file cap (2,000) than the default (400), and a
 3 MB byte budget against the 4 MB default, because it rebuilds and re-checks a
-whole `ts.Program` on every request — a cost set by the program, not by how many
-files the request named — so splitting its work repeats the expensive part.
+whole `ts.Program` on every request (a cost set by the program, not by how many
+files the request named), so splitting its work repeats the expensive part.
 
 ### Adaptive budgets
 
@@ -63,7 +63,7 @@ fraction of its budget for the rest of the scan. This repeats up to
 `max_scan_batch_halvings` times (4) per batch, after which the failure falls
 through to the ordinary degrade path below.
 
-A batch of one file is never retried — there is nothing left to split — so it
+A batch of one file is never retried (there is nothing left to split), so it
 degrades immediately instead of burning the remaining attempts.
 `WORKER_OUTPUT_LIMIT` is the only retryable failure: a crash, a timeout, or a
 cancellation is never retried.
@@ -80,7 +80,7 @@ A worker that fails or times out costs its own language, not the whole scan.
 The remaining languages are still analysed and reconciled, so a dead TypeScript
 worker leaves a usable PHP and Python graph rather than no graph at all.
 
-- `degraded_languages` — owner keys of scanners that failed during this scan.
+- `degraded_languages`: owner keys of scanners that failed during this scan.
   Non-empty means the graph is partial: the listed languages contributed no
   facts, and the corresponding failure is also persisted as an `error`
   diagnostic against the scan.

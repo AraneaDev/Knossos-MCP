@@ -21,11 +21,11 @@ file for everything else.
 
 Two tools make this self-service from inside a session:
 
-- **`server_info`** — the roots in force, where each came from, whether each
+- **`server_info`**: the roots in force, where each came from, whether each
   actually exists, the roots file to extend, and whether the server is
   containerised. Call it first in an unfamiliar setup, or whenever a path is
   rejected.
-- **`diagnose_runtime`** — runtimes, scanner workers, protocol, database, and
+- **`diagnose_runtime`**: runtimes, scanner workers, protocol, database, and
   migrations, for when a scan fails for no visible reason. Slower, because it
   starts each language worker.
 
@@ -104,7 +104,7 @@ that works.
 
 Anything able to write the roots file can widen what Knossos reads, which is why
 the grant is an inspectable file rather than a tool the caller can invoke on
-itself — Knossos never writes it during normal operation. Keep it owned by the
+itself. Knossos never writes it during normal operation. Keep it owned by the
 user running the server. If you would rather the boundary could not move at all,
 omit the file entirely and pass `--allow-root` only; the file is optional.
 
@@ -117,7 +117,7 @@ can corrupt NDJSON.
 
 Supported native runtimes are PHP 8.3 or newer with JSON, PDO, and PDO SQLite;
 Node 22 or newer; Python 3.11 or newer; Composer 2; and Git. Each is a floor
-rather than a range — newer releases are supported, and `doctor` reports a
+rather than a range: newer releases are supported, and `doctor` reports a
 version below the floor rather than capping the ones above it. Install locked dependencies without running project
 scripts. `change_impact` still returns static impact when a scanned root is not
 a Git repository:

@@ -38,7 +38,7 @@ root that was configured on the host and is not mounted shows up under
 
 The roots file is read from inside the container, so it belongs on the `/data`
 volume (`/data/roots.json`) and must name container paths. Adding a project
-still means adding a mount, which is a `docker run` change — the file removes
+still means adding a mount, which is a `docker run` change: the file removes
 the restart, not the mount.
 
 An MCP client can use `docker` as its server command and pass the `run` arguments

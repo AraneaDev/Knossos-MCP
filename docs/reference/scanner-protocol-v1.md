@@ -24,7 +24,7 @@ limits before accepting contributions.
 ## Methods
 
 The worker protocol has four methods: `initialize`, `scan`, `cancel`, and
-`shutdown`. `cancel` is advisory and best-effort — the workers are
+`shutdown`. `cancel` is advisory and best-effort: the workers are
 single-threaded and blocked inside `scan` when it arrives, so the host
 terminates the process rather than waiting. No worker advertises a `cancel`
 capability.
@@ -66,7 +66,7 @@ Two consequences for a worker author:
 
 - **Every integer in the result is a per-request count, and the core sums it
   across a language's requests.** `files_scanned`, and any counter of its own a
-  worker adds, must report what THIS request did, not a running total — a worker
+  worker adds, must report what THIS request did, not a running total: a worker
   that returns a cumulative figure will be double-counted. Non-integer result
   fields are not summed; the last request's value is the one reported.
 - **Work that can be amortised across requests should be cached on the session.**
@@ -74,9 +74,9 @@ Two consequences for a worker author:
   instance for exactly this reason, and the core in turn gives TypeScript a much
   larger file batch than PHP or Python so a normal project is still one request.
 - **A request that exceeds the output limit may be re-sent as smaller batches.**
-  The core cannot predict how much output a request will produce — measured
+  The core cannot predict how much output a request will produce (measured
   expansion from source bytes to protocol output ranges from under 2x for real
-  hand-written sources to 15x for code dense in declared symbols — so it sizes
+  hand-written sources to 15x for code dense in declared symbols), so it sizes
   batches optimistically and halves the budget when a worker overflows. A worker
   must therefore be safe to re-ask for files it has already partially reported
   on; the core discards the partial output of a failed request. Ordinary worker

@@ -1,7 +1,7 @@
 # List usages
 
 Use `list_usages` when you need every call/reference site of a symbol with
-file:line evidence — the grep killer. Because edges are occurrence-level
+file:line evidence: the grep killer. Because edges are occurrence-level
 facts (their stable id includes the evidence location), this is a direct
 listing, not an aggregation: two calls from the same caller to the same
 callee on different lines are two distinct rows, not one merged edge.
@@ -37,8 +37,8 @@ repeated calls against the same snapshot.
 
 ## The `contains` exclusion
 
-`edge_kinds` defaults to `IMPACT_EDGE_KINDS` — the same dependency-relationship
-set used by `impact_analysis` and friends — which deliberately excludes
+`edge_kinds` defaults to `IMPACT_EDGE_KINDS` (the same dependency-relationship
+set used by `impact_analysis` and friends), which deliberately excludes
 `contains`. A method's own class containment isn't a "usage" of that method,
 so it never shows up here even though it is a real edge in the graph. Passing
 `contains` explicitly in `edge_kinds` is rejected with an
@@ -56,5 +56,5 @@ so it never shows up here even though it is a real edge in the graph. Passing
   confidence.
 
 Unlike `impact_analysis`, which walks the transitive dependency graph,
-`list_usages` shows only the direct, one-hop occurrences — the literal call
+`list_usages` shows only the direct, one-hop occurrences: the literal call
 sites you'd otherwise have to grep for.
