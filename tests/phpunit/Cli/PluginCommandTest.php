@@ -82,7 +82,42 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame(true, str_contains($hook, 'knossos-mcp:dev'));
         assertSame(true, str_contains($hook, '/srv/knossos-data'));
         assertSame(false, str_contains($hook, '__KNOSSOS_'));  // every token substituted
+        // A regression dropping the chmod() call would leave the hook non-executable.
+        assertSame('0755', substr(sprintf('%o', fileperms($out . '/hooks/scripts/session-brief.sh')), -4));
 
         exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    #[Group('cli')]
+    public function testFailedEmitLeavesNoPartialDirectoryBehind(): void
+    {
+        // A path that already exists as a plain FILE where emit() needs a
+        // directory fails deterministically on the first mkdir(), with no
+        // root privileges required to trigger it.
+        $out = sys_get_temp_dir() . '/knossos-plugin-blocked-' . bin2hex(random_bytes(4));
+        file_put_contents($out, 'not a directory');
+        $before = filemtime($out);
+
+        try {
+            (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['out' => [$out], 'data' => ['/srv/knossos-data']],
+                $this->context(),
+            );
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException) {
+            // Expected: the blocking file leaves emit() unable to create its
+            // first directory.
+        }
+
+        // The filesystem is exactly as it was before the call: still the
+        // original file, unchanged, with no plugin scaffolding beside it.
+        assertSame(true, is_file($out));
+        assertSame(false, is_dir($out));
+        assertSame('not a directory', (string) file_get_contents($out));
+        assertSame($before, filemtime($out));
+
+        unlink($out);
     }
 }

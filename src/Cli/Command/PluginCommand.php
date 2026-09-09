@@ -7,6 +7,7 @@ namespace Knossos\Cli\Command;
 use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
+use Throwable;
 
 /**
  * Installs the agent orientation plugin from this installation.
@@ -73,6 +74,12 @@ final class PluginCommand implements CliCommand
     /**
      * Write a self-contained plugin directory for a containerised installation.
      *
+     * All-or-nothing: anything created before a mid-way failure is removed
+     * before the exception propagates, so a failed emit never leaves a
+     * directory that looks like a plugin but is missing pieces. Anything that
+     * was already on disk before this call, whether that is the `--out`
+     * directory itself or files inside it, is left exactly as it was found.
+     *
      * @param array<string, list<string>> $options
      */
     private function emit(string $root, string $out, array $options, CliCommandContext $context): void
@@ -85,34 +92,105 @@ final class PluginCommand implements CliCommand
             );
         }
         $image = $context->options->single($options, 'image') ?? self::DEFAULT_IMAGE;
-        foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills/knossos'] as $directory) {
-            if (!is_dir($out . $directory) && !mkdir($out . $directory, 0o755, true) && !is_dir($out . $directory)) {
-                throw new InvalidArgumentException(sprintf('Unable to create %s.', $out . $directory));
+        $existed = file_exists($out);
+        $createdDirectories = [];
+        $createdFiles = [];
+        try {
+            foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'] as $directory) {
+                $path = $out . $directory;
+                if (is_dir($path)) {
+                    continue;
+                }
+                if (!@mkdir($path, 0o755, true)) {
+                    throw new InvalidArgumentException(sprintf('Unable to create %s.', $path));
+                }
+                $createdDirectories[] = $path;
             }
-        }
-        $copies = [
-            '/.claude-plugin/plugin.json',
-            '/.claude-plugin/marketplace.json',
-            '/hooks/hooks.json',
-            '/skills/knossos/SKILL.md',
-        ];
-        foreach ($copies as $relative) {
-            if (!copy($root . $relative, $out . $relative)) {
-                throw new InvalidArgumentException(sprintf('Unable to copy %s.', $relative));
+            $copies = [
+                '/.claude-plugin/plugin.json',
+                '/.claude-plugin/marketplace.json',
+                '/hooks/hooks.json',
+                '/skills/knossos/SKILL.md',
+            ];
+            foreach ($copies as $relative) {
+                $target = $out . $relative;
+                $isNew = !file_exists($target);
+                if (!@copy($root . $relative, $target)) {
+                    throw new InvalidArgumentException(sprintf('Unable to copy %s.', $relative));
+                }
+                if ($isNew) {
+                    $createdFiles[] = $target;
+                }
             }
+            $template = (string) file_get_contents($root . '/hooks/scripts/session-brief-container.sh');
+            $script = strtr($template, ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data]);
+            $hook = $out . '/hooks/scripts/session-brief.sh';
+            $hookIsNew = !file_exists($hook);
+            if (file_put_contents($hook, $script) === false) {
+                throw new InvalidArgumentException('Unable to write the hook script.');
+            }
+            if ($hookIsNew) {
+                $createdFiles[] = $hook;
+            }
+            if (!@chmod($hook, 0o755)) {
+                throw new InvalidArgumentException('Unable to make the hook script executable.');
+            }
+        } catch (Throwable $error) {
+            $this->rollbackEmit($out, $existed, $createdDirectories, $createdFiles);
+            throw $error;
         }
-        $template = (string) file_get_contents($root . '/hooks/scripts/session-brief-container.sh');
-        $script = strtr($template, ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data]);
-        if (file_put_contents($out . '/hooks/scripts/session-brief.sh', $script) === false) {
-            throw new InvalidArgumentException('Unable to write the hook script.');
+        $message = sprintf('Wrote a container plugin to %s.', $out);
+        if ($existed) {
+            $message .= PHP_EOL . 'The target directory already existed; its files were replaced.';
         }
-        chmod($out . '/hooks/scripts/session-brief.sh', 0o755);
-        echo sprintf(
-            'Wrote a container plugin to %s.%sInstall it with: claude plugin marketplace add %s --scope user%s',
-            $out,
-            PHP_EOL,
-            escapeshellarg($out),
-            PHP_EOL,
-        );
+        if ($context->options->flag($options, 'execute')) {
+            $message .= PHP_EOL . '--out writes directly; --execute is not needed here and was ignored.';
+        }
+        $message .= PHP_EOL . sprintf('Install it with: claude plugin marketplace add %s --scope user', escapeshellarg($out));
+        echo $message . PHP_EOL;
+    }
+
+    /**
+     * Undo exactly what emit() created before it failed.
+     *
+     * When the `--out` target did not exist at all beforehand, everything
+     * under it is ours, so the whole tree is removed. Otherwise only the
+     * specific files and directories created during this call are removed,
+     * in reverse order, leaving anything that predates this call untouched.
+     *
+     * @param list<string> $createdDirectories
+     * @param list<string> $createdFiles
+     */
+    private function rollbackEmit(string $out, bool $outExisted, array $createdDirectories, array $createdFiles): void
+    {
+        if (!$outExisted) {
+            $this->removeTree($out);
+            return;
+        }
+        foreach ($createdFiles as $file) {
+            @unlink($file);
+        }
+        foreach (array_reverse($createdDirectories) as $directory) {
+            @rmdir($directory);
+        }
+    }
+
+    /** Recursively remove a path this command created, best-effort. */
+    private function removeTree(string $path): void
+    {
+        if (is_file($path) || is_link($path)) {
+            @unlink($path);
+            return;
+        }
+        if (!is_dir($path)) {
+            return;
+        }
+        foreach (scandir($path) ?: [] as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+            $this->removeTree($path . '/' . $entry);
+        }
+        @rmdir($path);
     }
 }
