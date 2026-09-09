@@ -197,6 +197,17 @@ final class NextStepPlannerTest extends TestCase
         self::assertSame('App\\Deep', $steps[0]['args']['symbol']);
     }
 
+    public function testFullScanSuggestsTheOrientationPluginAndIncrementalDoesNot(): void
+    {
+        // `mode` is a proxy for "first scan", not a synonym; pin both the positive
+        // and negative case so the arm cannot regress to firing unconditionally.
+        $full = $this->plan('scan_project', ['mode' => 'full']);
+
+        self::assertSame('install_agent_plugin', $full[0]['tool'] ?? null);
+        self::assertTrue(str_contains($full[0]['why'], 'session'));
+        self::assertSame([], $this->plan('scan_project', ['mode' => 'incremental']));
+    }
+
     /**
      * @param array<string, mixed> $data
      * @return list<array{tool: string, args: array<string, mixed>, why: string}>

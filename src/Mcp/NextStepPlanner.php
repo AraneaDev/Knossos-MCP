@@ -30,6 +30,7 @@ final readonly class NextStepPlanner
             'inspect_component' => $this->afterInspect($data),
             'impact_analysis' => $this->afterImpact($data),
             'architecture_health' => $this->afterHealth($data),
+            'scan_project' => $this->afterScan($data),
             default => [],
         };
         return array_slice($steps, 0, 3);
@@ -137,6 +138,30 @@ final readonly class NextStepPlanner
             'tool' => 'inspect_component',
             'args' => ['component' => $name],
             'why' => 'inspect the top structural hotspot',
+        ]];
+    }
+
+    /**
+     * After a full scan: point at the orientation plugin, once the graph exists
+     * and its value is obvious.
+     *
+     * Only on a full scan. `auto` picks incremental once a project has a graph,
+     * so this lands on new projects rather than on every rescan. It is a proxy
+     * for "first scan", not a synonym, and a forced full rescan repeats it.
+     *
+     * @param array<string, mixed> $data
+     * @return list<array{tool: string, args: array<string, mixed>, why: string}>
+     */
+    private function afterScan(array $data): array
+    {
+        if (($data['mode'] ?? null) !== 'full') {
+            return [];
+        }
+        return [[
+            'tool' => 'install_agent_plugin',
+            'args' => [],
+            'why' => 'Run `knossos install-agent-plugin` so every session starts with this '
+                . 'project\'s boundaries, notes, and graph freshness already in context.',
         ]];
     }
 
