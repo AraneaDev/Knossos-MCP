@@ -58,21 +58,7 @@ final readonly class SessionBriefService
     {
         $project = (new ProjectPathResolver($this->pdo))->resolve($path);
         if ($project === null) {
-            // Resolve to an absolute path the same way ProjectPathResolver does
-            // internally, so the verdict line can hand an agent a command it can
-            // actually run. An MCP server has its own working directory and
-            // allowed roots, so a relative argument here would be meaningless.
-            $absolute = realpath($path) ?: $path;
-            return new SessionBrief(
-                'unscanned',
-                null,
-                null,
-                $absolute,
-                null,
-                0,
-                0,
-                pathAllowed: $this->pathAllowed($absolute),
-            );
+            return self::unscanned($path, $this->databasePath);
         }
         $root = (string) $project['root_realpath'];
         $projectId = (string) $project['id'];
@@ -81,10 +67,15 @@ final readonly class SessionBriefService
         $drift = (int) ($probe['changed_files_since'] ?? 0)
             + (int) ($probe['added_files_since'] ?? 0)
             + (int) ($probe['deleted_files_since'] ?? 0);
-        // fresh/stale/unverified all imply a project that was already scanned,
-        // so its root was necessarily accepted before and the check has
-        // nothing to add; only 'missing' (no graph at all) needs it.
-        $pathAllowed = $state === 'missing' ? $this->pathAllowed($root) : true;
+        // Checked for every state, not just 'missing'. "Scanned implies the
+        // root was accepted" does not hold: `knossos scan` passes the root it
+        // was given as its own allow-list, so a CLI scan self-authorises any
+        // path and leaves a project whose root no `roots.json` covers. A
+        // 'stale' verdict there would otherwise tell an agent to run a
+        // `scan_project` the server is bound to reject. One RootGuard call is
+        // cheap enough to pay on every state rather than reason about which
+        // ones can be trusted to have earned it.
+        $pathAllowed = self::pathAllowed($this->databasePath, $root);
 
         return new SessionBrief(
             $state,
@@ -103,6 +94,37 @@ final readonly class SessionBriefService
     }
 
     /**
+     * The brief for a path that belongs to no project, built without a graph.
+     *
+     * Static, and public, because the session-start path must be able to render
+     * it with no database open at all: {@see \Knossos\Cli\Command\SessionCommand}
+     * checks whether the database file exists before opening anything, and
+     * opening one to say "not scanned" would create and migrate the very file
+     * whose absence is the answer.
+     *
+     * @param string|null $databasePath only to locate `roots.json` beside it
+     */
+    public static function unscanned(string $path, ?string $databasePath = null): SessionBrief
+    {
+        // Resolve to an absolute path the same way ProjectPathResolver does
+        // internally, so the verdict line can hand an agent a command it can
+        // actually run. An MCP server has its own working directory and
+        // allowed roots, so a relative argument here would be meaningless.
+        $absolute = realpath($path) ?: $path;
+
+        return new SessionBrief(
+            'unscanned',
+            null,
+            null,
+            $absolute,
+            null,
+            0,
+            0,
+            pathAllowed: self::pathAllowed($databasePath, $absolute),
+        );
+    }
+
+    /**
      * Whether $absolutePath lies inside a root the CLI can see right now.
      *
      * Reuses {@see RootGuard::resolve()} rather than reimplementing
@@ -115,13 +137,13 @@ final readonly class SessionBriefService
      * Only {@see DiscoveryException} is caught: that is RootGuard's own
      * "not allowed" signal, and nothing else may be silently read as one.
      */
-    private function pathAllowed(string $absolutePath): bool
+    private static function pathAllowed(?string $databasePath, string $absolutePath): bool
     {
         // ':memory:' is PDO's in-memory sentinel, not a filesystem path (the
         // same reading DatabaseMaintenanceService and DoctorService give it
         // elsewhere); there is no directory to find a roots file beside, so
         // it is treated the same as no database path at all.
-        if ($this->databasePath === null || $this->databasePath === ':memory:') {
+        if ($databasePath === null || $databasePath === ':memory:') {
             return true;
         }
         $staticRoots = [];
@@ -129,7 +151,7 @@ final readonly class SessionBriefService
         if (is_string($configured) && $configured !== '') {
             $staticRoots = array_values(array_filter(explode(PATH_SEPARATOR, $configured)));
         }
-        $allowedRoots = new AllowedRoots($staticRoots, AllowedRoots::defaultConfigPath($this->databasePath));
+        $allowedRoots = new AllowedRoots($staticRoots, AllowedRoots::defaultConfigPath($databasePath));
         try {
             (new RootGuard($allowedRoots))->resolve($absolutePath);
 

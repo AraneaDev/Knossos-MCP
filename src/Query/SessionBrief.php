@@ -21,10 +21,13 @@ final readonly class SessionBrief
      * @param list<string> $entryPoints graph-derived, rendered only when fresh
      * @param list<string> $hubs graph-derived, rendered only when fresh
      * @param bool $pathAllowed whether $path lies inside a root the CLI knows
-     *   about. Consulted only by the `unscanned` and `missing` verdicts: the
-     *   other three states imply a project that was already scanned, so its
-     *   root was necessarily accepted before, and the flag is not checked for
-     *   them. Advisory rather than definitive: a server started with
+     *   about. Gathered for every state and consulted by four of the five
+     *   verdicts. Being scanned is no evidence that the root was ever
+     *   permitted: `knossos scan` hands the root it was given to the guard as
+     *   its own allow-list, so a CLI scan self-authorises any path and leaves
+     *   a `stale` or `unverified` project that `scan_project` would refuse.
+     *   Only `fresh` ignores the flag, because it asks for nothing that could
+     *   be refused. Advisory rather than definitive: a server started with
      *   `--allow-root` flags has roots this check cannot see, so a false
      *   value here can be a false positive. That is acceptable only because
      *   the three root sources are unioned, so the fix the verdict names

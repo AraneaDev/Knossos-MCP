@@ -69,22 +69,47 @@ final readonly class SessionBriefRenderer
     /**
      * One line, always. There is nothing to skim past in a single line, which is
      * the whole reason this is not a paragraph.
+     *
+     * Four of the five states have two forms, chosen by whether the path lies
+     * inside a root the CLI can see. Each of those four otherwise ends in an
+     * instruction the server would reject on an unpermitted root, which is the
+     * dead end this feature exists to stop walking an agent into. `fresh` is
+     * the exception: it asks for nothing, so there is nothing to redirect, and
+     * a root warning on a graph that is currently correct would be noise on the
+     * one verdict that needs none.
      */
     private function verdict(SessionBrief $brief): string
     {
         return match ($brief->state) {
             'fresh' => sprintf('FRESH (scanned %s ago).', $this->age($brief->ageSeconds)),
-            'stale' => sprintf(
-                'STALE (%d files, %s). Run scan_project path=%s first.',
-                $brief->changedFiles,
-                $this->age($brief->ageSeconds),
-                $brief->path,
-            ),
-            'unverified' => sprintf(
-                'UNVERIFIED (%d files, over probe limit; scanned %s ago). Rescan if exactness matters.',
-                $brief->trackedFiles,
-                $this->age($brief->ageSeconds),
-            ),
+            'stale' => $brief->pathAllowed
+                ? sprintf(
+                    'STALE (%d files, %s). Run scan_project path=%s first.',
+                    $brief->changedFiles,
+                    $this->age($brief->ageSeconds),
+                    $brief->path,
+                )
+                : sprintf(
+                    'STALE (%d files, %s), and %s is not an allowed root. Add it: knossos allow-root %s --execute',
+                    $brief->changedFiles,
+                    $this->age($brief->ageSeconds),
+                    $brief->path,
+                    $brief->path,
+                ),
+            'unverified' => $brief->pathAllowed
+                ? sprintf(
+                    'UNVERIFIED (%d files, over probe limit; scanned %s ago). Rescan if exactness matters.',
+                    $brief->trackedFiles,
+                    $this->age($brief->ageSeconds),
+                )
+                : sprintf(
+                    'UNVERIFIED (%d files, over probe limit; scanned %s ago), and %s is not an allowed root. '
+                        . 'Add it: knossos allow-root %s --execute',
+                    $brief->trackedFiles,
+                    $this->age($brief->ageSeconds),
+                    $brief->path,
+                    $brief->path,
+                ),
             'missing' => $brief->pathAllowed
                 ? sprintf('NO GRAPH. Run scan_project path=%s first.', $brief->path)
                 : sprintf(

@@ -75,6 +75,110 @@ final class SessionBriefRendererTest extends TestCase
     }
 
     #[Group('query')]
+    public function testStaleNamesTheMissingRootInsteadOfAScanThatWouldBeRejected(): void
+    {
+        // "Scanned, therefore permitted" is false: `knossos scan` self-authorises
+        // whatever root it is given, so a CLI-scanned project can sit outside
+        // every allowed root and still report STALE. Telling that agent to run
+        // scan_project hands it the one command the server will refuse.
+        $brief = new SessionBrief(
+            'stale',
+            'project_1b4f41',
+            'Knossos-MCP',
+            '/root/Knossos-MCP',
+            1_468_800,
+            118,
+            402,
+            [],
+            [],
+            [],
+            [],
+            false,
+        );
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(
+            true,
+            str_starts_with(
+                $text,
+                'STALE (118 files, 17d), and /root/Knossos-MCP is not an allowed root. '
+                    . 'Add it: knossos allow-root /root/Knossos-MCP --execute',
+            ),
+        );
+        assertSame(false, str_contains($text, 'scan_project'));
+        assertSame(true, strlen($text) <= SessionBriefRenderer::BUDGETS['stale']);
+    }
+
+    #[Group('query')]
+    public function testStaleKeepsTodaysWordingWhenAllowed(): void
+    {
+        // Mirror of the test above, so an always-false flag cannot pass both.
+        $text = (new SessionBriefRenderer())->render($this->brief('stale', 1_468_800, 118));
+
+        assertSame(true, str_starts_with($text, 'STALE (118 files, 17d). Run scan_project path=/root/Knossos-MCP first.'));
+        assertSame(false, str_contains($text, 'allow-root'));
+    }
+
+    #[Group('query')]
+    public function testUnverifiedNamesTheMissingRootWhenNotAllowed(): void
+    {
+        // Same reasoning as stale: "rescan if exactness matters" is advice the
+        // reader cannot act on while the root is not permitted.
+        $brief = new SessionBrief(
+            'unverified',
+            'project_1b4f41',
+            'Knossos-MCP',
+            '/root/Knossos-MCP',
+            345_600,
+            0,
+            1240,
+            [],
+            [],
+            [],
+            [],
+            false,
+        );
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(
+            true,
+            str_starts_with(
+                $text,
+                'UNVERIFIED (1240 files, over probe limit; scanned 4d ago), and /root/Knossos-MCP is not an '
+                    . 'allowed root. Add it: knossos allow-root /root/Knossos-MCP --execute',
+            ),
+        );
+        assertSame(false, str_contains($text, 'Rescan if exactness matters.'));
+        assertSame(true, strlen($text) <= SessionBriefRenderer::BUDGETS['unverified']);
+    }
+
+    #[Group('query')]
+    public function testFreshIgnoresTheFlagBecauseItAsksForNothing(): void
+    {
+        // The one verdict with a single form. It requests no command, so there
+        // is nothing a root warning could redirect, and adding one would put
+        // noise on the only verdict that needs none.
+        $allowed = (new SessionBriefRenderer())->render($this->brief('fresh'));
+        $notAllowed = (new SessionBriefRenderer())->render(new SessionBrief(
+            'fresh',
+            'project_1b4f41',
+            'Knossos-MCP',
+            '/root/Knossos-MCP',
+            3600,
+            0,
+            402,
+            ['core -x-> php-worker, tooling, tests'],
+            ['ToolService.php: the seam is ToolCatalog, not ToolService'],
+            ['StdioServer (class): src/Mcp/StdioServer.php'],
+            ['ScannerClient'],
+            false,
+        ));
+
+        assertSame($allowed, $notAllowed);
+        assertSame(false, str_contains($notAllowed, 'allow-root'));
+    }
+
+    #[Group('query')]
     public function testUnscannedAndMissingAreShortAndActionable(): void
     {
         $unscanned = (new SessionBriefRenderer())->render(

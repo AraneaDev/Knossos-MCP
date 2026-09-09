@@ -206,6 +206,72 @@ final class SessionBriefServiceTest extends KnossosTestCase
         }
     }
 
+    #[Group('query')]
+    public function testAMissingGraphOutsideEveryRootPointsAtAllowRootThroughARealProbe(): void
+    {
+        // The `missing` state end to end, off a real StalenessProbe rather than
+        // a hand-built SessionBrief: a projects row with no active scan takes
+        // the probe's missing branch, and the containment check then runs
+        // against a roots file that covers nothing. One insert is all the state
+        // this needs, which is why it is written out rather than borrowed from
+        // a scan fixture.
+        //
+        // NULL rather than '': active_scan_id carries a foreign key to scans,
+        // which an empty string violates, so NULL is the only shape a real row
+        // with no active scan can take. Both land on the same branch of the
+        // probe.
+        [$pdo, $root, $databasePath] = $this->rootsFileFixture(['roots' => []]);
+        try {
+            $pdo->prepare(
+                'INSERT INTO projects(id, name, root_realpath, active_scan_id, created_at, updated_at) ' .
+                "VALUES('project_no_scan', 'No Graph Fixture', :root, NULL, :t, :t)",
+            )->execute(['root' => (string) realpath($root), 't' => '2026-09-09T12:00:00+00:00']);
+
+            $brief = (new SessionBriefService($pdo, $databasePath))->gather($root);
+            $text = (new SessionBriefService($pdo, $databasePath))->brief($root);
+
+            assertSame('missing', $brief->state);
+            assertSame(false, $brief->pathAllowed);
+            assertSame(true, str_contains($text, 'NO GRAPH, and ' . realpath($root) . ' is not an allowed root.'));
+            assertSame(true, str_contains($text, 'knossos allow-root'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testAStaleProjectOutsideEveryRootIsNotToldToRescan(): void
+    {
+        // A CLI scan self-authorises: ScanCommand passes the root it was given
+        // as its own allow-list, so `knossos scan` leaves a project that no
+        // roots.json covers. The old rule (scanned implies permitted) rendered
+        // `STALE (...). Run scan_project path=... first.` there, which is
+        // exactly the call the server rejects.
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/Checkout.php']);
+        try {
+            $databaseDirectory = $root . '/db';
+            mkdir($databaseDirectory, 0o777, true);
+            $databasePath = $databaseDirectory . '/knossos.sqlite';
+            file_put_contents($databaseDirectory . '/roots.json', json_encode(['roots' => []], JSON_THROW_ON_ERROR));
+            // A later attempt that never completed is what StalenessProbe reads
+            // as drift, without touching the filesystem.
+            $pdo->prepare(
+                'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at) ' .
+                "VALUES(:id, :project, 'full', 'failed', 'later-attempt', '2099-01-01T00:00:00Z')",
+            )->execute(['id' => $projectId . '-scan-2', 'project' => $projectId]);
+
+            $brief = (new SessionBriefService($pdo, $databasePath))->gather($root);
+            $text = (new SessionBriefService($pdo, $databasePath))->brief($root);
+
+            assertSame('stale', $brief->state);
+            assertSame(false, $brief->pathAllowed);
+            assertSame(true, str_contains($text, 'is not an allowed root. Add it: knossos allow-root'));
+            assertSame(false, str_contains($text, 'scan_project'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /**
      * A real temp directory (so RootGuard's own existence check can pass or
      * fail on its merits, not on a fixture path that was never created), a

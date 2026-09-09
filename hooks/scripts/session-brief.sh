@@ -8,6 +8,14 @@ set -u
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 
+# Run from the project directory so the working directory and the argument
+# agree. The command derives its database from the path it is given, but a
+# caller that passes no path at all falls back to the working directory, and a
+# session started in a subdirectory would then answer out of a different graph.
+# Guarded like every other failure path here: a directory that cannot be
+# entered is silent, not fatal.
+CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
+
 # Discovery order: an explicit override, then PATH, then the conventional
 # locations. Deliberately short: a long search is a slow session start.
 find_knossos() {

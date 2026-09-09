@@ -29,8 +29,10 @@ Each state renders exactly one verdict line, verbatim (the placeholders shown
 are substituted at render time):
 
 - `fresh`: `FRESH (scanned {age} ago).`
-- `stale`: `STALE ({n} files, {age}). Run scan_project path={path} first.`
-- `unverified`: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago). Rescan if exactness matters.`
+- `stale`, path allowed: `STALE ({n} files, {age}). Run scan_project path={path} first.`
+- `stale`, path not allowed: `STALE ({n} files, {age}), and {path} is not an allowed root. Add it: knossos allow-root {path} --execute`
+- `unverified`, path allowed: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago). Rescan if exactness matters.`
+- `unverified`, path not allowed: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago), and {path} is not an allowed root. Add it: knossos allow-root {path} --execute`
 - `missing`, path allowed: `NO GRAPH. Run scan_project path={path} first.`
 - `missing`, path not allowed: `NO GRAPH, and {path} is not an allowed root. Add it: knossos allow-root {path} --execute`
 - `unscanned`, path allowed: `NOT SCANNED. Run scan_project path={path} to map this repository.`
@@ -41,11 +43,11 @@ on a seventeen-day-old scan is noise, not accuracy.
 
 ## Naming `allow-root` instead of a scan that would be rejected
 
-The `missing` and `unscanned` verdicts each carry two forms, chosen by
-whether the path lies inside a root the server can currently see. When it
-does not, the verdict does not tell the agent to run `scan_project`, because
-that call would only fail against the allow-list `RootGuard` enforces. It
-names the actual fix instead: `knossos allow-root {path} --execute`.
+Four of the five verdicts carry two forms, chosen by whether the path lies
+inside a root the server can currently see. When it does not, the verdict
+does not tell the agent to run `scan_project`, because that call would only
+fail against the allow-list `RootGuard` enforces. It names the actual fix
+instead: `knossos allow-root {path} --execute`.
 
 This check reuses `RootGuard::resolve()`, the same containment logic a real
 `scan_project` call would run, so the warning can never drift from what a
@@ -69,9 +71,18 @@ variable before the addition. The check is not authoritative and the docs
 and the verdict text both treat it that way; it is a best-effort warning
 that only ever fires in the safe direction.
 
-Fresh, stale, and unverified states skip this check entirely. All three imply
-a project that was already scanned, which means its root was necessarily
-accepted once already, so there is nothing the check could add.
+The check runs for every state. An earlier version skipped it for `fresh`,
+`stale` and `unverified`, reasoning that a scanned project must have had its
+root accepted at some point, and that reasoning is wrong: `knossos scan`
+passes the root it was handed to the guard as its own allow-list, so a scan
+from the CLI self-authorises any path and leaves a project no `roots.json`
+covers. A `stale` verdict on such a project used to end in
+`Run scan_project path=... first.`, which is the exact call the server would
+refuse, so the brief walked the agent into the dead end it exists to prevent.
+
+Only `fresh` ignores the result. It asks for nothing, so it has nothing to
+redirect, and a root warning on a graph that is currently correct would be
+noise on the one verdict that needs none.
 
 ## Granting a root: `allow-root`
 
@@ -93,6 +104,38 @@ compared as literal strings against the path a scan request names, so a
 relative path would never match anything and would silently grant nothing,
 and a root that does not exist looks identical to a working one until
 something tries to scan it.
+
+## Which database it reads, and why it never creates one
+
+Every other CLI command opens the graph through the shared runtime, which
+creates the data directory and applies every migration before handing back a
+connection. That is right for a command that is about to write and wrong
+here: a `session-brief` in a directory nobody ever scanned would leave a
+migrated SQLite file behind, from a hook nobody asked to run. So the command
+locates the database itself, asks whether that file already exists, and opens
+it only then. An absent database renders the `unscanned` verdict and touches
+nothing.
+
+Where it looks is derived from the path argument, not from the process's
+working directory:
+
+1. `--db=FILE`, when given.
+2. `KNOSSOS_DATA_DIR`, which a containerised installation depends on.
+3. `.knossos/knossos.sqlite` under the path argument, then under each of its
+   parents, taking the nearest one that exists.
+
+The parent walk mirrors the one that resolves a path to its project: a
+session started in `src/` of a scanned repository has to reach that
+repository's graph, and a lookup that stopped at the argument would find no
+database there and report a fully scanned project as `NOT SCANNED`. It also
+kept dropping an untracked `.knossos/` into whichever subdirectory the
+session happened to start in.
+
+The hook completes the pair from the other side: it `cd`s into the project
+directory before invoking the binary, so the working directory and the
+argument name the same place even for a caller that passes no path at all. A
+directory it cannot enter is silent and exits 0, like every other failure
+path in that script.
 
 ## Budgets: bounding the optional sections, not the whole output
 

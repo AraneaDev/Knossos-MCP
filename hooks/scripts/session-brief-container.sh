@@ -13,6 +13,13 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
 IMAGE="__KNOSSOS_IMAGE__"
 DATA="__KNOSSOS_DATA__"
 
+# Same reason as the local hook: the working directory and the argument must
+# name the same place. `docker run` gives the container its image's own working
+# directory rather than this one, so the bind mount below is what actually
+# carries the project in; entering it here keeps a caller that passes no
+# CLAUDE_PROJECT_DIR from mounting one directory and reading another.
+CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
+
 command -v docker >/dev/null 2>&1 || exit 0
 
 # `timeout` is GNU coreutils. A plain macOS ships none of it, and Homebrew's
