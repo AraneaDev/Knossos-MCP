@@ -31,6 +31,7 @@ Each page documents one query surface, its CLI and MCP forms, and its limits.
 - [Component inspection](features/component-inspection.md) — single-call component dossiers.
 - [List usages](features/list-usages.md) — every call/reference site of a symbol with file:line evidence.
 - [Agent brief](features/agent-brief.md) — a paste-ready markdown orientation brief for agent memory files.
+- [Session brief](features/session-brief.md) — the path-addressed, five-state orientation text a Claude Code session sees at start, and the plugin that installs it.
 - [Architecture context](features/architecture-context.md) — bounded task-oriented evidence bundles.
 - [Declared architecture policies](features/architecture-policies.md) — boundary dependency rules.
 - [Architecture quality budgets](features/quality-budgets.md) — reviewable regression gates.

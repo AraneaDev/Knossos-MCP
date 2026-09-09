@@ -104,3 +104,51 @@ recommended transport.
 The mounted directory defaults to wherever `docker compose` is run from. Set
 `KNOSSOS_SOURCE` to scan a different tree; PowerShell does not export `PWD`, so
 Windows users must always set it. See `.env.example`.
+
+## Agent orientation plugin for a containerised install
+
+`knossos install-agent-plugin` normally installs the
+[session brief](../features/session-brief.md) plugin by running
+`claude plugin marketplace add` against this checkout, which only works when
+`claude` can reach a local Knossos installation directly. That path does not
+apply to a containerised install, so the same command has a second mode that
+emits a self-contained plugin directory instead of installing anything:
+
+```sh
+knossos install-agent-plugin --out=DIR --data=HOSTPATH [--image=NAME]
+```
+
+- `--out=DIR` writes `.claude-plugin/`, `hooks/`, and `skills/` under `DIR`,
+  all-or-nothing: a failure partway through removes everything the command
+  created (or, if `DIR` already existed, only the files and directories this
+  call added), so a failed emit never leaves a directory that looks like a
+  working plugin but is missing pieces.
+- `--data=HOSTPATH` is required. The process running `install-agent-plugin`
+  is itself inside the container it is configuring, so it has no way to
+  discover the host filesystem path of its own `/data` volume; nothing on
+  disk inside the container names that path. `HOSTPATH` is what the emitted
+  hook's `docker run` mounts back in at session start.
+- `--image=NAME` overrides the image the emitted hook runs (default
+  `knossos-mcp:dev`).
+
+The emitted hook script mounts the project directory at the **same path**
+inside the container as outside it, rather than at a fixed internal path such
+as `/workspace`. That is not cosmetic. Projects are keyed by
+`root_realpath`, the resolved filesystem path recorded at scan time. A
+session that starts in `/home/me/project` but is scanned inside the
+container as `/workspace` would record `/workspace` as the root; the next
+session's brief, resolving `/home/me/project` again, would not find that
+project at all, and would render `NOT SCANNED` for a project that has in fact
+already been scanned. Mounting at the identical path keeps `root_realpath`
+consistent between the scan and every later brief.
+
+Install the emitted directory the same way as a local one, pointed at `DIR`
+instead of this checkout:
+
+```sh
+claude plugin marketplace add DIR --scope user
+```
+
+MCP server registration is unaffected either way; see
+[why the plugin does not register the server](../../README.md#agent-orientation-plugin-setup)
+in the top-level README.

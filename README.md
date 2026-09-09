@@ -245,6 +245,44 @@ Register the server with an MCP client, and grant the narrowest readable tree:
 Docker, native, and client-specific variants are in
 [installation](docs/guides/installation.md).
 
+## Agent orientation plugin setup
+
+Every scanned project can also inject a short [session brief](docs/features/session-brief.md)
+at the start of each Claude Code session: whether the graph is fresh, the
+project's boundary rules and recorded notes, and (once the graph is fresh
+enough to trust) its entry points and hubs. That injection is a plugin,
+installed from the same installation that runs the server:
+
+```sh
+knossos install-agent-plugin
+```
+
+This previews the two `claude` commands it would run
+(`claude plugin marketplace add` against this checkout, then
+`claude plugin install knossos@knossos`) and applies neither. Add
+`--execute` to actually run them, and `--scope=project` or `--scope=local`
+to install somewhere other than the default `user` scope.
+
+The plugin is never installed from a public marketplace, and that is
+deliberate rather than an oversight. `.claude-plugin/marketplace.json` is a
+**local** source descriptor: it only ever tells `claude plugin marketplace
+add` to look at a path on disk, which is why the install command points it
+at this checkout instead of at a URL. A marketplace clone of this repository
+would have no `vendor/`, so its own `bin/knossos` would not run, and because
+the `SessionStart` hook is designed to fail silent on any error, that broken
+install would produce nothing, forever, with nothing to diagnose. Sourcing
+the plugin from a checkout that is already running the server rules that
+failure mode out instead of merely warning against it.
+
+MCP server registration is a separate step and stays that way: registering
+the server with an MCP client (see [quick start](#quick-start) above) does
+not need the plugin, and installing the plugin does not register a server.
+A containerised installation, in particular, does not run a local `knossos`
+binary at all, so folding server registration into the plugin install would
+either duplicate an existing registration or assume one that is not there.
+Installing from a container instead of a native checkout uses `--out`; see
+[the container operations guide](docs/operations/container.md#agent-orientation-plugin-for-a-containerised-install).
+
 ## Supported languages
 
 | Language                                         | Extraction                                                                          | Framework enrichment                                                               |
