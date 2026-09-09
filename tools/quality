@@ -34,7 +34,11 @@ in_lane() {
 # of assuming this script runs from the repository root.
 root=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 
-# Run the PHPUnit suite. In the quality container the tooling is installed as
+# Run the PHPUnit suite, and with it the SessionStart hook's shell-level
+# failure-mode tests: `composer test` runs both, because the hook's fail-silent
+# contract is a property of a shell script that no PHP test can reach, and a
+# check that lives beside the suite without running with it is a check nobody
+# runs. In the quality container the tooling is installed as
 # root, but the permission-error tests (Doctor unwritable-data-dir, MigrationRunner
 # unreadable-migration, ProjectDiscoverer permission-denied) skip themselves when
 # the process is root, so those branches would silently never run. Drop to the
@@ -119,7 +123,9 @@ fi
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark \
-        tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install
+        tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install \
+        hooks/scripts/session-brief.sh hooks/scripts/session-brief-container.sh \
+        tests/shell/session-brief-hook.sh
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1

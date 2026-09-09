@@ -42,7 +42,10 @@
       "php -l tools/supply-chain-report.php",
       "php -l tools/scanner-conformance"
     ],
-    "test": "phpunit",
+    "test": [
+      "phpunit",
+      "sh tests/shell/session-brief-hook.sh"
+    ],
     "check:quick": [
       "@composer validate --strict",
       "composer --working-dir=workers/php validate --strict",
