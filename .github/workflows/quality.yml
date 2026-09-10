@@ -88,8 +88,10 @@ jobs:
         # `static` holds the linters and static analysis, `tests` the suites,
         # `rust` the cargo toolchain because it is slow and self-contained,
         # `release` the supply-chain and packaging checks, `coverage` the pcov
-        # run and its budgets. The split is by independence, not by language:
-        # see tools/quality for why coverage cannot be split per language.
+        # run and its budgets, `gate` Knossos's own architecture budgets
+        # measured against Knossos. The split is by independence, not by
+        # language: see tools/quality for why coverage cannot be split per
+        # language, and what `gate` does and does not enforce.
         #
         # A release-please pull request runs `static` alone. Its diff is
         # version.txt, the manifest, a CHANGELOG entry and the version string
@@ -108,7 +110,7 @@ jobs:
         # main is the backstop rather than this being the only gate.
         lane:
           ${{ fromJSON(startsWith(github.head_ref, 'release-please--branches--') &&
-          '["static"]' || '["static","tests","rust","release","coverage"]') }}
+          '["static"]' || '["static","tests","rust","release","coverage","gate"]') }}
     permissions:
       contents: read
       packages: read

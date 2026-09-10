@@ -4,13 +4,13 @@ set -eu
 profile="${1:-fast}"
 lane="${2:-all}"
 if [ "$profile" != "fast" ] && [ "$profile" != "full" ]; then
-    echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage]" >&2
+    echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage|gate]" >&2
     exit 64
 fi
 case "$lane" in
-    all | static | tests | rust | release | coverage) ;;
+    all | static | tests | rust | release | coverage | gate) ;;
     *)
-        echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage]" >&2
+        echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage|gate]" >&2
         exit 64
         ;;
 esac
@@ -197,4 +197,55 @@ if [ "$profile" = "full" ] && in_lane coverage; then
     # Run it on demand instead -- `.github/workflows/mutation.yml`
     # (workflow_dispatch), or locally per docs/development/adversarial-testing.md.
     tools/coverage
+fi
+
+# Knossos's own architecture budgets, enforced against Knossos itself.
+#
+# Nothing ran this before, so the budgets in knossos.json were advisory: between
+# 2026-08-02 and 2026-09-10 `unreferenced_candidates` drifted from 68 to 158
+# against a limit of 110 and no run said so, because the only thing that
+# evaluated it was a maintainer asking by hand.
+#
+# The baseline is this repository scanned twice. That makes the two DELTA
+# budgets structurally inert here: `new_cycles` and `hub_degree_growth` are
+# both `max(0, after - before)`, and two scans of the same tree cannot differ,
+# so they can only ever report 0. They are still passed to the gate rather than
+# dropped, because knossos.json is the one place these limits are written and a
+# second, CI-only copy would drift from it.
+#
+# What this lane really enforces is the four ABSOLUTE budgets, which are also
+# the ones that caught the drift above: boundary_violations, error_diagnostics,
+# warning_diagnostics and unreferenced_candidates. Those are computed from the
+# active snapshot alone and fail the run when the current tree breaches them.
+#
+# Making the deltas meaningful needs a baseline scanned from the merge-base,
+# which this container cannot produce: the image is built with `.git` excluded
+# (see .dockerignore), so there is no history here to check out. It would take
+# mounting the runner's checkout and fetching enough depth to find the base
+# ref. Worth doing, and deliberately not done here: a lane that enforces four
+# budgets honestly is better than one that appears to enforce six.
+if [ "$profile" = "full" ] && in_lane gate; then
+    gate_dir=$(mktemp -d)
+    # `set -e` skips the rest of the lane on a failure, so the directory is
+    # removed on the way out however the gate ends.
+    trap 'rm -rf "$gate_dir"' EXIT INT TERM
+    # knossos.json holds the budgets and policies; the CLI takes each as its own
+    # file. Split rather than duplicated, so the config stays authoritative.
+    # shellcheck disable=SC2016 # $c and $argv are PHP variables, not shell ones
+    php -r '$c = json_decode(file_get_contents($argv[1]), true);
+        file_put_contents($argv[2] . "/budgets.json", json_encode($c["quality_budgets"] ?? []));
+        file_put_contents($argv[2] . "/policies.json", json_encode($c["policies"] ?? []));' \
+        "$root/knossos.json" "$gate_dir"
+    # Archiving a snapshot of this graph peaks around 130 MB, over PHP's 128 MB
+    # default. That default is unset on a typical developer's CLI and left in
+    # place in the container, so the scan passed locally and died in the image
+    # until this pinned the limit for both.
+    KNOSSOS_DATA_DIR="$gate_dir" php -d memory_limit=512M "$root/bin/knossos" scan "$root" --mode=full --json > "$gate_dir/baseline.json"
+    KNOSSOS_DATA_DIR="$gate_dir" php -d memory_limit=512M "$root/bin/knossos" scan "$root" --mode=full --json > "$gate_dir/active.json"
+    # shellcheck disable=SC2016 # as above: PHP variables
+    gate_project=$(php -r '$s = json_decode(file_get_contents($argv[1]), true); echo $s["project_id"];' "$gate_dir/baseline.json")
+    # shellcheck disable=SC2016 # as above: PHP variables
+    gate_baseline=$(php -r '$s = json_decode(file_get_contents($argv[1]), true); echo $s["snapshot_id"];' "$gate_dir/baseline.json")
+    KNOSSOS_DATA_DIR="$gate_dir" php -d memory_limit=512M "$root/bin/knossos" quality-gate "$gate_project" "$gate_baseline" \
+        --budgets="$gate_dir/budgets.json" --policies="$gate_dir/policies.json"
 fi

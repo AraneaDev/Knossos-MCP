@@ -241,6 +241,10 @@ COPY README.md CONTRIBUTING.md LICENSE ./
 COPY version.txt release-please-config.json .release-please-manifest.json ./
 COPY coverage-budgets.json ./
 COPY maintainability-budgets.json ./
+# The `gate` lane scans this repository and holds it to its own budgets, which
+# live here along with the boundaries and policies the scan needs to reproduce
+# the numbers those budgets were set from.
+COPY knossos.json ./
 COPY Dockerfile ./
 COPY docker-compose.yml .env.example ./
 COPY docs ./docs

@@ -12,7 +12,7 @@ tools/quality-container full
 ## Lanes
 
 The gate is one linear script, and locally it runs as one. CI splits it into
-five lanes that run at the same time, because most of the work does not depend
+six lanes that run at the same time, because most of the work does not depend
 on the rest of it. Both commands take an optional second argument naming a
 lane, so a lane that failed in CI can be reproduced here instead of only in the
 workflow:
@@ -29,6 +29,7 @@ tools/quality full static
 | `rust`     | `cargo fmt`, `clippy` and `test`, which are slow and self-contained                                       |
 | `release`  | audits, supply chain, benchmark, release lifecycle, the runtime image                                     |
 | `coverage` | the pcov run and the coverage floors                                                                      |
+| `gate`     | Knossos scanned by Knossos, held to the budgets in `knossos.json`                                         |
 
 Omitting the argument runs every lane, which is the local default.
 
@@ -38,10 +39,34 @@ latter two from worker subprocesses that run drives. Splitting coverage per
 language would measure three suites that never exercise the workers and report
 floors nothing earns.
 
+### What the `gate` lane enforces
+
+The lane scans this repository twice into a throwaway database, then holds the
+second scan to the budgets in `knossos.json`. Nothing ran those budgets before,
+so they were advisory: between 2026-08-02 and 2026-09-10 `unreferenced_candidates`
+drifted from 68 to 158 against a limit of 110 and no run said so.
+
+Its baseline is this same tree, which makes the two delta budgets inert here.
+`new_cycles` and `hub_degree_growth` are both `max(0, after - before)`, and two
+scans of one tree cannot differ, so they can only report 0. They are still
+passed to the gate rather than dropped, because `knossos.json` is the one place
+the limits are written and a second CI-only copy would drift from it.
+
+What the lane really enforces is the four absolute budgets, which are also the
+ones that caught the drift above: `boundary_violations`, `error_diagnostics`,
+`warning_diagnostics` and `unreferenced_candidates`. Each is computed from the
+active snapshot alone.
+
+Making the deltas meaningful needs a baseline scanned from the merge base, and
+the image cannot produce one: it is built with `.git` excluded, so no history
+reaches it. That would take mounting the runner's checkout and fetching enough
+depth to reach the base ref. A lane that enforces four budgets honestly is
+worth more than one that appears to enforce six.
+
 ## How CI runs it
 
 One job builds the quality image and pushes it to the repository's registry,
-tagged by commit, and the five lanes pull it. An aggregating job named
+tagged by commit, and the six lanes pull it. An aggregating job named
 `quality` fails unless the whole matrix succeeded, which is the check branch
 protection requires: a lane that is skipped or cancelled fails it just as a red
 lane does.
