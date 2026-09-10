@@ -242,7 +242,7 @@ COPY version.txt release-please-config.json .release-please-manifest.json ./
 COPY coverage-budgets.json ./
 COPY maintainability-budgets.json ./
 COPY Dockerfile ./
-COPY docker-compose.yml .env.example .mcp.json ./
+COPY docker-compose.yml .env.example ./
 COPY docs ./docs
 COPY benchmarks ./benchmarks
 COPY tests ./tests
