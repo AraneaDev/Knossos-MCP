@@ -209,6 +209,72 @@ final class SessionBriefRendererTest extends TestCase
     }
 
     #[Group('query')]
+    public function testTheNotAllowedVerdictNamesTheRootsFileItConsulted(): void
+    {
+        // Which file was consulted is the fact that makes the recommendation
+        // checkable. `allow-root` writes to a location derived the same way,
+        // so the two agree with each other and can still both differ from the
+        // file a running server reads; naming it is what lets a reader compare
+        // it against server_info instead of assuming.
+        $brief = new SessionBrief(
+            'unscanned',
+            null,
+            null,
+            '/root/Elsewhere',
+            null,
+            0,
+            0,
+            [],
+            [],
+            [],
+            [],
+            false,
+            true,
+            null,
+            true,
+            '/root/.knossos/roots.json',
+        );
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(
+            true,
+            str_contains(
+                $text,
+                'NOT SCANNED, and /root/Elsewhere is not an allowed root in /root/.knossos/roots.json. '
+                    . 'Add it: knossos allow-root /root/Elsewhere --execute',
+            ),
+        );
+    }
+
+    #[Group('query')]
+    public function testNamingTheRootsFileStaysWithinTheUnscannedBudget(): void
+    {
+        // The verdict is a floor: fit() drops optional lines but never this
+        // one, so anything added here is paid on every brief that reaches it.
+        $brief = new SessionBrief(
+            'unscanned',
+            null,
+            null,
+            '/root/some-project',
+            null,
+            0,
+            0,
+            [],
+            [],
+            [],
+            [],
+            false,
+            true,
+            null,
+            true,
+            '/root/.knossos/roots.json',
+        );
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(true, strlen($text) <= SessionBriefRenderer::BUDGETS['unscanned']);
+    }
+
+    #[Group('query')]
     public function testUnscannedKeepsTodaysWordingWhenAllowed(): void
     {
         // Pinned so the plumbing that computes the flag cannot silently start

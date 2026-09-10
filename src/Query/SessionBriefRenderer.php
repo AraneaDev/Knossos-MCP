@@ -153,10 +153,16 @@ final readonly class SessionBriefRenderer
             );
         }
         if (!$brief->pathAllowed && $brief->state !== 'fresh') {
+            // The roots file is named when there was one to read. It is the
+            // difference between a claim and a checkable claim: `allow-root`
+            // derives its target the same way, so the two agree with each
+            // other and can still both differ from the file a running server
+            // reads. Naming it lets a reader compare against server_info.
             return sprintf(
-                '%s, and %s is not an allowed root. Add it: knossos allow-root %s --execute',
+                '%s, and %s is not an allowed root%s. Add it: knossos allow-root %s --execute',
                 $state,
                 $brief->path,
+                $brief->rootsFile === null ? '' : ' in ' . $brief->rootsFile,
                 $brief->path,
             );
         }

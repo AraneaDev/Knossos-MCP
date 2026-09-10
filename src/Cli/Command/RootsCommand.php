@@ -70,6 +70,10 @@ final class RootsCommand implements CliCommand
         $configPath = AllowedRoots::defaultConfigPath($context->databasePath());
         $roots = self::readRoots($configPath);
         $json = $context->options->flag($options, 'json');
+        $named = self::locationWasNamed($context);
+        $effect = $named
+            ? 'A server configured with that roots file re-reads it per request, so %s with no restart.'
+            : 'That location came from the working directory, not from KNOSSOS_ROOTS_FILE or KNOSSOS_DATA_DIR, so it may not be the file your server reads. Check server_info.';
 
         // Existing entries are compared normalised but rewritten verbatim: a
         // root someone typed with a trailing slash before this fix is already
@@ -88,12 +92,19 @@ final class RootsCommand implements CliCommand
 
         if (!$context->options->flag($options, 'execute')) {
             $context->output(
-                ['path' => $path, 'roots_file' => $configPath, 'added' => false, 'preview' => true],
+                [
+                    'path' => $path,
+                    'roots_file' => $configPath,
+                    'roots_file_source' => $named ? 'named' : 'working-directory',
+                    'added' => false,
+                    'preview' => true,
+                ],
                 $json,
                 sprintf(
-                    "Would add %s to %s.\nA running server re-reads that file per request, so the addition would take effect with no restart.\nRe-run with --execute to write it.",
+                    "Would add %s to %s.\n%s\nRe-run with --execute to write it.",
                     $path,
                     $configPath,
+                    sprintf($effect, 'the addition would take effect'),
                 ),
             );
             return 0;
@@ -101,15 +112,45 @@ final class RootsCommand implements CliCommand
 
         self::writeRoots($configPath, $roots);
         $context->output(
-            ['path' => $path, 'roots_file' => $configPath, 'added' => true],
+            [
+                'path' => $path,
+                'roots_file' => $configPath,
+                'roots_file_source' => $named ? 'named' : 'working-directory',
+                'added' => true,
+            ],
             $json,
             sprintf(
-                "Added %s to %s.\nA running server re-reads that file per request, so this takes effect immediately with no restart.",
+                "Added %s to %s.\n%s",
                 $path,
                 $configPath,
+                sprintf($effect, 'this takes effect immediately'),
             ),
         );
         return 0;
+    }
+
+    /**
+     * Whether somebody stated where the roots file lives.
+     *
+     * Three things count, and they are the three {@see AllowedRoots::defaultConfigPath()}
+     * and {@see \Knossos\Runtime\RuntimeFactory::defaultDatabasePath()} consult
+     * before falling back: `KNOSSOS_ROOTS_FILE`, which names the file outright;
+     * `KNOSSOS_DATA_DIR`, which names the directory it sits in; and `--db`,
+     * which names the database it sits beside. With none of them the location
+     * is whatever the working directory implies, which is rarely the file a
+     * running server reads and is therefore worth disclosing rather than
+     * asserting a restart-free effect the caller cannot rely on.
+     */
+    private static function locationWasNamed(CliCommandContext $context): bool
+    {
+        foreach (['KNOSSOS_ROOTS_FILE', 'KNOSSOS_DATA_DIR'] as $variable) {
+            $value = getenv($variable);
+            if (is_string($value) && $value !== '') {
+                return true;
+            }
+        }
+
+        return $context->databasePathWasGiven();
     }
 
     /**

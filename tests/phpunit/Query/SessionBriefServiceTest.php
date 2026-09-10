@@ -14,6 +14,40 @@ use PHPUnit\Framework\Attributes\Group;
 final class SessionBriefServiceTest extends KnossosTestCase
 {
     #[Group('query')]
+    public function testTheBriefReportsTheRootsFileItActuallyConsulted(): void
+    {
+        // Not "the roots file", of which there may be several on one machine,
+        // but the one this call read. It follows the same precedence
+        // AllowedRoots uses, so the reported path is the path that decided the
+        // verdict rather than a plausible guess about where roots live.
+        $directory = sys_get_temp_dir() . '/knossos-brief-roots-' . bin2hex(random_bytes(4));
+        mkdir($directory, 0o755, true);
+        $previous = getenv('KNOSSOS_ROOTS_FILE');
+        putenv('KNOSSOS_ROOTS_FILE');
+        try {
+            $besideTheDatabase = SessionBriefService::unscanned('/root/Elsewhere', $directory . '/knossos.sqlite');
+            assertSame($directory . '/roots.json', $besideTheDatabase->rootsFile);
+
+            putenv('KNOSSOS_ROOTS_FILE=' . $directory . '/named.json');
+            $named = SessionBriefService::unscanned('/root/Elsewhere', $directory . '/knossos.sqlite');
+            assertSame($directory . '/named.json', $named->rootsFile);
+        } finally {
+            putenv(is_string($previous) ? 'KNOSSOS_ROOTS_FILE=' . $previous : 'KNOSSOS_ROOTS_FILE');
+            exec('rm -rf ' . escapeshellarg($directory));
+        }
+    }
+
+    #[Group('query')]
+    public function testNoRootsFileIsReportedWhenThereIsNoDatabaseToFindOneBeside(): void
+    {
+        // ':memory:' has no directory to look beside, so there is no file the
+        // verdict could honestly name and it must not invent one.
+        $brief = SessionBriefService::unscanned('/root/Elsewhere', ':memory:');
+
+        assertSame(null, $brief->rootsFile);
+    }
+
+    #[Group('query')]
     public function testUnscannedPathYieldsTheShortestBrief(): void
     {
         [$pdo] = $this->storeFixture();
@@ -298,7 +332,12 @@ final class SessionBriefServiceTest extends KnossosTestCase
 
             assertSame('missing', $brief->state);
             assertSame(false, $brief->pathAllowed);
-            assertSame(true, str_contains($text, 'NO GRAPH, and ' . realpath($root) . ' is not an allowed root.'));
+            // The roots file that decided it, named: the verdict is checkable
+            // against server_info rather than being a claim about "roots".
+            assertSame(true, str_contains(
+                $text,
+                'NO GRAPH, and ' . realpath($root) . ' is not an allowed root in ' . dirname($databasePath) . '/roots.json.',
+            ));
             assertSame(true, str_contains($text, 'knossos allow-root'));
         } finally {
             $this->removeTempTree($root);
@@ -331,7 +370,7 @@ final class SessionBriefServiceTest extends KnossosTestCase
 
             assertSame('stale', $brief->state);
             assertSame(false, $brief->pathAllowed);
-            assertSame(true, str_contains($text, 'is not an allowed root. Add it: knossos allow-root'));
+            assertSame(true, str_contains($text, 'is not an allowed root in ' . dirname($databasePath) . '/roots.json. Add it: knossos allow-root'));
             assertSame(false, str_contains($text, 'scan_project'));
         } finally {
             $this->removeTempTree($root);
@@ -380,7 +419,7 @@ final class SessionBriefServiceTest extends KnossosTestCase
 
             assertSame(true, $brief->pathExists);
             assertSame(false, $brief->pathAllowed);
-            assertSame(true, str_contains($text, 'is not an allowed root. Add it: knossos allow-root'));
+            assertSame(true, str_contains($text, 'is not an allowed root in ' . dirname($databasePath) . '/roots.json. Add it: knossos allow-root'));
             assertSame(false, str_contains($text, 'does not exist.'));
         } finally {
             $this->removeTempTree($root);

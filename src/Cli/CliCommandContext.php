@@ -56,6 +56,19 @@ final class CliCommandContext
     }
 
     /**
+     * Whether `--db` named the database, rather than it being derived.
+     *
+     * Asked by commands whose output makes a claim about where a file lives.
+     * A derived path is wherever the shell happened to be, which is a fact
+     * worth disclosing; a named one is what the caller asked for and needs no
+     * qualification.
+     */
+    public function databasePathWasGiven(): bool
+    {
+        return $this->databasePath !== null;
+    }
+
+    /**
      * A token wired to interrupt signals, so Ctrl-C stops a scan cleanly.
      *
      * Degrades to an un-signalled token where pcntl is unavailable rather than

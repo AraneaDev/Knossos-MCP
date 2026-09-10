@@ -56,6 +56,58 @@ final class RootsCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testAnOperatorNamedLocationKeepsTheNoRestartPromise(): void
+    {
+        // --db, KNOSSOS_DATA_DIR and KNOSSOS_ROOTS_FILE are all somebody
+        // stating where the graph lives, so the file this writes is the file
+        // they meant and the promise about a server reading it is earned.
+        ob_start();
+        (new RootsCommand())->run('allow-root', [$this->tempDir], [], $this->context());
+        $output = (string) ob_get_clean();
+
+        assertSame(true, str_contains($output, 'A server configured with that roots file re-reads it per request'));
+        assertSame(false, str_contains($output, 'working directory'));
+    }
+
+    #[Group('cli')]
+    public function testALocationDerivedFromTheWorkingDirectorySaysSo(): void
+    {
+        // With nothing naming a location, the roots file is wherever the shell
+        // happens to be, which is rarely the file the running server reads.
+        // Saying "takes effect immediately with no restart" there is the one
+        // thing this command must not do: the caller acts on it, the server
+        // refuses the scan anyway, and nothing points at why.
+        $previousData = getenv('KNOSSOS_DATA_DIR');
+        $previousFile = getenv('KNOSSOS_ROOTS_FILE');
+        $previousCwd = (string) getcwd();
+        putenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_ROOTS_FILE');
+        chdir($this->tempDir);
+        try {
+            // No database path at all, so the runtime falls back to <cwd>/.knossos,
+            // which the chdir above has placed inside this test's own directory.
+            $context = new CliCommandContext(
+                new CliOptionParser(),
+                new CliInputLoader(),
+                new RuntimeFactory(self::repositoryRoot()),
+                null,
+            );
+            ob_start();
+            (new RootsCommand())->run('allow-root', [$this->tempDir], [], $context);
+            $output = (string) ob_get_clean();
+        } finally {
+            chdir($previousCwd);
+            putenv(is_string($previousData) ? 'KNOSSOS_DATA_DIR=' . $previousData : 'KNOSSOS_DATA_DIR');
+            putenv(is_string($previousFile) ? 'KNOSSOS_ROOTS_FILE=' . $previousFile : 'KNOSSOS_ROOTS_FILE');
+        }
+
+        assertSame(false, str_contains($output, 'takes effect'));
+        assertSame(false, str_contains($output, 'no restart'));
+        assertSame(true, str_contains($output, 'came from the working directory'));
+        assertSame(true, str_contains($output, 'server_info'));
+    }
+
+    #[Group('cli')]
     public function testPreviewNamesTheRootsFileAndWritesNothing(): void
     {
         $target = $this->tempDir . '/project';

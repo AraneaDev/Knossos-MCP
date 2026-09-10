@@ -30,16 +30,23 @@ are substituted at render time):
 
 - `fresh`: `FRESH (scanned {age} ago).`
 - `stale`, path allowed: `STALE ({n} files, {age}). Run scan_project path={path} first.`
-- `stale`, path not allowed: `STALE ({n} files, {age}), and {path} is not an allowed root. Add it: knossos allow-root {path} --execute`
+- `stale`, path not allowed: `STALE ({n} files, {age}), and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
 - `unverified`, path allowed: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago). Rescan if exactness matters.`
-- `unverified`, path not allowed: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago), and {path} is not an allowed root. Add it: knossos allow-root {path} --execute`
+- `unverified`, path not allowed: `UNVERIFIED ({n} files, over probe limit; scanned {age} ago), and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
 - `missing`, path allowed: `NO GRAPH. Run scan_project path={path} first.`
-- `missing`, path not allowed: `NO GRAPH, and {path} is not an allowed root. Add it: knossos allow-root {path} --execute`
+- `missing`, path not allowed: `NO GRAPH, and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
 - `unscanned`, path allowed: `NOT SCANNED. Run scan_project path={path} to map this repository.`
-- `unscanned`, path not allowed: `NOT SCANNED, and {path} is not an allowed root. Add it: knossos allow-root {path} --execute`
+- `unscanned`, path not allowed: `NOT SCANNED, and {path} is not an allowed root in {roots_file}. Add it: knossos allow-root {path} --execute`
 
 `age` is a coarse, single-token duration (`17d`, `3h`, `9m`); minute precision
 on a seventeen-day-old scan is noise, not accuracy.
+
+`roots_file` is the file this brief actually read, following the same
+precedence `AllowedRoots` uses: `KNOSSOS_ROOTS_FILE`, else `roots.json` beside
+the database. It is named because a machine can have more than one, and the
+one a running server reads is not necessarily the one derived here. Compare it
+against `server_info` when a scan is refused anyway. The clause is dropped when
+there was no file to consult, which is the in-memory and no-database case.
 
 ## Naming `allow-root` instead of a scan that would be rejected
 
@@ -92,12 +99,27 @@ Like `annotate-component` and `install-agent-plugin`, it previews by default:
 without `--execute` it reports what it would add and changes nothing. With
 `--execute`, it writes the file, atomically (write to a temporary name
 beside the target, then `rename`, preserving the target's existing file
-mode), and reports that the addition takes effect immediately.
+mode).
 
-That immediacy is not incidental. `roots.json` is re-read on every request a
-running server handles, not cached at startup, so a newly-granted root needs
-no restart and no re-registration. A second `allow-root` run for a path
-already present reports it as already there and writes nothing.
+`roots.json` is re-read on every request a running server handles, not cached
+at startup, so a newly-granted root needs no restart and no re-registration.
+A second `allow-root` run for a path already present reports it as already
+there and writes nothing.
+
+What the command says about that depends on how it found the file, because
+only one of the two answers is worth relying on:
+
+- **Named**, by `KNOSSOS_ROOTS_FILE`, `KNOSSOS_DATA_DIR`, or `--db`: the file
+  is the one the caller meant, so the command reports that a server configured
+  with it picks the addition up with no restart.
+- **Derived** from the working directory, when none of those is set: the file
+  is wherever the shell happened to be, which is rarely the file a running
+  server reads. The command says so and points at `server_info` rather than
+  promising an effect the caller cannot rely on. Under `--json` the same fact
+  is `roots_file_source`, either `named` or `working-directory`.
+
+A registration written by `tools/install` pins `KNOSSOS_DATA_DIR`, so a shell
+that exports the same value is in the first case and agrees with the server.
 
 The path must be absolute and must already exist as a directory: roots are
 compared as literal strings against the path a scan request names, so a

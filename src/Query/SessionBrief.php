@@ -62,6 +62,14 @@ final readonly class SessionBrief
      *   caller named rather than about the project, so it is the one line that
      *   can assert a directory into existence. Meaningless, and ignored, when
      *   $queriedPath is null.
+     * @param string|null $rootsFile the roots file this brief actually read,
+     *   following {@see \Knossos\Discovery\AllowedRoots::defaultConfigPath()}'s
+     *   own precedence rather than guessing where roots live. Named in the
+     *   not-allowed verdict because it is what makes that verdict checkable: a
+     *   machine can have several, and the one a running server reads is not
+     *   necessarily the one derived here. Null when there was none to consult,
+     *   which is the ':memory:' and no-database case, and the verdict then
+     *   keeps its unqualified wording rather than inventing a path.
      */
     public function __construct(
         public string $state,
@@ -79,5 +87,6 @@ final readonly class SessionBrief
         public bool $pathExists = true,
         public ?string $queriedPath = null,
         public bool $queriedPathExists = true,
+        public ?string $rootsFile = null,
     ) {}
 }

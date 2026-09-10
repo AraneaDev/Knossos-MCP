@@ -131,6 +131,7 @@ final readonly class SessionBriefService
             // above already failed over to the literal path for a target that
             // is not there, which is exactly the case this has to catch.
             is_dir($queried),
+            $rootStatus['roots_file'],
         );
     }
 
@@ -164,6 +165,7 @@ final readonly class SessionBriefService
             0,
             pathAllowed: $rootStatus['allowed'],
             pathExists: $rootStatus['exists'],
+            rootsFile: $rootStatus['roots_file'],
         );
     }
 
@@ -189,7 +191,7 @@ final readonly class SessionBriefService
      * RootGuard's own refusal signal, and nothing else may be silently read
      * as one.
      *
-     * @return array{exists: bool, allowed: bool}
+     * @return array{exists: bool, allowed: bool, roots_file: string|null}
      */
     private static function rootStatus(?string $databasePath, string $absolutePath): array
     {
@@ -202,23 +204,26 @@ final readonly class SessionBriefService
         // and owes nothing to the allow-list, so having no roots file to
         // consult is no reason to claim a directory is there.
         if ($databasePath === null || $databasePath === ':memory:') {
-            return ['exists' => RootGuard::exists($absolutePath), 'allowed' => true];
+            return ['exists' => RootGuard::exists($absolutePath), 'allowed' => true, 'roots_file' => null];
         }
         $staticRoots = [];
         $configured = getenv('KNOSSOS_ALLOWED_ROOTS');
         if (is_string($configured) && $configured !== '') {
             $staticRoots = array_values(array_filter(explode(PATH_SEPARATOR, $configured)));
         }
-        $allowedRoots = new AllowedRoots($staticRoots, AllowedRoots::defaultConfigPath($databasePath));
+        // Resolved once and reported, not recomputed by the caller: the file
+        // named in the verdict has to be the file that decided it.
+        $configPath = AllowedRoots::defaultConfigPath($databasePath);
+        $allowedRoots = new AllowedRoots($staticRoots, $configPath);
         try {
             (new RootGuard($allowedRoots))->resolve($absolutePath);
 
-            return ['exists' => true, 'allowed' => true];
+            return ['exists' => true, 'allowed' => true, 'roots_file' => $configPath];
         } catch (RootNotFoundException) {
             // Ordered before the parent type, which would otherwise swallow it.
-            return ['exists' => false, 'allowed' => false];
+            return ['exists' => false, 'allowed' => false, 'roots_file' => $configPath];
         } catch (DiscoveryException) {
-            return ['exists' => true, 'allowed' => false];
+            return ['exists' => true, 'allowed' => false, 'roots_file' => $configPath];
         }
     }
 
