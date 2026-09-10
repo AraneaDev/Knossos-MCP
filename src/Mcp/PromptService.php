@@ -92,9 +92,9 @@ final readonly class PromptService
             Review the architectural blast radius of {$target} using the Knossos graph.
 
             1. Resolve the project_id via list_projects (scan_project first if the graph is stale, or pass refresh_if_stale: true).
-            2. Call review_diff — one call returns the impacted components, boundary-policy violations touching the change, the quality-gate delta, and any dependency cycles the change participates in. Policies and budgets default to the project's knossos.json.
+            2. Call review_diff: one call returns the impacted components, boundary-policy violations touching the change, the quality-gate delta, and any dependency cycles the change participates in. Policies and budgets default to the project's knossos.json.
 
-            Then report: what the change can break (with the evidence edges), any policy violations, and any budget regressions. Impact is a conservative static blast radius — say so when reporting.
+            Then report: what the change can break (with the evidence edges), any policy violations, and any budget regressions. Impact is a conservative static blast radius. Say so when reporting.
             TEXT;
     }
 }
