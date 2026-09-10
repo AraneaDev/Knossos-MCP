@@ -690,7 +690,6 @@ final class NdjsonRpcChannelTest extends TestCase
     public function testExhaustionRequiresEofAndNotMerelyAnEmptyRead(): void
     {
         $method = new \ReflectionMethod(NdjsonRpcChannel::class, 'isExhausted');
-        $method->setAccessible(true);
         [$reader, $writer] = $this->socketPair();
         stream_set_blocking($reader, false);
 
