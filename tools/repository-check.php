@@ -92,21 +92,40 @@ function repositoryFiles(string $root): array
     // Matched by full relative path, not bare basename -- see the docblock above.
     $skippedPathPrefixes = ['workers/rust/target/', 'workers/rust/bin/'];
     $paths = [];
-    $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
+    // Pruned during the walk rather than filtered afterwards. Collecting first
+    // and discarding later still OPENS every skipped directory, and one of
+    // them cannot be opened: `tools/coverage` writes
+    // `coverage/rust/html/coverage` as root with mode 0750 while the suite
+    // runs as a non-root user, so the walk threw an uncaught
+    // UnexpectedValueException and the gate exited 255 instead of its own 1.
+    // Pruning also drops the wall-clock cost this function's docblock
+    // describes, since a skipped tree is never descended into at all.
+    $prune = static function (SplFileInfo $file) use ($root, $skippedDirectories, $skippedPathPrefixes): bool {
+        $relative = str_replace('\\', '/', substr($file->getPathname(), strlen($root) + 1));
+        if (array_intersect(explode('/', $relative), $skippedDirectories) !== []) {
+            return false;
+        }
+        foreach ($skippedPathPrefixes as $prefix) {
+            // A directory is kept when it is still a prefix of a skipped path,
+            // so `workers/` survives long enough to reach `workers/php/`.
+            if (str_starts_with($relative . ($file->isDir() ? '/' : ''), $prefix)) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveCallbackFilterIterator(
+            new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS),
+            $prune,
+        ),
+    );
     foreach ($iterator as $file) {
         if (!$file instanceof SplFileInfo || !$file->isFile()) {
             continue;
         }
-        $relative = str_replace('\\', '/', substr($file->getPathname(), strlen($root) + 1));
-        if (array_intersect(explode('/', $relative), $skippedDirectories) !== []) {
-            continue;
-        }
-        foreach ($skippedPathPrefixes as $prefix) {
-            if (str_starts_with($relative, $prefix)) {
-                continue 2;
-            }
-        }
-        $paths[] = $relative;
+        $paths[] = str_replace('\\', '/', substr($file->getPathname(), strlen($root) + 1));
     }
     sort($paths, SORT_STRING);
     $ignored = gitIgnoredPaths($root, $paths);

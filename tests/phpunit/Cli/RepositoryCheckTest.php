@@ -70,6 +70,44 @@ final class RepositoryCheckTest extends KnossosTestCase
      * filter must not widen into "skip everything git does not already track".
      */
     #[Group('documentation')]
+    /**
+     * A skipped directory must not be opened, only discarded.
+     *
+     * The walk collected every path first and dropped the skipped ones
+     * afterwards, so a directory the gate never intended to read was opened
+     * anyway. `tools/coverage` writes `coverage/rust/html/coverage` as root
+     * with mode 0750, and the suite runs as a non-root user, so the second
+     * `tools/quality-container full` on any machine died here with an
+     * uncaught UnexpectedValueException and exit 255 rather than the gate's
+     * own exit 1.
+     */
+    #[Group('documentation')]
+    public function testRepositoryCheckDoesNotDescendIntoSkippedDirectories(): void
+    {
+        if (posix_geteuid() === 0) {
+            self::markTestSkipped('Running as root; an unreadable directory is still readable.');
+        }
+        $root = self::repositoryRoot();
+        $unreadable = $root . '/coverage/repository-check-unreadable';
+        if (!is_dir($root . '/coverage') && !@mkdir($root . '/coverage', 0o755, true) && !is_dir($root . '/coverage')) {
+            self::markTestSkipped('coverage/ cannot be created here.');
+        }
+        if (!@mkdir($unreadable, 0o700) && !is_dir($unreadable)) {
+            self::markTestSkipped('the fixture directory cannot be created here.');
+        }
+
+        try {
+            // Nothing inside is readable, so a walk that opens it throws.
+            @chmod($unreadable, 0o000);
+            [$exit] = $this->runFixtureCommandOutput([PHP_BINARY, $root . '/tools/repository-check.php']);
+
+            assertSame(0, $exit);
+        } finally {
+            @chmod($unreadable, 0o700);
+            @rmdir($unreadable);
+        }
+    }
+
     public function testRepositoryCheckStillInspectsUntrackedFilesThatAreNotIgnored(): void
     {
         $root = self::repositoryRoot();
