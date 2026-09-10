@@ -59,15 +59,26 @@
     //
     // The pattern is matched by Infection as `^-\s*<regex>$` against the
     // mutant's diff, so it targets the original line.
+    // The nanosecond-to-millisecond divisor on an `hrtime(true)` reading is a
+    // unit conversion, not a tuning knob. Off-by-one on it (999999, 1000001)
+    // shifts the result by one part in a million — under a microsecond on any
+    // duration this codebase measures, and erased entirely by the `(int)` cast
+    // and the `round(…, 3)` that follow. No test can distinguish it without
+    // restating the divisor, so these are equivalent mutants. Measured on
+    // GitProcessRunner.php:169 and GraphReconciler.php:86, both survivors of the
+    // 2026-09-10 run. Only the integer mutators are excluded: `Minus` on the
+    // same line (`hrtime(true) + $start`) is a real defect and stays reported.
     IncrementInteger: {
       ignoreSourceCodeByRegex: [
         ".*(?:private|protected|public)[^;{]*int \\$[A-Za-z_]\\w* = \\d[\\d_]{3,}.*",
         "(?:break|continue) \\d+;",
+        ".*hrtime\\(true\\).*/ 1_000_000.*",
       ],
     },
     DecrementInteger: {
       ignoreSourceCodeByRegex: [
         ".*(?:private|protected|public)[^;{]*int \\$[A-Za-z_]\\w* = \\d[\\d_]{3,}.*",
+        ".*hrtime\\(true\\).*/ 1_000_000.*",
       ],
     },
     // Stream buffering hints affect when bytes arrive, never which bytes. Removing

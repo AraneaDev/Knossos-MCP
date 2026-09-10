@@ -18,6 +18,83 @@ use RuntimeException;
 
 final class QueryTest extends KnossosTestCase
 {
+    /**
+     * `architectureSummary` reports itself truncated at the exact boundary, and
+     * from ANY of the four dimensions on its own.
+     *
+     * The flag is four `distinctCount(...) > $limit` tests joined by `||`, and
+     * it is the `truncated` field every caller reads to know whether the
+     * orientation view is complete. Nothing pinned it: the comparisons could be
+     * flipped to `>=` or `<=`, or the `||` chain narrowed to `&&`, with the
+     * suite still green, because every existing assertion sits far from the
+     * limit and never varies which dimension overflows.
+     *
+     * The counts are read from the fixture rather than hard-coded so the test
+     * states the boundary rule itself instead of restating today's fixture.
+     */
+    #[Group('query')]
+    public function testTheSummaryReportsTruncationAtTheLimitAndForEachDimensionAlone(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $distinct = static function (string $table, string $column) use ($pdo, $ids): int {
+            $statement = $pdo->prepare(sprintf('SELECT COUNT(DISTINCT %s) FROM %s WHERE project_id = :project', $column, $table));
+            $statement->execute([':project' => $ids['project']]);
+
+            return (int) $statement->fetchColumn();
+        };
+
+        // The base fixture has one distinct value per dimension, which cannot
+        // express a boundary at all — a limit of 0 is rejected outright. Pad
+        // all four to the SAME width, so a limit equal to it sits exactly on
+        // every comparison at once. That is what makes each `>` individually
+        // observable: the chain short-circuits, so a wider dimension earlier in
+        // it would mask a flipped comparison later.
+        $width = 3;
+        $kinds = ['interface', 'method', 'trait', 'enum'];
+        for ($index = 0; $distinct('nodes', 'kind') < $width; ++$index) {
+            $kind = $kinds[$index];
+            $node = StableId::symbol($ids['project'], 'php', $kind, 'App\\Extra' . $index);
+            $repository->saveNode($node, $ids['project'], 'php', $kind, 'App\\Extra' . $index, 'Extra' . $index, null, $ids['file'], 20 + $index, 25 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $edgeKinds = ['implements', 'extends', 'references', 'returns'];
+        $source = StableId::symbol($ids['project'], 'php', 'interface', 'App\\Extra0');
+        $target = StableId::symbol($ids['project'], 'php', 'method', 'App\\Extra1');
+        for ($index = 0; $distinct('edges', 'kind') < $width; ++$index) {
+            $edgeKind = $edgeKinds[$index];
+            $repository->saveEdge(StableId::edge($ids['project'], $edgeKind, $source, $target, 'src/Checkout.php:' . (30 + $index)), $ids['project'], $edgeKind, $source, $target, $ids['file'], 30 + $index, 30 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $languages = ['typescript', 'python', 'rust', 'go'];
+        for ($index = 0; $distinct('files', 'language') < $width; ++$index) {
+            $language = $languages[$index];
+            $extra = StableId::file($ids['project'], 'src/Extra' . $index);
+            $repository->saveFile($extra, $ids['project'], 'src/Extra' . $index, hash('sha256', 'extra' . $index), 10, 1, $language, '0.1.0', $ids['scan']);
+        }
+        for ($index = 0; $distinct('classifications', 'role') < $width; ++$index) {
+            $repository->saveClassification(StableId::symbol($ids['project'], 'php', 'role', 'extra' . $index), $ids['project'], $source, 'extra.role' . $index, 'heuristic', 'probable', 'rule.extra', $ids['file'], 20 + $index, 25 + $index, [], $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        foreach (['nodes' => 'kind', 'edges' => 'kind', 'files' => 'language', 'classifications' => 'role'] as $table => $column) {
+            assertSame($width, $distinct($table, $column), sprintf('%s must sit exactly on the boundary for this test to mean anything.', $table));
+        }
+
+        // Exactly at the limit nothing is truncated: every `>` must reject the
+        // equal case, so none of the four can be `>=`. With all four dimensions
+        // on the boundary, flipping any single one flips this answer.
+        assertSame(false, $queries->architectureSummary($ids['project'], $width)->truncated);
+        // One below, every dimension overflows: no `>` can be `<=`.
+        assertSame(true, $queries->architectureSummary($ids['project'], $width - 1)->truncated);
+
+        // A single dimension over the limit sets the flag on its own, which an
+        // `&&` chain would not: the other three are still exactly on it.
+        $widened = StableId::symbol($ids['project'], 'php', 'property', 'App\\Widening');
+        $repository->saveNode($widened, $ids['project'], 'php', 'property', 'App\\Widening', 'Widening', null, $ids['file'], 90, 91, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        assertSame($width + 1, $distinct('nodes', 'kind'));
+
+        assertSame(true, $queries->architectureSummary($ids['project'], $width)->truncated, 'One overflowing dimension must set truncated by itself.');
+    }
+
     #[Group('query')]
     public function testSnapshotDiffReportsBoundedArchitecturalChangesAndRenameHeuristics(): void
     {

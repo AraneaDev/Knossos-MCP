@@ -85,6 +85,43 @@ final class AnnotationsTest extends KnossosTestCase
         assertSame(1, $after['bounds']['annotated_false_positives']);
     }
 
+    /**
+     * A `false_positive` annotation skips that candidate, it does not end the scan.
+     *
+     * The guard sits inside the loop over every provisional dead-code
+     * candidate, so turning its `continue` into a `break` stops at the first
+     * annotated component and silently drops every candidate behind it. One
+     * annotation on a busy project would truncate the whole report.
+     *
+     * The existing tests annotate a single component, where skipping and
+     * stopping look the same. Three annotations separate them, and the
+     * `annotated_false_positives` count is asserted rather than the surviving
+     * names so the test does not depend on candidate ordering.
+     */
+    #[Group('query')]
+    public function testAFalsePositiveAnnotationSkipsRatherThanEndingTheScan(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $orphans = ['App\\OrphanOne', 'App\\OrphanTwo', 'App\\OrphanThree'];
+        foreach ($orphans as $index => $name) {
+            $node = \Knossos\Store\StableId::symbol($ids['project'], 'php', 'class', $name);
+            $repository->saveNode($node, $ids['project'], 'php', 'class', $name, 'Orphan' . $index, null, $ids['file'], 50 + $index, 60 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+        foreach ($orphans as $name) {
+            $queries->annotateComponent($ids['project'], $name, 'false_positive', 'constructed via DI config', execute: true);
+        }
+
+        $data = $queries->architectureHealth($ids['project'])->data;
+
+        assertSame(3, $data['bounds']['annotated_false_positives'], 'Every annotated candidate must be counted, not just the first.');
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+        foreach ($orphans as $name) {
+            assertSame(false, in_array($name, $names, true));
+        }
+    }
+
     #[Group('query')]
     public function testFalsePositiveTakesPrecedenceOverConfirmedDeadOnSameComponent(): void
     {

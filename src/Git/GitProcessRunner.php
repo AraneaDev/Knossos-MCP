@@ -168,7 +168,27 @@ final readonly class GitProcessRunner implements GitProcessRunnerInterface
         $hardened = $this->harden($command, $timeoutMs);
         $elapsedMs = (int) ((hrtime(true) - $start) / 1_000_000);
 
-        return $this->execute($hardened, max(1, $timeoutMs - $elapsedMs), $operation);
+        return $this->execute($hardened, self::remainingBudget($timeoutMs, $elapsedMs), $operation);
+    }
+
+    /**
+     * What is left of `$timeoutMs` once hardening has spent `$elapsedMs` of it.
+     *
+     * The deduction is the whole point of timing `harden()`: without it the
+     * enumeration subprocess and the caller's command each get the full budget,
+     * so the two together can take twice what the caller asked for. Kept as a
+     * named function because that invariant is otherwise only observable by
+     * racing two subprocesses, which is not a test anyone should have to write.
+     *
+     * Floored at 1 rather than 0: a budget of zero is indistinguishable from
+     * "no deadline" at a glance, and `execute()` checks process status before
+     * it checks the deadline, so a hardening step that overran still gets one
+     * pass at reaping an already-finished child instead of a guaranteed
+     * timeout.
+     */
+    private static function remainingBudget(int $timeoutMs, int $elapsedMs): int
+    {
+        return max(1, $timeoutMs - $elapsedMs);
     }
 
     /**
