@@ -111,6 +111,9 @@ Usage:
                          [--boundary=ID_OR_NAME] [--edge-kind=KIND]
                          [--direction=LR|TB] [--max-nodes=N] [--max-edges=N]
   knossos export-agent-brief <project-id> [--max-chars=N] [--out=FILE] [--json]
+  knossos session-brief [path] [--db=FILE] [--json]
+  knossos install-agent-plugin [--scope=user] [--execute]
+  knossos install-agent-plugin --out=DIR --data=HOSTPATH [--image=NAME]
   knossos list-boundaries <project-id> [--source=explicit|inferred] [--limit=N]
   knossos search-architecture <project-id> <query> [--kind=KIND] [--role=ROLE]
                               [--boundary=ID] [--confidence=LEVEL] [--limit=N]
@@ -121,6 +124,7 @@ Usage:
   knossos serve [--allow-root=PATH]... [--db=PATH]
                 (roots also come from KNOSSOS_ALLOWED_ROOTS and the roots
                  file beside the database, re-read on every request)
+  knossos allow-root <path> [--execute]
 
 Docker supplies PHP, Node, Composer, and SQLite; mount source read-only at an
 allowed path and graph data read-write at /data.

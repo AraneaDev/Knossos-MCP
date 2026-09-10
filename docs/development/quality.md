@@ -12,7 +12,7 @@ tools/quality-container full
 ## Lanes
 
 The gate is one linear script, and locally it runs as one. CI splits it into
-five lanes that run at the same time, because most of the work does not depend
+six lanes that run at the same time, because most of the work does not depend
 on the rest of it. Both commands take an optional second argument naming a
 lane, so a lane that failed in CI can be reproduced here instead of only in the
 workflow:
@@ -29,6 +29,7 @@ tools/quality full static
 | `rust`     | `cargo fmt`, `clippy` and `test`, which are slow and self-contained                                       |
 | `release`  | audits, supply chain, benchmark, release lifecycle, the runtime image                                     |
 | `coverage` | the pcov run and the coverage floors                                                                      |
+| `gate`     | Knossos scanned by Knossos, held to the budgets in `knossos.json`                                         |
 
 Omitting the argument runs every lane, which is the local default.
 
@@ -38,10 +39,45 @@ latter two from worker subprocesses that run drives. Splitting coverage per
 language would measure three suites that never exercise the workers and report
 floors nothing earns.
 
+### What the `gate` lane enforces
+
+The lane scans two trees, the commit the change is measured against and the
+change itself, then holds the second scan to the budgets in `knossos.json`.
+Nothing ran those budgets before, so they were advisory: between 2026-08-02 and
+2026-09-10 `unreferenced_candidates` drifted from 68 to 158 against a limit of
+110 and no run said so.
+
+All six budgets are live. `new_cycles` and `hub_degree_growth` compare the two
+scans; `boundary_violations`, `error_diagnostics`, `warning_diagnostics` and
+`unreferenced_candidates` are read off the second one.
+
+The baseline is what CI works out from the event, a pull request's target
+commit or the tip a push replaced. Failing that the lane takes the point the
+branch left the default branch, and failing that `HEAD^`. If none of those
+resolve it stops rather than scanning one tree twice, because that would zero
+both delta budgets and report a pass that checked nothing.
+
+Both trees come from `git archive` and are scanned at the same path. The path
+matters: a project's identity is its root, so a baseline scanned elsewhere
+would be a different project with nothing to compare against. Extracting both
+sides the same way matters too, since reading the active side off the
+container's baked source would diff the change against `.dockerignore` along
+with it. One consequence is that `git archive HEAD` is the committed tree, so
+uncommitted work is not gated; that is what CI measures anyway.
+
+Budgets and policies are read from the tree under test rather than from the
+baseline, so a change that needs a limit raised is reviewed as the diff that
+raises it.
+
+The image bakes this source without `.git`, so the lane is handed the checkout
+on a read-only mount and given the baseline commit by name. `tools/quality-container`
+mounts it the same way, and the CI lane checks out with `fetch-depth: 0`
+because a shallow clone cannot reach its own baseline.
+
 ## How CI runs it
 
 One job builds the quality image and pushes it to the repository's registry,
-tagged by commit, and the five lanes pull it. An aggregating job named
+tagged by commit, and the six lanes pull it. An aggregating job named
 `quality` fails unless the whole matrix succeeded, which is the check branch
 protection requires: a lane that is skipped or cancelled fails it just as a red
 lane does.

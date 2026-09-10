@@ -155,10 +155,12 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     // so a batch that excludes a type's declaring file degrades to the old
     // per-file behaviour without ever guessing.
     let mut declarations = Declarations::new();
+    let mut test_modules = crate::visit::TestModules::new();
     for item in &prepared {
         if let Prepared::Parsed { relative, parsed } = item {
             let module = module_path_for_file(relative, has_library_root);
             crate::visit::collect_declarations(&module, &parsed.items, &mut declarations);
+            crate::visit::collect_test_modules(&module, &parsed.items, &mut test_modules);
         }
     }
 
@@ -173,7 +175,14 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                 let mut facts = Facts::new(&relative);
                 let span = proc_macro2::Span::call_site();
                 facts.node("module", &module, &display, span, span);
-                crate::visit::walk(&mut facts, &module, &parsed, &frameworks, &declarations);
+                crate::visit::walk(
+                    &mut facts,
+                    &module,
+                    &parsed,
+                    &frameworks,
+                    &declarations,
+                    &test_modules,
+                );
                 if let Some((_, crate_name)) =
                     crates.iter().find(|(root_file, _)| root_file == &relative)
                 {

@@ -4,7 +4,7 @@
 
 ### Prerequisites
 
-The supported path is Docker — it pins PHP 8.5, Node 26, Python 3.13, Composer,
+The supported path is Docker, which pins PHP 8.5, Node 26, Python 3.13, Composer,
 SQLite, and every linter the quality profile runs, so you need none of them on
 the host:
 
@@ -27,7 +27,7 @@ docker run --rm knossos-mcp:dev doctor --json
 ## The `tools/quality-container` Pipeline
 
 All contributions must pass the quality profile before being merged. One
-versioned profile runs locally, in Git hooks, and in CI — there is no separate
+versioned profile runs locally, in Git hooks, and in CI. There is no separate
 CI-only configuration:
 
 ```bash
@@ -40,7 +40,7 @@ tools/quality-container full    # what CI runs
 | `fast`  | Dependency validation, PHP/JS/Markdown/Python linting, PHP-CS-Fixer, PHPStan, formatting, repository hygiene, generated-reference and documentation checks, maintainability budgets, and the full PHPUnit test suite                                          |
 | `full`  | Everything in `fast`, plus security audits, external documentation-link checks, MCP Inspector tool listing, runtime image build and `doctor`, release lifecycle, supply-chain assurance (SBOM, CVE gates, signed provenance), benchmarks, and coverage floors |
 
-`full` is the gate — see [quality gates](docs/development/quality.md) for what
+`full` is the gate. See [quality gates](docs/development/quality.md) for what
 each stage asserts and how to read its report.
 
 ### Install the Git hooks
@@ -65,7 +65,7 @@ vendor/bin/phpunit 2>/tmp/suite.err && test ! -s /tmp/suite.err
 Infection's `InitialTestsRunner` stops the test process on the _first byte_ it
 writes to STDERR (Symfony `Process::ERR`), whether or not a test failed. PHPUnit
 is then SIGTERMed mid-suite and Infection reports `PHPUnit reported an exit code
-of 143` under a "Project tests must be in a passing state" banner — pointing at
+of 143` under a "Project tests must be in a passing state" banner, pointing at
 the suite's health and the coverage driver, neither of which is the cause. Code
 that emits diagnostics must take an injectable stream (see
 `Knossos\Cli\CliErrorRenderer`) so tests can render into `php://memory` and
@@ -94,13 +94,13 @@ release process, not just documentation:
 | `feat!:` / `BREAKING CHANGE:` footer           | Major release           |
 | `docs:`, `chore:`, `test:`, `refactor:`, `ci:` | No release on their own |
 
-A scope is encouraged — `fix(query): …`, `feat(scanner): …`.
+A scope is encouraged: `fix(query): …`, `feat(scanner): …`.
 
 The **pull request title** follows the same rules, and on a branch with more
 than one commit it matters more than the commits do: a squash merge uses the PR
 title as the subject of the single commit that lands on `main`, and that subject
 is what release-please reads. A title like `Fix/my branch name` classifies as
-nothing, so the release it should have cut is skipped silently — the individual
+nothing, so the release it should have cut is skipped silently. The individual
 commit subjects survive only as body text, which release-please does not parse.
 The `PR Title` workflow fails its `conventional-title` check on a title that
 does not conform. That check is advisory until it is added to the required

@@ -54,10 +54,10 @@ foreach ($tools->definitions() as $definition) {
         if (isset($property['enum'])) {
             $details[] = 'enum=' . implode(', ', array_map('strval', $property['enum']));
         }
-        $mcp .= sprintf("| `%s` | %s | %s | %s |\n", $name, $type, isset($required[$name]) ? 'yes' : 'no', $details === [] ? '—' : implode('; ', $details));
+        $mcp .= sprintf("| `%s` | %s | %s | %s |\n", $name, $type, isset($required[$name]) ? 'yes' : 'no', $details === [] ? 'none' : implode('; ', $details));
     }
     if (($schema['properties'] ?? []) === []) {
-        $mcp .= "| — | — | — | No inputs |\n";
+        $mcp .= "| none | none | none | No inputs |\n";
     }
     $annotations = $definition['annotations'] ?? [];
     $mcp .= sprintf("\nAnnotations: read-only `%s`; destructive `%s`; idempotent `%s`; open-world `%s`.\n\n", $annotations['readOnlyHint'] ? 'yes' : 'no', $annotations['destructiveHint'] ? 'yes' : 'no', $annotations['idempotentHint'] ? 'yes' : 'no', $annotations['openWorldHint'] ? 'yes' : 'no');
@@ -88,7 +88,7 @@ foreach ($interfaces as $interface) {
             $parameters[] = ($parameter->hasType() ? reflectionType($parameter->getType()) . ' ' : '') . ($parameter->isVariadic() ? '...' : '') . '$' . $parameter->getName() . ($parameter->isDefaultValueAvailable() ? ' = ' . json_encode($parameter->getDefaultValue(), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) : '');
         }
         $return = $method->hasReturnType() ? ': ' . reflectionType($method->getReturnType()) : '';
-        $api .= sprintf("- `%s(%s)%s` — %s\n", $method->getName(), implode(', ', $parameters), $return, documentationSummary((string) $method->getDocComment()));
+        $api .= sprintf("- `%s(%s)%s`: %s\n", $method->getName(), implode(', ', $parameters), $return, documentationSummary((string) $method->getDocComment()));
     }
     $api .= "\n";
 }

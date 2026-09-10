@@ -522,24 +522,18 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     public function testServeCommandThrowsWithoutAllowedRoots(): void
     {
         // M18 / ServeCommand::run() throw: no --allow-root options AND
-        // KNOSSOS_ALLOWED_ROOTS env unset/empty -> final Usage throw.
-        // putenv() to ensure the env var is cleared for this run (the
-        // test inherits the user's shell env, which may carry
-        // KNOSSOS_ALLOWED_ROOTS).
-        $previous = getenv('KNOSSOS_ALLOWED_ROOTS');
-        putenv('KNOSSOS_ALLOWED_ROOTS');
-        try {
+        // no root from the environment or from a roots file -> final
+        // Usage throw. withoutAmbientAllowedRoots() removes both
+        // sources. The context's ':memory:' database put the roots file
+        // at ./roots.json, relative to whatever directory the suite was
+        // started from, so this passed on the absence of a file in the
+        // developer's working directory rather than on the code.
+        $this->withoutAmbientAllowedRoots(function (): void {
             assertThrows(
                 fn() => (new ServeCommand())->run('serve', [], [], $this->newContext()),
                 InvalidArgumentException::class,
             );
-        } finally {
-            if ($previous === false) {
-                putenv('KNOSSOS_ALLOWED_ROOTS');
-            } else {
-                putenv('KNOSSOS_ALLOWED_ROOTS=' . $previous);
-            }
-        }
+        });
     }
 
     // ===== MaintenanceCommand: doctor =====================================

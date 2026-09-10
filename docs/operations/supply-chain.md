@@ -41,8 +41,8 @@ its temporary containers and volumes.
 
 The fixture is copied into a scratch volume rather than bind-mounted, because a
 bind source is resolved by the Docker daemon against the host filesystem. When
-the profile runs inside the quality container — or on a CI runner whose
-workspace is itself a container mount — that path need not exist on the host.
+the profile runs inside the quality container, or on a CI runner whose
+workspace is itself a container mount, that path need not exist on the host.
 Set `KNOSSOS_LIFECYCLE_FIXTURE` to exercise a different project tree.
 
 These tests demonstrate the supported data lifecycle; they do not replace

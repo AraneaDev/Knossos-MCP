@@ -42,7 +42,10 @@ final readonly class TestModuleRule implements ClassificationRule
         // Every declaration inside a test file is glob-discovered too, so the role is
         // keyed on the file the node came from rather than on the module node alone.
         $path = str_replace('\\', '/', $node->evidence->relativePath);
-        if (!$this->isTestPath($path)) {
+        // A scanner mark wins over the path convention. Rust keeps
+        // `#[cfg(test)] mod tests` beside the code it covers, so there is no
+        // test directory to recognise and only the worker can tell us.
+        if (($node->attributes['test'] ?? false) !== true && !$this->isTestPath($path)) {
             return [];
         }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Mcp;
 
 use Knossos\Mcp\NextStepPlanner;
+use Knossos\Mcp\ToolCatalog;
 use Knossos\Query\ResultEnvelope;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -197,9 +198,57 @@ final class NextStepPlannerTest extends TestCase
         self::assertSame('App\\Deep', $steps[0]['args']['symbol']);
     }
 
+    public function testFullScanSuggestsTheOrientationPluginAndIncrementalDoesNot(): void
+    {
+        // `mode` is a proxy for "first scan", not a synonym; pin both the positive
+        // and negative case so the arm cannot regress to firing unconditionally.
+        $full = $this->plan('scan_project', ['mode' => 'full']);
+
+        self::assertSame('knossos install-agent-plugin', $full[0]['shell'] ?? null);
+        self::assertTrue(str_contains($full[0]['why'], 'session'));
+        self::assertSame([], $this->plan('scan_project', ['mode' => 'incremental']));
+    }
+
+    public function testTheOrientationPluginStepIsNotPresentedAsATool(): void
+    {
+        // It never was one: no `install_agent_plugin` is registered anywhere in
+        // ToolCatalog, so an agent working through next_steps mechanically
+        // called a tool that does not exist. Pinned as an absence, because the
+        // shape is what carries the meaning here.
+        $step = $this->plan('scan_project', ['mode' => 'full'])[0];
+
+        self::assertArrayNotHasKey('tool', $step);
+        self::assertArrayNotHasKey('args', $step);
+        self::assertArrayHasKey('shell', $step);
+    }
+
+    public function testEveryStepThatNamesAToolNamesARegisteredOne(): void
+    {
+        // The defect this pins is one an agent finds by calling: a next step
+        // that names a tool the catalog has never heard of. Every `tool` the
+        // planner can emit is checked against the real registry rather than
+        // against a list copied beside it.
+        $registered = array_column(ToolCatalog::definitions(), 'name');
+        $emitted = [
+            ...$this->plan('find_component', ['components' => [['canonical_name' => 'A'], ['canonical_name' => 'B']]]),
+            ...$this->plan('inspect_component', ['component' => 'A', 'is_hub' => true]),
+            ...$this->plan('impact_analysis', ['target' => 'A', 'dependants' => [['canonical_name' => 'B']]]),
+            ...$this->plan('architecture_health', ['hotspots' => [['canonical_name' => 'A']]]),
+            ...$this->plan('scan_project', ['mode' => 'full']),
+        ];
+
+        self::assertNotSame([], $emitted);
+        foreach ($emitted as $step) {
+            if (!isset($step['tool'])) {
+                continue;
+            }
+            self::assertContains($step['tool'], $registered);
+        }
+    }
+
     /**
      * @param array<string, mixed> $data
-     * @return list<array{tool: string, args: array<string, mixed>, why: string}>
+     * @return list<array{tool: string, args: array<string, mixed>, why: string}|array{shell: string, why: string}>
      */
     private function plan(string $tool, array $data): array
     {

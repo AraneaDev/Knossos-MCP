@@ -21,8 +21,8 @@ header, and the two differ in ways that matter to this threat model:
   deprecation window closes (no earlier than 2027-07).
 
 `2026-07-28` also requires each POST to mirror selected body fields into
-headers — `MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` for `tools/call`,
-`resources/read`, and `prompts/get` — and requires the server to reject any
+headers (`MCP-Protocol-Version`, `Mcp-Method`, and `Mcp-Name` for `tools/call`,
+`resources/read`, and `prompts/get`) and requires the server to reject any
 disagreement with `400` and JSON-RPC `-32020`. Knossos validates all three,
 decoding the `=?base64?…?=` sentinel before comparing. This closes a
 confused-deputy: an intermediary that routes or rate-limits on the header while
@@ -31,8 +31,8 @@ different one executes.
 
 That mirroring is also a new control available to operators. A reverse proxy in
 front of Knossos can now allow-list read-only tools by `Mcp-Name`, or deny
-`scan_project` and `remove_project` outright, without parsing request bodies —
-and the server's own validation is what makes those header values trustworthy.
+`scan_project` and `remove_project` outright, without parsing request bodies.
+The server's own validation is what makes those header values trustworthy.
 Note the specification's caveat: an intermediary enforcing policy this way
 **should** first confirm that `MCP-Protocol-Version` names a revision that
 requires header/body validation, and reject the request otherwise, rather than
@@ -106,7 +106,7 @@ invokes no filter itself, so it runs with only the restricted environment
 below, not the `-c` overrides) and appending a blanking `-c` override for
 every driver name it finds. That query follows `include`/`includeIf`
 directives and, by not restricting itself to `--local`, also sees
-`extensions.worktreeConfig`-enabled per-worktree settings — either can define
+`extensions.worktreeConfig`-enabled per-worktree settings: either can define
 a driver a narrower query would miss, while `git diff` itself still resolves
 them. A driver name containing `=` cannot be expressed as a `-c` override at
 all (Git's own `-c` parser splits on the first `=`), so that case fails
@@ -122,7 +122,7 @@ being skipped. `core.pager` is neutralised separately, by `--no-pager` at each
 call site rather than by an override. The child also runs under an explicit
 environment (`GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
 `HOME`/`GIT_ASKPASS` pointed at a nonexistent path); the only value carried
-over from the parent is `PATH` — which Git needs to find its helper binaries,
+over from the parent is `PATH`, which Git needs to find its helper binaries,
 and which falls back to `/usr/bin:/bin` when the parent has none.
 
 This matters whenever a repository directory arrives with its own `.git/`

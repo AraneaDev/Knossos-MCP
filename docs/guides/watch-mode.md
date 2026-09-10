@@ -17,8 +17,8 @@ to standard error (`ready`, `scan_started`, `scan_completed`, `overflow`,
 `error`, and `stopped`), leaving the final result available on standard output.
 SIGINT and SIGTERM request graceful cancellation.
 
-A rescan that fails transiently — a worker timeout, a busy write lease, a
-disappearing file, or a temporary storage error — emits a retryable `error`
+A rescan that fails transiently (a worker timeout, a busy write lease, a
+disappearing file, or a temporary storage error) emits a retryable `error`
 event and keeps the pending change set instead of dropping it. The watcher then
 retries with bounded exponential backoff, so the failed batch is scanned again
 once the underlying fault clears. Only an engine-level fault (a programming

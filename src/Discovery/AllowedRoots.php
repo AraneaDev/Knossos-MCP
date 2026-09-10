@@ -183,15 +183,30 @@ final class AllowedRoots
             if (!is_string($root) || trim($root) === '') {
                 continue;
             }
-            // rtrim would reduce "/" to "", which realpath() then rejects — a
-            // filesystem-root grant would silently grant nothing at all. Whether
-            // granting "/" is wise is the operator's call; silently ignoring what
-            // they wrote is not.
-            $trimmed = rtrim(trim($root), '/');
-            $resolved[] = $trimmed === '' ? '/' : $trimmed;
+            $resolved[] = self::normaliseRoot($root);
         }
 
         return array_values(array_unique($resolved));
+    }
+
+    /**
+     * One root in the spelling this class compares and de-duplicates on.
+     *
+     * Public because {@see \Knossos\Cli\Command\RootsCommand} writes the file
+     * this class reads, and the two have to agree on when two spellings are one
+     * root. A second normalisation over there would let the writer append `/p/`
+     * beside a `/p` the reader then silently folds together: one grant, two
+     * lines, in a file a person is expected to be able to read.
+     */
+    public static function normaliseRoot(string $root): string
+    {
+        // rtrim would reduce "/" to "", which realpath() then rejects — a
+        // filesystem-root grant would silently grant nothing at all. Whether
+        // granting "/" is wise is the operator's call; silently ignoring what
+        // they wrote is not.
+        $trimmed = rtrim(trim($root), '/');
+
+        return $trimmed === '' ? '/' : $trimmed;
     }
 
     /**

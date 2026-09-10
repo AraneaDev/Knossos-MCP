@@ -156,6 +156,142 @@ final class QualityGateMetricsTest extends KnossosTestCase
     }
 
     /**
+     * A lifecycle method the runtime invokes has no inbound edge by
+     * construction, in every language the scanners cover. The predicate knew
+     * only PHP's `__construct` and JavaScript's `constructor`, so Python's
+     * `__init__` and PHP's `__destruct` were charged to a budget no maintainer
+     * could ever pay down: there is no call site to add.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesExcludeRuntimeInvokedLifecycleMethods(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $this->addNode($repository, $ids, 'method', 'App\\Checkout::__destruct', '__destruct');
+        $this->addNode($repository, $ids, 'method', 'workers.python.Collector.__init__', '__init__');
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // Only App\Checkout from the fixture, which nothing calls. Neither
+        // lifecycle method is something a maintainer can reference.
+        assertSame(1, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
+    /**
+     * A method that implements a contract is reached through the contract, so
+     * the call edge lands on the interface's declaration and every concrete
+     * implementation shows an in-degree of zero. `architecture_health` already
+     * discounts these; the gate counted them, which put every implementation
+     * of every interface in this repository into a budget no maintainer could
+     * pay down without deleting the interface.
+     *
+     * Gated on the declaring type actually being used, exactly as health gates
+     * it: when nothing references the interface, the interface is the unit
+     * worth deleting and its implementations stay reportable.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesExcludeContractMembersOfAReferencedInterface(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $repo = $this->addNode($repository, $ids, 'interface', 'App\\Repo', 'Repo');
+        $repoSave = $this->addNode($repository, $ids, 'method', 'App\\Repo::save', 'save');
+        $this->edge($repository, $ids, 'contains', $repo, $repoSave);
+        $sql = $this->addNode($repository, $ids, 'class', 'App\\SqlRepo', 'SqlRepo');
+        $sqlSave = $this->addNode($repository, $ids, 'method', 'App\\SqlRepo::save', 'save');
+        $this->edge($repository, $ids, 'contains', $sql, $sqlSave);
+        $this->edge($repository, $ids, 'implements', $sql, $repo);
+        // The caller works through the interface: it uses the type, calls the
+        // declared method, and builds the implementation.
+        $this->edge($repository, $ids, 'depends_on', $ids['invoice'], $repo);
+        $this->edge($repository, $ids, 'calls', $ids['invoice'], $repoSave);
+        $this->edge($repository, $ids, 'constructs', $ids['invoice'], $sql);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // Only App\Checkout, which nothing calls. SqlRepo::save is reached
+        // through App\Repo::save and is not a candidate.
+        assertSame(1, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
+    /**
+     * The same shape with nothing using the interface: now the contract is
+     * dead weight, so both it and its implementation stay reportable.
+     */
+    #[Group('query')]
+    public function testContractMembersOfAnUnusedInterfaceRemainCandidates(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $repo = $this->addNode($repository, $ids, 'interface', 'App\\Repo', 'Repo');
+        $repoSave = $this->addNode($repository, $ids, 'method', 'App\\Repo::save', 'save');
+        $this->edge($repository, $ids, 'contains', $repo, $repoSave);
+        $sql = $this->addNode($repository, $ids, 'class', 'App\\SqlRepo', 'SqlRepo');
+        $sqlSave = $this->addNode($repository, $ids, 'method', 'App\\SqlRepo::save', 'save');
+        $this->edge($repository, $ids, 'contains', $sql, $sqlSave);
+        $this->edge($repository, $ids, 'implements', $sql, $repo);
+        $this->edge($repository, $ids, 'constructs', $ids['invoice'], $sql);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // App\Checkout, App\Repo::save and App\SqlRepo::save. App\Repo itself
+        // has the implements edge as an inbound reference, so it is not a
+        // candidate; what the contract gate asks is narrower, whether anything
+        // uses the interface for something other than implementing it.
+        assertSame(3, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
+    /**
+     * Add one edge to the fixture graph.
+     *
+     * @param array<string, string> $ids
+     */
+    private function edge(SqliteGraphRepository $repository, array $ids, string $kind, string $source, string $target): void
+    {
+        $repository->saveEdge(
+            StableId::edge($ids['project'], $kind, $source, $target, $kind . ':' . $source . ':' . $target),
+            $ids['project'],
+            $kind,
+            $source,
+            $target,
+            $ids['file'],
+            1,
+            1,
+            'ast',
+            'certain',
+            [],
+            'php:file:src/Checkout.php',
+            $ids['scan'],
+        );
+    }
+
+    /**
+     * Rust calls `Drop::drop` during destruction, so no call site names it and
+     * the graph shows it unreferenced however heavily the type is used. The
+     * Rust scanner marks exactly those methods, and the budget honours the
+     * mark rather than excluding every method called `drop`, which would hide
+     * an ordinary dead method behind a common name.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesExcludeRuntimeInvokedMethodsTheScannerMarked(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $this->addNode($repository, $ids, 'method', 'App\\Lease::drop', 'drop', attributes: ['runtime_invoked' => true]);
+        // An unmarked method of the same name stays a candidate.
+        $this->addNode($repository, $ids, 'method', 'App\\Cache::drop', 'drop');
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // App\Checkout from the fixture, plus the unmarked App\Cache::drop.
+        assertSame(2, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
+    /**
      * Give one node a role, the way the classifier does during a scan.
      *
      * @param array<string, string> $ids

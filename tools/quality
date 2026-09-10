@@ -4,13 +4,13 @@ set -eu
 profile="${1:-fast}"
 lane="${2:-all}"
 if [ "$profile" != "fast" ] && [ "$profile" != "full" ]; then
-    echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage]" >&2
+    echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage|gate]" >&2
     exit 64
 fi
 case "$lane" in
-    all | static | tests | rust | release | coverage) ;;
+    all | static | tests | rust | release | coverage | gate) ;;
     *)
-        echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage]" >&2
+        echo "usage: tools/quality [fast|full] [all|static|tests|rust|release|coverage|gate]" >&2
         exit 64
         ;;
 esac
@@ -34,7 +34,11 @@ in_lane() {
 # of assuming this script runs from the repository root.
 root=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 
-# Run the PHPUnit suite. In the quality container the tooling is installed as
+# Run the PHPUnit suite, and with it the SessionStart hook's shell-level
+# failure-mode tests: `composer test` runs both, because the hook's fail-silent
+# contract is a property of a shell script that no PHP test can reach, and a
+# check that lives beside the suite without running with it is a check nobody
+# runs. In the quality container the tooling is installed as
 # root, but the permission-error tests (Doctor unwritable-data-dir, MigrationRunner
 # unreadable-migration, ProjectDiscoverer permission-denied) skip themselves when
 # the process is root, so those branches would silently never run. Drop to the
@@ -119,7 +123,9 @@ fi
 
 if command -v shellcheck >/dev/null 2>&1; then
     shellcheck tools/quality tools/quality-container tools/install-hooks tools/benchmark \
-        tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install
+        tools/mcp-serve tools/mutation-diff tools/release-lifecycle tools/supply-chain tools/install \
+        hooks/scripts/session-brief.sh hooks/scripts/session-brief-container.sh \
+        tests/shell/session-brief-hook.sh
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "shellcheck is required in the quality container" >&2
     exit 1
@@ -191,4 +197,104 @@ if [ "$profile" = "full" ] && in_lane coverage; then
     # Run it on demand instead -- `.github/workflows/mutation.yml`
     # (workflow_dispatch), or locally per docs/development/adversarial-testing.md.
     tools/coverage
+fi
+
+# Knossos's own architecture budgets, enforced against Knossos itself.
+#
+# Nothing ran these before, so the budgets in knossos.json were advisory:
+# between 2026-08-02 and 2026-09-10 `unreferenced_candidates` drifted from 68
+# to 158 against a limit of 110 and no run said so, because the only thing
+# that evaluated it was a maintainer asking by hand.
+#
+# The lane scans two trees, the commit this change is measured against and the
+# change itself, so the delta budgets (`new_cycles`, `hub_degree_growth`) mean
+# what they say and the absolute ones (`boundary_violations`,
+# `error_diagnostics`, `warning_diagnostics`, `unreferenced_candidates`) are
+# read off the second scan.
+#
+# Both sides come from `git archive` and are scanned at the same path. The
+# path matters: a project's identity is its root, so a baseline scanned
+# somewhere else would be a different project with nothing to compare to.
+# Extracting both sides the same way matters too -- reading the active side
+# off the container's baked source would diff the change against
+# .dockerignore along with it.
+#
+# `git archive HEAD` is the committed tree, so uncommitted work is not gated
+# here. That is what CI measures anyway, and it keeps a local run and a CI run
+# answering the same question.
+if [ "$profile" = "full" ] && in_lane gate; then
+    gate_dir=$(mktemp -d)
+    # `set -e` skips the rest of the lane on a failure, so the directory is
+    # removed on the way out however the gate ends.
+    trap 'rm -rf "$gate_dir"' EXIT INT TERM
+
+    # Budgets and policies are read from the tree under test rather than the
+    # baseline, so a change that needs a limit raised is reviewed as the diff
+    # that raises it. knossos.json holds both and the CLI takes each as its
+    # own file, so they are split out rather than duplicated.
+    # shellcheck disable=SC2016 # $c and $argv are PHP variables, not shell ones
+    php -r '$c = json_decode(file_get_contents($argv[1]), true);
+        file_put_contents($argv[2] . "/budgets.json", json_encode($c["quality_budgets"] ?? []));
+        file_put_contents($argv[2] . "/policies.json", json_encode($c["policies"] ?? []));' \
+        "$root/knossos.json" "$gate_dir"
+
+    # Where the history lives. The image bakes this source without .git (see
+    # .dockerignore), so a container run is handed the checkout on a mount and
+    # names it here; a host run reads the repository it is already inside.
+    gate_repo="${KNOSSOS_GATE_REPO:-$root}"
+    # A mounted checkout belongs to the runner's user rather than this
+    # container's, and git refuses to read a repository it believes is someone
+    # else's. Scoped to this one path, not a blanket `*`.
+    git config --global --add safe.directory "$gate_repo" >/dev/null 2>&1 || true
+
+    # The commit to measure against: what CI worked out from the event, else
+    # where this branch left the default branch, else the previous commit so a
+    # push to main still has something to compare to.
+    gate_base="${KNOSSOS_GATE_BASE_REF:-}"
+    if [ -z "$gate_base" ]; then
+        gate_base=$(git -C "$gate_repo" merge-base HEAD origin/main 2>/dev/null \
+            || git -C "$gate_repo" merge-base HEAD main 2>/dev/null \
+            || git -C "$gate_repo" rev-parse HEAD^ 2>/dev/null \
+            || true)
+    fi
+    # Failing loudly beats quietly scanning one tree twice: that silently
+    # zeroes both delta budgets, and a gate that cannot fail is worse than no
+    # gate because it reads as if it checked.
+    if [ -z "$gate_base" ]; then
+        echo "gate: no baseline commit found in $gate_repo." >&2
+        echo "gate: set KNOSSOS_GATE_BASE_REF, or fetch enough history to reach the base ref." >&2
+        exit 1
+    fi
+    if ! git -C "$gate_repo" cat-file -e "$gate_base^{commit}" 2>/dev/null; then
+        echo "gate: baseline commit $gate_base is not in $gate_repo (shallow clone?)." >&2
+        exit 1
+    fi
+
+    # Archiving a snapshot of this graph peaks around 130 MB, over PHP's
+    # 128 MB default. That default is unset on a typical developer's CLI and
+    # left in place in the container, so the scan passed locally and died in
+    # the image until this pinned the limit for both.
+    gate_scan() {
+        rm -rf "$gate_dir/tree"
+        mkdir -p "$gate_dir/tree"
+        # Written to a file, not piped. A pipeline's status is its LAST
+        # command's, so `git archive ... | tar -x` reports tar's success even
+        # when the archive failed halfway, and `set -e` lets the gate go on to
+        # scan a partial tree and compare against nonsense.
+        git -C "$gate_repo" archive --format=tar -o "$gate_dir/tree.tar" "$1"
+        tar -xf "$gate_dir/tree.tar" -C "$gate_dir/tree"
+        rm -f "$gate_dir/tree.tar"
+        KNOSSOS_DATA_DIR="$gate_dir" php -d memory_limit=512M "$root/bin/knossos" \
+            scan "$gate_dir/tree" --mode=full --json > "$2"
+    }
+    printf 'gate: baseline %s\n' "$(git -C "$gate_repo" rev-parse --short "$gate_base")"
+    gate_scan "$gate_base" "$gate_dir/baseline.json"
+    gate_scan HEAD "$gate_dir/active.json"
+
+    # shellcheck disable=SC2016 # as above: PHP variables
+    gate_project=$(php -r '$s = json_decode(file_get_contents($argv[1]), true); echo $s["project_id"];' "$gate_dir/baseline.json")
+    # shellcheck disable=SC2016 # as above: PHP variables
+    gate_baseline=$(php -r '$s = json_decode(file_get_contents($argv[1]), true); echo $s["snapshot_id"];' "$gate_dir/baseline.json")
+    KNOSSOS_DATA_DIR="$gate_dir" php -d memory_limit=512M "$root/bin/knossos" quality-gate "$gate_project" "$gate_baseline" \
+        --budgets="$gate_dir/budgets.json" --policies="$gate_dir/policies.json"
 fi

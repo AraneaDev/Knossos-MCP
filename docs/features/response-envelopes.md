@@ -7,7 +7,7 @@ and the payload is compacted to spend as little of the agent's context budget
 as the answer allows.
 
 Enrichment happens only on the MCP path (`knossos serve`). The CLI's `--json`
-prints the raw envelope — no compaction, no `staleness`, no `next_steps`, no
+prints the raw envelope: no compaction, no `staleness`, no `next_steps`, no
 `meta`.
 
 ## Envelope fields
@@ -28,7 +28,7 @@ prints the raw envelope — no compaction, no `staleness`, no `next_steps`, no
 ## Verbosity
 
 Every query tool accepts `verbosity`, which is `compact` by default. `full`
-returns a lossless superset — nothing is hoisted, trimmed, or shortened.
+returns a lossless superset: nothing is hoisted, trimmed, or shortened.
 
 `compact` removes structural repetition rather than information:
 
@@ -38,8 +38,8 @@ returns a lossless superset — nothing is hoisted, trimmed, or shortened.
   components by canonical name and never by `symbol_…`/`edge_…` id, those
   opaque ids drop out of the payload as a side effect.
 - **Boundary legend.** The same treatment for repeated boundary objects, into
-  `data.boundary_legend`. Ids that _are_ tool inputs — `boundary_…`, snapshot
-  ids — are preserved wherever they are the answer.
+  `data.boundary_legend`. Ids that _are_ tool inputs (`boundary_…`, snapshot
+  ids) are preserved wherever they are the answer.
 - **Edge shortening.** A `via` edge object collapses to just its edge kind, so
   `"via": "implements"` replaces the edge id, origin, reconstructable
   `explanation` prose, and nested evidence.
@@ -113,14 +113,14 @@ edge inline instead:
 }
 ```
 
-That call is 3,763 bytes compact against 10,123 bytes full — the same names,
+That call is 3,763 bytes compact against 10,123 bytes full: the same names,
 `path:line`, confidence, and distance in roughly a third of the tokens.
 
 ## Size budgets
 
 Tools that accept `max_chars` size the _serialized envelope_ to that budget.
 When the result is over budget, Knossos repeatedly drops the tail item of the
-largest remaining list — descending into nested lists too — until it fits:
+largest remaining list, descending into nested lists too, until it fits:
 
 - `truncated` becomes `true`.
 - `meta.dropped_items` records how many items were dropped, keyed by dotted
@@ -131,25 +131,25 @@ Trimming shortens lists; it never rewrites or summarizes an item, so whatever
 survives is exactly what an untrimmed call would have returned. If no
 trimmable list remains and the envelope is still over budget, the result is
 returned anyway with the warning `The max_chars budget could not be fully met
-by trimming result lists.` — an honest overflow rather than a silent lie.
+by trimming result lists.`, an honest overflow rather than a silent lie.
 
 ## Staleness
 
 `staleness.state` is one of:
 
-| State        | Meaning                                                                      |
-| ------------ | ---------------------------------------------------------------------------- |
-| `fresh`      | No newer scan attempt, and no changed files since the active scan.           |
-| `stale`      | A newer scan attempt exists, or files changed since the active scan.         |
-| `unverified` | Change detection was skipped — root unavailable, or too many files to check. |
+| State        | Meaning                                                                     |
+| ------------ | --------------------------------------------------------------------------- |
+| `fresh`      | No newer scan attempt, and no changed files since the active scan.          |
+| `stale`      | A newer scan attempt exists, or files changed since the active scan.        |
+| `unverified` | Change detection was skipped: root unavailable, or too many files to check. |
 
 `stale` and `unverified` carry a `guidance` string naming the rescan to run.
 `unverified` exists so an unconfirmable graph is never reported as fresh.
 
 When change detection ran, `staleness` also carries:
 
-- `changed_files_since` — tracked files whose on-disk mtime differs from the scan's.
-- `added_files_since` — entries that appeared since the scan in the directories
+- `changed_files_since`: tracked files whose on-disk mtime differs from the scan's.
+- `added_files_since`: entries that appeared since the scan in the directories
   holding tracked files: entries absent from the tracked-path set whose inode
   change time is later than the scan. Two limits follow from the 500-file bound
   below rather than from the method. A new directory is only seen when its
@@ -157,7 +157,7 @@ When change detection ran, `staleness` also carries:
   in it is invisible. Ignore rules are not applied either, so a build artifact
   or a vendored dependency counts as an addition even though a rescan would
   skip it.
-- `deleted_files_since` — tracked files that no longer exist.
+- `deleted_files_since`: tracked files that no longer exist.
 
 All three are omitted, and the state is `unverified`, above 500 tracked files.
 
@@ -165,8 +165,16 @@ All three are omitted, and the state is `unverified`, above 500 tracked files.
 
 `next_steps` offers at most three follow-up calls, each with the `tool`, the
 `args` to pass, and a `why`. They are emitted after `find_component`,
-`inspect_component`, `impact_analysis`, and `architecture_health` — the tools
+`inspect_component`, `impact_analysis`, and `architecture_health`: the tools
 whose results most often lead to an obvious next question (for example, an
 ambiguous `find_component` match set suggests `inspect_component` on the top
 candidate). They are suggestions, not instructions, and nothing is executed
 on the agent's behalf.
+
+One step is not a tool call. A `full` `scan_project` suggests installing the
+[session brief](session-brief.md) plugin, and that entry carries `shell` and
+`why` instead of `tool` and `args`, because it is a command a person runs in
+a terminal: it installs a Claude Code plugin into the user's own
+configuration, which is not the server's to do on anyone's behalf. A caller
+walking `next_steps` mechanically has to key on which of the two keys is
+present rather than assume `tool`.

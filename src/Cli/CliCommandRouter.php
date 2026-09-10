@@ -5,13 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Cli;
 
 use InvalidArgumentException;
-use Knossos\Cli\Command\BundleCommand;
-use Knossos\Cli\Command\MaintenanceCommand;
-use Knossos\Cli\Command\MetaCommand;
-use Knossos\Cli\Command\QueryCommand;
-use Knossos\Cli\Command\ScanCommand;
-use Knossos\Cli\Command\ServeCommand;
-use Knossos\Cli\Command\WatchCommand;
+use Knossos\Cli\Command\CliCommandSet;
 use Knossos\Runtime\RuntimeFactory;
 
 /**
@@ -31,15 +25,7 @@ final class CliCommandRouter
         CliHelpRenderer $help,
         string $version,
     ) {
-        $this->commands = [
-            new MetaCommand($help, $version),
-            new ScanCommand(),
-            new WatchCommand(),
-            new BundleCommand(),
-            new QueryCommand(),
-            new MaintenanceCommand(),
-            new ServeCommand(),
-        ];
+        $this->commands = CliCommandSet::all($help, $version);
     }
 
     /**

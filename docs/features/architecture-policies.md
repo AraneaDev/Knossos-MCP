@@ -32,6 +32,6 @@ boundaries are rejected; use the stable ID returned by `list_boundaries`.
 
 Findings include the policy ID, violating relationship, both components,
 boundary memberships, reason, confidence, and source evidence. They describe
-the indexed static graph—not runtime enforcement—and may miss dependencies
+the indexed static graph, not runtime enforcement, and may miss dependencies
 created through reflection, configuration, framework conventions, or dynamic
 dispatch.

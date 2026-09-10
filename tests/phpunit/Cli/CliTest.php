@@ -456,33 +456,31 @@ final class CliTest extends KnossosTestCase
     #[Group('cli')]
     public function testServeRefusesToStartWithoutAnExplicitAllowedRoot(): void
     {
+        // Both root sources are removed, not just the environment one: this
+        // runs the real binary with no --db, so it reads the roots file beside
+        // this checkout's own database, and `knossos allow-root` on the
+        // checkout used to be enough to make the refusal under test stop
+        // happening. See AmbientRoots.
         $binary = self::repositoryRoot() . '/bin/knossos';
-        $previous = getenv('KNOSSOS_ALLOWED_ROOTS');
-        putenv('KNOSSOS_ALLOWED_ROOTS');
-        try {
+        $this->withoutAmbientAllowedRoots(function () use ($binary): void {
             [$exit, , $stderr] = $this->runFixtureCommandOutput([PHP_BINARY, $binary, 'serve']);
             assertSame(2, $exit);
             assertContains('--allow-root', $stderr);
-        } finally {
-            if (is_string($previous)) {
-                putenv('KNOSSOS_ALLOWED_ROOTS=' . $previous);
-            }
-        }
+        });
     }
 
     #[Group('cli')]
-    public function testCommittedMcpRegistrationIsPortableAndExplicitlyScoped(): void
+    public function testNoProjectScopedMcpRegistrationIsCommitted(): void
     {
-        $path = self::repositoryRoot() . '/.mcp.json';
-        $config = json_decode((string) file_get_contents($path), true, 512, JSON_THROW_ON_ERROR);
-
-        $server = $config['mcpServers']['knossos'];
-        // The launcher wraps `php bin/knossos serve` and logs process
-        // lifecycle so silent MCP disconnects are diagnosable.
-        assertSame('tools/mcp-serve', $server['command']);
-        // RootGuard::resolve() realpath()s each configured root against the process
-        // working directory, so args must stay relative to remain portable across checkouts.
-        assertSame(['--allow-root=.'], $server['args']);
+        // A checked-in `.mcp.json` registers a server that inherits no
+        // environment, so `tools/mcp-serve` falls back to `<root>/.knossos`
+        // and builds a second graph beside the installed one. Nothing warns:
+        // both servers answer, each from its own database, and the session
+        // brief reports whichever it reaches first by walking parents. The
+        // supported registration is the one `tools/install` writes, which
+        // pins KNOSSOS_DATA_DIR and KNOSSOS_ROOTS_FILE so every caller shares
+        // a single graph.
+        assertSame(false, file_exists(self::repositoryRoot() . '/.mcp.json'));
     }
 
     #[Group('cli')]

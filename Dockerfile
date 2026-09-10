@@ -87,6 +87,15 @@ COPY bin ./bin
 COPY src ./src
 COPY migrations ./migrations
 COPY schemas ./schemas
+# `install-agent-plugin` materialises the plugin out of the installation it is
+# run from, reading the manifest, the hook scripts and the skill as templates,
+# so an image without them ships a command that cannot do its job. The quality
+# stage shellchecks the hook scripts as well, and cannot see a file the image
+# does not carry. Keep this list in step with PluginCommand's MANIFEST and
+# COPIES, and with the scripts it reads by name.
+COPY .claude-plugin ./.claude-plugin
+COPY hooks ./hooks
+COPY skills ./skills
 RUN chmod 0755 \
     /opt/knossos/bin/knossos \
     /opt/knossos/workers/php/bin/worker \
@@ -241,8 +250,12 @@ COPY README.md CONTRIBUTING.md LICENSE ./
 COPY version.txt release-please-config.json .release-please-manifest.json ./
 COPY coverage-budgets.json ./
 COPY maintainability-budgets.json ./
+# The `gate` lane scans this repository and holds it to its own budgets, which
+# live here along with the boundaries and policies the scan needs to reproduce
+# the numbers those budgets were set from.
+COPY knossos.json ./
 COPY Dockerfile ./
-COPY docker-compose.yml .env.example .mcp.json ./
+COPY docker-compose.yml .env.example ./
 COPY docs ./docs
 COPY benchmarks ./benchmarks
 COPY tests ./tests

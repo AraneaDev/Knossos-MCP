@@ -2,6 +2,34 @@
 
 ## One installation, every project
 
+### One data directory
+
+`KNOSSOS_DATA_DIR` holds the graph database, and the roots file too unless
+`KNOSSOS_ROOTS_FILE` names one elsewhere. Pin it, in the MCP registration and
+in any shell you type `knossos` from. `tools/install`
+defaults it to `~/.knossos` and writes it into the registration it creates.
+
+Unpinned, it falls back to `<cwd>/.knossos`, and that fallback is per-caller.
+The consequences are quiet rather than loud:
+
+- Two servers, one registered with the variable and one without, build **two
+  graphs of the same project**. Both answer. Neither mentions the other.
+- `knossos` typed inside a project addresses `<project>/.knossos`, not the graph
+  the server reads, so a scan you just ran can leave the server's copy stale.
+- `knossos allow-root` writes the roots file beside whichever database it
+  derived, so a grant can land in a file the running server never reads. The
+  command says which file it wrote and whether the location was named or
+  derived; `server_info` reports the one actually in force.
+
+The fallback is deliberate, so that `knossos scan .` works on a fresh checkout
+with no configuration. It is only a hazard when a _server_ is also involved,
+which is exactly when the variable should be set.
+
+For the same reason this repository ships no `.mcp.json`. A project-scoped
+registration inherits no environment, so it would always be the unpinned case.
+
+### Granting projects
+
 The allow-list lives in a **roots file** that the server re-reads on every
 request, so granting another project needs no restart and no re-registration:
 
@@ -21,11 +49,11 @@ file for everything else.
 
 Two tools make this self-service from inside a session:
 
-- **`server_info`** — the roots in force, where each came from, whether each
+- **`server_info`**: the roots in force, where each came from, whether each
   actually exists, the roots file to extend, and whether the server is
   containerised. Call it first in an unfamiliar setup, or whenever a path is
   rejected.
-- **`diagnose_runtime`** — runtimes, scanner workers, protocol, database, and
+- **`diagnose_runtime`**: runtimes, scanner workers, protocol, database, and
   migrations, for when a scan fails for no visible reason. Slower, because it
   starts each language worker.
 
@@ -70,31 +98,30 @@ volume, disable networking, and keep stdin open for MCP:
 
 ## Native stdio (repository checkout)
 
-A checked-in `.mcp.json` at the repository root registers the server for
-clients that read project-scoped configuration:
-
-```json
-{
-    "mcpServers": {
-        "knossos": {
-            "command": "php",
-            "args": ["bin/knossos", "serve", "--allow-root=."]
-        }
-    }
-}
-```
-
-Both paths are relative on purpose. `bin/knossos` and `--allow-root=.` resolve
-against the working directory the client launches the server in, so the file is
-valid on any checkout without editing. A client that launches the server
-somewhere unexpected fails immediately on the relative binary path rather than
-silently granting access to the wrong tree.
-
-For a client that configures servers imperatively instead:
+Register the server once, for your user, and let the roots file decide which
+projects it may read. `tools/install` does this for you: it creates the data
+directory (`~/.knossos` unless `KNOSSOS_DATA_DIR` says otherwise), seeds the
+roots file, and writes a registration that pins both paths.
 
 ```sh
-claude mcp add knossos -- php bin/knossos serve --allow-root=.
+claude mcp add knossos --scope user \
+    -e KNOSSOS_DATA_DIR="$HOME/.knossos" \
+    -e KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
+    -- /absolute/path/to/checkout/tools/mcp-serve
 ```
+
+The repository deliberately ships **no** `.mcp.json`. A project-scoped
+registration inherits no environment, so `tools/mcp-serve` falls back to
+`<checkout>/.knossos` and builds a second graph beside the installed one.
+Nothing warns about it: both servers answer, each from its own database, and
+the session brief reports whichever it reaches first by walking parent
+directories. One registration with an explicit data directory is what keeps
+every caller, the CLI included, on a single graph.
+
+That is also why the paths above are absolute where the old checked-in file
+used relative ones. A registration that resolves against the client's working
+directory is portable across checkouts and ambiguous about which graph it
+means; this one is neither.
 
 The allow-list is a security boundary, not a convenience. It is the only thing
 standing between the server and the rest of the filesystem, so at least one root
@@ -104,7 +131,7 @@ that works.
 
 Anything able to write the roots file can widen what Knossos reads, which is why
 the grant is an inspectable file rather than a tool the caller can invoke on
-itself — Knossos never writes it during normal operation. Keep it owned by the
+itself. Knossos never writes it during normal operation. Keep it owned by the
 user running the server. If you would rather the boundary could not move at all,
 omit the file entirely and pass `--allow-root` only; the file is optional.
 
@@ -117,7 +144,7 @@ can corrupt NDJSON.
 
 Supported native runtimes are PHP 8.3 or newer with JSON, PDO, and PDO SQLite;
 Node 22 or newer; Python 3.11 or newer; Composer 2; and Git. Each is a floor
-rather than a range — newer releases are supported, and `doctor` reports a
+rather than a range: newer releases are supported, and `doctor` reports a
 version below the floor rather than capping the ones above it. Install locked dependencies without running project
 scripts. `change_impact` still returns static impact when a scanned root is not
 a Git repository:

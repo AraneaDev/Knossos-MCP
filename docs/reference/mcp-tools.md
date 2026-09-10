@@ -94,7 +94,7 @@ Check architecture budgets against a baseline in CI. Use to fail a build on regr
 | `refresh_if_stale` | boolean | no | default=false |
 | `project_id` | string | yes | minLength=1 |
 | `baseline_snapshot` | string | yes | minLength=1 |
-| `budgets` | object | yes | — |
+| `budgets` | object | yes | none |
 | `policies` | array | no | maxItems=50 |
 | `sarif` | boolean | no | default=false |
 | `propose_baseline` | boolean | no | default=false |
@@ -118,7 +118,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `find_component`
 
-Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates — use before inspect_component when the name is ambiguous.
+Locate a component by name when you are unsure of its exact canonical path. Returns ranked candidates. Use before inspect_component when the name is ambiguous.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -133,7 +133,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `inspect_component`
 
-Get the full dossier for one component — its roles, boundary, containment, relationships, and evidence — in a single call. Faster than opening and cross-referencing several files by hand.
+Get the full dossier for one component (its roles, boundary, containment, relationships, and evidence) in a single call. Faster than opening and cross-referencing several files by hand.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -150,7 +150,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `list_usages`
 
-List every usage site of a symbol with file:line evidence — one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.
+List every usage site of a symbol with file:line evidence: one row per occurrence. Use instead of grepping for callers; unlike impact_analysis this shows the exact call sites, not the transitive set.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -230,7 +230,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `explain_flow`
 
-Answer 'how does A reach B?' Traces evidence-backed static paths between two components — more reliable than grepping call sites across layers.
+Answer 'how does A reach B?' Traces evidence-backed static paths between two components, more reliable than grepping call sites across layers.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -368,7 +368,7 @@ Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no
 
 ## `changed_files_impact`
 
-Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches. Provide exactly one source: either files (an explicit list) or working_tree: true (let Git supply the changes). base_ref only applies with working_tree: true — it diffs the working tree against that ref; it cannot be combined with files.
+Map a set of changed files (explicit or from a Git diff) to the components they affect. Use to scope review or tests to what a change actually touches. Provide exactly one source: either files (an explicit list) or working_tree: true (let Git supply the changes). base_ref only applies with working_tree: true. It diffs the working tree against that ref; it cannot be combined with files.
 
 | Input | Type | Required | Constraints/default |
 | --- | --- | --- | --- |
@@ -421,7 +421,7 @@ One-call architectural review of a change set: blast radius, boundary-policy vio
 | `base_ref` | string | no | minLength=1; maxLength=200 |
 | `files` | array | no | maxItems=50 |
 | `policies` | array | no | maxItems=50 |
-| `budgets` | object | no | — |
+| `budgets` | object | no | none |
 | `baseline_snapshot` | string | no | minLength=1 |
 | `max_depth` | integer | no | minimum=1; maximum=8; default=4 |
 | `limit` | integer | no | minimum=1; maximum=100; default=100 |

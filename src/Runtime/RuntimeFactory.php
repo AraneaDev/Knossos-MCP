@@ -31,7 +31,7 @@ final class RuntimeFactory
     {
         $path ??= $this->defaultDatabasePath();
         $directory = dirname($path);
-        if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+        if (!is_dir($directory) && !@mkdir($directory, 0700, true) && !is_dir($directory)) {
             throw new RuntimeException(sprintf('Unable to create data directory: %s', $directory));
         }
         $pdo = SqliteConnection::open($path);

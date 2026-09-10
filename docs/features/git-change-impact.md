@@ -18,5 +18,16 @@ and history outside the selected window is absent. If Git is unavailable or the
 scanned root is not a repository, the tool returns the static impact with zero
 change scores and a reason instead of failing the whole query.
 
+When history was read, `git.available` is true and `git.reason` is `null`.
+Otherwise `git.reason` says what stopped it, and the value distinguishes two
+different failures. `unmatched_target` and `ambiguous_target` mean the request
+never resolved to one component, so there is no blast radius to score and
+`risk_ranking` is empty: the first when `symbol` matched nothing, the second when
+it matched several. Every other value still carries the full static impact with
+zero change scores, either `provider_unavailable` when no Git provider is
+configured, or the Git error message itself, truncated to 500 characters. That
+last case is free-form, so read `reason` as a diagnostic string rather than a
+closed set of codes.
+
 For current working-tree or explicit file changes rather than historical risk,
 use [`changed_files_impact`](changed-files-impact.md).

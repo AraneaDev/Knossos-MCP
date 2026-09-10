@@ -49,8 +49,8 @@ emits a JSON-RPC `ping` whenever the connection has been idle, keeping the
 transport warm.
 
 Each ping carries a fresh non-null id (`knossos-keepalive-N`) that the client
-echoes back. Responses that arrive without a matching in-flight request —
-including these keepalive replies — are ignored rather than treated as
+echoes back. Responses that arrive without a matching in-flight request
+(including these keepalive replies) are ignored rather than treated as
 protocol violations, so a client that answers late or not at all does not
 break the session.
 

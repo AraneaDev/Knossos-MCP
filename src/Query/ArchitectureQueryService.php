@@ -389,4 +389,15 @@ final readonly class ArchitectureQueryService
     {
         return $this->annotationQueries->listAnnotations($projectId, $component, $kind, $limit, $offset);
     }
+
+    /**
+     * {@see SessionBriefService::brief()}
+     *
+     * $databasePath is optional so every existing caller keeps working; pass
+     * it to let the brief warn when $path falls outside every allowed root.
+     */
+    public function sessionBrief(string $path, ?string $databasePath = null): string
+    {
+        return (new SessionBriefService($this->pdo, $databasePath, $this->topologyQueries))->brief($path);
+    }
 }

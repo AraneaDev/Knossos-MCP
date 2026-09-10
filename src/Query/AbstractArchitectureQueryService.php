@@ -94,6 +94,19 @@ abstract readonly class AbstractArchitectureQueryService
     }
 
     /**
+     * What to tell a caller whose reference did not resolve to exactly one component.
+     *
+     * Nothing-matched and too-many-matched are different failures with different
+     * recoveries: a caller can pick one of several candidates by stable ID, but a
+     * caller with no candidates has no ID to pick and must search for the name
+     * first. Advising disambiguation in the empty case sends them after an ID
+     * that does not exist, so the two cases are worded apart.
+     */
+    protected const UNMATCHED_ADVICE = 'No component matched; find the name with find_component or search_architecture, then retry with a returned stable component ID.';
+
+    protected const AMBIGUOUS_ADVICE = 'Use a returned stable component ID to disambiguate the request.';
+
+    /**
      * Resolve a component reference to one node, reporting ambiguity rather than guessing.
      *
      * @return list<array<string, mixed>>

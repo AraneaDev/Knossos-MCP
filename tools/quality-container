@@ -8,7 +8,13 @@ profile="${1:-fast}"
 lane="${2:-all}"
 mkdir -p coverage
 docker build --target quality -t knossos-mcp:quality .
+# The checkout is mounted read-only so the `gate` lane can reach the history:
+# the image bakes this source without .git (see .dockerignore), and that lane
+# measures the change against the commit it forked from. Read-only because the
+# lane only ever reads history; nothing in the gate writes to the repository.
 docker run --rm -e KNOSSOS_QUALITY_CONTAINER=1 \
+    -e KNOSSOS_GATE_REPO=/workspace \
     -v /var/run/docker.sock:/var/run/docker.sock \
+    -v "$PWD:/workspace:ro" \
     -v "$PWD/coverage:/opt/knossos/coverage" \
     knossos-mcp:quality "$profile" "$lane"

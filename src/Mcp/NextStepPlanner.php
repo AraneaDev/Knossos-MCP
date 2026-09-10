@@ -20,7 +20,12 @@ final readonly class NextStepPlanner
     /**
      * Suggest the calls that usually follow this result, so an agent is not left guessing.
      *
-     * @return list<array{tool: string, args: array<string, mixed>, why: string}>
+     * Almost every entry names a registered tool and the `args` to call it
+     * with. The one exception carries `shell` instead of `tool` and `args`: see
+     * {@see self::afterScan()}. A caller reading these mechanically must key on
+     * which of the two is present rather than assume `tool`.
+     *
+     * @return list<array{tool: string, args: array<string, mixed>, why: string}|array{shell: string, why: string}>
      */
     public function plan(string $toolName, ResultEnvelope $envelope): array
     {
@@ -30,6 +35,7 @@ final readonly class NextStepPlanner
             'inspect_component' => $this->afterInspect($data),
             'impact_analysis' => $this->afterImpact($data),
             'architecture_health' => $this->afterHealth($data),
+            'scan_project' => $this->afterScan($data),
             default => [],
         };
         return array_slice($steps, 0, 3);
@@ -137,6 +143,37 @@ final readonly class NextStepPlanner
             'tool' => 'inspect_component',
             'args' => ['component' => $name],
             'why' => 'inspect the top structural hotspot',
+        ]];
+    }
+
+    /**
+     * After a full scan: point at the orientation plugin, once the graph exists
+     * and its value is obvious.
+     *
+     * Only on a full scan. `auto` picks incremental once a project has a graph,
+     * so this lands on new projects rather than on every rescan. It is a proxy
+     * for "first scan", not a synonym, and a forced full rescan repeats it.
+     *
+     * The one step that is not a tool call. `install_agent_plugin` was never a
+     * registered tool, so an agent working through `next_steps` mechanically
+     * called something that does not exist. It stays a suggestion, under
+     * `shell` rather than `tool`, because that is the shape the thing actually
+     * has: a command a person runs in a terminal, which installs a Claude Code
+     * plugin into the user's own configuration and is therefore not the
+     * server's to perform on anyone's behalf.
+     *
+     * @param array<string, mixed> $data
+     * @return list<array{shell: string, why: string}>
+     */
+    private function afterScan(array $data): array
+    {
+        if (($data['mode'] ?? null) !== 'full') {
+            return [];
+        }
+        return [[
+            'shell' => 'knossos install-agent-plugin',
+            'why' => 'Not a tool call: run this yourself so every session starts with this '
+                . 'project\'s boundaries, notes, and graph freshness already in context.',
         ]];
     }
 

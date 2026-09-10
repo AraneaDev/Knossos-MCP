@@ -42,6 +42,17 @@ final readonly class ReportableComponent
         'tooling.config',
     ];
 
+    /**
+     * Lifecycle methods a runtime calls, one per scanned language.
+     *
+     * Nothing in the graph references these: an object's construction and
+     * destruction are the runtime's, not a call site a maintainer wrote or
+     * could add. Counting them charges a budget that no amount of cleanup can
+     * pay down, which is the same reason {@see self::isExecutableScript()}
+     * exists for a script's module.
+     */
+    public const RUNTIME_LIFECYCLE_METHODS = ['__construct', '__destruct', 'constructor', '__init__', '__del__'];
+
     /** Vendor code and unresolved references: not this project's to delete or restructure. */
     public static function isExternal(string $kind, ?string $origin): bool
     {
@@ -110,13 +121,32 @@ final readonly class ReportableComponent
     }
 
     /**
+     * A member a language runtime invokes, marked as such by the scanner.
+     *
+     * Rust calls `Drop::drop` during destruction, so no call site names it and
+     * the graph shows it unreferenced however heavily its type is used. The
+     * name alone cannot carry that: an inherent method called `drop` is an
+     * ordinary method with ordinary callers, and excluding every `drop` would
+     * hide a genuinely dead one. Only the scanner knows which is which, so it
+     * says so on the node and this reads the mark.
+     */
+    public static function isRuntimeInvoked(mixed $attributesJson): bool
+    {
+        if (!is_string($attributesJson)) {
+            return false;
+        }
+        $decoded = json_decode($attributesJson, true);
+        return is_array($decoded) && ($decoded['runtime_invoked'] ?? false) === true;
+    }
+
+    /**
      * A constructor, which the engine invokes through `new` on the declaring type.
      *
      * No call edge points at it even in code that constructs the type constantly,
      * so an unreferenced constructor is never evidence of dead code on its own.
      */
-    public static function isConstructor(string $kind, string $displayName): bool
+    public static function isRuntimeLifecycleMethod(string $kind, string $displayName): bool
     {
-        return $kind === 'method' && ($displayName === '__construct' || $displayName === 'constructor');
+        return $kind === 'method' && in_array($displayName, self::RUNTIME_LIFECYCLE_METHODS, true);
     }
 }

@@ -280,4 +280,34 @@ final class FlowTest extends KnossosTestCase
         assertSame(true, $flow->truncated);
         assertContains('endpoint_expansion_limit', implode(',', $flow->data['bounds']['truncation_reasons']));
     }
+
+    /**
+     * Flow has two endpoints, so its message has to say which one failed and how.
+     * Reporting an unmatched endpoint as ambiguous hides both facts.
+     */
+    #[Group('flow')]
+    public function testFlowNamesTheUnmatchedEndpointRatherThanCallingItAmbiguous(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $billing = StableId::symbol($ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService');
+        $repository->saveNode($billing, $ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService', 'InvoiceService', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Billing/InvoiceService.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $query = new ArchitectureQueryService($pdo);
+
+        $missingFrom = $query->explainFlow($ids['project'], 'NoSuchService', 'App\\Checkout');
+        assertContains('No component matched "NoSuchService"', $missingFrom->summary);
+        assertSame([], array_values(array_filter(
+            $missingFrom->warnings,
+            static fn(string $warning): bool => str_contains($warning, 'disambiguate'),
+        )));
+
+        // The failing endpoint is named even when it is the target.
+        $missingTo = $query->explainFlow($ids['project'], 'App\\Checkout', 'NoSuchService');
+        assertContains('No component matched "NoSuchService"', $missingTo->summary);
+
+        // An ambiguous endpoint still says so, and still offers the stable ID.
+        $ambiguous = $query->explainFlow($ids['project'], 'InvoiceService', 'App\\Checkout');
+        assertContains('ambiguous', $ambiguous->summary);
+        assertArrayContains('Use a returned stable component ID to disambiguate the request.', $ambiguous->warnings);
+    }
 }
