@@ -28,6 +28,14 @@ final class PluginCommand implements CliCommand
     private const DEFAULT_IMAGE = 'knossos-mcp:dev';
 
     /**
+     * @param string $version what this CLI is, written into the materialised
+     *   manifest. Injected the way {@see MetaCommand} takes it rather than read
+     *   from {@see \Knossos\Application}, so a command stays testable without
+     *   the constant the whole application is versioned by.
+     */
+    public function __construct(private readonly string $version = '0.0.0') {}
+
+    /**
      * Where an install materialises the plugin, relative to the installation root.
      *
      * The install registers this directory as the marketplace, never the
@@ -44,7 +52,10 @@ final class PluginCommand implements CliCommand
     private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'];
 
     /** Copied verbatim from the installation root into a materialised plugin. */
-    private const COPIES = ['/.claude-plugin/plugin.json', '/hooks/hooks.json', '/skills/knossos/SKILL.md'];
+    private const COPIES = ['/hooks/hooks.json', '/skills/knossos/SKILL.md'];
+
+    /** The manifest, read from the installation root and rewritten with this CLI's version. */
+    private const MANIFEST = '/.claude-plugin/plugin.json';
 
     /** Everything a materialised plugin directory contains, for reporting. */
     private const FILES = [
@@ -263,6 +274,21 @@ final class PluginCommand implements CliCommand
                     $createdFiles[] = $target;
                 }
             }
+            // Read and rewritten rather than copied. Claude Code caches an
+            // installed plugin by the version in this file, so a manifest
+            // frozen at a placeholder can never be refreshed: `claude plugin
+            // update` finds the cached version equal to the declared one and
+            // reports there is nothing to do, leaving whatever was first
+            // installed in place forever. Everything else in the file stays
+            // the file's business.
+            $manifest = $out . self::MANIFEST;
+            $manifestIsNew = !file_exists($manifest);
+            if (@file_put_contents($manifest, $this->versionedManifest($root . self::MANIFEST)) === false) {
+                throw new InvalidArgumentException(sprintf('Unable to write %s.', $manifest));
+            }
+            if ($manifestIsNew) {
+                $createdFiles[] = $manifest;
+            }
             // Generated, not copied. The descriptor is not committed, so a
             // fresh checkout legitimately has none to copy from, and a
             // materialise that depended on one would fail for every install.
@@ -287,6 +313,24 @@ final class PluginCommand implements CliCommand
         }
 
         return $existed;
+    }
+
+    /**
+     * The installation's manifest with this CLI's version substituted in.
+     *
+     * Key order is the source file's, because json_decode() preserves it and
+     * json_encode() writes it back in the same order: the emitted file reads
+     * as the committed one with a different version, not as a reordering of
+     * it. Slashes are left unescaped for the same reason, so the URLs in it
+     * stay readable to anyone who opens it.
+     */
+    private function versionedManifest(string $source): string
+    {
+        /** @var array<string, mixed> $manifest */
+        $manifest = json_decode($this->read($source), true, 16, JSON_THROW_ON_ERROR);
+        $manifest['version'] = $this->version;
+
+        return json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
     }
 
     /**

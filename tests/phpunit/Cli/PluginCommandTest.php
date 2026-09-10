@@ -352,7 +352,7 @@ final class PluginCommandTest extends KnossosTestCase
      *
      * @return list<string> one recorded line per invocation that was reached
      */
-    private function runWithStubbedClaude(string $root, array $options): array
+    private function runWithStubbedClaude(string $root, array $options, string $version = '0.0.0'): array
     {
         $bin = $this->temporaryPath('knossos-plugin-bin');
         mkdir($bin, 0o755, true);
@@ -365,7 +365,7 @@ final class PluginCommandTest extends KnossosTestCase
         try {
             ob_start();
             try {
-                (new PluginCommand())->run('install-agent-plugin', [], $options, $this->contextFor($root));
+                (new PluginCommand($version))->run('install-agent-plugin', [], $options, $this->contextFor($root));
                 self::fail('Expected the stubbed claude to fail the install.');
             } catch (InvalidArgumentException) {
                 // Expected: the stub exits 1, so nothing is really installed.
@@ -394,6 +394,48 @@ final class PluginCommandTest extends KnossosTestCase
         sort($found);
 
         return $found;
+    }
+
+    #[Group('cli')]
+    public function testTheMaterialisedManifestCarriesTheRunningVersion(): void
+    {
+        // Claude Code caches an installed plugin by the version in its
+        // manifest, so a manifest pinned at a placeholder can never be
+        // updated: `claude plugin update` reports it is already at the latest
+        // version and the snapshot stays whatever was first installed. The
+        // version is therefore written at materialise time from the version
+        // this CLI is, not copied from the committed file.
+        $root = $this->sourceRoot();
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']], '9.9.9');
+
+        $committed = json_decode(
+            (string) file_get_contents($root . '/.claude-plugin/plugin.json'),
+            true,
+            8,
+            JSON_THROW_ON_ERROR,
+        );
+        $materialised = json_decode(
+            (string) file_get_contents($root . '/.plugin/.claude-plugin/plugin.json'),
+            true,
+            8,
+            JSON_THROW_ON_ERROR,
+        );
+
+        assertSame('9.9.9', $materialised['version']);
+        // The source file is read, never rewritten: an install must not dirty
+        // the checkout it installs from.
+        assertSame('0.0.0', $committed['version']);
+        // Everything else is the committed manifest, so the description, author
+        // and keywords stay the file's business rather than the command's.
+        assertSame($committed['name'], $materialised['name']);
+        assertSame($committed['description'], $materialised['description']);
+        assertSame(array_keys($committed), array_keys($materialised));
+        // A URL that came back escaped would still parse, and would look wrong
+        // to anyone opening the file.
+        assertSame(true, str_contains((string) file_get_contents($root . '/.plugin/.claude-plugin/plugin.json'), 'https://github.com'));
+
+        exec('rm -rf ' . escapeshellarg($root));
     }
 
     #[Group('cli')]

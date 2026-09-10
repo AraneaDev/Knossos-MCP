@@ -306,13 +306,19 @@ the plugin copies only the plugin.
 copies of files already in the repository, and committing them would let the
 copies drift from their sources silently. Two consequences worth knowing:
 
-- The installed plugin is a **snapshot**, taken at install time and cached by
-  version. After editing `hooks/scripts/session-brief.sh`,
-  `skills/knossos/SKILL.md`, or `.claude-plugin/plugin.json`, re-running
-  `install-agent-plugin --execute` refreshes `.plugin/` but not the snapshot:
-  `claude plugin install` reports it is already installed and
-  `claude plugin update` reports it is already at the latest version, because
-  the manifest version has not moved. Uninstall first to actually replace it:
+- The installed plugin is a **snapshot**, cached by the version in its manifest.
+  `install-agent-plugin` writes the running CLI's version into the materialised
+  manifest, so a release propagates the ordinary way:
+
+    ```sh
+    knossos install-agent-plugin --execute   # refresh .plugin/
+    claude plugin update knossos@knossos     # replace the snapshot
+    ```
+
+    Within one version that update is a no-op, because the cached version already
+    equals the declared one. Editing `hooks/scripts/session-brief.sh` or
+    `skills/knossos/SKILL.md` without releasing therefore needs an uninstall to
+    force a fresh copy:
 
     ```sh
     claude plugin uninstall knossos@knossos --scope user

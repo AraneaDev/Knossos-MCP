@@ -37,7 +37,7 @@ final readonly class CliCommandSet
             new QueryCommand(),
             new SessionCommand(),
             new RootsCommand(),
-            new PluginCommand(),
+            new PluginCommand($version),
             new MaintenanceCommand(),
             new ServeCommand(),
         ];
