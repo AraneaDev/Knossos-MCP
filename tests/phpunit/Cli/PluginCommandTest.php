@@ -76,41 +76,16 @@ final class PluginCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
-    public function testExecuteGeneratesTheMarketplaceDescriptorWhenItIsAbsent(): void
+    public function testExecuteGeneratesTheMarketplaceDescriptorTheInstallNeeds(): void
     {
-        // `claude` is stubbed by a script that exits non-zero and prints
-        // nothing, so the install fails at its first command: this test can
-        // never register a marketplace on the machine running it. The
-        // descriptor is written before that first command, which is the point.
-        $root = $this->temporaryPath('knossos-plugin-root');
-        $bin = $this->temporaryPath('knossos-plugin-bin');
-        mkdir($root, 0o755, true);
-        mkdir($bin, 0o755, true);
-        file_put_contents($bin . '/claude', "#!/bin/sh\nexit 1\n");
-        chmod($bin . '/claude', 0o755);
-        $path = (string) getenv('PATH');
+        // The descriptor is generated rather than committed, so nothing on
+        // disk carries it until an install runs. It is written before the
+        // first `claude` command, which is what makes that command resolve.
+        $root = $this->sourceRoot();
 
-        putenv('PATH=' . $bin);
-        try {
-            ob_start();
-            try {
-                (new PluginCommand())->run(
-                    'install-agent-plugin',
-                    [],
-                    ['execute' => ['true']],
-                    $this->contextFor($root),
-                );
-                self::fail('Expected the stubbed claude to fail the install.');
-            } catch (InvalidArgumentException) {
-                // Expected: the stub exits 1, so nothing is really installed.
-            } finally {
-                ob_get_clean();
-            }
-        } finally {
-            putenv('PATH=' . $path);
-        }
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
-        $descriptor = $root . '/.claude-plugin/marketplace.json';
+        $descriptor = $root . '/.plugin/.claude-plugin/marketplace.json';
         assertSame(true, is_file($descriptor));
         $decoded = json_decode((string) file_get_contents($descriptor), true, 8, JSON_THROW_ON_ERROR);
         // The same top-level keys the committed descriptor carried, so a
@@ -119,10 +94,11 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame('knossos', $decoded['name']);
         assertSame(1, count($decoded['plugins']));
         assertSame('knossos', $decoded['plugins'][0]['name']);
-        // A local source: the whole reason the install points at a checkout.
+        // The plugin is the directory the descriptor sits in, which is why the
+        // install hands `marketplace add` that directory and not the checkout.
         assertSame('./', $decoded['plugins'][0]['source']);
 
-        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($bin));
+        exec('rm -rf ' . escapeshellarg($root));
     }
 
     #[Group('cli')]
@@ -340,5 +316,156 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame(true, is_dir($out . '/.claude-plugin/plugin.json'));
 
         exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /**
+     * A stand-in installation root carrying every file an install reads.
+     *
+     * Built rather than pointed at the real checkout because these tests
+     * materialise a plugin directory inside the root they are given, and the
+     * repository is not theirs to write into.
+     */
+    private function sourceRoot(): string
+    {
+        $root = $this->temporaryPath('knossos-plugin-source');
+        foreach ([
+            '/.claude-plugin/plugin.json',
+            '/hooks/hooks.json',
+            '/hooks/scripts/session-brief.sh',
+            '/hooks/scripts/session-brief-container.sh',
+            '/skills/knossos/SKILL.md',
+        ] as $relative) {
+            $directory = dirname($root . $relative);
+            if (!is_dir($directory)) {
+                mkdir($directory, 0o755, true);
+            }
+            copy(self::repositoryRoot() . $relative, $root . $relative);
+        }
+
+        return $root;
+    }
+
+    /**
+     * Run the install with `claude` stubbed by a script that records its
+     * arguments and then fails, so no test can register a marketplace on the
+     * machine running it.
+     *
+     * @return list<string> one recorded line per invocation that was reached
+     */
+    private function runWithStubbedClaude(string $root, array $options): array
+    {
+        $bin = $this->temporaryPath('knossos-plugin-bin');
+        mkdir($bin, 0o755, true);
+        $log = $bin . '/argv';
+        file_put_contents($bin . '/claude', "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " . escapeshellarg($log) . "\nexit 1\n");
+        chmod($bin . '/claude', 0o755);
+        $path = (string) getenv('PATH');
+
+        putenv('PATH=' . $bin);
+        try {
+            ob_start();
+            try {
+                (new PluginCommand())->run('install-agent-plugin', [], $options, $this->contextFor($root));
+                self::fail('Expected the stubbed claude to fail the install.');
+            } catch (InvalidArgumentException) {
+                // Expected: the stub exits 1, so nothing is really installed.
+            } finally {
+                ob_get_clean();
+            }
+        } finally {
+            putenv('PATH=' . $path);
+        }
+        $recorded = is_file($log) ? (string) file_get_contents($log) : '';
+        exec('rm -rf ' . escapeshellarg($bin));
+
+        return array_values(array_filter(explode("\n", trim($recorded)), static fn (string $line): bool => $line !== ''));
+    }
+
+    /** Every file under $directory, as paths relative to it, sorted. */
+    private function treeOf(string $directory): array
+    {
+        $found = [];
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+        );
+        foreach ($iterator as $entry) {
+            $found[] = substr((string) $entry->getPathname(), strlen($directory));
+        }
+        sort($found);
+
+        return $found;
+    }
+
+    #[Group('cli')]
+    public function testExecuteRegistersTheMaterialisedPluginDirectoryRatherThanTheCheckout(): void
+    {
+        // The bug this pins: registering the checkout itself made Claude Code
+        // snapshot the whole working tree, caches, vendor and graph included,
+        // into its plugin cache. The marketplace it is handed must be a
+        // directory that holds the plugin and nothing else.
+        $root = $this->sourceRoot();
+
+        $recorded = $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame(1, count($recorded));
+        assertSame("plugin marketplace add {$root}/.plugin --scope user", $recorded[0]);
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    #[Group('cli')]
+    public function testExecuteMaterialisesThePluginFilesAndNothingElse(): void
+    {
+        $root = $this->sourceRoot();
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        assertSame([
+            '/.claude-plugin/marketplace.json',
+            '/.claude-plugin/plugin.json',
+            '/hooks/hooks.json',
+            '/hooks/scripts/session-brief.sh',
+            '/skills/knossos/SKILL.md',
+        ], $this->treeOf($root . '/.plugin'));
+        // The descriptor belongs to the materialised directory now. Writing one
+        // at the root is what made `marketplace add <root>` resolve at all.
+        assertSame(false, file_exists($root . '/.claude-plugin/marketplace.json'));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    #[Group('cli')]
+    public function testMaterialisedPluginCarriesTheLocalHookNotTheContainerOne(): void
+    {
+        $root = $this->sourceRoot();
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        $hook = (string) file_get_contents($root . '/.plugin/hooks/scripts/session-brief.sh');
+        // The local hook finds a binary on the host; the container variant runs
+        // `docker run`. An install from a checkout must ship the former.
+        assertSame(true, str_contains($hook, 'find_knossos'));
+        assertSame(false, str_contains($hook, 'docker run'));
+        assertSame('0755', substr(sprintf('%o', fileperms($root . '/.plugin/hooks/scripts/session-brief.sh')), -4));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    #[Group('cli')]
+    public function testPreviewNamesThePluginDirectoryWithoutCreatingIt(): void
+    {
+        $root = $this->sourceRoot();
+
+        ob_start();
+        $status = (new PluginCommand())->run('install-agent-plugin', [], [], $this->contextFor($root));
+        $output = (string) ob_get_clean();
+
+        assertSame(0, $status);
+        assertSame(true, str_contains($output, $root . '/.plugin'));
+        // A preview that materialised the directory would leave a checkout
+        // dirty just for being asked what it would do.
+        assertSame(false, file_exists($root . '/.plugin'));
+
+        exec('rm -rf ' . escapeshellarg($root));
     }
 }

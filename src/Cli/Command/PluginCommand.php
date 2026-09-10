@@ -28,6 +28,34 @@ final class PluginCommand implements CliCommand
     private const DEFAULT_IMAGE = 'knossos-mcp:dev';
 
     /**
+     * Where an install materialises the plugin, relative to the installation root.
+     *
+     * The install registers this directory as the marketplace, never the
+     * installation root itself. Claude Code snapshots a local marketplace into
+     * its plugin cache, so handing it the root copied the entire working tree,
+     * `vendor/`, `node_modules/`, build caches, the graph database and any
+     * `.mcp.json` along with it. A directory holding only the plugin's own
+     * files copies only those, and carries nothing that could register a
+     * second, unintended MCP server.
+     */
+    private const PLUGIN_DIRECTORY = '/.plugin';
+
+    /** The directories a materialised plugin needs, in creation order. */
+    private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'];
+
+    /** Copied verbatim from the installation root into a materialised plugin. */
+    private const COPIES = ['/.claude-plugin/plugin.json', '/hooks/hooks.json', '/skills/knossos/SKILL.md'];
+
+    /** Everything a materialised plugin directory contains, for reporting. */
+    private const FILES = [
+        '.claude-plugin/plugin.json',
+        '.claude-plugin/marketplace.json',
+        'hooks/hooks.json',
+        'hooks/scripts/session-brief.sh',
+        'skills/knossos/SKILL.md',
+    ];
+
+    /**
      * The marketplace descriptor, byte for byte as an install needs it.
      *
      * Generated rather than committed. A copy of this file at the root of the
@@ -77,8 +105,9 @@ final class PluginCommand implements CliCommand
         if (!in_array($scope, self::SCOPES, true)) {
             throw new InvalidArgumentException('scope must be one of: ' . implode(', ', self::SCOPES) . '.');
         }
+        $pluginDirectory = $root . self::PLUGIN_DIRECTORY;
         $commands = [
-            sprintf('claude plugin marketplace add %s --scope %s', escapeshellarg($root), $scope),
+            sprintf('claude plugin marketplace add %s --scope %s', escapeshellarg($pluginDirectory), $scope),
             sprintf('claude plugin install knossos@knossos --scope %s --yes', $scope),
         ];
         $json = $context->options->flag($options, 'json');
@@ -89,17 +118,26 @@ final class PluginCommand implements CliCommand
             // one per element rather than glued into a paragraph it would have
             // to parse back apart.
             $context->output(
-                ['scope' => $scope, 'commands' => $commands, 'executed' => false, 'preview' => true],
+                [
+                    'scope' => $scope,
+                    'plugin_directory' => $pluginDirectory,
+                    'commands' => $commands,
+                    'executed' => false,
+                    'preview' => true,
+                ],
                 $json,
-                implode(PHP_EOL, $commands) . PHP_EOL . 'Preview only. Re-run with --execute to apply.',
+                implode(PHP_EOL, $commands) . PHP_EOL
+                . sprintf('The first command needs %s, which --execute writes before running it.', $pluginDirectory) . PHP_EOL
+                . 'Preview only. Re-run with --execute to apply.',
             );
             return 0;
         }
         // Only here, never on the preview path: a preview writes nothing at
-        // all. The descriptor is not in the repository, so the first command
-        // below would otherwise have nothing to resolve; this is the one place
-        // that knows the root is an installation which already runs the server.
-        $this->writeDescriptor($root . '/.claude-plugin/marketplace.json', false);
+        // all. The marketplace this install registers does not exist until now,
+        // because it is derived from the installation rather than committed to
+        // it; this is the one place that knows the root is an installation
+        // which already runs the server.
+        $this->materialise($root, $pluginDirectory, $this->read($root . '/hooks/scripts/session-brief.sh'));
         foreach ($commands as $line) {
             $status = 0;
             passthru($line, $status);
@@ -114,9 +152,15 @@ final class PluginCommand implements CliCommand
         // record of what was run, on the last line, where a caller that keeps
         // only the tail finds it.
         $context->output(
-            ['scope' => $scope, 'commands' => $commands, 'executed' => true],
+            [
+                'scope' => $scope,
+                'plugin_directory' => $pluginDirectory,
+                'files' => self::FILES,
+                'commands' => $commands,
+                'executed' => true,
+            ],
             $json,
-            'Installed the plugin.',
+            sprintf('Installed the plugin from %s.', $pluginDirectory),
         );
         return 0;
     }
@@ -142,60 +186,13 @@ final class PluginCommand implements CliCommand
             );
         }
         $image = $context->options->single($options, 'image') ?? self::DEFAULT_IMAGE;
-        $existed = file_exists($out);
-        $createdDirectories = [];
-        $createdFiles = [];
-        try {
-            foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'] as $directory) {
-                $path = $out . $directory;
-                if (is_dir($path)) {
-                    continue;
-                }
-                if (!@mkdir($path, 0o755, true)) {
-                    throw new InvalidArgumentException(sprintf('Unable to create %s.', $path));
-                }
-                $createdDirectories[] = $path;
-            }
-            $copies = [
-                '/.claude-plugin/plugin.json',
-                '/hooks/hooks.json',
-                '/skills/knossos/SKILL.md',
-            ];
-            foreach ($copies as $relative) {
-                $target = $out . $relative;
-                $isNew = !file_exists($target);
-                if (!@copy($root . $relative, $target)) {
-                    throw new InvalidArgumentException(sprintf('Unable to copy %s.', $relative));
-                }
-                if ($isNew) {
-                    $createdFiles[] = $target;
-                }
-            }
-            // Generated, not copied. The descriptor is not committed, so a
-            // fresh checkout legitimately has none to copy from, and an emit
-            // that depended on one would fail for the containerised install
-            // this mode exists to serve.
-            $descriptor = $out . '/.claude-plugin/marketplace.json';
-            if ($this->writeDescriptor($descriptor, true)) {
-                $createdFiles[] = $descriptor;
-            }
-            $template = (string) file_get_contents($root . '/hooks/scripts/session-brief-container.sh');
-            $script = strtr($template, ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data]);
-            $hook = $out . '/hooks/scripts/session-brief.sh';
-            $hookIsNew = !file_exists($hook);
-            if (file_put_contents($hook, $script) === false) {
-                throw new InvalidArgumentException('Unable to write the hook script.');
-            }
-            if ($hookIsNew) {
-                $createdFiles[] = $hook;
-            }
-            if (!@chmod($hook, 0o755)) {
-                throw new InvalidArgumentException('Unable to make the hook script executable.');
-            }
-        } catch (Throwable $error) {
-            $this->rollbackEmit($out, $existed, $createdDirectories, $createdFiles);
-            throw $error;
-        }
+        $template = $this->read($root . '/hooks/scripts/session-brief-container.sh');
+        $existed = $this->materialise(
+            $root,
+            $out,
+            strtr($template, ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data]),
+        );
+
         $message = sprintf('Wrote a container plugin to %s.', $out);
         if ($existed) {
             $message .= PHP_EOL . 'The target directory already existed; its files were replaced.';
@@ -216,17 +213,98 @@ final class PluginCommand implements CliCommand
                 'existed' => $existed,
                 'image' => $image,
                 'data' => $data,
-                'files' => [
-                    '.claude-plugin/plugin.json',
-                    '.claude-plugin/marketplace.json',
-                    'hooks/hooks.json',
-                    'hooks/scripts/session-brief.sh',
-                    'skills/knossos/SKILL.md',
-                ],
+                'files' => self::FILES,
             ],
             $context->options->flag($options, 'json'),
             $message,
         );
+    }
+
+    /**
+     * Write a self-contained plugin directory at $out, with $hook as its
+     * session-start script.
+     *
+     * The one place either mode writes a plugin. The two differ only in that
+     * script: an install from a checkout ships the hook that finds a binary on
+     * the host, a containerised emit ships the one that runs `docker run`.
+     * Everything else, the descriptor included, is the same five files.
+     *
+     * All-or-nothing: anything created before a mid-way failure is removed
+     * before the exception propagates, so a failure never leaves a directory
+     * that looks like a plugin but is missing pieces. Anything that was
+     * already on disk before this call, whether that is $out itself or files
+     * inside it, is left exactly as it was found.
+     *
+     * @return bool whether $out already existed before this call
+     */
+    private function materialise(string $root, string $out, string $hook): bool
+    {
+        $existed = file_exists($out);
+        $createdDirectories = [];
+        $createdFiles = [];
+        try {
+            foreach (self::DIRECTORIES as $directory) {
+                $path = $out . $directory;
+                if (is_dir($path)) {
+                    continue;
+                }
+                if (!@mkdir($path, 0o755, true)) {
+                    throw new InvalidArgumentException(sprintf('Unable to create %s.', $path));
+                }
+                $createdDirectories[] = $path;
+            }
+            foreach (self::COPIES as $relative) {
+                $target = $out . $relative;
+                $isNew = !file_exists($target);
+                if (!@copy($root . $relative, $target)) {
+                    throw new InvalidArgumentException(sprintf('Unable to copy %s.', $relative));
+                }
+                if ($isNew) {
+                    $createdFiles[] = $target;
+                }
+            }
+            // Generated, not copied. The descriptor is not committed, so a
+            // fresh checkout legitimately has none to copy from, and a
+            // materialise that depended on one would fail for every install.
+            $descriptor = $out . '/.claude-plugin/marketplace.json';
+            if ($this->writeDescriptor($descriptor, true)) {
+                $createdFiles[] = $descriptor;
+            }
+            $hookPath = $out . '/hooks/scripts/session-brief.sh';
+            $hookIsNew = !file_exists($hookPath);
+            if (@file_put_contents($hookPath, $hook) === false) {
+                throw new InvalidArgumentException(sprintf('Unable to write %s.', $hookPath));
+            }
+            if ($hookIsNew) {
+                $createdFiles[] = $hookPath;
+            }
+            if (!@chmod($hookPath, 0o755)) {
+                throw new InvalidArgumentException(sprintf('Unable to make %s executable.', $hookPath));
+            }
+        } catch (Throwable $error) {
+            $this->rollbackEmit($out, $existed, $createdDirectories, $createdFiles);
+            throw $error;
+        }
+
+        return $existed;
+    }
+
+    /**
+     * Read a file the plugin is assembled from, or say which one was missing.
+     *
+     * An unreadable source is reported by name because the two candidates,
+     * the local hook and the container template, are different installations'
+     * problems: one means a broken checkout, the other an image built without
+     * the container variant.
+     */
+    private function read(string $path): string
+    {
+        $contents = @file_get_contents($path);
+        if ($contents === false) {
+            throw new InvalidArgumentException(sprintf('Unable to read %s.', $path));
+        }
+
+        return $contents;
     }
 
     /**

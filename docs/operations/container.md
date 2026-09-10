@@ -108,9 +108,10 @@ Windows users must always set it. See `.env.example`.
 ## Agent orientation plugin for a containerised install
 
 `knossos install-agent-plugin` normally installs the
-[session brief](../features/session-brief.md) plugin by running
-`claude plugin marketplace add` against this checkout, which only works when
-`claude` can reach a local Knossos installation directly. That path does not
+[session brief](../features/session-brief.md) plugin by materialising a
+`.plugin/` directory beside this checkout and running
+`claude plugin marketplace add` against it, which only works when `claude`
+can reach a local Knossos installation directly. That path does not
 apply to a containerised install, so the same command has a second mode that
 emits a self-contained plugin directory instead of installing anything:
 
@@ -119,10 +120,11 @@ knossos install-agent-plugin --out=DIR --data=HOSTPATH [--image=NAME]
 ```
 
 - `--out=DIR` writes `.claude-plugin/`, `hooks/`, and `skills/` under `DIR`,
-  all-or-nothing: a failure partway through removes everything the command
-  created (or, if `DIR` already existed, only the files and directories this
-  call added), so a failed emit never leaves a directory that looks like a
-  working plugin but is missing pieces.
+  the same five files a local install materialises and differing only in the
+  hook script, all-or-nothing: a failure partway through removes everything
+  the command created (or, if `DIR` already existed, only the files and
+  directories this call added), so a failed emit never leaves a directory
+  that looks like a working plugin but is missing pieces.
 - `--data=HOSTPATH` is required. The process running `install-agent-plugin`
   is itself inside the container it is configuring, so it has no way to
   discover the host filesystem path of its own `/data` volume; nothing on
