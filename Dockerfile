@@ -87,6 +87,15 @@ COPY bin ./bin
 COPY src ./src
 COPY migrations ./migrations
 COPY schemas ./schemas
+# `install-agent-plugin` materialises the plugin out of the installation it is
+# run from, reading the manifest, the hook scripts and the skill as templates,
+# so an image without them ships a command that cannot do its job. The quality
+# stage shellchecks the hook scripts as well, and cannot see a file the image
+# does not carry. Keep this list in step with PluginCommand's MANIFEST and
+# COPIES, and with the scripts it reads by name.
+COPY .claude-plugin ./.claude-plugin
+COPY hooks ./hooks
+COPY skills ./skills
 RUN chmod 0755 \
     /opt/knossos/bin/knossos \
     /opt/knossos/workers/php/bin/worker \

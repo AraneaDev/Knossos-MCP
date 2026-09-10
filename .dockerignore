@@ -14,3 +14,25 @@ workers/rust/bin
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Local run output that .gitignore already keeps out of the repository. It has
+# to be kept out of the build context too, or a developer's leftovers change
+# what the image contains and the container stops answering the same question
+# CI does. cargo-mutants is the one that bites: it writes JSON that prettier
+# then reports as unformatted, so `tools/quality-container` fails for anyone
+# who has run mutation testing and passes for everyone else.
+.env
+.phpunit.cache
+.php-cs-fixer.cache
+.mypy_cache
+.ruff_cache
+__pycache__
+*.pyc
+workers/rust/mutants.out
+chaos-infection-log.json
+infection.args.log
+infection.out.log
+.audit-patches
+docs/audits
+.plugin
+.claude/settings.local.json
