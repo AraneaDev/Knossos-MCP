@@ -27,6 +27,31 @@ final class PluginCommand implements CliCommand
     private const SCOPES = ['user', 'project', 'local'];
     private const DEFAULT_IMAGE = 'knossos-mcp:dev';
 
+    /**
+     * The marketplace descriptor, byte for byte as an install needs it.
+     *
+     * Generated rather than committed. A copy of this file at the root of the
+     * public repository is what makes `claude plugin marketplace add
+     * AraneaDev/Knossos-MCP` resolve, and the clone it resolves to has no
+     * `vendor/`: its `bin/knossos` cannot run and the hook fails silent, so
+     * that install produces nothing, forever. Absent, the same command fails
+     * immediately with "Marketplace file not found", which is the whole point.
+     */
+    private const MARKETPLACE = <<<'JSON'
+        {
+          "name": "knossos",
+          "owner": { "name": "AraneaDev", "url": "https://github.com/AraneaDev" },
+          "description": "The labyrinth mapped once, so nobody has to wander it again.",
+          "plugins": [
+            {
+              "name": "knossos",
+              "source": "./",
+              "description": "Session-start architecture orientation, plus a skill for when to ask the graph."
+            }
+          ]
+        }
+        JSON . "\n";
+
     /** {@inheritDoc} */
     public function supports(string $command): bool
     {
@@ -70,6 +95,11 @@ final class PluginCommand implements CliCommand
             );
             return 0;
         }
+        // Only here, never on the preview path: a preview writes nothing at
+        // all. The descriptor is not in the repository, so the first command
+        // below would otherwise have nothing to resolve; this is the one place
+        // that knows the root is an installation which already runs the server.
+        $this->writeDescriptor($root . '/.claude-plugin/marketplace.json', false);
         foreach ($commands as $line) {
             $status = 0;
             passthru($line, $status);
@@ -128,7 +158,6 @@ final class PluginCommand implements CliCommand
             }
             $copies = [
                 '/.claude-plugin/plugin.json',
-                '/.claude-plugin/marketplace.json',
                 '/hooks/hooks.json',
                 '/skills/knossos/SKILL.md',
             ];
@@ -141,6 +170,14 @@ final class PluginCommand implements CliCommand
                 if ($isNew) {
                     $createdFiles[] = $target;
                 }
+            }
+            // Generated, not copied. The descriptor is not committed, so a
+            // fresh checkout legitimately has none to copy from, and an emit
+            // that depended on one would fail for the containerised install
+            // this mode exists to serve.
+            $descriptor = $out . '/.claude-plugin/marketplace.json';
+            if ($this->writeDescriptor($descriptor, true)) {
+                $createdFiles[] = $descriptor;
             }
             $template = (string) file_get_contents($root . '/hooks/scripts/session-brief-container.sh');
             $script = strtr($template, ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data]);
@@ -190,6 +227,32 @@ final class PluginCommand implements CliCommand
             $context->options->flag($options, 'json'),
             $message,
         );
+    }
+
+    /**
+     * Write the marketplace descriptor at $path, creating its directory.
+     *
+     * With $overwrite false an existing descriptor is left exactly as it is,
+     * because a checkout may carry a hand-edited one and an install is not the
+     * place to overwrite it. With $overwrite true the write is unconditional,
+     * matching what the copy() it replaced did to a `--out` target.
+     *
+     * @return bool whether the file did not exist before this call
+     */
+    private function writeDescriptor(string $path, bool $overwrite): bool
+    {
+        $isNew = !file_exists($path);
+        if (!$isNew && !$overwrite) {
+            return false;
+        }
+        $directory = dirname($path);
+        if (!is_dir($directory) && !@mkdir($directory, 0o755, true)) {
+            throw new InvalidArgumentException(sprintf('Unable to create %s.', $directory));
+        }
+        if (@file_put_contents($path, self::MARKETPLACE) === false) {
+            throw new InvalidArgumentException(sprintf('Unable to write %s.', $path));
+        }
+        return $isNew;
     }
 
     /**
