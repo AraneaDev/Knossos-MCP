@@ -42,6 +42,17 @@ final readonly class ReportableComponent
         'tooling.config',
     ];
 
+    /**
+     * Lifecycle methods a runtime calls, one per scanned language.
+     *
+     * Nothing in the graph references these: an object's construction and
+     * destruction are the runtime's, not a call site a maintainer wrote or
+     * could add. Counting them charges a budget that no amount of cleanup can
+     * pay down, which is the same reason {@see self::isExecutableScript()}
+     * exists for a script's module.
+     */
+    public const RUNTIME_LIFECYCLE_METHODS = ['__construct', '__destruct', 'constructor', '__init__', '__del__'];
+
     /** Vendor code and unresolved references: not this project's to delete or restructure. */
     public static function isExternal(string $kind, ?string $origin): bool
     {
@@ -115,8 +126,8 @@ final readonly class ReportableComponent
      * No call edge points at it even in code that constructs the type constantly,
      * so an unreferenced constructor is never evidence of dead code on its own.
      */
-    public static function isConstructor(string $kind, string $displayName): bool
+    public static function isRuntimeLifecycleMethod(string $kind, string $displayName): bool
     {
-        return $kind === 'method' && ($displayName === '__construct' || $displayName === 'constructor');
+        return $kind === 'method' && in_array($displayName, self::RUNTIME_LIFECYCLE_METHODS, true);
     }
 }

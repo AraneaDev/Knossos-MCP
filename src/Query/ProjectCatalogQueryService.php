@@ -655,6 +655,68 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         return $roles;
     }
 
+    /** Relationships by which a type takes on another type's members. */
+    private const CONTRACT_EDGE_KINDS = ['implements', 'extends', 'uses_trait'];
+
+    /**
+     * Whether a method is reached through a contract its type carries.
+     *
+     * A call to an interface method lands on the interface's declaration, so
+     * every implementation of it has an in-degree of zero however heavily the
+     * interface is used. `architecture_health` discounts these; counting them
+     * here charged the budget for every implementation of every interface,
+     * which no maintainer could pay down without deleting the contract.
+     *
+     * Gated on the declaring type being used for something other than being
+     * implemented, exactly as health gates it: when nothing else references
+     * the interface, the interface is the unit worth deleting and its members
+     * stay reportable.
+     *
+     * @param array<string, mixed> $node
+     * @param array<string, string> $declaringType
+     * @param array<string, list<string>> $contracts
+     * @param array<string, list<string>> $members
+     * @param array<string, string> $displayNames
+     * @param array<string, list<string>> $reverse
+     * @param array<string, int> $inheritanceInDegree
+     */
+    private function isContractMemberOfUsedType(
+        array $node,
+        array $declaringType,
+        array $contracts,
+        array $members,
+        array $displayNames,
+        array $reverse,
+        array $inheritanceInDegree,
+    ): bool {
+        if ($node['kind'] !== 'method') {
+            return false;
+        }
+        $owner = $declaringType[$node['id']] ?? null;
+        if ($owner === null) {
+            return false;
+        }
+        $name = (string) $node['display_name'];
+        foreach ($contracts[$owner] ?? [] as $contract) {
+            $declares = false;
+            foreach ($members[$contract] ?? [] as $member) {
+                if (($displayNames[$member] ?? null) === $name) {
+                    $declares = true;
+                    break;
+                }
+            }
+            if (!$declares) {
+                continue;
+            }
+            $uses = count($reverse[$contract] ?? []) - ($inheritanceInDegree[$contract] ?? 0);
+            if ($uses > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * The metrics the quality gate compares: cycles, violations, diagnostics, hub degree.
      *
@@ -677,14 +739,38 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         foreach (array_keys($nodes) as $id) {
             $adjacency[$id] = $reverse[$id] = [];
         }
+        // `contains` is not an impact relationship, so it never contributes a
+        // degree, but it is what says which type a method belongs to — needed
+        // below to tell a contract member from an orphan.
+        $members = $contracts = $inheritanceInDegree = [];
         foreach ($facts['edges'] ?? [] as $edge) {
-            if (!isset($nodes[$edge['source_id']], $nodes[$edge['target_id']]) || !in_array($edge['kind'], self::IMPACT_EDGE_KINDS, true)) {
+            if (!isset($nodes[$edge['source_id']], $nodes[$edge['target_id']])) {
+                continue;
+            }
+            if ($edge['kind'] === 'contains') {
+                $members[$edge['source_id']][] = $edge['target_id'];
+            }
+            if (in_array($edge['kind'], self::CONTRACT_EDGE_KINDS, true)) {
+                $contracts[$edge['source_id']][] = $edge['target_id'];
+                $inheritanceInDegree[$edge['target_id']] = ($inheritanceInDegree[$edge['target_id']] ?? 0) + 1;
+            }
+            if (!in_array($edge['kind'], self::IMPACT_EDGE_KINDS, true)) {
                 continue;
             }
             $adjacency[$edge['source_id']][] = $edge['target_id'];
             $reverse[$edge['target_id']][] = $edge['source_id'];
             ++$degree[$edge['source_id']];
             ++$degree[$edge['target_id']];
+        }
+        $declaringType = [];
+        foreach ($members as $type => $held) {
+            foreach ($held as $member) {
+                $declaringType[$member] = $type;
+            }
+        }
+        $displayNames = [];
+        foreach ($facts['nodes'] ?? [] as $node) {
+            $displayNames[$node['id']] = (string) $node['display_name'];
         }
         // Self-loops are ordinary recursion, not architectural cycles;
         // dependency_cycles excludes them by default, so mirror that here.
@@ -723,14 +809,18 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             if (!in_array($node['kind'], $candidateKinds, true)) {
                 continue;
             }
-            // A constructor, an executable script's module, a type declaration,
+            // A runtime-invoked lifecycle method, an executable script's module,
+            // a type declaration,
             // or a convention-discovered component has no inbound edge by
             // construction, so counting it would charge the budget for
             // something no maintainer can act on.
-            if (ReportableComponent::isConstructor((string) $node['kind'], (string) $node['display_name'])
+            if (ReportableComponent::isRuntimeLifecycleMethod((string) $node['kind'], (string) $node['display_name'])
                 || ReportableComponent::isExecutableScript((string) $node['kind'], $node['attributes_json'] ?? null)
                 || ReportableComponent::isTypeDeclaration($node['attributes_json'] ?? null)
                 || ReportableComponent::isDiscoveredByConvention($roles[$node['id']] ?? [])) {
+                continue;
+            }
+            if ($this->isContractMemberOfUsedType($node, $declaringType, $contracts, $members, $displayNames, $reverse, $inheritanceInDegree)) {
                 continue;
             }
             ++$unreferenced;
