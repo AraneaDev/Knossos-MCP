@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "knossos": {
-      "command": "tools/mcp-serve",
-      "args": ["--allow-root=."]
-    }
-  }
-}

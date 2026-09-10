@@ -70,31 +70,30 @@ volume, disable networking, and keep stdin open for MCP:
 
 ## Native stdio (repository checkout)
 
-A checked-in `.mcp.json` at the repository root registers the server for
-clients that read project-scoped configuration:
-
-```json
-{
-    "mcpServers": {
-        "knossos": {
-            "command": "php",
-            "args": ["bin/knossos", "serve", "--allow-root=."]
-        }
-    }
-}
-```
-
-Both paths are relative on purpose. `bin/knossos` and `--allow-root=.` resolve
-against the working directory the client launches the server in, so the file is
-valid on any checkout without editing. A client that launches the server
-somewhere unexpected fails immediately on the relative binary path rather than
-silently granting access to the wrong tree.
-
-For a client that configures servers imperatively instead:
+Register the server once, for your user, and let the roots file decide which
+projects it may read. `tools/install` does this for you: it creates the data
+directory (`~/.knossos` unless `KNOSSOS_DATA_DIR` says otherwise), seeds the
+roots file, and writes a registration that pins both paths.
 
 ```sh
-claude mcp add knossos -- php bin/knossos serve --allow-root=.
+claude mcp add knossos --scope user \
+    -e KNOSSOS_DATA_DIR="$HOME/.knossos" \
+    -e KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
+    -- /absolute/path/to/checkout/tools/mcp-serve
 ```
+
+The repository deliberately ships **no** `.mcp.json`. A project-scoped
+registration inherits no environment, so `tools/mcp-serve` falls back to
+`<checkout>/.knossos` and builds a second graph beside the installed one.
+Nothing warns about it: both servers answer, each from its own database, and
+the session brief reports whichever it reaches first by walking parent
+directories. One registration with an explicit data directory is what keeps
+every caller, the CLI included, on a single graph.
+
+That is also why the paths above are absolute where the old checked-in file
+used relative ones. A registration that resolves against the client's working
+directory is portable across checkouts and ambiguous about which graph it
+means; this one is neither.
 
 The allow-list is a security boundary, not a convenience. It is the only thing
 standing between the server and the rest of the filesystem, so at least one root
