@@ -24,9 +24,16 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         parent::__construct($pdo, $clock);
     }
 
-    /** Scanned projects with freshness and graph size, so a caller can pick the right project_id. */
-
-    public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
+    /**
+     * Scanned projects with freshness and graph size, so a caller can pick the right project_id.
+     *
+     * Every parameter is required. `ArchitectureQueryService::listProjects()` is
+     * the only caller and always passes all three, so defaults here were a
+     * second copy of values that already live on that facade: unreachable, and
+     * free to drift out of step with the ones callers actually get. The facade
+     * owns them.
+     */
+    public function listProjects(int $limit, int $offset, bool $includeRoots): ResultEnvelope
     {
         self::assertLimit($limit);
         if ($offset < 0 || $offset > 100_000) {

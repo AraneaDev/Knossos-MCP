@@ -283,6 +283,53 @@ final class QueryTest extends KnossosTestCase
         assertThrows(fn() => $queries->listProjects(limit: 101), InvalidArgumentException::class);
     }
 
+    /**
+     * The catalogue's offset guard is exact at both ends of its range.
+     *
+     * `offset < 0 || offset > 100_000` was only ever tested from well inside the
+     * range and with a clearly-negative value, so the upper comparison could
+     * become `>=` — rejecting the last legal offset — without failing anything.
+     * The documented range is 0 through 100000 inclusive.
+     */
+    #[Group('query')]
+    public function testTheCatalogueOffsetGuardAcceptsItsLastLegalValueAndRejectsTheNext(): void
+    {
+        [$pdo] = $this->storeFixture();
+        $queries = new ArchitectureQueryService($pdo);
+
+        assertSame([], $queries->listProjects(offset: 100_000)->data['projects']);
+        assertThrows(fn() => $queries->listProjects(offset: 100_001), InvalidArgumentException::class);
+    }
+
+    /**
+     * A no-argument catalogue call pages at 50 and hides absolute roots.
+     *
+     * These are the values every MCP and CLI caller gets when it asks for
+     * nothing, and the roots default is the one that matters: absolute paths on
+     * the host are withheld unless a caller explicitly opts in. Nothing pinned
+     * either — the fixture had a single project, so a default limit of 49 or 51
+     * returned the same one project, and no test compared a defaulted call
+     * against an explicit one.
+     */
+    #[Group('query')]
+    public function testTheCatalogueDefaultsPageAtFiftyAndWithholdRoots(): void
+    {
+        [$pdo, $repository] = $this->storeFixture();
+        for ($index = 0; $index < 51; ++$index) {
+            $repository->saveProject(StableId::project('bulk-' . $index), 'Bulk ' . $index, '/workspace/bulk-' . $index);
+        }
+        $queries = new ArchitectureQueryService($pdo);
+
+        $defaulted = $queries->listProjects();
+
+        assertSame(50, count($defaulted->data['projects']), 'The default page size is 50.');
+        assertSame(true, $defaulted->truncated);
+        assertSame(50, $defaulted->data['pagination']['next_offset'], 'A defaulted call starts at offset 0.');
+        foreach ($defaulted->data['projects'] as $project) {
+            assertSame(false, array_key_exists('root', $project), 'Absolute roots are withheld unless requested.');
+        }
+    }
+
     #[Group('query')]
     public function testComponentDossierCombinesIdentityContextRelationshipsAndAmbiguity(): void
     {
