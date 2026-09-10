@@ -2,6 +2,33 @@
 
 ## One installation, every project
 
+### One data directory
+
+`KNOSSOS_DATA_DIR` holds the graph database and the roots file. Pin it, in the
+MCP registration and in any shell you type `knossos` from. `tools/install`
+defaults it to `~/.knossos` and writes it into the registration it creates.
+
+Unpinned, it falls back to `<cwd>/.knossos`, and that fallback is per-caller.
+The consequences are quiet rather than loud:
+
+- Two servers, one registered with the variable and one without, build **two
+  graphs of the same project**. Both answer. Neither mentions the other.
+- `knossos` typed inside a project addresses `<project>/.knossos`, not the graph
+  the server reads, so a scan you just ran can leave the server's copy stale.
+- `knossos allow-root` writes the roots file beside whichever database it
+  derived, so a grant can land in a file the running server never reads. The
+  command says which file it wrote and whether the location was named or
+  derived; `server_info` reports the one actually in force.
+
+The fallback is deliberate, so that `knossos scan .` works on a fresh checkout
+with no configuration. It is only a hazard when a _server_ is also involved,
+which is exactly when the variable should be set.
+
+For the same reason this repository ships no `.mcp.json`. A project-scoped
+registration inherits no environment, so it would always be the unpinned case.
+
+### Granting projects
+
 The allow-list lives in a **roots file** that the server re-reads on every
 request, so granting another project needs no restart and no re-registration:
 
