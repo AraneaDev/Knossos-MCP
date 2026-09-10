@@ -6,46 +6,48 @@ covers it.
 
 ## Start here
 
-| Document                                                 | Read it for                                                       |
-| -------------------------------------------------------- | ----------------------------------------------------------------- |
-| [Installation](guides/installation.md)                   | Docker and native setup, MCP client registration, `--allow-root`. |
-| [Project configuration](guides/project-configuration.md) | `knossos.json` ignores, limits, boundaries, policies, budgets.    |
-| [Running in Docker](operations/container.md)             | Image guarantees, mounts, compose profiles.                       |
-| [CLI reference](reference/cli.md)                        | Generated command and option contract.                            |
-| [MCP tool reference](reference/mcp-tools.md)             | Generated tool schemas and annotations.                           |
+| Document                                                 | Read it for                                                      |
+| -------------------------------------------------------- | ---------------------------------------------------------------- |
+| [Installation](guides/installation.md)                   | Docker and native setup, MCP client registration, allowed roots. |
+| [MCP tool reference](reference/mcp-tools.md)             | All 33 tools: generated schemas, defaults, and annotations.      |
+| [CLI reference](reference/cli.md)                        | Generated command and option contract.                           |
+| [Project configuration](guides/project-configuration.md) | `knossos.json` ignores, limits, boundaries, policies, budgets.   |
+| [Running in Docker](operations/container.md)             | Image guarantees, mounts, compose profiles.                      |
+
+## Capabilities
+
+Each page covers one group of tools, in both its CLI and MCP form, with its
+limits stated. The groups match the tool tables in the
+[project README](../README.md#tools).
+
+- [Finding and reading components](capabilities/finding-components.md):
+  the project catalogue, component dossiers, usage sites, summaries,
+  boundaries, and diagram export.
+- [Structure analysis](capabilities/structure-analysis.md): impact analysis,
+  flow tracing, dependency cycles, architecture health, and where new code
+  belongs.
+- [Reviewing a change](capabilities/change-review.md): one-call review, plus
+  changed-file impact, test impact, and Git-weighted risk on their own.
+- [Declared rules and budgets](capabilities/architecture-rules.md): boundary
+  policies and reviewable regression gates.
+- [Scan history](capabilities/history.md): retained snapshots, architectural
+  changelogs, and trend metrics with release notes.
+- [Dead-code candidates](capabilities/dead-code-candidates.md): what
+  `architecture_health` reports as unreferenced, what it reports as reachable
+  only from tests, and everything it excludes first.
+- [Agent integration](capabilities/agent-integration.md): the paste-ready
+  orientation brief, task-shaped evidence bundles, and durable annotations.
+- [Session brief](capabilities/session-brief.md): the path-addressed,
+  five-state orientation text a Claude Code session sees at start.
 
 ## Guides
 
 - [Installation and MCP configuration](guides/installation.md)
 - [Checked-in project configuration](guides/project-configuration.md)
+- [The agent orientation plugin](guides/agent-plugin.md)
 - [CI and editor integration](guides/ci-editor-integration.md)
 - [Opt-in watch mode](guides/watch-mode.md)
 - [Portable graph bundles](guides/graph-bundles.md)
-
-## Capabilities
-
-Each page documents one query surface, its CLI and MCP forms, and its limits.
-
-- [Response envelopes](features/response-envelopes.md): the shared result shape, verbosity, size budgets, staleness, and next steps.
-- [Project catalogue](features/project-catalog.md): stable project IDs and freshness states.
-- [Component inspection](features/component-inspection.md): single-call component dossiers.
-- [List usages](features/list-usages.md): every call/reference site of a symbol with file:line evidence.
-- [Agent brief](features/agent-brief.md): a paste-ready markdown orientation brief for agent memory files.
-- [Session brief](features/session-brief.md): the path-addressed, five-state orientation text a Claude Code session sees at start, and the plugin that installs it.
-- [Architecture context](features/architecture-context.md): bounded task-oriented evidence bundles.
-- [Declared architecture policies](features/architecture-policies.md): boundary dependency rules.
-- [Architecture quality budgets](features/quality-budgets.md): reviewable regression gates.
-- [Review diff](features/review-diff.md): one-call architectural review of a change set.
-- [Architecture trends](features/architecture-trends.md): historical metrics and release notes.
-- [Retained snapshots](features/snapshots.md): immutable history across successful scans.
-- [Snapshot diff](features/snapshot-diff.md): evidence-backed architectural changelogs.
-- [Changed-file impact](features/changed-files-impact.md): explicit and Git-discovered change sets.
-- [Test impact](features/test-impact.md): test files that statically reach a change, ranked by distance.
-- [Git change signals](features/git-change-impact.md): time-aware, explicitly heuristic risk.
-- [Diagram source export](features/diagram-export.md): deterministic Mermaid and PlantUML.
-- [Semantic location ranking](features/semantic-ranking.md): optional, opt-in, with exact fallback.
-- [Component annotations](features/annotations.md): durable agent-written judgments that survive rescans.
-- [Dead-code candidates](features/dead-code-candidates.md): what `architecture_health` reports as unreferenced, what it reports as reachable only from tests, and everything it excludes first.
 
 ## Language and framework support
 
@@ -57,8 +59,11 @@ Each page documents one query surface, its CLI and MCP forms, and its limits.
 
 ## Reference
 
-- [CLI reference](reference/cli.md): generated from `bin/knossos help`.
 - [MCP tool reference](reference/mcp-tools.md): generated from live tool definitions.
+- [CLI reference](reference/cli.md): generated from `bin/knossos help`.
+- [Response envelopes](reference/response-envelopes.md): the shared result
+  shape every tool returns, plus verbosity, size budgets, staleness, and
+  next steps.
 - [Language API reference](reference/api.md): generated from enforced interface docblocks.
 - [Scanner worker protocol v1](reference/scanner-protocol-v1.md)
 - [Scanner and enricher SDK](reference/scanner-sdk.md)

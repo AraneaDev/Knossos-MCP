@@ -49,7 +49,7 @@ configuration change.
 The examples expect a checked-in `knossos-budgets.json`. Add
 `--policies=/workspace/architecture-policies.json` when the repository also has
 a checked-in policy file. See [architecture quality
-budgets](../features/quality-budgets.md) for both formats.
+budgets](../capabilities/architecture-rules.md#quality-budgets) for both formats.
 
 ## One-call alternative
 
@@ -58,7 +58,7 @@ get budget deltas and blast radius for a pull request. `review_diff` composes
 `changed_files_impact`, `check_architecture`, `quality_gate`, and
 `dependency_cycles` into a single result scoped to the changed components, so
 a CI review step or PR comment job can make one call instead of chaining four.
-It takes the same baseline and policy inputs. See [review diff](../features/review-diff.md).
+It takes the same baseline and policy inputs. See [review diff](../capabilities/change-review.md#review-diff).
 
 ## Ready-to-adapt recipes
 
