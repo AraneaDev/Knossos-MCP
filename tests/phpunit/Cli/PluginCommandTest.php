@@ -41,6 +41,64 @@ final class PluginCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testPreviewUnderJsonEmitsTheCommandsAsData(): void
+    {
+        // --json was accepted and ignored, so a script asking this command what
+        // it would run got a paragraph. The commands are the whole content of a
+        // preview, so they are the list: one element each, not one string a
+        // caller would have to split back apart.
+        ob_start();
+        $status = (new PluginCommand())->run('install-agent-plugin', [], ['json' => ['true']], $this->context());
+        $output = (string) ob_get_clean();
+
+        assertSame(0, $status);
+        $decoded = json_decode(trim($output), true, 8, JSON_THROW_ON_ERROR);
+        assertSame(true, is_array($decoded));
+        assertSame('user', $decoded['scope']);
+        assertSame(false, $decoded['executed']);
+        assertSame(true, $decoded['preview']);
+        assertSame(2, count($decoded['commands']));
+        assertSame(true, str_contains($decoded['commands'][0], 'claude plugin marketplace add'));
+        assertSame(true, str_contains($decoded['commands'][1], 'claude plugin install knossos@knossos'));
+        // Nothing but the object: prose alongside it is what a parser chokes on.
+        assertSame(false, str_contains($output, 'Preview only.'));
+    }
+
+    #[Group('cli')]
+    public function testContainerEmitUnderJsonNamesTheDirectoryAndItsFiles(): void
+    {
+        // The other half of the same gap. What a caller does next with an
+        // emitted plugin is copy, mount or checksum it, so the directory and
+        // the files now in it are what the object has to carry.
+        $out = sys_get_temp_dir() . '/knossos-plugin-' . bin2hex(random_bytes(4));
+
+        ob_start();
+        $status = (new PluginCommand())->run(
+            'install-agent-plugin',
+            [],
+            ['out' => [$out], 'data' => ['/srv/knossos-data'], 'json' => ['true']],
+            $this->context(),
+        );
+        $output = (string) ob_get_clean();
+
+        assertSame(0, $status);
+        $decoded = json_decode(trim($output), true, 8, JSON_THROW_ON_ERROR);
+        assertSame($out, $decoded['out']);
+        assertSame(false, $decoded['existed']);
+        assertSame('/srv/knossos-data', $decoded['data']);
+        assertSame(true, in_array('hooks/scripts/session-brief.sh', $decoded['files'], true));
+        assertSame(true, in_array('skills/knossos/SKILL.md', $decoded['files'], true));
+        // Every listed file is really there, so the list cannot drift from what
+        // emit() writes without this failing.
+        foreach ($decoded['files'] as $relative) {
+            assertSame(true, is_file($out . '/' . $relative));
+        }
+        assertSame(false, str_contains($output, 'Wrote a container plugin'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    #[Group('cli')]
     public function testContainerEmitRequiresTheHostDataPath(): void
     {
         // A process inside the container cannot discover the host path of its own

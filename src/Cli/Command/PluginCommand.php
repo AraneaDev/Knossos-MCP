@@ -56,9 +56,18 @@ final class PluginCommand implements CliCommand
             sprintf('claude plugin marketplace add %s --scope %s', escapeshellarg($root), $scope),
             sprintf('claude plugin install knossos@knossos --scope %s --yes', $scope),
         ];
+        $json = $context->options->flag($options, 'json');
         if (!$context->options->flag($options, 'execute')) {
-            echo implode(PHP_EOL, $commands) . PHP_EOL
-                . 'Preview only. Re-run with --execute to apply.' . PHP_EOL;
+            // The commands themselves, as a list, because that is the only
+            // thing a preview has to say and the only thing a caller could act
+            // on: a script that wants to run them, or check them, needs them
+            // one per element rather than glued into a paragraph it would have
+            // to parse back apart.
+            $context->output(
+                ['scope' => $scope, 'commands' => $commands, 'executed' => false, 'preview' => true],
+                $json,
+                implode(PHP_EOL, $commands) . PHP_EOL . 'Preview only. Re-run with --execute to apply.',
+            );
             return 0;
         }
         foreach ($commands as $line) {
@@ -68,6 +77,17 @@ final class PluginCommand implements CliCommand
                 throw new InvalidArgumentException(sprintf('Command failed (exit %d): %s', $status, $line));
             }
         }
+        // After passthru(), not instead of it. The installer writes to the
+        // inherited streams as it runs, so under --json its own output has
+        // already gone to STDOUT and this object cannot be the whole of what a
+        // caller reads. It is still worth emitting: it is the machine-readable
+        // record of what was run, on the last line, where a caller that keeps
+        // only the tail finds it.
+        $context->output(
+            ['scope' => $scope, 'commands' => $commands, 'executed' => true],
+            $json,
+            'Installed the plugin.',
+        );
         return 0;
     }
 
@@ -147,7 +167,29 @@ final class PluginCommand implements CliCommand
             $message .= PHP_EOL . '--out writes directly; --execute is not needed here and was ignored.';
         }
         $message .= PHP_EOL . sprintf('Install it with: claude plugin marketplace add %s --scope user', escapeshellarg($out));
-        echo $message . PHP_EOL;
+        // The directory and what is now in it, relative to that directory: a
+        // caller that wants to copy, mount or checksum the emitted plugin needs
+        // the file list, and absolute paths would only repeat the prefix it
+        // already has. `existed` is reported because it is the one fact the
+        // prose carries that changes what the caller wrote to: an emit into an
+        // existing directory replaced files that were already there.
+        $context->output(
+            [
+                'out' => $out,
+                'existed' => $existed,
+                'image' => $image,
+                'data' => $data,
+                'files' => [
+                    '.claude-plugin/plugin.json',
+                    '.claude-plugin/marketplace.json',
+                    'hooks/hooks.json',
+                    'hooks/scripts/session-brief.sh',
+                    'skills/knossos/SKILL.md',
+                ],
+            ],
+            $context->options->flag($options, 'json'),
+            $message,
+        );
     }
 
     /**
