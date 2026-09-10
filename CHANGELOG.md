@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.14.0...v0.14.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* **ci:** give the gate lane history in the release run, and never self-baseline ([#71](https://github.com/AraneaDev/Knossos-MCP/issues/71)) ([9a45ae6](https://github.com/AraneaDev/Knossos-MCP/commit/9a45ae637c196bab92fd01cd30c42f13e3912907))
+
 ## [0.14.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.13.1...v0.14.0) (2026-09-10)
 
 
