@@ -216,6 +216,12 @@ impl Walk<'_> {
             }
             Item::Fn(node) => {
                 let name = node.sig.ident.to_string();
+                // A harness-invoked test has no caller in the graph, the same
+                // way a cfg(test) module has none.
+                let is_test = is_test_attribute(&node.attrs);
+                if is_test {
+                    self.facts.enter_test_scope();
+                }
                 let canonical =
                     self.declare(container, container_kind, &name, "function", item.span());
                 // A crate-root `fn main` is what the runtime invokes — nothing
@@ -226,6 +232,9 @@ impl Walk<'_> {
                 }
                 self.attribute_routes(&canonical, &node.attrs);
                 self.walk_body(&reference("function", &canonical), container, &node.block);
+                if is_test {
+                    self.facts.exit_test_scope();
+                }
             }
             Item::Trait(node) => {
                 let canonical = self.declare(
@@ -356,10 +365,19 @@ impl Walk<'_> {
         span: proc_macro2::Span,
     ) {
         let canonical = format!("{container}::{}", node.ident);
+        // The whole subtree compiles only under cfg(test), so the mark covers
+        // the module node and every item it holds, helpers included.
+        let is_test = is_cfg_test(&node.attrs);
+        if is_test {
+            self.facts.enter_test_scope();
+        }
         if let Some((_, items)) = &node.content {
             self.facts
                 .node("module", &canonical, &node.ident.to_string(), span, span);
             self.walk_items(&canonical, "module", items);
+        }
+        if is_test {
+            self.facts.exit_test_scope();
         }
         self.facts.edge(
             "contains",
@@ -695,6 +713,39 @@ impl Walk<'_> {
     }
 }
 
+/// Whether an attribute list carries `#[cfg(test)]`.
+///
+/// Matched on the `test` ident anywhere inside the `cfg(..)` tokens, so
+/// `cfg(all(test, feature = "x"))` counts too. A false positive here costs a
+/// symbol its place in the dead-code budget; a false negative puts test code
+/// back in it, which is the failure this exists to prevent.
+fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr.meta.require_list().is_ok_and(|list| {
+                list.tokens.clone().into_iter().any(|token| {
+                    matches!(
+                        token,
+                        proc_macro2::TokenTree::Ident(ref ident) if ident == "test"
+                    ) || token.to_string().contains("test")
+                })
+            })
+    })
+}
+
+/// Whether an attribute list marks a test function.
+///
+/// Covers the bare `#[test]` and the framework spellings that wrap it
+/// (`#[tokio::test]`, `#[async_std::test]`), which all end in a `test` segment.
+fn is_test_attribute(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path()
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "test")
+    })
+}
+
 /// The first string-literal argument of an attribute, `"/path"` of
 /// `#[get("/path", rank = 1)]`, or `None` when the list does not open with
 /// one (a variable, a macro — anything the worker cannot prove static).
@@ -755,6 +806,27 @@ pub fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations
             Item::Union(node) => record(out, module, &node.ident.to_string()),
             Item::Trait(node) => record(out, module, &node.ident.to_string()),
             Item::Fn(node) => record(out, module, &node.sig.ident.to_string()),
+            Item::Impl(node) => {
+                // A method is declared in an `impl` block rather than beside
+                // its type, so indexing only top-level items left every method
+                // unresolvable: a call to one could never be vouched for, and
+                // the method read as uncalled however many callers it had.
+                //
+                // Only an unqualified `impl Type` is indexed. A qualified
+                // target (`impl crate::facts::Facts`) names a type this module
+                // may not own, and an index hit is trusted outright — so
+                // guessing `{module}::Facts` there would vouch for a path that
+                // does not exist. The walk resolves those through `use`
+                // aliases, which this collector does not have.
+                if let Some(name) = impl_target_name(&node.self_ty) {
+                    let owner = format!("{module}::{name}");
+                    for member in &node.items {
+                        if let syn::ImplItem::Fn(method) = member {
+                            record(out, &owner, &method.sig.ident.to_string());
+                        }
+                    }
+                }
+            }
             Item::Mod(node) => {
                 if let Some((_, inner)) = &node.content {
                     let nested = format!("{module}::{}", node.ident);
@@ -764,6 +836,26 @@ pub fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations
             _ => {}
         }
     }
+}
+
+/// The bare type name of an `impl` block's target, or `None` when the target
+/// is anything this collector cannot place from the module path alone.
+///
+/// Deliberately narrow: one path segment, no leading `::`. Generic arguments
+/// on that segment are fine (`impl Walk<'_>` is still `Walk`), because they do
+/// not change which type is being implemented.
+fn impl_target_name(ty: &Type) -> Option<String> {
+    let Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.leading_colon.is_some() || path.path.segments.len() != 1 {
+        return None;
+    }
+
+    path.path
+        .segments
+        .last()
+        .map(|segment| segment.ident.to_string())
 }
 
 /// Bump one canonical path's count in the declaration index.
@@ -1099,7 +1191,100 @@ fn call_kind(canonical: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::call_kind;
+    use super::{call_kind, collect_declarations, walk, Declarations};
+    use crate::facts::Facts;
+
+    /// A method lives in an `impl` block, not beside the type, so a collector
+    /// that walks only top-level items never indexes one. Nothing in the crate
+    /// can then resolve a call to it, and every method reads as uncalled
+    /// however many call sites it really has.
+    #[test]
+    fn impl_block_methods_enter_the_declaration_index() {
+        let file: syn::File =
+            syn::parse_str("struct Facts;\nimpl Facts {\n    fn new() -> Self { Facts }\n}")
+                .expect("parses");
+        let mut declarations = Declarations::new();
+
+        collect_declarations("crate::facts", &file.items, &mut declarations);
+
+        assert_eq!(Some(&1), declarations.get("crate::facts::Facts"));
+        assert_eq!(Some(&1), declarations.get("crate::facts::Facts::new"));
+    }
+
+    /// Trait impls declare methods on the type too, so they belong in the
+    /// index on the same terms.
+    #[test]
+    fn trait_impl_methods_enter_the_declaration_index() {
+        let file: syn::File = syn::parse_str(
+            "struct Walk;\ntrait Render { fn render(&self); }\nimpl Render for Walk {\n    fn render(&self) {}\n}",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+
+        collect_declarations("crate::visit", &file.items, &mut declarations);
+
+        assert_eq!(Some(&1), declarations.get("crate::visit::Walk::render"));
+    }
+
+    /// The behaviour the index exists for: a call to an impl method becomes a
+    /// real `calls` edge instead of being dropped as unconfirmable.
+    #[test]
+    fn a_call_to_an_impl_method_becomes_an_edge() {
+        let file: syn::File = syn::parse_str(
+            "struct Facts;\nimpl Facts {\n    fn new() -> Self { Facts }\n}\nfn build() { let _ = Facts::new(); }",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        collect_declarations("crate", &file.items, &mut declarations);
+        let mut facts = Facts::new("src/lib.rs");
+
+        walk(&mut facts, "crate", &file, &[], &declarations);
+
+        let contribution = facts.finish();
+        assert!(
+            contribution
+                .edges
+                .iter()
+                .any(|edge| edge.kind == "calls" && edge.target == "rust:method:crate::Facts::new"),
+            "no calls edge reached Facts::new; edges were {:?}",
+            contribution
+                .edges
+                .iter()
+                .map(|edge| format!("{} -> {}", edge.kind, edge.target))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Rust keeps its tests beside the code they cover, so a path-based test
+    /// convention cannot see them. Without a mark from the scanner every
+    /// `#[test]` fn reads as an unreferenced production symbol: nothing calls
+    /// it, because the harness invokes it.
+    #[test]
+    fn items_under_cfg_test_carry_the_test_attribute() {
+        let file: syn::File = syn::parse_str(
+            "#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_works() {}\n    fn helper() {}\n}\nfn production() {}",
+        )
+        .expect("parses");
+        let mut facts = Facts::new("src/lib.rs");
+        walk(&mut facts, "crate", &file, &[], &Declarations::new());
+        let contribution = facts.finish();
+        let marked = |name: &str| {
+            contribution
+                .nodes
+                .iter()
+                .find(|node| node.canonical_name == name)
+                .unwrap_or_else(|| panic!("no node named {name}"))
+                .attributes
+                .contains_key("test")
+        };
+
+        assert!(marked("crate::tests"), "the cfg(test) module itself");
+        assert!(marked("crate::tests::it_works"), "the #[test] fn");
+        // A plain helper inside the test module is test code too: the whole
+        // subtree is compiled only under cfg(test).
+        assert!(marked("crate::tests::helper"), "a helper inside it");
+        assert!(!marked("crate::production"), "production code must not be");
+    }
 
     #[test]
     fn a_snake_case_owner_segment_guesses_a_free_function() {

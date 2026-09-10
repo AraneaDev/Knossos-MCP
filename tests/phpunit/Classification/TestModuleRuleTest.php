@@ -326,7 +326,29 @@ final class TestModuleRuleTest extends TestCase
 
     // ----- helpers -----
 
-    private function makeNode(string $relativePath): NodeFact
+    /**
+     * Rust keeps `#[cfg(test)] mod tests` in the same file as the code it
+     * covers, so the path convention cannot see it. The Rust worker marks
+     * those nodes instead, and the rule has to honour the mark or every
+     * `#[test]` fn stays an unreferenced production symbol.
+     */
+    public function testClassifyTagsANodeTheScannerMarkedAsTestCode(): void
+    {
+        $node = $this->makeNode('workers/rust/src/resolve.rs', ['test' => true]);
+
+        $facts = (new TestModuleRule())->classify($node);
+
+        assertSame(1, count($facts));
+        assertSame(TestModuleRule::ROLE, $facts[0]->role);
+    }
+
+    public function testClassifyIgnoresAFalseScannerTestMark(): void
+    {
+        assertSame([], (new TestModuleRule())->classify($this->makeNode('workers/rust/src/resolve.rs', ['test' => false])));
+    }
+
+    /** @param array<string, scalar|null|array<mixed>> $attributes */
+    private function makeNode(string $relativePath, array $attributes = []): NodeFact
     {
         return new NodeFact(
             'file:' . $relativePath,
@@ -336,7 +358,7 @@ final class TestModuleRuleTest extends TestCase
             Origin::Ast,
             Confidence::Certain,
             new Evidence($relativePath, 1, 10),
-            [],
+            $attributes,
         );
     }
 }

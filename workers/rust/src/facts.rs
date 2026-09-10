@@ -58,6 +58,11 @@ pub struct Facts {
     /// when the value is derived at the end of the walk (a file's
     /// `executable` flag lands on its module node).
     pending_attributes: Vec<(String, String, Value)>,
+    /// How many enclosing `#[cfg(test)]` scopes the walk is inside. Rust keeps
+    /// its tests in the same file as the code under test, so a path convention
+    /// cannot recognise them; every node emitted while this is non-zero is
+    /// marked test code instead.
+    test_scope: usize,
     /// Whether this file's crate-root module is an executable target — it
     /// declares a top-level `fn main`, or (for an extensionless script) a
     /// shebang. Applied to the module node in `finish()`.
@@ -78,6 +83,7 @@ impl Facts {
             external: HashSet::new(),
             pending_attributes: Vec::new(),
             executable: false,
+            test_scope: 0,
         }
     }
 
@@ -114,9 +120,29 @@ impl Facts {
             origin: "ast",
             confidence: "certain",
             evidence,
-            attributes: BTreeMap::new(),
+            attributes: self.scope_attributes(),
         });
         self.declared.insert(local_id);
+    }
+
+    /// Enter a `#[cfg(test)]` scope; nodes emitted until the matching
+    /// [`Facts::exit_test_scope`] are marked as test code.
+    pub fn enter_test_scope(&mut self) {
+        self.test_scope += 1;
+    }
+
+    /// Leave the innermost `#[cfg(test)]` scope.
+    pub fn exit_test_scope(&mut self) {
+        self.test_scope = self.test_scope.saturating_sub(1);
+    }
+
+    /// The attributes every node emitted at the current scope carries.
+    fn scope_attributes(&self) -> BTreeMap<String, Value> {
+        let mut attributes = BTreeMap::new();
+        if self.test_scope > 0 {
+            attributes.insert("test".to_owned(), Value::Bool(true));
+        }
+        attributes
     }
 
     /// Record one declared symbol with attributes.
@@ -134,6 +160,9 @@ impl Facts {
     ) {
         let local_id = reference(kind, canonical);
         let evidence = self.evidence(start, end);
+        // Scope marks first, so an explicit attribute of the same name wins.
+        let mut merged = self.scope_attributes();
+        merged.extend(attributes);
         self.nodes.push(Node {
             local_id: local_id.clone(),
             kind: kind.to_owned(),
@@ -142,7 +171,7 @@ impl Facts {
             origin: "ast",
             confidence: "certain",
             evidence,
-            attributes,
+            attributes: merged,
         });
         self.declared.insert(local_id);
     }
