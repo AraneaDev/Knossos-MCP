@@ -780,17 +780,36 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $fromCandidates = $this->resolve($projectId, $from);
         $toCandidates = $this->resolve($projectId, $to);
         if (count($fromCandidates) !== 1 || count($toCandidates) !== 1) {
+            // Name the endpoint that failed, and say which way it failed: with two
+            // endpoints, "one unambiguous component each" leaves a caller guessing
+            // both which end to fix and whether to search for it or narrow it.
+            $unmatched = [];
+            if ($fromCandidates === []) {
+                $unmatched[] = $from;
+            }
+            if ($toCandidates === []) {
+                $unmatched[] = $to;
+            }
+            $warnings = [];
+            if ($unmatched !== []) {
+                $warnings[] = self::UNMATCHED_ADVICE;
+            }
+            if (count($fromCandidates) > 1 || count($toCandidates) > 1) {
+                $warnings[] = self::AMBIGUOUS_ADVICE;
+            }
             return new ResultEnvelope(
                 $projectId,
                 $project['active_scan_id'],
-                'Flow endpoints require one unambiguous component each.',
+                $unmatched === []
+                    ? 'Flow endpoints require one unambiguous component each.'
+                    : sprintf('No component matched %s.', implode(' or ', array_map(static fn(string $name): string => sprintf('"%s"', $name), $unmatched))),
                 [
                     'from' => ['query' => $from, 'candidates' => $fromCandidates],
                     'to' => ['query' => $to, 'candidates' => $toCandidates],
                     'paths' => [],
                 ],
                 [],
-                ['Use a returned stable component ID to disambiguate the request.'],
+                $warnings,
             );
         }
         $source = $fromCandidates[0];
@@ -934,10 +953,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             return new ResultEnvelope(
                 $projectId,
                 $project['active_scan_id'],
-                'Impact analysis requires one unambiguous component.',
+                $candidates === [] ? sprintf('No component matched "%s".', $symbol) : 'Impact analysis requires one unambiguous component.',
                 ['query' => $symbol, 'candidates' => $candidates, 'dependants' => [], 'counts' => ['by_distance' => [], 'by_confidence' => ['certain' => 0, 'probable' => 0, 'possible' => 0]], 'entry_points' => []],
                 [],
-                ['Use a returned stable component ID to disambiguate the request.'],
+                [$candidates === [] ? self::UNMATCHED_ADVICE : self::AMBIGUOUS_ADVICE],
             );
         }
         $target = $candidates[0];

@@ -54,11 +54,15 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         $impact = $this->topologyQueries->impactAnalysis($projectId, $symbol, $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs);
         $target = $impact->data['target'] ?? null;
         if (!is_array($target)) {
+            // Carry through which failure the underlying resolution hit, so the
+            // machine-readable reason does not report ambiguity for a name that
+            // matched nothing.
+            $unmatched = ($impact->data['candidates'] ?? null) === [];
             return new ResultEnvelope(
                 $projectId,
                 $project['active_scan_id'],
-                'Change-aware impact requires one unambiguous component.',
-                ['impact' => $impact->data, 'git' => ['available' => false, 'reason' => 'ambiguous_target'], 'risk_ranking' => []],
+                $unmatched ? sprintf('No component matched "%s".', $symbol) : 'Change-aware impact requires one unambiguous component.',
+                ['impact' => $impact->data, 'git' => ['available' => false, 'reason' => $unmatched ? 'unmatched_target' : 'ambiguous_target'], 'risk_ranking' => []],
                 $impact->evidence,
                 $impact->warnings,
                 $impact->truncated,

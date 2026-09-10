@@ -103,4 +103,41 @@ final class ImpactTest extends KnossosTestCase
         assertSame(0, $timed->data['bounds']['visited_states']);
         assertSame('time_limit', $timed->data['bounds']['truncation_reason']);
     }
+
+    /**
+     * A name that matches nothing is a different failure from a name that matches
+     * several. Only the second one has candidates to choose between, so only the
+     * second one can be answered by picking a stable ID; telling a caller to
+     * disambiguate an unmatched name sends them after an id that does not exist.
+     */
+    #[Group('impact')]
+    public function testImpactReportsAnUnmatchedNameAsUnmatchedRatherThanAmbiguous(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        // A second InvoiceService makes that short name genuinely ambiguous, so the
+        // two failure modes can be compared against the same graph.
+        $billing = StableId::symbol($ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService');
+        $repository->saveNode($billing, $ids['project'], 'php', 'class', 'App\\Billing\\InvoiceService', 'InvoiceService', null, $ids['file'], 50, 60, 'ast', 'certain', [], 'php:file:src/Billing/InvoiceService.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $query = new ArchitectureQueryService($pdo);
+
+        $missing = $query->impactAnalysis($ids['project'], 'NoSuchService');
+        assertSame([], $missing->data['candidates']);
+        assertContains('No component matched "NoSuchService"', $missing->summary);
+        assertSame([], array_values(array_filter(
+            $missing->warnings,
+            static fn(string $warning): bool => str_contains($warning, 'disambiguate'),
+        )));
+
+        // The ambiguous case keeps the advice that is actionable there.
+        $ambiguous = $query->impactAnalysis($ids['project'], 'InvoiceService');
+        assertSame(2, count($ambiguous->data['candidates']));
+        assertContains('ambiguous', $ambiguous->summary);
+        assertArrayContains('Use a returned stable component ID to disambiguate the request.', $ambiguous->warnings);
+
+        // change_impact reports the same distinction it inherits from impact.
+        $missingChange = $query->changeImpact($ids['project'], 'NoSuchService');
+        assertContains('No component matched "NoSuchService"', $missingChange->summary);
+        assertContains('ambiguous', $query->changeImpact($ids['project'], 'InvoiceService')->summary);
+    }
 }
