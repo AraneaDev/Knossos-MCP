@@ -15,13 +15,16 @@ use Throwable;
 /**
  * Direct tests for the four nano marker-class exception declarations in
  * src/:
- *   - Knossos\Discovery\DiscoveryException        (9 LoC, final)
+ *   - Knossos\Discovery\DiscoveryException        (non-final; see below)
  *   - Knossos\Reconciliation\ReconciliationException (9 LoC, final)
  *   - Knossos\Scan\ScanBusyException              (9 LoC, final)
  *   - Knossos\Scan\ScanCancelledException         (9 LoC, final)
  *
- * Each source file is just `final class X extends RuntimeException {}` —
- * no body, no constructor override. PHPUnit green + 100% line coverage is
+ * Each source file is just `class X extends RuntimeException {}` — no body,
+ * no constructor override. Three of the four are final; DiscoveryException is
+ * not, because {@see \Knossos\Discovery\RootNotFoundException} narrows it so
+ * that a caller can tell a missing directory from one outside the allow-list
+ * while every existing `catch (DiscoveryException)` keeps working unchanged. PHPUnit green + 100% line coverage is
  * the determinable ground truth because the engine MSI is structurally 0
  * mutants for empty class declarations (Infection 0.31.9 cannot produce
  * mutations against a body that has no executable lines).

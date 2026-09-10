@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Discovery;
 
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\RootGuard;
+use Knossos\Discovery\RootNotFoundException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -78,6 +79,52 @@ final class RootGuardTest extends TestCase
         );
 
         $this->assertStringStartsWith('Project root does not exist or is not a directory:', $error->getMessage());
+        unlink($file);
+    }
+
+    public function testTheTwoRefusalsAreDistinguishableByTypeWithoutBreakingTheOldCatch(): void
+    {
+        // A caller that offers `knossos allow-root` as the remedy has to know
+        // which refusal it got: adding a root fixes the second and can do
+        // nothing about the first. The narrower type is a subclass, so every
+        // existing `catch (DiscoveryException)` in the codebase keeps catching
+        // both, which is what makes this safe to introduce at all. Both halves
+        // are asserted here, since the subclass relation is the whole load-
+        // bearing claim.
+        $allowed = $this->makeTempDir();
+        $outside = $this->makeTempDir();
+        $guard = new RootGuard(allowedRoots: [$allowed]);
+
+        $absent = captureThrows(
+            static fn () => $guard->resolve($allowed . '/knossos-nonexistent'),
+            RootNotFoundException::class,
+        );
+        $rejected = captureThrows(
+            static fn () => $guard->resolve($outside),
+            DiscoveryException::class,
+        );
+
+        self::assertInstanceOf(DiscoveryException::class, $absent);
+        assertSame(DiscoveryException::class, $rejected::class);
+        assertSame(false, $rejected instanceof RootNotFoundException);
+        rmdir($allowed);
+        rmdir($outside);
+    }
+
+    public function testExistsAnswersTheSameQuestionResolveAsksFirst(): void
+    {
+        // Exposed for callers with no allow-list to consult, so they can tell
+        // "no such directory" from "outside every root" without writing their
+        // own realpath()-plus-is_dir() that could drift from this one.
+        $this->tempDir = $this->makeTempDir();
+        $file = $this->tempDir . '/file.txt';
+        file_put_contents($file, 'x');
+
+        assertSame(true, RootGuard::exists($this->tempDir));
+        assertSame(false, RootGuard::exists($this->tempDir . '/knossos-nonexistent'));
+        // A file is not a directory, and resolve() refuses it for that reason;
+        // exists() has to agree or the two would disagree on one path.
+        assertSame(false, RootGuard::exists($file));
         unlink($file);
     }
 

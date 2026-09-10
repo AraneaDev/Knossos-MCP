@@ -13,6 +13,12 @@ namespace Knossos\Discovery;
  * skipped rather than vetoing every later root, and a rejection explains which
  * roots are in force and where to add another, because a caller told only "no" can
  * do nothing but guess.
+ *
+ * The two ways a path can be refused are separate types, not one message a
+ * caller would have to match on: a path that is not there at all raises
+ * {@see RootNotFoundException}, a path outside every root raises
+ * {@see DiscoveryException} itself. Only the second is fixed by granting a
+ * root, so anything that offers that remedy has to be able to tell them apart.
  */
 final readonly class RootGuard
 {
@@ -27,12 +33,11 @@ final readonly class RootGuard
 
     public function resolve(string $requestedRoot): string
     {
-        $root = realpath($requestedRoot);
-        if ($root === false || !is_dir($root)) {
-            throw new DiscoveryException(sprintf('Project root does not exist or is not a directory: %s', $requestedRoot));
+        if (!self::exists($requestedRoot)) {
+            throw new RootNotFoundException(sprintf('Project root does not exist or is not a directory: %s', $requestedRoot));
         }
 
-        $root = self::normalize($root);
+        $root = self::normalize((string) realpath($requestedRoot));
         $allowedRoots = $this->roots->current();
         foreach ($allowedRoots as $allowedRoot) {
             $allowed = realpath($allowedRoot);
@@ -74,6 +79,22 @@ final readonly class RootGuard
         }
 
         return $message;
+    }
+
+    /**
+     * Whether a requested root is a directory this process can reach at all.
+     *
+     * The same test {@see resolve()} applies before it considers containment,
+     * exposed so a caller with no allow-list to consult can still tell "no such
+     * directory" from "outside every root" without writing its own
+     * realpath()-plus-is_dir() and drifting from this one. resolve() calls it
+     * rather than repeating it, so the two cannot disagree.
+     */
+    public static function exists(string $requestedRoot): bool
+    {
+        $root = realpath($requestedRoot);
+
+        return $root !== false && is_dir($root);
     }
 
     /** Whether the server runs inside a container, where host paths are not its paths. */
