@@ -88,11 +88,14 @@ final class RepositoryCheckTest extends KnossosTestCase
             self::markTestSkipped('Running as root; an unreadable directory is still readable.');
         }
         $root = self::repositoryRoot();
-        $unreadable = $root . '/coverage/repository-check-unreadable';
+        // Unique per run: a fixed name that already existed would be adopted by
+        // the creation guard below and then deleted in the finally block, so a
+        // failed earlier run could make this test destroy someone's directory.
+        $unreadable = $root . '/coverage/repository-check-unreadable-' . bin2hex(random_bytes(6));
         if (!is_dir($root . '/coverage') && !@mkdir($root . '/coverage', 0o755, true) && !is_dir($root . '/coverage')) {
             self::markTestSkipped('coverage/ cannot be created here.');
         }
-        if (!@mkdir($unreadable, 0o700) && !is_dir($unreadable)) {
+        if (!@mkdir($unreadable, 0o700)) {
             self::markTestSkipped('the fixture directory cannot be created here.');
         }
 

@@ -121,6 +121,25 @@ final readonly class ReportableComponent
     }
 
     /**
+     * A member a language runtime invokes, marked as such by the scanner.
+     *
+     * Rust calls `Drop::drop` during destruction, so no call site names it and
+     * the graph shows it unreferenced however heavily its type is used. The
+     * name alone cannot carry that: an inherent method called `drop` is an
+     * ordinary method with ordinary callers, and excluding every `drop` would
+     * hide a genuinely dead one. Only the scanner knows which is which, so it
+     * says so on the node and this reads the mark.
+     */
+    public static function isRuntimeInvoked(mixed $attributesJson): bool
+    {
+        if (!is_string($attributesJson)) {
+            return false;
+        }
+        $decoded = json_decode($attributesJson, true);
+        return is_array($decoded) && ($decoded['runtime_invoked'] ?? false) === true;
+    }
+
+    /**
      * A constructor, which the engine invokes through `new` on the declaring type.
      *
      * No call edge points at it even in code that constructs the type constantly,

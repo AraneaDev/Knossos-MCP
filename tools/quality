@@ -277,7 +277,13 @@ if [ "$profile" = "full" ] && in_lane gate; then
     gate_scan() {
         rm -rf "$gate_dir/tree"
         mkdir -p "$gate_dir/tree"
-        git -C "$gate_repo" archive "$1" | tar -x -C "$gate_dir/tree"
+        # Written to a file, not piped. A pipeline's status is its LAST
+        # command's, so `git archive ... | tar -x` reports tar's success even
+        # when the archive failed halfway, and `set -e` lets the gate go on to
+        # scan a partial tree and compare against nonsense.
+        git -C "$gate_repo" archive --format=tar -o "$gate_dir/tree.tar" "$1"
+        tar -xf "$gate_dir/tree.tar" -C "$gate_dir/tree"
+        rm -f "$gate_dir/tree.tar"
         KNOSSOS_DATA_DIR="$gate_dir" php -d memory_limit=512M "$root/bin/knossos" \
             scan "$gate_dir/tree" --mode=full --json > "$2"
     }

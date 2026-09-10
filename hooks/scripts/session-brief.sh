@@ -27,7 +27,10 @@ find_knossos() {
         command -v knossos
         return 0
     fi
-    for candidate in "$PROJECT_DIR/bin/knossos" "$HOME/.local/bin/knossos" /usr/local/bin/knossos; do
+    # HOME is expanded only when it is set: this script runs under `set -u`,
+    # and a bare $HOME with HOME unset makes the shell print a diagnostic on
+    # stderr, which a hook promising silence must not do.
+    for candidate in "$PROJECT_DIR/bin/knossos" "${HOME:+$HOME/.local/bin/knossos}" /usr/local/bin/knossos; do
         if [ -x "$candidate" ]; then
             printf '%s' "$candidate"
             return 0

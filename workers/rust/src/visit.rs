@@ -4,7 +4,7 @@
 //! `syn::visit::Visit`, because every node needs the canonical path of its
 //! parent and a visitor's callbacks do not carry one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use syn::spanned::Spanned;
 use syn::visit::Visit;
@@ -19,6 +19,15 @@ use crate::resolve::{flatten_use, parent_module, rebase, Aliases};
 /// child-module call resolve to its real target. A count above one means the
 /// name is ambiguous across the batch and must not be trusted.
 pub type Declarations = BTreeMap<String, usize>;
+
+/// Canonical paths of modules the crate declared `#[cfg(test)] mod name;`
+/// without a body, so the module lives in its own file.
+///
+/// Rust compiles that file only under `cfg(test)`, but the file is scanned as
+/// its own contribution and carries no attribute saying so. The declaring
+/// file is the only place the fact exists, so it is collected there and
+/// handed to the walk of every file in the request.
+pub type TestModules = BTreeSet<String>;
 
 /// One route fact discovered while walking, emitted after the walk.
 ///
@@ -72,7 +81,15 @@ pub fn walk(
     file: &syn::File,
     frameworks: &[String],
     declarations: &Declarations,
+    test_modules: &TestModules,
 ) {
+    // A file that IS an out-of-line test module is test code in its entirety,
+    // and so is anything nested below it, so the scope opens around the whole
+    // walk rather than around a single item.
+    let file_is_test = is_test_module_path(module, test_modules);
+    if file_is_test {
+        facts.enter_test_scope();
+    }
     let mut walker = Walk {
         facts,
         module: module.to_owned(),
@@ -86,6 +103,45 @@ pub fn walk(
     walker.collect_uses(module, &file.items);
     walker.walk_items(module, "module", &file.items);
     walker.finish_walk();
+    if file_is_test {
+        facts.exit_test_scope();
+    }
+}
+
+/// Whether `module`, or any module above it, was declared `#[cfg(test)]`.
+fn is_test_module_path(module: &str, test_modules: &TestModules) -> bool {
+    if test_modules.contains(module) {
+        return true;
+    }
+    let mut prefix = module;
+    while let Some(cut) = prefix.rfind("::") {
+        prefix = &prefix[..cut];
+        if test_modules.contains(prefix) {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Record every out-of-line `#[cfg(test)] mod name;` in one file's items.
+///
+/// Bodiless modules only: one with a body is walked in place, where
+/// [`Walk::walk_mod`] opens the scope directly.
+pub fn collect_test_modules(module: &str, items: &[Item], out: &mut TestModules) {
+    for item in items {
+        if let Item::Mod(node) = item {
+            let canonical = format!("{module}::{}", node.ident);
+            match &node.content {
+                Some((_, inner)) => collect_test_modules(&canonical, inner, out),
+                None => {
+                    if is_cfg_test(&node.attrs) {
+                        out.insert(canonical);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl Walk<'_> {
@@ -324,15 +380,29 @@ impl Walk<'_> {
                         );
                     }
                 }
+                // `impl Drop for T` is the one trait whose method the runtime
+                // calls: nothing in the graph names `drop`, so it reads as
+                // unreferenced however heavily the type is used. Marked here,
+                // on the trait rather than on the method name, so an ordinary
+                // inherent method that happens to be called `drop` keeps its
+                // reference check.
+                let drop_impl = node.trait_.as_ref().is_some_and(|(_, path, _)| {
+                    path.segments
+                        .last()
+                        .is_some_and(|segment| segment.ident == "Drop")
+                });
                 for member in &node.items {
                     if let ImplItem::Fn(method) = member {
-                        let method_canonical = self.declare(
-                            &target,
-                            "class",
-                            &method.sig.ident.to_string(),
-                            "method",
-                            member.span(),
-                        );
+                        let name = method.sig.ident.to_string();
+                        let method_canonical =
+                            self.declare(&target, "class", &name, "method", member.span());
+                        if drop_impl && name == "drop" {
+                            self.facts.node_attribute(
+                                &method_canonical,
+                                "runtime_invoked",
+                                serde_json::Value::Bool(true),
+                            );
+                        }
                         self.walk_body(
                             &reference("method", &method_canonical),
                             container,
@@ -722,14 +792,25 @@ impl Walk<'_> {
 fn is_cfg_test(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|attr| {
         attr.path().is_ident("cfg")
-            && attr.meta.require_list().is_ok_and(|list| {
-                list.tokens.clone().into_iter().any(|token| {
-                    matches!(
-                        token,
-                        proc_macro2::TokenTree::Ident(ref ident) if ident == "test"
-                    ) || token.to_string().contains("test")
-                })
-            })
+            && attr
+                .meta
+                .require_list()
+                .is_ok_and(|list| contains_test_ident(list.tokens.clone()))
+    })
+}
+
+/// Whether a `cfg(..)` token stream names the bare `test` identifier.
+///
+/// Recurses into groups so `cfg(all(test, feature = "x"))` counts, and matches
+/// an identifier rather than substring text so `cfg(feature = "latest")` does
+/// not. That distinction is the whole point: a false positive here silently
+/// removes production code from the dead-code and hub budgets, which is the
+/// failure those budgets exist to catch.
+fn contains_test_ident(tokens: proc_macro2::TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Ident(ident) => ident == "test",
+        proc_macro2::TokenTree::Group(group) => contains_test_ident(group.stream()),
+        _ => false,
     })
 }
 
@@ -1191,7 +1272,9 @@ fn call_kind(canonical: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{call_kind, collect_declarations, walk, Declarations};
+    use super::{
+        call_kind, collect_declarations, collect_test_modules, walk, Declarations, TestModules,
+    };
     use crate::facts::Facts;
 
     /// A method lives in an `impl` block, not beside the type, so a collector
@@ -1238,7 +1321,14 @@ mod tests {
         collect_declarations("crate", &file.items, &mut declarations);
         let mut facts = Facts::new("src/lib.rs");
 
-        walk(&mut facts, "crate", &file, &[], &declarations);
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &declarations,
+            &TestModules::new(),
+        );
 
         let contribution = facts.finish();
         assert!(
@@ -1255,6 +1345,168 @@ mod tests {
         );
     }
 
+    /// `#[cfg(test)] mod tests;` puts the module in its own file, which is
+    /// scanned as a separate contribution carrying no hint that it compiles
+    /// only under cfg(test). The declaring file is the only place that fact
+    /// exists, so it has to travel from there to the walk of the other file.
+    #[test]
+    fn an_out_of_line_cfg_test_module_marks_the_file_that_holds_it() {
+        let declaring: syn::File =
+            syn::parse_str("#[cfg(test)]\nmod tests;\nmod real;\nfn ship() {}").expect("parses");
+        let mut test_modules = TestModules::new();
+
+        collect_test_modules("crate", &declaring.items, &mut test_modules);
+
+        assert!(test_modules.contains("crate::tests"));
+        // A bodiless module without the attribute is ordinary source.
+        assert!(!test_modules.contains("crate::real"));
+
+        // tests.rs is its own contribution, walked with its own module path.
+        let held: syn::File = syn::parse_str("fn helper() {}\nstruct Rig;").expect("parses");
+        let mut facts = Facts::new("src/tests.rs");
+        walk(
+            &mut facts,
+            "crate::tests",
+            &held,
+            &[],
+            &Declarations::new(),
+            &test_modules,
+        );
+        let contribution = facts.finish();
+
+        for name in ["crate::tests::helper", "crate::tests::Rig"] {
+            assert!(
+                contribution
+                    .nodes
+                    .iter()
+                    .find(|node| node.canonical_name == name)
+                    .unwrap_or_else(|| panic!("no node {name}"))
+                    .attributes
+                    .contains_key("test"),
+                "{name} was not marked"
+            );
+        }
+
+        // A file that is not the test module keeps its production status.
+        let other: syn::File = syn::parse_str("fn ship() {}").expect("parses");
+        let mut facts = Facts::new("src/real.rs");
+        walk(
+            &mut facts,
+            "crate::real",
+            &other,
+            &[],
+            &Declarations::new(),
+            &test_modules,
+        );
+        assert!(!facts
+            .finish()
+            .nodes
+            .iter()
+            .any(|node| node.attributes.contains_key("test")));
+    }
+
+    /// Rust calls `Drop::drop` during destruction, so no call site names it
+    /// and the graph shows it unreferenced however heavily the type is used.
+    /// The marker lets the dead-code budget discount exactly these, without
+    /// blanket-excluding every method that happens to be called `drop`.
+    #[test]
+    fn a_drop_impl_marks_its_method_as_runtime_invoked() {
+        let file: syn::File = syn::parse_str(
+            "struct Lease;\nimpl Drop for Lease {\n    fn drop(&mut self) {}\n}\nimpl Lease {\n    fn drop_manually(&self) {}\n    fn drop(&self) {}\n}",
+        )
+        .expect("parses");
+        let mut facts = Facts::new("src/lib.rs");
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &Declarations::new(),
+            &TestModules::new(),
+        );
+        let contribution = facts.finish();
+        let marked = |name: &str| {
+            contribution
+                .nodes
+                .iter()
+                .filter(|node| node.canonical_name == name)
+                .any(|node| node.attributes.contains_key("runtime_invoked"))
+        };
+
+        assert!(marked("crate::Lease::drop"), "the Drop::drop impl");
+        // An inherent method named `drop` is an ordinary method with ordinary
+        // call sites, so it stays subject to the reference check.
+        assert!(
+            contribution
+                .nodes
+                .iter()
+                .filter(|node| node.canonical_name == "crate::Lease::drop")
+                .count()
+                >= 1
+        );
+        assert!(
+            !marked("crate::Lease::drop_manually"),
+            "an unrelated method"
+        );
+    }
+
+    /// `contains("test")` matched any token whose text held those four
+    /// letters, so `#[cfg(feature = "latest")]` marked a whole production
+    /// module as test code and removed it from the dead-code budget. Only a
+    /// bare `test` identifier counts.
+    #[test]
+    fn a_cfg_whose_text_merely_contains_test_is_not_a_test_module() {
+        let file: syn::File =
+            syn::parse_str("#[cfg(feature = \"latest\")]\nmod fastest {\n    pub fn ship() {}\n}")
+                .expect("parses");
+        let mut facts = Facts::new("src/lib.rs");
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &Declarations::new(),
+            &TestModules::new(),
+        );
+        let contribution = facts.finish();
+
+        for node in &contribution.nodes {
+            assert!(
+                !node.attributes.contains_key("test"),
+                "{} was marked as test code",
+                node.canonical_name
+            );
+        }
+    }
+
+    /// A `test` ident nested inside `cfg(all(..))` still counts, which is why
+    /// the match has to recurse rather than look only at the top level.
+    #[test]
+    fn a_nested_cfg_all_test_still_marks_the_module() {
+        let file: syn::File = syn::parse_str(
+            "#[cfg(all(test, feature = \"x\"))]\nmod tests {\n    fn helper() {}\n}",
+        )
+        .expect("parses");
+        let mut facts = Facts::new("src/lib.rs");
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &Declarations::new(),
+            &TestModules::new(),
+        );
+        let contribution = facts.finish();
+
+        assert!(contribution
+            .nodes
+            .iter()
+            .find(|node| node.canonical_name == "crate::tests")
+            .expect("module node")
+            .attributes
+            .contains_key("test"));
+    }
+
     /// Rust keeps its tests beside the code they cover, so a path-based test
     /// convention cannot see them. Without a mark from the scanner every
     /// `#[test]` fn reads as an unreferenced production symbol: nothing calls
@@ -1266,7 +1518,14 @@ mod tests {
         )
         .expect("parses");
         let mut facts = Facts::new("src/lib.rs");
-        walk(&mut facts, "crate", &file, &[], &Declarations::new());
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &Declarations::new(),
+            &TestModules::new(),
+        );
         let contribution = facts.finish();
         let marked = |name: &str| {
             contribution

@@ -33,11 +33,16 @@ final readonly class RootGuard
 
     public function resolve(string $requestedRoot): string
     {
-        if (!self::exists($requestedRoot)) {
+        // Resolved once. Checking existence and then resolving again left a
+        // window in which the directory could go away: the second realpath()
+        // returned false, the cast made it an empty string, and the caller was
+        // told its root was outside the allow-list rather than missing.
+        $resolved = realpath($requestedRoot);
+        if ($resolved === false || !is_dir($resolved)) {
             throw new RootNotFoundException(sprintf('Project root does not exist or is not a directory: %s', $requestedRoot));
         }
 
-        $root = self::normalize((string) realpath($requestedRoot));
+        $root = self::normalize($resolved);
         $allowedRoots = $this->roots->current();
         foreach ($allowedRoots as $allowedRoot) {
             $allowed = realpath($allowedRoot);

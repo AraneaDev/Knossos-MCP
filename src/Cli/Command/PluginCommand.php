@@ -253,6 +253,20 @@ final class PluginCommand implements CliCommand
         $existed = file_exists($out);
         $createdDirectories = [];
         $createdFiles = [];
+        // Contents of files that were already there and are about to be
+        // replaced. Tracking only what was CREATED left an overwritten file
+        // holding the new bytes after a later step failed, which is exactly
+        // what this method's contract says cannot happen.
+        $replacedFiles = [];
+        $keepOriginal = static function (string $target) use (&$replacedFiles): void {
+            if (!is_file($target)) {
+                return;
+            }
+            $original = @file_get_contents($target);
+            if ($original !== false) {
+                $replacedFiles[$target] = $original;
+            }
+        };
         try {
             foreach (self::DIRECTORIES as $directory) {
                 $path = $out . $directory;
@@ -267,6 +281,7 @@ final class PluginCommand implements CliCommand
             foreach (self::COPIES as $relative) {
                 $target = $out . $relative;
                 $isNew = !file_exists($target);
+                $keepOriginal($target);
                 if (!@copy($root . $relative, $target)) {
                     throw new InvalidArgumentException(sprintf('Unable to copy %s.', $relative));
                 }
@@ -283,6 +298,7 @@ final class PluginCommand implements CliCommand
             // the file's business.
             $manifest = $out . self::MANIFEST;
             $manifestIsNew = !file_exists($manifest);
+            $keepOriginal($manifest);
             if (@file_put_contents($manifest, $this->versionedManifest($root . self::MANIFEST)) === false) {
                 throw new InvalidArgumentException(sprintf('Unable to write %s.', $manifest));
             }
@@ -293,11 +309,13 @@ final class PluginCommand implements CliCommand
             // fresh checkout legitimately has none to copy from, and a
             // materialise that depended on one would fail for every install.
             $descriptor = $out . '/.claude-plugin/marketplace.json';
+            $keepOriginal($descriptor);
             if ($this->writeDescriptor($descriptor, true)) {
                 $createdFiles[] = $descriptor;
             }
             $hookPath = $out . '/hooks/scripts/session-brief.sh';
             $hookIsNew = !file_exists($hookPath);
+            $keepOriginal($hookPath);
             if (@file_put_contents($hookPath, $hook) === false) {
                 throw new InvalidArgumentException(sprintf('Unable to write %s.', $hookPath));
             }
@@ -308,7 +326,7 @@ final class PluginCommand implements CliCommand
                 throw new InvalidArgumentException(sprintf('Unable to make %s executable.', $hookPath));
             }
         } catch (Throwable $error) {
-            $this->rollbackEmit($out, $existed, $createdDirectories, $createdFiles);
+            $this->rollbackEmit($out, $existed, $createdDirectories, $createdFiles, $replacedFiles);
             throw $error;
         }
 
@@ -387,14 +405,23 @@ final class PluginCommand implements CliCommand
      *
      * @param list<string> $createdDirectories
      * @param list<string> $createdFiles
+     * @param array<string, string> $replacedFiles path => contents as found
      */
-    private function rollbackEmit(string $out, bool $outExisted, array $createdDirectories, array $createdFiles): void
+    private function rollbackEmit(string $out, bool $outExisted, array $createdDirectories, array $createdFiles, array $replacedFiles = []): void
     {
         if (!$outExisted) {
             $this->removeTree($out);
             return;
         }
+        // Restored before the created files are removed, so a path that was
+        // both is put back rather than deleted.
+        foreach ($replacedFiles as $file => $original) {
+            @file_put_contents($file, $original);
+        }
         foreach ($createdFiles as $file) {
+            if (array_key_exists($file, $replacedFiles)) {
+                continue;
+            }
             @unlink($file);
         }
         foreach (array_reverse($createdDirectories) as $directory) {

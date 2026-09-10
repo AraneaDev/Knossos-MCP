@@ -78,7 +78,7 @@ Usage:
                          [--boundary=ID_OR_NAME] [--edge-kind=KIND]
                          [--direction=LR|TB] [--max-nodes=N] [--max-edges=N]
   knossos export-agent-brief <project-id> [--max-chars=N] [--out=FILE] [--json]
-  knossos session-brief [path] [--json]
+  knossos session-brief [path] [--db=FILE] [--json]
   knossos install-agent-plugin [--scope=user] [--execute]
   knossos install-agent-plugin --out=DIR --data=HOSTPATH [--image=NAME]
   knossos list-boundaries <project-id> [--source=explicit|inferred] [--limit=N]

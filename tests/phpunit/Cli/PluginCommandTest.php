@@ -319,6 +319,42 @@ final class PluginCommandTest extends KnossosTestCase
     }
 
     /**
+     * emit() promises that "anything that was already on disk before this
+     * call, whether that is the `--out` directory itself or files inside it,
+     * is left exactly as it was found". Rollback tracked only the files it
+     * created, so a pre-existing file it overwrote on the way to a later
+     * failure kept the new content and the promise did not hold.
+     */
+    #[Group('cli')]
+    public function testFailedEmitRestoresFilesItOverwrote(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $this->temporaryPath('knossos-plugin-overwrite');
+        // hooks/hooks.json is copied early; the manifest is written later. Make
+        // the manifest path a directory so that later write fails, after the
+        // copy has already replaced the caller's file.
+        mkdir($out . '/hooks', 0o755, true);
+        mkdir($out . '/.claude-plugin/plugin.json', 0o755, true);
+        file_put_contents($out . '/hooks/hooks.json', '{"mine":true}');
+
+        try {
+            (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['out' => [$out], 'data' => ['/srv/knossos-data']],
+                $this->contextFor($root),
+            );
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException) {
+            // Expected: the manifest cannot be written over a directory.
+        }
+
+        assertSame('{"mine":true}', (string) file_get_contents($out . '/hooks/hooks.json'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /**
      * A stand-in installation root carrying every file an install reads.
      *
      * Built rather than pointed at the real checkout because these tests

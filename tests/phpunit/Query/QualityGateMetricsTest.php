@@ -269,6 +269,29 @@ final class QualityGateMetricsTest extends KnossosTestCase
     }
 
     /**
+     * Rust calls `Drop::drop` during destruction, so no call site names it and
+     * the graph shows it unreferenced however heavily the type is used. The
+     * Rust scanner marks exactly those methods, and the budget honours the
+     * mark rather than excluding every method called `drop`, which would hide
+     * an ordinary dead method behind a common name.
+     */
+    #[Group('query')]
+    public function testUnreferencedCandidatesExcludeRuntimeInvokedMethodsTheScannerMarked(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        $this->addNode($repository, $ids, 'method', 'App\\Lease::drop', 'drop', attributes: ['runtime_invoked' => true]);
+        // An unmarked method of the same name stays a candidate.
+        $this->addNode($repository, $ids, 'method', 'App\\Cache::drop', 'drop');
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['unreferenced_candidates' => 100]);
+
+        // App\Checkout from the fixture, plus the unmarked App\Cache::drop.
+        assertSame(2, $gate->data['metrics']['unreferenced_candidates']);
+    }
+
+    /**
      * Give one node a role, the way the classifier does during a scan.
      *
      * @param array<string, string> $ids

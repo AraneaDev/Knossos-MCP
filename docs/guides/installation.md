@@ -4,8 +4,9 @@
 
 ### One data directory
 
-`KNOSSOS_DATA_DIR` holds the graph database and the roots file. Pin it, in the
-MCP registration and in any shell you type `knossos` from. `tools/install`
+`KNOSSOS_DATA_DIR` holds the graph database, and the roots file too unless
+`KNOSSOS_ROOTS_FILE` names one elsewhere. Pin it, in the MCP registration and
+in any shell you type `knossos` from. `tools/install`
 defaults it to `~/.knossos` and writes it into the registration it creates.
 
 Unpinned, it falls back to `<cwd>/.knossos`, and that fallback is per-caller.

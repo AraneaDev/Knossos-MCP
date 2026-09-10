@@ -119,6 +119,17 @@ emits a self-contained plugin directory instead of installing anything:
 knossos install-agent-plugin --out=DIR --data=HOSTPATH [--image=NAME]
 ```
 
+`DIR` is a path _inside_ the container, so bind-mount a host directory onto it
+and point `--out` at the target. Without the mount the emitted plugin lives
+only in the container's writable layer and `--rm` takes it away with the
+container:
+
+```sh
+docker run --rm \
+  --mount type=bind,source="$PWD/plugin",target=/out \
+  knossos-mcp:dev install-agent-plugin --out=/out --data="$HOME/.knossos"
+```
+
 - `--out=DIR` writes `.claude-plugin/`, `hooks/`, and `skills/` under `DIR`,
   the same five files a local install materialises and differing only in the
   hook script, all-or-nothing: a failure partway through removes everything
