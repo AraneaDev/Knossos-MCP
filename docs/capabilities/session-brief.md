@@ -254,11 +254,11 @@ holds 11 `application.command` and 32 `application.entry_point`
 classifications and not a single `route`, `command` or `endpoint` node, so
 the section was simply never rendered. Nothing failed, which is why it went
 unnoticed. The predicate now lives in one place and is shared with the
-[agent brief](agent-brief.md).
+[agent brief](agent-integration.md#agent-brief).
 
 ## Why node counts and language mix are missing
 
-`export_agent_brief` (see [agent brief](agent-brief.md)) leads with file,
+`export_agent_brief` (see [agent brief](agent-integration.md#agent-brief)) leads with file,
 component, and relationship counts and the language mix, because it is read
 once by a person settling into a codebase. `session-brief` deliberately
 drops all of that. It is billed on every session start, resume, and compact,

@@ -13,7 +13,7 @@
 [![Last commit](https://img.shields.io/github/last-commit/AraneaDev/Knossos-MCP?label=last%20commit)](https://github.com/AraneaDev/Knossos-MCP/commits/main)
 [![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=white)](https://www.conventionalcommits.org/)
 [![MCP Observatory](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/badge.svg)](https://mcpobservatory.com/servers/github:AraneaDev/Knossos-MCP/security)
-[![Status](https://img.shields.io/badge/status-in%20development-orange)](#quick-start)
+[![Status](https://img.shields.io/badge/status-in%20development-orange)](#install)
 
 </div>
 
@@ -26,20 +26,19 @@ Knossos-MCP is a local-first MCP server that scans a repository once and answers
 questions from an evidence-backed graph, so an agent stops re-reading the whole source tree to
 work out what depends on what. It is the thread through your own labyrinth.
 
-Every fact points back to a file and a source location. Facts that static
-analysis cannot prove are labelled with their confidence and origin instead of
-being guessed. Nothing in the scan pipeline installs dependencies, imports a
-module, or boots an application framework. The Git-backed diff tools do invoke
-`git` inside the project, with repository-controlled command hooks
-(`core.fsmonitor`, `core.hooksPath`, `diff.external`, and any
-`.gitattributes` filter/textconv driver) forced off, `core.pager` neutralised
-by `--no-pager` at each call site, and a minimal environment. See [the HTTP
-threat model](docs/operations/http-threat-model.md).
+Every fact points back to a file and a source location. Facts that static analysis cannot prove
+are labelled with their confidence and origin instead of being guessed. Nothing in the scan
+pipeline installs dependencies, imports a module, or boots an application framework.
 
 > **Status:** pre-release. Knossos-MCP is **not yet published to Packagist or any container
 > registry**. The source is public on [GitHub](https://github.com/AraneaDev/Knossos-MCP), so
-> build from source (see [Quick start](#quick-start)). Image names such as `knossos-mcp:dev`
+> build from source (see [Install](#install)). Image names such as `knossos-mcp:dev`
 > in this README are built locally by you; there is no `docker pull` to fetch them yet.
+
+**Contents:** [What you can ask](#what-you-can-ask-after-one-scan) ·
+[Worked example](#worked-example) · [Tools](#tools) · [Install](#install) ·
+[Languages](#supported-languages) · [Safety](#safety-model) ·
+[Documentation](docs/README.md)
 
 ---
 
@@ -54,33 +53,35 @@ threat model](docs/operations/http-threat-model.md).
 - What does this working tree risk, reviewed architecturally in one call?
 - Where would a refunds feature fit the existing structure?
 
-Every query and analysis capability is available both as an MCP tool and as an
-equivalent CLI command; `watch`, `serve`, and the graph-bundle commands remain
-CLI-only. See the [documentation index](docs/README.md) for the full map.
+Every query and analysis capability is available both as an MCP tool and as an equivalent CLI
+command. See the [documentation index](docs/README.md) for the full map.
 
 ## Worked example
 
-Scanning this repository takes about ten seconds and yields a graph you can
+Scanning this repository takes about six seconds and yields a graph you can
 interrogate. Output below is real, abridged with `…`.
 
 ```console
 $ knossos scan . --json
-{"summary":"Scanned 402 files into 4965 nodes and 23126 relationships.",
- "data":{"files":402,"nodes":4965,"edges":23126,"diagnostics":20,"mode":"full",
- "scanner_metadata":{"knossos.php":{"files_scanned":353},
-   "knossos.typescript":{"files_scanned":34,"programs":9},
-   "knossos.python":{"files_scanned":15,"parser":"python.ast"}},
- "metrics":{"elapsed_ms":10541.0, …}}}
+{"summary":"Scanned 425 files into 6126 nodes and 35667 relationships.",
+ "data":{"files":425,"nodes":6126,"edges":35667,"diagnostics":0,"mode":"full",
+ "scanner_metadata":{"knossos.php":{"files_scanned":394},
+   "knossos.typescript":{"files_scanned":17,"programs":1},
+   "knossos.python":{"files_scanned":5,"parser":"python.ast"},
+   "knossos.rust":{"files_scanned":9,"parser":"rust.syn"}},
+ "metrics":{"elapsed_ms":6103.6, …}}}
 ```
 
 Orient yourself in a codebase you have never opened:
 
 ```console
 $ knossos architecture-summary project_1b4f41… --json
-{"summary":"Knossos-MCP contains 4965 nodes and 23126 relationships.",
- "data":{"node_kinds":[{"kind":"method","count":3243},{"kind":"class","count":426},
-   {"kind":"function","count":138},{"kind":"interface","count":15},
-   {"kind":"route","count":12}, …]}}
+{"summary":"Knossos-MCP contains 6126 nodes and 35667 relationships.",
+ "data":{"node_kinds":[{"kind":"method","count":4196},{"kind":"class","count":453},
+   {"kind":"function","count":311},{"kind":"module","count":51},
+   {"kind":"interface","count":12}, …],
+  "edge_kinds":[{"kind":"calls","count":23381},{"kind":"contains","count":4727},
+   {"kind":"constructs","count":3898}, …]}}
 ```
 
 Ask what breaks if you change an interface. Each dependant carries the edge that
@@ -88,54 +89,43 @@ justifies it and the exact source line, so the answer is checkable:
 
 ```console
 $ knossos impact-analysis project_1b4f41… 'Knossos\Scanner\ScannerClient' --json
-{"summary":"Found 37 potential static dependants within depth 4.",
+{"summary":"Found 100 potential static dependants within depth 4.",
  "data":{"target":{"kind":"interface","canonical_name":"Knossos\\Scanner\\ScannerClient", …},
    "dependants":[{"node":{"canonical_name":"Knossos\\Scanner\\Worker\\ProcessScannerClient", …},
      "distance":1,"path_confidence":"certain",
      "via":{"kind":"implements","origin":"ast",
        "explanation":"ProcessScannerClient depends through --implements (certain, ast)--> ScannerClient",
-       "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":10}}}, …],
-   "counts":{"by_distance":{"1":1,"2":8,"3":2,"4":26},
-     "by_confidence":{"certain":12,"probable":25,"possible":0}}, …}}
+       "evidence":{"path":"src/Scanner/Worker/ProcessScannerClient.php","start_line":11}}}, …],
+   "counts":{"by_distance":{"1":5,"2":15,"3":75,"4":5},
+     "by_confidence":{"certain":100,"probable":0,"possible":0}}, …}}
 ```
-
-`dependants` is a flat, BFS-ordered list rather than grouped by distance; sort
-or filter on the `distance` and `path_confidence` fields directly. MCP tool
-calls default to a compact verbosity that agents should prefer over `--json`:
-it hoists each repeated `node` (and `target`) object into a one-time
-`component_legend` keyed by canonical name, leaving a plain name string
-behind wherever the node appeared, and shortens each `via` object down to
-just its edge kind (e.g. `"via":"implements"`).
 
 Find refactor targets without shelling out to `wc` and `find`:
 
 ```console
 $ knossos file-metrics project_1b4f41… --limit=3 --json
-{"summary":"3 of 402 files by line_count desc.",
- "data":{"files":[{"path":"tests/phpunit/Reconciliation/GraphReconcilerTest.php","language":"php","line_count":1666},
-   {"path":"src/Mcp/ToolService.php","language":"php","line_count":1426},
-   {"path":"tests/phpunit/Cli/CommandsTest.php","language":"php","line_count":1354}]}}
+{"summary":"3 of 425 files by line_count desc.",
+ "data":{"files":[{"path":"tests/phpunit/Reconciliation/GraphReconcilerTest.php","language":"php","line_count":2473},
+   {"path":"workers/rust/src/visit.rs","language":"rust","line_count":1559},
+   {"path":"workers/rust/tests/scan.rs","language":"rust","line_count":1521}]}}
 ```
 
-Answers that rest on inference say so. `impact-analysis` returns the warning
+Answers that rest on inference say so. `impact_analysis` returns the warning
 "Impact is a conservative static blast radius; it does not guarantee that a
 dependant will break", and dead-code candidates report absence of evidence
 rather than proven absence.
 
+MCP tool calls default to a compact verbosity that agents should prefer over `--json`: it
+hoists each repeated node object into a one-time `component_legend` keyed by canonical name,
+leaving a plain name string behind wherever the node appeared, and shortens each `via` object
+down to just its edge kind. The same call is roughly a third of the tokens. See
+[response envelopes](docs/reference/response-envelopes.md).
+
 ## Tools
 
-Thirty-three MCP tools, all but `server_info` with an equivalent CLI command. Read tools are
-annotated read-only and idempotent. The four write tools
-(`annotate_component`, `remove_project`, `cleanup_stale_scans`, and
-`maintain_database`) preview by default and only apply once called with
-`execute` set; `remove_project` and `cleanup_stale_scans` are additionally
-annotated destructive. The server also exposes
-per-project MCP resources (`summary`, `boundaries`, `brief`) and prompts
-(`orient`, `review_diff`); these are MCP-protocol surfaces with no CLI
-equivalent. Agent annotations
-(`intended_boundary`, `confirmed_dead`, `false_positive`, `note`) record a
-durable judgment on a component that survives rescans; a `false_positive`
-annotation removes that component from future dead-code candidates.
+Thirty-three MCP tools, all but `server_info` with an equivalent CLI command. Full input
+schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
+[CLI reference](docs/reference/cli.md); each group below links to its capability guide.
 
 **Orientation**
 
@@ -144,68 +134,83 @@ annotation removes that component from future dead-code candidates.
 | `server_info`      | –        | Which roots this server may read, the roots file to extend, and whether it is containerised. |
 | `diagnose_runtime` | `doctor` | Whether the runtimes, scanner workers, database, and migrations are healthy.                 |
 
-**Projects and history**
+**[Finding and reading components](docs/capabilities/finding-components.md)**
+
+| MCP tool               | CLI                    | Answers                                                   |
+| ---------------------- | ---------------------- | --------------------------------------------------------- |
+| `list_projects`        | `list-projects`        | Which projects are scanned, how fresh, how large.         |
+| `find_component`       | `find-component`       | Ranked candidates when you only know part of a name.      |
+| `inspect_component`    | `inspect-component`    | One component's roles, boundary, relations, and evidence. |
+| `list_usages`          | `list-usages`          | Every usage site of a symbol with file:line evidence.     |
+| `architecture_summary` | `architecture-summary` | A one-call overview by language and node/edge kind.       |
+| `search_architecture`  | `search-architecture`  | Components filtered by kind, role, boundary, confidence.  |
+| `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.           |
+| `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.  |
+| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.         |
+
+**[Structure analysis](docs/capabilities/structure-analysis.md)**
+
+| MCP tool              | CLI                   | Answers                                                                                     |
+| --------------------- | --------------------- | ------------------------------------------------------------------------------------------- |
+| `impact_analysis`     | `impact-analysis`     | What depends on a symbol, with the edge that proves it.                                     |
+| `explain_flow`        | `explain-flow`        | How A reaches B, as ranked evidence-backed paths.                                           |
+| `dependency_cycles`   | `dependency-cycles`   | Circular dependencies as bounded strongly connected groups.                                 |
+| `architecture_health` | `architecture-health` | Hubs, hotspots, and dead code split into what nothing references and what only tests reach. |
+| `suggest_location`    | `suggest-location`    | Where new code for a feature belongs, with visible factors.                                 |
+
+**[Reviewing a change](docs/capabilities/change-review.md)**
+
+| MCP tool               | CLI                    | Answers                                                            |
+| ---------------------- | ---------------------- | ------------------------------------------------------------------ |
+| `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles.  |
+| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches.        |
+| `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance. |
+| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                  |
+
+**[Rules, budgets, and history](docs/capabilities/architecture-rules.md)**
 
 | MCP tool              | CLI                   | Answers                                                     |
 | --------------------- | --------------------- | ----------------------------------------------------------- |
-| `list_projects`       | `list-projects`       | Which projects are scanned, how fresh, how large.           |
-| `scan_project`        | `scan`                | Build or refresh the graph (auto, full, or incremental).    |
+| `check_architecture`  | `check-architecture`  | Which relationships violate declared boundary policies.     |
+| `quality_gate`        | `quality-gate`        | Whether a change breaches architecture budgets, with SARIF. |
 | `list_snapshots`      | `list-snapshots`      | The retained scan history for a project.                    |
 | `snapshot_diff`       | `snapshot-diff`       | What changed architecturally between two scans.             |
-| `quality_gate`        | `quality-gate`        | Whether a change breaches architecture budgets, with SARIF. |
 | `architecture_trends` | `architecture-trends` | How metrics moved over recent scans, plus release notes.    |
 
-**Finding and reading components**
+**[Agent integration](docs/capabilities/agent-integration.md)**
 
 | MCP tool               | CLI                    | Answers                                                             |
 | ---------------------- | ---------------------- | ------------------------------------------------------------------- |
-| `find_component`       | `find-component`       | Ranked candidates when you only know part of a name.                |
-| `inspect_component`    | `inspect-component`    | One component's roles, boundary, relations, and evidence.           |
-| `list_usages`          | `list-usages`          | Every usage site of a symbol with file:line evidence.               |
-| `architecture_summary` | `architecture-summary` | A one-call overview by language and node/edge kind.                 |
-| `search_architecture`  | `search-architecture`  | Components filtered by kind, role, boundary, confidence.            |
-| `file_metrics`         | `file-metrics`         | Files ranked by line count or path, filterable.                     |
-| `list_boundaries`      | `list-boundaries`      | How the codebase is partitioned, explicitly or inferred.            |
+| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.            |
 | `export_agent_brief`   | `export-agent-brief`   | A ready-to-paste markdown orientation brief for agent memory files. |
+| `annotate_component`   | `annotate-component`   | Record a durable annotation on a component.                         |
 | `list_annotations`     | `list-annotations`     | Durable agent annotations recorded on components.                   |
 
-**Structure and change analysis**
+**Scanning and maintenance**
 
-| MCP tool               | CLI                    | Answers                                                                                     |
-| ---------------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
-| `impact_analysis`      | `impact-analysis`      | What depends on a symbol, with the edge that proves it.                                     |
-| `explain_flow`         | `explain-flow`         | How A reaches B, as ranked evidence-backed paths.                                           |
-| `dependency_cycles`    | `dependency-cycles`    | Circular dependencies as bounded strongly connected groups.                                 |
-| `architecture_health`  | `architecture-health`  | Hubs, hotspots, and dead code split into what nothing references and what only tests reach. |
-| `check_architecture`   | `check-architecture`   | Which relationships violate declared boundary policies.                                     |
-| `suggest_location`     | `suggest-location`     | Where new code for a feature belongs, with visible factors.                                 |
-| `change_impact`        | `change-impact`        | Static blast radius weighted by recent Git churn.                                           |
-| `changed_files_impact` | `changed-files-impact` | What a set of changed files, or your working tree, touches.                                 |
-| `test_impact`          | `test-impact`          | Which test files statically exercise a change, ranked by distance.                          |
-| `review_diff`          | `review-diff`          | One-call review: impact, boundary violations, gate delta, cycles.                           |
-| `architecture_context` | `architecture-context` | A bounded task-shaped evidence bundle for a coding task.                                    |
-| `export_diagram`       | `export-diagram`       | Mermaid or PlantUML source for the current graph.                                           |
+| MCP tool              | CLI                   | Answers                                                  |
+| --------------------- | --------------------- | -------------------------------------------------------- |
+| `scan_project`        | `scan`                | Build or refresh the graph (auto, full, or incremental). |
+| `remove_project`      | `remove-project`      | Delete a project and its graph.                          |
+| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.       |
+| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup. |
 
-**Maintenance**
+Read tools are annotated read-only and idempotent. The four write tools
+(`annotate_component`, `remove_project`, `cleanup_stale_scans`, and `maintain_database`)
+preview by default and only apply once called with `execute` set; `remove_project` and
+`cleanup_stale_scans` are additionally annotated destructive.
 
-| MCP tool              | CLI                   | Answers                                                               |
-| --------------------- | --------------------- | --------------------------------------------------------------------- |
-| `annotate_component`  | `annotate-component`  | Record a durable annotation on a component. Preview unless `execute`. |
-| `remove_project`      | `remove-project`      | Delete a project and its graph. Previews unless `execute`.            |
-| `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.                    |
-| `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup.              |
+Eight commands are CLI-only: `version`, `serve`, `watch`, `session-brief`,
+`install-agent-plugin`, `allow-root`, and the `export-bundle`/`import-bundle` pair that moves
+a graph between databases. The server also exposes per-project MCP resources
+(`summary`, `boundaries`, `brief`) and prompts (`orient`, `review_diff`), which have no CLI
+equivalent because they are MCP-protocol surfaces.
 
-Three helpers remain CLI-only: `watch` rescans on change, `export-bundle` and
-`import-bundle` move a graph between databases, and `serve` starts the server
-itself. `doctor` is also available over MCP as `diagnose_runtime`.
-Full input schemas are in the [MCP tool reference](docs/reference/mcp-tools.md)
-and [CLI reference](docs/reference/cli.md).
+## Install
 
-## Quick start
-
-The recommended distribution is Docker: it pins PHP 8.5, Node 26, Python 3.13,
-Composer, SQLite, the PHP parser, and the TypeScript compiler, so the scanned
-project needs none of them.
+The recommended distribution is Docker: built from digest-pinned base images, it carries PHP
+8.5, Node 26, Python, Composer, SQLite, the PHP parser, the TypeScript compiler, and a
+prebuilt Rust worker, so the scanned project needs none of them.
 
 ```sh
 docker build -t knossos-mcp:dev .
@@ -228,6 +233,12 @@ docker run --rm \
   --mount type=volume,source=knossos-data,target=/data \
   knossos-mcp:dev list-projects --json
 ```
+
+A native install needs PHP 8.3+ (with JSON, PDO, PDO SQLite), Node 22+, Python 3.11+,
+Composer 2, and Git; Cargo 1.82+ is optional and enables the Rust scanner. Each is a floor,
+not a range.
+
+### Registering the server
 
 Register the server once, for your user. `tools/install` writes this for you;
 the shape matters more than the mechanism:
@@ -259,95 +270,27 @@ anything warning you.
 Docker, native, and client-specific variants are in
 [installation](docs/guides/installation.md).
 
-## Agent orientation plugin setup
+### Session orientation for Claude Code
 
-Every scanned project can also inject a short [session brief](docs/features/session-brief.md)
-at the start of each Claude Code session: whether the graph is fresh, the
-project's boundary rules and recorded notes, and (once the graph is fresh
-enough to trust) its entry points and hubs. That injection is a plugin,
-installed from the same installation that runs the server:
+A separate, optional plugin injects a short
+[session brief](docs/capabilities/session-brief.md) at the start of each Claude Code session:
+whether the graph is fresh, the project's boundary rules and recorded notes, and its entry
+points and hubs.
 
 ```sh
-knossos install-agent-plugin
+knossos install-agent-plugin           # previews; add --execute to apply
 ```
 
-**The hook needs to find a `knossos` binary, or it does nothing.** The plugin
-ships no binary; it runs the one already on the machine, looked up in a fixed
-order: `KNOSSOS_BIN`, then `PATH`, then `$CLAUDE_PROJECT_DIR/bin/knossos`,
-`~/.local/bin/knossos`, `/usr/local/bin/knossos`. Every failure path is silent
-by design, so a session in a project that is not this checkout simply gets no
-brief, with nothing printed to say why. One symlink into a directory the lookup
-already checks makes it work everywhere:
+The hook runs whatever `knossos` binary it can find on the machine and fails silently when it
+finds none, so a symlink is usually the missing step:
 
 ```sh
 ln -s /absolute/Knossos-MCP/bin/knossos ~/.local/bin/knossos
 ```
 
-This previews the two `claude` commands it would run
-(`claude plugin marketplace add` against the plugin directory described
-below, then `claude plugin install knossos@knossos`) and applies neither. Add
-`--execute` to actually run them, and `--scope=project` or `--scope=local`
-to install somewhere other than the default `user` scope.
-
-The supported install points at a directory on disk, so `--execute` first
-writes one: `.plugin/` beside this checkout, holding the marketplace
-descriptor, the plugin manifest, the `SessionStart` hook and the skill. Those
-five files are the whole plugin, and that directory is what
-`claude plugin marketplace add` is handed.
-
-The checkout itself is never registered. Claude Code copies a local
-marketplace into its plugin cache, so pointing it at the repository root
-copied the entire working tree with it: `vendor/`, `node_modules/`, build
-caches, the graph database, and every stray config file, one of which
-registered a second MCP server nobody asked for. A directory containing only
-the plugin copies only the plugin.
-
-`.plugin/` is git-ignored, and deliberately so: four of its five files are
-copies of files already in the repository, and committing them would let the
-copies drift from their sources silently. Two consequences worth knowing:
-
-- The installed plugin is a **snapshot**, cached by the version in its manifest.
-  `install-agent-plugin` writes the running CLI's version into the materialised
-  manifest, so a release propagates the ordinary way:
-
-    ```sh
-    knossos install-agent-plugin --execute   # refresh .plugin/
-    claude plugin update knossos@knossos     # replace the snapshot
-    ```
-
-    Within one version that update is a no-op, because the cached version already
-    equals the declared one. Editing `hooks/scripts/session-brief.sh` or
-    `skills/knossos/SKILL.md` without releasing therefore needs an uninstall to
-    force a fresh copy:
-
-    ```sh
-    claude plugin uninstall knossos@knossos --scope user
-    knossos install-agent-plugin --execute
-    ```
-
-- Anything that deletes ignored files, `git clean -xdf` in particular, removes
-  the directory the marketplace points at, and the plugin drops to
-  `failed to load: cache-miss`. The same command puts it back.
-
-The public route is closed. The descriptor is generated by
-`install-agent-plugin --execute` into that directory, and neither it nor the
-directory is committed, so `claude plugin marketplace add
-AraneaDev/Knossos-MCP` fails with `Marketplace file not found` instead of
-resolving. It has to fail there, because the clone it would otherwise
-resolve to has no `vendor/`: its own
-`bin/knossos` cannot run, and the `SessionStart` hook fails silent on every
-error, so such an install would produce nothing, forever, with nothing to
-diagnose. Install from a checkout that is already running the server, the one
-source that can supply the working binary the hook needs.
-
-MCP server registration is a separate step and stays that way: registering
-the server with an MCP client (see [quick start](#quick-start) above) does
-not need the plugin, and installing the plugin does not register a server.
-A containerised installation, in particular, does not run a local `knossos`
-binary at all, so folding server registration into the plugin install would
-either duplicate an existing registration or assume one that is not there.
-Installing from a container instead of a native checkout uses `--out`; see
-[the container operations guide](docs/operations/container.md#agent-orientation-plugin-for-a-containerised-install).
+Registering the MCP server and installing the plugin are separate steps and stay that way.
+The full picture, including containerised installs and why there is no public marketplace
+route, is in [the agent plugin guide](docs/guides/agent-plugin.md).
 
 ## Supported languages
 
@@ -373,9 +316,14 @@ isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.m
   deliberate act recorded on disk.
 - The SQLite database is derived and rebuildable; source mounts stay read-only.
   The one exception is `architecture_context`'s opt-in `include_source`, which
-  reads a bounded query-time excerpt (≤40 lines, files ≤2MB) through the same
-  root-guard as scanning and degrades to `unavailable` rather than failing, so
-  it does not require write access.
+  reads a bounded query-time excerpt (≤40 lines) through the same root guard as
+  scanning and degrades to `unavailable` rather than failing, so it does not
+  require write access.
+- The Git-backed diff tools do invoke `git` inside the project, with
+  repository-controlled command hooks (`core.fsmonitor`, `core.hooksPath`,
+  `diff.external`, and any `.gitattributes` filter/textconv driver) forced off,
+  `core.pager` neutralised by `--no-pager` at each call site, and a minimal
+  environment.
 - MCP stdio is the default and recommended transport. The constrained
   loopback-only Streamable HTTP profile and its deployment limits are documented
   in the [HTTP threat model](docs/operations/http-threat-model.md).
@@ -387,9 +335,9 @@ isolated worker processes through the [scanner SDK](docs/reference/scanner-sdk.m
 [docs/README.md](docs/README.md) is the index. The most-used entries:
 
 - [Installation and MCP configuration](docs/guides/installation.md)
+- [MCP tool reference](docs/reference/mcp-tools.md) and [CLI reference](docs/reference/cli.md)
 - [Checked-in project configuration](docs/guides/project-configuration.md)
 - [Running in Docker](docs/operations/container.md)
-- [CLI reference](docs/reference/cli.md) and [MCP tool reference](docs/reference/mcp-tools.md)
 - [Troubleshooting and migrations](docs/operations/troubleshooting-and-migrations.md)
 
 ## Development

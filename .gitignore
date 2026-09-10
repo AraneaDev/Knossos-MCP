@@ -21,7 +21,7 @@ __pycache__/
 /workers/rust/mutants.out/
 .claude/settings.local.json
 .claude/settings.local.json.*
-.superpowers/
+/.superpowers/
 
 # Local-only superpowers specs and plans
 /docs/superpowers/

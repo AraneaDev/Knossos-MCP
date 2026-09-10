@@ -108,7 +108,7 @@ Windows users must always set it. See `.env.example`.
 ## Agent orientation plugin for a containerised install
 
 `knossos install-agent-plugin` normally installs the
-[session brief](../features/session-brief.md) plugin by materialising a
+[session brief](../capabilities/session-brief.md) plugin by materialising a
 `.plugin/` directory beside this checkout and running
 `claude plugin marketplace add` against it, which only works when `claude`
 can reach a local Knossos installation directly. That path does not
@@ -163,5 +163,4 @@ claude plugin marketplace add DIR --scope user
 ```
 
 MCP server registration is unaffected either way; see
-[why the plugin does not register the server](../../README.md#agent-orientation-plugin-setup)
-in the top-level README.
+[why the plugin does not register the server](../guides/agent-plugin.md#the-plugin-and-the-mcp-server-are-separate-installs).

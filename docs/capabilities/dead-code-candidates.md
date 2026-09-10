@@ -69,7 +69,7 @@ auditable rather than invisible.
 | `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts` (see below).                                                                                    |
 | `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                                  |
 | `excluded_convention_discovered` | Components carrying an entry-point role: a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).                 |
-| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](annotations.md).                                                                                 |
+| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](agent-integration.md#component-annotations).                                                     |
 
 ### Why engine-invoked members are excluded
 
