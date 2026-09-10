@@ -284,6 +284,43 @@ final class SessionBriefRendererTest extends TestCase
     }
 
     #[Group('query')]
+    public function testTheIdentityLineSaysWhenTheQueriedPathIsNotThere(): void
+    {
+        // A directory that is not on disk cannot "lie inside" anything, and
+        // saying it does reads as confirmation that it is there. The graph
+        // still describes the ancestor, so the identity is worth keeping; what
+        // changes is the claim made about the path that was asked for.
+        $brief = new SessionBrief(
+            'fresh',
+            'project_1b4f41',
+            'Knossos-MCP',
+            '/root/Knossos-MCP',
+            3600,
+            0,
+            402,
+            [],
+            [],
+            [],
+            [],
+            true,
+            true,
+            '/root/Knossos-MCP/gone',
+            false,
+        );
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(
+            true,
+            str_contains(
+                $text,
+                'Knossos project_1b4f41 (Knossos-MCP), rooted at /root/Knossos-MCP. '
+                    . '/root/Knossos-MCP/gone does not exist; this describes the project it would lie inside.',
+            ),
+        );
+        assertSame(false, str_contains($text, 'lies inside it and is not a scanned project'));
+    }
+
+    #[Group('query')]
     public function testTheIdentityLineIsUnchangedWhenTheQueriedPathIsTheProjectRoot(): void
     {
         // The mirror, and the common case: a disclosure that always fired would

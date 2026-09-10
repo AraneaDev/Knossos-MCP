@@ -185,6 +185,28 @@ final class SessionCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testASubPathThatIsNotOnDiskIsNotDescribedAsIfItWere(): void
+    {
+        // The missing-path verdict only ever looked at the resolved project
+        // root, which exists by definition once a project resolves. A target
+        // under that root which is not on disk was then disclosed as an
+        // ordinary nested directory, so the brief asserted the existence of
+        // something that is not there.
+        [$root] = $this->scannedProjectOnDisk();
+        $missing = $root . '/src/gone';
+        try {
+            ob_start();
+            (new SessionCommand())->run('session-brief', [$missing], [], $this->context());
+            $text = (string) ob_get_clean();
+
+            assertSame(true, str_contains($text, $missing . ' does not exist;'));
+            assertSame(false, str_contains($text, 'lies inside it and is not a scanned project'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('cli')]
     public function testAnExplicitDatabaseOptionStillWinsOverTheDerivedPath(): void
     {
         // A container installation and every scripted invocation depend on this:

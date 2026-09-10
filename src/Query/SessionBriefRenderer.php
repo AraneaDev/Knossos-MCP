@@ -93,6 +93,20 @@ final readonly class SessionBriefRenderer
             return $identity;
         }
 
+        // A path that is not on disk gets the other half of the same honesty.
+        // "Lies inside it" is a statement about a directory that is there, and
+        // on a missing target it would be read as confirmation that it is. The
+        // identity still stands, because the graph really does describe the
+        // ancestor; only the claim about the queried path changes.
+        if (!$brief->queriedPathExists) {
+            return sprintf(
+                '%s, rooted at %s. %s does not exist; this describes the project it would lie inside.',
+                $identity,
+                $brief->path,
+                $brief->queriedPath,
+            );
+        }
+
         // Not "nothing here describes that directory", which would be false:
         // an ancestor's scan usually does cover the files underneath it. What
         // is true, and is the fact a reader of a nested repository needs, is

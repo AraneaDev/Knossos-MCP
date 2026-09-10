@@ -54,6 +54,14 @@ final readonly class SessionBrief
      *   discloses the ancestry and lets the reader decide. Null, or equal to
      *   $path, means the question was about the project root itself and there
      *   is nothing to disclose.
+     * @param bool $queriedPathExists whether $queriedPath is a directory that
+     *   is actually there. Distinct from $pathExists, which answers for the
+     *   resolved project root and is therefore true whenever a project
+     *   resolves at all: an ancestor cannot be scanned and absent. The
+     *   disclosure is the one line that makes a claim about the path the
+     *   caller named rather than about the project, so it is the one line that
+     *   can assert a directory into existence. Meaningless, and ignored, when
+     *   $queriedPath is null.
      */
     public function __construct(
         public string $state,
@@ -70,5 +78,6 @@ final readonly class SessionBrief
         public bool $pathAllowed = true,
         public bool $pathExists = true,
         public ?string $queriedPath = null,
+        public bool $queriedPathExists = true,
     ) {}
 }

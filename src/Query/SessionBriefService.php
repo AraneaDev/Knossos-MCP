@@ -125,6 +125,12 @@ final readonly class SessionBriefService
             $rootStatus['allowed'],
             $rootStatus['exists'],
             $queried,
+            // Asked of the caller's path, not the project's. $rootStatus
+            // answers for the resolved root, which exists whenever a project
+            // resolves, so it can never speak for a target below it. realpath()
+            // above already failed over to the literal path for a target that
+            // is not there, which is exactly the case this has to catch.
+            is_dir($queried),
         );
     }
 
