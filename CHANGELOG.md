@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.13.1...v0.14.0) (2026-09-10)
+
+
+### Features
+
+* **cli:** orient each session on the architecture it is working in ([#69](https://github.com/AraneaDev/Knossos-MCP/issues/69)) ([4fedc2a](https://github.com/AraneaDev/Knossos-MCP/commit/4fedc2abde7c0b3e400de7c5f8d7b0aed88bdcc4))
+
 ## [0.13.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.13.0...v0.13.1) (2026-09-08)
 
 
