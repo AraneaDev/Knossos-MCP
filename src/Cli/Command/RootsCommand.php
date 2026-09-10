@@ -43,9 +43,9 @@ final class RootsCommand implements CliCommand
         $path = $positionals[0] ?? throw new InvalidArgumentException(
             'Usage: knossos allow-root <path> [--execute] [--db=FILE] [--json]',
         );
-        // Roots are compared as literal strings against the path a scan is
-        // asked to cover, so a relative one would never match anything and
-        // would silently grant nothing.
+        // Roots are compared against the canonical path a scan is asked to
+        // cover, which is always absolute, so a relative entry would never
+        // match anything and would silently grant nothing.
         if (!str_starts_with($path, '/')) {
             throw new InvalidArgumentException(sprintf(
                 '%s is not absolute. allow-root needs an absolute path so it can be compared against scan requests.',
@@ -58,12 +58,24 @@ final class RootsCommand implements CliCommand
         if (!is_dir($path)) {
             throw new InvalidArgumentException(sprintf('%s is not an existing directory.', $path));
         }
+        // Both the comparison below and the entry written out use the reader's
+        // own spelling of a root, borrowed from AllowedRoots rather than
+        // reinvented, so `/p` and `/p/` cannot become two lines granting one
+        // directory. AllowedRoots::normalise() folds them back together when it
+        // reads the file, so the duplicate was never a security hole; it was
+        // rot in a file people hand-edit, and a command reporting "already
+        // present" for neither spelling.
+        $path = AllowedRoots::normaliseRoot($path);
 
         $configPath = AllowedRoots::defaultConfigPath($context->databasePath());
         $roots = self::readRoots($configPath);
         $json = $context->options->flag($options, 'json');
 
-        if (in_array($path, $roots, true)) {
+        // Existing entries are compared normalised but rewritten verbatim: a
+        // root someone typed with a trailing slash before this fix is already
+        // granted, and silently rewriting lines this call did not add would
+        // make an append look like an edit.
+        if (in_array($path, array_map(AllowedRoots::normaliseRoot(...), $roots), true)) {
             $context->output(
                 ['path' => $path, 'roots_file' => $configPath, 'added' => false],
                 $json,

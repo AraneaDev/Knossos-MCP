@@ -133,6 +133,74 @@ final class RootsCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testATrailingSlashIsTheSameRootRatherThanASecondEntry(): void
+    {
+        // The command compared raw strings, so `/p` then `/p/` wrote two lines
+        // and reported "already present" for neither. AllowedRoots::normalise()
+        // folds them back together on read, so the grant was never doubled;
+        // what was doubled was the file, which is one a person edits by hand.
+        $target = $this->tempDir . '/project';
+        mkdir($target);
+
+        ob_start();
+        (new RootsCommand())->run('allow-root', [$target], ['execute' => ['true']], $this->context());
+        ob_get_clean();
+
+        ob_start();
+        $status = (new RootsCommand())->run('allow-root', [$target . '/'], ['execute' => ['true']], $this->context());
+        $output = (string) ob_get_clean();
+
+        assertSame(0, $status);
+        assertSame(true, str_contains($output, 'already'));
+        $decoded = json_decode((string) file_get_contents($this->rootsFile()), true);
+        assertSame(['roots' => [$target]], $decoded);
+    }
+
+    #[Group('cli')]
+    public function testATrailingSlashIsStrippedFromTheEntryItWrites(): void
+    {
+        // The other order, on an empty file: the entry that lands on disk is
+        // already in the reader's own spelling, so a later `allow-root /p` sees
+        // it as present instead of appending the twin this fix just prevented.
+        $target = $this->tempDir . '/project';
+        mkdir($target);
+
+        ob_start();
+        (new RootsCommand())->run('allow-root', [$target . '/'], ['execute' => ['true']], $this->context());
+        ob_get_clean();
+
+        $decoded = json_decode((string) file_get_contents($this->rootsFile()), true);
+        assertSame(['roots' => [$target]], $decoded);
+
+        ob_start();
+        (new RootsCommand())->run('allow-root', [$target], ['execute' => ['true']], $this->context());
+        $output = (string) ob_get_clean();
+
+        assertSame(true, str_contains($output, 'already'));
+    }
+
+    #[Group('cli')]
+    public function testAHandEditedTrailingSlashEntryIsMatchedAndLeftAlone(): void
+    {
+        // A file written before this fix, or by hand, can already hold `/p/`.
+        // That entry is a grant the server honours, so a call for `/p` must
+        // recognise it rather than append a duplicate, and must not quietly
+        // rewrite a line it did not add.
+        $target = $this->tempDir . '/project';
+        mkdir($target);
+        file_put_contents($this->rootsFile(), json_encode(['roots' => [$target . '/']], JSON_PRETTY_PRINT) . PHP_EOL);
+
+        ob_start();
+        $status = (new RootsCommand())->run('allow-root', [$target], ['execute' => ['true']], $this->context());
+        $output = (string) ob_get_clean();
+
+        assertSame(0, $status);
+        assertSame(true, str_contains($output, 'already'));
+        $decoded = json_decode((string) file_get_contents($this->rootsFile()), true);
+        assertSame(['roots' => [$target . '/']], $decoded);
+    }
+
+    #[Group('cli')]
     public function testBareArrayFileIsAcceptedAppendedAndNormalisedToCanonicalShape(): void
     {
         // AllowedRoots::parse() tolerates a bare [...] as well as
