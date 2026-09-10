@@ -34,6 +34,15 @@ final readonly class SessionBrief
      *   (`knossos allow-root`) is a no-op when the root was already allowed
      *   through one of those invisible sources. A false value must never be
      *   read as proof that a scan will fail.
+     * @param bool $pathExists whether $path is a directory the CLI can reach.
+     *   Separate from $pathAllowed because the two have different remedies and
+     *   only one of them has a command behind it. A path that is not there is
+     *   not a path `knossos allow-root` would accept either, so collapsing the
+     *   two would answer a missing directory with a grant that is itself
+     *   refused for the same reason. False forces the verdict to say so and to
+     *   recommend nothing; $pathAllowed is then not consulted at all, because
+     *   "outside every root" is not a useful thing to say about a directory
+     *   that does not exist.
      */
     public function __construct(
         public string $state,
@@ -48,5 +57,6 @@ final readonly class SessionBrief
         public array $entryPoints = [],
         public array $hubs = [],
         public bool $pathAllowed = true,
+        public bool $pathExists = true,
     ) {}
 }

@@ -32,13 +32,37 @@ final class SessionBriefServiceTest extends KnossosTestCase
         // leaking into the verdict. `scan_project path=.` is not a command an
         // MCP server can run: it has its own working directory and allowed
         // roots, so the argument handed back must be absolute.
+        //
+        // The working directory is moved to a fixture the test created rather
+        // than assumed to be the repository root. Comparing against
+        // repositoryRoot() made this pass only when phpunit was launched from
+        // there; nothing in CI does otherwise today, so the failure would have
+        // been a puzzling red on someone's laptop rather than a caught bug.
+        // The expectation is now the directory this test chose, so what is
+        // asserted is unchanged and where it is asserted from no longer
+        // matters.
         [$pdo] = $this->storeFixture();
-        $absolute = (string) realpath(self::repositoryRoot());
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o777, true);
+        $absolute = (string) realpath($root);
+        $previousDirectory = (string) getcwd();
 
-        $text = (new SessionBriefService($pdo))->brief('.');
+        try {
+            chdir($root);
+            $text = (new SessionBriefService($pdo))->brief('.');
+        } finally {
+            // Restored before any assertion runs, so a failure here cannot
+            // leave every later test in this process running from a directory
+            // that is about to be deleted.
+            chdir($previousDirectory);
+        }
 
-        assertSame(true, str_contains($text, $absolute));
-        assertSame(false, str_contains($text, 'path=.'));
+        try {
+            assertSame(true, str_contains($text, $absolute));
+            assertSame(false, str_contains($text, 'path=.'));
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 
     #[Group('query')]
@@ -270,6 +294,71 @@ final class SessionBriefServiceTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    #[Group('query')]
+    public function testAPathThatDoesNotExistIsNotReportedAsAnUnallowedRoot(): void
+    {
+        // The two-step dead end this pair of tests exists to prevent: RootGuard
+        // used to raise one exception type for "no such directory" and for
+        // "outside every root", so the brief read the first as the second and
+        // answered a path that is not there with `knossos allow-root <path>`,
+        // which then refuses it for not being a directory. The verdict must say
+        // what is actually wrong and recommend neither command.
+        [$pdo, $root, $databasePath] = $this->rootsFileFixture(['roots' => []]);
+        try {
+            $absent = $root . '/no-such-directory';
+
+            $brief = (new SessionBriefService($pdo, $databasePath))->gather($absent);
+            $text = (new SessionBriefService($pdo, $databasePath))->brief($absent);
+
+            assertSame(false, $brief->pathExists);
+            assertSame(true, str_contains($text, $absent . ' does not exist.'));
+            assertSame(false, str_contains($text, 'is not an allowed root'));
+            // Both command names occur in the verdict, as the two things that
+            // will not accept this path. Neither may occur as an instruction.
+            assertSame(false, str_contains($text, 'knossos allow-root'));
+            assertSame(false, str_contains($text, 'scan_project path='));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testAPathThatExistsButIsOutsideEveryRootKeepsTheAllowRootWording(): void
+    {
+        // The mirror of the test above, against the same empty roots file. Both
+        // paths are refused by RootGuard; only the exception type tells them
+        // apart, so a fix that reported every refusal as "does not exist" would
+        // pass the test above and fail this one.
+        [$pdo, $root, $databasePath] = $this->rootsFileFixture(['roots' => []]);
+        try {
+            $brief = (new SessionBriefService($pdo, $databasePath))->gather($root);
+            $text = (new SessionBriefService($pdo, $databasePath))->brief($root);
+
+            assertSame(true, $brief->pathExists);
+            assertSame(false, $brief->pathAllowed);
+            assertSame(true, str_contains($text, 'is not an allowed root. Add it: knossos allow-root'));
+            assertSame(false, str_contains($text, 'does not exist.'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testExistenceIsStillReportedWithNoDatabasePathToConsult(): void
+    {
+        // With no database path there is no roots file, so no root warning has
+        // any basis and every path is treated as allowed. Whether a directory
+        // is on disk owes nothing to that, and the brief must not tell a
+        // session to scan a path that is not there just because it had no
+        // allow-list to read.
+        [$pdo] = $this->storeFixture();
+
+        $text = (new SessionBriefService($pdo))->brief('/knossos-definitely-absent-' . bin2hex(random_bytes(6)));
+
+        assertSame(true, str_contains($text, 'does not exist.'));
+        assertSame(false, str_contains($text, 'scan_project path='));
     }
 
     /**

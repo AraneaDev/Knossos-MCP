@@ -246,6 +246,67 @@ final class SessionBriefRendererTest extends TestCase
     }
 
     #[Group('query')]
+    public function testAMissingPathOutranksTheRootWarningInEveryStateThatHasOne(): void
+    {
+        // A path that is not on disk cannot be scanned and cannot be granted,
+        // so neither of the other two continuations is worth printing. The four
+        // states are checked together because the form is shared: a regression
+        // that wired it into one of them would leave the other three still
+        // recommending a command that cannot run.
+        $expected = [
+            'unscanned' => 'NOT SCANNED, and /root/Gone does not exist. '
+                . 'Neither scan_project nor allow-root will accept it.',
+            'missing' => 'NO GRAPH, and /root/Gone does not exist. '
+                . 'Neither scan_project nor allow-root will accept it.',
+            'stale' => 'STALE (118 files, 17d), and /root/Gone does not exist. '
+                . 'Neither scan_project nor allow-root will accept it.',
+            'unverified' => 'UNVERIFIED (1240 files, over probe limit; scanned 17d ago), and /root/Gone does not '
+                . 'exist. Neither scan_project nor allow-root will accept it.',
+        ];
+        foreach ($expected as $state => $line) {
+            // pathAllowed is left true, so the missing-path form cannot be
+            // passing here merely because the root warning happened to fire.
+            $brief = new SessionBrief(
+                $state,
+                'project_1b4f41',
+                'Knossos-MCP',
+                '/root/Gone',
+                1_468_800,
+                118,
+                1240,
+                [],
+                [],
+                [],
+                [],
+                true,
+                false,
+            );
+            $text = (new SessionBriefRenderer())->render($brief);
+
+            assertSame(true, str_starts_with($text, $line));
+            // The two command names appear in the line, as the things that will
+            // not work. What must be absent is either of them handed over as an
+            // instruction to run.
+            assertSame(false, str_contains($text, 'knossos allow-root'));
+            assertSame(false, str_contains($text, 'scan_project path='));
+        }
+    }
+
+    #[Group('query')]
+    public function testAMissingPathIsPreferredOverTheRootWarningWhenBothApply(): void
+    {
+        // Both flags false. Only one line can be printed, and it has to be the
+        // one that names the blocker the reader hits first: granting a root
+        // that is not a directory fails for exactly the reason the other form
+        // would have been hiding.
+        $brief = new SessionBrief('unscanned', null, null, '/root/Gone', null, 0, 0, [], [], [], [], false, false);
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(true, str_contains($text, '/root/Gone does not exist.'));
+        assertSame(false, str_contains($text, 'is not an allowed root'));
+    }
+
+    #[Group('query')]
     public function testVerdictAndPointerSurviveEvenWhenTheVerdictAloneExceedsBudget(): void
     {
         // An unbounded project path can make the verdict line alone longer than

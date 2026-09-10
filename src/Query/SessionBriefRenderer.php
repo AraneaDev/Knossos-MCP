@@ -70,60 +70,76 @@ final readonly class SessionBriefRenderer
      * One line, always. There is nothing to skim past in a single line, which is
      * the whole reason this is not a paragraph.
      *
-     * Four of the five states have two forms, chosen by whether the path lies
-     * inside a root the CLI can see. Each of those four otherwise ends in an
-     * instruction the server would reject on an unpermitted root, which is the
-     * dead end this feature exists to stop walking an agent into. `fresh` is
-     * the exception: it asks for nothing, so there is nothing to redirect, and
-     * a root warning on a graph that is currently correct would be noise on the
-     * one verdict that needs none.
+     * Every verdict is a state clause, which says what is known about the
+     * graph, plus one continuation, which says what to do next. The
+     * continuations are ordered by how far they stop an agent: a path that is
+     * not on disk beats a path outside the allowed roots, which beats the
+     * ordinary instruction, because the earlier blocker makes the later advice
+     * impossible to act on rather than merely incomplete.
+     *
+     * Four of the five states therefore have three forms. `fresh` is the
+     * exception: it asks for nothing, so there is nothing to redirect, and a
+     * root warning on a graph that is currently correct would be noise on the
+     * one verdict that needs none. It cannot reach the missing-path form
+     * either, since {@see StalenessProbe} cannot call a graph fresh without
+     * fingerprinting files under a root that is there to be read.
      */
     private function verdict(SessionBrief $brief): string
     {
+        $state = $this->stateClause($brief);
+        if (!$brief->pathExists) {
+            // Neither of the two commands the other forms hand out applies:
+            // `scan_project` has nothing to walk, and `allow-root` refuses a
+            // path that is not an existing directory. Naming both is what
+            // stops the reader trying the second after the first fails.
+            return sprintf(
+                '%s, and %s does not exist. Neither scan_project nor allow-root will accept it.',
+                $state,
+                $brief->path,
+            );
+        }
+        if (!$brief->pathAllowed && $brief->state !== 'fresh') {
+            return sprintf(
+                '%s, and %s is not an allowed root. Add it: knossos allow-root %s --execute',
+                $state,
+                $brief->path,
+                $brief->path,
+            );
+        }
+        return $state . match ($brief->state) {
+            'fresh' => '.',
+            'stale', 'missing' => sprintf('. Run scan_project path=%s first.', $brief->path),
+            // Not stale's wording: probing was skipped, so the graph may well
+            // be current and the instruction is conditional rather than owed.
+            'unverified' => '. Rescan if exactness matters.',
+            default => sprintf('. Run scan_project path=%s to map this repository.', $brief->path),
+        };
+    }
+
+    /**
+     * What is known about the graph, with no trailing punctuation.
+     *
+     * Split out so the three continuations above are written once each instead
+     * of once per state: the "not an allowed root" sentence was already
+     * identical across four states, and a third form would have made twelve
+     * near-copies of two sentences out of what is really a two-part line.
+     */
+    private function stateClause(SessionBrief $brief): string
+    {
         return match ($brief->state) {
-            'fresh' => sprintf('FRESH (scanned %s ago).', $this->age($brief->ageSeconds)),
-            'stale' => $brief->pathAllowed
-                ? sprintf(
-                    'STALE (%d files, %s). Run scan_project path=%s first.',
-                    $brief->changedFiles,
-                    $this->age($brief->ageSeconds),
-                    $brief->path,
-                )
-                : sprintf(
-                    'STALE (%d files, %s), and %s is not an allowed root. Add it: knossos allow-root %s --execute',
-                    $brief->changedFiles,
-                    $this->age($brief->ageSeconds),
-                    $brief->path,
-                    $brief->path,
-                ),
-            'unverified' => $brief->pathAllowed
-                ? sprintf(
-                    'UNVERIFIED (%d files, over probe limit; scanned %s ago). Rescan if exactness matters.',
-                    $brief->trackedFiles,
-                    $this->age($brief->ageSeconds),
-                )
-                : sprintf(
-                    'UNVERIFIED (%d files, over probe limit; scanned %s ago), and %s is not an allowed root. '
-                        . 'Add it: knossos allow-root %s --execute',
-                    $brief->trackedFiles,
-                    $this->age($brief->ageSeconds),
-                    $brief->path,
-                    $brief->path,
-                ),
-            'missing' => $brief->pathAllowed
-                ? sprintf('NO GRAPH. Run scan_project path=%s first.', $brief->path)
-                : sprintf(
-                    'NO GRAPH, and %s is not an allowed root. Add it: knossos allow-root %s --execute',
-                    $brief->path,
-                    $brief->path,
-                ),
-            default => $brief->pathAllowed
-                ? sprintf('NOT SCANNED. Run scan_project path=%s to map this repository.', $brief->path)
-                : sprintf(
-                    'NOT SCANNED, and %s is not an allowed root. Add it: knossos allow-root %s --execute',
-                    $brief->path,
-                    $brief->path,
-                ),
+            'fresh' => sprintf('FRESH (scanned %s ago)', $this->age($brief->ageSeconds)),
+            'stale' => sprintf(
+                'STALE (%d files, %s)',
+                $brief->changedFiles,
+                $this->age($brief->ageSeconds),
+            ),
+            'unverified' => sprintf(
+                'UNVERIFIED (%d files, over probe limit; scanned %s ago)',
+                $brief->trackedFiles,
+                $this->age($brief->ageSeconds),
+            ),
+            'missing' => 'NO GRAPH',
+            default => 'NOT SCANNED',
         };
     }
 
@@ -164,6 +180,19 @@ final readonly class SessionBriefRenderer
      * truncating the verdict would hand back a `scan_project path=...` that
      * nobody can run. Both are appended unconditionally, so an unusually long
      * path can push the final output past its nominal budget.
+     *
+     * A section that does not fit is skipped, not read as the end of the list:
+     * the loop keeps testing the sections after it, so a long `Rules` block can
+     * be dropped while a shorter `Hubs` block that follows it survives. That is
+     * deliberate. The sections are independent statements about the project
+     * rather than one continuing argument, so a later one is neither wrong nor
+     * confusing for an earlier one being absent, and stopping at the first
+     * overflow would leave the rest of the budget spent on nothing. What to
+     * expect as a result: the order is stable, but what survives is not a
+     * prefix of it. A brief says what fitted and never that everything above it
+     * fitted too, so nothing may be inferred from a section's absence, which is
+     * also why every section carries its own label rather than relying on
+     * position.
      *
      * @param list<string> $lines the verdict first, then optional sections
      */
