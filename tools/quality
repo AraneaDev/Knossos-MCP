@@ -257,6 +257,15 @@ if [ "$profile" = "full" ] && in_lane gate; then
             || git -C "$gate_repo" rev-parse HEAD^ 2>/dev/null \
             || true)
     fi
+    # A merge base taken ON the default branch is that commit itself, which is
+    # what a push to main and the release re-run both hand this lane. Comparing
+    # a tree with itself zeroes both delta budgets while still reporting a
+    # pass, so step back one commit instead.
+    if [ -n "$gate_base" ] \
+        && [ "$(git -C "$gate_repo" rev-parse "$gate_base^{commit}" 2>/dev/null)" \
+            = "$(git -C "$gate_repo" rev-parse 'HEAD^{commit}' 2>/dev/null)" ]; then
+        gate_base=$(git -C "$gate_repo" rev-parse 'HEAD^' 2>/dev/null || true)
+    fi
     # Failing loudly beats quietly scanning one tree twice: that silently
     # zeroes both delta budgets, and a gate that cannot fail is worse than no
     # gate because it reads as if it checked.

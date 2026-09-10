@@ -328,7 +328,6 @@ final class GitProcessRunnerHardeningTest extends TestCase
             $keys .= sprintf("filter.driver%d.clean\0", $i);
         }
         $method = new \ReflectionMethod(GitProcessRunner::class, 'parseDriverOverrides');
-        $method->setAccessible(true);
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessageMatches('/exceeding the ' . GitProcessRunner::MAX_DRIVER_NAMES . '/');
@@ -349,7 +348,6 @@ final class GitProcessRunnerHardeningTest extends TestCase
             $keys .= sprintf("filter.%s%d.clean\0", str_repeat('n', 2_000), $i);
         }
         $method = new \ReflectionMethod(GitProcessRunner::class, 'parseDriverOverrides');
-        $method->setAccessible(true);
 
         $this->expectException(\RuntimeException::class);
         $this->expectExceptionMessageMatches('/exceeding the ' . GitProcessRunner::MAX_DRIVER_OVERRIDE_BYTES . ' this runner will place on one command line/');
@@ -378,7 +376,6 @@ final class GitProcessRunnerHardeningTest extends TestCase
     public function testAFailedSpawnCarriesTheReasonIntoTheException(): void
     {
         $method = new \ReflectionMethod(GitProcessRunner::class, 'execute');
-        $method->setAccessible(true);
         $command = ['/bin/true', ...array_fill(0, 256, str_repeat('x', 65_536))];
 
         $this->expectException(\RuntimeException::class);
@@ -418,7 +415,6 @@ final class GitProcessRunnerHardeningTest extends TestCase
     public function testTheRepositoryRootIsReadFromTheLeadingOptionRegionOnly(): void
     {
         $method = new \ReflectionMethod(GitProcessRunner::class, 'repositoryRoot');
-        $method->setAccessible(true);
 
         // The production history argv: `-c <value>` must not end the walk.
         self::assertSame('/repo', $method->invoke(null, [

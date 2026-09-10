@@ -34,9 +34,24 @@ jobs:
       # Everything below runs ONLY on the merge that cut a release. Because the
       # tag/release are made with GITHUB_TOKEN, no separate tag-triggered
       # workflow would fire — so build/verify/publish live here instead.
+      # Full history: the profile's `gate` lane measures the released tree
+      # against the commit before it, and a shallow clone cannot reach one.
+      #
+      # Credentials are NOT persisted. actions/checkout writes GITHUB_TOKEN into
+      # .git/config by default, and this job's token carries `contents: write`
+      # and `pull-requests: write`. The quality container is handed this
+      # checkout so the gate lane can read history, and a read-only mount stops
+      # nothing here: reading the credential is the whole risk, and everything
+      # the profile runs, tests and their dependencies included, could read it.
+      # Nothing after this step uses git credentials -- release-please took its
+      # own token above, and the image push authenticates to the registry
+      # separately -- so persisting them buys nothing.
       - name: Checkout
         if: ${{ steps.release.outputs.release_created }}
         uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Build pinned quality image
         if: ${{ steps.release.outputs.release_created }}
@@ -49,7 +64,9 @@ jobs:
         if: ${{ steps.release.outputs.release_created }}
         run: |
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
+            -e KNOSSOS_GATE_REPO=/workspace \
             -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD:/workspace:ro" \
             knossos-mcp:quality full
 
       - name: Verify the released runtime image reports its version
