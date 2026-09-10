@@ -41,27 +41,38 @@ floors nothing earns.
 
 ### What the `gate` lane enforces
 
-The lane scans this repository twice into a throwaway database, then holds the
-second scan to the budgets in `knossos.json`. Nothing ran those budgets before,
-so they were advisory: between 2026-08-02 and 2026-09-10 `unreferenced_candidates`
-drifted from 68 to 158 against a limit of 110 and no run said so.
+The lane scans two trees, the commit the change is measured against and the
+change itself, then holds the second scan to the budgets in `knossos.json`.
+Nothing ran those budgets before, so they were advisory: between 2026-08-02 and
+2026-09-10 `unreferenced_candidates` drifted from 68 to 158 against a limit of
+110 and no run said so.
 
-Its baseline is this same tree, which makes the two delta budgets inert here.
-`new_cycles` and `hub_degree_growth` are both `max(0, after - before)`, and two
-scans of one tree cannot differ, so they can only report 0. They are still
-passed to the gate rather than dropped, because `knossos.json` is the one place
-the limits are written and a second CI-only copy would drift from it.
+All six budgets are live. `new_cycles` and `hub_degree_growth` compare the two
+scans; `boundary_violations`, `error_diagnostics`, `warning_diagnostics` and
+`unreferenced_candidates` are read off the second one.
 
-What the lane really enforces is the four absolute budgets, which are also the
-ones that caught the drift above: `boundary_violations`, `error_diagnostics`,
-`warning_diagnostics` and `unreferenced_candidates`. Each is computed from the
-active snapshot alone.
+The baseline is what CI works out from the event, a pull request's target
+commit or the tip a push replaced. Failing that the lane takes the point the
+branch left the default branch, and failing that `HEAD^`. If none of those
+resolve it stops rather than scanning one tree twice, because that would zero
+both delta budgets and report a pass that checked nothing.
 
-Making the deltas meaningful needs a baseline scanned from the merge base, and
-the image cannot produce one: it is built with `.git` excluded, so no history
-reaches it. That would take mounting the runner's checkout and fetching enough
-depth to reach the base ref. A lane that enforces four budgets honestly is
-worth more than one that appears to enforce six.
+Both trees come from `git archive` and are scanned at the same path. The path
+matters: a project's identity is its root, so a baseline scanned elsewhere
+would be a different project with nothing to compare against. Extracting both
+sides the same way matters too, since reading the active side off the
+container's baked source would diff the change against `.dockerignore` along
+with it. One consequence is that `git archive HEAD` is the committed tree, so
+uncommitted work is not gated; that is what CI measures anyway.
+
+Budgets and policies are read from the tree under test rather than from the
+baseline, so a change that needs a limit raised is reviewed as the diff that
+raises it.
+
+The image bakes this source without `.git`, so the lane is handed the checkout
+on a read-only mount and given the baseline commit by name. `tools/quality-container`
+mounts it the same way, and the CI lane checks out with `fetch-depth: 0`
+because a shallow clone cannot reach its own baseline.
 
 ## How CI runs it
 

@@ -115,7 +115,15 @@ jobs:
       contents: read
       packages: read
     steps:
+      # The `gate` lane measures this change against the commit it forked
+      # from, so it needs history; every other lane only needs the tree. The
+      # depths are strings on purpose: `matrix.lane == 'gate' && 0 || 1` would
+      # always yield 1, because a numeric 0 is falsy and falls through the
+      # `||`, and the lane would then run against a shallow clone that cannot
+      # reach its own baseline.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ matrix.lane == 'gate' && '0' || '1' }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -150,6 +158,7 @@ jobs:
       # paths that only exist inside the job, and Docker would silently create
       # an empty directory on the host instead of failing.
       - name: Run the ${{ matrix.lane }} lane
+        if: matrix.lane != 'gate'
         run: |
           mkdir -p "${{ runner.temp }}/trivy-cache"
           docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
@@ -158,6 +167,32 @@ jobs:
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${{ runner.temp }}/trivy-cache:/tmp/trivy-cache" \
             knossos-mcp:quality full ${{ matrix.lane }}
+      # The gate lane runs on its own because it is the one lane that needs the
+      # repository's history: the image bakes this source without .git, so the
+      # checkout is mounted and the baseline commit named explicitly.
+      #
+      # A pull request is measured against the commit it targets. A push is
+      # measured against the tip it replaced, which is empty on the first push
+      # to a branch and all-zeros on a force push; both cases hand the lane an
+      # empty value, and it falls back to the merge base and then to HEAD^.
+      - name: Work out the baseline commit
+        if: matrix.lane == 'gate'
+        id: gate-base
+        run: |
+          base='${{ github.event.pull_request.base.sha || github.event.before }}'
+          case "$base" in
+            '' | 0000000000000000000000000000000000000000) base='' ;;
+          esac
+          printf 'sha=%s\n' "$base" >> "$GITHUB_OUTPUT"
+          printf 'baseline: %s\n' "${base:-<derived by the lane>}"
+      - name: Run the gate lane
+        if: matrix.lane == 'gate'
+        run: |
+          docker run --name knossos-quality -e KNOSSOS_QUALITY_CONTAINER=1 \
+            -e KNOSSOS_GATE_REPO=/workspace \
+            -e KNOSSOS_GATE_BASE_REF='${{ steps.gate-base.outputs.sha }}' \
+            -v "$PWD:/workspace:ro" \
+            knossos-mcp:quality full gate
       - name: Collect reports
         if: always() && matrix.lane == 'coverage'
         run: |
