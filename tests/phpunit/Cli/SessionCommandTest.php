@@ -144,16 +144,70 @@ final class SessionCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testADirectoryUnderAScannedProjectIsToldTheBriefDescribesTheAncestor(): void
+    {
+        // The parent walk is wanted and stays: a session started in a
+        // subdirectory must reach its repository's graph. It also means a
+        // repository that merely lives inside a scanned one, a vendored clone
+        // or a checkout under a scanned $HOME, resolves to that ancestor. The
+        // brief then said FRESH and named the ancestor's id with nothing
+        // marking it as the wrong project, which is the most confident thing
+        // this command says and the failure the freshness verdict exists to
+        // prevent. Nothing in the graph tells that apart from an ordinary
+        // subdirectory, so it is disclosed rather than guessed at.
+        //
+        // Both directions in one test, off one fixture, because a disclosure
+        // that always fired, or never did, would pass half of this.
+        [$root, $projectId] = $this->scannedProjectOnDisk();
+        $nested = $root . '/src/nested';
+        try {
+            ob_start();
+            (new SessionCommand())->run('session-brief', [$nested], [], $this->context());
+            $inside = (string) ob_get_clean();
+
+            ob_start();
+            (new SessionCommand())->run('session-brief', [$root], [], $this->context());
+            $atRoot = (string) ob_get_clean();
+
+            assertSame(true, str_contains($inside, $projectId));
+            assertSame(true, str_contains($inside, 'rooted at ' . realpath($root) . '.'));
+            assertSame(
+                true,
+                str_contains($inside, realpath($nested) . ' lies inside it and is not a scanned project of its own.'),
+            );
+            // The common case, unchanged: the identity line ends right after
+            // the project name.
+            assertSame(true, str_contains($atRoot, 'Knossos ' . $projectId . " (Session CLI Fixture)\n"));
+            assertSame(false, str_contains($atRoot, 'rooted at'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('cli')]
     public function testAnExplicitDatabaseOptionStillWinsOverTheDerivedPath(): void
     {
         // A container installation and every scripted invocation depend on this:
         // deriving from the target path must not quietly override a path the
-        // caller named. The project below is reachable only through --db, since
-        // the target has no `.knossos` of its own.
+        // caller named.
+        //
+        // The two paths have to disagree, or this passes just as well with --db
+        // ignored. It used to point --db at exactly the database the target
+        // derives to, so it did. Now the graph is moved out to $elsewhere and
+        // the derived path is left holding a migrated database with no projects
+        // in it, so naming the project is only possible if --db won and
+        // NOT SCANNED is what losing looks like.
         [$root, $projectId] = $this->scannedProjectOnDisk();
         $elsewhere = $this->temporaryDirectory();
-        $databasePath = $root . '/.knossos/knossos.sqlite';
+        $derived = $root . '/.knossos/knossos.sqlite';
+        $databasePath = $elsewhere . '/knossos.sqlite';
         try {
+            rename($derived, $databasePath);
+            (new MigrationRunner(
+                SqliteConnection::open($derived),
+                self::repositoryRoot() . '/migrations',
+            ))->migrate();
+
             ob_start();
             $status = (new SessionCommand())->run(
                 'session-brief',
@@ -165,6 +219,9 @@ final class SessionCommandTest extends KnossosTestCase
 
             assertSame(0, $status);
             assertSame(true, str_contains($output, $projectId));
+            assertSame(false, str_contains($output, 'NOT SCANNED'));
+            // A --db the caller named is opened where it is; no data directory
+            // is invented beside it.
             assertSame(false, is_dir($elsewhere . '/.knossos'));
         } finally {
             $this->removeTempTree($elsewhere);

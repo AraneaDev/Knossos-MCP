@@ -61,6 +61,13 @@ final readonly class SessionBriefService
         if ($project === null) {
             return self::unscanned($path, $this->databasePath);
         }
+        // Canonicalised the same way ProjectPathResolver canonicalises before
+        // matching, so "the project root is the directory that was asked about"
+        // is a string comparison rather than a second opinion about what two
+        // paths mean. The resolver matched root_realpath against exactly this
+        // value at depth 0, so equality here is precisely "found without
+        // walking".
+        $queried = realpath($path) ?: $path;
         $root = (string) $project['root_realpath'];
         $projectId = (string) $project['id'];
         // No `?? ['state' => 'missing']` fallback, because nothing reaches it.
@@ -103,6 +110,7 @@ final readonly class SessionBriefService
             $state === 'fresh' ? $this->hubs($projectId) : [],
             $rootStatus['allowed'],
             $rootStatus['exists'],
+            $queried,
         );
     }
 

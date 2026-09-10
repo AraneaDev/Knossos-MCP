@@ -122,9 +122,12 @@ final class SessionCommand implements CliCommand
     private function nearestDatabase(string $target): string
     {
         $current = realpath($target) ?: $target;
+        // Computed once and carried into the loop as its first candidate. The
+        // loop used to recompute the same value from the same $current on its
+        // first pass, which read as though the two could differ.
         $candidate = $this->databaseIn($current);
+        $path = $candidate;
         for ($depth = 0; $depth < self::MAX_ANCESTORS; $depth++) {
-            $path = $this->databaseIn($current);
             if (is_file($path)) {
                 return $path;
             }
@@ -133,6 +136,7 @@ final class SessionCommand implements CliCommand
                 break;
             }
             $current = $parent;
+            $path = $this->databaseIn($current);
         }
         return $candidate;
     }

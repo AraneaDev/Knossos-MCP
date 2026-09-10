@@ -246,6 +246,78 @@ final class SessionBriefRendererTest extends TestCase
     }
 
     #[Group('query')]
+    public function testTheIdentityLineDisclosesWhenTheProjectIsAnAncestorOfTheQueriedPath(): void
+    {
+        // A project is found by walking parents, so a repository that merely
+        // lives inside a scanned one, a vendored clone or a checkout under a
+        // scanned $HOME, resolves to its ancestor. The brief was then
+        // confidently wrong: a FRESH verdict and the ancestor's id, with
+        // nothing saying the reader was looking at the wrong project. Nothing
+        // in the graph can tell that apart from an ordinary subdirectory, so
+        // the ancestry is disclosed rather than guessed at.
+        $brief = new SessionBrief(
+            'fresh',
+            'project_1b4f41',
+            'Knossos-MCP',
+            '/root/Knossos-MCP',
+            3600,
+            0,
+            402,
+            [],
+            [],
+            [],
+            [],
+            true,
+            true,
+            '/root/Knossos-MCP/vendor/nested',
+        );
+        $text = (new SessionBriefRenderer())->render($brief);
+
+        assertSame(
+            true,
+            str_contains(
+                $text,
+                'Knossos project_1b4f41 (Knossos-MCP), rooted at /root/Knossos-MCP. '
+                    . '/root/Knossos-MCP/vendor/nested lies inside it and is not a scanned project of its own.',
+            ),
+        );
+    }
+
+    #[Group('query')]
+    public function testTheIdentityLineIsUnchangedWhenTheQueriedPathIsTheProjectRoot(): void
+    {
+        // The mirror, and the common case: a disclosure that always fired would
+        // pass the test above and be noise on every brief. Both spellings of
+        // "nothing to disclose" are checked, since gather() supplies the
+        // resolved path and hand-built briefs supply null.
+        $sameRoot = new SessionBrief(
+            'fresh',
+            'project_1b4f41',
+            'Knossos-MCP',
+            '/root/Knossos-MCP',
+            3600,
+            0,
+            402,
+            [],
+            [],
+            [],
+            [],
+            true,
+            true,
+            '/root/Knossos-MCP',
+        );
+        $unset = $this->brief('fresh');
+
+        $text = (new SessionBriefRenderer())->render($sameRoot);
+        $textUnset = (new SessionBriefRenderer())->render($unset);
+
+        assertSame(true, str_contains($text, "\nKnossos project_1b4f41 (Knossos-MCP)\n"));
+        assertSame(false, str_contains($text, 'rooted at'));
+        assertSame(false, str_contains($textUnset, 'rooted at'));
+        assertSame(true, str_contains($textUnset, "\nKnossos project_1b4f41 (Knossos-MCP)\n"));
+    }
+
+    #[Group('query')]
     public function testAMissingPathOutranksTheRootWarningInEveryStateThatHasOne(): void
     {
         // A path that is not on disk cannot be scanned and cannot be granted,

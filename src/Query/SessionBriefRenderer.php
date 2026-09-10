@@ -49,7 +49,7 @@ final readonly class SessionBriefRenderer
             return $this->fit([$verdict], $budget);
         }
 
-        $lines = [$verdict, sprintf('Knossos %s (%s)', (string) $brief->projectId, (string) $brief->projectName)];
+        $lines = [$verdict, $this->identity($brief)];
         $sections = [
             $this->section('Rules', $brief->rules),
             $this->section('Notes', $brief->notes),
@@ -64,6 +64,46 @@ final readonly class SessionBriefRenderer
             }
         }
         return $this->fit($lines, $budget);
+    }
+
+    /**
+     * Which project this is, and when that is not the directory that was asked about.
+     *
+     * A project is found by walking parents, so a session started in a
+     * subdirectory reaches its repository's graph. That is the common case and
+     * the one the walk exists for. It also means a repository that merely lives
+     * inside a scanned one, a vendored clone or a checkout under a scanned
+     * $HOME, resolves to its ancestor and receives that ancestor's rules, entry
+     * points and hubs. Nothing in the graph tells those two apart, and a
+     * heuristic that guessed would be confidently wrong on the cases it got
+     * wrong, which is the failure this whole feature exists to avoid.
+     *
+     * So the ancestry is disclosed rather than guessed at, and it is disclosed
+     * here rather than as a section of its own: the sections are optional and
+     * this qualifies the identity, which is the thing that would otherwise be
+     * read as an answer about the queried directory. It shares that line's fate
+     * under the budget, which is the right coupling. If the line is dropped for
+     * length, the project id goes with it, so there is no claim left standing
+     * for the disclosure to have qualified.
+     */
+    private function identity(SessionBrief $brief): string
+    {
+        $identity = sprintf('Knossos %s (%s)', (string) $brief->projectId, (string) $brief->projectName);
+        if ($brief->queriedPath === null || $brief->queriedPath === $brief->path) {
+            return $identity;
+        }
+
+        // Not "nothing here describes that directory", which would be false:
+        // an ancestor's scan usually does cover the files underneath it. What
+        // is true, and is the fact a reader of a nested repository needs, is
+        // that the directory asked about has no project of its own in this
+        // graph, so everything below is the ancestor's.
+        return sprintf(
+            '%s, rooted at %s. %s lies inside it and is not a scanned project of its own.',
+            $identity,
+            $brief->path,
+            $brief->queriedPath,
+        );
     }
 
     /**

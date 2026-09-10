@@ -43,6 +43,17 @@ final readonly class SessionBrief
      *   recommend nothing; $pathAllowed is then not consulted at all, because
      *   "outside every root" is not a useful thing to say about a directory
      *   that does not exist.
+     * @param string|null $queriedPath the path the caller actually asked
+     *   about, when that is not $path. $path is the resolved project's root,
+     *   and the two differ whenever a project was found by walking parents:
+     *   the common, wanted case of a session started in a subdirectory, and
+     *   the case this field exists for, a separate repository that merely
+     *   lives inside a scanned one. Nothing distinguishes those two from the
+     *   database, and guessing (a nested `.git`, say) would be wrong often
+     *   enough to be worse than saying which project this is. So the renderer
+     *   discloses the ancestry and lets the reader decide. Null, or equal to
+     *   $path, means the question was about the project root itself and there
+     *   is nothing to disclose.
      */
     public function __construct(
         public string $state,
@@ -58,5 +69,6 @@ final readonly class SessionBrief
         public array $hubs = [],
         public bool $pathAllowed = true,
         public bool $pathExists = true,
+        public ?string $queriedPath = null,
     ) {}
 }
