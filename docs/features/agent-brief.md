@@ -15,7 +15,11 @@ Sections are appended in a fixed priority order:
    counts, and the language mix. Always included.
 2. **Boundaries**: the top explicit/inferred boundaries by member count.
 3. **Entry points**: routes, commands, and controller/command-classified
-   components: where execution starts.
+   components: where execution starts. Test-role components are excluded; a
+   command stub declared in a test file carries the command role without
+   being a way into the system. The predicate is shared with the
+   [session brief](session-brief.md), which asks the same question of the
+   same graph.
 4. **Key hubs (most depended-on)**: the highest-degree components from
    `architecture_health`'s _filtered_ hub ranking (test-role and, unless
    requested, external/unresolved components are excluded: an unfiltered

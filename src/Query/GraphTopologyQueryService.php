@@ -678,6 +678,86 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
     }
 
     /**
+     * The top hubs on architecture_health's terms, at a session start's price.
+     *
+     * {@see architectureHealth()} is the authority on what a hub is, and this
+     * shares its two exclusions verbatim through {@see ReportableComponent}:
+     * vendor code and unresolved references are not this project's structure,
+     * and test code is measured by coverage rather than by architecture. It
+     * shares the degree definition too — inbound plus outbound over
+     * {@see AbstractArchitectureQueryService::IMPACT_EDGE_KINDS}, which is what
+     * keeps `contains` out of the tally, a relationship every declaration has
+     * with its own members and which therefore ranks nothing.
+     *
+     * What it does not share is the rest of that method. `architecture_health`
+     * also computes hotspots, runs a full cycle detection, and reconciles
+     * dead-code candidates, and it pays for all three before it can hand back
+     * hubs. Measured against this repository's own graph (6,058 components,
+     * 35,162 relationships) that is around 0.4s, against roughly 0.05s here.
+     * The session brief is billed on every session start, resume and compact,
+     * behind a hook that bounds itself at three seconds, so the whole report is
+     * the wrong thing to buy for one ranked list — and the gap widens with the
+     * graph, since the parts not needed here are the ones that scale worst.
+     *
+     * Filtering happens in PHP rather than in SQL so the predicates stay in one
+     * place instead of being restated as a WHERE clause that could drift from
+     * them. That is affordable because the ranking is consumed lazily: rows
+     * arrive in degree order and the loop stops as soon as $limit survivors are
+     * found, which on this repository means reading 21 rows to keep 5.
+     * $maxRowsExamined bounds the pathological case — a graph whose entire head
+     * is vendor code — so a brief can never turn into a full table scan.
+     *
+     * @return list<array{display_name: string, kind: string, degree: int}>
+     */
+    public function hubRanking(string $projectId, int $limit = 5, int $maxRowsExamined = 500): array
+    {
+        $placeholders = implode(',', array_fill(0, count(self::IMPACT_EDGE_KINDS), '?'));
+        $degrees = $this->pdo->prepare(
+            'SELECT n.id, n.display_name, n.kind, n.origin, d.degree FROM (' .
+            'SELECT node_id, COUNT(*) AS degree FROM (' .
+            sprintf('SELECT source_id AS node_id FROM edges WHERE project_id = ? AND kind IN (%s) ', $placeholders) .
+            'UNION ALL ' .
+            sprintf('SELECT target_id AS node_id FROM edges WHERE project_id = ? AND kind IN (%s)', $placeholders) .
+            ') GROUP BY node_id) d JOIN nodes n ON n.id = d.node_id AND n.project_id = ? ' .
+            'ORDER BY d.degree DESC, n.canonical_name',
+        );
+        $degrees->execute([$projectId, ...self::IMPACT_EDGE_KINDS, $projectId, ...self::IMPACT_EDGE_KINDS, $projectId]);
+        $roles = $this->pdo->prepare('SELECT role FROM classifications WHERE project_id = ? AND node_id = ?');
+
+        $hubs = [];
+        $examined = 0;
+        while (count($hubs) < $limit && $examined < $maxRowsExamined) {
+            $row = $degrees->fetch(PDO::FETCH_ASSOC);
+            if ($row === false) {
+                break;
+            }
+            ++$examined;
+            if (ReportableComponent::isExternal((string) $row['kind'], $row['origin'])) {
+                continue;
+            }
+            // Looked up per surviving candidate rather than joined for the
+            // whole ranking: the join would classify every component in the
+            // graph to report five of them.
+            $roles->execute([$projectId, $row['id']]);
+            /** @var list<string> $nodeRoles */
+            $nodeRoles = $roles->fetchAll(PDO::FETCH_COLUMN);
+            if (ReportableComponent::isTest($nodeRoles)) {
+                continue;
+            }
+            $hubs[] = [
+                'display_name' => (string) $row['display_name'],
+                'kind' => (string) $row['kind'],
+                'degree' => (int) $row['degree'],
+            ];
+        }
+        // The cursor is abandoned mid-result on every call that stops early,
+        // and SQLite holds its read lock until it is closed.
+        $degrees->closeCursor();
+
+        return $hubs;
+    }
+
+    /**
      * Paths by which one component can reach another, with the edges that justify each hop.
      *
      * @param list<string> $edgeKinds

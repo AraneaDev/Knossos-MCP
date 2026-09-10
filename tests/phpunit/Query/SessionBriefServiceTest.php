@@ -142,7 +142,49 @@ final class SessionBriefServiceTest extends KnossosTestCase
 
             assertSame('fresh', $brief->state);
             assertSame(true, in_array('LoginRoute (route)', $brief->entryPoints, true));
-            assertSame(true, in_array('PaymentGateway', $brief->hubs, true));
+            // Kind and degree travel with the name: a bare name gives an agent
+            // no way to judge why the component is on the list. The degree is
+            // the seeded 10 inbound `calls` edges, counted the way
+            // architecture_health counts, so this also pins that the brief
+            // ranks over impact relationships rather than over every edge.
+            assertSame(true, in_array('PaymentGateway (class, degree 10)', $brief->hubs, true));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testGraphSectionsExcludeTestAndVendorComponents(): void
+    {
+        // Against this repository's own graph the unfiltered ranking led with
+        // assertSame, InvalidArgumentException, count, StableId and sprintf: a
+        // test helper, an SPL class and two PHP built-ins offered to an agent
+        // as the components a change is most likely to reach. The seeds below
+        // reproduce both shapes deliberately, each outranking the real hub, so
+        // the filters are what keeps them out rather than an accident of the
+        // fixture's own degrees. The command stub is the entry-point half of
+        // the same problem: it carries the role without being a way in.
+        [$pdo, $projectId, $root] = $this->scanTempFixture('php-scanner');
+        try {
+            $this->seedRouteAndHub($pdo, $projectId);
+            $this->seedUnreportableNoise($pdo, $projectId);
+
+            $brief = (new SessionBriefService($pdo))->gather($root);
+
+            assertSame('fresh', $brief->state);
+            assertSame(true, in_array('PaymentGateway (class, degree 10)', $brief->hubs, true));
+            assertSame(true, in_array('LoginRoute (route)', $brief->entryPoints, true));
+            // Both outrank PaymentGateway at 12 inbound edges apiece, so
+            // either one appearing would mean the filter never ran.
+            assertSame(false, in_array('VendorClient (external_class, degree 12)', $brief->hubs, true));
+            assertSame(false, in_array('TestKitAssert (method, degree 12)', $brief->hubs, true));
+            // 'command' sorts before 'route', so an unfiltered entry-point
+            // query puts this stub ahead of the real route.
+            assertSame(false, in_array('FakeCommandStub (command)', $brief->entryPoints, true));
+            // The role a classifier gives a controller is the whole reason
+            // this repository rendered no entry points at all: nothing here
+            // carries the `route`, `command` or `endpoint` kind.
+            assertSame(true, in_array('CheckoutController (class)', $brief->entryPoints, true));
         } finally {
             $this->removeTempTree($root);
         }
@@ -472,6 +514,98 @@ final class SessionBriefServiceTest extends KnossosTestCase
                 "test:session-brief-edge-{$i}",
                 $scanId,
             );
+        }
+    }
+
+    /**
+     * The three components a brief must never offer, each seeded so that only
+     * a filter can keep it out.
+     *
+     * Two of them are hubs by degree: a vendor class and a test helper, both
+     * wired to 12 inbound edges against the seeded hub's 10, so an unfiltered
+     * ranking puts them above it. The third is a command stub carrying the
+     * command role inside a test module, which an unfiltered entry-point query
+     * sorts ahead of the real route because 'command' precedes 'route'.
+     *
+     * The seeded controller is the positive half: it holds no entry-point
+     * kind, only an `application.controller` role, which is how every way into
+     * a repository this scanner classifies is actually recognised.
+     */
+    private function seedUnreportableNoise(PDO $pdo, string $projectId): void
+    {
+        $repository = new SqliteGraphRepository($pdo);
+        $statement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+        $scanId = (string) $statement->fetchColumn();
+
+        $saveNode = static function (string $kind, string $canonical, string $display, string $origin) use ($repository, $projectId, $scanId): string {
+            $id = StableId::symbol($projectId, 'php', $kind, $canonical);
+            $repository->saveNode(
+                $id,
+                $projectId,
+                'php',
+                $kind,
+                $canonical,
+                $display,
+                null,
+                null,
+                null,
+                null,
+                $origin,
+                'certain',
+                [],
+                'test:session-brief-' . $display,
+                $scanId,
+            );
+
+            return $id;
+        };
+        $classify = static function (string $nodeId, string $role) use ($repository, $projectId, $scanId): void {
+            $repository->saveClassification(
+                StableId::classification($projectId, $nodeId, $role, 'test:session-brief'),
+                $projectId,
+                $nodeId,
+                $role,
+                'heuristic',
+                'certain',
+                'test:session-brief',
+                null,
+                null,
+                null,
+                [],
+                $scanId,
+            );
+        };
+
+        $vendor = $saveNode('external_class', 'Vendor\\VendorClient', 'VendorClient', 'external');
+        $helper = $saveNode('method', 'App\\Tests\\TestKit::assert', 'TestKitAssert', 'ast');
+        $classify($helper, 'quality.test_module');
+        $stub = $saveNode('command', 'App\\Tests\\FakeCommandStub', 'FakeCommandStub', 'ast');
+        $classify($stub, 'application.command');
+        $classify($stub, 'quality.test_module');
+        $controller = $saveNode('class', 'App\\CheckoutController', 'CheckoutController', 'ast');
+        $classify($controller, 'application.controller');
+
+        for ($i = 0; $i < 12; $i++) {
+            $source = $saveNode('class', "App\\Noise{$i}", "Noise{$i}", 'ast');
+            foreach ([$vendor, $helper] as $target) {
+                $owner = "test:session-brief-noise-{$i}-{$target}";
+                $repository->saveEdge(
+                    StableId::edge($projectId, 'calls', $source, $target, $owner),
+                    $projectId,
+                    'calls',
+                    $source,
+                    $target,
+                    null,
+                    null,
+                    null,
+                    'ast',
+                    'certain',
+                    [],
+                    $owner,
+                    $scanId,
+                );
+            }
         }
     }
 }

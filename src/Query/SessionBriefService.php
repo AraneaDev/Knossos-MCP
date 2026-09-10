@@ -32,6 +32,8 @@ final readonly class SessionBriefService
     private const MAX_ENTRY_POINTS = 4;
     private const MAX_HUBS = 5;
 
+    private GraphTopologyQueryService $topology;
+
     /**
      * @param string|null $databasePath where the database lives, used only to
      *   locate `roots.json` beside it (see {@see AllowedRoots::defaultConfigPath()}).
@@ -40,8 +42,20 @@ final readonly class SessionBriefService
      *   {@see self::rootStatus()} then treats every path as allowed rather
      *   than raising a warning it has no basis for. A missing database path
      *   is not evidence of a missing root.
+     * @param GraphTopologyQueryService|null $topology the service that owns the
+     *   hub ranking, so this brief and `architecture_health` cannot come to
+     *   disagree about what a hub is. Optional because most callers hold a PDO
+     *   and nothing else; a caller that already built one (every caller that
+     *   arrives through {@see ArchitectureQueryService}) passes it rather than
+     *   paying for a second.
      */
-    public function __construct(private PDO $pdo, private ?string $databasePath = null) {}
+    public function __construct(
+        private PDO $pdo,
+        private ?string $databasePath = null,
+        ?GraphTopologyQueryService $topology = null,
+    ) {
+        $this->topology = $topology ?? new GraphTopologyQueryService($pdo);
+    }
 
     /**
      * The gathered brief for whatever project contains this path.
@@ -275,14 +289,28 @@ final readonly class SessionBriefService
     /**
      * Where execution enters the system. Graph-derived, so fresh graphs only.
      *
+     * The predicate comes from {@see EntryPointCriteria}, which the agent brief
+     * uses too. Matching node kinds alone, as this did, found nothing at all in
+     * a repository whose ways in are recognised by classification rather than
+     * tagged by kind: this one holds 11 `application.command` and 32
+     * `application.entry_point` classifications and not a single `route`,
+     * `command` or `endpoint` node, and rendered no entry-point section.
+     *
+     * The ordering is this method's own, because four of forty is a choice the
+     * agent brief's twelve does not have to make. Kind-declared entry points
+     * lead; the rest fall back to the same kind-then-name ordering, which is
+     * arbitrary but stable, so the section does not reshuffle between two
+     * sessions on an unchanged graph.
+     *
      * @return list<string>
      */
     private function entryPoints(string $projectId): array
     {
         $statement = $this->pdo->prepare(
-            'SELECT n.display_name, n.kind FROM nodes n ' .
-            "WHERE n.project_id = :project AND n.kind IN ('route', 'command', 'endpoint') " .
-            'ORDER BY n.kind, n.canonical_name LIMIT ' . self::MAX_ENTRY_POINTS,
+            'SELECT n.display_name, n.kind FROM nodes n WHERE n.project_id = :project AND ' .
+            EntryPointCriteria::sqlCondition() .
+            ' ORDER BY ' . EntryPointCriteria::sqlKindPriority() . ', n.kind, n.canonical_name ' .
+            'LIMIT ' . self::MAX_ENTRY_POINTS,
         );
         $statement->execute(['project' => $projectId]);
         return array_map(
@@ -294,20 +322,32 @@ final readonly class SessionBriefService
     /**
      * The components a change is most likely to reach. Graph-derived.
      *
+     * Delegated to {@see GraphTopologyQueryService::hubRanking()} rather than
+     * ranked here, because a raw edge count is not a hub ranking. Counting
+     * every inbound edge over every relationship kind put `assertSame`,
+     * `InvalidArgumentException`, `count`, `StableId` and `sprintf` at the head
+     * of this repository's own brief: a test helper, an SPL class, two PHP
+     * built-ins and one real component, offered to an agent as the components a
+     * change is most likely to reach. Test code and vendor code have to be out,
+     * on the same terms `architecture_health` applies, or the section is worse
+     * than absent.
+     *
+     * Kind and degree are rendered with the name, one line each, because a bare
+     * name says nothing about why it is on the list. That is what the agent
+     * brief shows, for the same reason.
+     *
      * @return list<string>
      */
     private function hubs(string $projectId): array
     {
-        $statement = $this->pdo->prepare(
-            'SELECT n.display_name, COUNT(e.id) AS degree FROM nodes n ' .
-            'JOIN edges e ON e.target_id = n.id ' .
-            'WHERE n.project_id = :project GROUP BY n.id ' .
-            'ORDER BY degree DESC, n.canonical_name LIMIT ' . self::MAX_HUBS,
-        );
-        $statement->execute(['project' => $projectId]);
         return array_map(
-            static fn(array $row): string => (string) $row['display_name'],
-            $statement->fetchAll(PDO::FETCH_ASSOC),
+            static fn(array $hub): string => sprintf(
+                '%s (%s, degree %d)',
+                $hub['display_name'],
+                $hub['kind'],
+                $hub['degree'],
+            ),
+            $this->topology->hubRanking($projectId, self::MAX_HUBS),
         );
     }
 }

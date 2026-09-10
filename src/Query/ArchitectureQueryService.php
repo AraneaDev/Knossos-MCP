@@ -398,6 +398,6 @@ final readonly class ArchitectureQueryService
      */
     public function sessionBrief(string $path, ?string $databasePath = null): string
     {
-        return (new SessionBriefService($this->pdo, $databasePath))->brief($path);
+        return (new SessionBriefService($this->pdo, $databasePath, $this->topologyQueries))->brief($path);
     }
 }

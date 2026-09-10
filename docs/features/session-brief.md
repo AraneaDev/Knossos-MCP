@@ -173,8 +173,7 @@ The brief draws a hard line between two kinds of material:
   from the config snapshot stored at scan time, so a policy edited since the
   last scan is still the policy CI will enforce), and notes, read from the
   `note`-kind rows in the annotations table.
-- **Graph-derived**: entry points (routes, commands, and endpoints) and hubs
-  (the most-depended-on components by inbound edge count).
+- **Graph-derived**: entry points and hubs, both filtered (see below).
 
 Rules and notes are rendered for every state that has a project at all
 (fresh, stale, unverified, missing), because neither a declaration in
@@ -189,6 +188,51 @@ so they can describe a codebase that no longer exists once the tree has
 drifted from the scan that produced them. Showing them under `stale` or
 `unverified` would present stale structural claims with the same confidence
 as current ones.
+
+## What the two graph sections show, and what they leave out
+
+Both sections rank over the graph, and both have to leave most of it out. A
+section an agent cannot trust at a glance is worse than an absent one,
+because it is read anyway.
+
+**Hubs** are the top five components by degree, counted the way
+`architecture_health` counts: inbound plus outbound over dependency
+relationships, so `contains` (which every declaration has with its own
+members, and which therefore ranks nothing) is not in the tally. Vendor code,
+unresolved references and test code are excluded, on exactly the terms
+`architecture_health` applies them; the predicates are shared rather than
+restated. Each hub is rendered with its
+kind and degree, one line each, because a bare name says nothing about why
+it is on the list.
+
+Ranking on raw edge counts instead is what this section used to do, and
+against this repository's own graph it produced `assertSame`,
+`InvalidArgumentException`, `count`, `StableId` and `sprintf`: a test
+assertion helper, an SPL class, two PHP built-ins, and one real component.
+
+The full `architecture_health` report is not what produces this. That call
+also computes hotspots, detects cycles and reconciles dead-code candidates
+before it can hand back a hub list, which on this repository's graph costs
+about 0.4s against 0.03s for the ranking alone. This runs on every session
+start behind a hook that bounds itself at three seconds, so the brief asks
+for the ranking and nothing else.
+
+**Entry points** are the first four ways into the system, matched either by
+node kind (`route`, `command`, `endpoint`) or by a classification role
+(`application.controller`, `application.command`, `application.entry_point`,
+`laravel.controller`, `laravel.command`), and never when the component is
+classified as test code. Kind-declared entry points lead, because a scanner
+read those off a route or command declaration rather than inferring them
+from shape; the rest are ordered by kind and name, which is arbitrary but
+stable across sessions on an unchanged graph.
+
+Matching on kind alone, as this section used to, found nothing at all in a
+repository whose ways in are classified rather than kind-tagged: this one
+holds 11 `application.command` and 32 `application.entry_point`
+classifications and not a single `route`, `command` or `endpoint` node, so
+the section was simply never rendered. Nothing failed, which is why it went
+unnoticed. The predicate now lives in one place and is shared with the
+[agent brief](agent-brief.md).
 
 ## Why node counts and language mix are missing
 
