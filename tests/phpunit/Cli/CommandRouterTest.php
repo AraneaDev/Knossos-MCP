@@ -39,28 +39,6 @@ final class CommandRouterTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         );
     }
 
-    /**
-     * Run a callable with the given environment variable cleared;
-     * restore the previous value (or absence) afterwards even if the
-     * callable throws. Pattern introduced in batch 10b for
-     * KNOSSOS_ALLOWED_ROOTS and reused here for the same env var
-     * across M9 + M11.
-     */
-    private function withEnvCleared(string $name, callable $fn): void
-    {
-        $previous = getenv($name);
-        putenv($name);
-        try {
-            $fn();
-        } finally {
-            if ($previous === false) {
-                putenv($name);
-            } else {
-                putenv($name . '=' . $previous);
-            }
-        }
-    }
-
     // ===== Constructor + dispatch routes =================================
 
     public function testRouterRoutesVersionCommandWithoutEagerDbInit(): void
@@ -154,10 +132,12 @@ final class CommandRouterTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     {
         // M9 / route() -> ServeCommand. After getenv check, the route()
         // reaches ServeCommand.run() which throws 'serve requires at
-        // least one --allow-root=PATH...'. The withEnvCleared() helper
-        // ensures KNOSSOS_ALLOWED_ROOTS is cleared for this run
-        // (inherited from the user's shell env).
-        $this->withEnvCleared('KNOSSOS_ALLOWED_ROOTS', function (): void {
+        // least one --allow-root=PATH...'. withoutAmbientAllowedRoots()
+        // removes both root sources for this run: the environment
+        // variable inherited from the user's shell, and the roots file
+        // beside the default database, which the router resolves from
+        // this checkout and which `knossos allow-root` writes.
+        $this->withoutAmbientAllowedRoots(function (): void {
             $router = $this->newRouter();
             assertThrows(
                 fn() => $router->route('serve', [], []),
@@ -217,7 +197,7 @@ final class CommandRouterTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         // trace which of the 6 individual tests is failing).
         $router = $this->newRouter();
         assertSame(0, $router->route('version', [], []));
-        $this->withEnvCleared('KNOSSOS_ALLOWED_ROOTS', function () use ($router): void {
+        $this->withoutAmbientAllowedRoots(function () use ($router): void {
             assertThrows(fn() => $router->route('scan', [], []), InvalidArgumentException::class);
             assertThrows(fn() => $router->route('watch', [], []), InvalidArgumentException::class);
             assertThrows(fn() => $router->route('export-bundle', ['proj-1'], []), InvalidArgumentException::class);

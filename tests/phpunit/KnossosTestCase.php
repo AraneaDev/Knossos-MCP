@@ -9,6 +9,7 @@ use Throwable;
 
 abstract class KnossosTestCase extends TestCase
 {
+    use Support\AmbientRoots;
     use Support\Fixtures;
     use Support\Processes;
     use Support\TempTrees;

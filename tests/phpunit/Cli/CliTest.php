@@ -456,18 +456,17 @@ final class CliTest extends KnossosTestCase
     #[Group('cli')]
     public function testServeRefusesToStartWithoutAnExplicitAllowedRoot(): void
     {
+        // Both root sources are removed, not just the environment one: this
+        // runs the real binary with no --db, so it reads the roots file beside
+        // this checkout's own database, and `knossos allow-root` on the
+        // checkout used to be enough to make the refusal under test stop
+        // happening. See AmbientRoots.
         $binary = self::repositoryRoot() . '/bin/knossos';
-        $previous = getenv('KNOSSOS_ALLOWED_ROOTS');
-        putenv('KNOSSOS_ALLOWED_ROOTS');
-        try {
+        $this->withoutAmbientAllowedRoots(function () use ($binary): void {
             [$exit, , $stderr] = $this->runFixtureCommandOutput([PHP_BINARY, $binary, 'serve']);
             assertSame(2, $exit);
             assertContains('--allow-root', $stderr);
-        } finally {
-            if (is_string($previous)) {
-                putenv('KNOSSOS_ALLOWED_ROOTS=' . $previous);
-            }
-        }
+        });
     }
 
     #[Group('cli')]
