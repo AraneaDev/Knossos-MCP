@@ -77,6 +77,30 @@ final class AgentBriefBoundsTest extends KnossosTestCase
         assertSame(false, str_contains($markdown, 'fff: 1'), 'Only five languages are named.');
     }
 
+    /**
+     * Exactly five languages are all named, with nothing counted after them.
+     *
+     * Eight languages cannot tell the cap from an off-by-one, because both
+     * readings truncate. Five is the only count that separates them: the rule as
+     * written names all five, and one step out appends a remainder of zero.
+     */
+    #[Group('query')]
+    public function testExactlyFiveLanguagesAreAllNamedWithNoRemainder(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $scan = (string) $pdo->query("SELECT active_scan_id FROM projects WHERE id = '" . $ids['project'] . "'")->fetchColumn();
+        // Four more beside the fixture's own php file makes five.
+        foreach (['aaa', 'bbb', 'ccc', 'ddd'] as $language) {
+            self::addFile($pdo, $ids['project'], $scan, $language);
+        }
+
+        $markdown = (new ArchitectureQueryService($pdo))->exportAgentBrief($ids['project'])->data['markdown'];
+
+        assertSame(true, str_contains($markdown, 'aaa: 1, bbb: 1, ccc: 1, ddd: 1, php: 1'), $markdown);
+        assertSame(false, str_contains($markdown, '+0 more'), 'Five languages are five, not five and a remainder of none.');
+    }
+
     /** A scan with no finish time is described as the active snapshot. */
     #[Group('query')]
     public function testAScanWithNoFinishTimeIsDescribedAsTheActiveSnapshot(): void
