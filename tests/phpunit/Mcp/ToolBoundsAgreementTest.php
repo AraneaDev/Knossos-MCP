@@ -85,10 +85,14 @@ final class ToolBoundsAgreementTest extends KnossosTestCase
      * what passing its advertised default produces. The values come from the
      * schema and are never restated here, so moving either copy breaks it.
      *
-     * Each call gets its own store, because the tools whose default is
-     * `execute => false` write to the database as soon as that default is
-     * wrong, and a shared fixture would carry that damage into later
-     * comparisons.
+     * Both calls of a pair share one store. A scan stamps itself with the wall
+     * clock and with a fresh id, so two fixtures built a second apart differ in
+     * ways that have nothing to do with the default under test. Comparing across
+     * two fixtures made this test flaky, and that flakiness broke a mutation
+     * audit's initial run before it was caught here. Sharing is safe in the
+     * direction that matters: a correct `execute => false` default means neither
+     * call writes anything, and when that default is wrong, the write the
+     * omitted call performs is precisely what makes the two disagree.
      */
     #[Group('mcp')]
     public function testEveryAdvertisedDefaultIsTheOneApplied(): void
@@ -104,9 +108,10 @@ final class ToolBoundsAgreementTest extends KnossosTestCase
                 if (!in_array($spec['type'] ?? null, ['integer', 'boolean'], true)) {
                     continue;
                 }
+                [$tools, $project] = $this->tools();
                 assertSame(
-                    $this->outcomeOf($name, $definition, (string) $key, $spec['default']),
-                    $this->outcomeOf($name, $definition, (string) $key, null),
+                    self::outcomeOf($tools, $project, $name, $definition, (string) $key, $spec['default']),
+                    self::outcomeOf($tools, $project, $name, $definition, (string) $key, null),
                     sprintf(
                         '%s.%s: omitting the argument must do what its advertised default (%s) does.',
                         $name,
@@ -156,23 +161,28 @@ final class ToolBoundsAgreementTest extends KnossosTestCase
     }
 
     /**
-     * What one call produces against a store of its own: the data it returns,
-     * or the error it fails with. `null` omits the argument entirely.
+     * What one call produces: the data it returns, or the error it fails with.
+     * `null` omits the argument entirely.
+     *
+     * Wall-clock stamps are blanked before comparing. A tool that reports when a
+     * scan finished would otherwise differ between two calls made either side of
+     * a second boundary, which says nothing about the default under test.
      *
      * @param array<string, mixed> $definition
      */
-    private function outcomeOf(string $name, array $definition, string $key, mixed $value): string
+    private static function outcomeOf(ToolService $tools, string $project, string $name, array $definition, string $key, mixed $value): string
     {
-        [$tools, $project] = $this->tools();
         $arguments = self::requiredArguments($definition, $project);
         if ($value !== null) {
             $arguments[$key] = $value;
         }
         try {
-            return json_encode($tools->call($name, $arguments)->data, JSON_THROW_ON_ERROR);
+            $encoded = json_encode($tools->call($name, $arguments)->data, JSON_THROW_ON_ERROR);
         } catch (Throwable $error) {
             return $error::class . ': ' . $error->getMessage();
         }
+
+        return preg_replace('/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/', '<time>', $encoded) ?? $encoded;
     }
 
     /**
