@@ -16,11 +16,19 @@ use PDO;
  */
 final class SqliteSnapshotArchive
 {
-    /** @param list<string> $capturedTables */
+    /**
+     * @param list<string> $capturedTables
+     * @param int $maxRowsPerTable more rows than this in any captured table and
+     *   the snapshot records why instead of the facts
+     * @param int $maxPayloadBytes the same, for the uncompressed payload size;
+     *   both ceilings are parameters so a test can reach them with a few rows
+     */
     public function __construct(
         private readonly PDO $pdo,
         private readonly SqliteScanLifecycle $lifecycle,
         private readonly array $capturedTables,
+        private readonly int $maxRowsPerTable = 200_000,
+        private readonly int $maxPayloadBytes = 50_000_000,
     ) {}
 
     /**
@@ -42,9 +50,6 @@ final class SqliteSnapshotArchive
         }
         $project = $this->lifecycle->findProject($projectId);
         $scanId = is_array($project) ? $project['active_scan_id'] : null;
-        if (!is_string($scanId) || $scanId === '') {
-            return;
-        }
         // Skip when the active graph is unchanged: a snapshot for this scan was
         // already captured, so there is nothing new to archive. This also
         // avoids materialising and JSON-encoding a payload only for the
@@ -57,37 +62,23 @@ final class SqliteSnapshotArchive
         $scan = $this->pdo->prepare('SELECT scanner_set_hash FROM scans WHERE id = :scan AND project_id = :project AND status = :status');
         $scan->execute(['scan' => $scanId, 'project' => $projectId, 'status' => 'complete']);
         $scannerHash = $scan->fetchColumn();
+        // Also covers a project with no active scan at all, or an unknown one:
+        // there is then no complete scan to find, and nothing to capture.
         if (!is_string($scannerHash)) {
             return;
         }
 
-        // Count first so an over-limit table is never fetched into memory only
-        // to be discarded (the previous SELECT * ... LIMIT 200001 + fetchAll
-        // materialised up to 1.4M rows before checking the bound).
-        $complete = true;
-        foreach ($this->capturedTables as $table) {
-            $count = $this->pdo->prepare(sprintf('SELECT COUNT(*) FROM %s WHERE project_id = :project', $table));
-            $count->execute(['project' => $projectId]);
-            if ((int) $count->fetchColumn() > 200_000) {
-                $complete = false;
-                break;
-            }
+        // Which ceiling stopped the capture, if one did: too many facts to be
+        // worth keeping, or a payload that outgrew the byte cap while being
+        // written. A stopped capture stores the reason instead of the facts.
+        $reason = $this->overRowLimit($projectId) ? 'fact_limit' : null;
+        $captured = $reason === null ? $this->streamSnapshotPayload($projectId) : null;
+        if ($captured === null) {
+            $reason ??= 'byte_limit';
+            $encoded = SqliteValues::json(['schema' => 1, 'reason' => $reason]);
+            $captured = [SnapshotPayload::encode($encoded), 0, strlen($encoded)];
         }
-
-        // Streamed row by row into an incremental compressor rather than built
-        // whole: materialising the payload cost several times its own size in
-        // peak memory, and that multiplier grew with the project.
-        [$payload, $factCount, $byteSize] = $complete
-            ? $this->streamSnapshotPayload($projectId, $this->capturedTables, $complete)
-            : [null, 0, 0];
-        if (!$complete) {
-            // Which ceiling stopped it: too many facts to be worth keeping, or a
-            // payload that outgrew the byte cap while being written.
-            $encoded = SqliteValues::json(['schema' => 1, 'reason' => $payload === null ? 'fact_limit' : 'byte_limit']);
-            $factCount = 0;
-            $byteSize = strlen($encoded);
-            $payload = SnapshotPayload::encode($encoded);
-        }
+        [$payload, $factCount, $byteSize] = $captured;
         // byte_size stays the size of the facts themselves. It answers "how big
         // is this snapshot", which readers compare across scans; how many bytes
         // the row happens to occupy after compression is a storage detail.
@@ -97,25 +88,48 @@ final class SqliteSnapshotArchive
         );
         $insert->execute([
             'scan' => $scanId, 'project' => $projectId, 'scanner' => $scannerHash, 'config' => $configHash,
-            'complete' => $complete ? 1 : 0, 'facts' => $factCount, 'bytes' => $byteSize,
+            'complete' => $reason === null ? 1 : 0, 'facts' => $factCount, 'bytes' => $byteSize,
             'payload' => $payload, 'captured' => SqliteValues::now(),
         ]);
     }
 
     /**
+     * Whether any captured table holds more of this project's rows than a
+     * snapshot keeps.
+     *
+     * Counted first so an over-limit table is never fetched into memory only to
+     * be discarded (the previous SELECT * ... LIMIT 200001 + fetchAll
+     * materialised up to 1.4M rows before checking the bound).
+     */
+    private function overRowLimit(string $projectId): bool
+    {
+        foreach ($this->capturedTables as $table) {
+            $count = $this->pdo->prepare(sprintf('SELECT COUNT(*) FROM %s WHERE project_id = :project', $table));
+            $count->execute(['project' => $projectId]);
+            if ((int) $count->fetchColumn() > $this->maxRowsPerTable) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Compress a project's facts into a stored payload as the rows are read.
      *
-     * @param list<string> $tables
-     * @param bool $complete set to false when the payload outgrew its byte ceiling
+     * Streamed row by row into an incremental compressor rather than built
+     * whole: materialising the payload cost several times its own size in peak
+     * memory, and that multiplier grew with the project.
      *
-     * @return array{0: string, 1: int, 2: int} payload, fact count, uncompressed size
+     * @return array{0: string, 1: int, 2: int}|null payload, fact count and
+     *   uncompressed size, or null when the payload outgrew its byte ceiling
      */
-    private function streamSnapshotPayload(string $projectId, array $tables, bool &$complete): array
+    private function streamSnapshotPayload(string $projectId): ?array
     {
-        $writer = SnapshotPayload::writer(50_000_000);
+        $writer = SnapshotPayload::writer($this->maxPayloadBytes);
         $writer->write('{"schema":1,"facts":{');
         $factCount = 0;
-        foreach ($tables as $index => $table) {
+        foreach ($this->capturedTables as $index => $table) {
             $order = $table === 'boundary_memberships' ? 'boundary_id, node_id' : 'id';
             $statement = $this->pdo->prepare(sprintf('SELECT * FROM %s WHERE project_id = :project ORDER BY %s', $table, $order));
             $statement->execute(['project' => $projectId]);
@@ -134,12 +148,15 @@ final class SqliteSnapshotArchive
             $writer->write(']');
             if ($writer->exceeded()) {
                 // Past the ceiling the payload is discarded, so stop reading.
-                $complete = false;
-
-                return ['', 0, 0];
+                return null;
             }
         }
         $writer->write('}}');
+        // Checked once more after the closing braces: a payload those two
+        // bytes carried past the ceiling was otherwise stored as complete.
+        if ($writer->exceeded()) {
+            return null;
+        }
 
         return [$writer->finish(), $factCount, $writer->byteSize()];
     }
