@@ -6,6 +6,7 @@ namespace Knossos\Tests\Scan;
 
 use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveryResult;
+use Knossos\Discovery\ProjectUnit;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\LanguageDescriptor;
@@ -36,7 +37,7 @@ final class LanguageScanRunnerTest extends TestCase
         // left one file in the system temp directory per run of
         // testAReducedBudgetDoesNotPinTheRestOfTheLanguage().
         if ($this->recordPath !== null) {
-            foreach ([$this->recordPath, $this->recordPath . '.overflowed', $this->recordPath . '.oomed', $this->recordPath . '.framed'] as $path) {
+            foreach ([$this->recordPath, $this->recordPath . '.overflowed', $this->recordPath . '.oomed', $this->recordPath . '.framed', $this->recordPath . '.request'] as $path) {
                 if (is_file($path)) {
                     unlink($path);
                 }
@@ -133,7 +134,10 @@ final class LanguageScanRunnerTest extends TestCase
 
     public function testRunThrowsScanCancelledExceptionWhenTokenPreCancelled(): void
     {
-        $pool = $this->createStub(LanguageWorkerPool::class);
+        // Before any worker is asked for: starting one only to cancel it costs a
+        // process spawn per language, for a scan nobody wants any more.
+        $pool = $this->createMock(LanguageWorkerPool::class);
+        $pool->expects($this->never())->method('client');
         $cache = new ContributionCacheService();
         $descriptor = new LanguageDescriptor(
             key: 'php',
@@ -956,5 +960,182 @@ final class LanguageScanRunnerTest extends TestCase
             $result->batchBudgets['knossos.typescript']['source_bytes'],
             $result->batchBudgets['knossos.typescript']['source_bytes_used'],
         );
+    }
+
+    /**
+     * Each language's worker is told the limits, and the frameworks and config
+     * files that are its own and nobody else's.
+     *
+     * The units are listed with each language's own one after a unit it must
+     * not see, so a config list that kept its filtered keys would reach the
+     * worker as an object rather than a list.
+     */
+    public function testEachWorkerIsSentItsLimitsFrameworksAndOwnConfigFiles(): void
+    {
+        $this->allocateRecordPath();
+        $keys = ['php', 'typescript', 'python', 'rust'];
+        $clients = array_combine($keys, array_map(fn(): ProcessScannerClient => $this->workerClient('per_file_request'), $keys));
+        $base = $this->makePreparationWithFiles(
+            [
+                $this->fileFixture('src/A.php', 'php'),
+                $this->fileFixture('web/a.ts', 'typescript'),
+                $this->fileFixture('py/a.py', 'python'),
+                $this->fileFixture('rs/a.rs', 'rust'),
+            ],
+            ['php' => 'cfg-php', 'typescript' => 'cfg-ts', 'python' => 'cfg-py', 'rust' => 'cfg-rs'],
+        );
+        $preparation = new ScanPreparation(
+            configuration: $base->configuration,
+            discovery: new DiscoveryResult(
+                rootRealpath: '/tmp/foo',
+                files: $base->discovery->files,
+                units: [
+                    new ProjectUnit('composer', 'composer.json', 'h1'),
+                    new ProjectUnit('typescript', 'web/tsconfig.json', 'h2'),
+                    new ProjectUnit('cargo', 'rs/Cargo.toml', 'h3'),
+                ],
+                diagnostics: [],
+                inputHash: '',
+                configurationHash: '',
+            ),
+            maxFiles: 7,
+            maxFileBytes: 9_000,
+            explicitBoundaries: [],
+            requestedMode: 'fast',
+            snapshotRetention: 0,
+            executionPolicy: new WorkerExecutionPolicy(),
+            laravel: true,
+            symfony: false,
+            configurationHashes: $base->configurationHashes,
+            configurationMilliseconds: 0.0,
+            discoveryMilliseconds: 0.0,
+            planningMilliseconds: 0.0,
+            pythonFrameworks: ['django'],
+            rustFrameworks: ['axum'],
+        );
+
+        $this->runnerWithClients($clients)->run(
+            new ScanPlan(preparation: $preparation, projectId: 'plan-requests', effectiveMode: 'fast', cacheByScannerPath: [], deletedFiles: 0),
+            new CancellationToken(),
+        );
+
+        $limits = ['root' => '/tmp/foo', 'limits' => ['max_files' => 7, 'max_file_bytes' => 9_000]];
+        assertSame(
+            [
+                [...$limits, 'frameworks' => ['laravel']],
+                [...$limits, 'config_files' => ['web/tsconfig.json']],
+                [...$limits, 'frameworks' => ['django']],
+                [...$limits, 'frameworks' => ['axum'], 'config_files' => ['rs/Cargo.toml']],
+            ],
+            array_map(
+                static fn(string $line): mixed => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
+                array_values(array_filter(explode("\n", (string) file_get_contents($this->recordPath . '.request')))),
+            ),
+        );
+    }
+
+    /**
+     * A batch closes exactly when the next file would take it past the byte
+     * budget, and a file with no size adds nothing to the total.
+     *
+     * The sizes put every comparison on its boundary: the first batch reaches
+     * 300,001 only through its sizeless file counting zero, the second reaches
+     * exactly 300,000 and holds, and the third ends on a sizeless file at
+     * exactly the budget.
+     */
+    public function testABatchClosesExactlyWhereTheByteBudgetWouldBeExceeded(): void
+    {
+        $sizes = [150_000, 0, 150_001, 149_999, 1, 299_999, 0];
+        $files = [];
+        foreach ($sizes as $index => $size) {
+            $files[] = $this->fileFixture(sprintf('src/F%d.php', $index), 'php', $size);
+        }
+        $runner = $this->runnerWithClients(
+            ['php' => $this->recordingClient()],
+            [$this->descriptorFor('php', batchSourceBytes: 300_000)],
+        );
+
+        $runner->run(
+            new ScanPlan(
+                preparation: $this->makePreparationWithFiles($files, ['php' => 'cfg-php', 'typescript' => 'cfg-ts', 'python' => 'cfg-py']),
+                projectId: 'plan-boundaries',
+                effectiveMode: 'fast',
+                cacheByScannerPath: [],
+                deletedFiles: 0,
+            ),
+            new CancellationToken(),
+        );
+
+        assertSame([2, 2, 3], $this->recordedBatches());
+    }
+
+    /**
+     * Halving never takes the reported budget below one byte, the smallest
+     * budget that still sends a file. From 3 it goes to 1 and stays there.
+     */
+    public function testAHalvedBudgetStopsAtOneByte(): void
+    {
+        $this->allocateRecordPath();
+        $runner = $this->runnerWithWorkerFactory(
+            fn(): ProcessScannerClient => $this->workerClient('per_file_overflow', threshold: 0, tightCap: true),
+            $this->descriptorFor('php', batchSourceBytes: 3),
+        );
+
+        $result = $runner->run(
+            $this->planForFiles(['src/A.php' => 'php', 'src/B.php' => 'php', 'src/C.php' => 'php', 'src/D.php' => 'php']),
+            new CancellationToken(),
+        );
+
+        assertSame(1 + WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS, count($this->recordedBatches()));
+        assertSame('WORKER_OUTPUT_LIMIT', $result->workerDiagnostics[0]['code']);
+        assertSame(1, $result->batchBudgets['knossos.php']['source_bytes_used']);
+    }
+
+    /** Every language's new and changed files are counted, not only the last language's. */
+    public function testAddedAndChangedFilesAreSummedAcrossLanguages(): void
+    {
+        $this->allocateRecordPath();
+        $stale = static fn(string $path): array => ["knossos.fake\0" . $path => [
+            'content_hash' => 'stale', 'scanner_version' => '0.1.0', 'configuration_hash' => 'cfg', 'payload_json' => '{}',
+        ]];
+        $runner = $this->runnerWithClients(['php' => $this->workerClient('per_file'), 'typescript' => $this->workerClient('per_file')]);
+
+        $result = $runner->run(
+            new ScanPlan(
+                preparation: $this->makePreparationWithFiles(
+                    [
+                        $this->fileFixture('src/A.php', 'php'),
+                        $this->fileFixture('src/B.php', 'php'),
+                        $this->fileFixture('web/a.ts', 'typescript'),
+                        $this->fileFixture('web/b.ts', 'typescript'),
+                    ],
+                    ['php' => 'cfg', 'typescript' => 'cfg', 'python' => 'cfg'],
+                ),
+                projectId: 'plan-counts',
+                effectiveMode: 'fast',
+                cacheByScannerPath: [...$stale('src/B.php'), ...$stale('web/b.ts')],
+                deletedFiles: 0,
+            ),
+            new CancellationToken(),
+        );
+
+        assertSame(2, $result->added, 'One uncached file per language.');
+        assertSame(2, $result->changed, 'One stale cache entry per language.');
+        // A stage timing is a duration: never negative, and nowhere near a minute here.
+        $milliseconds = $result->stageMilliseconds['php-analysis'];
+        assertSame(true, $milliseconds >= 0.0 && $milliseconds < 60_000.0, sprintf('php-analysis took %s ms.', $milliseconds));
+    }
+
+    /** A failed language's worker is shut down, so a hung process cannot outlive the scan that gave up on it. */
+    public function testAFailedLanguageShutsThePoolDown(): void
+    {
+        $pool = $this->createMock(LanguageWorkerPool::class);
+        $pool->method('client')->willThrowException(new WorkerException('WORKER_TIMEOUT', 'Scanner worker request timed out.'));
+        $pool->expects($this->once())->method('shutdown');
+
+        $result = (new LanguageScanRunner([$this->phpDescriptor()], $pool, new ContributionCacheService()))
+            ->run($this->planWithOneFile(), new CancellationToken());
+
+        assertSame('WORKER_TIMEOUT', $result->workerDiagnostics[0]['code']);
     }
 }

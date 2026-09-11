@@ -120,6 +120,14 @@ while (($line = fgets(STDIN)) !== false) {
         if (str_starts_with($mode, 'per_file')) {
             $requested = $request['params']['files'] ?? [];
             $batch = recordBatch($pidFile, count($requested));
+            // Everything the request carried besides the file list, one JSON
+            // line per request, so a test can see what the host told the
+            // worker about limits, frameworks and config files.
+            if ($mode === 'per_file_request' && is_string($pidFile)) {
+                $params = $request['params'] ?? [];
+                unset($params['files']);
+                file_put_contents($pidFile . '.request', json_encode($params) . "\n", FILE_APPEND);
+            }
             // A request the worker considers oversized. `per_file_overflow`
             // floods past the client's output cap, which is the retryable
             // WORKER_OUTPUT_LIMIT; `per_file_exit` dies instead, which is not
