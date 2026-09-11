@@ -28,6 +28,12 @@ abstract readonly class AbstractArchitectureQueryService
         'binds', 'observes', 'depends_on', 'imports', 'uses_middleware', 'references',
         'extends', 'implements', 'returns', 'exports', 're_exports', 'uses_trait',
     ];
+    /**
+     * The three confidence levels in order, so two can be compared. One
+     * definition for every query that filters, ranks or merges by confidence,
+     * where there had been seven copies of this literal.
+     */
+    protected const CONFIDENCE_RANK = ['possible' => 1, 'probable' => 2, 'certain' => 3];
 
     public function __construct(
         protected PDO $pdo,
@@ -210,7 +216,7 @@ abstract readonly class AbstractArchitectureQueryService
         if ($timeoutMs < 1 || $timeoutMs > 5000) {
             throw new InvalidArgumentException('timeout_ms must be between 1 and 5000.');
         }
-        $confidenceRank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $confidenceRank = self::CONFIDENCE_RANK;
         if (!isset($confidenceRank[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }

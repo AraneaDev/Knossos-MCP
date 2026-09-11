@@ -81,19 +81,39 @@
     // feeds streamBounded(), which stops on the first row past $maxRows and so
     // never reads a second spare row either. Re-check any new match.
     // IncrementInteger only: DecrementInteger turns `+ 1` into `+ 0`, which
-    // does break overflow detection, and stays reported.
+    // does break overflow detection, and stays reported. The same holds for
+    // ChangeImpactQueryService's direct-component query, which spells its
+    // look-ahead as `LIMIT %d` over `self::MAX_DIRECT_COMPONENTS + 1` and
+    // slices to the bound before use.
+    //
+    // A millisecond timeout becomes a nanosecond deadline as `$timeoutMs *
+    // 1_000_000`, the inverse of the divisor above and equivalent for the same
+    // reason: 999999 or 1000001 moves a deadline by one part in a million.
+    // Eight sites, all `$deadline = <clock> + ($timeoutMs * 1_000_000)`.
+    //
+    // SQL placeholder lists are built as `implode(',', array_fill(0, count($x),
+    // '?'))`. implode() reads values, never keys, so the start index of the
+    // fill (-1 or 1 for 0) produces the identical string. Thirty-two sites, all
+    // of that exact shape; the count argument is not an integer literal and
+    // keeps its mutants. Confirmed on ChangeImpactQueryService.php:180 in the
+    // 2026-09-11 run.
     IncrementInteger: {
       ignoreSourceCodeByRegex: [
         ".*(?:private|protected|public)[^;{]*int \\$[A-Za-z_]\\w* = \\d[\\d_]{3,}.*",
         "(?:break|continue) \\d+;",
         ".*hrtime\\(true\\).*/ 1_000_000.*",
         ".*bindValue\\(':limit', \\$\\w+ \\+ 1, PDO::PARAM_INT\\).*",
+        ".*LIMIT %d', self::\\w+ \\+ 1\\).*",
+        ".*\\$timeoutMs \\* 1_000_000.*",
+        ".*implode\\(',', array_fill\\(0, count\\(.*",
       ],
     },
     DecrementInteger: {
       ignoreSourceCodeByRegex: [
         ".*(?:private|protected|public)[^;{]*int \\$[A-Za-z_]\\w* = \\d[\\d_]{3,}.*",
         ".*hrtime\\(true\\).*/ 1_000_000.*",
+        ".*\\$timeoutMs \\* 1_000_000.*",
+        ".*implode\\(',', array_fill\\(0, count\\(.*",
       ],
     },
     // Stream buffering hints affect when bytes arrive, never which bytes. Removing

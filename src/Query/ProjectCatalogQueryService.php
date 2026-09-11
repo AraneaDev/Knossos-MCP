@@ -243,7 +243,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $sections['components']['counts']['rename_candidates'] = $renameCount;
         $truncated = $truncated || $take < $renameCount;
         $confidence = ['raised' => 0, 'lowered' => 0];
-        $rank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $rank = self::CONFIDENCE_RANK;
         foreach (['components', 'relationships', 'roles'] as $section) {
             $confidenceChanges = $section === 'components' ? $allComponentChanges : $rawDiffs[$section]['changed'];
             foreach ($confidenceChanges as $change) {

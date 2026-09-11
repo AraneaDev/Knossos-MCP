@@ -98,7 +98,7 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         if ($maxEdges < 1 || $maxEdges > 1000) {
             throw new InvalidArgumentException('max_edges must be between 1 and 1000.');
         }
-        $rank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $rank = self::CONFIDENCE_RANK;
         if (!isset($rank[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
