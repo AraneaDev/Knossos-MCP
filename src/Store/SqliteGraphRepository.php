@@ -8,8 +8,6 @@ use InvalidArgumentException;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use PDO;
 use PDOStatement;
-use RuntimeException;
-use Throwable;
 
 /**
  * SQLite implementation of the graph store.
@@ -25,11 +23,8 @@ final class SqliteGraphRepository implements GraphRepository
     /** The prepared-statement cache every store class for this connection shares. */
     private SqliteStatementCache $statements;
 
-    /** Depth of write transactions this repository has opened via BEGIN IMMEDIATE. */
-    private int $transactionDepth = 0;
-
-    /** Monotonic sequence used to name nested savepoints uniquely. */
-    private int $savepointSequence = 0;
+    /** The one transaction state this connection has: nesting depends on it being shared. */
+    private SqliteTransactions $transactions;
 
     /**
      * The graph tables a scan owns and the column identifying a row in each,
@@ -52,38 +47,13 @@ final class SqliteGraphRepository implements GraphRepository
     public function __construct(private PDO $pdo)
     {
         $this->statements = new SqliteStatementCache($pdo);
+        $this->transactions = new SqliteTransactions($pdo);
     }
 
     /** {@inheritDoc} */
     public function transaction(callable $operation): mixed
     {
-        if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
-            return $this->savepointTransaction($operation);
-        }
-
-        // BEGIN IMMEDIATE acquires the write lock up front so a read-then-write
-        // upgrade under WAL cannot hit a non-retryable SQLITE_BUSY. PDO's
-        // beginTransaction() issues a deferred BEGIN, and PDO::inTransaction()
-        // only tracks API-level transactions, so the boundary and the nesting
-        // depth are managed manually here.
-        $this->pdo->exec('BEGIN IMMEDIATE');
-        $this->transactionDepth = 1;
-        try {
-            $result = $operation($this);
-            $this->pdo->exec('COMMIT');
-            $this->transactionDepth = 0;
-            $this->savepointSequence = 0;
-
-            return $result;
-        } catch (Throwable $error) {
-            $this->transactionDepth = 0;
-            $this->savepointSequence = 0;
-            try {
-                $this->pdo->exec('ROLLBACK');
-            } catch (Throwable) {
-            }
-            throw $error;
-        }
+        return $this->transactions->run(fn(): mixed => $operation($this));
     }
 
     /**
@@ -109,66 +79,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function bulkTransaction(callable $operation): mixed
     {
-        if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
-            return $this->transaction($operation);
-        }
-        $previous = (string) $this->pdo->query('PRAGMA foreign_keys')->fetchColumn();
-        $this->pdo->exec('PRAGMA foreign_keys = OFF');
-        try {
-            return $this->transaction(function (GraphRepository $repository) use ($operation): mixed {
-                $result = $operation($repository);
-                // Checked per table rather than database-wide: an unrelated
-                // table's pre-existing damage is not this rewrite's to fail on,
-                // and naming the table keeps the blame where it belongs.
-                foreach (self::REWRITTEN_TABLES as $table) {
-                    $violations = $this->pdo->query(sprintf('PRAGMA foreign_key_check(%s)', $table))->fetchAll();
-                    if ($violations !== []) {
-                        throw new RuntimeException(sprintf(
-                            'Refusing to commit a graph with %d dangling reference(s) in table %s.',
-                            count($violations),
-                            $table,
-                        ));
-                    }
-                }
-
-                return $result;
-            });
-        } finally {
-            // Restored rather than forced on: a caller that had enforcement off
-            // did not ask this method to change that.
-            $this->pdo->exec('PRAGMA foreign_keys = ' . ($previous === '1' ? 'ON' : 'OFF'));
-        }
-    }
-
-    /**
-     * Run a nested transaction as a SAVEPOINT so a caught inner failure rolls
-     * back only the inner work. The previous no-op nesting silently committed
-     * partial inner writes with the enclosing transaction.
-     *
-     * @template T
-     * @param callable(GraphRepository): T $operation
-     * @return T
-     */
-    private function savepointTransaction(callable $operation): mixed
-    {
-        $name = 'knossos_sp_' . $this->savepointSequence++;
-        $this->transactionDepth++;
-        $this->pdo->exec('SAVEPOINT ' . $name);
-        try {
-            $result = $operation($this);
-            $this->pdo->exec('RELEASE SAVEPOINT ' . $name);
-            $this->transactionDepth--;
-
-            return $result;
-        } catch (Throwable $error) {
-            $this->transactionDepth--;
-            try {
-                $this->pdo->exec('ROLLBACK TO SAVEPOINT ' . $name);
-                $this->pdo->exec('RELEASE SAVEPOINT ' . $name);
-            } catch (Throwable) {
-            }
-            throw $error;
-        }
+        return $this->transactions->runBulk(fn(): mixed => $operation($this), self::REWRITTEN_TABLES);
     }
 
     /** Upsert by id: a rescan of the same root updates the name/config rather than creating a second project. */
