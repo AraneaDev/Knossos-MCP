@@ -10,34 +10,36 @@ use PDO;
 /**
  * SQLite implementation of the graph store.
  *
- * Writes go through BEGIN IMMEDIATE rather than PDO's deferred transaction,
- * because a read-then-write upgrade under WAL can hit a non-retryable
- * SQLITE_BUSY; nesting is handled with savepoints so a reconciler already inside
- * a transaction can call these methods safely. Prepared statements are cached,
- * since a scan replays the same handful of inserts thousands of times.
+ * A thin facade over the collaborators that actually own each concern:
+ * `SqliteTransactions` owns BEGIN IMMEDIATE, savepoint nesting and the bulk
+ * integrity check; `SqliteStatementCache` owns prepared-statement caching;
+ * `SqliteGraphReader`/`SqliteGraphWriter`/`SqliteGraphPruner` own reads,
+ * writes and rescan pruning; `SqliteScanLifecycle` owns projects and scans;
+ * `SqliteSnapshotArchive` owns retained snapshots. This class wires them
+ * together and forwards the `GraphRepository` contract.
  */
 final class SqliteGraphRepository implements GraphRepository
 {
     /** The prepared-statement cache every store class for this connection shares. */
-    private SqliteStatementCache $statements;
+    private readonly SqliteStatementCache $statements;
 
     /** The one transaction state this connection has: nesting depends on it being shared. */
-    private SqliteTransactions $transactions;
+    private readonly SqliteTransactions $transactions;
 
     /** Reads over the stored graph. */
-    private SqliteGraphReader $reader;
+    private readonly SqliteGraphReader $reader;
 
     /** Every row a scan writes. */
-    private SqliteGraphWriter $writer;
+    private readonly SqliteGraphWriter $writer;
 
     /** Brings the stored graph in line with a rescan. */
-    private SqliteGraphPruner $pruner;
+    private readonly SqliteGraphPruner $pruner;
 
     /** Projects and scans. */
-    private SqliteScanLifecycle $lifecycle;
+    private readonly SqliteScanLifecycle $lifecycle;
 
     /** Retained snapshots of the active graph. */
-    private SqliteSnapshotArchive $archive;
+    private readonly SqliteSnapshotArchive $archive;
 
     /**
      * Every table a scan writes: the scope of the bulk integrity check and of a
@@ -67,20 +69,10 @@ final class SqliteGraphRepository implements GraphRepository
     }
 
     /**
-     * Run a whole-graph rewrite, verifying referential integrity once at the end.
+     * Run a whole-graph rewrite with per-table foreign-key enforcement turned
+     * off and verified once, via `PRAGMA foreign_key_check`, before commit.
      *
-     * Per-statement foreign-key enforcement, not the row count, is what a rescan
-     * spends its time on: SQLite runs the referencing-table sub-programs for
-     * every row deleted, and clearing this repository's own graph measured 5.6s
-     * that way against 0.6s with enforcement off and a single
-     * `PRAGMA foreign_key_check` at the end. The check runs inside the
-     * transaction, so a rewrite that would leave a dangling reference is rolled
-     * back and never observable — the same guarantee, verified once instead of
-     * a few hundred thousand times.
-     *
-     * `PRAGMA foreign_keys` is a no-op inside a transaction, so it is toggled
-     * around the BEGIN and restored in a finally. A nested call cannot do that
-     * and runs as an ordinary transaction instead.
+     * @see SqliteTransactions::runBulk() for why, and for the nesting behaviour.
      *
      * @template T
      * @param callable(GraphRepository): T $operation

@@ -13,7 +13,7 @@ namespace Knossos\Store;
  */
 final class SqliteGraphPruner
 {
-    public function __construct(private SqliteStatementCache $statements) {}
+    public function __construct(private readonly SqliteStatementCache $statements) {}
 
     /**
      * The graph tables a scan owns and the column identifying a row in each,

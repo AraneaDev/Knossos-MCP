@@ -74,7 +74,7 @@ final class SqliteTransactions
      *
      * Per-statement foreign-key enforcement, not the row count, is what a rescan
      * spends its time on: SQLite runs the referencing-table sub-programs for
-     * every row deleted, and clearing this repository's own graph measured 5.6s
+     * every row deleted, and clearing a large project's graph measured 5.6s
      * that way against 0.6s with enforcement off and a single
      * `PRAGMA foreign_key_check` at the end. The check runs inside the
      * transaction, so a rewrite that would leave a dangling reference is rolled
