@@ -6,7 +6,6 @@ namespace Knossos\Store;
 
 use InvalidArgumentException;
 use PDO;
-use PDOStatement;
 
 /**
  * SQLite implementation of the graph store.
@@ -34,6 +33,9 @@ final class SqliteGraphRepository implements GraphRepository
     /** Brings the stored graph in line with a rescan. */
     private SqliteGraphPruner $pruner;
 
+    /** Projects and scans. */
+    private SqliteScanLifecycle $lifecycle;
+
     /** Every table a graph rewrite writes, which is the scope its integrity check needs. */
     private const REWRITTEN_TABLES = [
         'files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics',
@@ -46,6 +48,7 @@ final class SqliteGraphRepository implements GraphRepository
         $this->reader = new SqliteGraphReader($pdo);
         $this->writer = new SqliteGraphWriter($this->statements);
         $this->pruner = new SqliteGraphPruner($this->statements);
+        $this->lifecycle = new SqliteScanLifecycle($this->statements, $this->transactions);
     }
 
     /** {@inheritDoc} */
@@ -83,21 +86,7 @@ final class SqliteGraphRepository implements GraphRepository
     /** Upsert by id: a rescan of the same root updates the name/config rather than creating a second project. */
     public function saveProject(string $id, string $name, string $rootRealpath, array $config = []): void
     {
-        $now = SqliteValues::now();
-        $statement = $this->pdo->prepare(
-            'INSERT INTO projects(id, name, root_realpath, config_json, created_at, updated_at) ' .
-            'VALUES (:id, :name, :root, :config, :created, :updated) ' .
-            'ON CONFLICT(id) DO UPDATE SET name = excluded.name, root_realpath = excluded.root_realpath, ' .
-            'config_json = excluded.config_json, updated_at = excluded.updated_at',
-        );
-        $statement->execute([
-            'id' => $id,
-            'name' => $name,
-            'root' => $rootRealpath,
-            'config' => SqliteValues::json($config),
-            'created' => $now,
-            'updated' => $now,
-        ]);
+        $this->lifecycle->saveProject($id, $name, $rootRealpath, $config);
     }
 
     /**
@@ -107,11 +96,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function findProject(string $id): ?array
     {
-        $statement = $this->pdo->prepare('SELECT * FROM projects WHERE id = :id');
-        $statement->execute(['id' => $id]);
-        $project = $statement->fetch();
-
-        return $project === false ? null : $project;
+        return $this->lifecycle->findProject($id);
     }
 
     /**
@@ -123,22 +108,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void
     {
-        if (!in_array($mode, ['full', 'incremental'], true)) {
-            throw new InvalidArgumentException('Scan mode must be full or incremental.');
-        }
-
-        $statement = $this->pdo->prepare(
-            'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at) ' .
-            'VALUES (:id, :project, :mode, :status, :hash, :started)',
-        );
-        $statement->execute([
-            'id' => $id,
-            'project' => $projectId,
-            'mode' => $mode,
-            'status' => 'running',
-            'hash' => $scannerSetHash,
-            'started' => SqliteValues::now(),
-        ]);
+        $this->lifecycle->createScan($id, $projectId, $mode, $scannerSetHash);
     }
 
     /**
@@ -152,34 +122,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function completeScan(string $projectId, string $scanId): void
     {
-        $this->transaction(function () use ($projectId, $scanId): void {
-            $updateScan = $this->pdo->prepare(
-                'UPDATE scans SET status = :status, finished_at = :finished ' .
-                'WHERE id = :id AND project_id = :project AND status = :running',
-            );
-            $updateScan->execute([
-                'status' => 'complete',
-                'finished' => SqliteValues::now(),
-                'id' => $scanId,
-                'project' => $projectId,
-                'running' => 'running',
-            ]);
-            if ($updateScan->rowCount() !== 1) {
-                throw new InvalidArgumentException('Running scan not found for project.');
-            }
-
-            $updateProject = $this->pdo->prepare(
-                'UPDATE projects SET active_scan_id = :scan, updated_at = :updated WHERE id = :project',
-            );
-            $updateProject->execute([
-                'scan' => $scanId,
-                'updated' => SqliteValues::now(),
-                'project' => $projectId,
-            ]);
-            $project = $this->findProject($projectId);
-            $config = is_array($project) ? json_decode((string) $project['config_json'], true, 32, JSON_THROW_ON_ERROR) : [];
-            $this->pruneSnapshotHistory($projectId, is_int($config['snapshot_retention'] ?? null) ? $config['snapshot_retention'] : 5);
-        });
+        $this->lifecycle->completeScan($projectId, $scanId);
     }
 
     /**
@@ -195,9 +138,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function refreshScanCompletion(string $projectId, string $scanId): void
     {
-        $this->prepare(
-            "UPDATE scans SET finished_at = :finished WHERE id = :id AND project_id = :project AND status = 'complete'",
-        )->execute(['finished' => SqliteValues::now(), 'id' => $scanId, 'project' => $projectId]);
+        $this->lifecycle->refreshScanCompletion($projectId, $scanId);
     }
 
     /**
@@ -210,36 +151,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function recordFailedScan(string $id, string $projectId, string $mode, string $status): void
     {
-        if (!in_array($mode, ['full', 'incremental'], true)) {
-            throw new InvalidArgumentException('Scan mode must be full or incremental.');
-        }
-        if (!in_array($status, ['failed', 'cancelled'], true)) {
-            throw new InvalidArgumentException('Terminal scan status must be failed or cancelled.');
-        }
-        $this->transaction(function () use ($id, $projectId, $mode, $status): void {
-            // A terminal record for a project that was never persisted has nothing
-            // to reference and nothing to clean up, so skip it rather than trip the
-            // scans.project_id foreign key.
-            $exists = $this->pdo->prepare('SELECT 1 FROM projects WHERE id = :project');
-            $exists->execute(['project' => $projectId]);
-            if ($exists->fetchColumn() === false) {
-                return;
-            }
-            $now = SqliteValues::now();
-            $statement = $this->pdo->prepare(
-                'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at, finished_at) ' .
-                'VALUES (:id, :project, :mode, :status, :hash, :started, :finished)',
-            );
-            $statement->execute([
-                'id' => $id,
-                'project' => $projectId,
-                'mode' => $mode,
-                'status' => $status,
-                'hash' => '',
-                'started' => $now,
-                'finished' => $now,
-            ]);
-        });
+        $this->lifecycle->recordFailedScan($id, $projectId, $mode, $status);
     }
 
     /**
@@ -412,25 +324,6 @@ final class SqliteGraphRepository implements GraphRepository
     public function clearProjectDiagnostics(string $projectId): void
     {
         $this->pruner->clearProjectDiagnostics($projectId);
-    }
-
-    /** Drop the oldest snapshots beyond the project's retention setting. */
-
-    private function pruneSnapshotHistory(string $projectId, int $retention): void
-    {
-        $statement = $this->pdo->prepare('SELECT scan_id FROM scan_snapshots WHERE project_id = :project ORDER BY captured_at DESC, rowid DESC');
-        $statement->execute(['project' => $projectId]);
-        $snapshotIds = $statement->fetchAll(PDO::FETCH_COLUMN);
-        $deleteSnapshot = $this->pdo->prepare('DELETE FROM scan_snapshots WHERE scan_id = :scan AND project_id = :project');
-        foreach (array_slice($snapshotIds, $retention) as $snapshotId) {
-            $deleteSnapshot->execute(['scan' => $snapshotId, 'project' => $projectId]);
-        }
-        $deleteScans = $this->pdo->prepare(
-            "DELETE FROM scans WHERE project_id = :project AND status = 'complete' " .
-            'AND id <> COALESCE((SELECT active_scan_id FROM projects WHERE id = :project), \'\') ' .
-            'AND NOT EXISTS (SELECT 1 FROM scan_snapshots ss WHERE ss.scan_id = scans.id)',
-        );
-        $deleteScans->execute(['project' => $projectId]);
     }
 
     /** Record one discovered file and the fingerprint that lets the next scan decide whether to re-analyse it. */
@@ -646,11 +539,5 @@ final class SqliteGraphRepository implements GraphRepository
     public function incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
     {
         return $this->reader->incoming($projectId, $nodeId, $kind, $limit);
-    }
-    /** A cached prepared statement, since a scan replays the same inserts repeatedly. */
-
-    private function prepare(string $sql): PDOStatement
-    {
-        return $this->statements->prepare($sql);
     }
 }
