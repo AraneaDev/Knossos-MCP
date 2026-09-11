@@ -123,6 +123,39 @@ final class ToolBoundsAgreementTest extends KnossosTestCase
     }
 
     /**
+     * Maintenance that writes previews by default, and only acts when told to.
+     *
+     * The loop above cannot see this one. It probes `maintain_database` with the
+     * action its schema requires, `integrity`, which reads the database and
+     * changes nothing whichever way `execute` falls, so both arms agree and the
+     * default is invisible. Every other action does write, and there the default
+     * is the whole safety margin: an agent calling `maintain_database` to find
+     * out what a vacuum would do must not thereby vacuum the database.
+     *
+     * Both arms are asserted, because a preview is only meaningful if the other
+     * arm genuinely does something.
+     */
+    #[Group('mcp')]
+    public function testMaintenanceThatWritesPreviewsUnlessExecuteIsAskedFor(): void
+    {
+        [$tools] = $this->tools();
+
+        $preview = $tools->call('maintain_database', ['action' => 'vacuum']);
+
+        assertSame('vacuum', $preview->data['action']);
+        assertSame(false, $preview->data['executed'], 'Omitting execute must not perform maintenance.');
+        assertSame(true, str_starts_with($preview->summary, 'Dry run:'));
+        assertSame(false, array_key_exists('freed_bytes', $preview->data), 'A dry run reports no reclaimed bytes, because it reclaimed none.');
+        assertSame(['Set execute=true to perform this maintenance action.'], $preview->warnings);
+
+        $performed = $tools->call('maintain_database', ['action' => 'vacuum', 'execute' => true]);
+
+        assertSame(true, $performed->data['executed']);
+        assertSame(true, array_key_exists('freed_bytes', $performed->data));
+        assertSame([], $performed->warnings);
+    }
+
+    /**
      * What one call produces against a store of its own: the data it returns,
      * or the error it fails with. `null` omits the argument entirely.
      *
