@@ -195,10 +195,11 @@ schemas are in the [MCP tool reference](docs/reference/mcp-tools.md) and
 | `cleanup_stale_scans` | `cleanup-stale-scans` | Drop failed, cancelled, or abandoned scan records.       |
 | `maintain_database`   | `maintain-database`   | Integrity check, checkpoint, optimize, or atomic backup. |
 
-Read tools are annotated read-only and idempotent. The four write tools
-(`annotate_component`, `remove_project`, `cleanup_stale_scans`, and `maintain_database`)
-preview by default and only apply once called with `execute` set; `remove_project` and
-`cleanup_stale_scans` are additionally annotated destructive.
+Read tools are annotated read-only and idempotent. Five tools write: `scan_project` rebuilds
+the graph directly, and the other four (`annotate_component`, `remove_project`,
+`cleanup_stale_scans`, and `maintain_database`) preview by default and only apply once called
+with `execute` set. `remove_project` and `cleanup_stale_scans` are additionally annotated
+destructive, which is what makes a client ask before running them.
 
 Eight commands are CLI-only: `version`, `serve`, `watch`, `session-brief`,
 `install-agent-plugin`, `allow-root`, and the `export-bundle`/`import-bundle` pair that moves
