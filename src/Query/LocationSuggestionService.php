@@ -72,7 +72,11 @@ final readonly class LocationSuggestionService extends AbstractArchitectureQuery
      */
     private function assertArguments(string $featureDescription, int $limit, int $maxMembers, int $maxEdges, int $timeoutMs, string $rankingMode): array
     {
-        if (trim($featureDescription) === '' || strlen($featureDescription) > 2000) {
+        // A length guard only. Whitespace-only input is left to the token check
+        // below: trimming here reported "   " as needing "between 1 and 2000
+        // bytes", which it already has, where the token check says what is
+        // actually wrong with it.
+        if ($featureDescription === '' || strlen($featureDescription) > 2000) {
             throw new InvalidArgumentException('feature_description must contain between 1 and 2000 bytes.');
         }
         if ($limit < 1 || $limit > 20) {
