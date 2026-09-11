@@ -180,16 +180,8 @@ final readonly class ToolCatalog
                         ...self::commonReadProperties(),
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'baseline_snapshot' => ['type' => 'string', 'minLength' => 1],
-                        'budgets' => ['type' => 'object', 'properties' => [
-                            'new_cycles' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
-                            'boundary_violations' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'description' => 'Requires policies: there is nothing to count violations against without them.'],
-                            'error_diagnostics' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
-                            'warning_diagnostics' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
-                            'hub_degree_growth' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
-                            'unreferenced_candidates' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
-                            'public_surface_changes' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000],
-                        ], 'additionalProperties' => false],
-                        'policies' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'object']],
+                        'budgets' => self::budgetsSchema(),
+                        'policies' => ['type' => 'array', 'maxItems' => 50, 'items' => self::policySchema()],
                         'sarif' => ['type' => 'boolean', 'default' => false],
                         'propose_baseline' => ['type' => 'boolean', 'default' => false],
                     ],
@@ -443,19 +435,7 @@ final readonly class ToolCatalog
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'policies' => [
                             'type' => 'array', 'minItems' => 1, 'maxItems' => 50,
-                            'items' => [
-                                'type' => 'object',
-                                'properties' => [
-                                    'id' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 100],
-                                    'from_boundary' => ['type' => 'string', 'minLength' => 1],
-                                    'allow_targets' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
-                                    'deny_targets' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
-                                    'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string', 'minLength' => 1]],
-                                ],
-                                'required' => ['id', 'from_boundary'],
-                                'anyOf' => [['required' => ['allow_targets']], ['required' => ['deny_targets']]],
-                                'additionalProperties' => false,
-                            ],
+                            'items' => self::policySchema(),
                         ],
                         'min_confidence' => ['type' => 'string', 'enum' => ['certain', 'probable', 'possible'], 'default' => 'possible'],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
@@ -580,8 +560,8 @@ final readonly class ToolCatalog
                         'project_id' => ['type' => 'string', 'minLength' => 1],
                         'base_ref' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 200],
                         'files' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
-                        'policies' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'object']],
-                        'budgets' => ['type' => 'object', 'additionalProperties' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000]],
+                        'policies' => ['type' => 'array', 'maxItems' => 50, 'items' => self::policySchema()],
+                        'budgets' => self::budgetsSchema(),
                         'baseline_snapshot' => ['type' => 'string', 'minLength' => 1],
                         'max_depth' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 8, 'default' => 4],
                         'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 100],
@@ -731,6 +711,64 @@ final readonly class ToolCatalog
             'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
             'max_chars' => ['type' => 'integer', 'minimum' => 4000, 'maximum' => 100000, 'default' => 30000, 'description' => 'Byte budget for the serialized result; supporting material (legends, evidence) is trimmed before findings, tail-first, and reported in meta.dropped_items. Defaults to 30000 so a large result cannot exceed the host\'s response cap; raise it to trade context window for detail.'],
             'refresh_if_stale' => ['type' => 'boolean', 'default' => false, 'description' => 'If the graph is stale, run an incremental rescan (of Knossos\'s own derived database only) before answering; a failed rescan serves the last complete graph with a warning. A missing graph still requires scan_project.'],
+        ];
+    }
+
+    /**
+     * One boundary policy, the same shape wherever a tool accepts policies.
+     *
+     * `check_architecture`, `quality_gate` and `review_diff` all take the same
+     * policy object, and the last reads it straight from knossos.json. Only the
+     * first used to describe it: the other two advertised "any object", so an
+     * agent reading their schema had no way to learn the keys, and a misspelled
+     * `deny_target` looked as valid as the real one.
+     *
+     * @return array<string, mixed>
+     */
+    private static function policySchema(): array
+    {
+        return [
+            'type' => 'object',
+            'properties' => [
+                'id' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 100],
+                'from_boundary' => ['type' => 'string', 'minLength' => 1],
+                'allow_targets' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
+                'deny_targets' => ['type' => 'array', 'maxItems' => 50, 'items' => ['type' => 'string', 'minLength' => 1]],
+                'edge_kinds' => ['type' => 'array', 'maxItems' => 20, 'items' => ['type' => 'string', 'minLength' => 1]],
+            ],
+            'required' => ['id', 'from_boundary'],
+            'anyOf' => [['required' => ['allow_targets']], ['required' => ['deny_targets']]],
+            'additionalProperties' => false,
+        ];
+    }
+
+    /**
+     * The quality budgets a gate can enforce, the same set wherever budgets are accepted.
+     *
+     * `quality_gate` named its seven limits; `review_diff` accepted any key with
+     * an integer value. The gate itself rejects an unknown key at runtime, so
+     * nothing was silently skipped, but the schema is the only description an
+     * agent gets before calling, and it described two different contracts.
+     * An empty object stays valid: `review_diff` treats `{}` as "no budgets".
+     *
+     * @return array<string, mixed>
+     */
+    private static function budgetsSchema(): array
+    {
+        $limit = ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000];
+
+        return [
+            'type' => 'object',
+            'properties' => [
+                'new_cycles' => $limit,
+                'boundary_violations' => [...$limit, 'description' => 'Requires policies: there is nothing to count violations against without them.'],
+                'error_diagnostics' => $limit,
+                'warning_diagnostics' => $limit,
+                'hub_degree_growth' => $limit,
+                'unreferenced_candidates' => $limit,
+                'public_surface_changes' => $limit,
+            ],
+            'additionalProperties' => false,
         ];
     }
 

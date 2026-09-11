@@ -15,16 +15,22 @@ declare(strict_types=1);
 use PHPUnit\Framework\Assert;
 
 if (!function_exists('assertSame')) {
-    function assertSame(mixed $expected, mixed $actual): void
+    /**
+     * The message is optional but passed through: PHP silently discards an
+     * argument a function does not declare, so without this parameter every
+     * `assertSame($a, $b, 'why')` in the suite lost its explanation and a
+     * failure reported only the two values.
+     */
+    function assertSame(mixed $expected, mixed $actual, string $message = ''): void
     {
-        Assert::assertSame($expected, $actual);
+        Assert::assertSame($expected, $actual, $message);
     }
 }
 
 if (!function_exists('assertNotSame')) {
-    function assertNotSame(mixed $unexpected, mixed $actual): void
+    function assertNotSame(mixed $unexpected, mixed $actual, string $message = ''): void
     {
-        Assert::assertNotSame($unexpected, $actual);
+        Assert::assertNotSame($unexpected, $actual, $message);
     }
 }
 
