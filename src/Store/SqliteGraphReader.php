@@ -11,6 +11,10 @@ use PDO;
  * Reads over one project's stored graph: nodes by name, and the edges on
  * either side of a node. Prepared per call, not cached, because the limit and
  * the optional kind filter change the SQL.
+ *
+ * No parameter has a default: the defaults belong to GraphRepository, and the
+ * facade always passes them on. A second copy here could only drift, and no
+ * call could ever observe it.
  */
 final class SqliteGraphReader
 {
@@ -21,7 +25,7 @@ final class SqliteGraphReader
      *
      * @return list<array<string, mixed>>
      */
-    public function findNodesByName(string $projectId, string $name, int $limit = 20): array
+    public function findNodesByName(string $projectId, string $name, int $limit): array
     {
         self::assertLimit($limit);
         $statement = $this->pdo->prepare(
@@ -42,7 +46,7 @@ final class SqliteGraphReader
      *
      * @return list<array<string, mixed>>
      */
-    public function outgoing(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
+    public function outgoing(string $projectId, string $nodeId, ?string $kind, int $limit): array
     {
         return $this->adjacent('source_id', $projectId, $nodeId, $kind, $limit);
     }
@@ -52,7 +56,7 @@ final class SqliteGraphReader
      *
      * @return list<array<string, mixed>>
      */
-    public function incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
+    public function incoming(string $projectId, string $nodeId, ?string $kind, int $limit): array
     {
         return $this->adjacent('target_id', $projectId, $nodeId, $kind, $limit);
     }

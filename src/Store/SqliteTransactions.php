@@ -14,7 +14,7 @@ use Throwable;
  * Writes go through BEGIN IMMEDIATE rather than PDO's deferred transaction,
  * because a read-then-write upgrade under WAL can hit a non-retryable
  * SQLITE_BUSY. Nesting uses savepoints, so a caught inner failure rolls back
- * only the inner work. One instance per connection: the depth counter is what
+ * only the inner work. One instance per connection: the open flag is what
  * tells a nested call to use a savepoint, so two instances would each believe
  * they were outermost.
  *
@@ -23,11 +23,22 @@ use Throwable;
  */
 final class SqliteTransactions
 {
-    /** Depth of write transactions this instance has opened via BEGIN IMMEDIATE. */
-    private int $transactionDepth = 0;
+    /**
+     * Whether this instance has a BEGIN IMMEDIATE open.
+     *
+     * A flag rather than a depth: nothing but "is one open" was ever asked of
+     * the count, and a savepoint inside it never changes the answer.
+     */
+    private bool $open = false;
 
-    /** Monotonic sequence used to name nested savepoints uniquely. */
-    private int $savepointSequence = 0;
+    /**
+     * The one name every savepoint takes.
+     *
+     * SQLite resolves ROLLBACK TO and RELEASE to the most recent savepoint of
+     * the name, and these nest strictly with the call stack, so the innermost
+     * open savepoint is always the one meant. Numbering them bought nothing.
+     */
+    private const SAVEPOINT = 'knossos_sp';
 
     public function __construct(private readonly PDO $pdo) {}
 
@@ -40,27 +51,25 @@ final class SqliteTransactions
      */
     public function run(callable $operation): mixed
     {
-        if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
+        if ($this->open || $this->pdo->inTransaction()) {
             return $this->savepoint($operation);
         }
 
         // BEGIN IMMEDIATE acquires the write lock up front so a read-then-write
         // upgrade under WAL cannot hit a non-retryable SQLITE_BUSY. PDO's
         // beginTransaction() issues a deferred BEGIN, and PDO::inTransaction()
-        // only tracks API-level transactions, so the boundary and the nesting
-        // depth are managed manually here.
+        // only tracks API-level transactions, so the boundary is tracked
+        // manually here.
         $this->pdo->exec('BEGIN IMMEDIATE');
-        $this->transactionDepth = 1;
+        $this->open = true;
         try {
             $result = $operation();
             $this->pdo->exec('COMMIT');
-            $this->transactionDepth = 0;
-            $this->savepointSequence = 0;
+            $this->open = false;
 
             return $result;
         } catch (Throwable $error) {
-            $this->transactionDepth = 0;
-            $this->savepointSequence = 0;
+            $this->open = false;
             try {
                 $this->pdo->exec('ROLLBACK');
             } catch (Throwable) {
@@ -93,7 +102,7 @@ final class SqliteTransactions
      */
     public function runBulk(callable $operation, array $checkedTables): mixed
     {
-        if ($this->transactionDepth > 0 || $this->pdo->inTransaction()) {
+        if ($this->open || $this->pdo->inTransaction()) {
             return $this->run($operation);
         }
         $previous = (string) $this->pdo->query('PRAGMA foreign_keys')->fetchColumn();
@@ -135,20 +144,16 @@ final class SqliteTransactions
      */
     private function savepoint(callable $operation): mixed
     {
-        $name = 'knossos_sp_' . $this->savepointSequence++;
-        $this->transactionDepth++;
-        $this->pdo->exec('SAVEPOINT ' . $name);
+        $this->pdo->exec('SAVEPOINT ' . self::SAVEPOINT);
         try {
             $result = $operation();
-            $this->pdo->exec('RELEASE SAVEPOINT ' . $name);
-            $this->transactionDepth--;
+            $this->pdo->exec('RELEASE SAVEPOINT ' . self::SAVEPOINT);
 
             return $result;
         } catch (Throwable $error) {
-            $this->transactionDepth--;
             try {
-                $this->pdo->exec('ROLLBACK TO SAVEPOINT ' . $name);
-                $this->pdo->exec('RELEASE SAVEPOINT ' . $name);
+                $this->pdo->exec('ROLLBACK TO SAVEPOINT ' . self::SAVEPOINT);
+                $this->pdo->exec('RELEASE SAVEPOINT ' . self::SAVEPOINT);
             } catch (Throwable) {
             }
             throw $error;

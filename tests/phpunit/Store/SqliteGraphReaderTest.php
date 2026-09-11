@@ -20,7 +20,7 @@ final class SqliteGraphReaderTest extends KnossosTestCase
         $other = StableId::symbol($ids['project'], 'php', 'class', 'Vendor\\Checkout');
         $repository->saveNode($other, $ids['project'], 'php', 'class', 'Vendor\\Checkout', 'App\\Checkout', null, $ids['file'], 30, 31, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
 
-        $rows = (new SqliteGraphReader($pdo))->findNodesByName($ids['project'], 'App\\Checkout');
+        $rows = (new SqliteGraphReader($pdo))->findNodesByName($ids['project'], 'App\\Checkout', 20);
 
         assertSame(['App\\Checkout', 'Vendor\\Checkout'], array_column($rows, 'canonical_name'));
     }
@@ -41,9 +41,9 @@ final class SqliteGraphReaderTest extends KnossosTestCase
         [$pdo, , $ids] = $this->storeFixture();
         $reader = new SqliteGraphReader($pdo);
 
-        assertSame($ids['invoice'], $reader->outgoing($ids['project'], $ids['checkout'])[0]['target_id']);
-        assertSame($ids['checkout'], $reader->incoming($ids['project'], $ids['invoice'])[0]['source_id']);
-        assertSame([], $reader->incoming($ids['project'], $ids['checkout']));
+        assertSame($ids['invoice'], $reader->outgoing($ids['project'], $ids['checkout'], null, 100)[0]['target_id']);
+        assertSame($ids['checkout'], $reader->incoming($ids['project'], $ids['invoice'], null, 100)[0]['source_id']);
+        assertSame([], $reader->incoming($ids['project'], $ids['checkout'], null, 100));
     }
 
     #[Group('store')]
@@ -52,8 +52,8 @@ final class SqliteGraphReaderTest extends KnossosTestCase
         [$pdo, , $ids] = $this->storeFixture();
         $reader = new SqliteGraphReader($pdo);
 
-        assertSame(1, count($reader->outgoing($ids['project'], $ids['checkout'], 'calls')));
-        assertSame([], $reader->outgoing($ids['project'], $ids['checkout'], 'extends'));
+        assertSame(1, count($reader->outgoing($ids['project'], $ids['checkout'], 'calls', 100)));
+        assertSame([], $reader->outgoing($ids['project'], $ids['checkout'], 'extends', 100));
     }
 
     #[Group('store')]
