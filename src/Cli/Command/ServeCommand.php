@@ -51,13 +51,10 @@ final class ServeCommand implements CliCommand
     {
         $staticRoots = $options['allow-root'] ?? [];
         if ($staticRoots === []) {
-            $configured = getenv('KNOSSOS_ALLOWED_ROOTS');
-            if (is_string($configured) && $configured !== '') {
-                $staticRoots = array_values(array_filter(explode(PATH_SEPARATOR, $configured)));
-            }
+            $staticRoots = AllowedRoots::fromEnvironment();
         }
         $rootsFile = AllowedRoots::defaultConfigPath($databasePath);
-        $allowedRoots = new AllowedRoots(array_values($staticRoots), $rootsFile);
+        $allowedRoots = new AllowedRoots($staticRoots, $rootsFile);
         if ($allowedRoots->current() === []) {
             throw new InvalidArgumentException(sprintf(
                 'serve needs at least one allowed root. Pass --allow-root=PATH, set KNOSSOS_ALLOWED_ROOTS, or create %s containing {"roots": ["/absolute/path"]}.',

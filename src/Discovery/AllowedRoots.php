@@ -48,6 +48,24 @@ final class AllowedRoots
     }
 
     /**
+     * The roots named by `KNOSSOS_ALLOWED_ROOTS`, split on the path separator.
+     *
+     * Returned unfiltered: the constructor already drops empty entries, so a
+     * leading, trailing or doubled separator grants nothing. The server and the
+     * session brief each carried their own copy of this parsing, filtering
+     * blanks the constructor was about to drop anyway; one copy here keeps the
+     * brief's root warning reading the variable exactly as the server does.
+     *
+     * @return list<string>
+     */
+    public static function fromEnvironment(): array
+    {
+        $configured = getenv('KNOSSOS_ALLOWED_ROOTS');
+
+        return is_string($configured) ? explode(PATH_SEPARATOR, $configured) : [];
+    }
+
+    /**
      * Accept either an already-built instance or a plain list.
      *
      * The plain-list form keeps every existing call site and test fixture valid;
