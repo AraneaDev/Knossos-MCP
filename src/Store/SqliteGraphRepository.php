@@ -22,8 +22,8 @@ use Throwable;
  */
 final class SqliteGraphRepository implements GraphRepository
 {
-    /** @var array<string, PDOStatement> */
-    private array $statements = [];
+    /** The prepared-statement cache every store class for this connection shares. */
+    private SqliteStatementCache $statements;
 
     /** Depth of write transactions this repository has opened via BEGIN IMMEDIATE. */
     private int $transactionDepth = 0;
@@ -49,7 +49,10 @@ final class SqliteGraphRepository implements GraphRepository
         'files' => 'id',
     ];
 
-    public function __construct(private PDO $pdo) {}
+    public function __construct(private PDO $pdo)
+    {
+        $this->statements = new SqliteStatementCache($pdo);
+    }
 
     /** {@inheritDoc} */
     public function transaction(callable $operation): mixed
@@ -171,7 +174,7 @@ final class SqliteGraphRepository implements GraphRepository
     /** Upsert by id: a rescan of the same root updates the name/config rather than creating a second project. */
     public function saveProject(string $id, string $name, string $rootRealpath, array $config = []): void
     {
-        $now = self::now();
+        $now = SqliteValues::now();
         $statement = $this->pdo->prepare(
             'INSERT INTO projects(id, name, root_realpath, config_json, created_at, updated_at) ' .
             'VALUES (:id, :name, :root, :config, :created, :updated) ' .
@@ -182,7 +185,7 @@ final class SqliteGraphRepository implements GraphRepository
             'id' => $id,
             'name' => $name,
             'root' => $rootRealpath,
-            'config' => self::json($config),
+            'config' => SqliteValues::json($config),
             'created' => $now,
             'updated' => $now,
         ]);
@@ -225,7 +228,7 @@ final class SqliteGraphRepository implements GraphRepository
             'mode' => $mode,
             'status' => 'running',
             'hash' => $scannerSetHash,
-            'started' => self::now(),
+            'started' => SqliteValues::now(),
         ]);
     }
 
@@ -247,7 +250,7 @@ final class SqliteGraphRepository implements GraphRepository
             );
             $updateScan->execute([
                 'status' => 'complete',
-                'finished' => self::now(),
+                'finished' => SqliteValues::now(),
                 'id' => $scanId,
                 'project' => $projectId,
                 'running' => 'running',
@@ -261,7 +264,7 @@ final class SqliteGraphRepository implements GraphRepository
             );
             $updateProject->execute([
                 'scan' => $scanId,
-                'updated' => self::now(),
+                'updated' => SqliteValues::now(),
                 'project' => $projectId,
             ]);
             $project = $this->findProject($projectId);
@@ -285,7 +288,7 @@ final class SqliteGraphRepository implements GraphRepository
     {
         $this->prepare(
             "UPDATE scans SET finished_at = :finished WHERE id = :id AND project_id = :project AND status = 'complete'",
-        )->execute(['finished' => self::now(), 'id' => $scanId, 'project' => $projectId]);
+        )->execute(['finished' => SqliteValues::now(), 'id' => $scanId, 'project' => $projectId]);
     }
 
     /**
@@ -313,7 +316,7 @@ final class SqliteGraphRepository implements GraphRepository
             if ($exists->fetchColumn() === false) {
                 return;
             }
-            $now = self::now();
+            $now = SqliteValues::now();
             $statement = $this->pdo->prepare(
                 'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at, finished_at) ' .
                 'VALUES (:id, :project, :mode, :status, :hash, :started, :finished)',
@@ -392,7 +395,7 @@ final class SqliteGraphRepository implements GraphRepository
         if (!$complete) {
             // Which ceiling stopped it: too many facts to be worth keeping, or a
             // payload that outgrew the byte cap while being written.
-            $encoded = self::json(['schema' => 1, 'reason' => $payload === null ? 'fact_limit' : 'byte_limit']);
+            $encoded = SqliteValues::json(['schema' => 1, 'reason' => $payload === null ? 'fact_limit' : 'byte_limit']);
             $factCount = 0;
             $byteSize = strlen($encoded);
             $payload = SnapshotPayload::encode($encoded);
@@ -407,7 +410,7 @@ final class SqliteGraphRepository implements GraphRepository
         $insert->execute([
             'scan' => $scanId, 'project' => $projectId, 'scanner' => $scannerHash, 'config' => $configHash,
             'complete' => $complete ? 1 : 0, 'facts' => $factCount, 'bytes' => $byteSize,
-            'payload' => $payload, 'captured' => self::now(),
+            'payload' => $payload, 'captured' => SqliteValues::now(),
         ]);
     }
 
@@ -431,7 +434,7 @@ final class SqliteGraphRepository implements GraphRepository
             $writer->write(sprintf('%s"%s":[', $index === 0 ? '' : ',', $table));
             $first = true;
             while (($row = $statement->fetch()) !== false) {
-                $writer->write(($first ? '' : ',') . self::json($row));
+                $writer->write(($first ? '' : ',') . SqliteValues::json($row));
                 $first = false;
                 ++$factCount;
                 if ($writer->exceeded()) {
@@ -667,7 +670,7 @@ final class SqliteGraphRepository implements GraphRepository
             'end' => $endLine,
             'origin' => $origin,
             'confidence' => $confidence,
-            'attributes' => self::json($attributes),
+            'attributes' => SqliteValues::json($attributes),
             'owner' => $ownerKey,
             'scan' => $scanId,
         ]);
@@ -716,7 +719,7 @@ final class SqliteGraphRepository implements GraphRepository
             'end' => $endLine,
             'origin' => $origin,
             'confidence' => $confidence,
-            'attributes' => self::json($attributes),
+            'attributes' => SqliteValues::json($attributes),
             'owner' => $ownerKey,
             'scan' => $scanId,
         ]);
@@ -737,7 +740,7 @@ final class SqliteGraphRepository implements GraphRepository
                 . ' WHERE nodes.language IS NOT excluded.language OR nodes.kind IS NOT excluded.kind OR nodes.canonical_name IS NOT excluded.canonical_name OR nodes.display_name IS NOT excluded.display_name OR nodes.parent_id IS NOT excluded.parent_id OR nodes.file_id IS NOT excluded.file_id OR nodes.start_line IS NOT excluded.start_line OR nodes.end_line IS NOT excluded.end_line OR nodes.origin IS NOT excluded.origin OR nodes.confidence IS NOT excluded.confidence OR nodes.attributes_json IS NOT excluded.attributes_json OR nodes.owner_key IS NOT excluded.owner_key';
             $values = [];
             foreach ($chunk as $node) {
-                array_push($values, $node['id'], $projectId, $node['language'], $node['kind'], $node['canonical_name'], $node['display_name'], null, $node['file_id'], $node['start_line'], $node['end_line'], $node['origin'], $node['confidence'], self::json($node['attributes']), $node['owner_key'], $scanId);
+                array_push($values, $node['id'], $projectId, $node['language'], $node['kind'], $node['canonical_name'], $node['display_name'], null, $node['file_id'], $node['start_line'], $node['end_line'], $node['origin'], $node['confidence'], SqliteValues::json($node['attributes']), $node['owner_key'], $scanId);
             }
             $this->prepare($sql)->execute($values);
         }
@@ -758,7 +761,7 @@ final class SqliteGraphRepository implements GraphRepository
                 . ' WHERE edges.kind IS NOT excluded.kind OR edges.source_id IS NOT excluded.source_id OR edges.target_id IS NOT excluded.target_id OR edges.file_id IS NOT excluded.file_id OR edges.start_line IS NOT excluded.start_line OR edges.end_line IS NOT excluded.end_line OR edges.origin IS NOT excluded.origin OR edges.confidence IS NOT excluded.confidence OR edges.attributes_json IS NOT excluded.attributes_json OR edges.owner_key IS NOT excluded.owner_key';
             $values = [];
             foreach ($chunk as $edge) {
-                array_push($values, $edge['id'], $projectId, $edge['kind'], $edge['source_id'], $edge['target_id'], $edge['file_id'], $edge['start_line'], $edge['end_line'], $edge['origin'], $edge['confidence'], self::json($edge['attributes']), $edge['owner_key'], $scanId);
+                array_push($values, $edge['id'], $projectId, $edge['kind'], $edge['source_id'], $edge['target_id'], $edge['file_id'], $edge['start_line'], $edge['end_line'], $edge['origin'], $edge['confidence'], SqliteValues::json($edge['attributes']), $edge['owner_key'], $scanId);
             }
             $this->prepare($sql)->execute($values);
         }
@@ -800,7 +803,7 @@ final class SqliteGraphRepository implements GraphRepository
                 . ' WHERE classifications.node_id IS NOT excluded.node_id OR classifications.role IS NOT excluded.role OR classifications.origin IS NOT excluded.origin OR classifications.confidence IS NOT excluded.confidence OR classifications.rule_id IS NOT excluded.rule_id OR classifications.file_id IS NOT excluded.file_id OR classifications.start_line IS NOT excluded.start_line OR classifications.end_line IS NOT excluded.end_line OR classifications.attributes_json IS NOT excluded.attributes_json';
             $values = [];
             foreach ($chunk as $classification) {
-                array_push($values, $classification['id'], $projectId, $classification['node_id'], $classification['role'], $classification['origin'], $classification['confidence'], $classification['rule_id'], $classification['file_id'], $classification['start_line'], $classification['end_line'], self::json($classification['attributes']), $scanId);
+                array_push($values, $classification['id'], $projectId, $classification['node_id'], $classification['role'], $classification['origin'], $classification['confidence'], $classification['rule_id'], $classification['file_id'], $classification['start_line'], $classification['end_line'], SqliteValues::json($classification['attributes']), $scanId);
             }
             $this->prepare($sql)->execute($values);
         }
@@ -903,7 +906,7 @@ final class SqliteGraphRepository implements GraphRepository
         $statement->execute([
             'id' => $id, 'project' => $projectId, 'node' => $nodeId, 'role' => $role,
             'origin' => $origin, 'confidence' => $confidence, 'rule' => $ruleId, 'file' => $fileId,
-            'start' => $startLine, 'end' => $endLine, 'attributes' => self::json($attributes), 'scan' => $scanId,
+            'start' => $startLine, 'end' => $endLine, 'attributes' => SqliteValues::json($attributes), 'scan' => $scanId,
         ]);
     }
 
@@ -921,7 +924,7 @@ final class SqliteGraphRepository implements GraphRepository
             'WHERE boundaries.name IS NOT excluded.name OR boundaries.matcher_json IS NOT excluded.matcher_json OR boundaries.source IS NOT excluded.source',
         );
         $statement->execute([
-            'id' => $id, 'project' => $projectId, 'name' => $name, 'matcher' => self::json($matcher),
+            'id' => $id, 'project' => $projectId, 'name' => $name, 'matcher' => SqliteValues::json($matcher),
             'source' => $source, 'scan' => $scanId,
         ]);
     }
@@ -964,7 +967,7 @@ final class SqliteGraphRepository implements GraphRepository
                 'version' => $entry->scannerVersion,
                 'config' => $entry->configurationHash,
                 'payload' => json_encode($entry->contribution, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES),
-                'updated' => self::now(),
+                'updated' => SqliteValues::now(),
             ]);
         }
     }
@@ -1031,22 +1034,6 @@ final class SqliteGraphRepository implements GraphRepository
 
     private function prepare(string $sql): PDOStatement
     {
-        return $this->statements[$sql] ??= $this->pdo->prepare($sql);
-    }
-
-    /**
-     * Encode an attributes array for storage, throwing rather than storing malformed JSON.
-     *
-     * @param array<string, mixed> $value
-     */
-    private static function json(array $value): string
-    {
-        return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    }
-    /** The current timestamp in the format the schema stores. */
-
-    private static function now(): string
-    {
-        return gmdate('Y-m-d\TH:i:s\Z');
+        return $this->statements->prepare($sql);
     }
 }
