@@ -145,6 +145,9 @@ final class ProjectScanServiceContractTest extends KnossosTestCase
      *
      * Found by counting: a first scan counts how often the token is consulted,
      * and a second, identical scan cancels at exactly that last consultation.
+     * Both are no-change rescans, because only those consult the token a fixed
+     * number of times: they send no scan request, and a scan request polls the
+     * token once per frame it reads, which varies with how the pipe delivers.
      */
     #[Group('scan')]
     public function testACancellationAtTheLastCheckpointIsHonoured(): void
@@ -155,7 +158,7 @@ final class ProjectScanServiceContractTest extends KnossosTestCase
             // second scan on the same one skips the handshake the first
             // counted, and consults the token fewer times.
             $consulted = 0;
-            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full', cancellation: new CancellationToken(static function () use (&$consulted): bool {
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, cancellation: new CancellationToken(static function () use (&$consulted): bool {
                 ++$consulted;
 
                 return false;
@@ -164,7 +167,7 @@ final class ProjectScanServiceContractTest extends KnossosTestCase
 
             $seen = 0;
             $error = captureThrows(
-                static fn() => (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full', cancellation: new CancellationToken(static function () use (&$seen, $consulted): bool {
+                static fn() => (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, cancellation: new CancellationToken(static function () use (&$seen, $consulted): bool {
                     return ++$seen >= $consulted;
                 })),
                 ScanCancelledException::class,
