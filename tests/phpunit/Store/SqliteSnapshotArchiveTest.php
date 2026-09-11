@@ -61,6 +61,17 @@ final class SqliteSnapshotArchiveTest extends KnossosTestCase
 
         assertSame('1', (string) $pdo->query('SELECT COUNT(*) FROM scan_snapshots')->fetchColumn());
         assertSame('1', (string) $pdo->query('SELECT complete FROM scan_snapshots')->fetchColumn());
+
+        // A count of 1 alone is what INSERT OR IGNORE would give even for a
+        // row nothing actually populated; check the row itself has real content.
+        $row = $pdo->query('SELECT fact_count, payload_json FROM scan_snapshots')->fetch(PDO::FETCH_ASSOC);
+        $this->assertGreaterThan(0, (int) $row['fact_count'], 'storeFixture() seeds two nodes and an edge; fact_count must reflect them.');
+        $decoded = json_decode(\Knossos\Store\SnapshotPayload::decode((string) $row['payload_json']), true, 512, JSON_THROW_ON_ERROR);
+        $nodeIds = array_map(static fn(array $node): string => (string) $node['id'], $decoded['facts']['nodes']);
+        sort($nodeIds, SORT_STRING);
+        $expected = [$ids['checkout'], $ids['invoice']];
+        sort($expected, SORT_STRING);
+        assertSame($expected, $nodeIds);
     }
 
     private static function archive(PDO $pdo): SqliteSnapshotArchive

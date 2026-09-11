@@ -51,6 +51,49 @@ final class SqliteTransactionsTest extends KnossosTestCase
     }
 
     #[Group('store')]
+    public function testDepthResetsToZeroAfterAFailedOuterTransaction(): void
+    {
+        $pdo = self::parentChild();
+        $transactions = new SqliteTransactions($pdo);
+
+        assertThrows(static fn() => $transactions->run(static function (): void {
+            throw new RuntimeException('boom');
+        }), RuntimeException::class);
+
+        // A leaked depth would route this runBulk down the nested (savepoint)
+        // branch, which never turns foreign key enforcement off, so the
+        // child-before-parent write below would fail its own FK check
+        // immediately instead of succeeding at commit as it does once the
+        // depth was actually reset to zero by the catch block.
+        $transactions->runBulk(static function () use ($pdo): void {
+            $pdo->exec('INSERT INTO child(id, parent_id) VALUES (1, 7)');
+            $pdo->exec('INSERT INTO parent(id) VALUES (7)');
+        }, ['child']);
+
+        assertSame('1', (string) $pdo->query('SELECT COUNT(*) FROM child')->fetchColumn(), 'A depth leaked by a failed outer run() must not survive past it.');
+    }
+
+    #[Group('store')]
+    public function testRunTreatsAConnectionAlreadyInAPdoTransactionAsNested(): void
+    {
+        $pdo = self::table();
+        $pdo->beginTransaction();
+
+        // pdo->inTransaction() is true here (PDO tracks its own
+        // beginTransaction()), so run() must take the savepoint branch rather
+        // than issuing its own BEGIN IMMEDIATE, which SQLite would refuse
+        // while a transaction is already open.
+        (new SqliteTransactions($pdo))->run(static function () use ($pdo): void {
+            $pdo->exec("INSERT INTO t(v) VALUES ('nested')");
+        });
+
+        assertSame(['nested'], self::values($pdo), 'run() must nest via savepoint rather than attempt a second BEGIN.');
+        assertSame(true, $pdo->inTransaction(), 'the outer PDO-level transaction must still be open; run() must not have committed it.');
+
+        $pdo->commit();
+    }
+
+    #[Group('store')]
     public function testACaughtInnerFailureRollsBackOnlyTheInnerWork(): void
     {
         $pdo = self::table();
