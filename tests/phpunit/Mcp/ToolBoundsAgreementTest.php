@@ -72,6 +72,77 @@ final class ToolBoundsAgreementTest extends KnossosTestCase
     }
 
     /**
+     * Every default a tool advertises is the default its handler applies.
+     *
+     * The same defaults are written twice, exactly as the bounds above are:
+     * once in `ToolCatalog`, which is what a client reads and fills in, and once
+     * as a literal in the `ToolService` handler, which is what a call actually
+     * uses when the argument is absent. A schema promising `limit` defaults to
+     * 50 over a handler that quietly applies 20 misleads every caller that
+     * trusted the schema and omitted the key.
+     *
+     * Stated as a rule rather than a table: omitting an argument must produce
+     * what passing its advertised default produces. The values come from the
+     * schema and are never restated here, so moving either copy breaks it.
+     *
+     * Each call gets its own store, because the tools whose default is
+     * `execute => false` write to the database as soon as that default is
+     * wrong, and a shared fixture would carry that damage into later
+     * comparisons.
+     */
+    #[Group('mcp')]
+    public function testEveryAdvertisedDefaultIsTheOneApplied(): void
+    {
+        $checked = 0;
+
+        foreach (ToolCatalog::definitions(false) as $definition) {
+            $name = $definition['name'];
+            foreach ((array) ($definition['inputSchema']['properties'] ?? []) as $key => $spec) {
+                if (!is_array($spec) || !array_key_exists('default', $spec)) {
+                    continue;
+                }
+                if (!in_array($spec['type'] ?? null, ['integer', 'boolean'], true)) {
+                    continue;
+                }
+                assertSame(
+                    $this->outcomeOf($name, $definition, (string) $key, $spec['default']),
+                    $this->outcomeOf($name, $definition, (string) $key, null),
+                    sprintf(
+                        '%s.%s: omitting the argument must do what its advertised default (%s) does.',
+                        $name,
+                        $key,
+                        var_export($spec['default'], true),
+                    ),
+                );
+                ++$checked;
+            }
+        }
+
+        // A guard against the test silently checking nothing if the schema's shape changes.
+        assertSame(true, $checked >= 100, sprintf('Expected to check at least 100 advertised defaults, checked %d.', $checked));
+    }
+
+    /**
+     * What one call produces against a store of its own: the data it returns,
+     * or the error it fails with. `null` omits the argument entirely.
+     *
+     * @param array<string, mixed> $definition
+     */
+    private function outcomeOf(string $name, array $definition, string $key, mixed $value): string
+    {
+        [$tools, $project] = $this->tools();
+        $arguments = self::requiredArguments($definition, $project);
+        if ($value !== null) {
+            $arguments[$key] = $value;
+        }
+        try {
+            return json_encode($tools->call($name, $arguments)->data, JSON_THROW_ON_ERROR);
+        } catch (Throwable $error) {
+            return $error::class . ': ' . $error->getMessage();
+        }
+    }
+
+    /**
      * The message a call fails with, or null when it succeeds.
      *
      * @param array<string, mixed> $arguments
