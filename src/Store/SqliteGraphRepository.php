@@ -226,7 +226,7 @@ final class SqliteGraphRepository implements GraphRepository
         $this->pruner->clearProjectDiagnostics($projectId);
     }
 
-    /** Record one discovered file and the fingerprint that lets the next scan decide whether to re-analyse it. */
+    /** {@inheritDoc} */
     public function saveFile(
         string $id,
         string $projectId,
@@ -344,7 +344,7 @@ final class SqliteGraphRepository implements GraphRepository
         $this->writer->saveBoundaryMemberships($memberships, $projectId, $scanId);
     }
 
-    /** Record a scanner-reported problem against a file, surfaced with the scan rather than thrown. */
+    /** {@inheritDoc} */
     public function saveDiagnostic(
         string $id,
         string $projectId,
