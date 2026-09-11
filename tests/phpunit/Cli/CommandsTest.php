@@ -1235,6 +1235,53 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         }
     }
 
+    /**
+     * `quality-gate` fails the build when a budget is exceeded, and only then.
+     *
+     * The exit code is the whole point of the command in CI, and nothing tested
+     * the failing side: the only existing case used budgets of 100 and asserted
+     * exit 0, so `passed ? 0 : 1` could become `passed ? 0 : 0` and every build
+     * would pass whatever it broke.
+     *
+     * The limit is set from a measured value rather than hard-coded, so the
+     * test holds whatever the fixture happens to contain: one budget exactly at
+     * the actual value must pass, and one below it must fail.
+     */
+    public function testQualityGateExitsNonZeroExactlyWhenABudgetIsExceeded(): void
+    {
+        [$dbPath, $projectId, , $archivedScanId, $cleanup] = $this->richPopulatedTestDatabase();
+        $budgetsFile = sys_get_temp_dir() . '/knossos-budgets-' . bin2hex(random_bytes(6)) . '.json';
+        try {
+            $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $dbPath);
+            $gate = static function (array $budgets) use ($projectId, $archivedScanId, $budgetsFile, $context): array {
+                file_put_contents($budgetsFile, json_encode($budgets, JSON_THROW_ON_ERROR));
+                ob_start();
+                try {
+                    $exit = (new QueryCommand())->run('quality-gate', [$projectId, $archivedScanId], ['budgets' => [$budgetsFile], 'json' => [true]], $context);
+                } finally {
+                    $printed = (string) ob_get_clean();
+                }
+
+                return [$exit, json_decode($printed, true, 512, JSON_THROW_ON_ERROR)['data']];
+            };
+
+            [, $measured] = $gate(['unreferenced_candidates' => 100000]);
+            $actual = $measured['metrics']['unreferenced_candidates'];
+            assertSame(true, is_int($actual) && $actual >= 1, sprintf('The fixture must hold at least one unreferenced candidate to exceed; it holds %s.', var_export($actual, true)));
+
+            [$atLimit, $atLimitData] = $gate(['unreferenced_candidates' => $actual]);
+            assertSame(true, $atLimitData['passed'], 'A metric exactly at its budget passes.');
+            assertSame(0, $atLimit);
+
+            [$over, $overData] = $gate(['unreferenced_candidates' => $actual - 1]);
+            assertSame(false, $overData['passed']);
+            assertSame(1, $over, 'An exceeded budget must fail the build.');
+        } finally {
+            @unlink($budgetsFile);
+            $cleanup();
+        }
+    }
+
     public function testQueryCommandCheckArchitectureWithRichDatabase(): void
     {
         // M44 / QueryCommand::run() -- checkArchitecture() happy path.
