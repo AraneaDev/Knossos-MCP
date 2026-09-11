@@ -546,4 +546,278 @@ final class PluginCommandTest extends KnossosTestCase
 
         exec('rm -rf ' . escapeshellarg($root));
     }
+
+    // ----- mutation-audit gaps -----
+
+    /**
+     * Run the install with `claude` stubbed by a script that records its
+     * arguments and exits with $code, so the success path is reachable without
+     * registering anything on the machine running the test.
+     *
+     * @param array<string, list<string>> $options
+     * @return array{status: ?int, output: string, recorded: list<string>, error: ?\Throwable}
+     */
+    private function runWithClaudeExiting(int $code, string $root, array $options, string $version = '0.0.0'): array
+    {
+        $bin = $this->temporaryPath('knossos-plugin-bin');
+        mkdir($bin, 0o755, true);
+        $log = $bin . '/argv';
+        file_put_contents($bin . '/claude', "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " . escapeshellarg($log) . "\nexit " . $code . "\n");
+        chmod($bin . '/claude', 0o755);
+        $path = (string) getenv('PATH');
+        putenv('PATH=' . $bin);
+        $status = null;
+        $error = null;
+        ob_start();
+        try {
+            $status = (new PluginCommand($version))->run('install-agent-plugin', [], $options, $this->contextFor($root));
+        } catch (\Throwable $thrown) {
+            $error = $thrown;
+        } finally {
+            $output = (string) ob_get_clean();
+            putenv('PATH=' . $path);
+        }
+        $recorded = is_file($log) ? (string) file_get_contents($log) : '';
+        exec('rm -rf ' . escapeshellarg($bin));
+
+        return [
+            'status' => $status,
+            'output' => $output,
+            'recorded' => array_values(array_filter(explode("\n", trim($recorded)), static fn (string $line): bool => $line !== '')),
+            'error' => $error,
+        ];
+    }
+
+    /** An install that succeeds runs both commands and records what it did. */
+    #[Group('cli')]
+    public function testASuccessfulInstallRunsBothCommandsAndReportsThem(): void
+    {
+        $root = $this->sourceRoot();
+
+        $run = $this->runWithClaudeExiting(0, $root, ['execute' => ['true'], 'json' => ['true']]);
+
+        assertSame(null, $run['error']);
+        assertSame(0, $run['status']);
+        assertSame([
+            "plugin marketplace add {$root}/.plugin --scope user",
+            'plugin install knossos@knossos --scope user --yes',
+        ], $run['recorded']);
+        $decoded = json_decode(trim($run['output']), true, 8, JSON_THROW_ON_ERROR);
+        assertSame(true, $decoded['executed']);
+        assertSame($root . '/.plugin', $decoded['plugin_directory']);
+        assertSame(5, count($decoded['files']));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** A command that fails is named with the status it failed with. */
+    #[Group('cli')]
+    public function testAFailedCommandIsNamedWithItsExitStatus(): void
+    {
+        $root = $this->sourceRoot();
+
+        $run = $this->runWithClaudeExiting(3, $root, ['execute' => ['true']]);
+
+        assertSame(true, $run['error'] instanceof InvalidArgumentException);
+        assertSame(
+            sprintf('Command failed (exit 3): claude plugin marketplace add %s --scope user', escapeshellarg($root . '/.plugin')),
+            $run['error']?->getMessage(),
+        );
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** The scope the caller asked for reaches both commands and the report. */
+    #[Group('cli')]
+    public function testTheRequestedScopeReachesTheCommands(): void
+    {
+        $root = $this->sourceRoot();
+
+        ob_start();
+        (new PluginCommand())->run('install-agent-plugin', [], ['scope' => ['project'], 'json' => ['true']], $this->contextFor($root));
+        $preview = json_decode(trim((string) ob_get_clean()), true, 8, JSON_THROW_ON_ERROR);
+
+        assertSame('project', $preview['scope']);
+        assertSame(true, str_contains($preview['commands'][1], '--scope project'));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /** The container image is the one asked for, and the default otherwise. */
+    #[Group('cli')]
+    public function testTheContainerImageIsTheOneAskedFor(): void
+    {
+        $named = $this->temporaryPath('knossos-plugin-image');
+        $default = $this->temporaryPath('knossos-plugin-image-default');
+
+        assertSame('ghcr.io/me/knossos:2', $this->emitJson($named, ['image' => ['ghcr.io/me/knossos:2']])['image']);
+        assertSame(true, str_contains((string) file_get_contents($named . '/hooks/scripts/session-brief.sh'), 'ghcr.io/me/knossos:2'));
+
+        assertSame('knossos-mcp:dev', $this->emitJson($default, [])['image']);
+        assertSame(true, str_contains((string) file_get_contents($default . '/hooks/scripts/session-brief.sh'), 'knossos-mcp:dev'));
+
+        exec('rm -rf ' . escapeshellarg($named) . ' ' . escapeshellarg($default));
+    }
+
+    /**
+     * An emit says whether it replaced what was there, names the command that
+     * installs it, and says when --execute was beside the point.
+     */
+    #[Group('cli')]
+    public function testTheEmitProseSaysWhatItDidAndWhatToRunNext(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-prose');
+
+        $first = $this->emitProse($out, []);
+        assertSame(false, str_contains($first, 'already existed'));
+        assertSame(false, str_contains($first, '--execute is not needed'));
+        assertSame(true, str_contains($first, sprintf('Install it with: claude plugin marketplace add %s --scope user', escapeshellarg($out))));
+
+        $second = $this->emitProse($out, ['execute' => ['true']]);
+        assertSame(true, str_contains($second, 'The target directory already existed; its files were replaced.'));
+        assertSame(true, str_contains($second, '--execute writes directly; --execute is not needed here and was ignored.') || str_contains($second, '--execute is not needed here and was ignored.'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** A directory that already exists does not stop the ones after it being created. */
+    #[Group('cli')]
+    public function testDirectoriesAfterAnExistingOneAreStillCreated(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-dirs');
+        mkdir($out . '/.claude-plugin', 0o755, true);
+
+        $this->emitProse($out, []);
+
+        foreach (['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'] as $directory) {
+            assertSame(true, is_dir($out . $directory), $directory);
+        }
+        assertSame('0755', substr(sprintf('%o', fileperms($out . '/hooks/scripts')), -4));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /** An emit replaces a hand-edited descriptor, because the plugin it describes is regenerated. */
+    #[Group('cli')]
+    public function testTheEmittedDescriptorReplacesAHandEditedOne(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-descriptor');
+        mkdir($out . '/.claude-plugin', 0o755, true);
+        file_put_contents($out . '/.claude-plugin/marketplace.json', '{"mine":true}');
+
+        $this->emitProse($out, []);
+
+        $descriptor = (string) file_get_contents($out . '/.claude-plugin/marketplace.json');
+        assertSame(false, str_contains($descriptor, 'mine'));
+        assertSame(true, str_contains($descriptor, '"name": "knossos"'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    /**
+     * An emit that fails at the hook takes the manifest and descriptor it had
+     * already written with it, rather than leaving a half-written plugin.
+     */
+    #[Group('cli')]
+    public function testAFailedEmitRemovesTheManifestAndDescriptorItWrote(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $this->temporaryPath('knossos-plugin-latefail');
+        // The hook is written last; a directory in its place fails that write
+        // after the manifest and descriptor are already on disk.
+        mkdir($out . '/hooks/scripts/session-brief.sh', 0o755, true);
+
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/data']], $this->contextFor($root));
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException) {
+            // Expected: the hook cannot be written over a directory.
+        }
+
+        assertSame(false, file_exists($out . '/.claude-plugin/plugin.json'));
+        assertSame(false, file_exists($out . '/.claude-plugin/marketplace.json'));
+        assertSame(false, file_exists($out . '/hooks/hooks.json'));
+
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out));
+    }
+
+    /** The same failure restores a manifest and descriptor that were already there. */
+    #[Group('cli')]
+    public function testAFailedEmitRestoresTheManifestAndDescriptorItReplaced(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $this->temporaryPath('knossos-plugin-restore');
+        mkdir($out . '/hooks/scripts/session-brief.sh', 0o755, true);
+        mkdir($out . '/.claude-plugin', 0o755, true);
+        file_put_contents($out . '/.claude-plugin/plugin.json', '{"mine":"manifest"}');
+        file_put_contents($out . '/.claude-plugin/marketplace.json', '{"mine":"descriptor"}');
+
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/data']], $this->contextFor($root));
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException) {
+            // Expected, as above.
+        }
+
+        assertSame('{"mine":"manifest"}', (string) file_get_contents($out . '/.claude-plugin/plugin.json'));
+        assertSame('{"mine":"descriptor"}', (string) file_get_contents($out . '/.claude-plugin/marketplace.json'));
+
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out));
+    }
+
+    /** The materialised manifest is indented, ends with a newline, and keeps its slashes. */
+    #[Group('cli')]
+    public function testTheMaterialisedManifestIsReadableJson(): void
+    {
+        $root = $this->sourceRoot();
+
+        $this->runWithClaudeExiting(0, $root, ['execute' => ['true']]);
+
+        $manifest = (string) file_get_contents($root . '/.plugin/.claude-plugin/plugin.json');
+        assertSame(true, str_ends_with($manifest, "}\n"));
+        assertSame(true, str_contains($manifest, "\n    \"name\""));
+        assertSame(true, str_contains($manifest, 'https://github.com'));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    /**
+     * A container emit, returning its JSON report.
+     *
+     * @param array<string, list<string>> $options
+     * @return array<string, mixed>
+     */
+    private function emitJson(string $out, array $options): array
+    {
+        ob_start();
+        try {
+            (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['out' => [$out], 'data' => ['/srv/data'], 'json' => ['true']] + $options,
+                $this->context(),
+            );
+        } finally {
+            $output = (string) ob_get_clean();
+        }
+
+        return json_decode(trim($output), true, 8, JSON_THROW_ON_ERROR);
+    }
+
+    /**
+     * A container emit, returning its prose.
+     *
+     * @param array<string, list<string>> $options
+     */
+    private function emitProse(string $out, array $options): string
+    {
+        ob_start();
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/data']] + $options, $this->context());
+        } finally {
+            $output = (string) ob_get_clean();
+        }
+
+        return $output;
+    }
 }
