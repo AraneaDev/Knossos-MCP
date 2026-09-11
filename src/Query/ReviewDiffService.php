@@ -72,7 +72,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         $policyCheck = ['status' => 'not_evaluated', 'reason' => $configReason ?? 'No boundary policies declared in knossos.json or supplied.'];
         if ($policies !== []) {
             try {
-                $check = $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, 100, 20_000, $timeoutMs);
+                $check = $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, 100, ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, $timeoutMs);
                 $touchingViolations = array_values(array_filter(
                     $check->data['violations'],
                     static fn(array $violation): bool => isset($touched[$violation['source']['id']]) || isset($touched[$violation['target']['id']]),
@@ -117,7 +117,7 @@ final readonly class ReviewDiffService extends AbstractArchitectureQueryService
         $cycleEvidence = [];
         $touchingCycles = [];
         try {
-            $cycleResult = $this->topologyQueries->dependencyCycles($projectId, [], $minConfidence, 100, 10_000, 20_000, $timeoutMs);
+            $cycleResult = $this->topologyQueries->dependencyCycles($projectId, [], $minConfidence, 100, 10_000, 100_000, $timeoutMs);
             $touchingCycles = array_values(array_filter(
                 $cycleResult->data['cycles'],
                 static function (array $cycle) use ($touched): bool {

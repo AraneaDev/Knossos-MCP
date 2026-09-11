@@ -310,7 +310,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             // the budget was unpassable on any larger graph, with no argument to
             // raise either bound. Lifting only the edge ceiling would have left
             // the deadline to become the ceiling in its place.
-            $policyResult = $this->policyQueries->checkArchitecture($projectId, $policies, limit: 100, maxEdges: 100_000, timeoutMs: 5000);
+            $policyResult = $this->policyQueries->checkArchitecture($projectId, $policies, limit: 100, maxEdges: ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, timeoutMs: 5000);
             $policyBounds = $policyResult->data['bounds'] ?? [];
             // Exact count past the collection limit; a budget of >=100 was
             // previously dead because the collected subset capped at 100.

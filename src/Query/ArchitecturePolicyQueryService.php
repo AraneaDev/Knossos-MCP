@@ -17,11 +17,25 @@ use InvalidArgumentException;
 final readonly class ArchitecturePolicyQueryService extends AbstractArchitectureQueryService
 {
     /**
+     * The edge budget for a full policy check, wherever one runs.
+     *
+     * A policy check that stops early can report only the violations it
+     * reached, so every entry point must examine the same slice of the graph.
+     * They did not: `check_architecture` and the quality gate scanned up to
+     * 100,000 edges while `review_diff` and the CLI's default scanned 20,000.
+     * On this repository's own graph the 20,000-edge check covered 64% of the
+     * policy-relevant edges, reported itself truncated, and still exited 0, so
+     * a violation in the rest would have passed CI. One constant keeps the
+     * budgets from drifting apart again.
+     */
+    public const DEFAULT_MAX_EDGES = 100_000;
+
+    /**
      * Evaluate declared policies, returning each violation with the edge that breaches it.
      *
      * @param list<array<string, mixed>> $policies
      */
-    public function checkArchitecture(string $projectId, array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = 20_000, int $timeoutMs = 1000): ResultEnvelope
+    public function checkArchitecture(string $projectId, array $policies, string $minConfidence = 'possible', int $limit = 100, int $maxEdges = self::DEFAULT_MAX_EDGES, int $timeoutMs = 1000): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);

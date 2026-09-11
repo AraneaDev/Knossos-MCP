@@ -1307,6 +1307,53 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         }
     }
 
+    /**
+     * A CLI command given no --max-edges walks the same slice of the graph its
+     * MCP tool does.
+     *
+     * The README promises an equivalent CLI command for every tool, and the CLI
+     * defaulted --max-edges to 20,000 for four of them while the schema says
+     * 100,000. On this repository's own graph that cut check-architecture off at
+     * 64% of the policy-relevant edges; it reported itself truncated and still
+     * exited 0, so a violation in the rest would have passed CI.
+     *
+     * Asserted on the budget each command reports it used, with the expected
+     * value read from the schema rather than restated.
+     */
+    public function testCliEdgeBudgetsDefaultToTheAdvertisedMcpDefault(): void
+    {
+        [$dbPath, $projectId, $boundaryId, , $cleanup] = $this->richPopulatedTestDatabase();
+        $policiesFile = sys_get_temp_dir() . '/knossos-policies-' . bin2hex(random_bytes(6)) . '.json';
+        file_put_contents($policiesFile, json_encode([['id' => 'p', 'from_boundary' => $boundaryId, 'deny_targets' => ['@unassigned']]], JSON_THROW_ON_ERROR));
+        $defaults = [];
+        foreach (\Knossos\Mcp\ToolCatalog::definitions() as $definition) {
+            $defaults[$definition['name']] = ((array) $definition['inputSchema']['properties'])['max_edges']['default'] ?? null;
+        }
+        try {
+            $context = new CliCommandContext(new CliOptionParser(), new CliInputLoader(), new RuntimeFactory(self::repositoryRoot()), $dbPath);
+            foreach ([
+                'check-architecture' => [[$projectId], ['policies' => [$policiesFile]]],
+                'dependency-cycles' => [[$projectId], []],
+                'architecture-health' => [[$projectId], []],
+                'suggest-location' => [[$projectId, 'checkout refunds'], []],
+            ] as $command => [$positionals, $options]) {
+                ob_start();
+                try {
+                    (new QueryCommand())->run($command, $positionals, [...$options, 'json' => [true]], $context);
+                } finally {
+                    $printed = (string) ob_get_clean();
+                }
+                $bounds = json_decode($printed, true, 512, JSON_THROW_ON_ERROR)['data']['bounds'];
+                $expected = $defaults[str_replace('-', '_', $command)];
+                assertSame(true, is_int($expected), sprintf('%s must advertise a max_edges default.', $command));
+                assertSame($expected, $bounds['max_edges'], sprintf('%s without --max-edges must use the MCP default.', $command));
+            }
+        } finally {
+            @unlink($policiesFile);
+            $cleanup();
+        }
+    }
+
     public function testCheckArchitectureExitCodeReflectsViolationPresence(): void
     {
         // The "check" command must gate CI on its own result: exit 1 when
