@@ -68,11 +68,26 @@
     // GitProcessRunner.php:169 and GraphReconciler.php:86, both survivors of the
     // 2026-09-10 run. Only the integer mutators are excluded: `Minus` on the
     // same line (`hrtime(true) + $start`) is a real defect and stays reported.
+    // The look-ahead row on a paged query: `LIMIT :limit` bound to `$max + 1`
+    // fetches one row past the page only to learn whether a further page
+    // exists. Raising it to `$max + 2` fetches a second spare row, and every
+    // caller then does `count($rows) > $max` and `array_slice($rows, 0, $max)`,
+    // which behave identically with one spare row or two: the only difference
+    // is a wasted row read. Survived and confirmed by hand three times in the
+    // 2026-09-10/11 runs (ProjectCatalogQueryService listProjects, and
+    // LocationSuggestionService's member and edge queries). The pattern matches
+    // eight lines in src, and each was read before excluding it: seven slice
+    // with count()/array_slice(), and GraphTopologyQueryService's node query
+    // feeds streamBounded(), which stops on the first row past $maxRows and so
+    // never reads a second spare row either. Re-check any new match.
+    // IncrementInteger only: DecrementInteger turns `+ 1` into `+ 0`, which
+    // does break overflow detection, and stays reported.
     IncrementInteger: {
       ignoreSourceCodeByRegex: [
         ".*(?:private|protected|public)[^;{]*int \\$[A-Za-z_]\\w* = \\d[\\d_]{3,}.*",
         "(?:break|continue) \\d+;",
         ".*hrtime\\(true\\).*/ 1_000_000.*",
+        ".*bindValue\\(':limit', \\$\\w+ \\+ 1, PDO::PARAM_INT\\).*",
       ],
     },
     DecrementInteger: {
