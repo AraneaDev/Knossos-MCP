@@ -150,6 +150,113 @@ final class ResultEnricherBudgetTest extends KnossosTestCase
         );
     }
 
+    /**
+     * One pass drops as many items as the overage costs, not one and not all.
+     *
+     * Ten items measuring 5,000 against a 4,000 budget: the items average 500
+     * bytes, the overage is 1,000, so two of them cover it.
+     */
+    #[Group('mcp')]
+    public function testOnePassDropsAsManyItemsAsTheOverageCosts(): void
+    {
+        $enricher = $this->enricherMeasuringInTurn($this->freshTestDatabase(), [5_000, 4_000]);
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['components' => self::items(10)]);
+
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4_000);
+
+        assertSame(['components' => 2], $result->meta['dropped_items']);
+        assertSame(8, count($result->data['components']));
+    }
+
+    /**
+     * A large estimate is capped at half the collection, so one pass can never
+     * empty a list that the next pass would have kept.
+     *
+     * Ten items measuring 40,000 against 4,000: the overage is nine items'
+     * worth, and five are dropped.
+     */
+    #[Group('mcp')]
+    public function testABatchNeverTakesMoreThanHalfTheCollection(): void
+    {
+        $enricher = $this->enricherMeasuringInTurn($this->freshTestDatabase(), [40_000, 4_000]);
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['components' => self::items(10)]);
+
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4_000);
+
+        assertSame(['components' => 5], $result->meta['dropped_items']);
+        assertSame(5, count($result->data['components']));
+    }
+
+    /**
+     * A collection holding more items than the payload holds bytes still drops
+     * one at a time rather than dividing by a per-item cost of zero.
+     */
+    #[Group('mcp')]
+    public function testACollectionLongerThanThePayloadIsStillTrimmable(): void
+    {
+        $enricher = $this->enricherMeasuringInTurn($this->freshTestDatabase(), [5, 4]);
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', ['components' => self::items(10)]);
+
+        $result = $enricher->enrich($envelope, 'search_architecture', 'compact', 4);
+
+        assertSame(['components' => 1], $result->meta['dropped_items']);
+        assertSame(9, count($result->data['components']));
+    }
+
+    /**
+     * Decoration pays before findings even when the findings are the larger
+     * list: a three-entry legend is trimmed while fifty findings are untouched.
+     *
+     * Selecting by size alone emptied payloads while every legend entry
+     * survived, which is the failure this tier ordering exists to prevent.
+     */
+    #[Group('mcp')]
+    public function testTheSupportingTierPaysFirstEvenWhenItIsTheSmallerCollection(): void
+    {
+        $enricher = $this->enricherMeasuringInTurn($this->freshTestDatabase(), [5_000, 4_000]);
+        $envelope = new ResultEnvelope('project_x', 'scan_x', 'ok', [
+            'findings' => self::items(50),
+            'component_legend' => ['A\\A' => ['kind' => 'class'], 'A\\B' => ['kind' => 'class'], 'A\\C' => ['kind' => 'class']],
+        ]);
+
+        $result = $enricher->enrich($envelope, 'dependency_cycles', 'compact', 4_000);
+
+        assertSame(['component_legend' => 1], $result->meta['dropped_items']);
+        assertSame(50, count($result->data['findings']));
+        assertSame(2, count($result->data['component_legend']));
+    }
+
+    /**
+     * $count distinct list items, each small enough that the staged measurer
+     * rather than the real encoder decides the sizes.
+     *
+     * @return list<array<string, int>>
+     */
+    private static function items(int $count): array
+    {
+        return array_map(static fn(int $index): array => ['n' => $index], range(1, $count));
+    }
+
+    /**
+     * An enricher whose measurer answers the given sizes in turn, so a single
+     * trimming pass can be staged exactly.
+     *
+     * @param list<int> $sizes
+     */
+    private function enricherMeasuringInTurn(PDO $pdo, array $sizes): ResultEnricher
+    {
+        $remaining = $sizes;
+        $last = $sizes[count($sizes) - 1];
+
+        return new ResultEnricher(
+            new StalenessProbe($pdo),
+            new NextStepPlanner(),
+            static function () use (&$remaining, $last): int {
+                return array_shift($remaining) ?? $last;
+            },
+        );
+    }
+
     /** An enricher whose measurer always answers $size, so a budget edge can be stated exactly. */
     private function enricherMeasuring(PDO $pdo, int $size): ResultEnricher
     {
