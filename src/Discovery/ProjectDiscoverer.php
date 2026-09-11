@@ -7,7 +7,7 @@ namespace Knossos\Discovery;
 use DirectoryIterator;
 use Knossos\Classification\ToolConfigModuleRule;
 use Knossos\Scan\CancellationToken;
-use Throwable;
+use RuntimeException;
 
 /**
  * Walks a project tree and selects the files worth analysing.
@@ -43,8 +43,12 @@ final readonly class ProjectDiscoverer
         while ($stack !== []) {
             $directory = array_pop($stack);
             try {
+                // UnexpectedValueException, which is a RuntimeException, is what
+                // DirectoryIterator throws for a directory it cannot open. Caught
+                // by that name rather than as Throwable so a programming error in
+                // the walk is not filed as an unreadable directory.
                 $entries = new DirectoryIterator($directory);
-            } catch (Throwable $error) {
+            } catch (RuntimeException $error) {
                 $diagnostics[] = new DiscoveryDiagnostic(
                     'warning',
                     'DISCOVERY_DIRECTORY_UNREADABLE',
@@ -125,7 +129,7 @@ final readonly class ProjectDiscoverer
                     $mtime = max(0, $entry->getMTime());
                 } catch (DiscoveryException $error) {
                     throw $error;
-                } catch (Throwable $error) {
+                } catch (RuntimeException $error) {
                     $diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
                         'DISCOVERY_FILE_UNREADABLE',
