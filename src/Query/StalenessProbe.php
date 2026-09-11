@@ -108,8 +108,8 @@ final readonly class StalenessProbe
         $row = $statement->fetch();
         return $row === false ? null : $row;
     }
-    /** When the active scan finished, the reference point for every age calculation. */
 
+    /** When the active scan finished, the reference point for every age calculation. */
     private function activeFinishedAt(string $scanId): ?string
     {
         $statement = $this->pdo->prepare('SELECT finished_at FROM scans WHERE id = :id');
@@ -120,8 +120,8 @@ final readonly class StalenessProbe
         }
         return $row['finished_at'];
     }
-    /** Seconds since the graph was built, which is what makes staleness legible. */
 
+    /** Seconds since the graph was built, which is what makes staleness legible. */
     private function age(?string $finishedAt): ?int
     {
         if ($finishedAt === null) {
@@ -133,8 +133,8 @@ final readonly class StalenessProbe
         }
         return max(0, ($this->wallClock)() - $then);
     }
-    /** Whether a later scan attempt exists, so a failed rescan is distinguishable from never trying. */
 
+    /** Whether a later scan attempt exists, so a failed rescan is distinguishable from never trying. */
     private function hasNewerAttempt(string $projectId, string $activeScanId): bool
     {
         $statement = $this->pdo->prepare(
@@ -231,7 +231,10 @@ final readonly class StalenessProbe
      */
     private static function addedSince(array $directories, ?string $finishedAt): int
     {
-        $scannedAt = $finishedAt === null ? false : strtotime($finishedAt);
+        if ($finishedAt === null) {
+            return 0;
+        }
+        $scannedAt = strtotime($finishedAt);
         if ($scannedAt === false) {
             return 0;
         }
