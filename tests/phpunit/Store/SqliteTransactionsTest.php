@@ -74,12 +74,28 @@ final class SqliteTransactionsTest extends KnossosTestCase
     public function testSequentialTransactionsEachCommit(): void
     {
         $pdo = self::table();
+        $pdo->exec('CREATE TABLE parent(id INTEGER PRIMARY KEY)');
+        $pdo->exec('CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent(id))');
         $transactions = new SqliteTransactions($pdo);
 
         $transactions->run(static fn() => $pdo->exec("INSERT INTO t(v) VALUES ('one')"));
         $transactions->run(static fn() => $pdo->exec("INSERT INTO t(v) VALUES ('two')"));
 
         assertSame(['one', 'two'], self::values($pdo), 'Depth must return to zero after each commit.');
+
+        // ['one', 'two'] alone cannot tell a reset depth from a leaked one: SQLite
+        // treats a SAVEPOINT opened in autocommit mode as its own transaction, so a
+        // leaked depth still commits both rows through the savepoint path. A leaked
+        // depth instead shows up here: it routes this runBulk down the nested
+        // (savepoint) branch, which never turns foreign key enforcement off, so the
+        // child-before-parent write below fails its own FK check immediately instead
+        // of succeeding at commit as it does when the depth was reset to zero.
+        $transactions->runBulk(static function () use ($pdo): void {
+            $pdo->exec('INSERT INTO child(id, parent_id) VALUES (1, 7)');
+            $pdo->exec('INSERT INTO parent(id) VALUES (7)');
+        }, ['child']);
+
+        assertSame('1', (string) $pdo->query('SELECT COUNT(*) FROM child')->fetchColumn(), 'A leaked depth must not survive past the transactions that reset it.');
     }
 
     #[Group('store')]
@@ -112,14 +128,33 @@ final class SqliteTransactionsTest extends KnossosTestCase
     }
 
     #[Group('store')]
-    public function testABulkRewriteRestoresTheForeignKeySettingItFound(): void
+    public function testABulkRewriteRestoresTheForeignKeySettingItFoundOff(): void
+    {
+        $pdo = self::parentChild();
+        // parentChild() leaves enforcement on, so it must be turned off here: a
+        // mutant that always restores ON (rather than what it found) would still
+        // pass a test that only ever found ON, since found and forced agree.
+        $pdo->exec('PRAGMA foreign_keys = OFF');
+
+        (new SqliteTransactions($pdo))->runBulk(static fn() => null, ['child']);
+
+        assertSame('0', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn(), 'A restore must return exactly what it found, not force enforcement on.');
+    }
+
+    #[Group('store')]
+    public function testABulkRewriteRestoresTheForeignKeySettingItFoundEvenWhenTheOperationThrows(): void
     {
         $pdo = self::parentChild();
         $pdo->exec('PRAGMA foreign_keys = ON');
 
-        (new SqliteTransactions($pdo))->runBulk(static fn() => null, ['child']);
+        assertThrows(
+            static fn() => (new SqliteTransactions($pdo))->runBulk(static function (): void {
+                throw new RuntimeException('boom');
+            }, ['child']),
+            RuntimeException::class,
+        );
 
-        assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
+        assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn(), 'The finally must restore the setting even when the operation throws before the FK check runs.');
     }
 
     #[Group('store')]
