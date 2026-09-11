@@ -29,7 +29,7 @@ final class SqliteGraphWriter
         string $language,
         string $scannerVersion,
         string $scanId,
-        int $lineCount = 0,
+        int $lineCount,
     ): void {
         $statement = $this->statements->prepare(
             'INSERT INTO files(id, project_id, relative_path, content_hash, size, mtime, language, scanner_version, last_scan_id, line_count) ' .
