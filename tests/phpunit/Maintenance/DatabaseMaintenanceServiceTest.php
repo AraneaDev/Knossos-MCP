@@ -716,4 +716,168 @@ final class DatabaseMaintenanceServiceTest extends TestCase
         assertSame(false, $result->data['executed']);
     }
 
+    // ----- mutation-audit gaps (2026-09-11) -----
+
+    /**
+     * A failed removal undoes everything it did, including clearing the active
+     * scan before the delete that failed, and leaves no transaction open.
+     */
+    public function testAFailedRemovalRestoresTheActiveScanAndClosesItsTransaction(): void
+    {
+        $this->seedProject();
+        $this->seedScan('scan-A', 'proj-1', 'complete', '2020-01-01T00:00:00Z');
+        $this->pdo->exec("UPDATE projects SET active_scan_id = 'scan-A' WHERE id = 'proj-1'");
+        $this->pdo->exec("CREATE TRIGGER fail_project_delete BEFORE DELETE ON projects BEGIN SELECT RAISE(ABORT, 'forced'); END");
+
+        $error = captureThrows(fn () => $this->makeService()->removeProject('proj-1', true), PDOException::class);
+
+        assertSame(true, str_contains($error->getMessage(), 'forced'), 'The original failure, not one raised while rolling back.');
+        assertSame(false, $this->pdo->inTransaction());
+        assertSame('scan-A', $this->pdo->query("SELECT active_scan_id FROM projects WHERE id = 'proj-1'")->fetchColumn());
+    }
+
+    /** A completed removal commits, reports the scan it removed and the rows it counted. */
+    public function testARemovalCommitsAndReportsWhatItRemoved(): void
+    {
+        $this->seedProject();
+        $this->seedScan('scan-A', 'proj-1', 'complete', '2020-01-01T00:00:00Z');
+        $this->seedFileForScan('proj-1', 'scan-A');
+        $this->pdo->exec("UPDATE projects SET active_scan_id = 'scan-A' WHERE id = 'proj-1'");
+
+        $preview = $this->makeService()->removeProject('proj-1', false);
+        $result = $this->makeService()->removeProject('proj-1', true);
+
+        assertSame(['scans' => 1, 'files' => 1, 'nodes' => 0, 'edges' => 0, 'diagnostics' => 0, 'annotations' => 0], $preview->data['counts']);
+        assertSame(false, $this->pdo->inTransaction(), 'The removal is committed, not left open.');
+        assertSame('scan-A', $result->snapshotId);
+        assertSame(['id' => 'proj-1', 'name' => 'Test'], $result->data['project']);
+        assertSame($preview->data['counts'], $result->data['removed']);
+    }
+
+    /** A cleanup whose delete fails rolls back and leaves no transaction open. */
+    public function testAFailedCleanupClosesItsTransaction(): void
+    {
+        $this->seedProject();
+        $this->seedScan('old', 'proj-1', 'failed', '2000-01-01T00:00:00Z');
+        $this->pdo->exec("CREATE TRIGGER fail_scan_delete BEFORE DELETE ON scans BEGIN SELECT RAISE(ABORT, 'forced'); END");
+
+        $error = captureThrows(fn () => $this->makeService()->cleanupStaleScans('proj-1', 24, true), PDOException::class);
+
+        assertSame(true, str_contains($error->getMessage(), 'forced'));
+        assertSame(false, $this->pdo->inTransaction());
+    }
+
+    /** A scan whose start time cannot be read is skipped, and the ones after it are still considered. */
+    public function testAnUnreadableStartTimeSkipsOnlyThatScan(): void
+    {
+        $this->seedProject();
+        // Sorts first by started_at, so it is met before the readable one.
+        $this->seedScan('unreadable', 'proj-1', 'failed', '0000-not-a-date');
+        $this->seedScan('readable', 'proj-1', 'failed', '2000-01-01T00:00:00Z');
+
+        assertSame(['readable'], $this->makeService()->cleanupStaleScans('proj-1', 24, false)->data['removable_scan_ids']);
+    }
+
+    /** Exactly a thousand stale scans fit; truncation starts at the thousand-and-first. */
+    public function testAThousandStaleScansAreNotTruncated(): void
+    {
+        $this->seedProject();
+        $insert = $this->pdo->prepare('INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at) VALUES(?, ?, ?, ?, ?, ?)');
+        $this->pdo->beginTransaction();
+        for ($i = 0; $i < 1000; $i++) {
+            $insert->execute([sprintf('s-%04d', $i), 'proj-1', 'full', 'failed', 'h', '2000-01-01T00:00:00Z']);
+        }
+        $this->pdo->commit();
+
+        $result = $this->makeService()->cleanupStaleScans('proj-1', 24, false);
+
+        assertSame(false, $result->truncated);
+        assertSame(1000, count($result->data['removable_scan_ids']));
+    }
+
+    public function testACleanupReportsTheActiveScan(): void
+    {
+        $this->seedProject();
+        $this->seedScan('active', 'proj-1', 'complete', '2000-01-01T00:00:00Z');
+        $this->pdo->exec("UPDATE projects SET active_scan_id = 'active' WHERE id = 'proj-1'");
+
+        assertSame('active', $this->makeService()->cleanupStaleScans('proj-1', 24, false)->snapshotId);
+    }
+
+    /** A vacuum reports the pages it freed, their size in bytes, and that the log shrank too. */
+    public function testAVacuumReportsExactlyWhatItFreed(): void
+    {
+        $this->pdo->exec('CREATE TABLE ballast (id INTEGER PRIMARY KEY, blob TEXT)');
+        $insert = $this->pdo->prepare('INSERT INTO ballast (blob) VALUES (:blob)');
+        for ($i = 0; $i < 200; $i++) {
+            $insert->execute(['blob' => str_repeat('x', 4096)]);
+        }
+        $this->pdo->exec('DELETE FROM ballast');
+        $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetchAll();
+        $free = (int) $this->pdo->query('PRAGMA freelist_count')->fetchColumn();
+        $pageSize = (int) $this->pdo->query('PRAGMA page_size')->fetchColumn();
+
+        $data = $this->makeService()->maintain('vacuum', true)->data;
+
+        assertSame(
+            ['action' => 'vacuum', 'executed' => true, 'reclaimed_pages' => $free, 'page_size' => $pageSize, 'freed_bytes' => $free * $pageSize, 'log_truncated' => true],
+            $data,
+        );
+    }
+
+    public function testAVacuumWithNothingToFreeReportsNothing(): void
+    {
+        $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetchAll();
+
+        $data = $this->makeService()->maintain('vacuum', true)->data;
+
+        assertSame(0, $data['reclaimed_pages']);
+        assertSame(0, $data['freed_bytes']);
+    }
+
+    /**
+     * A reader holding the log open stops the checkpoint from truncating it,
+     * and the result says so rather than claiming the space came back.
+     */
+    public function testAVacuumSaysSoWhenAReaderKeepsTheLogOpen(): void
+    {
+        $reader = SqliteConnection::open($this->dbPath);
+        $reader->beginTransaction();
+        $reader->query('SELECT COUNT(*) FROM projects')->fetchColumn();
+        try {
+            $data = $this->makeService()->maintain('vacuum', true)->data;
+        } finally {
+            $reader->rollBack();
+        }
+
+        assertSame(false, $data['log_truncated']);
+    }
+
+    /** The backup directory is private to its owner, and the reported size is the file's. */
+    public function testABackupDirectoryIsPrivateAndTheSizeIsTheFiles(): void
+    {
+        $this->seedProject();
+
+        $result = $this->makeService()->maintain('backup', true, 'sized.sqlite');
+
+        clearstatcache();
+        assertSame(0700, fileperms(dirname($result->data['target'])) & 0777);
+        assertSame(filesize($result->data['target']), $result->data['bytes']);
+    }
+
+    /** Exactly a thousand projects can be maintained; the limit applies from the thousand-and-first. */
+    public function testAThousandProjectsCanBeMaintained(): void
+    {
+        $insert = $this->pdo->prepare('INSERT INTO projects(id, name, root_realpath, config_json, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)');
+        $this->pdo->beginTransaction();
+        for ($i = 0; $i < 1000; $i++) {
+            $insert->execute([sprintf('p-%04d', $i), 'P', '/nowhere/p-' . $i, '{}', gmdate('c'), gmdate('c')]);
+        }
+        $this->pdo->commit();
+
+        $result = $this->makeService()->maintain('optimize', true);
+
+        assertSame(true, $result->data['executed']);
+        assertSame(0, (int) $this->pdo->query('SELECT COUNT(*) FROM scan_locks')->fetchColumn());
+    }
 }
