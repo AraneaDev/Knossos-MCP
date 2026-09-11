@@ -130,7 +130,7 @@ final readonly class GraphReconciler
             $this->repository->archiveActiveSnapshot(
                 $projectId,
                 hash('sha256', (string) ($previousProject['config_json'] ?? '{}')),
-                $request->projectConfig['snapshot_retention'] ?? 5,
+                $request->projectConfig['snapshot_retention'] ?? GraphRepository::DEFAULT_SNAPSHOT_RETENTION,
             );
             $mark('archive_snapshot');
 

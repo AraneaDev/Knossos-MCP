@@ -47,7 +47,7 @@ final class SqliteGraphPruner
             $statement->execute(['project' => $projectId]);
             $seen = [];
             while (($row = $statement->fetch()) !== false) {
-                $seen[(string) $row['id']] = true;
+                $seen[$row['id']] = true;
             }
             $ids[$table] = $seen;
         }
@@ -101,7 +101,7 @@ final class SqliteGraphPruner
     {
         $byBoundary = [];
         foreach ($pairs as $pair) {
-            [$boundaryId, $nodeId] = explode("\0", $pair, 2);
+            [$boundaryId, $nodeId] = explode("\0", $pair);
             $byBoundary[$boundaryId][] = $nodeId;
         }
         foreach ($byBoundary as $boundaryId => $nodeIds) {

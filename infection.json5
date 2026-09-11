@@ -97,6 +97,14 @@
     // of that exact shape; the count argument is not an integer literal and
     // keeps its mutants. Confirmed on ChangeImpactQueryService.php:180 in the
     // 2026-09-11 run.
+    //
+    // `array_chunk($rows, N)` batch sizes are throughput knobs: every chunk is
+    // written, deleted or queried the same way, so N +/- 1 yields the same rows.
+    // Each size already sits well under SQLite's variable limit (the writer's
+    // 15-column node batch of 60 is 900 of the historic 999 floor; this build
+    // allows 32766), so one more row per batch cannot cross it. Ten sites:
+    // SqliteGraphWriter x5, SqliteGraphPruner x2, DeadCodeAnalysis x3.
+    // Confirmed on SqliteGraphPruner.php:87 and :108 in the 2026-09-11 run.
     IncrementInteger: {
       ignoreSourceCodeByRegex: [
         ".*(?:private|protected|public)[^;{]*int \\$[A-Za-z_]\\w* = \\d[\\d_]{3,}.*",
@@ -106,6 +114,7 @@
         ".*LIMIT %d', self::\\w+ \\+ 1\\).*",
         ".*\\$timeoutMs \\* 1_000_000.*",
         ".*implode\\(',', array_fill\\(0, count\\(.*",
+        ".*array_chunk\\(\\$\\w+, \\d+\\).*",
       ],
     },
     DecrementInteger: {
@@ -114,6 +123,7 @@
         ".*hrtime\\(true\\).*/ 1_000_000.*",
         ".*\\$timeoutMs \\* 1_000_000.*",
         ".*implode\\(',', array_fill\\(0, count\\(.*",
+        ".*array_chunk\\(\\$\\w+, \\d+\\).*",
       ],
     },
     // Stream buffering hints affect when bytes arrive, never which bytes. Removing

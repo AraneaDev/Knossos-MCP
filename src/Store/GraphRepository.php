@@ -16,6 +16,15 @@ use Knossos\Reconciliation\ContributionCacheEntry;
 interface GraphRepository
 {
     /**
+     * Snapshots kept when a project sets no `snapshot_retention`.
+     *
+     * Read in two places that must agree: the reconciler archives a snapshot
+     * only when retention is above zero, and completing a scan prunes to it.
+     * Each used to spell out its own 5.
+     */
+    public const DEFAULT_SNAPSHOT_RETENTION = 5;
+
+    /**
      * Execute an operation atomically and return its result.
      *
      * @template T
