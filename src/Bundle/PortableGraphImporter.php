@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Bundle;
 
 use InvalidArgumentException;
+use JsonException;
 use PDO;
 
 /**
@@ -111,9 +112,7 @@ final readonly class PortableGraphImporter
                 $path[$current] = true;
                 $current = $parents[$current] ?? null;
             }
-            foreach (array_keys($path) as $seen) {
-                $safe[$seen] = true;
-            }
+            $safe += $path;
         }
     }
 
@@ -220,7 +219,6 @@ final readonly class PortableGraphImporter
     }
 
     /** A required string field from untrusted bundle data. */
-
     private function text(mixed $value): string
     {
         if (!is_string($value) || $value === '' || strlen($value) > 1_000_000) {
@@ -242,12 +240,15 @@ final readonly class PortableGraphImporter
             return $language;
         }
         $kind = $item['kind'] ?? '';
-        $attributes = json_decode((string) ($item['attributes_json'] ?? '{}'), true);
+        // Read before jsonObject() validates the field, so it may be anything:
+        // casting an array to string here raised a PHP warning.
+        $json = $item['attributes_json'] ?? null;
+        $attributes = is_string($json) ? json_decode($json, true) : null;
         $reference = is_array($attributes) ? ($attributes['reference'] ?? null) : null;
         if (is_string($kind) && str_starts_with($kind, 'external_') && is_string($reference) && str_contains($reference, ':')) {
-            return explode(':', $reference, 2)[0];
+            return explode(':', $reference)[0];
         }
-        $scanner = explode(':', (string) ($item['owner_key'] ?? ''), 2)[0];
+        $scanner = explode(':', (string) ($item['owner_key'] ?? ''))[0];
         return match ($scanner) {
             'knossos.php' => 'php',
             'knossos.typescript' => 'ts',
@@ -256,8 +257,8 @@ final readonly class PortableGraphImporter
             default => $scanner !== '' ? $scanner : 'unknown',
         };
     }
-    /** A path field, validated as project-relative so a bundle cannot carry an absolute path in. */
 
+    /** A path field, validated as project-relative so a bundle cannot carry an absolute path in. */
     private function relativePath(mixed $value): string
     {
         $path = $this->text($value);
@@ -266,8 +267,8 @@ final readonly class PortableGraphImporter
         }
         return $path;
     }
-    /** An integer field that must not be negative, such as a line number or size. */
 
+    /** An integer field that must not be negative, such as a line number or size. */
     private function nonNegative(mixed $value): int
     {
         if (!is_int($value) || $value < 0) {
@@ -294,16 +295,22 @@ final readonly class PortableGraphImporter
     }
 
     /**
-     * Validate an untrusted timestamp against an ISO-8601 shape with a length
-     * cap, falling back to $fallback when the field is absent or non-string
+     * Validate an untrusted timestamp against an anchored ISO-8601 shape,
+     * falling back to $fallback when the field is absent or non-string
      * (matching the prior lenient behaviour for missing scan metadata).
+     *
+     * The pattern bounds the length by itself, at 32 bytes with microseconds
+     * and an offset, so the separate 40-byte cap that used to precede it
+     * could never reject anything the pattern accepted.
      */
     private function timestampOrFallback(mixed $value, string $fallback): string
     {
         if (!is_string($value)) {
             return $fallback;
         }
-        if (strlen($value) > 40 || preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/', $value) !== 1) {
+        // `D`: without it `$` also matches before a trailing newline, and a
+        // timestamp ending in "\n" was stored as given.
+        if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/D', $value) !== 1) {
             throw new InvalidArgumentException('Bundle timestamp is malformed.');
         }
         return $value;
@@ -319,25 +326,32 @@ final readonly class PortableGraphImporter
         if ($value === null) {
             return $fallback;
         }
-        if (!is_string($value) || preg_match('/^[0-9a-fA-F]{1,128}$/', $value) !== 1) {
+        if (!is_string($value) || preg_match('/^[0-9a-fA-F]{1,128}$/D', $value) !== 1) {
             throw new InvalidArgumentException('Bundle hash is malformed.');
         }
         return $value;
     }
-    /** A confidence field, rejecting a value outside the enum rather than defaulting it. */
 
+    /** A confidence field, rejecting a value outside the enum rather than defaulting it. */
     private function confidence(mixed $value): string
     {
         return in_array($value, ['certain', 'probable', 'possible'], true) ? $value : throw new InvalidArgumentException('Bundle confidence is invalid.');
     }
-    /** Re-encode an attributes object for storage, rejecting anything unencodable. */
 
+    /** Re-encode an attributes object for storage, rejecting anything unencodable. */
     private function jsonObject(mixed $value): string
     {
         if (!is_string($value) || strlen($value) > 1_000_000) {
             throw new InvalidArgumentException('Bundle JSON attributes are invalid.');
         }
-        $decoded = json_decode($value, true, 64, JSON_THROW_ON_ERROR);
+        // Malformed or over-nested JSON is a bad bundle like any other, so it
+        // is refused as one. Left as a JsonException it reached the client as
+        // "An unexpected error occurred" rather than KNOSSOS_INVALID_ARGUMENT.
+        try {
+            $decoded = json_decode($value, true, 64, JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            throw new InvalidArgumentException('Bundle JSON attributes are invalid.', previous: $error);
+        }
         if (!is_array($decoded) || ($decoded !== [] && array_is_list($decoded))) {
             throw new InvalidArgumentException('Bundle JSON attributes must be objects.');
         }
