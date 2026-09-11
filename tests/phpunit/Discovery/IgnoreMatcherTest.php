@@ -790,4 +790,58 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('assets/output/app.js'));
         assertSame(false, $matcher->matches('packages/assets/output'));
     }
+
+    /**
+     * One case per boundary in the glob compiler, each where a wrong index or a
+     * wrong operator changes the answer.
+     *
+     * @return iterable<string, array{string, string, bool}>
+     */
+    public static function compilerBoundaries(): iterable
+    {
+        yield '** must be a pair' => ['**/b', 'ab', false];
+        yield '**/ spans directories' => ['**/b', 'a/c/b', true];
+        yield 'a class stops at its own bracket' => ['x[ab]y', 'x]y', false];
+        yield 'text after a class still matches' => ['x[ab]y', 'xby', true];
+        yield 'a POSIX class keeps its bracket' => ['[[:alpha:]]', ']', false];
+        yield 'a POSIX class matches its members' => ['[[:alpha:]]', 'q', true];
+        yield 'a quoted character after a POSIX class' => ['[x[:digit:]#]', '#', true];
+        yield 'a digit through the POSIX class' => ['[x[:digit:]#]', '7', true];
+        yield 'a bracket that opens no POSIX class' => ['[a[x:]', 'a', true];
+        yield 'an unclosed [: at the end of a class' => ['[a[:]', 'a', true];
+        yield 'a lone [ at the end of a class' => ['[a[]', '[', true];
+        yield 'an unterminated [: is a literal' => ['[[:x]', ':', true];
+        yield 'an unterminated class is literal text' => ['[[:', '[[:', true];
+        yield 'a leading hyphen is literal' => ['[-a]', '-', true];
+        yield 'a trailing hyphen is literal' => ['[a-]', '-', true];
+        yield 'a negated leading hyphen is literal' => ['[!-a]', '-', false];
+        yield 'a hyphen between two literals is a range' => ['[a-c]', 'b', true];
+    }
+
+    /**
+     * Each pattern compiles without a warning, terminates, and decides the path
+     * as fnmatch would. An index one off in the class scanner, in either
+     * direction, fails one of these: by reading past the end of the pattern, by
+     * never finishing the scan, or by moving a class boundary.
+     */
+    #[DataProvider('compilerBoundaries')]
+    public function testTheGlobCompilerOnItsBoundaries(string $pattern, string $path, bool $ignored): void
+    {
+        assertSame($ignored, (new IgnoreMatcher([$pattern]))->matches($path));
+    }
+
+    /** An invalid glob is reported as the user wrote it: JSON when it can be, var_export() when it cannot. */
+    public function testAnInvalidGlobIsQuotedAsWritten(): void
+    {
+        $message = static fn(string $pattern): string => captureThrows(
+            static fn() => new IgnoreMatcher([$pattern]),
+            DiscoveryException::class,
+        )->getMessage();
+
+        assertSame('PROJECT_CONFIG_INVALID: ignore pattern "[[::]]" is not a valid glob.', $message('[[::]]'));
+        // The negation marker, anchoring slashes and whitespace are stripped
+        // before compiling; the message still shows them.
+        assertSame('PROJECT_CONFIG_INVALID: ignore pattern "!\/[z-a]\/ " is not a valid glob.', $message('!/[z-a]/ '));
+        assertSame("PROJECT_CONFIG_INVALID: ignore pattern '[\xff-a]' is not a valid glob.", $message("[\xff-a]"));
+    }
 }
