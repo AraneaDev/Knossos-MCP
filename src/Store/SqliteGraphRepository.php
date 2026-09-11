@@ -31,22 +31,12 @@ final class SqliteGraphRepository implements GraphRepository
     /** Every row a scan writes. */
     private SqliteGraphWriter $writer;
 
-    /**
-     * The graph tables a scan owns and the column identifying a row in each,
-     * child-first so a delete never orphans a row it has not reached yet.
-     */
+    /** Brings the stored graph in line with a rescan. */
+    private SqliteGraphPruner $pruner;
+
     /** Every table a graph rewrite writes, which is the scope its integrity check needs. */
     private const REWRITTEN_TABLES = [
         'files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics',
-    ];
-
-    private const GRAPH_TABLES = [
-        'boundary_memberships' => 'boundary_id',
-        'boundaries' => 'id',
-        'classifications' => 'id',
-        'edges' => 'id',
-        'nodes' => 'id',
-        'files' => 'id',
     ];
 
     public function __construct(private PDO $pdo)
@@ -55,6 +45,7 @@ final class SqliteGraphRepository implements GraphRepository
         $this->transactions = new SqliteTransactions($pdo);
         $this->reader = new SqliteGraphReader($pdo);
         $this->writer = new SqliteGraphWriter($this->statements);
+        $this->pruner = new SqliteGraphPruner($this->statements);
     }
 
     /** {@inheritDoc} */
@@ -384,29 +375,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function existingGraphIds(string $projectId): array
     {
-        $ids = [];
-        foreach (array_keys(self::GRAPH_TABLES) as $table) {
-            if ($table === 'boundary_memberships') {
-                continue;
-            }
-            $statement = $this->prepare(sprintf('SELECT id FROM %s WHERE project_id = :project', $table));
-            $statement->execute(['project' => $projectId]);
-            $seen = [];
-            while (($row = $statement->fetch()) !== false) {
-                $seen[(string) $row['id']] = true;
-            }
-            $ids[$table] = $seen;
-        }
-        // A membership is identified by the pair it joins, not by an id column.
-        $statement = $this->prepare('SELECT boundary_id, node_id FROM boundary_memberships WHERE project_id = :project');
-        $statement->execute(['project' => $projectId]);
-        $memberships = [];
-        while (($row = $statement->fetch()) !== false) {
-            $memberships[$row['boundary_id'] . "\0" . $row['node_id']] = true;
-        }
-        $ids['boundary_memberships'] = $memberships;
-
-        return $ids;
+        return $this->pruner->existingGraphIds($projectId);
     }
 
     /**
@@ -421,45 +390,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function pruneGraph(string $projectId, array $existing, array $desired): void
     {
-        foreach (array_keys(self::GRAPH_TABLES) as $table) {
-            $obsolete = array_keys(array_diff_key($existing[$table] ?? [], $desired[$table] ?? []));
-            if ($obsolete === []) {
-                continue;
-            }
-            if ($table === 'boundary_memberships') {
-                $this->deleteMemberships($projectId, $obsolete);
-                continue;
-            }
-            foreach (array_chunk($obsolete, 400) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-                $statement = $this->prepare(sprintf('DELETE FROM %s WHERE project_id = ? AND id IN (%s)', $table, $placeholders));
-                $statement->execute([$projectId, ...$chunk]);
-            }
-        }
-    }
-
-    /**
-     * Delete memberships by the pair they join, grouped so each delete can use the index.
-     *
-     * @param list<string> $pairs boundary id and node id joined by a NUL byte
-     */
-    private function deleteMemberships(string $projectId, array $pairs): void
-    {
-        $byBoundary = [];
-        foreach ($pairs as $pair) {
-            [$boundaryId, $nodeId] = explode("\0", $pair, 2);
-            $byBoundary[$boundaryId][] = $nodeId;
-        }
-        foreach ($byBoundary as $boundaryId => $nodeIds) {
-            foreach (array_chunk($nodeIds, 400) as $chunk) {
-                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
-                $statement = $this->prepare(sprintf(
-                    'DELETE FROM boundary_memberships WHERE project_id = ? AND boundary_id = ? AND node_id IN (%s)',
-                    $placeholders,
-                ));
-                $statement->execute([$projectId, $boundaryId, ...$chunk]);
-            }
-        }
+        $this->pruner->pruneGraph($projectId, $existing, $desired);
     }
 
     /**
@@ -474,16 +405,13 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function stampGraphScan(string $projectId, string $scanId): void
     {
-        foreach (array_keys(self::GRAPH_TABLES) as $table) {
-            $statement = $this->prepare(sprintf('UPDATE %s SET last_scan_id = :scan WHERE project_id = :project AND last_scan_id <> :scan', $table));
-            $statement->execute(['scan' => $scanId, 'project' => $projectId]);
-        }
+        $this->pruner->stampGraphScan($projectId, $scanId);
     }
 
     /** Drop a project's diagnostics, which belong to the scan that produced them. */
     public function clearProjectDiagnostics(string $projectId): void
     {
-        $this->prepare('DELETE FROM diagnostics WHERE project_id = :project')->execute(['project' => $projectId]);
+        $this->pruner->clearProjectDiagnostics($projectId);
     }
 
     /** Drop the oldest snapshots beyond the project's retention setting. */
