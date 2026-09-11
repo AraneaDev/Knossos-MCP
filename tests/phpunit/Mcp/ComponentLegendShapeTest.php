@@ -84,6 +84,14 @@ final class ComponentLegendShapeTest extends KnossosTestCase
         $kindOnly = ['kind' => 'calls'];
         [$out] = ComponentLegend::compress(['via' => $kindOnly]);
         assertSame($kindOnly, $out['via']);
+
+        // A kind that is not a string is not a label to shorten to, however
+        // complete the rest of the shape is: the rewrite replaces the whole map
+        // with that value, so a number here would put a number where every
+        // reader expects a relationship name.
+        $numericKind = ['kind' => 5, 'source_id' => 'symbol_a', 'target_id' => 'symbol_b'];
+        [$out] = ComponentLegend::compress(['via' => $numericKind]);
+        assertSame($numericKind, $out['via']);
     }
 
     /**
