@@ -26,6 +26,9 @@ final class SqliteGraphRepository implements GraphRepository
     /** The one transaction state this connection has: nesting depends on it being shared. */
     private SqliteTransactions $transactions;
 
+    /** Reads over the stored graph. */
+    private SqliteGraphReader $reader;
+
     /**
      * The graph tables a scan owns and the column identifying a row in each,
      * child-first so a delete never orphans a row it has not reached yet.
@@ -48,6 +51,7 @@ final class SqliteGraphRepository implements GraphRepository
     {
         $this->statements = new SqliteStatementCache($pdo);
         $this->transactions = new SqliteTransactions($pdo);
+        $this->reader = new SqliteGraphReader($pdo);
     }
 
     /** {@inheritDoc} */
@@ -776,18 +780,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function findNodesByName(string $projectId, string $name, int $limit = 20): array
     {
-        self::assertLimit($limit);
-        $statement = $this->pdo->prepare(
-            'SELECT * FROM nodes WHERE project_id = :project ' .
-            'AND (canonical_name = :name OR display_name = :name) ' .
-            'ORDER BY CASE WHEN canonical_name = :name THEN 0 ELSE 1 END, canonical_name LIMIT :limit',
-        );
-        $statement->bindValue(':project', $projectId);
-        $statement->bindValue(':name', $name);
-        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
-        $statement->execute();
-
-        return $statement->fetchAll();
+        return $this->reader->findNodesByName($projectId, $name, $limit);
     }
 
     /**
@@ -890,7 +883,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function outgoing(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
     {
-        return $this->adjacent('source_id', $projectId, $nodeId, $kind, $limit);
+        return $this->reader->outgoing($projectId, $nodeId, $kind, $limit);
     }
 
     /**
@@ -900,46 +893,7 @@ final class SqliteGraphRepository implements GraphRepository
      */
     public function incoming(string $projectId, string $nodeId, ?string $kind = null, int $limit = 100): array
     {
-        return $this->adjacent('target_id', $projectId, $nodeId, $kind, $limit);
-    }
-
-    /**
-     * Edges on one side of a node, shared by outgoing() and incoming().
-     *
-     * @return list<array<string, mixed>>
-     */
-    private function adjacent(
-        string $column,
-        string $projectId,
-        string $nodeId,
-        ?string $kind,
-        int $limit,
-    ): array {
-        self::assertLimit($limit);
-        $sql = sprintf('SELECT * FROM edges WHERE project_id = :project AND %s = :node', $column);
-        if ($kind !== null) {
-            $sql .= ' AND kind = :kind';
-        }
-        $sql .= ' ORDER BY kind, id LIMIT :limit';
-
-        $statement = $this->pdo->prepare($sql);
-        $statement->bindValue(':project', $projectId);
-        $statement->bindValue(':node', $nodeId);
-        if ($kind !== null) {
-            $statement->bindValue(':kind', $kind);
-        }
-        $statement->bindValue(':limit', $limit, PDO::PARAM_INT);
-        $statement->execute();
-
-        return $statement->fetchAll();
-    }
-    /** Reject a limit outside its bounds rather than clamping it silently. */
-
-    private static function assertLimit(int $limit): void
-    {
-        if ($limit < 1 || $limit > 1000) {
-            throw new InvalidArgumentException('Query limit must be between 1 and 1000.');
-        }
+        return $this->reader->incoming($projectId, $nodeId, $kind, $limit);
     }
     /** A cached prepared statement, since a scan replays the same inserts repeatedly. */
 
