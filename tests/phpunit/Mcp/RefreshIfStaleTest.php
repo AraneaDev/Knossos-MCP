@@ -267,8 +267,10 @@ final class RefreshIfStaleTest extends KnossosTestCase
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
         try {
-            // A newer failed attempt makes the probe report 'stale' without any
-            // drift counts, which is the branch under test.
+            // A newer failed attempt makes the probe report 'stale' while the
+            // drift counts all read zero: the verdict comes from the attempt,
+            // not from anything measured on disk, so there is no change set to
+            // cost a rescan against. That is the branch under test.
             // started_at must match the schema's own timestamp format (see
             // SqliteValues::now()): hasNewerAttempt() orders by started_at as a
             // string, and a mismatched format (e.g. a space instead of 'T')

@@ -20,8 +20,8 @@ per-project resources at `knossos://<project_id>/summary`, `/boundaries`, and
 
 ## Refreshing a stale graph without asking twice
 
-This one applies to every read tool, not only the four above. `refresh_if_stale`
-defaults to `true`, so a call that lands on a stale graph rescans before
+`refresh_if_stale` is accepted by every read tool, and it defaults to
+`true`, so a call that lands on a stale graph rescans before
 answering instead of leaving you to read a staleness banner, call
 `scan_project`, and ask again: the round trip a session would otherwise spend
 discovering it needed a fresh graph.

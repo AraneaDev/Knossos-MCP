@@ -17,13 +17,13 @@ brief names.
 
 ## The five states
 
-| State        | Meaning                                                                                                        |
-| ------------ | -------------------------------------------------------------------------------------------------------------- |
-| `fresh`      | Scanned, and a drift probe found nothing changed since.                                                        |
-| `stale`      | Scanned, but files have changed since the last scan.                                                           |
-| `unverified` | Scanned, but drift probing was skipped: over 500 tracked files, or the root is currently unavailable to check. |
-| `missing`    | The path belongs to a known project, but that project has no graph at all.                                     |
-| `unscanned`  | The path belongs to no project.                                                                                |
+| State        | Meaning                                                                                                           |
+| ------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `fresh`      | Scanned, and a drift probe found nothing changed since.                                                           |
+| `stale`      | Scanned, but files have changed since the last scan.                                                              |
+| `unverified` | Scanned, but drift probing was skipped: over 20,000 tracked files, or the root is currently unavailable to check. |
+| `missing`    | The path belongs to a known project, but that project has no graph at all.                                        |
+| `unscanned`  | The path belongs to no project.                                                                                   |
 
 Each state renders exactly one verdict line, verbatim (the placeholders shown
 are substituted at render time):

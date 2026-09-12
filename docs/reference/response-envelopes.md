@@ -148,18 +148,24 @@ by trimming result lists.`, an honest overflow rather than a silent lie.
 
 When change detection ran, `staleness` also carries:
 
-- `changed_files_since`: tracked files whose on-disk mtime differs from the scan's.
+- `changed_files_since`: tracked files whose content hash differs from the one
+  the scan stored. Content decides drift, so a `touch` that moves an mtime
+  without changing a byte is not a change, and neither is a `git checkout` that
+  restores identical content.
 - `added_files_since`: entries that appeared since the scan in the directories
-  holding tracked files: entries absent from the tracked-path set whose inode
-  change time is later than the scan. Two limits follow from the 500-file bound
-  below rather than from the method. A new directory is only seen when its
+  holding tracked files: entries absent from the tracked-path set, that the
+  scanner would have tracked, whose inode change time is later than the scan.
+  The project's ignore rules apply, and so does the scanner's own idea of
+  source, so a build artifact, a vendored dependency and a new README are not
+  additions. A new directory is, because nothing short of descending into it
+  says whether it holds source. One limit follows from the 20,000-file bound
+  below rather than from the method: a new directory is only seen when its
   parent holds a tracked file, so one created in a subtree with no tracked file
-  in it is invisible. Ignore rules are not applied either, so a build artifact
-  or a vendored dependency counts as an addition even though a rescan would
-  skip it.
+  in it is invisible.
 - `deleted_files_since`: tracked files that no longer exist.
 
-All three are omitted, and the state is `unverified`, above 500 tracked files.
+All three are omitted, and the state is `unverified`, above 20,000 tracked
+files with no usable Git history to ask instead.
 
 ## Refreshing a stale graph
 
@@ -171,17 +177,21 @@ default is overridden: the stored graph is served as stored, stale or not,
 with no rescan attempted.
 
 The rescan only runs when it is cheap enough to fit inside the call you are
-already waiting on. `RefreshPolicy` estimates the cost from the project's own
-last scan (its wall time divided by the files it scanned) multiplied by how
-many files drifted, and compares that estimate against a 5000 ms budget. Over
-budget, or when there is no scan history to estimate against, or when the
-graph is `stale` with no measured change set to cost, the refresh is declined
-and the stored graph answers instead. A declined or failed refresh adds one
+already waiting on. `RefreshPolicy` estimates the cost from the duration the
+project's own last scan recorded: a fixed overhead for the discovery, worker
+startup and reconciliation any rescan pays, plus that scan's per-file cost
+times the number of files that drifted, capped at what the full scan cost.
+It compares that estimate against a 5000 ms budget. Over budget, or when the
+active scan recorded no duration to estimate against, or when the graph is
+`stale` with no measured change set to cost, the refresh is declined and the
+stored graph answers instead. A declined or failed refresh adds one
 line to `warnings`, prefixed `refresh_if_stale:`, naming the reason and, when
 relevant, pointing you at `scan_project`. A refresh that succeeds adds no
-warning at all: `staleness.state` on the same result already reads `fresh`,
-so a second announcement would land on every call for the one case that needs
-no attention.
+warning at all: staleness is probed again after the rescan, so
+`staleness.state` on the same result already reads `fresh`, and a second
+announcement would land on every call for the one case that needs no
+attention. It can still read `stale` if the tree moved again while the rescan
+was running, which is the honest answer rather than a stale one.
 
 Set the environment variable `KNOSSOS_AUTO_REFRESH=0` on the server process
 to turn the default back off everywhere, for every tool and every project,

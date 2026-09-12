@@ -37,11 +37,22 @@ final readonly class GitHeadResolver
                 self::TIMEOUT_MS,
                 'scan head',
             ));
-        } catch (Throwable) {
+        } catch (Throwable $error) {
+            // A scan with no recorded head degrades to the walk oracle, which
+            // looks like nothing at all from outside: no warning, no slow path,
+            // just a probe that never gets cheaper. Anything that is not simply
+            // a directory outside a repository leaves a breadcrumb, so the
+            // reason is findable; the ordinary gitless project does not, or
+            // every scan of one would narrate itself. Never stdout, which
+            // carries MCP protocol frames.
+            if (!str_contains($error->getMessage(), 'not a git repository')) {
+                error_log('knossos scan head: git could not answer (' . $error->getMessage() . ')');
+            }
             return null;
         }
-        // Only a sha may be stored. Anything else would later be handed to
-        // `git diff` as a revision, where it would fail on every probe.
-        return preg_match('/^[a-f0-9]{40,64}$/', $output) === 1 ? $output : null;
+        // Only a sha may be stored, and only at the two lengths git emits:
+        // SHA-1 and SHA-256. Anything else would later be handed to `git diff`
+        // as a revision, where it would fail on every probe.
+        return preg_match('/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/', $output) === 1 ? $output : null;
     }
 }
