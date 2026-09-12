@@ -38,11 +38,11 @@ final class OracleAgreementTest extends KnossosTestCase
             file_put_contents($root . '/src/c.php', "<?php\n");
             touch($root . '/src', time() + 60);
 
-            $git = new GitDriftOracle($pdo, $this->fakeRunner([
-                str_repeat('a', 40) . "\n",
-                "M\0src/a.php\0D\0src/b.php\0",
-                "src/c.php\0",
-            ]));
+            $git = new GitDriftOracle($pdo, $this->fakeRunner(
+                changed: ['src/a.php', 'src/b.php'],
+                untracked: ['src/c.php'],
+                indexed: ['src/a.php', 'src/b.php'],
+            ));
             $walk = new WalkDriftOracle($pdo);
 
             self::assertEquals(
@@ -73,18 +73,47 @@ final class OracleAgreementTest extends KnossosTestCase
         return (string) $statement->fetchColumn();
     }
 
-    /** A runner that hands back each of $outputs in call order, standing in for rev-parse, diff and ls-files. */
-    private function fakeRunner(array $outputs): GitProcessRunnerInterface
+    /**
+     * A runner answering each git subcommand by name, standing in for
+     * rev-parse, diff and the two ls-files listings.
+     *
+     * @param list<string> $changed paths `git diff` reports against the recorded commit
+     * @param list<string> $untracked paths `git ls-files --others` reports
+     * @param list<string> $indexed paths the index holds
+     */
+    private function fakeRunner(array $changed, array $untracked, array $indexed): GitProcessRunnerInterface
     {
-        return new class ($outputs) implements GitProcessRunnerInterface {
-            private int $call = 0;
+        return new class ($changed, $untracked, $indexed) implements GitProcessRunnerInterface {
+            /**
+             * @param list<string> $changed
+             * @param list<string> $untracked
+             * @param list<string> $indexed
+             */
+            public function __construct(
+                private readonly array $changed,
+                private readonly array $untracked,
+                private readonly array $indexed,
+            ) {}
 
-            /** @param list<string> $outputs */
-            public function __construct(private readonly array $outputs) {}
-
+            /** Canned stdout for whichever subcommand $command names. */
             public function run(array $command, int $timeoutMs, string $operation): string
             {
-                return $this->outputs[$this->call++] ?? '';
+                return match (true) {
+                    in_array('rev-parse', $command, true) => str_repeat('a', 40) . "\n",
+                    in_array('diff', $command, true) => self::framed($this->changed),
+                    in_array('--others', $command, true) => self::framed($this->untracked),
+                    default => self::framed($this->indexed),
+                };
+            }
+
+            /**
+             * Git's own `-z` framing: every entry terminated by a NUL.
+             *
+             * @param list<string> $paths
+             */
+            private static function framed(array $paths): string
+            {
+                return $paths === [] ? '' : implode("\0", $paths) . "\0";
             }
         };
     }

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
-use Knossos\Discovery\IgnoreMatcher;
 use PDO;
 
 /**
@@ -31,6 +30,13 @@ final readonly class WalkDriftOracle implements DriftOracle
 
     /** Entries examined per directory when looking for additions; opening directories is the expensive half. */
     private const MAX_ADDITION_ENTRIES = 500;
+
+    /**
+     * Additions counted before the walk stops, a different quantity from the
+     * entries it examines to find them. One number served as both, which read
+     * as a single bound and was two.
+     */
+    private const MAX_ADDITIONS_COUNTED = 500;
 
     public function __construct(private PDO $pdo) {}
 
@@ -88,25 +94,7 @@ final readonly class WalkDriftOracle implements DriftOracle
             $directories[dirname($absolute)][basename($absolute)] = true;
         }
 
-        return new DriftCounts($changed, $this->addedSince($directories, $finishedAt, $this->ignoreMatcher($projectId), $root), $deleted);
-    }
-
-    /** The project's own ignores on top of the defaults IgnoreMatcher already applies. */
-    private function ignoreMatcher(string $projectId): IgnoreMatcher
-    {
-        $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
-        $statement->execute(['id' => $projectId]);
-        $raw = $statement->fetchColumn();
-        $patterns = [];
-        if (is_string($raw) && $raw !== '') {
-            // A malformed config must not make a probe throw: the graph is
-            // still answerable, and discovery reports the same fault properly.
-            $decoded = json_decode($raw, true);
-            if (is_array($decoded) && is_array($decoded['ignores'] ?? null)) {
-                $patterns = array_values(array_filter($decoded['ignores'], is_string(...)));
-            }
-        }
-        return new IgnoreMatcher($patterns);
+        return new DriftCounts($changed, $this->addedSince($directories, $finishedAt, ScannedPaths::forProject($this->pdo, $projectId), $root), $deleted);
     }
 
     /**
@@ -118,7 +106,8 @@ final readonly class WalkDriftOracle implements DriftOracle
      * addition per drifted directory reported a pure deletion as both a
      * deletion and an addition. The mtime is therefore only a filter for which
      * directories are worth opening; the count comes from the entries
-     * themselves — those absent from the tracked-path set, and whose own inode
+     * themselves — those absent from the tracked-path set, that {@see
+     * ScannedPaths} says the scanner would have picked up, and whose own inode
      * change time is later than the scan, so an untracked entry that has sat
      * there since before the scan is not counted every time a sibling moves.
      *
@@ -140,7 +129,7 @@ final readonly class WalkDriftOracle implements DriftOracle
      * @param array<string, array<string, true>> $directories directory => tracked basenames within it
      * @param ?string $finishedAt when the active scan finished
      */
-    private function addedSince(array $directories, ?string $finishedAt, IgnoreMatcher $matcher, string $root): int
+    private function addedSince(array $directories, ?string $finishedAt, ScannedPaths $scanned, string $root): int
     {
         if ($finishedAt === null) {
             return 0;
@@ -174,7 +163,7 @@ final readonly class WalkDriftOracle implements DriftOracle
                     }
                     $absolute = $directory . '/' . $entry;
                     $relative = ltrim(substr($absolute, strlen($root)), '/');
-                    if ($matcher->matches($relative)) {
+                    if (!$scanned->tracks($relative, $absolute)) {
                         continue;
                     }
                     ++$examined;
@@ -184,7 +173,7 @@ final readonly class WalkDriftOracle implements DriftOracle
                     }
                     // Enough drift to report; what the rest of the tree holds
                     // cannot change the answer.
-                    if ($added >= self::MAX_ADDITION_ENTRIES) {
+                    if ($added >= self::MAX_ADDITIONS_COUNTED) {
                         return $added;
                     }
                 }

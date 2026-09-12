@@ -7,6 +7,7 @@ namespace Knossos\Query;
 use Closure;
 use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
+use Knossos\Query\Drift\DriftOracle;
 use PDO;
 
 /**
@@ -44,6 +45,7 @@ final readonly class ArchitectureQueryService
         ?GitWorkingTreeProvider $gitWorkingTree = null,
         ?Closure $wallClock = null,
         ?RefreshPolicy $refreshPolicy = null,
+        ?DriftOracle $driftOracle = null,
     ) {
         $this->pdo = $pdo;
         $this->refreshPolicy = $refreshPolicy ?? new RefreshPolicy($pdo);
@@ -70,7 +72,7 @@ final readonly class ArchitectureQueryService
         $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->catalogQueries, $this->topologyQueries);
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
-        $this->stalenessProbe = new StalenessProbe($pdo, $wallClock);
+        $this->stalenessProbe = new StalenessProbe($pdo, $wallClock, $driftOracle);
         $this->briefQueries = new AgentBriefService($pdo, $clock, $this->topologyQueries);
         $this->annotationQueries = new AnnotationService($pdo, $clock);
     }

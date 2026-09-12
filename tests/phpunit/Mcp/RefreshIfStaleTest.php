@@ -5,18 +5,27 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Mcp;
 
 use InvalidArgumentException;
+use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
+use Knossos\Query\Drift\FirstAnsweringDriftOracle;
+use Knossos\Query\Drift\GitDriftOracle;
+use Knossos\Query\Drift\WalkDriftOracle;
 use Knossos\Query\StalenessProbe;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use PDO;
 use PHPUnit\Framework\Attributes\Group;
 
 final class RefreshIfStaleTest extends KnossosTestCase
 {
+    /** The commit every scan of the git-backed fixture records, spelled as a literal so no test value is ever interpolated into SQL. */
+    private const GIT_HEAD = '3f1a9c2b4d5e6f708192a3b4c5d6e7f8091a2b3c';
+
+    /** A graph rebuilt because it was stale must come back fresh, or the refresh bought the caller nothing. */
     #[Group('mcp')]
     public function testStaleGraphIsRescannedBeforeAnswering(): void
     {
@@ -35,6 +44,94 @@ final class RefreshIfStaleTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The same promise, on the kind of project this server ships into: a git
+     * checkout carrying uncommitted edits.
+     *
+     * Saving a file does not move HEAD, so every scan of such a repository
+     * records the same commit the previous one did, and a drift oracle that
+     * reads `git diff <recorded head>` as the verdict reports the edit the
+     * scan already absorbed forever. The trigger reproduces that condition
+     * exactly; the runner is faked because CI has neither a git binary nor a
+     * checkout, and what is under test is the oracle's own reasoning rather
+     * than git's.
+     */
+    #[Group('mcp')]
+    public function testARefreshOnAGitBackedProjectAnswersFreshAgain(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $tracked = $pdo->query('SELECT relative_path FROM files')->fetchAll(PDO::FETCH_COLUMN);
+            $pdo->prepare('UPDATE scans SET git_head = :head')->execute(['head' => self::GIT_HEAD]);
+            // Every later scan records the same commit, because nothing here commits.
+            $pdo->exec(
+                'CREATE TRIGGER stamp_git_head AFTER INSERT ON scans BEGIN ' .
+                "UPDATE scans SET git_head = '" . self::GIT_HEAD . "' WHERE id = NEW.id; END",
+            );
+            file_put_contents($root . '/src/CheckoutService.php', "\n// drift\n", FILE_APPEND);
+
+            $oracle = new FirstAnsweringDriftOracle(
+                new GitDriftOracle($pdo, $this->gitRunnerReporting(['src/CheckoutService.php'], $tracked)),
+                new WalkDriftOracle($pdo),
+            );
+            $tools = new ToolService(
+                new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+                new ArchitectureQueryService($pdo, driftOracle: $oracle),
+                new DatabaseMaintenanceService($pdo, ':memory:'),
+                new ResultEnricher(new StalenessProbe($pdo, oracle: $oracle), new NextStepPlanner()),
+            );
+            assertSame('stale', (new StalenessProbe($pdo, oracle: $oracle))->probe($projectId)['state']);
+
+            $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => true]);
+
+            assertSame('fresh', $result->staleness['state'], 'A refresh that rebuilt the graph must clear the staleness that triggered it.');
+            assertSame([], $result->warnings, 'A refresh that succeeded says so by the state alone; a warning would fire on every call.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A runner that answers each git subcommand the drift oracle asks by name
+     * rather than by call order, so it stays correct however many times the
+     * oracle is consulted within one tool call.
+     *
+     * @param list<string> $changed paths `git diff` reports against the recorded commit
+     * @param list<string> $tracked paths the index holds, which is what git knows about at all
+     */
+    private function gitRunnerReporting(array $changed, array $tracked): GitProcessRunnerInterface
+    {
+        return new class (self::GIT_HEAD, $changed, $tracked) implements GitProcessRunnerInterface {
+            /**
+             * @param list<string> $changed
+             * @param list<string> $tracked
+             */
+            public function __construct(
+                private readonly string $head,
+                private readonly array $changed,
+                private readonly array $tracked,
+            ) {}
+
+            /** Canned stdout for whichever subcommand $command names. */
+            public function run(array $command, int $timeoutMs, string $operation): string
+            {
+                return match (true) {
+                    in_array('rev-parse', $command, true) => $this->head . "\n",
+                    in_array('diff', $command, true) => self::nulSeparated($this->changed),
+                    in_array('--cached', $command, true) => self::nulSeparated($this->tracked),
+                    default => '',
+                };
+            }
+
+            /** Git's own `-z` framing: every entry terminated by a NUL, nothing quoted. */
+            private static function nulSeparated(array $paths): string
+            {
+                return $paths === [] ? '' : implode("\0", $paths) . "\0";
+            }
+        };
+    }
+
+    /** A fresh graph must not be rescanned, and a rescan that cannot run must warn rather than fail the query. */
     #[Group('mcp')]
     public function testFreshGraphSkipsRescanAndFailedRescanWarnsInsteadOfErroring(): void
     {

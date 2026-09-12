@@ -1365,10 +1365,17 @@ final readonly class ProjectDiscoverer
      * look unreferenced, so dead-code detection reports a live entry point as a
      * deletion candidate.
      *
+     * Public because the drift oracles have to answer the same question this
+     * loop answers, about a path they were handed rather than one they walked
+     * to: whether a file appearing beside the graph is source the scanner would
+     * have tracked, or a README the graph was never going to hold. Two
+     * definitions of "source" would let a probe report drift a rescan cannot
+     * clear.
+     *
      * @param string|null $absolutePath needed only to read a shebang; omit and
      *        extensionless files are simply not classified
      */
-    private static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
+    public static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
     {
         $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
         $byExtension = match ($extension) {

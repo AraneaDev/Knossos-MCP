@@ -51,20 +51,19 @@ final class FastPathTest extends KnossosTestCase
     }
 
     /**
-     * A directory-mtime bump that discovery cannot see -- an editor swap file
-     * created next to a tracked one, a stray artefact of a type discovery
-     * never classifies as source -- makes StalenessProbe report an addition,
-     * and the fast path is the only thing that can retract it: it creates no
-     * scan row, so unless it restamps the active scan's completion the
-     * project reads stale for ever and every `refresh_if_stale` call rescans
-     * the whole tree for nothing.
+     * A new directory beside a tracked file makes StalenessProbe report an
+     * addition, and the fast path is the only thing that can retract it: it
+     * creates no scan row, so unless it restamps the active scan's completion
+     * the project reads stale for ever and every `refresh_if_stale` call
+     * rescans the whole tree for nothing.
      *
      * A `__pycache__` directory would once have demonstrated the same thing,
-     * but WalkDriftOracle now applies the scanner's own ignore rules before
-     * counting an addition, so a directory of that name never reaches the
-     * probe as drift in the first place. What is left for the fast path to
-     * retract is narrower: an entry that is neither ignored nor a language
-     * discovery recognises.
+     * and so would an editor swap file, but the probe now asks whether the
+     * scanner would have tracked an entry before counting it: an ignored name
+     * and a file of a type no language claims both fall out before they reach
+     * the probe as drift. A directory is what is left, and it has to be
+     * counted, because nothing short of descending into it says whether it
+     * holds source -- which is the walk the bound exists to avoid.
      *
      * Deliberately does not lean on scanTempFixture()'s directory backdating,
      * which exists to keep a freshly copied tree from reading as stale and would
@@ -84,12 +83,12 @@ final class FastPathTest extends KnossosTestCase
             // An entry, not a bare `touch` of the directory: the probe counts
             // the entries that appeared rather than the directories whose mtime
             // moved, because an mtime moves on unlink too and counting it as an
-            // addition reported every deletion twice. A `.swp` file has no
-            // extension discovery classifies as source and sits directly in
-            // `src/`, so neither discovery nor IgnoreMatcher's default excludes
-            // make it invisible to the oracle -- only the fast path's restamp
+            // addition reported every deletion twice. An empty directory
+            // directly under `src/` is neither ignored by default nor
+            // classifiable as source, and the probe cannot know it holds
+            // nothing without descending -- only the fast path's restamp
             // retracts the staleness it causes.
-            file_put_contents($root . '/src/.CheckoutService.php.swp', "\x00\x00");
+            mkdir($root . '/src/drafts');
 
             $probe = new StalenessProbe($pdo);
             $before = $probe->probe($projectId);
