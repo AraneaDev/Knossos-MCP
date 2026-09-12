@@ -104,6 +104,13 @@ final readonly class ToolService
         // round trips to discover it needed one. RefreshPolicy is what makes
         // that safe, by skipping any refresh that would cost more than the
         // budget. KNOSSOS_AUTO_REFRESH=0 restores the previous behaviour.
+        //
+        // Only the literal string '0' disables it: 'false', 'off', 'no' and
+        // even 'FALSE' all still read as enabled, the same idiom
+        // ProtocolNegotiator::legacyEnabled() uses for KNOSSOS_LEGACY_PROTOCOL.
+        // Consistency between the two operator switches is worth more than
+        // accommodating spellings nobody has asked for; if that ever changes,
+        // change both switches together, not just one.
         $refreshRequested = getenv('KNOSSOS_AUTO_REFRESH') !== '0';
         if (in_array('refresh_if_stale', $declared, true) && array_key_exists('refresh_if_stale', $arguments)) {
             $refresh = $arguments['refresh_if_stale'];

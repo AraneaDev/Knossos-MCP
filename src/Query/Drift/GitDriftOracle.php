@@ -29,6 +29,17 @@ use Throwable;
  * other case returns null and the walk takes over. Cost stays proportional to
  * the change set rather than to the repository, which is what lets this answer
  * for a tree far above the walk's own ceiling.
+ *
+ * One gap survives even the index cross-check: a file `.gitignore` excludes
+ * that the scanner would track for the *first* time — new since the active
+ * scan, so it has no `files` row yet — appears in neither `diff` nor
+ * `ls-files --others --exclude-standard`, and the cross-check has nothing
+ * stored to notice it by. Only the walk catches it. Declining whenever the
+ * cross-check finds any gitignored-but-scanned row was considered and
+ * rejected: it would hand every large project with even one such file
+ * permanently to the walk's own ceiling, trading the fast path away for
+ * exactly the repositories it exists to serve, to close a gap that a full
+ * scan or the walk already closes on its own.
  */
 final readonly class GitDriftOracle implements DriftOracle
 {
