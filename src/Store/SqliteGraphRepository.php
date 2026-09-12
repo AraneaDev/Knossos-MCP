@@ -145,6 +145,18 @@ final class SqliteGraphRepository implements GraphRepository
     }
 
     /**
+     * Record how long the scan that built this graph took, so a refresh can be
+     * costed against a measurement rather than against a timestamp that means
+     * something else.
+     *
+     * {@see SqliteScanLifecycle::recordScanDuration()}
+     */
+    public function recordScanDuration(string $projectId, string $scanId, int $milliseconds): void
+    {
+        $this->lifecycle->recordScanDuration($projectId, $scanId, $milliseconds);
+    }
+
+    /**
      * Record a terminal failed/cancelled scan for diagnostics.
      *
      * Silently skips a project that was never persisted: the failure may have been

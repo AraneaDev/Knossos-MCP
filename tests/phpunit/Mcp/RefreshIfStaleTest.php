@@ -184,17 +184,14 @@ final class RefreshIfStaleTest extends KnossosTestCase
             // budget to zero: a scan too fast to time costs zero per file, and
             // zero is never over any budget, so a zero budget would not reach
             // the branch under test at all. The 'mixed' fixture scans 3 files,
-            // so a 600-second span costs 200,000 ms/file for a 1-file drift,
-            // far over the 5000 ms default budget.
+            // so a recorded 600-second scan costs 200,000 ms/file for a 1-file
+            // drift, far over the 5000 ms default budget.
             $projectStatement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
             $projectStatement->execute(['id' => $projectId]);
             $scanId = (string) $projectStatement->fetchColumn();
 
-            $finishedStatement = $pdo->prepare('SELECT finished_at FROM scans WHERE id = :id');
-            $finishedStatement->execute(['id' => $scanId]);
-            $started = gmdate('Y-m-d\TH:i:s\Z', strtotime((string) $finishedStatement->fetchColumn()) - 600);
-            $pdo->prepare('UPDATE scans SET started_at = :started WHERE id = :id')->execute([
-                'started' => $started,
+            $pdo->prepare('UPDATE scans SET duration_ms = :duration WHERE id = :id')->execute([
+                'duration' => 600_000,
                 'id' => $scanId,
             ]);
             $before = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();

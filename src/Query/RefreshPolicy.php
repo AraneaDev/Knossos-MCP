@@ -20,6 +20,19 @@ final readonly class RefreshPolicy
 {
     public const DEFAULT_BUDGET_MS = 5000;
 
+    /**
+     * What a rescan costs before it touches a single drifted file.
+     *
+     * A rescan is not a linear fraction of a full one. Rescanning one file
+     * still pays for discovery, for starting the language workers, and for
+     * reconciling the result, and those do not shrink with the change set.
+     * Modelling the cost as per-file alone made a one-file refresh look free
+     * on a large project and unaffordable on a small one. Deliberately small
+     * against the default budget, so the overhead term alone never declines a
+     * refresh the per-file term would have allowed.
+     */
+    private const FIXED_OVERHEAD_MS = 500;
+
     public function __construct(private PDO $pdo, private int $budgetMs = self::DEFAULT_BUDGET_MS) {}
 
     /** Whether to rescan before answering, given how many files drifted. */
@@ -29,12 +42,15 @@ final readonly class RefreshPolicy
             return RefreshDecision::decline('Nothing drifted.');
         }
 
-        $perFileMs = $this->perFileCostMs($projectId);
-        if ($perFileMs === null) {
-            return RefreshDecision::decline('No scan history to estimate a rescan against; call scan_project to refresh.');
+        $cost = $this->scanCost($projectId);
+        if ($cost === null) {
+            return RefreshDecision::decline('No recorded scan duration to estimate a rescan against; call scan_project to refresh.');
         }
 
-        $estimateMs = (int) round($perFileMs * $driftedFiles);
+        // Capped at what the whole graph cost to build: no incremental rescan
+        // can be dearer than the full scan it is a subset of, and the cap keeps
+        // a large drift on a cheap project from being modelled out of reach.
+        $estimateMs = (int) round(min($cost['total'], self::FIXED_OVERHEAD_MS + $cost['perFile'] * $driftedFiles));
         if ($estimateMs > $this->budgetMs) {
             return RefreshDecision::decline(sprintf(
                 '%d files drifted, an estimated %d ms to rescan, over the %d ms budget; call scan_project to refresh.',
@@ -48,32 +64,40 @@ final readonly class RefreshPolicy
     }
 
     /**
-     * Milliseconds per file, from the active scan's own wall time.
+     * What the active scan measured itself as costing, whole and per file.
      *
-     * Null when the project has no completed scan to learn from. Zero is a
-     * legitimate answer and not the same as null: scan timestamps have
-     * second resolution, so a scan that finished inside one second is
-     * genuinely too cheap to worry about repeating.
+     * Read from the duration the scan recorded rather than from its
+     * timestamps. finished_at is restamped every time a rescan finds no
+     * change — it means "when this graph last agreed with the tree" — so
+     * subtracting started_at from it measured elapsed wall-clock time since
+     * the scan, and grew without bound. A 73 ms scan was costed at 21 seconds.
+     *
+     * Null is the only signal for "unknown", and it must stay that way: a
+     * scan predating the duration column knows nothing about its own cost,
+     * and an unknown cost cannot be capped. A recorded zero is a different
+     * and legitimate answer, a scan too fast to time being a scan too cheap
+     * to worry about repeating, so the caller tests for null strictly.
+     *
+     * @return array{total: float, perFile: float}|null
      */
-    private function perFileCostMs(string $projectId): ?float
+    private function scanCost(string $projectId): ?array
     {
         $statement = $this->pdo->prepare(
-            'SELECT s.started_at, s.finished_at, (SELECT COUNT(*) FROM files f WHERE f.last_scan_id = s.id) AS file_count ' .
+            'SELECT s.duration_ms, (SELECT COUNT(*) FROM files f WHERE f.last_scan_id = s.id) AS file_count ' .
             'FROM projects p JOIN scans s ON s.id = p.active_scan_id WHERE p.id = :id',
         );
         $statement->execute(['id' => $projectId]);
         $row = $statement->fetch();
-        if ($row === false || !is_string($row['finished_at']) || !is_string($row['started_at'])) {
+        if ($row === false || !is_numeric($row['duration_ms'])) {
             return null;
         }
 
-        $started = strtotime($row['started_at']);
-        $finished = strtotime($row['finished_at']);
         $files = (int) $row['file_count'];
-        if ($started === false || $finished === false || $files < 1) {
+        if ($files < 1) {
             return null;
         }
+        $total = max(0.0, (float) $row['duration_ms']);
 
-        return max(0, ($finished - $started) * 1000) / $files;
+        return ['total' => $total, 'perFile' => $total / $files];
     }
 }

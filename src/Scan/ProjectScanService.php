@@ -131,6 +131,16 @@ final class ProjectScanService implements ProjectScanner
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
             }
             $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
+            // What rebuilding this graph cost, end to end, recorded here
+            // because this is the only place that knows it: reconciliation
+            // completes the scan row but sees neither discovery nor analysis.
+            // RefreshPolicy reads it to decide whether repeating the work fits
+            // inside a query the caller is already waiting on.
+            (new SqliteGraphRepository($this->pdo))->recordScanDuration(
+                $result->projectId,
+                $result->scanId,
+                (int) round(self::elapsedMilliseconds($startedAt)),
+            );
 
             return $this->resultFactory->create($plan, $language, $result, $startedAt, $stageMilliseconds);
         } catch (\Throwable $error) {

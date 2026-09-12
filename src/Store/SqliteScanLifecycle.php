@@ -147,6 +147,23 @@ final class SqliteScanLifecycle
     }
 
     /**
+     * Record how long the scan that built this graph took.
+     *
+     * Measured rather than inferred, and deliberately not written by the
+     * no-change fast path: that path rebuilds nothing, so its own wall time
+     * says nothing about what rebuilding would cost, and the duration of the
+     * scan that did build the graph is the estimate worth keeping. Restricted
+     * to a complete scan for the same reason refreshScanCompletion() is: a
+     * running or terminal one has no completed work to describe.
+     */
+    public function recordScanDuration(string $projectId, string $scanId, int $milliseconds): void
+    {
+        $this->statements->prepare(
+            "UPDATE scans SET duration_ms = :duration WHERE id = :id AND project_id = :project AND status = 'complete'",
+        )->execute(['duration' => max(0, $milliseconds), 'id' => $scanId, 'project' => $projectId]);
+    }
+
+    /**
      * Record a terminal failed/cancelled scan for diagnostics.
      *
      * Silently skips a project that was never persisted: the failure may have been
