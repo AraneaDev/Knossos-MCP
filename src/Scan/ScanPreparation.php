@@ -43,5 +43,12 @@ final readonly class ScanPreparation
          * @var list<string>
          */
         public array $rustFrameworks = [],
+        /**
+         * The commit the scan root was at when the walk started, or null when
+         * the root is not a Git repository. Captured before discovery reads a
+         * single file so the scan records a commit its own bytes cannot
+         * predate; see {@see ScanPlanner}.
+         */
+        public ?string $gitHead = null,
     ) {}
 }

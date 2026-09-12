@@ -9,8 +9,6 @@ use Knossos\Classification\ClassificationFact;
 use Knossos\Discovery\DiscoveredFile;
 use Knossos\Discovery\DiscoveryDiagnostic;
 use Knossos\Discovery\DiscoveryResult;
-use Knossos\Git\GitHeadResolver;
-use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Reconciliation\FullScanRequest;
 use Knossos\Reconciliation\GraphReconciler;
@@ -34,25 +32,12 @@ final class GraphReconcilerTest extends TestCase
 {
     private FakeGraphRepository $repo;
 
-    /**
-     * A resolver backed by a fake runner rather than a real subprocess: this
-     * suite reconciles hundreds of times, and none of it is a test of Git
-     * itself, so nothing here may shell out.
-     */
-    private GitHeadResolver $gitHead;
-
     /** The diagnostic code an unresolvable edge target now produces instead of an abort. */
     private const UNRESOLVABLE_CODE = 'reconciler.unresolvable_edge_target';
 
     protected function setUp(): void
     {
         $this->repo = new FakeGraphRepository();
-        $this->gitHead = new GitHeadResolver(new class implements GitProcessRunnerInterface {
-            public function run(array $command, int $timeoutMs, string $operation): string
-            {
-                return "3f1a9c2b4d5e6f708192a3b4c5d6e7f8091a2b3c\n";
-            }
-        });
     }
 
     // ----- class shape -----
@@ -78,7 +63,7 @@ final class GraphReconcilerTest extends TestCase
     public function testReconcileExecutesFullLifecycle(): void
     {
         $request = $this->buildRequest();
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -108,7 +93,7 @@ final class GraphReconcilerTest extends TestCase
             'projectIdentity' => 'proj-stable',
             'mode' => 'incremental',
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -136,7 +121,7 @@ final class GraphReconcilerTest extends TestCase
                 configurationHash: 'c',
             ),
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -151,7 +136,7 @@ final class GraphReconcilerTest extends TestCase
     {
         $config = ['snapshot_retention' => 7, 'extra' => 'value'];
         $request = $this->buildRequest(['projectConfig' => $config]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -162,7 +147,7 @@ final class GraphReconcilerTest extends TestCase
     {
         $this->repo->findProjectStub = ['config_json' => '{"retention":10}'];
         $request = $this->buildRequest(['projectConfig' => ['snapshot_retention' => 3]]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -175,7 +160,7 @@ final class GraphReconcilerTest extends TestCase
     {
         $this->repo->findProjectStub = null;
         $request = $this->buildRequest();
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -186,7 +171,7 @@ final class GraphReconcilerTest extends TestCase
     public function testReconcileArchivesUsingDefaultRetentionWhenConfigLacksSnapshotRetention(): void
     {
         $request = $this->buildRequest(['projectConfig' => ['other_key' => 'value']]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -196,7 +181,7 @@ final class GraphReconcilerTest extends TestCase
     public function testReconcileSavesScannerSetHashAsFourthScanArg(): void
     {
         $request = $this->buildRequest();
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -212,11 +197,11 @@ final class GraphReconcilerTest extends TestCase
         $requestForward = $this->buildRequest(['scanners' => [$manifestA, $manifestB]]);
         $requestReverse = $this->buildRequest(['scanners' => [$manifestB, $manifestA]]);
 
-        (new GraphReconciler($this->repo, $this->gitHead))->reconcile($requestForward);
+        (new GraphReconciler($this->repo))->reconcile($requestForward);
         $hashForward = $this->repo->scans[0][3];
 
         $this->repo->reset();
-        (new GraphReconciler($this->repo, $this->gitHead))->reconcile($requestReverse);
+        (new GraphReconciler($this->repo))->reconcile($requestReverse);
         $hashReverse = $this->repo->scans[0][3];
 
         assertSame($hashForward, $hashReverse);
@@ -230,11 +215,11 @@ final class GraphReconcilerTest extends TestCase
         $request1 = $this->buildRequest(['scanners' => [$manifestA]]);
         $request2 = $this->buildRequest(['scanners' => [$manifestB]]);
 
-        (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request1);
+        (new GraphReconciler($this->repo))->reconcile($request1);
         $hash1 = $this->repo->scans[0][3];
 
         $this->repo->reset();
-        (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request2);
+        (new GraphReconciler($this->repo))->reconcile($request2);
         $hash2 = $this->repo->scans[0][3];
 
         assertNotSame($hash1, $hash2);
@@ -246,7 +231,7 @@ final class GraphReconcilerTest extends TestCase
         $request = $this->buildRequest([
             'discovery' => $this->minimalDiscovery([$file]),
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -268,7 +253,7 @@ final class GraphReconcilerTest extends TestCase
         $request = $this->buildRequest([
             'discovery' => $this->minimalDiscovery([$file]),
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -282,7 +267,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$node])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -314,7 +299,7 @@ final class GraphReconcilerTest extends TestCase
                 $this->minimalContribution([$node2]),
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -335,7 +320,7 @@ final class GraphReconcilerTest extends TestCase
             ],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(0, $result->diagnostics);
         assertSame([], $this->repo->diagnostics);
@@ -372,7 +357,7 @@ final class GraphReconcilerTest extends TestCase
             ],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(1, $result->nodes);
         assertSame(1, $result->diagnostics);
@@ -418,7 +403,7 @@ final class GraphReconcilerTest extends TestCase
             ],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(1, $result->nodes);
         assertSame(0, $result->diagnostics);
@@ -466,7 +451,7 @@ final class GraphReconcilerTest extends TestCase
             ],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(1, $result->nodes);
         assertSame(1, $result->diagnostics);
@@ -492,7 +477,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source, $target], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -522,7 +507,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$node])],
             'classifications' => [$classification],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -551,7 +536,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$node])],
             'boundaries' => [$boundary],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -585,7 +570,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$node])],
             'boundaries' => [$boundary],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -609,7 +594,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$node])],
             'boundaries' => [$boundary],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -620,7 +605,7 @@ final class GraphReconcilerTest extends TestCase
     {
         $cacheEntry = $this->minimalContributionCacheEntry();
         $request = $this->buildRequest(['contributionCache' => [$cacheEntry]]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -642,7 +627,7 @@ final class GraphReconcilerTest extends TestCase
                 new ScanContribution('test.knossos:file:src/Foo.php', [], [], [$diagnostic]),
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -670,7 +655,7 @@ final class GraphReconcilerTest extends TestCase
                 new ScanContribution('test.knossos:file:src/Foo.php', [], [], [$diagnostic]),
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -690,7 +675,7 @@ final class GraphReconcilerTest extends TestCase
                 ['owner' => 'knossos.python', 'code' => 'WORKER_FAILED', 'message' => 'python scanner failed: broken pipe.'],
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -719,7 +704,7 @@ final class GraphReconcilerTest extends TestCase
         $request = $this->buildRequest([
             'discovery' => $this->minimalDiscovery([], [$diagnostic]),
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -740,7 +725,7 @@ final class GraphReconcilerTest extends TestCase
         $request = $this->buildRequest([
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Big.php')], [$diagnostic]),
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -760,7 +745,7 @@ final class GraphReconcilerTest extends TestCase
                 new ScanContribution('test.knossos:file:src/Foo.php', [], [], [$scannerDiagnostic]),
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -857,7 +842,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$source, $declaration], [$edge])],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(1, $result->unresolvedNodes);
         $external = collectMatching($this->repo->nodes, fn($n) => str_starts_with($n[3], 'external_'));
@@ -890,7 +875,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$source, $declaration], [$edge])],
         ]);
 
-        return (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        return (new GraphReconciler($this->repo))->reconcile($request);
     }
 
     // ----- resolveEdges: trait member resolution -----
@@ -974,7 +959,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$class, $traitA, $traitB], $edges)],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(1, $result->unresolvedNodes);
     }
@@ -1007,7 +992,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution($nodes, $edges)],
         ]);
 
-        return (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        return (new GraphReconciler($this->repo))->reconcile($request);
     }
 
     // ----- resolveEdges: inherited member resolution -----
@@ -1067,7 +1052,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution($nodes, $edges)],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(0, $result->unresolvedNodes);
         $callEdges = collectMatching($this->repo->edges, fn($e) => $e[2] === 'calls');
@@ -1116,7 +1101,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution($nodes, $edges)],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(1, $result->unresolvedNodes);
     }
@@ -1142,7 +1127,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution($nodes, $edges)],
         ]);
 
-        return (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        return (new GraphReconciler($this->repo))->reconcile($request);
     }
 
     private function memberNode(string $canonical): NodeFact
@@ -1205,7 +1190,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -1241,7 +1226,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -1265,7 +1250,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -1288,7 +1273,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -1316,7 +1301,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -1333,7 +1318,7 @@ final class GraphReconcilerTest extends TestCase
                 new ScanContribution('php.knossos:more:parts:here', [$node]),
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -1349,7 +1334,7 @@ final class GraphReconcilerTest extends TestCase
                 new ScanContribution('lonely', [$node]),
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -1366,7 +1351,7 @@ final class GraphReconcilerTest extends TestCase
                 $this->minimalDiscoveredFile('src/B.py', language: 'python'),
             ]),
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $reconciler->reconcile($request);
 
@@ -1403,7 +1388,7 @@ final class GraphReconcilerTest extends TestCase
                 $this->minimalContribution([$nodeB]),
             ],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1428,7 +1413,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$node])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1454,7 +1439,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$node, $rogue])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1479,7 +1464,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$target], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1505,7 +1490,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source, $target], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1529,7 +1514,7 @@ final class GraphReconcilerTest extends TestCase
         // again, exactly the failure mode Task 2 removed.
         $isResolvable = new \ReflectionMethod(GraphReconciler::class, 'isResolvableReference');
         $externalNode = new \ReflectionMethod(GraphReconciler::class, 'externalNode');
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
         $evidence = new Evidence('src/Foo.php', 1, 5);
 
         foreach (['no_colons', ':empty_lang:class', 'php:class:', 'php::Foo'] as $reference) {
@@ -1568,7 +1553,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -1591,7 +1576,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -1615,7 +1600,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         // The graph survives: the source node is persisted, only the edge is lost.
         assertSame(1, $result->nodes);
@@ -1643,7 +1628,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$source], [$edge(1), $edge(2), $edge(3)])],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(0, $result->edges);
         assertSame(1, $result->diagnostics);
@@ -1678,7 +1663,7 @@ final class GraphReconcilerTest extends TestCase
             )],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(0, $result->edges);
         assertSame(3, $result->diagnostics);
@@ -1703,7 +1688,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'classifications' => [$classification],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1729,7 +1714,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$node])],
             'classifications' => [$classification],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1753,7 +1738,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$node])],
             'boundaries' => [$boundary],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $error = captureThrows(
             fn() => $reconciler->reconcile($request),
@@ -1778,7 +1763,7 @@ final class GraphReconcilerTest extends TestCase
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$source], [$edge])],
         ]);
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -1788,7 +1773,7 @@ final class GraphReconcilerTest extends TestCase
     public function testReconcileReportsPhaseTimings(): void
     {
         $request = $this->buildRequest();
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $result = $reconciler->reconcile($request);
 
@@ -1823,7 +1808,7 @@ final class GraphReconcilerTest extends TestCase
     public function testNoPhaseTimingExceedsTheCallThatMeasuredIt(): void
     {
         $request = $this->buildRequest();
-        $reconciler = new GraphReconciler($this->repo, $this->gitHead);
+        $reconciler = new GraphReconciler($this->repo);
 
         $startedAt = hrtime(true);
         $result = $reconciler->reconcile($request);
@@ -1869,7 +1854,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$source], $edges)],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         // The declaring node survives; none of the three references produce an
         // edge, and no external symbol is invented for any of them.
@@ -1929,7 +1914,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$declared, $caller], [$edge])],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         // Resolved to the declaration, so no global twin was invented.
         assertSame(2, $result->nodes);
@@ -1955,7 +1940,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$caller], [$edge])],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         // The edge survives against an external global symbol; unlike a
         // speculative receiver, a function call is known to happen.
@@ -1996,7 +1981,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution([$caller], [$edge])],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         assertSame(0, $result->edges);
         assertSame(self::UNRESOLVABLE_CODE, $this->repo->diagnostics[0][5]);
@@ -2039,7 +2024,7 @@ final class GraphReconcilerTest extends TestCase
             'contributions' => [$this->minimalContribution($nodes, $edges)],
         ]);
 
-        $result = (new GraphReconciler($this->repo, $this->gitHead))->reconcile($request);
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
 
         // Three edges in, three edges out means the deferred one resolved; had
         // it been dropped only the two composition/returns edges would survive.

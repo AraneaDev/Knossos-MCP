@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Knossos\Reconciliation;
 
 use Knossos\Discovery\DiscoveredFile;
-use Knossos\Git\GitHeadResolver;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\Evidence;
@@ -71,7 +70,6 @@ final readonly class GraphReconciler
 
     public function __construct(
         private GraphRepository $repository,
-        private GitHeadResolver $gitHead = new GitHeadResolver(),
     ) {}
     /** Merge a scan's contributions into the graph, in one transaction. */
 
@@ -113,10 +111,14 @@ final readonly class GraphReconciler
 
         $mark('prepare');
 
-        // Resolved before the transaction opens: this shells out to git, and a
-        // subprocess with its own timeout has no business running while the
-        // graph write lock is held.
-        $gitHead = $this->gitHead->resolve($request->discovery->rootRealpath);
+        // Taken from the request, not resolved here. Two reasons, and the
+        // second is the one that matters: shelling out while the graph write
+        // lock is held would hold that lock for a subprocess timeout, and
+        // resolving at this point resolves *after* discovery has read every
+        // file, so a commit landing in between records a commit this graph was
+        // never built against. The caller captures it before the walk; see
+        // {@see \Knossos\Scan\ScanPlanner}.
+        $gitHead = $request->gitHead;
 
         $diagnosticCount = 0;
         // A rewrite of this size is dominated by per-statement foreign-key

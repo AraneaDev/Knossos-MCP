@@ -6,7 +6,8 @@ namespace Knossos\Scan;
 
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfigurationLoader;
-use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer};
+use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer, RootGuard};
+use Knossos\Git\GitHeadResolver;
 use Knossos\Store\StableId;
 use PDO;
 
@@ -17,15 +18,28 @@ use PDO;
  * incremental, and computes the analyzer hashes reuse is keyed on. Allowed roots
  * are resolved here at call time, so a project granted after the server started is
  * scannable without a restart.
+ *
+ * The commit is captured here too, and deliberately before the walk rather
+ * than after it. Reconciliation used to resolve HEAD once discovery had
+ * already read every file, so a commit landing inside that window left the
+ * graph holding pre-commit bytes while the scan row recorded the post-commit
+ * sha. {@see \Knossos\Query\Drift\GitDriftOracle} then diffs from a commit
+ * the graph was never built against: with a clean working tree the diff names
+ * no candidate for those files, and a graph that really is behind reports
+ * `fresh`. Capturing first makes the recorded commit one the scan cannot have
+ * read ahead of — any change committed afterwards shows up as ordinary drift.
  */
 final readonly class ScanPlanner
 {
     private readonly AllowedRoots $roots;
 
+    private readonly GitHeadResolver $gitHead;
+
     /** @param AllowedRoots|list<string> $allowedRoots */
-    public function __construct(private PDO $pdo, AllowedRoots|array $allowedRoots)
+    public function __construct(private PDO $pdo, AllowedRoots|array $allowedRoots, ?GitHeadResolver $gitHead = null)
     {
         $this->roots = AllowedRoots::of($allowedRoots);
+        $this->gitHead = $gitHead ?? new GitHeadResolver();
     }
 
     /**
@@ -67,6 +81,11 @@ final readonly class ScanPlanner
             workerMemoryMb: $workerMemoryMb ?? $configuration->workerMemoryMb,
         );
         $configurationMilliseconds = self::elapsedMilliseconds($started);
+        // Before discovery, never after: see the class docblock. Resolving the
+        // root again is free next to the walk, and cannot fail on its own —
+        // ProjectConfigurationLoader::load() above already resolved the same
+        // path through the same guard, so anything invalid has thrown by now.
+        $gitHead = $this->gitHead->resolve((new RootGuard($allowedRoots))->resolve($root));
         $started = hrtime(true);
         $discovery = (new ProjectDiscoverer(new DiscoveryConfig(
             $allowedRoots,
@@ -122,6 +141,7 @@ final readonly class ScanPlanner
             self::elapsedMilliseconds($started),
             pythonFrameworks: $pythonFrameworks,
             rustFrameworks: $rustFrameworks,
+            gitHead: $gitHead,
         );
     }
     /** Complete the plan once the analyzer set is known. */

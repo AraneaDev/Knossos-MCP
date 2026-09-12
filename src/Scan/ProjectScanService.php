@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Git\GitHeadResolver;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResult};
 use Knossos\Store\SqliteGraphRepository;
@@ -25,13 +26,18 @@ final class ProjectScanService implements ProjectScanner
     private readonly ScanAnalysisPipeline $analysisPipeline;
     private readonly ScanResultFactory $resultFactory;
 
-    /** @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots */
+    /**
+     * @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots
+     * @param ?GitHeadResolver $gitHead injected only so a test can drive the
+     *        commit capture without a subprocess; production builds its own.
+     */
     public function __construct(
         private PDO $pdo,
         string $installationRoot,
         \Knossos\Discovery\AllowedRoots|array $allowedRoots,
+        ?GitHeadResolver $gitHead = null,
     ) {
-        $this->planner = new ScanPlanner($pdo, $allowedRoots);
+        $this->planner = new ScanPlanner($pdo, $allowedRoots, $gitHead);
         $this->workerPool = new LanguageWorkerPool();
         $this->languageRunner = new LanguageScanRunner(
             LanguageDescriptor::installed($installationRoot),
@@ -126,6 +132,9 @@ final class ProjectScanService implements ProjectScanner
                 $plan->effectiveMode,
                 $language->cacheEntries,
                 $language->workerDiagnostics,
+                // Captured before discovery walked the tree, so the commit the
+                // scan records is one its own bytes cannot predate.
+                $preparation->gitHead,
             ));
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;

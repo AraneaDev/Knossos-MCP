@@ -650,7 +650,7 @@ final class CommandsTest extends \Knossos\Tests\Phpunit\KnossosTestCase
             (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
             [$fixturePdo, , $request] = $this->reconciliationFixture();
             unset($fixturePdo);
-            $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo), $this->fakeGitHeadResolver());
+            $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo));
             $result = $reconciler->reconcile($request);
             unset($pdo);
         } catch (\Throwable $error) {

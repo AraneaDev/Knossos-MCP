@@ -6,8 +6,6 @@ namespace Knossos\Tests\Phpunit\Support;
 
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\ProjectDiscoverer;
-use Knossos\Git\GitHeadResolver;
-use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
@@ -36,16 +34,6 @@ trait Fixtures
      * repository, so an unfaked resolver would shell out to a real `git` and
      * return this checkout's actual HEAD instead of a fixed, fixture-owned value.
      */
-    public function fakeGitHeadResolver(): GitHeadResolver
-    {
-        return new GitHeadResolver(new class implements GitProcessRunnerInterface {
-            public function run(array $command, int $timeoutMs, string $operation): string
-            {
-                return "3f1a9c2b4d5e6f708192a3b4c5d6e7f8091a2b3c\n";
-            }
-        });
-    }
-
     public function typescriptFixtureFiles(): array
     {
         return [
@@ -137,7 +125,7 @@ trait Fixtures
 
         $pdo = SqliteConnection::open(':memory:');
         (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
-        $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo), $this->fakeGitHeadResolver());
+        $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo));
         $request = new FullScanRequest('mixed-fixture', 'Mixed Fixture', $discovery, $scanners, [$php, $typescript]);
 
         return [$pdo, $reconciler, $request];
