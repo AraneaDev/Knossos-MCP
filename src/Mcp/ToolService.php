@@ -9,6 +9,7 @@ use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
+use Knossos\Query\StalenessSnapshot;
 use Knossos\Runtime\ServerEnvironment;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanService;
@@ -118,14 +119,18 @@ final readonly class ToolService
         self::validateKeys($arguments, $schema);
 
         $refreshWarnings = [];
+        $probed = null;
         if ($refreshRequested && $name !== 'scan_project') {
-            $refreshWarnings = $this->refreshIfStale($arguments, $cancellation);
+            [$refreshWarnings, $probed] = $this->refreshIfStale($arguments, $cancellation);
         }
         $envelope = $this->dispatch($name, $arguments, $cancellation);
         if ($refreshWarnings !== []) {
             $envelope = $envelope->withWarnings($refreshWarnings);
         }
-        return $this->enricher->enrich($envelope, $name, $verbosity, $maxChars);
+        // The verdict this call already reached is handed to the enricher
+        // rather than derived a second time. It is withheld whenever a rescan
+        // ran, because a repaired graph is no longer the graph that was probed.
+        return $this->enricher->enrich($envelope, $name, $verbosity, $maxChars, $probed);
     }
 
     /**
@@ -158,13 +163,17 @@ final readonly class ToolService
      * from the previous graph must still be answered. Cancellation is the one
      * exception, because the caller asked for it.
      *
-     * Nothing is reported when the refresh succeeds. The staleness probe runs
-     * after dispatch and already says 'fresh' on the same result, so a second
-     * announcement would put a line on every response for the case that needs
-     * no attention.
+     * Nothing is reported when the refresh succeeds. The staleness attached to
+     * the same result already says 'fresh', so a second announcement would put
+     * a line on every response for the case that needs no attention.
+     *
+     * Returns the verdict it probed alongside its warnings, so the enricher can
+     * attach that verdict instead of running the oracle again — and returns
+     * null for it whenever a scan was attempted, because the graph it probed is
+     * not the graph the answer came from.
      *
      * @param array<string, mixed> $arguments
-     * @return list<string>
+     * @return array{0: list<string>, 1: ?StalenessSnapshot}
      */
     private function refreshIfStale(array $arguments, ?CancellationToken $cancellation): array
     {
@@ -173,11 +182,12 @@ final readonly class ToolService
         // caller with a stale answer their refresh_if_stale asked to avoid.
         $projectId = self::normalized($arguments['project_id'] ?? null);
         if ($projectId === '') {
-            return [];
+            return [[], null];
         }
         $staleness = $this->queries->staleness($projectId);
+        $snapshot = new StalenessSnapshot($projectId, $staleness);
         if (($staleness['state'] ?? null) !== 'stale') {
-            return [];
+            return [[], $snapshot];
         }
         // A 'stale' verdict can come from a newer failed scan attempt rather
         // than from measured drift, leaving no change set to cost the rescan
@@ -186,25 +196,27 @@ final readonly class ToolService
             ? (int) $staleness['changed_files_since'] + (int) $staleness['added_files_since'] + (int) $staleness['deleted_files_since']
             : 0;
         if ($drifted < 1) {
-            return ['refresh_if_stale: the graph is stale but the change set is unknown; call scan_project to refresh.'];
+            return [['refresh_if_stale: the graph is stale but the change set is unknown; call scan_project to refresh.'], $snapshot];
         }
         $decision = $this->queries->refreshDecision($projectId, $drifted);
         if (!$decision->refresh) {
-            return ['refresh_if_stale: ' . (string) $decision->reason];
+            return [['refresh_if_stale: ' . (string) $decision->reason], $snapshot];
         }
         $root = $this->queries->projectRoot($projectId);
         if ($root === null) {
-            return ['refresh_if_stale: the project root is unknown; serving the last complete graph.'];
+            return [['refresh_if_stale: the project root is unknown; serving the last complete graph.'], $snapshot];
         }
         try {
             $this->scanner->scan($root, cancellation: $cancellation);
-            return [];
+            return [[], null];
         } catch (\Knossos\Scan\ScanCancelledException $cancelled) {
             // A client-requested cancellation is not a rescan failure to paper
             // over; propagate it so the transport can surface/suppress it.
             throw $cancelled;
         } catch (\Throwable $error) {
-            return [sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', $error->getMessage())];
+            // No snapshot: a failed attempt leaves a scan row behind, and that
+            // row is itself part of the staleness verdict.
+            return [[sprintf('refresh_if_stale: rescan failed (%s); serving the last complete graph.', $error->getMessage())], null];
         }
     }
 

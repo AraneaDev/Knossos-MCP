@@ -11,6 +11,8 @@ use Knossos\Mcp\NextStepPlanner;
 use Knossos\Mcp\ResultEnricher;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
+use Knossos\Query\Drift\DriftCounts;
+use Knossos\Query\Drift\DriftOracle;
 use Knossos\Query\Drift\FirstAnsweringDriftOracle;
 use Knossos\Query\Drift\GitDriftOracle;
 use Knossos\Query\Drift\WalkDriftOracle;
@@ -89,6 +91,58 @@ final class RefreshIfStaleTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /**
+     * Drift detection is the one cost this feature was careful to bound, and
+     * the bound was paid twice: once before dispatch to decide whether to
+     * repair the graph, once after to annotate the answer. That is six git
+     * subprocesses for a git project, or two complete hash walks for a gitless
+     * one, for a single question with one answer.
+     *
+     * The memo is per call and nothing more: a second call probes again, or a
+     * graph rebuilt between two calls would be reported with the verdict from
+     * before it was rebuilt.
+     */
+    #[Group('mcp')]
+    public function testTheDriftOracleRunsOncePerToolCall(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $oracle = $this->countingOracle(new WalkDriftOracle($pdo));
+            $tools = new ToolService(
+                new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+                new ArchitectureQueryService($pdo, driftOracle: $oracle),
+                new DatabaseMaintenanceService($pdo, ':memory:'),
+                new ResultEnricher(new StalenessProbe($pdo, oracle: $oracle), new NextStepPlanner()),
+            );
+
+            $tools->call('architecture_summary', ['project_id' => $projectId]);
+            assertSame(1, $oracle->calls, 'One tool call asks one question, so it probes once.');
+
+            $tools->call('architecture_summary', ['project_id' => $projectId]);
+            assertSame(2, $oracle->calls, 'The next call probes again; staleness is not cached across calls.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** An oracle that counts how often it was consulted and otherwise answers exactly as the one it wraps. */
+    private function countingOracle(DriftOracle $inner)
+    {
+        return new class ($inner) implements DriftOracle {
+            public int $calls = 0;
+
+            public function __construct(private readonly DriftOracle $inner) {}
+
+            /** Counts the probe, then defers to the wrapped oracle. */
+            public function drift(string $projectId, string $activeScanId, string $root, ?string $finishedAt): ?DriftCounts
+            {
+                ++$this->calls;
+
+                return $this->inner->drift($projectId, $activeScanId, $root, $finishedAt);
+            }
+        };
     }
 
     /**
