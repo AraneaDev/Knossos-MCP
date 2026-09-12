@@ -22,14 +22,14 @@ by dropping the pointer leaves the skill unarmed for the whole session.
 
 Six shapes of question, each with the tool that answers it:
 
-| About to                                     | Ask instead                                 |
-| -------------------------------------------- | ------------------------------------------- |
-| grep for callers of a symbol                 | `list_usages`                               |
-| guess what a change breaks                   | `impact_analysis`                           |
-| read several files to trace a request path   | `explain_flow`                              |
-| decide where a new file belongs              | `suggest_location`                          |
-| eyeball a diff for architectural risk        | `review_diff`                               |
-| work out what a class is and what it touches | `find_component`, then `inspect_component`  |
+| About to                                     | Ask instead                                |
+| -------------------------------------------- | ------------------------------------------ |
+| grep for callers of a symbol                 | `list_usages`                              |
+| guess what a change breaks                   | `impact_analysis`                          |
+| read several files to trace a request path   | `explain_flow`                             |
+| decide where a new file belongs              | `suggest_location`                         |
+| eyeball a diff for architectural risk        | `review_diff`                              |
+| work out what a class is and what it touches | `find_component`, then `inspect_component` |
 
 Each row is a question an agent would otherwise answer by reading files and
 inferring from them, which pays for the same derivation once per session and
