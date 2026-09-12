@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Knossos\Discovery\IgnoreMatcher;
 use PDO;
 
 /**
@@ -27,6 +28,9 @@ final readonly class WalkDriftOracle implements DriftOracle
 {
     /** Tracked files above which the walk is skipped and freshness reported as unverified. */
     private const MAX_PROBED_FILES = 20_000;
+
+    /** Entries examined per directory when looking for additions; opening directories is the expensive half. */
+    private const MAX_ADDITION_ENTRIES = 500;
 
     public function __construct(private PDO $pdo) {}
 
@@ -84,7 +88,25 @@ final readonly class WalkDriftOracle implements DriftOracle
             $directories[dirname($absolute)][basename($absolute)] = true;
         }
 
-        return new DriftCounts($changed, self::addedSince($directories, $finishedAt), $deleted);
+        return new DriftCounts($changed, $this->addedSince($directories, $finishedAt, $this->ignoreMatcher($projectId), $root), $deleted);
+    }
+
+    /** The project's own ignores on top of the defaults IgnoreMatcher already applies. */
+    private function ignoreMatcher(string $projectId): IgnoreMatcher
+    {
+        $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+        $raw = $statement->fetchColumn();
+        $patterns = [];
+        if (is_string($raw) && $raw !== '') {
+            // A malformed config must not make a probe throw: the graph is
+            // still answerable, and discovery reports the same fault properly.
+            $decoded = json_decode($raw, true);
+            if (is_array($decoded) && is_array($decoded['ignores'] ?? null)) {
+                $patterns = array_values(array_filter($decoded['ignores'], is_string(...)));
+            }
+        }
+        return new IgnoreMatcher($patterns);
     }
 
     /**
@@ -108,19 +130,17 @@ final readonly class WalkDriftOracle implements DriftOracle
      * - A new directory is seen only when its parent holds a tracked file.
      *   Nothing points at a subtree with no tracked file in it, so a new
      *   directory created there is invisible to this check.
-     * - Ignore rules are not applied. An entry the scanner would never have
-     *   tracked — a build artifact, a vendored dependency — counts as an
-     *   addition, so this can report drift that a rescan would not act on.
-     * - Only the first self::MAX_PROBED_FILES untracked entries of a directory
-     *   are stat'ed, so an addition sitting behind that many others in the
-     *   same directory is missed. The bound is per directory rather than per
-     *   probe on purpose: one crowded directory next to a small source tree
-     *   must not exhaust the budget and report the tree as fresh.
+     * - Only the first {@see self::MAX_ADDITION_ENTRIES} untracked entries of
+     *   a directory are examined, so an addition sitting behind that many
+     *   others in the same directory is missed. The bound is per directory
+     *   rather than per probe on purpose: one crowded directory next to a
+     *   small source tree must not exhaust the budget and report the tree as
+     *   fresh.
      *
      * @param array<string, array<string, true>> $directories directory => tracked basenames within it
      * @param ?string $finishedAt when the active scan finished
      */
-    private static function addedSince(array $directories, ?string $finishedAt): int
+    private function addedSince(array $directories, ?string $finishedAt, IgnoreMatcher $matcher, string $root): int
     {
         if ($finishedAt === null) {
             return 0;
@@ -148,18 +168,23 @@ final readonly class WalkDriftOracle implements DriftOracle
             }
             try {
                 $examined = 0;
-                while ($examined < self::MAX_PROBED_FILES && ($entry = readdir($handle)) !== false) {
+                while ($examined < self::MAX_ADDITION_ENTRIES && ($entry = readdir($handle)) !== false) {
                     if ($entry === '.' || $entry === '..' || isset($tracked[$entry])) {
                         continue;
                     }
+                    $absolute = $directory . '/' . $entry;
+                    $relative = ltrim(substr($absolute, strlen($root)), '/');
+                    if ($matcher->matches($relative)) {
+                        continue;
+                    }
                     ++$examined;
-                    $createdAt = @filectime($directory . '/' . $entry);
+                    $createdAt = @filectime($absolute);
                     if ($createdAt !== false && $createdAt > $scannedAt) {
                         ++$added;
                     }
                     // Enough drift to report; what the rest of the tree holds
                     // cannot change the answer.
-                    if ($added >= self::MAX_PROBED_FILES) {
+                    if ($added >= self::MAX_ADDITION_ENTRIES) {
                         return $added;
                     }
                 }
