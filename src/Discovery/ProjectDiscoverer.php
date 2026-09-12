@@ -1425,9 +1425,16 @@ final readonly class ProjectDiscoverer
             default => null,
         };
     }
-    /** Which manifest kind a filename is, or null when it is not one. */
-
-    private static function unitKindFor(string $relativePath): ?string
+    /**
+     * Which manifest kind a filename is, or null when it is not one.
+     *
+     * Public because it is half of what "an input this scanner reads" means,
+     * and the drift oracles need the same half: a path that is a unit here but
+     * not a language file has no `files` row, and a probe that asked only
+     * {@see self::languageFor()} treated editing composer.json as nothing at
+     * all. {@see \Knossos\Query\Drift\ScannedPaths} asks both.
+     */
+    public static function unitKindFor(string $relativePath): ?string
     {
         $basename = strtolower(basename($relativePath));
         if ($basename === 'composer.json') {

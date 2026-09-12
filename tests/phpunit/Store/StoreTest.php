@@ -23,7 +23,7 @@ final class StoreTest extends KnossosTestCase
         $pdo = SqliteConnection::open(':memory:');
         $runner = new MigrationRunner($pdo, self::repositoryRoot() . '/migrations');
 
-        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness', '011_annotations', '012_add_missing_indexes', '013_edges_fk_child_indexes', '014_scan_git_head', '015_scan_duration', '016_scan_dirty_paths'], $runner->migrate());
+        assertSame(['001_initial_graph', '002_classifications', '003_boundary_memberships', '004_contribution_cache', '005_scan_locks', '006_http_sessions', '007_scan_snapshots', '008_occurrence_edges', '009_file_line_count', '010_language_scoped_node_uniqueness', '011_annotations', '012_add_missing_indexes', '013_edges_fk_child_indexes', '014_scan_git_head', '015_scan_duration', '016_scan_dirty_paths', '017_scan_unit_inputs'], $runner->migrate());
         assertSame([], $runner->migrate());
         assertSame('1', (string) $pdo->query('PRAGMA foreign_keys')->fetchColumn());
         $edgeSchema = (string) $pdo->query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'edges'")->fetchColumn();
@@ -38,12 +38,13 @@ final class StoreTest extends KnossosTestCase
         copy(self::repositoryRoot() . '/migrations/001_initial_graph.sql', $directory . '/001_initial_graph.sql');
         // The fixture writer persists line_count and language, so the baseline
         // includes migrations 009 and 010. It also calls createScan(), whose
-        // INSERT names git_head and dirty_paths_json unconditionally, so the
-        // baseline needs 014 and 016 too.
+        // INSERT names git_head, dirty_paths_json and unit_inputs_json
+        // unconditionally, so the baseline needs 014, 016 and 017 too.
         copy(self::repositoryRoot() . '/migrations/009_file_line_count.sql', $directory . '/009_file_line_count.sql');
         copy(self::repositoryRoot() . '/migrations/010_language_scoped_node_uniqueness.sql', $directory . '/010_language_scoped_node_uniqueness.sql');
         copy(self::repositoryRoot() . '/migrations/014_scan_git_head.sql', $directory . '/014_scan_git_head.sql');
         copy(self::repositoryRoot() . '/migrations/016_scan_dirty_paths.sql', $directory . '/016_scan_dirty_paths.sql');
+        copy(self::repositoryRoot() . '/migrations/017_scan_unit_inputs.sql', $directory . '/017_scan_unit_inputs.sql');
 
         try {
             [$pdo, $repository, $ids] = $this->storeFixture($directory);

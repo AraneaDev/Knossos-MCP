@@ -13,6 +13,13 @@ use PDO;
  * tracked files it declines to answer rather than turn a probe into a full
  * tree walk.
  *
+ * What it walks against is every input the scan recorded a hash for, which is
+ * wider than the `files` rows: discovery also reads composer.json,
+ * package.json, tsconfig.json and their siblings as project units, and what
+ * they say decides framework enrichment, analyzer configuration hashes and
+ * entry points. Comparing only `files` meant editing a manifest changed what a
+ * rescan would produce while this probe reported the graph fresh.
+ *
  * Every present tracked file is read and hashed on each call, not stat'd:
  * content is the only thing that decides drift, so there is no cheaper check
  * that stays correct. This runs on every enriched query result, so a project
@@ -73,11 +80,19 @@ final readonly class WalkDriftOracle implements DriftOracle
             'SELECT relative_path, content_hash FROM files WHERE project_id = :project AND last_scan_id = :scan LIMIT ' . self::MAX_PROBED_FILES,
         );
         $statement->execute(['project' => $projectId, 'scan' => $activeScanId]);
+        $tracked = [];
+        foreach ($statement->fetchAll() as $file) {
+            $tracked[(string) $file['relative_path']] = (string) $file['content_hash'];
+        }
+        // Unioned with `+`, so a path that is both a `files` row and a manifest
+        // keeps the row's hash: one path, one stored answer, and one pass over
+        // it below rather than two.
+        $tracked += RecordedUnitInputs::forScan($this->pdo, $activeScanId);
         $changed = 0;
         $deleted = 0;
         $directories = [];
-        foreach ($statement->fetchAll() as $file) {
-            $absolute = $root . '/' . $file['relative_path'];
+        foreach ($tracked as $relativePath => $contentHash) {
+            $absolute = $root . '/' . $relativePath;
             // filemtime() here is only an existence probe, not a comparison: a
             // moved mtime does not prove the bytes changed (a `touch` or a
             // `git checkout` that restores identical content moves it for
@@ -95,7 +110,7 @@ final readonly class WalkDriftOracle implements DriftOracle
                 ++$deleted;
                 continue;
             }
-            if ($hash !== (string) $file['content_hash']) {
+            if ($hash !== $contentHash) {
                 ++$changed;
             }
             $directories[dirname($absolute)][basename($absolute)] = true;

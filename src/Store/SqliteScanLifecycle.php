@@ -67,17 +67,20 @@ final class SqliteScanLifecycle
      *        paths that differed from $gitHead when the scan read them, or null when there
      *        is no such set to trust. An unrecorded set makes the drift oracle decline
      *        rather than report a graph fresh it could not verify.
+     * @param ?string $unitInputsJson the encoded {@see \Knossos\Discovery\UnitInputSet} of
+     *        manifests the scan read but stores no `files` row for, so an edit to one is
+     *        decidable by the same hash comparison every other input is decided by
      * @throws InvalidArgumentException when $mode is neither full nor incremental
      */
-    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null, ?string $dirtyPathsJson = null): void
+    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null, ?string $dirtyPathsJson = null, ?string $unitInputsJson = null): void
     {
         if (!in_array($mode, ['full', 'incremental'], true)) {
             throw new InvalidArgumentException('Scan mode must be full or incremental.');
         }
 
         $statement = $this->statements->pdo()->prepare(
-            'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at, git_head, dirty_paths_json) ' .
-            'VALUES (:id, :project, :mode, :status, :hash, :started, :head, :dirty)',
+            'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at, git_head, dirty_paths_json, unit_inputs_json) ' .
+            'VALUES (:id, :project, :mode, :status, :hash, :started, :head, :dirty, :units)',
         );
         $statement->execute([
             'id' => $id,
@@ -88,6 +91,7 @@ final class SqliteScanLifecycle
             'started' => SqliteValues::now(),
             'head' => $gitHead,
             'dirty' => $dirtyPathsJson,
+            'units' => $unitInputsJson,
         ]);
     }
 

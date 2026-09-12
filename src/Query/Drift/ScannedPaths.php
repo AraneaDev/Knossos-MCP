@@ -16,6 +16,16 @@ use PDO;
  * oracle happened to answer. It also decides whether drift is repairable at
  * all — a file discovery would skip cannot be absorbed by a rescan, so counting
  * it reports a staleness no amount of scanning can clear.
+ *
+ * "Would have put in it" is wider than "holds a node for". Discovery reads
+ * composer.json, package.json, tsconfig.json, pyproject.toml, workflow YAML
+ * and the rest as project units: they never become `files` rows, but they
+ * decide which frameworks are enriched, which analyzer configuration hash a
+ * contribution is cached under, and which paths are entry points. A predicate
+ * that asked only about languages answered "not an input" for every one of
+ * them, so adding a manifest was invisible drift. Both halves are asked here,
+ * and {@see \Knossos\Discovery\UnitInputSet} supplies the stored hashes that
+ * make an *edited* manifest decidable by the same rule.
  */
 final readonly class ScannedPaths implements TrackedPathPredicate
 {
@@ -47,6 +57,9 @@ final readonly class ScannedPaths implements TrackedPathPredicate
      * nothing inside a directory the scan never saw is in the graph, and the
      * walk oracle only ever sees the new directory rather than the source
      * files under it.
+     *
+     * A manifest answers yes for the reason given in the class docblock: the
+     * scan read it, and what it says changes what a rescan would produce.
      */
     public function tracks(string $relativePath, string $absolutePath): bool
     {
@@ -54,6 +67,8 @@ final readonly class ScannedPaths implements TrackedPathPredicate
             return false;
         }
 
-        return is_dir($absolutePath) || ProjectDiscoverer::languageFor($relativePath, $absolutePath) !== null;
+        return is_dir($absolutePath)
+            || ProjectDiscoverer::languageFor($relativePath, $absolutePath) !== null
+            || ProjectDiscoverer::unitKindFor($relativePath) !== null;
     }
 }

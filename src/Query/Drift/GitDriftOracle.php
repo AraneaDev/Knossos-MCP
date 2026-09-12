@@ -92,6 +92,16 @@ use Throwable;
  * bound) cannot rule that case out, so this oracle declines for it rather
  * than reporting a freshness it never verified.
  *
+ * The graph's own inputs are wider than its `files` rows: discovery also
+ * reads composer.json, package.json, tsconfig.json and their siblings, and
+ * what they say decides framework enrichment, analyzer configuration hashes
+ * and entry points. They have no `files` row, so the hashes the scan recorded
+ * for them are read separately and merged into the same lookup every other
+ * candidate is decided against. A scan that recorded none — one taken before
+ * the column existed — leaves such a path without a stored hash, so an edited
+ * manifest reads as an addition rather than as a change. That is the harmless
+ * direction, it is visible rather than silent, and one rescan settles it.
+ *
  * A narrower spurious decline can still occur: a path-normalisation mismatch
  * between what the scan stored and what git reports — a case-insensitive
  * filesystem where the two differ only in case is the clearest example —
@@ -248,7 +258,10 @@ final readonly class GitDriftOracle implements DriftOracle
         if (count($candidates) > self::MAX_CANDIDATES) {
             return null;
         }
-        $hashes = $crossCheck ? $tracked : $this->trackedHashes($projectId, $activeScanId, array_keys($candidates));
+        // Unioned with `+`, so a path that is both a `files` row and a
+        // manifest keeps the row's hash: one path, one stored answer.
+        $hashes = ($crossCheck ? $tracked : $this->trackedHashes($projectId, $activeScanId, array_keys($candidates)))
+            + RecordedUnitInputs::forScan($this->pdo, $activeScanId);
 
         return $this->decide($projectId, $root, array_keys($candidates), $hashes);
     }

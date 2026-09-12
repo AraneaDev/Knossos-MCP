@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query\Drift;
 
+use Knossos\Discovery\ProjectUnit;
+use Knossos\Discovery\UnitInputSet;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Query\Drift\DriftCounts;
@@ -731,6 +733,36 @@ final class GitDriftOracleTest extends KnossosTestCase
                 $this->drift($pdo, $projectId, $scanId, $root, [], [], ['src/a.php']),
                 'An incomplete record cannot be decided from, and says so rather than being trimmed into a complete-looking one.',
             );
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A manifest has no `files` row, so without the hashes the scan recorded
+     * for its project units this oracle had nothing to decide an edited
+     * composer.json against — and reported a graph whose framework detection
+     * and analyzer configuration hash had both moved as fresh. The stored hash
+     * makes it an ordinary candidate, decided by the ordinary rule, and makes
+     * this oracle agree with the walk about the same path.
+     */
+    #[Group('git')]
+    public function testAnEditedManifestIsAChangeEvenThoughItHasNoFilesRow(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            file_put_contents($root . '/composer.json', '{"name":"fixture/scanned"}');
+            $pdo->prepare('UPDATE scans SET unit_inputs_json = :units WHERE id = :id')->execute([
+                'units' => UnitInputSet::of([new ProjectUnit('composer', 'composer.json', hash('sha256', (string) file_get_contents($root . '/composer.json')))])->encode(),
+                'id' => $scanId,
+            ]);
+            file_put_contents($root . '/composer.json', '{"name":"fixture/scanned","require":{"laravel/framework":"^11.0"}}');
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, ['composer.json'], [], ['src/a.php', 'composer.json']);
+
+            self::assertNotNull($drift);
+            self::assertSame(1, $drift->changed, 'The manifest hashes differently from what the scan read, which is a change to the graph\'s own inputs.');
+            self::assertSame(0, $drift->added, 'It is a known input, not a new one: reporting it as an addition would say the scan never saw it.');
         } finally {
             $this->removeTempTree($root);
         }

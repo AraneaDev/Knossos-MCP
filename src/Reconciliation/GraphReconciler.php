@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Reconciliation;
 
 use Knossos\Discovery\DiscoveredFile;
+use Knossos\Discovery\UnitInputSet;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\Evidence;
@@ -165,6 +166,10 @@ final readonly class GraphReconciler
                 $scannerSetHash,
                 $gitHead,
                 $request->dirtyPaths?->encode(),
+                // The manifests this scan read but stores no files row for.
+                // Without them, editing composer.json changes what a scan
+                // would produce while the graph reports itself fresh.
+                UnitInputSet::of($request->discovery->units)->encode(),
             );
             // What the graph holds now, so what this scan does not produce can be
             // deleted afterwards. Reading ids is what makes the write proportional
