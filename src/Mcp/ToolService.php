@@ -148,11 +148,16 @@ final readonly class ToolService
     }
 
     /**
-     * Opt-in self-healing: when the target project is stale, run an
-     * incremental rescan before dispatching the query. A failed rescan never
-     * blocks the answer — the last complete graph is served with a warning,
-     * matching the recovery model. A missing graph is not auto-healed: the
-     * first full scan is an expensive, user-visible choice.
+     * Repair a stale graph before answering, when that fits the budget.
+     *
+     * Returns warnings and never throws for a scan fault: a query answerable
+     * from the previous graph must still be answered. Cancellation is the one
+     * exception, because the caller asked for it.
+     *
+     * Nothing is reported when the refresh succeeds. The staleness probe runs
+     * after dispatch and already says 'fresh' on the same result, so a second
+     * announcement would put a line on every response for the case that needs
+     * no attention.
      *
      * @param array<string, mixed> $arguments
      * @return list<string>
@@ -169,6 +174,19 @@ final readonly class ToolService
         $staleness = $this->queries->staleness($projectId);
         if (($staleness['state'] ?? null) !== 'stale') {
             return [];
+        }
+        // A 'stale' verdict can come from a newer failed scan attempt rather
+        // than from measured drift, leaving no change set to cost the rescan
+        // against. Guessing a size there is how an unbounded scan gets back in.
+        $drifted = isset($staleness['changed_files_since'])
+            ? (int) $staleness['changed_files_since'] + (int) $staleness['added_files_since'] + (int) $staleness['deleted_files_since']
+            : 0;
+        if ($drifted < 1) {
+            return ['refresh_if_stale: the graph is stale but the change set is unknown; call scan_project to refresh.'];
+        }
+        $decision = $this->queries->refreshDecision($projectId, $drifted);
+        if (!$decision->refresh) {
+            return ['refresh_if_stale: ' . (string) $decision->reason];
         }
         $root = $this->queries->projectRoot($projectId);
         if ($root === null) {
