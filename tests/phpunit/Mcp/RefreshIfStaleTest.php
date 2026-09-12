@@ -151,6 +151,40 @@ final class RefreshIfStaleTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The gate belongs to the tool's own schema, not to an exclude-list naming
+     * scan_project. `remove_project` does not declare refresh_if_stale, so a
+     * stale graph must reach it untouched: scanning the project immediately
+     * before deleting it would be wasted work at best, and at worst races the
+     * deletion that follows.
+     */
+    #[Group('mcp')]
+    public function testAGraphMutatingToolDoesNotTriggerAScan(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+            assertSame('stale', (new StalenessProbe($pdo))->probe($projectId)['state']);
+            $before = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+
+            // Preview mode (no execute), deliberately: remove_project's real
+            // deletion cascades onto the scans table, which would make an
+            // unwanted extra scan indistinguishable from none at all once the
+            // project itself is gone. What is under test is the gate in
+            // ToolService, which runs identically whichever branch of
+            // remove_project follows.
+            $tools->call('remove_project', ['project_id' => $projectId]);
+
+            assertSame($before, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn(), 'remove_project must not scan a stale project on its way to previewing its removal.');
+        } finally {
+            if (is_dir($root)) {
+                $this->removeTempTree($root);
+            }
+        }
+    }
+
     /** An oracle that counts how often it was consulted and otherwise answers exactly as the one it wraps. */
     private function countingOracle(DriftOracle $inner)
     {
@@ -394,6 +428,10 @@ final class RefreshIfStaleTest extends KnossosTestCase
     public function testTheKillSwitchRestoresTheOldDefault(): void
     {
         [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        // Captured rather than assumed absent: unsetting unconditionally in the
+        // finally below would silently change global state for every later
+        // test in this process if the variable was already set when it started.
+        $previous = getenv('KNOSSOS_AUTO_REFRESH');
         putenv('KNOSSOS_AUTO_REFRESH=0');
         try {
             $file = $root . '/src/CheckoutService.php';
@@ -406,7 +444,11 @@ final class RefreshIfStaleTest extends KnossosTestCase
             assertSame($before, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn());
             assertSame('stale', $result->staleness['state']);
         } finally {
-            putenv('KNOSSOS_AUTO_REFRESH');
+            if ($previous === false) {
+                putenv('KNOSSOS_AUTO_REFRESH');
+            } else {
+                putenv('KNOSSOS_AUTO_REFRESH=' . $previous);
+            }
             $this->removeTempTree($root);
         }
     }

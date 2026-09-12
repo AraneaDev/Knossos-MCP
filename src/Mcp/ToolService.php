@@ -127,17 +127,15 @@ final readonly class ToolService
 
         $refreshWarnings = [];
         $probed = null;
-        if ($refreshRequested && $name !== 'scan_project') {
+        // Gated on the tool's own schema, not on an exclude-list: declaring
+        // refresh_if_stale is exactly what marks a tool as one whose answer
+        // may be repaired by a rescan first. A tool that does not declare it
+        // (every graph-mutating tool, plus server_info/diagnose_runtime) must
+        // never trigger one as a side effect of being called — remove_project
+        // triggering a full rescan of the very project it is about to delete
+        // is the case this guards against.
+        if ($refreshRequested && in_array('refresh_if_stale', $declared, true)) {
             [$refreshWarnings, $probed] = $this->refreshIfStale($arguments, $cancellation);
-            // Only a tool that declares refresh_if_stale may reuse the verdict,
-            // and that set is exactly the read tools. Anything else can change
-            // the graph itself between the probe and the answer:
-            // remove_project deletes the very project the snapshot describes
-            // and returns an envelope still naming it, so reusing the snapshot
-            // reported staleness for a project that no longer exists.
-            if (!in_array('refresh_if_stale', $declared, true)) {
-                $probed = null;
-            }
         }
         $envelope = $this->dispatch($name, $arguments, $cancellation);
         if ($refreshWarnings !== []) {
