@@ -7,6 +7,8 @@ namespace Knossos\Scan;
 use InvalidArgumentException;
 use Knossos\Configuration\ProjectConfigurationLoader;
 use Knossos\Discovery\{AllowedRoots, DiscoveryConfig, ProjectDiscoverer, RootGuard};
+use Knossos\Git\DirtyPathResolver;
+use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitHeadResolver;
 use Knossos\Store\StableId;
 use PDO;
@@ -28,6 +30,13 @@ use PDO;
  * no candidate for those files, and a graph that really is behind reports
  * `fresh`. Capturing first makes the recorded commit one the scan cannot have
  * read ahead of — any change committed afterwards shows up as ordinary drift.
+ *
+ * The paths that differ from that commit are captured too, and deliberately
+ * after the walk rather than before it: taken at a moment when every file has
+ * been read, the set names every path whose scanned bytes can differ from the
+ * commit's, including one edited while the scan was running and including
+ * every path of a commit that landed mid-scan. See {@see DirtyPathSet} for
+ * what the oracle does with it.
  */
 final readonly class ScanPlanner
 {
@@ -35,11 +44,18 @@ final readonly class ScanPlanner
 
     private readonly GitHeadResolver $gitHead;
 
+    private readonly DirtyPathResolver $dirtyPaths;
+
     /** @param AllowedRoots|list<string> $allowedRoots */
-    public function __construct(private PDO $pdo, AllowedRoots|array $allowedRoots, ?GitHeadResolver $gitHead = null)
-    {
+    public function __construct(
+        private PDO $pdo,
+        AllowedRoots|array $allowedRoots,
+        ?GitHeadResolver $gitHead = null,
+        ?DirtyPathResolver $dirtyPaths = null,
+    ) {
         $this->roots = AllowedRoots::of($allowedRoots);
         $this->gitHead = $gitHead ?? new GitHeadResolver();
+        $this->dirtyPaths = $dirtyPaths ?? new DirtyPathResolver();
     }
 
     /**
@@ -85,7 +101,8 @@ final readonly class ScanPlanner
         // root again is free next to the walk, and cannot fail on its own —
         // ProjectConfigurationLoader::load() above already resolved the same
         // path through the same guard, so anything invalid has thrown by now.
-        $gitHead = $this->gitHead->resolve((new RootGuard($allowedRoots))->resolve($root));
+        $rootRealpath = (new RootGuard($allowedRoots))->resolve($root);
+        $gitHead = $this->gitHead->resolve($rootRealpath);
         $started = hrtime(true);
         $discovery = (new ProjectDiscoverer(new DiscoveryConfig(
             $allowedRoots,
@@ -94,6 +111,11 @@ final readonly class ScanPlanner
             maxFileBytes: $maxFileBytes,
         )))->discover($root);
         $discoveryMilliseconds = self::elapsedMilliseconds($started);
+        // After the walk, against the commit captured before it: every file
+        // has been read by now, so a path missing from this set is one whose
+        // scanned bytes are the commit's. Only asked when there is a commit to
+        // be dirty against; a gitless project has no such question.
+        $dirtyPaths = $gitHead === null ? null : $this->dirtyPaths->resolve($rootRealpath, $gitHead);
         $started = hrtime(true);
         $laravel = in_array('laravel', $configuration->frameworks, true) || $this->hasComposerPackage($discovery->units, ['laravel/framework']);
         $symfony = in_array('symfony', $configuration->frameworks, true) || $this->hasComposerPackage($discovery->units, ['symfony/framework-bundle', 'symfony/http-kernel', 'symfony/console', 'symfony/messenger']);
@@ -142,6 +164,7 @@ final readonly class ScanPlanner
             pythonFrameworks: $pythonFrameworks,
             rustFrameworks: $rustFrameworks,
             gitHead: $gitHead,
+            dirtyPaths: $dirtyPaths,
         );
     }
     /** Complete the plan once the analyzer set is known. */

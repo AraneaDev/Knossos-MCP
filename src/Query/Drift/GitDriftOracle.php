@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitProcessRunner;
 use Knossos\Git\GitProcessRunnerInterface;
 use PDO;
@@ -79,6 +80,18 @@ use Throwable;
  * its row exists and every later edit or deletion to it is caught by the
  * cross-check like any other tracked file.
  *
+ * Git's listings are also blind to a file the scan read while it was
+ * modified relative to HEAD and the user has since restored: `diff` no longer
+ * names it (it matches HEAD again), `--others` never did (it is tracked), and
+ * the cross-check finds it exactly where it belongs — while the hash the scan
+ * stored is of content that is no longer on disk. The scan records the paths
+ * that were dirty when it read them for precisely this, and every one of them
+ * is a candidate on every probe, whatever the three listings say now. A scan
+ * that recorded no such set (a graph built before the column existed, or one
+ * whose dirty listing git could not answer, or one dirty past the recorded
+ * bound) cannot rule that case out, so this oracle declines for it rather
+ * than reporting a freshness it never verified.
+ *
  * A narrower spurious decline can still occur: a path-normalisation mismatch
  * between what the scan stored and what git reports — a case-insensitive
  * filesystem where the two differ only in case is the clearest example —
@@ -152,6 +165,13 @@ final readonly class GitDriftOracle implements DriftOracle
         if (!is_string($head) || preg_match('/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/', $head) !== 1) {
             return null;
         }
+        // Before any subprocess: a scan with no trustworthy dirty set cannot
+        // be decided from git's listings at all, so there is nothing to spend
+        // three git calls on.
+        $dirty = $this->dirtyPaths($activeScanId);
+        if ($dirty === null) {
+            return null;
+        }
         $crossCheck = $this->trackedFileCount($projectId, $activeScanId) <= self::MAX_CROSS_CHECKED_FILES;
         try {
             // Verify first. Handing a garbage-collected or rebased-away commit
@@ -221,7 +241,10 @@ final readonly class GitDriftOracle implements DriftOracle
                 return null;
             }
         }
-        $candidates = $changedEntries + $untrackedEntries;
+        // The dirty set joins the candidates rather than the drift count:
+        // each of its paths is still decided against the hash the scan stored
+        // for it, so one that has not actually moved reports no drift.
+        $candidates = $changedEntries + $untrackedEntries + $dirty->asKeys();
         if (count($candidates) > self::MAX_CANDIDATES) {
             return null;
         }
@@ -268,6 +291,24 @@ final readonly class GitDriftOracle implements DriftOracle
         }
 
         return new DriftCounts($changed, $added, $deleted);
+    }
+
+    /**
+     * The paths the scan recorded as differing from its commit, or null when
+     * it recorded none this oracle can trust.
+     *
+     * Null is every shape that is not a complete recorded set — see
+     * {@see DirtyPathSet::decode()} — and all of them mean the same thing
+     * here: a file scanned dirty and since restored cannot be ruled out, so
+     * the walk must answer instead.
+     */
+    private function dirtyPaths(string $activeScanId): ?DirtyPathSet
+    {
+        $statement = $this->pdo->prepare('SELECT dirty_paths_json FROM scans WHERE id = :id');
+        $statement->execute(['id' => $activeScanId]);
+        $raw = $statement->fetchColumn();
+
+        return DirtyPathSet::decode(is_string($raw) ? $raw : null);
     }
 
     /** How many files the active scan tracks, which decides whether the index is worth cross-checking. */

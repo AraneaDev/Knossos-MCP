@@ -164,6 +164,7 @@ final readonly class GraphReconciler
                 $request->mode,
                 $scannerSetHash,
                 $gitHead,
+                $request->dirtyPaths?->encode(),
             );
             // What the graph holds now, so what this scan does not produce can be
             // deleted afterwards. Reading ids is what makes the write proportional

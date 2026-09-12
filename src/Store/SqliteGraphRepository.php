@@ -109,9 +109,9 @@ final class SqliteGraphRepository implements GraphRepository
      *        Git repository (or Git could not be asked)
      * @throws InvalidArgumentException when $mode is neither full nor incremental
      */
-    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null): void
+    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null, ?string $dirtyPathsJson = null): void
     {
-        $this->lifecycle->createScan($id, $projectId, $mode, $scannerSetHash, $gitHead);
+        $this->lifecycle->createScan($id, $projectId, $mode, $scannerSetHash, $gitHead, $dirtyPathsJson);
     }
 
     /**

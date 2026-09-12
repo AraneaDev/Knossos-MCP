@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query\Drift;
 
+use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Query\Drift\DriftCounts;
 use Knossos\Query\Drift\FirstAnsweringDriftOracle;
@@ -430,7 +431,8 @@ final class GitDriftOracleTest extends KnossosTestCase
             $project = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :project');
             $project->execute(['project' => $projectId]);
             $scanId = (string) $project->fetchColumn();
-            $pdo->prepare('UPDATE scans SET git_head = :head WHERE id = :id')->execute(['head' => self::HEAD, 'id' => $scanId]);
+            $pdo->prepare('UPDATE scans SET git_head = :head, dirty_paths_json = :dirty WHERE id = :id')
+                ->execute(['head' => self::HEAD, 'dirty' => DirtyPathSet::clean()->encode(), 'id' => $scanId]);
 
             file_put_contents($root . '/src/chunk1/f0005.php', "<?php\nfinal class Chunk1Edit {}\n");
             file_put_contents($root . '/src/chunk2/g0002.php', "<?php\nfinal class Chunk2Edit {}\n");
@@ -636,19 +638,126 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
-     * Seeds a project with one file and stamps its scan's `git_head` to the
-     * given value, so each test controls what the oracle finds without
+     * The hole the recorded dirty set exists to close. A tracked file scanned
+     * while it differed from HEAD stores a hash of the working-tree bytes;
+     * restore it and git can no longer name it at all — `diff` matches, the
+     * untracked listing skips a tracked file, and the index holds it exactly
+     * where it belongs — while the stored hash is of content that is gone.
+     * Without the recorded set there is no candidate and the graph reports
+     * fresh; with it the path is a candidate whatever the listings say, and
+     * the ordinary hash comparison finds the change.
+     */
+    #[Group('git')]
+    public function testAFileScannedDirtyAndSinceRestoredIsStillAChange(): void
+    {
+        // The scan read `src/a.php` while it was modified, so the graph holds
+        // a hash of those bytes rather than of the committed ones.
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD, ['src/a.php']);
+        try {
+            // Restored to its committed content: git now names it nowhere.
+            file_put_contents($root . '/src/a.php', "<?php\nfinal class Committed {}\n");
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, [], [], ['src/a.php']);
+
+            self::assertNotNull($drift, 'The scan recorded a complete dirty set, so the oracle can answer.');
+            self::assertSame(1, $drift->changed, 'The stored hash is of bytes no longer on disk; that is a change however invisible it is to git.');
+            self::assertSame(0, $drift->added);
+            self::assertSame(0, $drift->deleted);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A path recorded as dirty that has not moved since must not be counted:
+     * every candidate is still decided against the hash the scan stored, so
+     * always-a-candidate cannot become always-drifted. Otherwise a project
+     * with any uncommitted work would report permanent staleness no rescan
+     * could clear.
+     */
+    #[Group('git')]
+    public function testARecordedDirtyPathThatHasNotMovedIsNotDrift(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD, ['src/a.php']);
+        try {
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, [], [], ['src/a.php']);
+
+            self::assertNotNull($drift);
+            self::assertSame(0, $drift->total(), 'The file still hashes to what the scan stored, so nothing drifted.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A scan that recorded no dirty set — a graph built before the column
+     * existed, or one whose dirty listing git could not answer — cannot rule
+     * out the restore above. Declining hands the question to the walk, which
+     * sees the file directly; deciding would report a freshness this oracle
+     * never verified.
+     */
+    #[Group('git')]
+    public function testAScanWithNoRecordedDirtySetDeclines(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $pdo->prepare('UPDATE scans SET dirty_paths_json = NULL WHERE id = :id')->execute(['id' => $scanId]);
+
+            self::assertNull(
+                $this->drift($pdo, $projectId, $scanId, $root, [], [], ['src/a.php']),
+                'Without a recorded dirty set a file scanned dirty and since restored is invisible, so the walk must answer instead.',
+            );
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A set the scan had to truncate is not a set: reading it as complete
+     * would put the invisible-restore hole straight back for exactly the
+     * repositories most likely to have one. It declines like an absent set.
+     */
+    #[Group('git')]
+    public function testATruncatedDirtySetDeclinesLikeAnAbsentOne(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $pdo->prepare('UPDATE scans SET dirty_paths_json = :dirty WHERE id = :id')->execute([
+                'dirty' => (string) json_encode(['paths' => ['src/a.php'], 'complete' => false]),
+                'id' => $scanId,
+            ]);
+
+            self::assertNull(
+                $this->drift($pdo, $projectId, $scanId, $root, [], [], ['src/a.php']),
+                'An incomplete record cannot be decided from, and says so rather than being trimmed into a complete-looking one.',
+            );
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Seeds a project with one file and stamps its scan's `git_head` and
+     * recorded dirty set, so each test controls what the oracle finds without
      * touching the fixture's own scan-creation path.
      *
+     * The dirty set defaults to a clean working tree, which is a recorded
+     * answer and not an absent one: a scan that recorded nothing makes the
+     * oracle decline outright, and every test here that is about something
+     * else needs it past that gate.
+     *
+     * @param list<string> $dirty tracked paths the scan read while they
+     *        differed from $head
      * @return array{0: PDO, 1: string, 2: string, 3: string}
      */
-    private function seedWithHead(?string $head): array
+    private function seedWithHead(?string $head, array $dirty = []): array
     {
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
         $project = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :project');
         $project->execute(['project' => $projectId]);
         $scanId = (string) $project->fetchColumn();
-        $pdo->prepare('UPDATE scans SET git_head = :head WHERE id = :id')->execute(['head' => $head, 'id' => $scanId]);
+        $pdo->prepare('UPDATE scans SET git_head = :head, dirty_paths_json = :dirty WHERE id = :id')
+            ->execute(['head' => $head, 'dirty' => DirtyPathSet::of($dirty)->encode(), 'id' => $scanId]);
 
         return [$pdo, $projectId, $root, $scanId];
     }

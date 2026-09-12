@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Git\DirtyPathResolver;
 use Knossos\Git\GitHeadResolver;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResult};
@@ -30,14 +31,16 @@ final class ProjectScanService implements ProjectScanner
      * @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots
      * @param ?GitHeadResolver $gitHead injected only so a test can drive the
      *        commit capture without a subprocess; production builds its own.
+     * @param ?DirtyPathResolver $dirtyPaths injected for the same reason.
      */
     public function __construct(
         private PDO $pdo,
         string $installationRoot,
         \Knossos\Discovery\AllowedRoots|array $allowedRoots,
         ?GitHeadResolver $gitHead = null,
+        ?DirtyPathResolver $dirtyPaths = null,
     ) {
-        $this->planner = new ScanPlanner($pdo, $allowedRoots, $gitHead);
+        $this->planner = new ScanPlanner($pdo, $allowedRoots, $gitHead, $dirtyPaths);
         $this->workerPool = new LanguageWorkerPool();
         $this->languageRunner = new LanguageScanRunner(
             LanguageDescriptor::installed($installationRoot),
@@ -135,6 +138,7 @@ final class ProjectScanService implements ProjectScanner
                 // Captured before discovery walked the tree, so the commit the
                 // scan records is one its own bytes cannot predate.
                 $preparation->gitHead,
+                $preparation->dirtyPaths,
             ));
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;

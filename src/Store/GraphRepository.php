@@ -66,7 +66,7 @@ interface GraphRepository
      * @param ?string $gitHead the scan root's HEAD sha, or null when the root
      *        is not a Git repository (or Git could not be asked)
      */
-    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null): void;
+    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null, ?string $dirtyPathsJson = null): void;
 
     /** Atomically make a successfully reconciled scan active. */
     public function completeScan(string $projectId, string $scanId): void;
