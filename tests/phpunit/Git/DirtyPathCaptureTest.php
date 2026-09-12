@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Git;
 
+use Knossos\Discovery\DiscoveredFile;
 use Knossos\Git\DirtyPathResolver;
 use Knossos\Git\DirtyPathSet;
 use Knossos\Git\GitProcessRunnerInterface;
@@ -26,36 +27,100 @@ final class DirtyPathCaptureTest extends KnossosTestCase
 {
     private const HEAD = '3f1a9c2b4d5e6f708192a3b4c5d6e7f8091a2b3c';
 
-    /** A NUL-separated listing is the set, deduplicated and ordered so the same tree encodes identically. */
+    /**
+     * The set is what discovery read against what the commit holds, not what
+     * git would call dirty at some later moment. `changed.php` hashes to
+     * something the tree does not hold and is dirty; `clean.php` matches its
+     * committed blob and is not.
+     */
     #[Group('git')]
-    public function testItReadsTheNulSeparatedListingAsTheSet(): void
+    public function testAReadThatDiffersFromTheCommittedBlobIsDirty(): void
     {
-        $set = (new DirtyPathResolver($this->runner("src/b.php\0src/a.php\0src/a.php\0")))->resolve('/tmp/knossos-dirty', self::HEAD);
+        $set = $this->resolve(
+            ['src/clean.php' => 'aaaa', 'src/changed.php' => 'bbbb'],
+            [$this->discovered('src/clean.php', 'aaaa'), $this->discovered('src/changed.php', 'cccc')],
+        );
 
         self::assertNotNull($set);
-        self::assertSame(['src/a.php', 'src/b.php'], $set->paths);
+        self::assertSame(['src/changed.php'], $set->paths);
         self::assertTrue($set->complete);
     }
 
     /**
-     * The argv is the contract, and it has to be spelled exactly like the
-     * drift oracle's own changed-file listing: the two sets are unioned later,
-     * so a difference in `--relative` or the pathspec would be a silent
-     * mismatch between paths that name the same file.
+     * The case the whole derivation exists for: a file modified while
+     * discovery read it and restored before anything else ran. Every later
+     * question to git calls it clean, and a set built from such a question
+     * omits it while the graph holds a hash of the modified bytes. Comparing
+     * the read itself against an immutable tree cannot be fooled that way.
+     */
+    #[Group('git')]
+    public function testAReadThatWasRestoredAfterwardsIsStillDirty(): void
+    {
+        // The tree holds the committed blob; the file on disk now holds it
+        // again too. Only what discovery read disagrees, and that is what is
+        // compared.
+        $set = $this->resolve(
+            ['src/edited.php' => 'committed-blob'],
+            [$this->discovered('src/edited.php', 'blob-of-the-modified-bytes')],
+        );
+
+        self::assertNotNull($set);
+        self::assertSame(['src/edited.php'], $set->paths, 'The scan stored a hash of bytes that are no longer on disk, whatever git would say about the file now.');
+    }
+
+    /** A file the commit does not hold was untracked when it was read, so there is no committed content for its stored hash to disagree with. */
+    #[Group('git')]
+    public function testAPathTheCommitDoesNotHoldIsNotDirty(): void
+    {
+        $set = $this->resolve(['src/tracked.php' => 'aaaa'], [$this->discovered('src/untracked.php', 'bbbb')]);
+
+        self::assertNotNull($set);
+        self::assertSame([], $set->paths);
+    }
+
+    /** A read that could not be pinned to a blob id cannot be compared, and "cannot be compared" must not resolve to "matched". */
+    #[Group('git')]
+    public function testAReadWithNoBlobIdIsTreatedAsDirty(): void
+    {
+        $set = $this->resolve(['src/racing.php' => 'aaaa'], [$this->discovered('src/racing.php', null)]);
+
+        self::assertNotNull($set);
+        self::assertSame(['src/racing.php'], $set->paths);
+    }
+
+    /** Entries that are not blobs, such as a submodule's commit entry, name nothing discovery read and must not become paths. */
+    #[Group('git')]
+    public function testANonBlobTreeEntryIsIgnored(): void
+    {
+        $listing = "160000 commit 1111111111111111111111111111111111111111\tvendor/sub\0"
+            . "100644 blob 2222222222222222222222222222222222222222\tsrc/a.php\0";
+
+        $set = (new DirtyPathResolver($this->runner($listing)))
+            ->resolve('/tmp/knossos-dirty', self::HEAD, [$this->discovered('src/a.php', '2222222222222222222222222222222222222222')]);
+
+        self::assertNotNull($set);
+        self::assertSame([], $set->paths);
+    }
+
+    /**
+     * The argv is the contract. `-C` with a `.` pathspec is what makes the
+     * reported paths relative to the scanned root and keeps a monorepo's
+     * sibling packages out; the recorded commit rather than a symbolic HEAD is
+     * what makes the comparison describe the scan this set accompanies.
      */
     #[Group('git')]
     public function testItPinsTheCommandItIssues(): void
     {
         $runner = $this->capturingRunner();
 
-        (new DirtyPathResolver($runner))->resolve('/tmp/knossos-dirty', self::HEAD);
+        (new DirtyPathResolver($runner))->resolve('/tmp/knossos-dirty', self::HEAD, []);
 
         self::assertSame([[
             'git', '--no-optional-locks', '--no-pager', '-C', '/tmp/knossos-dirty',
-            'diff', '--name-only', '-z', '--no-ext-diff', '--no-renames', '--relative', self::HEAD, '--', '/tmp/knossos-dirty',
+            'ls-tree', '-r', '-z', self::HEAD, '--', '.',
         ]], $runner->commands);
         self::assertSame([2000], $runner->timeouts);
-        self::assertSame(['scan dirty paths'], $runner->operations);
+        self::assertSame(['scan head tree'], $runner->operations);
     }
 
     /** A git that could not answer leaves no set at all, rather than an empty one that would read as a clean tree. */
@@ -65,14 +130,46 @@ final class DirtyPathCaptureTest extends KnossosTestCase
         $log = sys_get_temp_dir() . '/knossos-dirty-breadcrumb-' . bin2hex(random_bytes(6)) . '.log';
         $previous = ini_set('error_log', $log);
         try {
-            $set = (new DirtyPathResolver($this->failingRunner()))->resolve('/tmp/knossos-dirty', self::HEAD);
+            $set = (new DirtyPathResolver($this->failingRunner()))->resolve('/tmp/knossos-dirty', self::HEAD, []);
 
-            self::assertNull($set, 'An empty set would claim a clean tree; the truth is that nothing is known.');
-            self::assertStringContainsString('scan dirty paths', (string) @file_get_contents($log), 'The degraded oracle that follows is invisible from outside, so the reason has to be findable.');
+            self::assertNull($set, 'An empty set would claim every read matched the commit; the truth is that nothing is known.');
+            self::assertStringContainsString('scan head tree', (string) @file_get_contents($log), 'The degraded oracle that follows is invisible from outside, so the reason has to be findable.');
         } finally {
             ini_set('error_log', $previous === false ? '' : $previous);
             @unlink($log);
         }
+    }
+
+    /**
+     * Runs the resolver against a faked `ls-tree` listing built from the given
+     * committed blobs.
+     *
+     * @param array<string, string> $tree relative path => committed blob id
+     * @param list<DiscoveredFile> $files
+     */
+    private function resolve(array $tree, array $files): ?DirtyPathSet
+    {
+        $entries = '';
+        foreach ($tree as $path => $blob) {
+            $entries .= '100644 blob ' . $blob . "\t" . $path . "\0";
+        }
+
+        return (new DirtyPathResolver($this->runner($entries)))->resolve('/tmp/knossos-dirty', self::HEAD, $files);
+    }
+
+    /** One discovered file, carrying only the two fields this resolver reads. */
+    private function discovered(string $relativePath, ?string $gitBlobHash): DiscoveredFile
+    {
+        return new DiscoveredFile(
+            $relativePath,
+            '/tmp/knossos-dirty/' . $relativePath,
+            'php',
+            1,
+            1,
+            hash('sha256', $relativePath),
+            1,
+            $gitBlobHash,
+        );
     }
 
     /** A tree dirty past the persisted bound is marked incomplete rather than trimmed into a complete-looking set. */

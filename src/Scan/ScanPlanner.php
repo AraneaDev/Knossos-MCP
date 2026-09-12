@@ -31,12 +31,13 @@ use PDO;
  * `fresh`. Capturing first makes the recorded commit one the scan cannot have
  * read ahead of — any change committed afterwards shows up as ordinary drift.
  *
- * The paths that differ from that commit are captured too, and deliberately
- * after the walk rather than before it: taken at a moment when every file has
- * been read, the set names every path whose scanned bytes can differ from the
- * commit's, including one edited while the scan was running and including
- * every path of a commit that landed mid-scan. See {@see DirtyPathSet} for
- * what the oracle does with it.
+ * The paths that differ from that commit are derived from what the walk
+ * actually read, rather than from asking git what is dirty at some later
+ * moment: discovery's own Git blob ids are compared against the captured
+ * commit's tree, and that tree does not change, so the recorded set describes
+ * the same instant as the hashes it accompanies. See {@see DirtyPathResolver}
+ * for why any question asked later can disagree with the read, and
+ * {@see DirtyPathSet} for what the oracle does with the answer.
  */
 final readonly class ScanPlanner
 {
@@ -111,11 +112,10 @@ final readonly class ScanPlanner
             maxFileBytes: $maxFileBytes,
         )))->discover($root);
         $discoveryMilliseconds = self::elapsedMilliseconds($started);
-        // After the walk, against the commit captured before it: every file
-        // has been read by now, so a path missing from this set is one whose
-        // scanned bytes are the commit's. Only asked when there is a commit to
-        // be dirty against; a gitless project has no such question.
-        $dirtyPaths = $gitHead === null ? null : $this->dirtyPaths->resolve($rootRealpath, $gitHead);
+        // Derived from the bytes the walk just read, against the commit
+        // captured before it. Only asked when there is a commit to be dirty
+        // against; a gitless project has no such question.
+        $dirtyPaths = $gitHead === null ? null : $this->dirtyPaths->resolve($rootRealpath, $gitHead, $discovery->files);
         $started = hrtime(true);
         $laravel = in_array('laravel', $configuration->frameworks, true) || $this->hasComposerPackage($discovery->units, ['laravel/framework']);
         $symfony = in_array('symfony', $configuration->frameworks, true) || $this->hasComposerPackage($discovery->units, ['symfony/framework-bundle', 'symfony/http-kernel', 'symfony/console', 'symfony/messenger']);

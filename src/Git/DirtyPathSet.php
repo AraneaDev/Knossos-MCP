@@ -18,7 +18,9 @@ namespace Knossos\Git;
  *
  * Recording the set closes that: a path in it cannot be assumed to hash equal
  * to HEAD, so it is a candidate on every later probe whatever git says about
- * it now. Deciding it still costs one file hash against the graph's own
+ * it now. It is derived from the bytes discovery read rather than from a later
+ * question to git — see {@see DirtyPathResolver} — because a question asked at
+ * any other moment describes another moment. Deciding it still costs one file hash against the graph's own
  * stored value, exactly like any other candidate, so a path that has not
  * actually moved reports no drift.
  *

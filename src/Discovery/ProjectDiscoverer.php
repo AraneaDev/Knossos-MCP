@@ -160,6 +160,7 @@ final readonly class ProjectDiscoverer
                         $mtime,
                         $contentHash,
                         $fingerprint->lineCount,
+                        $fingerprint->gitBlobHash,
                     );
                 }
 
