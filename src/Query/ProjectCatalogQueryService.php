@@ -766,8 +766,22 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             }
             $adjacency[$edge['source_id']][] = $edge['target_id'];
             $reverse[$edge['target_id']][] = $edge['source_id'];
-            ++$degree[$edge['source_id']];
-            ++$degree[$edge['target_id']];
+            // Only a relationship between two reportable components is part of
+            // the architecture this degree describes. Excluding test and vendor
+            // components from BEING hubs was not enough on its own: a test
+            // referencing a production hub still raised that hub's degree, so a
+            // commit that only added tests spent hub_degree_growth it had no way
+            // to reclaim, which is the failure the scope comment above exists to
+            // prevent. Found by running this gate against Knossos itself, where
+            // adding twenty-five test files moved the budget by 57.
+            //
+            // Reachability is deliberately left alone: $adjacency and $reverse
+            // still record the edge, so a component a test references stays
+            // referenced rather than becoming an unreferenced candidate.
+            if (isset($reportable[$edge['source_id']], $reportable[$edge['target_id']])) {
+                ++$degree[$edge['source_id']];
+                ++$degree[$edge['target_id']];
+            }
         }
         $declaringType = [];
         foreach ($members as $type => $held) {
