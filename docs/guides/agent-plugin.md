@@ -41,7 +41,8 @@ ln -s /absolute/Knossos-MCP/bin/knossos ~/.local/bin/knossos
 
 The supported install points at a directory on disk, so `--execute` first
 writes one: `.plugin/` beside this checkout, holding the marketplace
-descriptor, the plugin manifest, the `SessionStart` hook and the skill. Those
+descriptor, the plugin manifest, the `SessionStart` hook and the
+[routing skill](../capabilities/agent-skill.md). Those
 five files are the whole plugin, and that directory is what
 `claude plugin marketplace add` is handed.
 
