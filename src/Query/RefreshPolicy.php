@@ -35,7 +35,17 @@ final readonly class RefreshPolicy
 
     public function __construct(private PDO $pdo, private int $budgetMs = self::DEFAULT_BUDGET_MS) {}
 
-    /** Whether to rescan before answering, given how many files drifted. */
+    /**
+     * Whether to rescan before answering, given how many files drifted.
+     *
+     * Wrong in the direction of allowing a rescan holds a query open past the
+     * client's own timeout, which returns the caller nothing at all — worse
+     * than the stale-but-served answer a correct decline would have given.
+     * Wrong the other way costs only a warning and the previous graph, which
+     * is why every uncertainty in this method (an unmeasurable cost, a tie at
+     * the budget, a fractional millisecond rounded) resolves toward declining
+     * rather than toward allowing.
+     */
     public function decide(string $projectId, int $driftedFiles): RefreshDecision
     {
         if ($driftedFiles < 1) {
@@ -50,7 +60,19 @@ final readonly class RefreshPolicy
         // Capped at what the whole graph cost to build: no incremental rescan
         // can be dearer than the full scan it is a subset of, and the cap keeps
         // a large drift on a cheap project from being modelled out of reach.
-        $estimateMs = (int) round(min($cost['total'], self::FIXED_OVERHEAD_MS + $cost['perFile'] * $driftedFiles));
+        //
+        // Rounded up, not to nearest: round() turns a true 5000.4 ms estimate
+        // into 5000 and lets it slip under a 5000 ms budget it never actually
+        // fit. ceil() cannot manufacture a false decline the way round() can
+        // manufacture a false allow, so it is the only direction that keeps
+        // the estimate a ceiling rather than an approximation.
+        $estimateMs = (int) ceil(min($cost['total'], self::FIXED_OVERHEAD_MS + $cost['perFile'] * $driftedFiles));
+        // Strict >, not >=: an estimate that lands exactly on the budget is
+        // allowed. The budget is already a deliberately conservative cap (see
+        // the class docblock), so a tie is the estimate saying "exactly what
+        // you asked for," not "slightly over" — and >= would flip that on any
+        // future retuning of FIXED_OVERHEAD_MS or DEFAULT_BUDGET_MS that
+        // happens to land the arithmetic on a round number.
         if ($estimateMs > $this->budgetMs) {
             return RefreshDecision::decline(sprintf(
                 '%d files drifted, an estimated %d ms to rescan, over the %d ms budget; call scan_project to refresh.',

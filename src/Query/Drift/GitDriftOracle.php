@@ -116,13 +116,33 @@ final readonly class GitDriftOracle implements DriftOracle
             // be rebuilt for.
             $changedOutput = $this->run($root, ['diff', '--name-only', '-z', '--no-ext-diff', '--no-renames', '--relative', $head, '--', $root]);
             $untrackedOutput = $this->run($root, ['ls-files', '--others', '--exclude-standard', '-z', '--']);
-            $indexedOutput = $crossCheck ? $this->run($root, ['ls-files', '--cached', '-z', '--']) : '';
         } catch (Throwable $error) {
             // A permanently silent fast path is undiagnosable: this oracle
             // failing simply means the walk answers, which looks like nothing
             // at all from outside. Never stdout, which carries protocol frames.
             error_log('knossos drift query: git could not answer (' . $error->getMessage() . ')');
             return null;
+        }
+
+        $indexedOutput = '';
+        if ($crossCheck) {
+            try {
+                $indexedOutput = $this->run($root, ['ls-files', '--cached', '-z', '--']);
+            } catch (Throwable $error) {
+                // Deliberately its own try/catch, distinct from the one above:
+                // this listing is an addition to what the oracle can decide,
+                // not a precondition for it. On a large repository with long
+                // paths it is the call most likely to approach
+                // GitProcessRunner's maxOutputBytes, and at exactly the
+                // repository size where the walk is also near its own
+                // ceiling. Losing it costs only the gitignored-but-scanned
+                // coverage the cross-check adds; folding its failure into the
+                // block above would cost the whole oracle instead, for a
+                // reason unrelated to whether diff and untracked candidates
+                // could still answer.
+                error_log('knossos drift query: git ls-files --cached could not answer, cross-check skipped (' . $error->getMessage() . ')');
+                $crossCheck = false;
+            }
         }
 
         $tracked = $crossCheck ? $this->trackedHashes($projectId, $activeScanId, null) : [];
