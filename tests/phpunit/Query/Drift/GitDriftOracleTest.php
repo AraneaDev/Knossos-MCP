@@ -546,6 +546,77 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
+     * `if (!is_file($absolute)) { continue; }` (~line 251) skips one
+     * candidate that has no stored hash and is also gone from disk.
+     * Mutating `continue` to `break` abandons every remaining candidate the
+     * moment this happens, instead of only skipping this one. `ghost.php`
+     * is such a candidate — untracked and absent from disk — placed before
+     * a second, genuinely new file that must still be decided (and counted
+     * as an addition) once the first is skipped.
+     */
+    #[Group('git')]
+    public function testASkippedCandidateDoesNotAbandonTheRestOfTheLoop(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            file_put_contents($root . '/new.php', "<?php\n");
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, [], ['ghost.php', 'new.php'], ['src/a.php']);
+
+            self::assertNotNull($drift);
+            self::assertSame(1, $drift->added, 'The candidate listed after the skipped one must still be decided, not abandoned.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The `error_log()` breadcrumb in the outer catch (~line 162) exists
+     * because a permanently silent git fast path is undiagnosable in
+     * production; a `FunctionCallRemoval` mutant deletes the call itself and
+     * nothing previously noticed. Points PHP's `error_log` ini directive at a
+     * temporary file for the duration of the call, triggers the failure
+     * path, and asserts the file received a stable marker rather than the
+     * full sentence, which is cosmetic and free to reword.
+     */
+    #[Group('git')]
+    public function testAGitFailureEmitsADiagnosticBreadcrumb(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $log = $this->captureErrorLog(function () use ($pdo, $projectId, $scanId, $root): void {
+                (new GitDriftOracle($pdo, $this->failingRunner()))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
+
+            self::assertStringContainsString('knossos drift query: git could not answer', $log, 'A failed git call must leave a breadcrumb; a silent fast path is undiagnosable in production.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The `error_log()` breadcrumb in the fail-soft cross-check catch
+     * (~line 186) is a distinct requirement from the outer one above, with
+     * its own independently surviving `FunctionCallRemoval` mutant.
+     */
+    #[Group('git')]
+    public function testAFailedIndexCrossCheckEmitsItsOwnDiagnosticBreadcrumb(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $log = $this->captureErrorLog(function () use ($pdo, $projectId, $scanId, $root): void {
+                (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
+
+            self::assertStringContainsString('cross-check skipped', $log, 'A failed index cross-check must leave its own breadcrumb, distinct from the outer git-failure one.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * Runs the oracle against a runner answering with the given listings.
      *
      * @param list<string> $changed what `git diff` reports against the recorded commit
@@ -610,6 +681,30 @@ final class GitDriftOracleTest extends KnossosTestCase
         $statement->execute(['id' => $scanId]);
 
         return (string) $statement->fetchColumn();
+    }
+
+    /**
+     * Points PHP's `error_log` ini directive at a temporary file for the
+     * duration of $trigger, so `error_log()` calls land somewhere assertable
+     * instead of stderr or syslog, then restores the previous setting in a
+     * `finally` — the same restore-in-finally discipline the putenv
+     * kill-switch tests use, so nothing leaks into a later test. Never
+     * touches stdout, which carries MCP protocol frames rather than
+     * diagnostics.
+     */
+    private function captureErrorLog(callable $trigger): string
+    {
+        $previous = ini_get('error_log');
+        $tmpFile = tempnam(sys_get_temp_dir(), 'knossos-errlog-');
+        ini_set('error_log', $tmpFile);
+        try {
+            $trigger();
+
+            return (string) file_get_contents($tmpFile);
+        } finally {
+            ini_set('error_log', $previous === false ? '' : $previous);
+            @unlink($tmpFile);
+        }
     }
 
     /**
