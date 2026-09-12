@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Knossos\Query\Drift\DriftCounts;
 use Knossos\Query\RefreshPolicy;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
@@ -22,7 +23,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
 
-        self::assertTrue((new RefreshPolicy($pdo))->decide($projectId, 5)->refresh, '10 ms per file times 5 files is 50 ms, well under budget.');
+        self::assertTrue((new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(5, 0, 0))->refresh, '10 ms per file times 5 files is 50 ms, well under budget.');
     }
 
     /** Over budget, the caller needs the drift count to decide whether to rescan itself. */
@@ -30,7 +31,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     public function testALargeDriftDeclinesWithAReason(): void
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
-        $decision = (new RefreshPolicy($pdo))->decide($projectId, 900);
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(900, 0, 0));
 
         self::assertFalse($decision->refresh);
         self::assertStringContainsString('900', (string) $decision->reason, 'The caller needs the drift count to decide whether to rescan itself.');
@@ -42,7 +43,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 0, files: 1000);
 
-        self::assertTrue((new RefreshPolicy($pdo))->decide($projectId, 900)->refresh, 'A scan too fast to time is a scan that costs nothing to repeat.');
+        self::assertTrue((new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(900, 0, 0))->refresh, 'A scan too fast to time is a scan that costs nothing to repeat.');
     }
 
     /** Without a scan to learn cost from, the policy must decline rather than guess or divide by zero. */
@@ -50,7 +51,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     public function testAProjectWithNoScanHistoryDeclines(): void
     {
         $pdo = $this->freshTestDatabase();
-        $decision = (new RefreshPolicy($pdo))->decide('unknown-project', 5);
+        $decision = (new RefreshPolicy($pdo))->decide('unknown-project', new DriftCounts(5, 0, 0));
 
         self::assertFalse($decision->refresh, 'A cost that cannot be measured cannot be capped.');
     }
@@ -65,7 +66,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: null, files: 1000);
 
-        self::assertFalse((new RefreshPolicy($pdo))->decide($projectId, 1)->refresh, 'An unrecorded cost is unknown, not zero.');
+        self::assertFalse((new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(1, 0, 0))->refresh, 'An unrecorded cost is unknown, not zero.');
     }
 
     /**
@@ -80,7 +81,7 @@ final class RefreshPolicyTest extends KnossosTestCase
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
         $pdo->prepare('UPDATE scans SET finished_at = :finished')->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', time() + 86_400)]);
 
-        self::assertTrue((new RefreshPolicy($pdo))->decide($projectId, 5)->refresh, 'When the graph last agreed with the tree says nothing about what rebuilding it costs.');
+        self::assertTrue((new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(5, 0, 0))->refresh, 'When the graph last agreed with the tree says nothing about what rebuilding it costs.');
     }
 
     /**
@@ -95,8 +96,8 @@ final class RefreshPolicyTest extends KnossosTestCase
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
         $policy = new RefreshPolicy($pdo);
 
-        self::assertTrue($policy->decide($projectId, 450)->refresh, '4500 ms of files plus 500 ms of overhead is exactly the budget.');
-        self::assertFalse($policy->decide($projectId, 460)->refresh, '4600 ms of files plus the same overhead is over it.');
+        self::assertTrue($policy->decide($projectId, new DriftCounts(450, 0, 0))->refresh, '4500 ms of files plus 500 ms of overhead is exactly the budget.');
+        self::assertFalse($policy->decide($projectId, new DriftCounts(460, 0, 0))->refresh, '4600 ms of files plus the same overhead is over it.');
     }
 
     /** No rescan of part of a graph can cost more than the scan that built all of it, so the estimate is capped there. */
@@ -106,8 +107,67 @@ final class RefreshPolicyTest extends KnossosTestCase
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 4800, files: 1000);
 
         self::assertTrue(
-            (new RefreshPolicy($pdo))->decide($projectId, 1000)->refresh,
+            (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(1000, 0, 0))->refresh,
             'Every file drifted, so the rescan is the full scan, which took 4800 ms and fits.',
+        );
+    }
+
+    /**
+     * The historical cap is an upper bound only while the rescan is a subset
+     * of the scan it is compared against. Additions break that: a small
+     * project that has gained thousands of files has a next scan far larger
+     * than its last, so capping at the last one's duration shrank a correctly
+     * large estimate down to the cost of the smaller old graph and allowed an
+     * over-budget refresh to run inside a query the caller was waiting on.
+     *
+     * Ten files costing 100 ms is 10 ms/file, so two thousand added files
+     * estimate at 20500 ms — four times the 5000 ms budget — while the cap
+     * would shrink the same estimate to the old scan's own 100 ms and wave it
+     * through.
+     */
+    #[Group('query')]
+    public function testAnAdditionHeavyDriftIsNotCappedAtTheOldScanDuration(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 100, files: 10);
+
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(0, 2000, 0));
+
+        self::assertFalse($decision->refresh, 'A scan of two thousand new files is not bounded by what ten files cost to scan.');
+        self::assertStringContainsString('20500 ms', (string) $decision->reason, 'The estimate the caller is told about must be the uncapped one it was actually declined on.');
+    }
+
+    /**
+     * One addition beside a large set of changes is still an addition: the
+     * next scan covers files the last one never saw, so the cap does not
+     * hold for the set as a whole. Pinned because a cap keyed on the
+     * majority, or on additions outnumbering changes, would read as
+     * reasonable and reopen the same hole for a mixed change set.
+     */
+    #[Group('query')]
+    public function testASingleAdditionAmongChangesAlsoLiftsTheCap(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 100, files: 10);
+
+        self::assertFalse(
+            (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(1999, 1, 0))->refresh,
+            'A change set holding any addition is not a subset of the previous scan, so the previous scan bounds nothing.',
+        );
+    }
+
+    /**
+     * Deletions and changes keep the cap, which is the whole reason it
+     * exists: a large drift on a cheap project must not be modelled out of
+     * reach when the rescan really is a subset of the scan being compared
+     * against.
+     */
+    #[Group('query')]
+    public function testDeletionsAndChangesKeepTheHistoricalCap(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 4800, files: 1000);
+
+        self::assertTrue(
+            (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(600, 0, 400))->refresh,
+            'Nothing was added, so the rescan cannot be dearer than the 4800 ms full scan it is a subset of.',
         );
     }
 
@@ -123,11 +183,11 @@ final class RefreshPolicyTest extends KnossosTestCase
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
 
         self::assertTrue(
-            (new RefreshPolicy($pdo, budgetMs: 550))->decide($projectId, 5)->refresh,
+            (new RefreshPolicy($pdo, budgetMs: 550))->decide($projectId, new DriftCounts(5, 0, 0))->refresh,
             '500 ms overhead plus 10 ms/file times 5 files is exactly 550 ms; a tie must fall on the side of allowing the refresh.',
         );
         self::assertFalse(
-            (new RefreshPolicy($pdo, budgetMs: 549))->decide($projectId, 5)->refresh,
+            (new RefreshPolicy($pdo, budgetMs: 549))->decide($projectId, new DriftCounts(5, 0, 0))->refresh,
             'One ms over the budget must still decline.',
         );
     }
@@ -143,7 +203,7 @@ final class RefreshPolicyTest extends KnossosTestCase
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_001, files: 1000);
 
         self::assertFalse(
-            (new RefreshPolicy($pdo))->decide($projectId, 450)->refresh,
+            (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(450, 0, 0))->refresh,
             'perFile is 10.001 ms/file; 450 files plus the 500 ms overhead cost 5000.45 ms, over the 5000 ms budget even though round() alone would hide the excess.',
         );
     }
@@ -154,7 +214,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 600_000, files: 1000);
 
-        self::assertFalse((new RefreshPolicy($pdo))->decide($projectId, 0)->refresh, 'Nothing drifted, so there is nothing to refresh.');
+        self::assertFalse((new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(0, 0, 0))->refresh, 'Nothing drifted, so there is nothing to refresh.');
     }
 
     /**
@@ -171,7 +231,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 100, files: 1);
 
-        $decision = (new RefreshPolicy($pdo))->decide($projectId, 1);
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(1, 0, 0));
 
         self::assertTrue($decision->refresh, 'One tracked file is a measurable scan (100 ms / 1 file), well under budget; it must not be declined as unmeasurable.');
         self::assertNull($decision->reason);
@@ -191,7 +251,7 @@ final class RefreshPolicyTest extends KnossosTestCase
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 0, files: 1);
 
-        $decision = (new RefreshPolicy($pdo, budgetMs: 0))->decide($projectId, 1);
+        $decision = (new RefreshPolicy($pdo, budgetMs: 0))->decide($projectId, new DriftCounts(1, 0, 0));
 
         self::assertTrue($decision->refresh, 'A true zero-cost scan estimates 0 ms, which fits even a 0 ms budget; max(1.0, ...) would estimate 1 ms and be declined instead.');
     }

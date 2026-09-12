@@ -102,9 +102,9 @@ final readonly class ArchitectureQueryService
      *
      * {@see RefreshPolicy::decide()}
      */
-    public function refreshDecision(string $projectId, int $driftedFiles): RefreshDecision
+    public function refreshDecision(string $projectId, \Knossos\Query\Drift\DriftCounts $drift): RefreshDecision
     {
-        return $this->refreshPolicy->decide($projectId, $driftedFiles);
+        return $this->refreshPolicy->decide($projectId, $drift);
     }
 
     /** {@see ProjectCatalogQueryService::listProjects()} */

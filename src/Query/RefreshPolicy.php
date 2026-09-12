@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Query\Drift\DriftCounts;
 use PDO;
 
 /**
@@ -36,7 +37,14 @@ final readonly class RefreshPolicy
     public function __construct(private PDO $pdo, private int $budgetMs = self::DEFAULT_BUDGET_MS) {}
 
     /**
-     * Whether to rescan before answering, given how many files drifted.
+     * Whether to rescan before answering, given what drifted.
+     *
+     * Takes the three counts rather than one total because the historical cap
+     * below depends on their composition: a change set of additions describes
+     * a scan larger than the last one, and the last one's duration is then not
+     * an upper bound on anything. A caller that knows only a total must
+     * present it as additions, which is the uncapped and therefore
+     * conservative side.
      *
      * Wrong in the direction of allowing a rescan holds a query open past the
      * client's own timeout, which returns the caller nothing at all — worse
@@ -46,8 +54,9 @@ final readonly class RefreshPolicy
      * the budget, a fractional millisecond rounded) resolves toward declining
      * rather than toward allowing.
      */
-    public function decide(string $projectId, int $driftedFiles): RefreshDecision
+    public function decide(string $projectId, DriftCounts $drift): RefreshDecision
     {
+        $driftedFiles = $drift->total();
         if ($driftedFiles < 1) {
             return RefreshDecision::decline('Nothing drifted.');
         }
@@ -57,16 +66,12 @@ final readonly class RefreshPolicy
             return RefreshDecision::decline('No recorded scan duration to estimate a rescan against; call scan_project to refresh.');
         }
 
-        // Capped at what the whole graph cost to build: no incremental rescan
-        // can be dearer than the full scan it is a subset of, and the cap keeps
-        // a large drift on a cheap project from being modelled out of reach.
-        //
         // Rounded up, not to nearest: round() turns a true 5000.4 ms estimate
         // into 5000 and lets it slip under a 5000 ms budget it never actually
         // fit. ceil() cannot manufacture a false decline the way round() can
         // manufacture a false allow, so it is the only direction that keeps
         // the estimate a ceiling rather than an approximation.
-        $estimateMs = (int) ceil(min($cost['total'], self::FIXED_OVERHEAD_MS + $cost['perFile'] * $driftedFiles));
+        $estimateMs = (int) ceil($this->cap($cost, $drift, self::FIXED_OVERHEAD_MS + $cost['perFile'] * $driftedFiles));
         // Strict >, not >=: an estimate that lands exactly on the budget is
         // allowed. The budget is already a deliberately conservative cap (see
         // the class docblock), so a tie is the estimate saying "exactly what
@@ -83,6 +88,31 @@ final readonly class RefreshPolicy
         }
 
         return RefreshDecision::allow();
+    }
+
+    /**
+     * The estimate, capped at what the whole graph cost to build where that
+     * cap actually holds.
+     *
+     * It holds only when the rescan is a subset of the scan it is compared
+     * against: no rescan of part of a graph can be dearer than building all of
+     * it. Additions break that. A project of ten files that has gained two
+     * thousand is not rescanning a subset of anything — the next scan is far
+     * larger than the last — and capping there shrank a correctly large
+     * estimate down to the cost of the smaller old graph, which is how an
+     * over-budget refresh was allowed to run inside a query the caller was
+     * waiting on.
+     *
+     * So the cap applies only to a change set with no additions in it. Where
+     * there are additions the uncapped estimate stands, which is the
+     * conservative side: too large an estimate costs a decline and a warning,
+     * too small a one costs the caller their whole answer.
+     *
+     * @param array{total: float, perFile: float} $cost
+     */
+    private function cap(array $cost, DriftCounts $drift, float $estimate): float
+    {
+        return $drift->added > 0 ? $estimate : min($cost['total'], $estimate);
     }
 
     /**

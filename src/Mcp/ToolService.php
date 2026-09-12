@@ -206,13 +206,22 @@ final readonly class ToolService
         // A 'stale' verdict can come from a newer failed scan attempt rather
         // than from measured drift, leaving no change set to cost the rescan
         // against. Guessing a size there is how an unbounded scan gets back in.
-        $drifted = isset($staleness['changed_files_since'])
-            ? (int) $staleness['changed_files_since'] + (int) $staleness['added_files_since'] + (int) $staleness['deleted_files_since']
-            : 0;
-        if ($drifted < 1) {
+        //
+        // Passed on split three ways rather than summed: the policy caps its
+        // estimate at the previous full scan's duration, and that cap only
+        // holds for a change set that has no additions in it. A total alone
+        // would hide the difference.
+        $drift = isset($staleness['changed_files_since'])
+            ? new \Knossos\Query\Drift\DriftCounts(
+                (int) $staleness['changed_files_since'],
+                (int) $staleness['added_files_since'],
+                (int) $staleness['deleted_files_since'],
+            )
+            : new \Knossos\Query\Drift\DriftCounts(0, 0, 0);
+        if ($drift->total() < 1) {
             return [['refresh_if_stale: the graph is stale but the change set is unknown; call scan_project to refresh.'], $snapshot];
         }
-        $decision = $this->queries->refreshDecision($projectId, $drifted);
+        $decision = $this->queries->refreshDecision($projectId, $drift);
         if (!$decision->refresh) {
             return [['refresh_if_stale: ' . (string) $decision->reason], $snapshot];
         }
