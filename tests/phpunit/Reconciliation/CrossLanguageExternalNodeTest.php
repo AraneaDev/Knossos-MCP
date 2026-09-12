@@ -67,7 +67,7 @@ final class CrossLanguageExternalNodeTest extends KnossosTestCase
 
         $pdo = SqliteConnection::open(':memory:');
         (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
-        $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo));
+        $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo), $this->fakeGitHeadResolver());
         $request = new FullScanRequest('cross-language', 'Cross Language', $discovery, $scanners, [$php, $typescript]);
 
         $result = $reconciler->reconcile($request);

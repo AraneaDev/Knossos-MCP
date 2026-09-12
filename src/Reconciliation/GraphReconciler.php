@@ -113,6 +113,11 @@ final readonly class GraphReconciler
 
         $mark('prepare');
 
+        // Resolved before the transaction opens: this shells out to git, and a
+        // subprocess with its own timeout has no business running while the
+        // graph write lock is held.
+        $gitHead = $this->gitHead->resolve($request->discovery->rootRealpath);
+
         $diagnosticCount = 0;
         // A rewrite of this size is dominated by per-statement foreign-key
         // enforcement, so integrity is verified once before the commit instead.
@@ -121,6 +126,7 @@ final readonly class GraphReconciler
             $projectId,
             $scanId,
             $scannerSetHash,
+            $gitHead,
             $fileIds,
             $nodes,
             $edges,
@@ -141,7 +147,9 @@ final readonly class GraphReconciler
             // saveProject/createScan fall inside the read_existing window per the
             // phase-timing contract: they are cheap bookkeeping writes that
             // immediately precede the read, and splitting them into their own
-            // phase would add noise without profiling value.
+            // phase would add noise without profiling value. The HEAD itself was
+            // already resolved before the transaction opened; only the write
+            // of it happens here.
             $this->repository->saveProject(
                 $projectId,
                 $request->projectName,
@@ -153,7 +161,7 @@ final readonly class GraphReconciler
                 $projectId,
                 $request->mode,
                 $scannerSetHash,
-                $this->gitHead->resolve($request->discovery->rootRealpath),
+                $gitHead,
             );
             // What the graph holds now, so what this scan does not produce can be
             // deleted afterwards. Reading ids is what makes the write proportional

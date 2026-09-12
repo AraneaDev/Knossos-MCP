@@ -103,7 +103,7 @@ final class ReconciliationTest extends KnossosTestCase
 
         $pdo = SqliteConnection::open(':memory:');
         (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
-        $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo));
+        $reconciler = new GraphReconciler(new SqliteGraphRepository($pdo), $this->fakeGitHeadResolver());
         $first = $reconciler->reconcile($request);
         assertSame(6, $first->edges);
         assertSame(6, (int) $pdo->query('SELECT COUNT(*) FROM edges')->fetchColumn());
