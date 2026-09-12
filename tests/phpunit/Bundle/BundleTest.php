@@ -185,7 +185,6 @@ final class BundleTest extends KnossosTestCase
             // Rewrite a scanned file's contents so its hash no longer matches the stored one.
             $target = $root . '/src/Architecture.php';
             file_put_contents($target, file_get_contents($target) . "\n// drift\n");
-            clearstatcache();
             $stale = (new \Knossos\Query\StalenessProbe($pdo, fn(): int => time() + 5))->probe($projectId);
             assertSame('stale', $stale['state']);
             assertContains('rescan', $stale['guidance']);

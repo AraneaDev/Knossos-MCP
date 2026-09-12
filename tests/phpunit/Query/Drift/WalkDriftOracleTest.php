@@ -31,14 +31,10 @@ final class WalkDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php', 'src/b.php']);
         try {
-            $scanId = (string) $pdo->query("SELECT active_scan_id FROM projects WHERE id = '{$projectId}'")->fetchColumn();
-            $finishedAt = (string) $pdo->query('SELECT finished_at FROM scans LIMIT 1')->fetchColumn();
-
             unlink($root . '/src/b.php');
             file_put_contents($root . '/src/a.php', "<?php\nfinal class A {}\n");
 
-            $oracle = new WalkDriftOracle($pdo);
-            $drift = $oracle->drift($projectId, $scanId, $root, $finishedAt);
+            $drift = self::drift($pdo, $projectId, $root);
 
             $this->assertNotNull($drift);
             $this->assertSame(1, $drift->changed);
@@ -57,7 +53,9 @@ final class WalkDriftOracleTest extends KnossosTestCase
     public function testDriftIsNullWhenTheRootIsGone(): void
     {
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
-        $scanId = (string) $pdo->query("SELECT active_scan_id FROM projects WHERE id = '{$projectId}'")->fetchColumn();
+        $statement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+        $scanId = (string) $statement->fetchColumn();
         $this->removeTempTree($root);
 
         $oracle = new WalkDriftOracle($pdo);
