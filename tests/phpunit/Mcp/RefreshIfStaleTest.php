@@ -139,4 +139,64 @@ final class RefreshIfStaleTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /** The default is the feature: an agent that must ask for a fresh graph pays two round trips discovering it needed one. */
+    #[Group('mcp')]
+    public function testRefreshHappensWithoutBeingAsked(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+
+            $result = $tools->call('architecture_summary', ['project_id' => $projectId]);
+
+            assertSame('fresh', $result->staleness['state'], 'No refresh_if_stale argument was passed, and the graph is fresh anyway.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A default is not a mandate. An explicit false must be obeyed, or callers lose the ability to read the stored graph as stored. */
+    #[Group('mcp')]
+    public function testAnExplicitFalseStillSuppressesTheRefresh(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+            $before = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+
+            $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => false]);
+
+            assertSame($before, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn());
+            assertSame('stale', $result->staleness['state']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The kill switch restores the previous behaviour wholesale, for anyone who wants the stored graph and nothing else. */
+    #[Group('mcp')]
+    public function testTheKillSwitchRestoresTheOldDefault(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        putenv('KNOSSOS_AUTO_REFRESH=0');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+            $before = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+
+            $result = $tools->call('architecture_summary', ['project_id' => $projectId]);
+
+            assertSame($before, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn());
+            assertSame('stale', $result->staleness['state']);
+        } finally {
+            putenv('KNOSSOS_AUTO_REFRESH');
+            $this->removeTempTree($root);
+        }
+    }
 }

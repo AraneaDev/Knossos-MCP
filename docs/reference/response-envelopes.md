@@ -161,6 +161,38 @@ When change detection ran, `staleness` also carries:
 
 All three are omitted, and the state is `unverified`, above 500 tracked files.
 
+## Refreshing a stale graph
+
+Every read tool that accepts `refresh_if_stale` defaults it to `true`. When a
+call lands on a `stale` graph, the server tries a rescan before answering, so
+you get a current answer without first reading a staleness banner, calling
+`scan_project`, and asking again. Pass `refresh_if_stale: false` and the
+default is overridden: the stored graph is served as stored, stale or not,
+with no rescan attempted.
+
+The rescan only runs when it is cheap enough to fit inside the call you are
+already waiting on. `RefreshPolicy` estimates the cost from the project's own
+last scan (its wall time divided by the files it scanned) multiplied by how
+many files drifted, and compares that estimate against a 5000 ms budget. Over
+budget, or when there is no scan history to estimate against, or when the
+graph is `stale` with no measured change set to cost, the refresh is declined
+and the stored graph answers instead. A declined or failed refresh adds one
+line to `warnings`, prefixed `refresh_if_stale:`, naming the reason and, when
+relevant, pointing you at `scan_project`. A refresh that succeeds adds no
+warning at all: `staleness.state` on the same result already reads `fresh`,
+so a second announcement would land on every call for the one case that needs
+no attention.
+
+Set the environment variable `KNOSSOS_AUTO_REFRESH=0` on the server process
+to turn the default back off everywhere, for every tool and every project,
+without touching a single call site. An explicit `refresh_if_stale` argument
+still wins over both the default and the kill switch: passing `true`
+refreshes even with the kill switch set, and passing `false` never refreshes
+regardless of it.
+
+`scan_project` itself is exempt: it is already the rescan, so `refresh_if_stale`
+has nothing to trigger there.
+
 ## Next steps
 
 `next_steps` offers at most three follow-up calls, each with the `tool`, the
