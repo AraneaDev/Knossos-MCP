@@ -203,6 +203,15 @@ regardless of it.
 `scan_project` itself is exempt: it is already the rescan, so `refresh_if_stale`
 has nothing to trigger there.
 
+Because any tool that declares `refresh_if_stale` can trigger a rescan, none
+of them carry `readOnlyHint: true` any more: a call to one of them can write
+Knossos's own graph and start language worker subprocesses, which is exactly
+what that annotation promises a client does not happen. `destructiveHint:
+false` and `idempotentHint: true` still hold, since a rescan neither destroys
+data nor makes the tool behave differently when repeated. Pass
+`refresh_if_stale: false`, or set `KNOSSOS_AUTO_REFRESH=0` on the server
+process, for behaviour a client can rely on as genuinely read-only.
+
 ## Next steps
 
 `next_steps` offers at most three follow-up calls, each with the `tool`, the

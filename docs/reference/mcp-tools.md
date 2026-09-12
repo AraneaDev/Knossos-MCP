@@ -33,7 +33,7 @@ Start here to find a project_id. Lists scanned projects with freshness and graph
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 | `include_roots` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `scan_project`
 
@@ -65,7 +65,7 @@ See a project's scan history. Use to find an older snapshot id to diff against o
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `snapshot_diff`
 
@@ -81,7 +81,7 @@ See what changed architecturally between two scans. Use after a rescan to review
 | `to_snapshot` | string | no | minLength=1; default="active" |
 | `max_changes` | integer | no | minimum=1; maximum=1000; default=25 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `quality_gate`
 
@@ -99,7 +99,7 @@ Check architecture budgets against a baseline in CI. Use to fail a build on regr
 | `sarif` | boolean | no | default=false |
 | `propose_baseline` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_trends`
 
@@ -114,7 +114,7 @@ See how architecture metrics moved over recent scans. Use for release notes or t
 | `limit` | integer | no | minimum=2; maximum=20; default=10 |
 | `release_from` | string | no | minLength=1 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `find_component`
 
@@ -129,7 +129,7 @@ Locate a component by name when you are unsure of its exact canonical path. Retu
 | `name` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `inspect_component`
 
@@ -146,7 +146,7 @@ Get the full dossier for one component (its roles, boundary, containment, relati
 | `max_children` | integer | no | minimum=1; maximum=100; default=25 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `list_usages`
 
@@ -163,7 +163,7 @@ List every usage site of a symbol with file:line evidence: one row per occurrenc
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `limit` | integer | no | minimum=1; maximum=500; default=100 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_summary`
 
@@ -177,7 +177,7 @@ Get a one-call overview of the codebase by language, node kind, and relationship
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `export_agent_brief`
 
@@ -190,7 +190,7 @@ Render a compact markdown orientation brief (boundaries, entry points, key hubs)
 | `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `file_metrics`
 
@@ -209,7 +209,7 @@ Find the largest or longest files. Use to spot refactor targets without shelling
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `list_annotations`
 
@@ -226,7 +226,7 @@ List durable agent annotations recorded on components, optionally filtered by co
 | `limit` | integer | no | minimum=1; maximum=100; default=100 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `explain_flow`
 
@@ -246,7 +246,7 @@ Answer 'how does A reach B?' Traces evidence-backed static paths between two com
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `impact_analysis`
 
@@ -265,7 +265,7 @@ Before editing a symbol, find everything that depends on it. Answers 'what break
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `dependency_cycles`
 
@@ -285,7 +285,7 @@ Find circular dependencies. Use before a refactor to see which modules are tangl
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 | `include_self_loops` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_health`
 
@@ -306,7 +306,7 @@ Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cl
 | `include_external` | boolean | no | default=false |
 | `include_tests` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `check_architecture`
 
@@ -324,7 +324,7 @@ Verify declared boundary rules still hold. Use to confirm a change did not intro
 | `max_edges` | integer | no | minimum=1; maximum=100000; default=100000 |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `suggest_location`
 
@@ -343,7 +343,7 @@ Decide where new code for a feature belongs. Ranks existing boundaries by lexica
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 | `ranking_mode` | string | no | default="deterministic"; enum=deterministic, semantic_if_available |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `change_impact`
 
@@ -364,7 +364,7 @@ Blend static blast radius with recent Git churn to prioritize review. Use when y
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `changed_files_impact`
 
@@ -385,7 +385,7 @@ Map a set of changed files (explicit or from a Git diff) to the components they 
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `test_impact`
 
@@ -406,7 +406,7 @@ Map a change set to the test files that statically exercise it, ranked by distan
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `review_diff`
 
@@ -428,7 +428,7 @@ One-call architectural review of a change set: blast radius, boundary-policy vio
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_context`
 
@@ -464,7 +464,7 @@ Render the current graph as Mermaid or PlantUML source. Use to embed an up-to-da
 | `max_nodes` | integer | no | minimum=1; maximum=400; default=200 |
 | `max_edges` | integer | no | minimum=1; maximum=1000; default=500 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `list_boundaries`
 
@@ -480,7 +480,7 @@ List the architecture boundaries and sample members. Use to learn how the codeba
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `search_architecture`
 
@@ -500,7 +500,7 @@ Search components by name, attribute, or role with structured filters. Use when 
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `annotate_component`
 

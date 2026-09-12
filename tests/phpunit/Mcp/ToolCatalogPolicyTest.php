@@ -36,14 +36,24 @@ final class ToolCatalogPolicyTest extends KnossosTestCase
     /** Tools that need a live server environment, and are omitted without one. */
     private const ENVIRONMENT_TOOLS = ['diagnose_runtime', 'server_info'];
 
+    /**
+     * readOnlyHint must be false for a graph-mutating tool, and also for any
+     * tool whose schema declares refresh_if_stale: that declaration is exactly
+     * what lets ToolService run an incremental rescan before answering, which
+     * writes the graph and spawns worker subprocesses. Declaring is checked
+     * against ToolCatalog::schemaFor() rather than a second hand-maintained
+     * list, so this test cannot drift from the gate ToolService actually uses.
+     */
     #[Group('mcp')]
-    public function testEveryToolNotDeclaredAWriterIsReadOnly(): void
+    public function testEveryToolNotDeclaredAWriterOrRefreshableIsReadOnly(): void
     {
         foreach (self::definitions() as $name => $definition) {
+            $canRefresh = in_array('refresh_if_stale', ToolCatalog::schemaFor($name)['properties'] ?? [], true);
+            $expectedReadOnly = !in_array($name, self::WRITE_TOOLS, true) && !$canRefresh;
             assertSame(
-                !in_array($name, self::WRITE_TOOLS, true),
+                $expectedReadOnly,
                 $definition['annotations']['readOnlyHint'],
-                sprintf('%s: readOnlyHint must be %s.', $name, in_array($name, self::WRITE_TOOLS, true) ? 'false' : 'true'),
+                sprintf('%s: readOnlyHint must be %s.', $name, $expectedReadOnly ? 'true' : 'false'),
             );
         }
     }

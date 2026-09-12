@@ -36,6 +36,16 @@ the kill switch, so passing `false` still gets you the stored graph exactly
 as stored. Full detail on the budget and the warning's shape is in
 [response envelopes](../reference/response-envelopes.md#refreshing-a-stale-graph).
 
+Because of this, the read tools that declare `refresh_if_stale` are no longer
+annotated `readOnlyHint: true`: a call to any of them can write Knossos's own
+graph and spawn language worker subprocesses when it repairs a stale project
+first, so a client that uses the annotation to decide whether to ask before
+calling should treat these tools accordingly. They still carry
+`destructiveHint: false` and `idempotentHint: true`, both of which remain
+true regardless of whether a rescan runs. Pass `refresh_if_stale: false`, or
+set `KNOSSOS_AUTO_REFRESH=0` on the server process, to get genuinely
+read-only behaviour back.
+
 ## Agent brief
 
 `export_agent_brief` renders a compact, deterministic markdown orientation
