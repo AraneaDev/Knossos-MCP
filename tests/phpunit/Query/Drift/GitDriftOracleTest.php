@@ -346,12 +346,18 @@ final class GitDriftOracleTest extends KnossosTestCase
 
     /**
      * The index cross-check is the call most likely to hit a large repository's
-     * output ceiling, and it must fail on its own: losing it should cost only
-     * the gitignored-but-scanned coverage it adds, not the whole oracle's
-     * answer, which diff and untracked candidates can still decide.
+     * output ceiling, and its failure must decline the whole oracle rather than
+     * let diff and untracked candidates decide alone: without the index
+     * listing, a file `.gitignore` excludes that the scanner tracks anyway is
+     * absent from both remaining listings, so proceeding here could return a
+     * non-null zero for a project that is not actually fresh — a false
+     * `fresh`, which this whole mechanism exists to avoid. Previously this
+     * fell back to diff and untracked candidates alone; that was reversed
+     * because it traded a false `fresh` for an honest `unverified`, the wrong
+     * way round.
      */
     #[Group('git')]
-    public function testTheIndexCrossCheckFailsSoftInsteadOfSilencingTheOracle(): void
+    public function testAFailedIndexCrossCheckDeclinesTheOracle(): void
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
@@ -360,8 +366,7 @@ final class GitDriftOracleTest extends KnossosTestCase
             $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', ['src/a.php'], [])))
                 ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
 
-            self::assertNotNull($drift, 'diff and untracked candidates can still decide the oracle even when the cross-check cannot run.');
-            self::assertSame(1, $drift->changed);
+            self::assertNull($drift, 'A failed index cross-check must decline the oracle outright, not decide from diff and untracked candidates alone.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -403,10 +408,12 @@ final class GitDriftOracleTest extends KnossosTestCase
      * chunk's rows, but every existing test stayed under 400 candidates, so
      * the loop only ever ran once and the mutation was invisible. This seeds
      * 405 tracked files (400 in one directory, 5 in another, spanning two
-     * chunks) and forces the narrowed, chunked lookup path by failing the
-     * index cross-check, then edits one file in each chunk. `+=` finds both
-     * edits; `=` would drop the first chunk's hashes entirely and
-     * misreport its untouched files as fresh additions instead.
+     * chunks) and forces the narrowed, chunked lookup path by pushing the
+     * tracked file count past MAX_CROSS_CHECKED_FILES (rather than failing
+     * the index cross-check, which now declines the oracle outright), then
+     * edits one file in each chunk. `+=` finds both edits; `=` would drop the
+     * first chunk's hashes entirely and misreport its untouched files as
+     * fresh additions instead.
      */
     #[Group('git')]
     public function testTheChunkedHashLookupAccumulatesAcrossChunks(): void
@@ -428,13 +435,15 @@ final class GitDriftOracleTest extends KnossosTestCase
             file_put_contents($root . '/src/chunk1/f0005.php', "<?php\nfinal class Chunk1Edit {}\n");
             file_put_contents($root . '/src/chunk2/g0002.php', "<?php\nfinal class Chunk2Edit {}\n");
 
-            // Failing the index cross-check is what routes trackedHashes()
-            // through the narrowed, chunked call rather than the whole-scan
-            // one: with the cross-check answering, $hashes would come from
-            // the single unchunked query instead, and the chunking bug would
-            // never run at all.
-            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', $paths, [])))
-                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            // Pushing the tracked file count past MAX_CROSS_CHECKED_FILES
+            // disables the cross-check by size, without git failing at all,
+            // which is what routes trackedHashes() through the narrowed,
+            // chunked call rather than the whole-scan one: with the
+            // cross-check answering, $hashes would come from the single
+            // unchunked query instead, and the chunking bug would never run.
+            $this->addTrackedFileRows($pdo, $projectId, $scanId, 19_600, 'src/filler');
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, ['src/chunk1/f0005.php', 'src/chunk2/g0002.php'], [], []);
 
             self::assertNotNull($drift);
             self::assertSame(2, $drift->changed, 'One edit in each of the two chunks must both be found; += becoming = would drop the first chunk entirely.');
@@ -469,25 +478,22 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
-     * The fail-soft catch's `$crossCheck = false;` has no test proving the
-     * assignment actually disables the cross-check rather than leaving it
-     * enabled to run against the failed call's empty result. The tracked
-     * file here is untouched and would only ever have been named by the
-     * (failing) indexed listing, so a cross-check that wrongly stayed
-     * enabled would see it in none of the three listings and decline
-     * outright; disabling it correctly lets diff and untracked answer from
-     * nothing changed.
+     * The catch around the index listing must decline the oracle even when
+     * nothing else in the change set looks suspicious: a failed cross-check
+     * means this oracle no longer has a complete view of what git can name,
+     * whether or not diff and untracked happen to report anything. Declining
+     * here regardless of an otherwise-quiet change set is what closes the gap
+     * a scanner-tracked, gitignored file would otherwise fall through.
      */
     #[Group('git')]
-    public function testAFailedIndexCrossCheckStaysDisabledRatherThanProceedingOnAnEmptyListing(): void
+    public function testAFailedIndexCrossCheckDeclinesEvenWhenNothingElseChanged(): void
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
             $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
                 ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
 
-            self::assertNotNull($drift, 'A failed cross-check must disable the cross-check entirely, not proceed as though its failed, empty listing were real: that would make the untouched tracked file look invisible and decline the oracle outright.');
-            self::assertSame(0, $drift->total(), 'Nothing actually changed; diff and untracked both reported nothing.');
+            self::assertNull($drift, 'A failed index cross-check must decline the oracle even when diff and untracked both report nothing changed.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -596,9 +602,9 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
-     * The `error_log()` breadcrumb in the fail-soft cross-check catch
-     * (~line 186) is a distinct requirement from the outer one above, with
-     * its own independently surviving `FunctionCallRemoval` mutant.
+     * The `error_log()` breadcrumb in the index cross-check's own catch is a
+     * distinct requirement from the outer one above, with its own
+     * independently surviving `FunctionCallRemoval` mutant.
      */
     #[Group('git')]
     public function testAFailedIndexCrossCheckEmitsItsOwnDiagnosticBreadcrumb(): void
@@ -610,7 +616,7 @@ final class GitDriftOracleTest extends KnossosTestCase
                     ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
             });
 
-            self::assertStringContainsString('cross-check skipped', $log, 'A failed index cross-check must leave its own breadcrumb, distinct from the outer git-failure one.');
+            self::assertStringContainsString('ls-files --cached could not answer', $log, 'A failed index cross-check must leave its own breadcrumb, distinct from the outer git-failure one.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -791,8 +797,9 @@ final class GitDriftOracleTest extends KnossosTestCase
     /**
      * A runner that answers every subcommand normally except the one named by
      * $failingFlag, which it throws for — standing in for an index listing
-     * that overruns GitProcessRunner's output ceiling while diff and
-     * untracked candidates still answer fine.
+     * that overruns GitProcessRunner's output ceiling, while diff and
+     * untracked still answer fine on their own (the oracle now declines
+     * regardless, once the index listing itself fails).
      *
      * @param list<string> $changed
      * @param list<string> $untracked

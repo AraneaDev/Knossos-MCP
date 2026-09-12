@@ -47,17 +47,27 @@ use Throwable;
  * FirstAnsweringDriftOracle} falls through to the walk, which sees such a
  * file directly through {@see ScannedPaths} rather than through git.
  *
- * That guarantee holds only where the cross-check actually ran clean. Two
- * cases deliberately proceed instead of declining: above the file-count
- * bound, where the cross-check is skipped entirely, and when the
- * `ls-files --cached` call itself fails (its own try/catch, below — most
+ * That guarantee holds only where the cross-check actually ran, or was never
+ * attempted because the project is above the file-count bound. Above that
+ * bound this oracle proceeds anyway, deliberately: the walk cannot take over
+ * for such a repository either, since its ceiling is the same number, so
+ * declining there would trade a possible miss for a certain `unverified` on
+ * every probe against it.
+ *
+ * Below that bound, though, when the cross-check was attempted and the
+ * `ls-files --cached` call itself failed (its own try/catch, below — most
  * likely on a large repository with long paths, approaching
- * {@see \Knossos\Git\GitProcessRunner}'s own output ceiling). Declining in
- * either case would strip this oracle from exactly the large repositories it
- * exists to serve: the walk cannot take over for them either, since its
- * ceiling is the same number, so both oracles would return null and every
- * probe on such a project would report `unverified` forever. Honest, but a
- * larger regression than the gap declining there would close.
+ * {@see \Knossos\Git\GitProcessRunner}'s own output ceiling), this oracle
+ * declines outright rather than deciding from `diff` and `--others` alone.
+ * Without the index listing, a file `.gitignore` excludes that the scanner
+ * tracks anyway is absent from both remaining listings, which is exactly the
+ * gap the cross-check exists to close — so proceeding here can return a
+ * non-null zero for a project that is not actually fresh, and
+ * {@see FirstAnsweringDriftOracle} stops at that answer without ever running
+ * the walk that would have caught it. A false `fresh` is the one outcome
+ * this oracle exists to avoid, so it declines even in the large-repository
+ * case it otherwise tries hard to serve, leaving the walk (or `unverified`,
+ * if the walk is also beyond its own ceiling) to answer instead.
  *
  * One gap survives even where the guarantee holds: a file `.gitignore`
  * excludes that the scanner would track for the *first* time has no `files`
@@ -169,22 +179,21 @@ final readonly class GitDriftOracle implements DriftOracle
                 $indexedOutput = $this->run($root, ['ls-files', '--cached', '-z', '--']);
             } catch (Throwable $error) {
                 // Deliberately its own try/catch, distinct from the one above:
-                // this listing is an addition to what the oracle can decide,
-                // not a precondition for it. On a large repository with long
-                // paths it is the call most likely to approach
+                // this listing is what the cross-check needs, not a
+                // precondition for the oracle overall. On a large repository
+                // with long paths it is the call most likely to approach
                 // GitProcessRunner's maxOutputBytes, and at exactly the
                 // repository size where the walk is also near its own
-                // ceiling. Losing it costs the decline guarantee documented
-                // on the class and on MAX_CROSS_CHECKED_FILES, not just the
-                // gitignored-but-scanned coverage the cross-check adds: this
-                // oracle proceeds from diff and untracked candidates alone,
-                // deliberately, for the same reason the size bound proceeds
-                // rather than declines above its own ceiling. Folding this
-                // failure into the block above would cost the whole oracle
-                // instead, for a reason unrelated to whether diff and
-                // untracked candidates could still answer.
-                error_log('knossos drift query: git ls-files --cached could not answer, cross-check skipped (' . $error->getMessage() . ')');
-                $crossCheck = false;
+                // ceiling — but proceeding on diff and untracked candidates
+                // alone here would lose exactly the coverage the cross-check
+                // exists to add: a file .gitignore excludes that the scanner
+                // tracks anyway is absent from both remaining listings, so
+                // this oracle could return a non-null zero for a project that
+                // is not actually fresh. That is a false 'fresh', the one
+                // outcome worse than answering unverified, so this declines
+                // rather than proceeding.
+                error_log('knossos drift query: git ls-files --cached could not answer (' . $error->getMessage() . ')');
+                return null;
             }
         }
 
