@@ -7,6 +7,7 @@ namespace Knossos\Mcp;
 use Closure;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
+use Knossos\Query\StalenessSnapshot;
 
 /**
  * Prepares a query result for an agent rather than a human.
@@ -41,14 +42,22 @@ final readonly class ResultEnricher
             ? strlen((string) json_encode($candidate->jsonSerialize(), JSON_UNESCAPED_SLASHES))
             : ($this->measurer)($candidate);
     }
-    /** Trim, budget, and annotate a result for an agent rather than a human. */
-
-    public function enrich(ResultEnvelope $envelope, string $toolName, string $verbosity, ?int $maxChars = null): ResultEnvelope
+    /**
+     * Trim, budget, and annotate a result for an agent rather than a human.
+     *
+     * $probed is a staleness verdict the caller already has for this project,
+     * reused rather than re-derived. It is accepted only for the project the
+     * envelope names, and the caller withholds it whenever a rescan has run in
+     * between, because the answer has changed by then.
+     */
+    public function enrich(ResultEnvelope $envelope, string $toolName, string $verbosity, ?int $maxChars = null, ?StalenessSnapshot $probed = null): ResultEnvelope
     {
         $total = count($envelope->evidence);
         $base = $verbosity === 'compact' ? $this->compact($envelope) : $envelope;
 
-        $staleness = $this->probe->probe($envelope->projectId);
+        $staleness = $probed !== null && $probed->projectId === $envelope->projectId
+            ? $probed->staleness
+            : $this->probe->probe($envelope->projectId);
         $steps = $this->planner->plan($toolName, $envelope);
         $enriched = $base->with(staleness: $staleness, nextSteps: $steps);
 

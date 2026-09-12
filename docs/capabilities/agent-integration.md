@@ -20,6 +20,35 @@ per-project resources at `knossos://<project_id>/summary`, `/boundaries`, and
 `/brief` (the first two JSON, the last the same markdown
 `export_agent_brief` renders), plus the `orient` and `review_diff` prompts.
 
+## Refreshing a stale graph without asking twice
+
+`refresh_if_stale` is accepted by every read tool, and it defaults to
+`true`, so a call that lands on a stale graph rescans before
+answering instead of leaving you to read a staleness banner, call
+`scan_project`, and ask again: the round trip a session would otherwise spend
+discovering it needed a fresh graph.
+
+The rescan only runs when it is cheap enough to fit inside the call you are
+already waiting on; a project whose own scan history says it would cost more
+than a 5000 ms budget gets the stored graph and a warning instead, naming
+`scan_project` as the next step. Set `KNOSSOS_AUTO_REFRESH=0` on the server
+process to turn the default off everywhere. Either way, an explicit
+`refresh_if_stale` argument on a call always wins over both the default and
+the kill switch, so passing `false` still gets you the stored graph exactly
+as stored. Full detail on the budget and the warning's shape is in
+[response envelopes](../reference/response-envelopes.md#refreshing-a-stale-graph).
+
+Because of this, the read tools that declare `refresh_if_stale` are no longer
+annotated `readOnlyHint: true`: a call to any of them can write Knossos's own
+graph and spawn language worker subprocesses when it repairs a stale project
+first, so a client that uses the annotation to decide whether to ask before
+calling should treat these tools accordingly. They still carry
+`destructiveHint: false` and `idempotentHint: true`, both of which remain
+true regardless of whether a rescan runs. Pass `refresh_if_stale: false` to
+get genuinely read-only behaviour back on a call. `KNOSSOS_AUTO_REFRESH=0`
+does not do that on its own: it only turns the default off, and an explicit
+`refresh_if_stale: true` still wins over it.
+
 ## Agent brief
 
 `export_agent_brief` renders a compact, deterministic markdown orientation

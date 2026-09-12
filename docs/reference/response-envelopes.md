@@ -148,18 +148,74 @@ by trimming result lists.`, an honest overflow rather than a silent lie.
 
 When change detection ran, `staleness` also carries:
 
-- `changed_files_since`: tracked files whose on-disk mtime differs from the scan's.
+- `changed_files_since`: tracked files whose content hash differs from the one
+  the scan stored. Content decides drift, so a `touch` that moves an mtime
+  without changing a byte is not a change, and neither is a `git checkout` that
+  restores identical content.
 - `added_files_since`: entries that appeared since the scan in the directories
-  holding tracked files: entries absent from the tracked-path set whose inode
-  change time is later than the scan. Two limits follow from the 500-file bound
-  below rather than from the method. A new directory is only seen when its
+  holding tracked files: entries absent from the tracked-path set, that the
+  scanner would have tracked, whose inode change time is later than the scan.
+  The project's ignore rules apply, and so does the scanner's own idea of
+  source, so a build artifact, a vendored dependency and a new README are not
+  additions. A new directory is, because nothing short of descending into it
+  says whether it holds source. One limit follows from the 20,000-file bound
+  below rather than from the method: a new directory is only seen when its
   parent holds a tracked file, so one created in a subtree with no tracked file
-  in it is invisible. Ignore rules are not applied either, so a build artifact
-  or a vendored dependency counts as an addition even though a rescan would
-  skip it.
+  in it is invisible.
 - `deleted_files_since`: tracked files that no longer exist.
 
-All three are omitted, and the state is `unverified`, above 500 tracked files.
+All three are omitted, and the state is `unverified`, above 20,000 tracked
+files with no usable Git history to ask instead.
+
+## Refreshing a stale graph
+
+Every read tool that accepts `refresh_if_stale` defaults it to `true`. When a
+call lands on a `stale` graph, the server tries a rescan before answering, so
+you get a current answer without first reading a staleness banner, calling
+`scan_project`, and asking again. Pass `refresh_if_stale: false` and the
+default is overridden: the stored graph is served as stored, stale or not,
+with no rescan attempted.
+
+The rescan only runs when it is cheap enough to fit inside the call you are
+already waiting on. `RefreshPolicy` estimates the cost from the duration the
+project's own last scan recorded: a fixed overhead for the discovery, worker
+startup and reconciliation any rescan pays, plus that scan's per-file cost
+times the number of files that drifted, capped at what the full scan cost.
+It compares that estimate against a 5000 ms budget. Over budget, or when the
+active scan recorded no duration to estimate against, or when the graph is
+`stale` with no measured change set to cost, the refresh is declined and the
+stored graph answers instead. A declined or failed refresh adds one
+line to `warnings`, prefixed `refresh_if_stale:`, naming the reason and, when
+relevant, pointing you at `scan_project`. A refresh that succeeds adds no
+warning at all: staleness is probed again after the rescan, so
+`staleness.state` on the same result already reads `fresh`, and a second
+announcement would land on every call for the one case that needs no
+attention. It can still read `stale` if the tree moved again while the rescan
+was running, which is the honest answer rather than a stale one.
+
+Set the environment variable `KNOSSOS_AUTO_REFRESH=0` on the server process
+to turn the default back off everywhere, for every tool and every project,
+without touching a single call site. An explicit `refresh_if_stale` argument
+still wins over both the default and the kill switch: passing `true`
+refreshes even with the kill switch set, and passing `false` never refreshes
+regardless of it.
+
+`scan_project` itself is exempt: it is already the rescan, so `refresh_if_stale`
+has nothing to trigger there.
+
+Because any tool that declares `refresh_if_stale` can trigger a rescan, none
+of them carry `readOnlyHint: true` any more: a call to one of them can write
+Knossos's own graph and start language worker subprocesses, which is exactly
+what that annotation promises a client does not happen. `destructiveHint:
+false` and `idempotentHint: true` still hold, since a rescan neither destroys
+data nor makes the tool behave differently when repeated.
+
+For a call a client can rely on as genuinely read-only, pass
+`refresh_if_stale: false`. `KNOSSOS_AUTO_REFRESH=0` is not enough on its own:
+it turns the default off, but an explicit `refresh_if_stale: true` still wins
+over it, so a caller that asks for a refresh gets one on a server with the
+kill switch set. The variable makes the server not refresh unasked; only the
+argument makes a particular call read-only.
 
 ## Next steps
 

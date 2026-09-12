@@ -28,12 +28,12 @@ Start here to find a project_id. Lists scanned projects with freshness and graph
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 | `include_roots` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `scan_project`
 
@@ -60,12 +60,12 @@ See a project's scan history. Use to find an older snapshot id to diff against o
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `snapshot_diff`
 
@@ -75,13 +75,13 @@ See what changed architecturally between two scans. Use after a rescan to review
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `from_snapshot` | string | yes | minLength=1 |
 | `to_snapshot` | string | no | minLength=1; default="active" |
 | `max_changes` | integer | no | minimum=1; maximum=1000; default=25 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `quality_gate`
 
@@ -91,7 +91,7 @@ Check architecture budgets against a baseline in CI. Use to fail a build on regr
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `baseline_snapshot` | string | yes | minLength=1 |
 | `budgets` | object | yes | none |
@@ -99,7 +99,7 @@ Check architecture budgets against a baseline in CI. Use to fail a build on regr
 | `sarif` | boolean | no | default=false |
 | `propose_baseline` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_trends`
 
@@ -109,12 +109,12 @@ See how architecture metrics moved over recent scans. Use for release notes or t
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=2; maximum=20; default=10 |
 | `release_from` | string | no | minLength=1 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `find_component`
 
@@ -124,12 +124,12 @@ Locate a component by name when you are unsure of its exact canonical path. Retu
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `name` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `inspect_component`
 
@@ -139,14 +139,14 @@ Get the full dossier for one component (its roles, boundary, containment, relati
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | yes | minLength=1 |
 | `max_relationships` | integer | no | minimum=1; maximum=100; default=25 |
 | `max_children` | integer | no | minimum=1; maximum=100; default=25 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `list_usages`
 
@@ -156,14 +156,14 @@ List every usage site of a symbol with file:line evidence: one row per occurrenc
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `symbol` | string | yes | minLength=1 |
 | `edge_kinds` | array | no | maxItems=20 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `limit` | integer | no | minimum=1; maximum=500; default=100 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_summary`
 
@@ -173,11 +173,11 @@ Get a one-call overview of the codebase by language, node kind, and relationship
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `export_agent_brief`
 
@@ -187,10 +187,10 @@ Render a compact markdown orientation brief (boundaries, entry points, key hubs)
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=1000; maximum=20000; default=4000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `file_metrics`
 
@@ -200,7 +200,7 @@ Find the largest or longest files. Use to spot refactor targets without shelling
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `path_contains` | string | no | minLength=1; maxLength=1000 |
 | `language` | string | no | minLength=1; maxLength=100 |
@@ -209,7 +209,7 @@ Find the largest or longest files. Use to spot refactor targets without shelling
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `list_annotations`
 
@@ -219,14 +219,14 @@ List durable agent annotations recorded on components, optionally filtered by co
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `component` | string | no | minLength=1 |
 | `kind` | string | no | enum=intended_boundary, confirmed_dead, false_positive, note |
 | `limit` | integer | no | minimum=1; maximum=100; default=100 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `explain_flow`
 
@@ -236,7 +236,7 @@ Answer 'how does A reach B?' Traces evidence-backed static paths between two com
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `from` | string | yes | minLength=1 |
 | `to` | string | yes | minLength=1 |
@@ -246,7 +246,7 @@ Answer 'how does A reach B?' Traces evidence-backed static paths between two com
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `impact_analysis`
 
@@ -256,7 +256,7 @@ Before editing a symbol, find everything that depends on it. Answers 'what break
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `symbol` | string | yes | minLength=1 |
 | `max_depth` | integer | no | minimum=1; maximum=8; default=4 |
@@ -265,7 +265,7 @@ Before editing a symbol, find everything that depends on it. Answers 'what break
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `dependency_cycles`
 
@@ -275,7 +275,7 @@ Find circular dependencies. Use before a refactor to see which modules are tangl
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `edge_kinds` | array | no | maxItems=20 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -285,7 +285,7 @@ Find circular dependencies. Use before a refactor to see which modules are tangl
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 | `include_self_loops` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_health`
 
@@ -295,7 +295,7 @@ Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cl
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `edge_kinds` | array | no | maxItems=20 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -306,7 +306,7 @@ Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cl
 | `include_external` | boolean | no | default=false |
 | `include_tests` | boolean | no | default=false |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `check_architecture`
 
@@ -316,7 +316,7 @@ Verify declared boundary rules still hold. Use to confirm a change did not intro
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `policies` | array | yes | maxItems=50 |
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
@@ -324,7 +324,7 @@ Verify declared boundary rules still hold. Use to confirm a change did not intro
 | `max_edges` | integer | no | minimum=1; maximum=100000; default=100000 |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `suggest_location`
 
@@ -334,7 +334,7 @@ Decide where new code for a feature belongs. Ranks existing boundaries by lexica
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `feature_description` | string | yes | minLength=1; maxLength=2000 |
 | `limit` | integer | no | minimum=1; maximum=20; default=5 |
@@ -343,7 +343,7 @@ Decide where new code for a feature belongs. Ranks existing boundaries by lexica
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 | `ranking_mode` | string | no | default="deterministic"; enum=deterministic, semantic_if_available |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `change_impact`
 
@@ -353,7 +353,7 @@ Blend static blast radius with recent Git churn to prioritize review. Use when y
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `symbol` | string | yes | minLength=1 |
 | `since_days` | integer | no | minimum=1; maximum=3650; default=90 |
@@ -364,7 +364,7 @@ Blend static blast radius with recent Git churn to prioritize review. Use when y
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `changed_files_impact`
 
@@ -374,7 +374,7 @@ Map a set of changed files (explicit or from a Git diff) to the components they 
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `files` | array | no | maxItems=50 |
 | `working_tree` | boolean | no | default=false |
@@ -385,7 +385,7 @@ Map a set of changed files (explicit or from a Git diff) to the components they 
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `test_impact`
 
@@ -395,7 +395,7 @@ Map a change set to the test files that statically exercise it, ranked by distan
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `files` | array | no | maxItems=50 |
 | `working_tree` | boolean | no | default=false |
@@ -406,7 +406,7 @@ Map a change set to the test files that statically exercise it, ranked by distan
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `review_diff`
 
@@ -416,7 +416,7 @@ One-call architectural review of a change set: blast radius, boundary-policy vio
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `base_ref` | string | no | minLength=1; maxLength=200 |
 | `files` | array | no | maxItems=50 |
@@ -428,7 +428,7 @@ One-call architectural review of a change set: blast radius, boundary-policy vio
 | `min_confidence` | string | no | default="possible"; enum=certain, probable, possible |
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `architecture_context`
 
@@ -454,7 +454,7 @@ Render the current graph as Mermaid or PlantUML source. Use to embed an up-to-da
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `format` | string | no | default="mermaid"; enum=mermaid, plantuml |
 | `boundary` | string | no | minLength=1 |
@@ -464,7 +464,7 @@ Render the current graph as Mermaid or PlantUML source. Use to embed an up-to-da
 | `max_nodes` | integer | no | minimum=1; maximum=400; default=200 |
 | `max_edges` | integer | no | minimum=1; maximum=1000; default=500 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `list_boundaries`
 
@@ -474,13 +474,13 @@ List the architecture boundaries and sample members. Use to learn how the codeba
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `source` | string | no | enum=explicit, inferred |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `search_architecture`
 
@@ -490,7 +490,7 @@ Search components by name, attribute, or role with structured filters. Use when 
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=false |
+| `refresh_if_stale` | boolean | no | default=true |
 | `project_id` | string | yes | minLength=1 |
 | `query` | string | yes | minLength=1 |
 | `kinds` | array | no | maxItems=20 |
@@ -500,7 +500,7 @@ Search components by name, attribute, or role with structured filters. Use when 
 | `limit` | integer | no | minimum=1; maximum=100; default=20 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
-Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `annotate_component`
 

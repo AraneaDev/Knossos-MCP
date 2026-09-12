@@ -51,19 +51,35 @@ final class FastPathTest extends KnossosTestCase
     }
 
     /**
-     * A directory-mtime bump that discovery cannot see -- a `__pycache__`
-     * appearing, a build artefact written, an editor swap file created and
-     * removed -- makes StalenessProbe report an addition, and the fast path is
-     * the only thing that can retract it: it creates no scan row, so unless it
-     * restamps the active scan's completion the project reads stale for ever and
-     * every `refresh_if_stale` call rescans the whole tree for nothing.
+     * A new directory beside a tracked file makes StalenessProbe report an
+     * addition, and the fast path is the only thing that can retract it: it
+     * creates no scan row, so unless it restamps the active scan's completion
+     * the project reads stale for ever and every `refresh_if_stale` call
+     * rescans the whole tree for nothing.
+     *
+     * A `__pycache__` directory would once have demonstrated the same thing,
+     * and so would an editor swap file, but the probe now asks whether the
+     * scanner would have tracked an entry before counting it: an ignored name
+     * and a file of a type no language claims both fall out before they reach
+     * the probe as drift. A directory is what is left, and it has to be
+     * counted, because nothing short of descending into it says whether it
+     * holds source -- which is the walk the bound exists to avoid.
      *
      * Deliberately does not lean on scanTempFixture()'s directory backdating,
      * which exists to keep a freshly copied tree from reading as stale and would
      * otherwise be the only reason this passes: the scan's finished_at is pushed
-     * explicitly into the past and a real ignored artefact is written, so the
+     * explicitly into the past and a real untracked artefact is written, so the
      * "appeared later than the scan" relation is established here rather than
      * inherited.
+     *
+     * The wait for the next clock second is what makes the retraction
+     * observable at all. The probe's boundaries are inclusive by design — at
+     * second resolution an entry created inside the scan's own finishing
+     * second is indistinguishable from one created just after it, and the
+     * probe errs toward reporting drift rather than hiding it permanently — so
+     * a restamp landing in the same second as the artefact retracts nothing.
+     * Production heals on the next rescan, a second later; a test cannot
+     * assert a retraction it has not let the clock reach.
      */
     #[Group('scan')]
     public function testDirectoryMtimeBumpIsRetractedByTheFastPath(): void
@@ -76,9 +92,13 @@ final class FastPathTest extends KnossosTestCase
             // An entry, not a bare `touch` of the directory: the probe counts
             // the entries that appeared rather than the directories whose mtime
             // moved, because an mtime moves on unlink too and counting it as an
-            // addition reported every deletion twice.
-            mkdir($root . '/src/__pycache__');
-            file_put_contents($root . '/src/__pycache__/service.cpython-312.pyc', "\x00\x00");
+            // addition reported every deletion twice. An empty directory
+            // directly under `src/` is neither ignored by default nor
+            // classifiable as source, and the probe cannot know it holds
+            // nothing without descending -- only the fast path's restamp
+            // retracts the staleness it causes.
+            mkdir($root . '/src/drafts');
+            self::waitForNextSecond();
 
             $probe = new StalenessProbe($pdo);
             $before = $probe->probe($projectId);
@@ -99,6 +119,21 @@ final class FastPathTest extends KnossosTestCase
             assertSame($scanId, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
         } finally {
             $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Blocks until the wall clock reaches its next whole second, so a restamp
+     * taken afterwards is strictly later than a filesystem timestamp taken
+     * before it. Bounded by construction: at most one second, and it polls
+     * rather than sleeping a fixed amount so it costs only what is left of
+     * the current second.
+     */
+    private static function waitForNextSecond(): void
+    {
+        $second = time();
+        while (time() === $second) {
+            usleep(10_000);
         }
     }
 

@@ -1,0 +1,11 @@
+-- How long the scan that built this graph actually took, in milliseconds.
+--
+-- Inferring it from finished_at - started_at does not work: finished_at is
+-- restamped whenever a rescan finds no change, so it means "when this graph
+-- last agreed with the tree" and the inferred span grows with wall-clock time.
+-- A 73 ms scan read as 21 seconds twenty-one seconds later, and RefreshPolicy
+-- declined every refresh on the strength of it.
+--
+-- Nullable: a scan taken before this migration has no duration to backfill, and
+-- an unknown cost must decline a refresh rather than be guessed at.
+ALTER TABLE scans ADD COLUMN duration_ms INTEGER NULL;

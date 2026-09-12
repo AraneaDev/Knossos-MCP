@@ -105,11 +105,13 @@ final class SqliteGraphRepository implements GraphRepository
      *
      * @param string $scannerSetHash identifies the analyzer set; a change invalidates
      *        incremental reuse, because facts from a different analyzer are not comparable
+     * @param ?string $gitHead the scan root's HEAD sha, or null when the root is not a
+     *        Git repository (or Git could not be asked)
      * @throws InvalidArgumentException when $mode is neither full nor incremental
      */
-    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void
+    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null, ?string $dirtyPathsJson = null, ?string $unitInputsJson = null): void
     {
-        $this->lifecycle->createScan($id, $projectId, $mode, $scannerSetHash);
+        $this->lifecycle->createScan($id, $projectId, $mode, $scannerSetHash, $gitHead, $dirtyPathsJson, $unitInputsJson);
     }
 
     /**
@@ -140,6 +142,18 @@ final class SqliteGraphRepository implements GraphRepository
     public function refreshScanCompletion(string $projectId, string $scanId): void
     {
         $this->lifecycle->refreshScanCompletion($projectId, $scanId);
+    }
+
+    /**
+     * Record how long the scan that built this graph took, so a refresh can be
+     * costed against a measurement rather than against a timestamp that means
+     * something else.
+     *
+     * {@see SqliteScanLifecycle::recordScanDuration()}
+     */
+    public function recordScanDuration(string $projectId, string $scanId, int $milliseconds): void
+    {
+        $this->lifecycle->recordScanDuration($projectId, $scanId, $milliseconds);
     }
 
     /**

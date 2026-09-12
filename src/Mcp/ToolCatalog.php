@@ -105,7 +105,7 @@ final readonly class ToolCatalog
                     ],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'scan_project',
@@ -150,7 +150,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'snapshot_diff',
@@ -168,7 +168,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'from_snapshot'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'quality_gate',
@@ -188,7 +188,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'baseline_snapshot', 'budgets'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'architecture_trends',
@@ -205,7 +205,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
         ];
     }
@@ -233,7 +233,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'name'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'inspect_component',
@@ -252,7 +252,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'component'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'list_usages',
@@ -271,7 +271,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'symbol'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'architecture_summary',
@@ -287,7 +287,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'export_agent_brief',
@@ -303,7 +303,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             self::fileMetricsDefinition(),
             [
@@ -323,7 +323,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
         ];
     }
@@ -356,7 +356,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'from', 'to'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'impact_analysis',
@@ -377,7 +377,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'symbol'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'dependency_cycles',
@@ -399,7 +399,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'architecture_health',
@@ -422,7 +422,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'check_architecture',
@@ -445,7 +445,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'policies'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'suggest_location',
@@ -466,7 +466,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'feature_description'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'change_impact',
@@ -489,7 +489,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id', 'symbol'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'changed_files_impact',
@@ -512,7 +512,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             ...self::changeAnalysisDefinitions(),
         ];
@@ -547,7 +547,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'review_diff',
@@ -571,7 +571,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'architecture_context',
@@ -613,7 +613,7 @@ final readonly class ToolCatalog
                     'required' => ['project_id'],
                     'additionalProperties' => false,
                 ],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'list_boundaries', 'title' => 'List boundaries',
@@ -625,7 +625,7 @@ final readonly class ToolCatalog
                     'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 50],
                     'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
                 ], 'required' => ['project_id'], 'additionalProperties' => false],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
             [
                 'name' => 'search_architecture', 'title' => 'Search architecture',
@@ -641,7 +641,7 @@ final readonly class ToolCatalog
                     'limit' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20],
                     'offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0],
                 ], 'required' => ['project_id', 'query'], 'additionalProperties' => false],
-                'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+                'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
             ],
         ];
     }
@@ -710,7 +710,7 @@ final readonly class ToolCatalog
         return [
             'verbosity' => ['type' => 'string', 'enum' => ['compact', 'full'], 'default' => 'compact', 'description' => 'compact (default) trims evidence to a preview; full returns all evidence.'],
             'max_chars' => ['type' => 'integer', 'minimum' => 4000, 'maximum' => 100000, 'default' => 30000, 'description' => 'Byte budget for the serialized result; supporting material (legends, evidence) is trimmed before findings, tail-first, and reported in meta.dropped_items. Defaults to 30000 so a large result cannot exceed the host\'s response cap; raise it to trade context window for detail.'],
-            'refresh_if_stale' => ['type' => 'boolean', 'default' => false, 'description' => 'If the graph is stale, run an incremental rescan (of Knossos\'s own derived database only) before answering; a failed rescan serves the last complete graph with a warning. A missing graph still requires scan_project.'],
+            'refresh_if_stale' => ['type' => 'boolean', 'default' => true, 'description' => 'If the graph is stale and the rescan fits the latency budget, run an incremental rescan (of Knossos\'s own derived database only) before answering; over budget, or on failure, the last complete graph is served with a warning saying why. A missing graph still requires scan_project. Set false to answer from the stored graph regardless.'],
         ];
     }
 
@@ -798,7 +798,7 @@ final readonly class ToolCatalog
                 'required' => ['project_id'],
                 'additionalProperties' => false,
             ],
-            'annotations' => ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
+            'annotations' => ['readOnlyHint' => false, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false],
         ];
     }
 }

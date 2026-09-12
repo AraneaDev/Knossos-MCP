@@ -160,6 +160,7 @@ final readonly class ProjectDiscoverer
                         $mtime,
                         $contentHash,
                         $fingerprint->lineCount,
+                        $fingerprint->gitBlobHash,
                     );
                 }
 
@@ -1365,10 +1366,17 @@ final readonly class ProjectDiscoverer
      * look unreferenced, so dead-code detection reports a live entry point as a
      * deletion candidate.
      *
+     * Public because the drift oracles have to answer the same question this
+     * loop answers, about a path they were handed rather than one they walked
+     * to: whether a file appearing beside the graph is source the scanner would
+     * have tracked, or a README the graph was never going to hold. Two
+     * definitions of "source" would let a probe report drift a rescan cannot
+     * clear.
+     *
      * @param string|null $absolutePath needed only to read a shebang; omit and
      *        extensionless files are simply not classified
      */
-    private static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
+    public static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
     {
         $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
         $byExtension = match ($extension) {
@@ -1418,9 +1426,16 @@ final readonly class ProjectDiscoverer
             default => null,
         };
     }
-    /** Which manifest kind a filename is, or null when it is not one. */
-
-    private static function unitKindFor(string $relativePath): ?string
+    /**
+     * Which manifest kind a filename is, or null when it is not one.
+     *
+     * Public because it is half of what "an input this scanner reads" means,
+     * and the drift oracles need the same half: a path that is a unit here but
+     * not a language file has no `files` row, and a probe that asked only
+     * {@see self::languageFor()} treated editing composer.json as nothing at
+     * all. {@see \Knossos\Query\Drift\ScannedPaths} asks both.
+     */
+    public static function unitKindFor(string $relativePath): ?string
     {
         $basename = strtolower(basename($relativePath));
         if ($basename === 'composer.json') {

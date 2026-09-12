@@ -7,6 +7,7 @@ namespace Knossos\Query;
 use Closure;
 use Knossos\Git\GitHistoryProvider;
 use Knossos\Git\GitWorkingTreeProvider;
+use Knossos\Query\Drift\DriftOracle;
 use PDO;
 
 /**
@@ -34,6 +35,7 @@ final readonly class ArchitectureQueryService
     private StalenessProbe $stalenessProbe;
     private AgentBriefService $briefQueries;
     private AnnotationService $annotationQueries;
+    private RefreshPolicy $refreshPolicy;
 
     public function __construct(
         PDO $pdo,
@@ -42,8 +44,11 @@ final readonly class ArchitectureQueryService
         ?GitHistoryProvider $gitHistory = null,
         ?GitWorkingTreeProvider $gitWorkingTree = null,
         ?Closure $wallClock = null,
+        ?RefreshPolicy $refreshPolicy = null,
+        ?DriftOracle $driftOracle = null,
     ) {
         $this->pdo = $pdo;
+        $this->refreshPolicy = $refreshPolicy ?? new RefreshPolicy($pdo);
         $this->policyQueries = new ArchitecturePolicyQueryService($pdo, $clock);
         $this->locationQueries = new LocationSuggestionService($pdo, $clock, $semanticRanker);
         $this->topologyQueries = new GraphTopologyQueryService($pdo, $clock);
@@ -67,7 +72,7 @@ final readonly class ArchitectureQueryService
         $this->reviewQueries = new ReviewDiffService($pdo, $clock, $this->changeQueries, $this->policyQueries, $this->catalogQueries, $this->topologyQueries);
         $this->diagramQueries = new DiagramExportService($pdo, $clock);
         $this->fileMetricsQueries = new FileMetricsQueryService($pdo, $clock);
-        $this->stalenessProbe = new StalenessProbe($pdo, $wallClock);
+        $this->stalenessProbe = new StalenessProbe($pdo, $wallClock, $driftOracle);
         $this->briefQueries = new AgentBriefService($pdo, $clock, $this->topologyQueries);
         $this->annotationQueries = new AnnotationService($pdo, $clock);
     }
@@ -86,6 +91,20 @@ final readonly class ArchitectureQueryService
         $statement->execute(['id' => $projectId]);
         $root = $statement->fetchColumn();
         return is_string($root) && $root !== '' ? $root : null;
+    }
+
+    /**
+     * Whether a stale graph may be repaired inside the caller's query.
+     *
+     * Beside projectRoot() on purpose: both exist so the MCP layer can
+     * self-heal a stale graph, and both are reads the facade already owns the
+     * connection for.
+     *
+     * {@see RefreshPolicy::decide()}
+     */
+    public function refreshDecision(string $projectId, \Knossos\Query\Drift\DriftCounts $drift): RefreshDecision
+    {
+        return $this->refreshPolicy->decide($projectId, $drift);
     }
 
     /** {@see ProjectCatalogQueryService::listProjects()} */
