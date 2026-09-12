@@ -31,9 +31,18 @@ use Throwable;
  * for a tree far above the walk's own ceiling.
  *
  * git's own universe still cannot show it a file `.gitignore` excludes that
- * the scanner tracks anyway, which is what the index cross-check is for:
- * whenever it runs (at or below {@see self::MAX_CROSS_CHECKED_FILES} tracked
- * files) and finds a tracked row absent from git's index, this oracle
+ * the scanner tracks anyway, which is what the visibility cross-check is for.
+ * The question it asks is not "is this path in the index" but "can git name
+ * this path at all": a path in any of the three listings this oracle already
+ * gathers — `ls-files --cached` (committed), `ls-files --others
+ * --exclude-standard` (untracked but not ignored), or `diff --name-only`
+ * (changed or deleted versus HEAD) — is visible to git, whatever its index
+ * status. The index alone is not enough: an uncommitted new file lives only
+ * in `--others`, and a staged rename's or delete's old path lives only in
+ * `diff`, so checking the index in isolation declined on ordinary uncommitted
+ * work, not only on the gap this check exists to close. Whenever the
+ * cross-check runs (at or below {@see self::MAX_CROSS_CHECKED_FILES} tracked
+ * files) and finds a tracked row absent from all three listings, this oracle
  * declines outright — null, never a zero or a partial count — so {@see
  * FirstAnsweringDriftOracle} falls through to the walk, which sees such a
  * file directly through {@see ScannedPaths} rather than through git.
@@ -53,19 +62,20 @@ use Throwable;
  * One gap survives even where the guarantee holds: a file `.gitignore`
  * excludes that the scanner would track for the *first* time has no `files`
  * row yet, so the cross-check has nothing to compare it against — it appears
- * in neither `diff` nor `ls-files --others --exclude-standard` either. This
- * does not heal on its own: nothing rescans a repository where that new file
- * is the only change, so it stays invisible indefinitely, until something
- * else triggers a rescan or a full one is run by hand. Once such a file has
- * been scanned once, though, its row exists and every later edit or deletion
- * to it is caught by the cross-check like any other tracked file.
+ * in none of the three listings either. This does not heal on its own:
+ * nothing rescans a repository where that new file is the only change, so it
+ * stays invisible indefinitely, until something else triggers a rescan or a
+ * full one is run by hand. Once such a file has been scanned once, though,
+ * its row exists and every later edit or deletion to it is caught by the
+ * cross-check like any other tracked file.
  *
- * The cross-check also declines on a state that is not actually a problem: a
- * file leaving git's index (an uncommitted removal, or a rename's departing
- * half under `--no-renames`) while its `files` row survives until the next
- * scan looks identical, from here, to a permanent gitignore. That spurious
- * decline is harmless — it only hands an ordinary case to the walk one probe
- * early — and is not worth telling apart from the real one.
+ * A narrower spurious decline can still occur: a path-normalisation mismatch
+ * between what the scan stored and what git reports — a case-insensitive
+ * filesystem where the two differ only in case is the clearest example —
+ * would make a visible path fail to match its `files` row by string key, and
+ * the row would read as invisible to all three listings when it is not
+ * actually so. Harmless, since it only hands an ordinary case to the walk one
+ * probe early, and rare enough not to be worth a normalisation pass here.
  */
 final readonly class GitDriftOracle implements DriftOracle
 {
@@ -79,17 +89,18 @@ final readonly class GitDriftOracle implements DriftOracle
     private const MAX_CANDIDATES = 20_000;
 
     /**
-     * Tracked files up to which the index is cross-checked against the graph,
-     * and the boundary of the decline guarantee described in the class
-     * docblock, not only a performance cutoff.
+     * Tracked files up to which git's visibility into them is cross-checked
+     * against the graph, and the boundary of the decline guarantee described
+     * in the class docblock, not only a performance cutoff.
      *
-     * At or below it, a tracked row absent from git's index declines the
-     * oracle outright, so the walk answers from a complete view instead of
-     * this one from an incomplete one. Above it, the cross-check is skipped
-     * and this oracle proceeds as though git's universe were complete anyway:
-     * the walk cannot help a project this large either, so declining here
-     * would only trade a possible miss for a certain `unverified` on every
-     * probe against it.
+     * At or below it, a tracked row git cannot name by any of its three
+     * listings (`--cached`, `--others --exclude-standard`, `diff`) declines
+     * the oracle outright, so the walk answers from a complete view instead
+     * of this one from an incomplete one. Above it, the cross-check is
+     * skipped and this oracle proceeds as though git's universe were
+     * complete anyway: the walk cannot help a project this large either, so
+     * declining here would only trade a possible miss for a certain
+     * `unverified` on every probe against it.
      */
     private const MAX_CROSS_CHECKED_FILES = 20_000;
 
@@ -177,18 +188,31 @@ final readonly class GitDriftOracle implements DriftOracle
             }
         }
 
+        $changedEntries = self::entries($changedOutput);
+        $untrackedEntries = self::entries($untrackedOutput);
         $tracked = $crossCheck ? $this->trackedHashes($projectId, $activeScanId, null) : [];
-        if ($crossCheck && array_diff_key($tracked, self::entries($indexedOutput)) !== []) {
-            // A tracked row git does not follow at all: this oracle's view of
-            // the project is incomplete, not merely thin. Declining outright
-            // — null, not a zero or a partial count over just the candidates
-            // diff and untracked already named — is what lets the walk answer
-            // from a complete view instead. See the class docblock for where
-            // this guarantee holds, where it deliberately does not, and the
-            // harmless spurious decline this same check also produces.
-            return null;
+        if ($crossCheck) {
+            // Visible, not merely indexed: a path git can name by any of the
+            // three listings it was asked for is a path git can decide, even
+            // when the index alone does not hold it — an uncommitted new
+            // file lives only in `--others`, and a staged rename's or
+            // delete's old path lives only in `diff`. Checking the index in
+            // isolation declined on both of those, which are the normal shape
+            // of uncommitted work, not the gap this check exists to close.
+            $visible = self::entries($indexedOutput) + $untrackedEntries + $changedEntries;
+            if (array_diff_key($tracked, $visible) !== []) {
+                // A tracked row git cannot name by any of its three listings:
+                // this oracle's view of the project is incomplete, not merely
+                // thin. Declining outright — null, not a zero or a partial
+                // count over just the candidates diff and untracked already
+                // named — is what lets the walk answer from a complete view
+                // instead. See the class docblock for where this guarantee
+                // holds, where it deliberately does not, and the residual
+                // spurious decline this same check can still produce.
+                return null;
+            }
         }
-        $candidates = self::entries($changedOutput) + self::entries($untrackedOutput);
+        $candidates = $changedEntries + $untrackedEntries;
         if (count($candidates) > self::MAX_CANDIDATES) {
             return null;
         }

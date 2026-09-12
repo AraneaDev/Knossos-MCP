@@ -123,15 +123,16 @@ final class GitDriftOracleTest extends KnossosTestCase
 
     /**
      * `--no-renames` makes git emit a rename as an unrelated delete plus add,
-     * and the departing path also leaves the index while its `files` row
-     * survives until the next scan — exactly the spurious-decline state
-     * documented on the class docblock: indistinguishable, from here, from a
-     * permanently gitignored-but-scanned file. The oracle must decline rather
-     * than guess; the walk still resolves the rename correctly once it does
-     * (see testWhenGitDeclinesTheWalkAnswersInstead for that property).
+     * and the departing path also leaves the index. The index alone is not
+     * the visibility check, though: `diff --name-only` still names the old
+     * path as a change versus HEAD, so git can see it and the oracle must
+     * answer normally rather than decline. The old path counts as a deletion
+     * (its `files` row survives, its bytes do not), the new path as an
+     * addition (no `files` row, but present and trackable), and the two must
+     * not cancel into a false zero.
      */
     #[Group('git')]
-    public function testARenameLeavesTheOldPathOutOfTheIndexAndDeclines(): void
+    public function testARenameIsADeletionAndAnAdditionNotAWash(): void
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
@@ -140,20 +141,92 @@ final class GitDriftOracleTest extends KnossosTestCase
 
             $drift = $this->drift($pdo, $projectId, $scanId, $root, ['src/a.php', 'src/renamed.php'], [], ['src/renamed.php']);
 
-            self::assertNull($drift, "src/a.php's files row survives outside git's index until the next scan; the oracle must decline rather than decide it alone.");
+            self::assertNotNull($drift, 'The old path is named by diff, so git can still see it; the oracle must answer rather than decline.');
+            self::assertSame(1, $drift->added, 'The new path has no files row but is trackable.');
+            self::assertSame(1, $drift->deleted, 'The old path has a files row and no file on disk.');
+            self::assertSame(0, $drift->changed, 'Neither half of a rename is a content change.');
         } finally {
             $this->removeTempTree($root);
         }
     }
 
     /**
-     * A file `.gitignore` excludes and the scanner tracks anyway is invisible
-     * to `git diff`. Deciding it from the graph's own stored hash was the
-     * original design; it is no longer what this oracle does. A tracked row
-     * git does not follow at all means this oracle's view is incomplete, so
-     * it must decline outright — null, not a count, however confidently the
-     * graph's hash could answer for this one file — and let the walk, which
-     * sees the file directly, answer from a complete view instead.
+     * A staged delete's path leaves the index just as a rename's old half
+     * does, and is visible the same way: `diff --name-only` still names it as
+     * a change versus HEAD. The oracle must answer rather than decline, and
+     * must count it as a deletion, not silently drop it.
+     */
+    #[Group('git')]
+    public function testAStagedDeleteIsVisibleThroughDiffAndCountsAsADeletion(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            unlink($root . '/src/a.php');
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, ['src/a.php'], [], []);
+
+            self::assertNotNull($drift, 'The deleted path is named by diff, so git can still see it; the oracle must answer rather than decline.');
+            self::assertSame(1, $drift->deleted);
+            self::assertSame(0, $drift->changed);
+            self::assertSame(0, $drift->added);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The regression this refinement removes: a source file created and
+     * scanned but not yet committed has a files row and is absent from the
+     * index, exactly like a genuinely gitignored file — but it is present in
+     * `ls-files --others`, so git can see it, and the oracle must decide it
+     * rather than decline. This is the normal shape of uncommitted agent
+     * work, not the narrow case the decline exists to catch.
+     */
+    #[Group('git')]
+    public function testANewUncommittedFileIsVisibleThroughUntrackedAndDecided(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            file_put_contents($root . '/src/new.php', "<?php\necho 'edited';\n");
+            $pdo->prepare(
+                'INSERT INTO files(id, project_id, relative_path, content_hash, size, mtime, language, scanner_version, last_scan_id) ' .
+                'VALUES (:id, :project, :path, :hash, 1, 1, :language, :version, :scan)',
+            )->execute([
+                'id' => 'new-file-row',
+                'project' => $projectId,
+                'path' => 'src/new.php',
+                'hash' => hash('sha256', "<?php\n"),
+                'language' => 'php',
+                'version' => '0.1.0',
+                'scan' => $scanId,
+            ]);
+
+            // diff: empty, the file was never committed or staged against HEAD.
+            // untracked (--others): the new file, since it is not yet added.
+            // indexed (--cached): only the original tracked file.
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, [], ['src/new.php'], ['src/a.php']);
+
+            self::assertNotNull($drift, 'The new file is named by --others, so git can see it; the oracle must decide it rather than decline.');
+            self::assertSame(1, $drift->changed, "The stored hash is for the file's original content; the disk content has since been edited.");
+            self::assertSame(0, $drift->added);
+            self::assertSame(0, $drift->deleted);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The guarantee this whole mechanism exists for: a file `.gitignore`
+     * excludes and the scanner tracks anyway is absent from all three
+     * listings this oracle gathers — `diff`, `--others` (excluded by
+     * `--exclude-standard`), and `--cached` — which is what makes it
+     * genuinely invisible to git rather than merely uncommitted. Deciding it
+     * from the graph's own stored hash was the original design; it is no
+     * longer what this oracle does. A tracked row git cannot name by any
+     * means means this oracle's view is incomplete, so it must decline
+     * outright — null, not a count, however confidently the graph's hash
+     * could answer for this one file — and let the walk, which sees the file
+     * directly, answer from a complete view instead.
      */
     #[Group('git')]
     public function testAFileGitDoesNotFollowMakesTheOracleDecline(): void
