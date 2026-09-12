@@ -105,11 +105,13 @@ final class SqliteGraphRepository implements GraphRepository
      *
      * @param string $scannerSetHash identifies the analyzer set; a change invalidates
      *        incremental reuse, because facts from a different analyzer are not comparable
+     * @param ?string $gitHead the scan root's HEAD sha, or null when the root is not a
+     *        Git repository (or Git could not be asked)
      * @throws InvalidArgumentException when $mode is neither full nor incremental
      */
-    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void
+    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null): void
     {
-        $this->lifecycle->createScan($id, $projectId, $mode, $scannerSetHash);
+        $this->lifecycle->createScan($id, $projectId, $mode, $scannerSetHash, $gitHead);
     }
 
     /**

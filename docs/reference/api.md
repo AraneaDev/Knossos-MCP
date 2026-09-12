@@ -49,7 +49,7 @@ This file is generated from enforced PHP interface docblocks and the isolated Ty
 - `bulkTransaction(callable $operation): mixed`: Execute a whole-graph rewrite atomically, checking referential integrity
 - `saveProject(string $id, string $name, string $rootRealpath, array $config = []): void`: Create or update project identity and non-secret configuration metadata
 - `findProject(string $id): ?array`: Find one project by stable ID
-- `createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void`: Record the start of a scan before graph reconciliation
+- `createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null): void`: Record the start of a scan before graph reconciliation
 - `completeScan(string $projectId, string $scanId): void`: Atomically make a successfully reconciled scan active
 - `recordFailedScan(string $id, string $projectId, string $mode, string $status): void`: Persist a terminal (failed or cancelled) scan attempt so it is observable
 - `archiveActiveSnapshot(string $projectId, string $configHash, int $retention): void`: Retain the active snapshot under the configured bounded history policy

@@ -2254,9 +2254,9 @@ final class FakeGraphRepository implements GraphRepository
         return $this->findProjectStub;
     }
 
-    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void
+    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null): void
     {
-        $this->scans[] = [$id, $projectId, $mode, $scannerSetHash];
+        $this->scans[] = [$id, $projectId, $mode, $scannerSetHash, $gitHead];
     }
 
     public function completeScan(string $projectId, string $scanId): void

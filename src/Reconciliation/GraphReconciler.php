@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Reconciliation;
 
 use Knossos\Discovery\DiscoveredFile;
+use Knossos\Git\GitHeadResolver;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\Evidence;
@@ -68,7 +69,10 @@ final readonly class GraphReconciler
      */
     private const UNRESOLVABLE_TARGET_CODE = 'reconciler.unresolvable_edge_target';
 
-    public function __construct(private GraphRepository $repository) {}
+    public function __construct(
+        private GraphRepository $repository,
+        private GitHeadResolver $gitHead = new GitHeadResolver(),
+    ) {}
     /** Merge a scan's contributions into the graph, in one transaction. */
 
     public function reconcile(FullScanRequest $request): ReconciliationResult
@@ -144,7 +148,13 @@ final readonly class GraphReconciler
                 $request->discovery->rootRealpath,
                 $request->projectConfig,
             );
-            $this->repository->createScan($scanId, $projectId, $request->mode, $scannerSetHash);
+            $this->repository->createScan(
+                $scanId,
+                $projectId,
+                $request->mode,
+                $scannerSetHash,
+                $this->gitHead->resolve($request->discovery->rootRealpath),
+            );
             // What the graph holds now, so what this scan does not produce can be
             // deleted afterwards. Reading ids is what makes the write proportional
             // to the change: clearing the project first meant every row had to be

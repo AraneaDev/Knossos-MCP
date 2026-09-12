@@ -61,17 +61,19 @@ final class SqliteScanLifecycle
      *
      * @param string $scannerSetHash identifies the analyzer set; a change invalidates
      *        incremental reuse, because facts from a different analyzer are not comparable
+     * @param ?string $gitHead the scan root's HEAD sha, or null when the root is not a
+     *        Git repository (or Git could not be asked)
      * @throws InvalidArgumentException when $mode is neither full nor incremental
      */
-    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash): void
+    public function createScan(string $id, string $projectId, string $mode, string $scannerSetHash, ?string $gitHead = null): void
     {
         if (!in_array($mode, ['full', 'incremental'], true)) {
             throw new InvalidArgumentException('Scan mode must be full or incremental.');
         }
 
         $statement = $this->statements->pdo()->prepare(
-            'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at) ' .
-            'VALUES (:id, :project, :mode, :status, :hash, :started)',
+            'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at, git_head) ' .
+            'VALUES (:id, :project, :mode, :status, :hash, :started, :head)',
         );
         $statement->execute([
             'id' => $id,
@@ -80,6 +82,7 @@ final class SqliteScanLifecycle
             'status' => 'running',
             'hash' => $scannerSetHash,
             'started' => SqliteValues::now(),
+            'head' => $gitHead,
         ]);
     }
 
