@@ -6,12 +6,7 @@ namespace Knossos\Reconciliation;
 
 use Knossos\Discovery\DiscoveredFile;
 use Knossos\Git\GitHeadResolver;
-use Knossos\Scanner\Protocol\Diagnostic;
-use Knossos\Scanner\Protocol\EdgeFact;
-use Knossos\Scanner\Protocol\Evidence;
-use Knossos\Scanner\Protocol\NodeFact;
-use Knossos\Scanner\Protocol\ScanContribution;
-use Knossos\Scanner\Protocol\ScannerManifest;
+use Knossos\Scanner\Protocol\{Diagnostic, EdgeFact, Evidence, NodeFact, ScanContribution, ScannerManifest};
 use Knossos\Store\GraphRepository;
 use Knossos\Store\StableId;
 
