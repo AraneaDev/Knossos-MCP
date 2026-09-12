@@ -12,6 +12,16 @@ use PDO;
  * Bounded to keep a freshness check cheap: above {@see self::MAX_PROBED_FILES}
  * tracked files it declines to answer rather than turn a probe into a full
  * tree walk.
+ *
+ * Every present tracked file is read and hashed on each call, not stat'd:
+ * content is the only thing that decides drift, so there is no cheaper check
+ * that stays correct. This runs on every enriched query result, so a project
+ * near the {@see self::MAX_PROBED_FILES} ceiling pays up to that many file
+ * reads and SHA-256 hashes per tool call. Two things keep that bound tolerable
+ * in practice rather than in theory: discovery caps a tracked file at 2 MB,
+ * and a later oracle in this project's plan answers from git for a git
+ * repository ahead of this one, so once that lands this walk only runs at all
+ * for a small or gitless project.
  */
 final readonly class WalkDriftOracle implements DriftOracle
 {
@@ -63,12 +73,12 @@ final readonly class WalkDriftOracle implements DriftOracle
                 ++$deleted;
                 continue;
             }
-            $contents = @file_get_contents($absolute);
-            if ($contents === false) {
+            $hash = @hash_file('sha256', $absolute);
+            if ($hash === false) {
                 ++$deleted;
                 continue;
             }
-            if (hash('sha256', $contents) !== (string) $file['content_hash']) {
+            if ($hash !== (string) $file['content_hash']) {
                 ++$changed;
             }
             $directories[dirname($absolute)][basename($absolute)] = true;

@@ -65,6 +65,7 @@ final class WalkDriftOracleTest extends KnossosTestCase
         $this->assertNull($oracle->drift($projectId, $scanId, $root, null));
     }
 
+    /** A `touch` or a `git checkout` that restores identical bytes must not force a rescan. */
     #[Group('query')]
     public function testATouchWithoutAContentChangeIsNotDrift(): void
     {
@@ -78,6 +79,7 @@ final class WalkDriftOracleTest extends KnossosTestCase
         }
     }
 
+    /** A real edit must still be caught now that mtime is no longer part of the verdict. */
     #[Group('query')]
     public function testAContentChangeIsDrift(): void
     {
@@ -91,6 +93,7 @@ final class WalkDriftOracleTest extends KnossosTestCase
         }
     }
 
+    /** A filesystem clock coarse enough to hide an edit inside one tick must not hide it from this probe. */
     #[Group('query')]
     public function testAContentChangeThatLeavesMtimeAloneIsStillDrift(): void
     {
@@ -106,6 +109,7 @@ final class WalkDriftOracleTest extends KnossosTestCase
         }
     }
 
+    /** A file the hash pass cannot read must be counted once, as a deletion, not doubled as a change too. */
     #[Group('query')]
     public function testAMissingFileCountsAsDeletedNotChanged(): void
     {
