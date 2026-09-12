@@ -6,6 +6,7 @@ namespace Knossos\Mcp;
 
 use InvalidArgumentException;
 use Knossos\Maintenance\DatabaseMaintenanceService;
+use Knossos\Query\ArchitecturePolicyQueryService;
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Runtime\ServerEnvironment;
@@ -643,7 +644,7 @@ final readonly class ToolService
             $policies,
             array_key_exists('min_confidence', $arguments) ? self::string($arguments, 'min_confidence') : 'possible',
             self::integer($arguments, 'limit', 100, 1, 100),
-            self::integer($arguments, 'max_edges', 100_000, 1, 100_000),
+            self::integer($arguments, 'max_edges', ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, 1, 100_000),
             self::integer($arguments, 'timeout_ms', 1000, 1, 5000),
         );
     }

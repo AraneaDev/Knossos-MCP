@@ -29,7 +29,6 @@ final class ScannerProtocolSession
     ) {}
 
     /** Handshake with the worker and verify its identity and protocol version. */
-
     public function initialize(): ScannerManifest
     {
         if ($this->manifest !== null) {
@@ -78,7 +77,7 @@ final class ScannerProtocolSession
     public function requireCapabilities(array $required): ScannerManifest
     {
         $manifest = $this->initialize();
-        $missing = array_values(array_diff(array_unique($required), $manifest->capabilities));
+        $missing = array_diff(array_unique($required), $manifest->capabilities);
         if ($missing !== []) {
             $this->close(true);
             throw new WorkerException(
@@ -110,8 +109,8 @@ final class ScannerProtocolSession
         try {
             while (true) {
                 if ($cancelled !== null && $cancelled()) {
+                    // Terminated by the catch below, like any other failure.
                     $this->cancel($id);
-                    $this->close(true);
                     throw new WorkerException('WORKER_CANCELLED', 'Scanner worker request was cancelled.');
                 }
                 $message = $this->channel->readMessage($deadline, $cancelled);
@@ -168,7 +167,6 @@ final class ScannerProtocolSession
     }
 
     /** Discard a cancelled scan's pending reply so the channel is reusable rather than desynchronised. */
-
     private function drainAbandonedScan(int $id): void
     {
         if (!$this->process->isRunning()) {
@@ -185,11 +183,16 @@ final class ScannerProtocolSession
                 if (!array_key_exists('id', $message)) {
                     continue;
                 }
-                if (($message['id'] ?? null) === $id) {
-                    $result = $message['result'] ?? null;
-                    if (is_array($result) && !($result !== [] && array_is_list($result))) {
-                        $this->lastScanResult = $result;
-                    }
+                if (($message['id'] ?? null) !== $id) {
+                    // A reply to some other request: the channel is out of step,
+                    // and this request's own reply may still be on its way, to be
+                    // read as the answer to the next request on this worker.
+                    $this->close(true);
+                    return;
+                }
+                $result = $message['result'] ?? null;
+                if (is_array($result) && !($result !== [] && array_is_list($result))) {
+                    $this->lastScanResult = $result;
                 }
                 return;
             }
@@ -199,7 +202,6 @@ final class ScannerProtocolSession
     }
 
     /** Ask the worker to exit cleanly, then release the channel. */
-
     public function shutdown(): void
     {
         if (!$this->process->isRunning()) {
@@ -216,7 +218,6 @@ final class ScannerProtocolSession
     }
 
     /** Release the channel without expecting a reply, for a worker already gone. */
-
     public function close(bool $terminate): void
     {
         $this->process->close($terminate);
@@ -224,7 +225,6 @@ final class ScannerProtocolSession
     }
 
     /** Whatever the worker wrote to stderr, surfaced in diagnostics rather than discarded. */
-
     public function stderr(): string
     {
         return $this->channel->stderr();

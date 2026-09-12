@@ -98,7 +98,7 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         if ($maxEdges < 1 || $maxEdges > 1000) {
             throw new InvalidArgumentException('max_edges must be between 1 and 1000.');
         }
-        $rank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $rank = self::CONFIDENCE_RANK;
         if (!isset($rank[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
@@ -107,7 +107,6 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
             throw new InvalidArgumentException('edge_kinds contains an unsupported dependency relationship.');
         }
 
-        $params = ['project' => $projectId];
         $boundaryId = null;
         if ($boundary !== null) {
             $statement = $this->pdo->prepare('SELECT id, name, source FROM boundaries WHERE project_id = :project ORDER BY source, name, id');
@@ -148,9 +147,12 @@ final readonly class DiagramExportService extends AbstractArchitectureQueryServi
         // Name and id break ties so the export stays deterministic. The pool is
         // wider than the slice so the selection below has neighbours to grow
         // into rather than only the very top of the degree ranking.
+        // Eight times the slice, capped: always wider than the slice itself, so
+        // the pool is what tells count($pool) > $maxNodes that anything was left
+        // out. A max() against $maxNodes + 1 here could never bind.
         $poolSize = min(self::MAX_CANDIDATE_POOL, $maxNodes * 8);
         $sql .= ' ORDER BY degree DESC, n.canonical_name, n.id LIMIT ?';
-        $nodeParams[] = max($poolSize, $maxNodes + 1);
+        $nodeParams[] = $poolSize;
         $statement = $this->pdo->prepare($sql);
         $statement->execute($nodeParams);
         $pool = $statement->fetchAll();

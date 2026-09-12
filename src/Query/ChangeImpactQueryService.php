@@ -32,6 +32,18 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
      */
     private const TEST_IMPACT_SCAN_LIMIT = 100;
 
+    /** Most changed files one request may name, and most a working tree may contribute. */
+    private const MAX_FILES = 50;
+
+    /** Most components the changed files map to directly, each of which fans out into its own impact search. */
+    private const MAX_DIRECT_COMPONENTS = 1000;
+
+    /** Most evidence records returned, so a wide change cannot bury the answer in citations. */
+    private const MAX_EVIDENCE = 100;
+
+    /** Most bytes of a Git failure quoted back, which is plenty to name the cause. */
+    private const MAX_REASON_BYTES = 500;
+
     public function __construct(PDO $pdo, ?Closure $clock, private GraphTopologyQueryService $topologyQueries, private ?GitHistoryProvider $gitHistory = null, private ?GitWorkingTreeProvider $gitWorkingTree = null)
     {
         parent::__construct($pdo, $clock);
@@ -76,7 +88,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         }
         $paths = $this->nodePaths(array_keys($components));
         $gitMetadata = ['available' => false, 'reason' => 'provider_unavailable', 'since_days' => $sinceDays, 'max_commits' => $maxCommits];
-        $history = ['files' => [], 'commits_examined' => 0, 'truncated' => false];
+        $history = ['files' => [], 'truncated' => false];
         $warnings = $impact->warnings;
         if ($this->gitHistory !== null) {
             try {
@@ -86,7 +98,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
                     'commits_examined' => $history['commits_examined'], 'truncated' => $history['truncated'],
                 ];
             } catch (Throwable $error) {
-                $gitMetadata['reason'] = substr($error->getMessage(), 0, 500);
+                $gitMetadata['reason'] = substr($error->getMessage(), 0, self::MAX_REASON_BYTES);
             }
         }
         if (!$gitMetadata['available']) {
@@ -99,7 +111,9 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
             $signal = is_string($path) && isset($history['files'][$path])
                 ? $history['files'][$path]
                 : ['commit_count' => 0, 'authors' => [], 'last_changed_at' => null];
-            $staticWeight = max(0, $maxDepth + 1 - $component['distance']);
+            // At least 1: impact_analysis stops at max_depth, so the farthest
+            // dependant scores 1 and the target itself max_depth + 1.
+            $staticWeight = $maxDepth + 1 - $component['distance'];
             $score = ($signal['commit_count'] * 3) + count($signal['authors']) + $staticWeight;
             $ranking[] = [
                 'component' => $component['node'], 'relative_path' => $path, 'distance' => $component['distance'],
@@ -147,8 +161,8 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         if ($workingTree === ($files !== [])) {
             throw new InvalidArgumentException('Provide either files or working_tree, but not both.');
         }
-        if (count($files) > 50) {
-            throw new InvalidArgumentException('files must contain at most 50 paths.');
+        if (count($files) > self::MAX_FILES) {
+            throw new InvalidArgumentException(sprintf('files must contain at most %d paths.', self::MAX_FILES));
         }
         $git = ['used' => false, 'base_ref' => $baseRef, 'renames' => [], 'truncated' => false];
         if ($workingTree) {
@@ -156,24 +170,22 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
                 throw new InvalidArgumentException('Working-tree change discovery is unavailable.');
             }
             try {
-                $changes = $this->gitWorkingTree->changes($project['root_realpath'], $baseRef, 50, $timeoutMs);
+                $changes = $this->gitWorkingTree->changes($project['root_realpath'], $baseRef, self::MAX_FILES, $timeoutMs);
             } catch (Throwable $error) {
-                throw new InvalidArgumentException('Working-tree change discovery failed: ' . substr($error->getMessage(), 0, 500), previous: $error);
+                throw new InvalidArgumentException('Working-tree change discovery failed: ' . substr($error->getMessage(), 0, self::MAX_REASON_BYTES), previous: $error);
             }
             $files = $changes['paths'];
             $git = ['used' => true, 'base_ref' => $baseRef, 'renames' => $changes['renames'], 'truncated' => $changes['truncated']];
         } elseif ($baseRef !== null) {
             throw new InvalidArgumentException('base_ref requires working_tree.');
         }
-        $normalized = [];
         foreach ($files as $path) {
             if (!is_string($path)) {
                 throw new InvalidArgumentException('files must contain project-relative strings.');
             }
             RelativePath::assertValid($path, 'Changed file');
-            $normalized[$path] = true;
         }
-        $files = array_keys($normalized);
+        $files = array_values(array_unique($files));
         sort($files, SORT_STRING);
         $direct = [];
         if ($files !== []) {
@@ -181,7 +193,7 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
             $statement = $this->pdo->prepare(
                 'SELECT n.id, n.kind, n.canonical_name, n.display_name, n.confidence, f.relative_path, n.start_line, n.end_line ' .
                 'FROM nodes n JOIN files f ON f.id = n.file_id WHERE n.project_id = ? AND f.relative_path IN (' . $placeholders . ') ' .
-                'ORDER BY f.relative_path, n.canonical_name, n.id LIMIT 1001',
+                sprintf('ORDER BY f.relative_path, n.canonical_name, n.id LIMIT %d', self::MAX_DIRECT_COMPONENTS + 1),
             );
             $statement->execute([$projectId, ...$files]);
             $direct = $statement->fetchAll();
@@ -191,16 +203,17 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         $impacted = [];
         $entryPoints = [];
         $warnings = [];
-        $truncated = $git['truncated'] || count($direct) > 1000;
+        $truncated = $git['truncated'] || count($direct) > self::MAX_DIRECT_COMPONENTS;
         // One deadline shared across the whole fan-out bounds the entire request,
         // instead of each per-component analysis resetting its own timeout (which
         // could otherwise multiply into minutes of wall time for a single call).
         $deadline = $this->now() + ($timeoutMs * 1_000_000);
-        foreach (array_slice($direct, 0, 1000) as $node) {
+        $direct = array_slice($direct, 0, self::MAX_DIRECT_COMPONENTS);
+        foreach ($direct as $node) {
             $impact = $this->topologyQueries->impactAnalysis($projectId, $node['id'], $maxDepth, $limit, $edgeKinds, $minConfidence, $timeoutMs, $deadline);
             foreach ($impact->data['dependants'] ?? [] as $record) {
                 $id = $record['node']['id'];
-                if (!isset($impacted[$id]) || $record['distance'] < $impacted[$id]['distance']) {
+                if (!isset($impacted[$id]) || self::nearerOrSurer($record, $impacted[$id])) {
                     $impacted[$id] = $record;
                 }
             }
@@ -219,15 +232,15 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
         $evidence = array_map(static fn(array $node): array => [
             'component_id' => $node['id'], 'path' => $node['relative_path'],
             'start_line' => $node['start_line'], 'end_line' => $node['end_line'],
-        ], array_slice($direct, 0, 100));
+        ], array_slice($direct, 0, self::MAX_EVIDENCE));
 
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
             sprintf('Mapped %d changed file%s to %d direct and %d impacted component%s.', count($files), count($files) === 1 ? '' : 's', count($direct), count($impacted), count($impacted) === 1 ? '' : 's'),
-            ['changed_files' => $files, 'unresolved_files' => $unresolved, 'direct_components' => array_slice($direct, 0, 1000),
+            ['changed_files' => $files, 'unresolved_files' => $unresolved, 'direct_components' => $direct,
                 'impacted_components' => $impacted, 'entry_points' => array_values($entryPoints), 'git' => $git,
-                'bounds' => ['max_files' => 50, 'max_direct_components' => 1000, 'limit' => $limit, 'max_depth' => $maxDepth]],
+                'bounds' => ['max_files' => self::MAX_FILES, 'max_direct_components' => self::MAX_DIRECT_COMPONENTS, 'limit' => $limit, 'max_depth' => $maxDepth]],
             $evidence,
             array_values(array_unique($warnings)),
             $truncated,
@@ -315,10 +328,30 @@ final readonly class ChangeImpactQueryService extends AbstractArchitectureQueryS
                     'impacted_scan_limit' => self::TEST_IMPACT_SCAN_LIMIT,
                 ]),
             ],
-            array_slice(array_map(static fn(array $entry): array => ['path' => $entry['path'], 'start_line' => null, 'end_line' => null], $testFiles), 0, 100),
+            array_slice(array_map(static fn(array $entry): array => ['path' => $entry['path'], 'start_line' => null, 'end_line' => null], $testFiles), 0, self::MAX_EVIDENCE),
             array_values(array_unique($warnings)),
             $truncated,
         );
+    }
+
+    /**
+     * Whether a dependant reached from one changed component beats the record
+     * already kept for it from another.
+     *
+     * The nearer path wins, and at the same distance the surer one, which is
+     * the rule impact_analysis applies within a single search. Keeping the
+     * first record found at equal distance reported a dependant as `possible`
+     * whenever the alphabetically first changed component reached it that way,
+     * even when another changed component reached it for certain.
+     *
+     * @param array{distance: int, path_confidence: string} $candidate
+     * @param array{distance: int, path_confidence: string} $kept
+     */
+    private static function nearerOrSurer(array $candidate, array $kept): bool
+    {
+        return $candidate['distance'] < $kept['distance']
+            || ($candidate['distance'] === $kept['distance']
+                && self::CONFIDENCE_RANK[$candidate['path_confidence']] > self::CONFIDENCE_RANK[$kept['path_confidence']]);
     }
 
     /**

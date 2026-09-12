@@ -206,7 +206,7 @@ final readonly class ArchitectureQueryService
         array $policies,
         string $minConfidence = 'possible',
         int $limit = 100,
-        int $maxEdges = 100_000,
+        int $maxEdges = ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES,
         int $timeoutMs = 1000,
     ): ResultEnvelope {
         return $this->policyQueries->checkArchitecture($projectId, $policies, $minConfidence, $limit, $maxEdges, $timeoutMs);

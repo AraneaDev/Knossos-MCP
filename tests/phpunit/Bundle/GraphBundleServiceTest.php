@@ -206,8 +206,25 @@ final class GraphBundleServiceTest extends TestCase
         $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
 
         $redacted = $bundle['payload']['nodes'][0]['owner_key'];
-        $this->assertStringStartsWith('redacted:', $redacted);
+        // Stated exactly, the way the file-path redaction above it is. A prefix
+        // check alone leaves the hash length free to move, and that length is
+        // precisely how much of the original a redacted bundle still carries.
+        assertSame('redacted:' . substr(hash('sha256', 'secret-owner-key'), 0, 24), $redacted);
         $this->assertStringNotContainsString('secret-owner-key', $redacted);
+    }
+
+    public function testExportStrictRedactionRewritesDiagnosticMessageAndOwnerKey(): void
+    {
+        $this->seedProjectAndScan('proj-1', 'scan-1');
+        $this->seedFile('f1', 'proj-1', 'src/A.php', 'php');
+        $this->seedDiagnostic('d1', 'proj-1', 'scan-1', 'f1', 'a message naming a customer');
+        $this->pdo->exec("UPDATE diagnostics SET owner_key = 'secret-owner-key' WHERE id = 'd1'");
+
+        $bundle = (new GraphBundleDecoder())->decodeAndValidate($this->service->export('proj-1', 'strict'));
+
+        $diagnostic = $bundle['payload']['diagnostics'][0];
+        assertSame('[redacted]', $diagnostic['message'], 'A diagnostic message is free text and goes entirely.');
+        assertSame('redacted:' . substr(hash('sha256', 'secret-owner-key'), 0, 24), $diagnostic['owner_key']);
     }
 
     public function testExportStrictRedactionLeavesNullOwnerKeyAsNull(): void

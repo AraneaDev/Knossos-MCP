@@ -9,6 +9,7 @@ use Knossos\Query\ResultEnvelope;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ProjectScanner;
 use Knossos\Watch\WatchService;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -51,6 +52,45 @@ final class WatchServiceValidationTest extends TestCase
     }
 
     // ----- run() input validation -----
+
+    /**
+     * Every range is accepted at both of its ends.
+     *
+     * The refusals below say nothing about where each range stops: a comparison
+     * one step out still refuses everything these tests refuse. The bound itself
+     * is what separates them, and it can be asserted without watching anything,
+     * because an accepted set of bounds falls through to the maxPolls check and
+     * is refused there instead, with a different message.
+     *
+     * @param array<string, int> $arguments
+     */
+    #[DataProvider('acceptedBounds')]
+    public function testRunAcceptsEveryRangeAtItsBounds(array $arguments): void
+    {
+        $service = self::serviceWith([self::ROOT]);
+
+        $error = captureThrows(
+            static fn () => $service->run(self::ROOT, ...[...$arguments, 'maxPolls' => 0]),
+            InvalidArgumentException::class,
+        );
+
+        $this->assertStringContainsString(
+            'maxPolls must be positive',
+            $error->getMessage(),
+            'These bounds are legal, so the refusal must come from the next guard: ' . json_encode($arguments),
+        );
+    }
+
+    /** @return iterable<string, array{0: array<string, int>}> */
+    public static function acceptedBounds(): iterable
+    {
+        yield 'poll floor' => [['pollMs' => 1]];
+        yield 'poll ceiling' => [['pollMs' => 60_000]];
+        yield 'debounce floor' => [['debounceMs' => 0]];
+        yield 'debounce ceiling' => [['debounceMs' => 60_000]];
+        yield 'queue floor' => [['maxQueue' => 1]];
+        yield 'queue ceiling' => [['maxQueue' => 10_000]];
+    }
 
     public function testRunRejectsZeroPollMs(): void
     {

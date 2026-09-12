@@ -568,6 +568,40 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(1, $data['bounds']['suppressed_candidates']);
     }
 
+    /**
+     * A suppressed candidate is SKIPPED, not a stop signal for the whole scan.
+     *
+     * The guard that drops a suppressed candidate sits inside the loop over
+     * every provisional candidate. Turning its `continue` into a `break` ends
+     * that loop at the first suppression, silently discarding every candidate
+     * behind it — a one-line change that would quietly truncate the entire
+     * dead-code report for any project carrying a suppression.
+     *
+     * Every existing test suppresses exactly one candidate, where "skip it" and
+     * "stop here" produce identical output, so nothing caught that. Three
+     * suppressed candidates tell the two apart, and asserting the COUNT rather
+     * than the surviving names keeps the test independent of the order the
+     * candidates come back in.
+     */
+    public function testASuppressedCandidateSkipsRatherThanEndingTheScan(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        foreach (['Exporter', 'Importer', 'Archiver'] as $index => $name) {
+            $node = StableId::symbol($ids['project'], 'php', 'class', 'App\\Legacy\\' . $name);
+            $repository->saveNode($node, $ids['project'], 'php', 'class', 'App\\Legacy\\' . $name, $name, null, $ids['file'], 50 + $index, 60 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->saveProject($ids['project'], 'Fixture Shop', '/workspace/fixture-shop', ['dead_code_suppressions' => ['App\\Legacy\\*']]);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+
+        assertSame(3, $data['bounds']['suppressed_candidates'], 'Every suppressed candidate must be counted, not just the first.');
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+        foreach (['Exporter', 'Importer', 'Archiver'] as $name) {
+            assertSame(false, in_array('App\\Legacy\\' . $name, $names, true));
+        }
+    }
+
     #[Group('query')]
     public function testDeadCodeIgnoresInDegreeMeasuredOnATruncatedEdgeSlice(): void
     {

@@ -108,7 +108,10 @@ final class BoundaryInference
                 }
             }
             if (str_starts_with($node->localId, 'py:')) {
-                $top = explode('/', ltrim($node->evidence->relativePath, '/'))[0] ?? '';
+                // Not trimmed: Evidence refuses a path with a leading separator,
+                // so unlike the TypeScript canonical name above there is nothing
+                // here to trim.
+                $top = explode('/', $node->evidence->relativePath)[0] ?? '';
                 if ($top !== '' && str_contains($node->evidence->relativePath, '/') && preg_match(self::PATH_SEGMENT, $top) === 1) {
                     $rules['python-package:' . $top] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $top . '/']];
                 }

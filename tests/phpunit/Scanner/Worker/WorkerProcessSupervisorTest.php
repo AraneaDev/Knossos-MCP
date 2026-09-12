@@ -146,21 +146,53 @@ final class WorkerProcessSupervisorTest extends TestCase
 
         $supervisor->close(true);
 
-        // Poll: the grandchild must be reaped, not orphaned to init.
-        $alive = true;
+        // Poll: the grandchild must stop RUNNING, rather than merely stop
+        // existing. Those are different questions, and asking the wrong one made
+        // this test flaky: `posix_kill($pid, 0)` succeeds on a zombie, which is a
+        // process that has already been killed and is waiting for whatever
+        // inherited it — systemd, once its own parent died — to reap it. That
+        // reaping is not the supervisor's job and its latency is not ours to
+        // depend on; under a full-suite run it once took longer than the deadline
+        // and a correctly killed grandchild read as still alive.
+        $running = true;
         $deadline = microtime(true) + 3.0;
         while (microtime(true) < $deadline) {
-            if (!@posix_kill($grandchildPid, 0)) {
-                $alive = false;
+            if (!self::isRunning($grandchildPid)) {
+                $running = false;
                 break;
             }
             usleep(20_000);
         }
-        if ($alive) {
+        if ($running) {
             @posix_kill($grandchildPid, 9); // avoid leaking a real process
         }
 
-        assertSame(false, $alive);
+        assertSame(false, $running);
+    }
+
+    /**
+     * Whether a pid names a process that is still running, as opposed to one
+     * that merely still exists.
+     *
+     * Linux publishes the state as the first field after the command name in
+     * `/proc/<pid>/stat`, and `Z` is a zombie: killed, and awaiting a reaper.
+     * The command name can itself contain spaces and parentheses, so the state
+     * is read after the LAST closing parenthesis rather than by splitting on
+     * spaces. Where `/proc` is unavailable the question cannot be answered, so
+     * existence stands in for it and the old behaviour applies unchanged.
+     */
+    private static function isRunning(int $pid): bool
+    {
+        if (!@posix_kill($pid, 0)) {
+            return false;
+        }
+        $stat = @file_get_contents('/proc/' . $pid . '/stat');
+        if (!is_string($stat) || $stat === '') {
+            return !is_dir('/proc');
+        }
+        $afterCommand = substr($stat, (int) strrpos($stat, ')') + 1);
+
+        return trim(strtok($afterCommand, ' ') ?: '') !== 'Z';
     }
 
     /**

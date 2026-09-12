@@ -23,8 +23,8 @@ final readonly class LanguageScanRunner
         private LanguageWorkerPool $pool,
         private ContributionCacheService $cache,
     ) {}
-    /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
 
+    /** Run each language's worker over the files it claims, degrading a failure to a diagnostic. */
     public function run(ScanPlan $plan, CancellationToken $cancellation): LanguageScanResult
     {
         $manifests = $contributions = $cacheEntries = [];
@@ -130,10 +130,10 @@ final readonly class LanguageScanRunner
             $plan->effectiveMode === 'full',
             $cancellation,
         );
-        $paths = array_map(static fn($file): string => $file->relativePath, $partition->filesToScan);
+        // Everything a scan request carries except `files`, which each batch
+        // supplies for itself.
         $request = [
             'root' => $plan->preparation->discovery->rootRealpath,
-            'files' => $paths,
             'limits' => ['max_files' => $plan->preparation->maxFiles, 'max_file_bytes' => $plan->preparation->maxFileBytes],
         ];
         if ($descriptor->key === 'php') {
@@ -169,27 +169,18 @@ final readonly class LanguageScanRunner
                 // retry re-sends those files, so keeping them would double-count
                 // both `parsed` and the reconciled facts.
                 $received = [];
-                // `['files' => ...] + $request` overrides `files` only: PHP's
-                // `+` keeps the left operand's key, so `root`, `limits` and the
-                // per-language extras above survive every batch.
                 $requested = array_map(static fn(object $file): string => $file->relativePath, $item['files']);
                 foreach ($client->scan(['files' => $requested] + $request, $cancellation->isCancelled(...)) as $contribution) {
                     $received[] = $contribution;
                 }
             } catch (WorkerException $error) {
-                // WORKER_OUTPUT_LIMIT, WORKER_FRAME_TOO_LARGE, and
-                // WORKER_REQUEST_TOO_LARGE all say the batch was too big rather
-                // than that the worker is broken — split the batch and retry.
-                // TypeScript heap exhaustion is the same in principle: a compiler
-                // that hit a V8 ceiling on the current batch size.
-                // Everything else — a crash, a timeout, and above all a
+                // A batch that was too big (see OversizedBatch) is split and
+                // retried. Everything else — a crash, a timeout, and above all a
                 // cancellation — keeps the per-language behaviour it already had:
                 // rethrow, and let run() degrade or propagate it. A single file
                 // cannot be split any further, so retrying it would only burn
                 // the remaining attempts and worker restarts.
-                $retryable = in_array($error->diagnosticCode, ['WORKER_OUTPUT_LIMIT', 'WORKER_FRAME_TOO_LARGE', 'WORKER_REQUEST_TOO_LARGE'], true)
-                    || self::isTypeScriptHeapExhaustion($descriptor, $error, $request);
-                if (!$retryable
+                if (!OversizedBatch::signalledBy($descriptor, $error, $request)
                     || count($item['files']) <= 1
                     || $item['halvings'] >= WorkerExecutionPolicy::MAX_SCAN_BATCH_HALVINGS
                     || $cancellation->isCancelled()) {
@@ -236,28 +227,9 @@ final readonly class LanguageScanRunner
             'unchanged' => count($partition->cached),
             'added' => $partition->added,
             'changed' => $partition->changed,
-            'scanner_metadata' => $paths === [] ? [] : [$manifest->id => $metadata],
+            'scanner_metadata' => $partition->filesToScan === [] ? [] : [$manifest->id => $metadata],
             'milliseconds' => self::elapsedMilliseconds($started),
         ];
-    }
-    /**
-     * Whether a TypeScript worker explicitly died from V8 heap exhaustion.
-     *
-     * An ordinary worker exit is a real failure and is not retried. Node's
-     * stable stderr signature lets a large batch be treated like an output
-     * overflow: split only that batch and give the language a fresh worker.
-     */
-    private static function isTypeScriptHeapExhaustion(LanguageDescriptor $descriptor, WorkerException $error, array $request): bool
-    {
-        if ($descriptor->key !== 'typescript'
-            || $error->diagnosticCode !== 'WORKER_EXITED'
-            || ($request['config_files'] ?? []) !== []) {
-            return false;
-        }
-        $message = strtolower($error->getMessage());
-
-        return str_contains($message, 'javascript heap out of memory')
-            || str_contains($message, 'ineffective mark-compacts near heap limit');
     }
 
     /**
@@ -355,8 +327,8 @@ final readonly class LanguageScanRunner
 
         return $metadata;
     }
-    /** Milliseconds since a hrtime() mark, for the stage timings. */
 
+    /** Milliseconds since a hrtime() mark, for the stage timings. */
     private static function elapsedMilliseconds(int $startedAt): float
     {
         return round((hrtime(true) - $startedAt) / 1_000_000, 3);

@@ -156,6 +156,43 @@ final class QualityGateMetricsTest extends KnossosTestCase
     }
 
     /**
+     * Tests calling PRODUCTION code must not move the budget either.
+     *
+     * The case above covers a hub that is itself test code. The commoner shape
+     * is a production utility every new test touches — an id factory, a value
+     * object, a result envelope — and excluding test components from BEING hubs
+     * does nothing for it: the production hub's own degree still climbs by one
+     * per test added.
+     *
+     * Found by running this gate against Knossos itself. Twenty-five new test
+     * files, two deleted lines of production code, and hub_degree_growth came
+     * back at 57 against a budget of 25: exactly the "budget it has no way to
+     * reclaim" that snapshotQualityMetrics() says it exists to prevent.
+     */
+    #[Group('query')]
+    public function testTestsCallingProductionCodeDoNotMoveTheHubBudget(): void
+    {
+        [$pdo, $repository, $ids] = $this->baseline();
+        // Twelve test methods, each calling the same production class.
+        for ($i = 0; $i < 12; $i++) {
+            $caller = $this->addNode($repository, $ids, 'method', sprintf('Tests\\CheckoutTest::test%d', $i), sprintf('test%d', $i));
+            $this->classify($repository, $ids, $caller, ReportableComponent::TEST_ROLE);
+            $this->edge($repository, $ids, 'calls', $caller, $ids['checkout']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $gate = (new ArchitectureQueryService($pdo))
+            ->qualityGate($ids['project'], $ids['baseline'], ['hub_degree_growth' => 0]);
+
+        assertSame(
+            0,
+            $gate->data['metrics']['hub_degree_growth'],
+            'Twelve tests exercising a class are not twelve units of architectural growth.',
+        );
+        assertSame(true, $gate->data['passed']);
+    }
+
+    /**
      * A lifecycle method the runtime invokes has no inbound edge by
      * construction, in every language the scanners cover. The predicate knew
      * only PHP's `__construct` and JavaScript's `constructor`, so Python's

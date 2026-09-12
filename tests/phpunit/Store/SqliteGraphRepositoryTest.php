@@ -174,7 +174,12 @@ final class SqliteGraphRepositoryTest extends TestCase
 
         assertSame('boom', $error->getMessage());
         assertSame(null, $this->repository->findProject('trans-rollback'));
-        assertSame(false, $this->pdo->inTransaction(), 'transaction must be released after rollback');
+        // PDO::inTransaction() cannot see this: the transaction was opened and
+        // rolled back via exec('BEGIN IMMEDIATE')/exec('ROLLBACK'), which PDO's
+        // own transaction tracking never observes (see isInSqlTransaction()).
+        // Asserting inTransaction() === false here can never fail, even if the
+        // rollback never ran.
+        assertSame(false, $this->isInSqlTransaction(), 'transaction must be released after rollback');
     }
 
     public function testTransactionRunsNestedCallsWithinTheOuterTransaction(): void
@@ -219,6 +224,26 @@ final class SqliteGraphRepositoryTest extends TestCase
         assertSame('Project One', $this->repository->findProject('outer-keep')['name']);
         assertSame(null, $this->repository->findProject('inner-discard'), 'inner savepoint work must be rolled back');
         assertSame(false, $this->isInSqlTransaction());
+    }
+
+    public function testTransactionStateIsSharedWithTheCollaboratorsItWraps(): void
+    {
+        // transaction() opens the outer BEGIN IMMEDIATE via the facade's own
+        // SqliteTransactions instance. completeScan() runs through
+        // SqliteScanLifecycle, which must be using that SAME instance: if it
+        // held its own, its inner run() would see neither a depth > 0 nor
+        // pdo->inTransaction() (BEGIN IMMEDIATE is issued via exec, which PDO
+        // does not track) and would attempt a second BEGIN IMMEDIATE on a
+        // connection that already has one open, which SQLite refuses.
+        $this->seedProject('proj-shared-state');
+        $this->seedScan('proj-shared-state', 'scan-shared-state');
+
+        $this->repository->transaction(function (SqliteGraphRepository $repo): void {
+            $repo->completeScan('proj-shared-state', 'scan-shared-state');
+        });
+
+        $status = $this->pdo->query("SELECT status FROM scans WHERE id = 'scan-shared-state'")->fetchColumn();
+        assertSame('complete', $status);
     }
 
     public function testMissingForeignKeyIndexesExistAfterMigration(): void
@@ -411,6 +436,50 @@ final class SqliteGraphRepositoryTest extends TestCase
         $this->assertGreaterThanOrEqual(0, (int) $row['fact_count']);
         // Stored compressed; the schema marker is in the payload it decodes to.
         $this->assertStringContainsString('"schema":1', \Knossos\Store\SnapshotPayload::decode($row['payload_json']));
+    }
+
+    // ----- SCAN_OWNED_TABLES: order, contents -----
+
+    public function testArchivedSnapshotFactsAreKeyedInScanOwnedTablesOrder(): void
+    {
+        // Order fixes the JSON key order of every stored snapshot payload, and
+        // this is the one test that reads that order back rather than merely
+        // asserting a fact was captured. Swapping two entries, or dropping one,
+        // must show up here even though every other snapshot test stays green.
+        $this->seedProject('proj-snap-order');
+        $this->seedScan('proj-snap-order', 'scan-snap-order');
+        $this->repository->completeScan('proj-snap-order', 'scan-snap-order');
+
+        $this->repository->archiveActiveSnapshot('proj-snap-order', 'cfg-h', 5);
+
+        $stored = $this->pdo->query("SELECT payload_json FROM scan_snapshots WHERE project_id = 'proj-snap-order'")->fetchColumn();
+        $decoded = json_decode(\Knossos\Store\SnapshotPayload::decode((string) $stored), true, 512, JSON_THROW_ON_ERROR);
+
+        assertSame(
+            ['files', 'nodes', 'edges', 'classifications', 'boundaries', 'boundary_memberships', 'diagnostics'],
+            array_keys($decoded['facts']),
+        );
+    }
+
+    public function testBulkTransactionRefusesToCommitADanglingDiagnosticsRow(): void
+    {
+        // diagnostics is the last entry in SCAN_OWNED_TABLES; if it were ever
+        // dropped from that list, a bulk rewrite would stop checking it and
+        // this row would commit silently instead of being refused.
+        $this->seedProject('proj-diag-dangling');
+
+        $error = captureThrows(
+            fn () => $this->repository->bulkTransaction(function (SqliteGraphRepository $repo): void {
+                $repo->saveDiagnostic(
+                    'd-dangling', 'proj-diag-dangling', 'scan-never-created', null,
+                    'info', 'code', 'a dangling diagnostic', null, null, 'owner',
+                );
+            }),
+            \RuntimeException::class,
+        );
+
+        $this->assertStringContainsString('diagnostics', $error->getMessage());
+        assertSame(0, (int) $this->pdo->query("SELECT COUNT(*) FROM diagnostics WHERE id = 'd-dangling'")->fetchColumn());
     }
 
     public function testArchiveActiveSnapshotSkipsWhenActiveScanAlreadyArchived(): void

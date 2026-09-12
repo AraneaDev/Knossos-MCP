@@ -24,9 +24,16 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         parent::__construct($pdo, $clock);
     }
 
-    /** Scanned projects with freshness and graph size, so a caller can pick the right project_id. */
-
-    public function listProjects(int $limit = 50, int $offset = 0, bool $includeRoots = false): ResultEnvelope
+    /**
+     * Scanned projects with freshness and graph size, so a caller can pick the right project_id.
+     *
+     * Every parameter is required. `ArchitectureQueryService::listProjects()` is
+     * the only caller and always passes all three, so defaults here were a
+     * second copy of values that already live on that facade: unreachable, and
+     * free to drift out of step with the ones callers actually get. The facade
+     * owns them.
+     */
+    public function listProjects(int $limit, int $offset, bool $includeRoots): ResultEnvelope
     {
         self::assertLimit($limit);
         if ($offset < 0 || $offset > 100_000) {
@@ -236,7 +243,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         $sections['components']['counts']['rename_candidates'] = $renameCount;
         $truncated = $truncated || $take < $renameCount;
         $confidence = ['raised' => 0, 'lowered' => 0];
-        $rank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $rank = self::CONFIDENCE_RANK;
         foreach (['components', 'relationships', 'roles'] as $section) {
             $confidenceChanges = $section === 'components' ? $allComponentChanges : $rawDiffs[$section]['changed'];
             foreach ($confidenceChanges as $change) {
@@ -303,7 +310,7 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             // the budget was unpassable on any larger graph, with no argument to
             // raise either bound. Lifting only the edge ceiling would have left
             // the deadline to become the ceiling in its place.
-            $policyResult = $this->policyQueries->checkArchitecture($projectId, $policies, limit: 100, maxEdges: 100_000, timeoutMs: 5000);
+            $policyResult = $this->policyQueries->checkArchitecture($projectId, $policies, limit: 100, maxEdges: ArchitecturePolicyQueryService::DEFAULT_MAX_EDGES, timeoutMs: 5000);
             $policyBounds = $policyResult->data['bounds'] ?? [];
             // Exact count past the collection limit; a budget of >=100 was
             // previously dead because the collected subset capped at 100.
@@ -759,8 +766,22 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             }
             $adjacency[$edge['source_id']][] = $edge['target_id'];
             $reverse[$edge['target_id']][] = $edge['source_id'];
-            ++$degree[$edge['source_id']];
-            ++$degree[$edge['target_id']];
+            // Only a relationship between two reportable components is part of
+            // the architecture this degree describes. Excluding test and vendor
+            // components from BEING hubs was not enough on its own: a test
+            // referencing a production hub still raised that hub's degree, so a
+            // commit that only added tests spent hub_degree_growth it had no way
+            // to reclaim, which is the failure the scope comment above exists to
+            // prevent. Found by running this gate against Knossos itself, where
+            // adding twenty-five test files moved the budget by 57.
+            //
+            // Reachability is deliberately left alone: $adjacency and $reverse
+            // still record the edge, so a component a test references stays
+            // referenced rather than becoming an unreferenced candidate.
+            if (isset($reportable[$edge['source_id']], $reportable[$edge['target_id']])) {
+                ++$degree[$edge['source_id']];
+                ++$degree[$edge['target_id']];
+            }
         }
         $declaringType = [];
         foreach ($members as $type => $held) {

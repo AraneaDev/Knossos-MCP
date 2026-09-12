@@ -24,8 +24,8 @@ use Throwable;
 final readonly class DatabaseMaintenanceService
 {
     public function __construct(private PDO $pdo, private string $databasePath) {}
-    /** Delete a project and its graph, previewing the row counts unless executing. */
 
+    /** Delete a project and its graph, previewing the row counts unless executing. */
     public function removeProject(string $projectId, bool $execute = false): ResultEnvelope
     {
         $project = $this->project($projectId);
@@ -57,9 +57,14 @@ final readonly class DatabaseMaintenanceService
             'executed' => true, 'project' => ['id' => $projectId, 'name' => $project['name']], 'removed' => $counts,
         ]);
     }
-    /** Drop failed, cancelled, or abandoned scan records older than the cutoff. */
 
-    public function cleanupStaleScans(string $projectId, int $olderThanHours = 24, bool $execute = false): ResultEnvelope
+    /**
+     * Drop failed, cancelled, or abandoned scan records older than the cutoff.
+     *
+     * No default for the age: both callers, the MCP tool and the CLI, validate
+     * and pass their own, so a third copy here could only drift from theirs.
+     */
+    public function cleanupStaleScans(string $projectId, int $olderThanHours, bool $execute = false): ResultEnvelope
     {
         if ($olderThanHours < 1 || $olderThanHours > 8760) {
             throw new InvalidArgumentException('older_than_hours must be between 1 and 8760.');
@@ -121,8 +126,8 @@ final readonly class DatabaseMaintenanceService
             truncated: $truncated,
         );
     }
-    /** Run one maintenance action, previewing unless explicitly told to execute. */
 
+    /** Run one maintenance action, previewing unless explicitly told to execute. */
     public function maintain(string $action, bool $execute = false, ?string $backupName = null): ResultEnvelope
     {
         if (!in_array($action, ['integrity', 'checkpoint', 'optimize', 'vacuum', 'backup'], true)) {
@@ -157,7 +162,7 @@ final readonly class DatabaseMaintenanceService
                 $data += $this->backup($backupName);
             }
         } finally {
-            foreach (array_reverse($leases) as $lease) {
+            foreach ($leases as $lease) {
                 $lease->release();
             }
         }
@@ -189,8 +194,11 @@ final readonly class DatabaseMaintenanceService
         // flag is carried out so the caller knows the file did not shrink.
         $checkpoint = $this->pdo->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetch();
         $blocked = is_array($checkpoint) && (int) reset($checkpoint) !== 0;
-        $after = (int) $this->pdo->query('PRAGMA freelist_count')->fetchColumn();
-        $reclaimed = max(0, $before - $after);
+        // Every page that was free is reclaimed: VACUUM rebuilds the file with
+        // an empty free list, and the leases taken in maintain() keep every
+        // writer out until this returns. Counting the free list again after
+        // the rebuild only ever subtracted zero.
+        $reclaimed = $before;
 
         return [
             'reclaimed_pages' => $reclaimed,
@@ -231,8 +239,8 @@ final readonly class DatabaseMaintenanceService
         }
         return $counts;
     }
-    /** How many scans still reference a project, so a removal cannot orphan history. */
 
+    /** How many graph rows a scan is still the last writer of, so cleanup cannot orphan them. */
     private function scanReferenceCount(string $scanId): int
     {
         $count = 0;
@@ -262,15 +270,15 @@ final readonly class DatabaseMaintenanceService
                 $leases[] = $lock->acquire((string) $id);
             }
         } catch (Throwable $error) {
-            foreach (array_reverse($leases) as $lease) {
+            foreach ($leases as $lease) {
                 $lease->release();
             }
             throw $error;
         }
         return $leases;
     }
-    /** Resolve and validate the backup path, refusing to overwrite an existing file. */
 
+    /** Resolve and validate the backup path, refusing to overwrite an existing file. */
     private function backupTarget(?string $backupName): string
     {
         if ($this->databasePath === ':memory:') {
@@ -308,7 +316,9 @@ final readonly class DatabaseMaintenanceService
                 throw new RuntimeException('Unable to atomically publish database backup.');
             }
             chmod($target, 0600);
-            return ['target' => $target, 'bytes' => filesize($target) ?: 0];
+            clearstatcache(true, $target);
+
+            return ['target' => $target, 'bytes' => (int) filesize($target)];
         } finally {
             if (is_file($temporary)) {
                 unlink($temporary);

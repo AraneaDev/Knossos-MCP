@@ -119,8 +119,9 @@ final class StoreTest extends KnossosTestCase
     public function testRepositoryHotWritesReusePreparedStatements(): void
     {
         [, $repository, $ids] = $this->storeFixture();
-        $property = new ReflectionProperty($repository, 'statements');
-        $before = $property->getValue($repository);
+        $cache = (new ReflectionProperty($repository, 'statements'))->getValue($repository);
+        $property = new ReflectionProperty($cache, 'statements');
+        $before = $property->getValue($cache);
         $repository->saveFile(
             $ids['file'],
             $ids['project'],
@@ -132,7 +133,7 @@ final class StoreTest extends KnossosTestCase
             '1.0.0',
             $ids['scan'],
         );
-        $after = $property->getValue($repository);
+        $after = $property->getValue($cache);
         assertSame(count($before), count($after));
         assertSame(1, count(array_filter(array_keys($after), fn(string $sql): bool => str_starts_with($sql, 'INSERT INTO files'))));
     }

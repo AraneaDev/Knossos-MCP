@@ -18,6 +18,83 @@ use RuntimeException;
 
 final class QueryTest extends KnossosTestCase
 {
+    /**
+     * `architectureSummary` reports itself truncated at the exact boundary, and
+     * from ANY of the four dimensions on its own.
+     *
+     * The flag is four `distinctCount(...) > $limit` tests joined by `||`, and
+     * it is the `truncated` field every caller reads to know whether the
+     * orientation view is complete. Nothing pinned it: the comparisons could be
+     * flipped to `>=` or `<=`, or the `||` chain narrowed to `&&`, with the
+     * suite still green, because every existing assertion sits far from the
+     * limit and never varies which dimension overflows.
+     *
+     * The counts are read from the fixture rather than hard-coded so the test
+     * states the boundary rule itself instead of restating today's fixture.
+     */
+    #[Group('query')]
+    public function testTheSummaryReportsTruncationAtTheLimitAndForEachDimensionAlone(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $distinct = static function (string $table, string $column) use ($pdo, $ids): int {
+            $statement = $pdo->prepare(sprintf('SELECT COUNT(DISTINCT %s) FROM %s WHERE project_id = :project', $column, $table));
+            $statement->execute([':project' => $ids['project']]);
+
+            return (int) $statement->fetchColumn();
+        };
+
+        // The base fixture has one distinct value per dimension, which cannot
+        // express a boundary at all — a limit of 0 is rejected outright. Pad
+        // all four to the SAME width, so a limit equal to it sits exactly on
+        // every comparison at once. That is what makes each `>` individually
+        // observable: the chain short-circuits, so a wider dimension earlier in
+        // it would mask a flipped comparison later.
+        $width = 3;
+        $kinds = ['interface', 'method', 'trait', 'enum'];
+        for ($index = 0; $distinct('nodes', 'kind') < $width; ++$index) {
+            $kind = $kinds[$index];
+            $node = StableId::symbol($ids['project'], 'php', $kind, 'App\\Extra' . $index);
+            $repository->saveNode($node, $ids['project'], 'php', $kind, 'App\\Extra' . $index, 'Extra' . $index, null, $ids['file'], 20 + $index, 25 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $edgeKinds = ['implements', 'extends', 'references', 'returns'];
+        $source = StableId::symbol($ids['project'], 'php', 'interface', 'App\\Extra0');
+        $target = StableId::symbol($ids['project'], 'php', 'method', 'App\\Extra1');
+        for ($index = 0; $distinct('edges', 'kind') < $width; ++$index) {
+            $edgeKind = $edgeKinds[$index];
+            $repository->saveEdge(StableId::edge($ids['project'], $edgeKind, $source, $target, 'src/Checkout.php:' . (30 + $index)), $ids['project'], $edgeKind, $source, $target, $ids['file'], 30 + $index, 30 + $index, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $languages = ['typescript', 'python', 'rust', 'go'];
+        for ($index = 0; $distinct('files', 'language') < $width; ++$index) {
+            $language = $languages[$index];
+            $extra = StableId::file($ids['project'], 'src/Extra' . $index);
+            $repository->saveFile($extra, $ids['project'], 'src/Extra' . $index, hash('sha256', 'extra' . $index), 10, 1, $language, '0.1.0', $ids['scan']);
+        }
+        for ($index = 0; $distinct('classifications', 'role') < $width; ++$index) {
+            $repository->saveClassification(StableId::symbol($ids['project'], 'php', 'role', 'extra' . $index), $ids['project'], $source, 'extra.role' . $index, 'heuristic', 'probable', 'rule.extra', $ids['file'], 20 + $index, 25 + $index, [], $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        foreach (['nodes' => 'kind', 'edges' => 'kind', 'files' => 'language', 'classifications' => 'role'] as $table => $column) {
+            assertSame($width, $distinct($table, $column), sprintf('%s must sit exactly on the boundary for this test to mean anything.', $table));
+        }
+
+        // Exactly at the limit nothing is truncated: every `>` must reject the
+        // equal case, so none of the four can be `>=`. With all four dimensions
+        // on the boundary, flipping any single one flips this answer.
+        assertSame(false, $queries->architectureSummary($ids['project'], $width)->truncated);
+        // One below, every dimension overflows: no `>` can be `<=`.
+        assertSame(true, $queries->architectureSummary($ids['project'], $width - 1)->truncated);
+
+        // A single dimension over the limit sets the flag on its own, which an
+        // `&&` chain would not: the other three are still exactly on it.
+        $widened = StableId::symbol($ids['project'], 'php', 'property', 'App\\Widening');
+        $repository->saveNode($widened, $ids['project'], 'php', 'property', 'App\\Widening', 'Widening', null, $ids['file'], 90, 91, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        assertSame($width + 1, $distinct('nodes', 'kind'));
+
+        assertSame(true, $queries->architectureSummary($ids['project'], $width)->truncated, 'One overflowing dimension must set truncated by itself.');
+    }
+
     #[Group('query')]
     public function testSnapshotDiffReportsBoundedArchitecturalChangesAndRenameHeuristics(): void
     {
@@ -204,6 +281,53 @@ final class QueryTest extends KnossosTestCase
         assertSame(1, count($queries->listProjects(limit: 1, offset: 1)->data['projects']));
         assertThrows(fn() => $queries->listProjects(offset: -1), InvalidArgumentException::class);
         assertThrows(fn() => $queries->listProjects(limit: 101), InvalidArgumentException::class);
+    }
+
+    /**
+     * The catalogue's offset guard is exact at both ends of its range.
+     *
+     * `offset < 0 || offset > 100_000` was only ever tested from well inside the
+     * range and with a clearly-negative value, so the upper comparison could
+     * become `>=` — rejecting the last legal offset — without failing anything.
+     * The documented range is 0 through 100000 inclusive.
+     */
+    #[Group('query')]
+    public function testTheCatalogueOffsetGuardAcceptsItsLastLegalValueAndRejectsTheNext(): void
+    {
+        [$pdo] = $this->storeFixture();
+        $queries = new ArchitectureQueryService($pdo);
+
+        assertSame([], $queries->listProjects(offset: 100_000)->data['projects']);
+        assertThrows(fn() => $queries->listProjects(offset: 100_001), InvalidArgumentException::class);
+    }
+
+    /**
+     * A no-argument catalogue call pages at 50 and hides absolute roots.
+     *
+     * These are the values every MCP and CLI caller gets when it asks for
+     * nothing, and the roots default is the one that matters: absolute paths on
+     * the host are withheld unless a caller explicitly opts in. Nothing pinned
+     * either — the fixture had a single project, so a default limit of 49 or 51
+     * returned the same one project, and no test compared a defaulted call
+     * against an explicit one.
+     */
+    #[Group('query')]
+    public function testTheCatalogueDefaultsPageAtFiftyAndWithholdRoots(): void
+    {
+        [$pdo, $repository] = $this->storeFixture();
+        for ($index = 0; $index < 51; ++$index) {
+            $repository->saveProject(StableId::project('bulk-' . $index), 'Bulk ' . $index, '/workspace/bulk-' . $index);
+        }
+        $queries = new ArchitectureQueryService($pdo);
+
+        $defaulted = $queries->listProjects();
+
+        assertSame(50, count($defaulted->data['projects']), 'The default page size is 50.');
+        assertSame(true, $defaulted->truncated);
+        assertSame(50, $defaulted->data['pagination']['next_offset'], 'A defaulted call starts at offset 0.');
+        foreach ($defaulted->data['projects'] as $project) {
+            assertSame(false, array_key_exists('root', $project), 'Absolute roots are withheld unless requested.');
+        }
     }
 
     #[Group('query')]

@@ -206,15 +206,10 @@ final readonly class SessionBriefService
         if ($databasePath === null || $databasePath === ':memory:') {
             return ['exists' => RootGuard::exists($absolutePath), 'allowed' => true, 'roots_file' => null];
         }
-        $staticRoots = [];
-        $configured = getenv('KNOSSOS_ALLOWED_ROOTS');
-        if (is_string($configured) && $configured !== '') {
-            $staticRoots = array_values(array_filter(explode(PATH_SEPARATOR, $configured)));
-        }
         // Resolved once and reported, not recomputed by the caller: the file
         // named in the verdict has to be the file that decided it.
         $configPath = AllowedRoots::defaultConfigPath($databasePath);
-        $allowedRoots = new AllowedRoots($staticRoots, $configPath);
+        $allowedRoots = new AllowedRoots(AllowedRoots::fromEnvironment(), $configPath);
         try {
             (new RootGuard($allowedRoots))->resolve($absolutePath);
 

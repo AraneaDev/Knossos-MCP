@@ -459,4 +459,58 @@ final class GitProcessRunnerHardeningTest extends TestCase
         }
         proc_close($process);
     }
+
+    /**
+     * Hardening's cost is DEDUCTED from the caller's deadline, not added to it.
+     *
+     * `run()` times `harden()` — which spawns a `git config --list` to
+     * enumerate this repository's filter and diff drivers — and hands the
+     * remainder to the real command, so the two subprocesses together still
+     * respect the one `$timeoutMs` the caller asked for. Nothing pinned that:
+     * mutating the subtraction to an addition left every test green while
+     * giving the pair up to twice the requested budget, which is precisely the
+     * behaviour the method's docblock promises it prevents.
+     *
+     * Asserted on the arithmetic rather than by racing two real subprocesses,
+     * because a timing test for this is both slow and flaky.
+     */
+    public function testHardeningTimeIsDeductedFromTheCommandDeadline(): void
+    {
+        $remaining = new \ReflectionMethod(GitProcessRunner::class, 'remainingBudget');
+
+        self::assertSame(600, $remaining->invoke(null, 1_000, 400), 'Hardening time must be subtracted, not added.');
+        self::assertSame(1_000, $remaining->invoke(null, 1_000, 0), 'A free hardening step must leave the budget whole.');
+    }
+
+    /**
+     * An overrun hardening step floors the deadline at 1ms, never 0 or below.
+     *
+     * `execute()` reads process status before it reads the deadline, so one
+     * millisecond still lets an already-finished child be reaped; a floor of
+     * zero reads as "no deadline" to anyone skimming the call, and a negative
+     * remainder would be worse. The boundary is the interesting case here —
+     * both the exactly-spent and the overspent budget land on the floor.
+     */
+    public function testAnOverrunHardeningStepFloorsTheDeadlineAtOneMillisecond(): void
+    {
+        $remaining = new \ReflectionMethod(GitProcessRunner::class, 'remainingBudget');
+
+        self::assertSame(1, $remaining->invoke(null, 500, 500), 'A fully spent budget floors at 1.');
+        self::assertSame(1, $remaining->invoke(null, 500, 900), 'An overspent budget floors at 1, never negative.');
+        self::assertSame(2, $remaining->invoke(null, 500, 498), 'Just above the floor is returned unchanged.');
+    }
+
+    /**
+     * The refusal names the binary the caller actually passed.
+     *
+     * The message exists to tell a future call site which of its arguments was
+     * wrong, so reading the wrong element of the command would make it point at
+     * a subcommand — or, on a one-element command, at nothing at all.
+     */
+    public function testTheWrapperRefusalNamesTheOffendingBinary(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('#requested for /usr/bin/git-wrapper, which is not git#');
+        (new GitProcessRunner())->run(['/usr/bin/git-wrapper', 'diff'], 1_000, 'wrapper probe');
+    }
 }

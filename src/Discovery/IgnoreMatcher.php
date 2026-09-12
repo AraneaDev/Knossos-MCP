@@ -281,12 +281,14 @@ final readonly class IgnoreMatcher
                 continue;
             }
             $char = $body[$i];
-            // A range hyphen between two literals is the one metacharacter a
-            // gitignore class may carry; everything else is quoted. An invalid
-            // range (for example a descending one) still fails to compile —
-            // compile() turns that into a loud PROJECT_CONFIG_INVALID rather than
-            // a silently-empty match.
-            $escaped .= $char === '-' && $i > 0 && $i < $length - 1 ? '-' : preg_quote($char, '#');
+            // A range hyphen is the one metacharacter a gitignore class may
+            // carry; everything else is quoted. It is passed through wherever
+            // it stands: PCRE reads a hyphen at either end of a class as a
+            // literal, exactly as fnmatch does, so its position needs no test.
+            // An invalid range (for example a descending one) still fails to
+            // compile, and compile() turns that into a loud
+            // PROJECT_CONFIG_INVALID rather than a silently-empty match.
+            $escaped .= $char === '-' ? '-' : preg_quote($char, '#');
         }
 
         return '[' . ($negated ? '^' : '') . $escaped . ']';
@@ -331,6 +333,6 @@ final readonly class IgnoreMatcher
         }
         $close = strpos($subject, ':]', $start + 2);
 
-        return $close === false || $close + 2 > $length ? null : $close + 2;
+        return $close === false ? null : $close + 2;
     }
 }

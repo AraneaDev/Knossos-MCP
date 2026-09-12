@@ -41,7 +41,11 @@ final readonly class TestModuleRule implements ClassificationRule
     {
         // Every declaration inside a test file is glob-discovered too, so the role is
         // keyed on the file the node came from rather than on the module node alone.
-        $path = str_replace('\\', '/', $node->evidence->relativePath);
+        //
+        // Not normalised here: Evidence refuses a path that is not already
+        // project-relative with forward slashes, so a backslash cannot reach
+        // this rule. Normalising again only hid that guarantee.
+        $path = $node->evidence->relativePath;
         // A scanner mark wins over the path convention. Rust keeps
         // `#[cfg(test)] mod tests` beside the code it covers, so there is no
         // test directory to recognise and only the worker can tell us.

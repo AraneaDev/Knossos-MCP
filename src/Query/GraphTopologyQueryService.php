@@ -940,7 +940,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         if ($timeoutMs < 1 || $timeoutMs > 5000) {
             throw new InvalidArgumentException('timeout_ms must be between 1 and 5000.');
         }
-        $confidenceRank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $confidenceRank = self::CONFIDENCE_RANK;
         if (!isset($confidenceRank[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
@@ -1281,7 +1281,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      */
     private function path(array $nodes, array $edges): array
     {
-        $rank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $rank = self::CONFIDENCE_RANK;
         $semantic = ['routes_to', 'dispatches', 'handles', 'listens_to', 'binds', 'observes', 'uses_middleware'];
         $hops = [];
         $minimum = 3;

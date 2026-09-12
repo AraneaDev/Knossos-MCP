@@ -78,7 +78,7 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         $project = $this->project($projectId);
         self::assertLimit($maxRelationships);
         self::assertLimit($maxChildren);
-        $confidenceRank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $confidenceRank = self::CONFIDENCE_RANK;
         if (!isset($confidenceRank[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }
@@ -190,7 +190,7 @@ final readonly class ComponentQueryService extends AbstractArchitectureQueryServ
         if ($limit < 1 || $limit > 500) {
             throw new InvalidArgumentException('limit must be between 1 and 500.');
         }
-        $confidenceRank = ['possible' => 1, 'probable' => 2, 'certain' => 3];
+        $confidenceRank = self::CONFIDENCE_RANK;
         if (!isset($confidenceRank[$minConfidence])) {
             throw new InvalidArgumentException('min_confidence must be possible, probable, or certain.');
         }

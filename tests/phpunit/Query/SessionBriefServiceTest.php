@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Knossos\Query\GraphTopologyQueryService;
 use Knossos\Query\SessionBriefService;
 use Knossos\Store\SqliteGraphRepository;
 use Knossos\Store\StableId;
@@ -394,6 +395,9 @@ final class SessionBriefServiceTest extends KnossosTestCase
             $text = (new SessionBriefService($pdo, $databasePath))->brief($absent);
 
             assertSame(false, $brief->pathExists);
+            // RootGuard refused it, so it must not read as allowed to anything
+            // consuming the gathered brief rather than its rendered text.
+            assertSame(false, $brief->pathAllowed);
             assertSame(true, str_contains($text, $absent . ' does not exist.'));
             assertSame(false, str_contains($text, 'is not an allowed root'));
             // Both command names occur in the verdict, as the two things that
@@ -440,6 +444,126 @@ final class SessionBriefServiceTest extends KnossosTestCase
 
         assertSame(true, str_contains($text, 'does not exist.'));
         assertSame(false, str_contains($text, 'scan_project path='));
+    }
+
+    /**
+     * The verdict line quotes these numbers, so each one is the probe's own.
+     *
+     * One file of each kind of drift, so a term dropped from the sum, or a
+     * default standing in for a count that was there, moves the total.
+     */
+    #[Group('query')]
+    public function testDriftAgeAndTrackedFilesAreTheScansOwnCounts(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php', 'src/b.php', 'lib/c.php']);
+        try {
+            file_put_contents($root . '/src/a.php', "<?php\n// edited\n");
+            touch($root . '/src/a.php', time() + 60);
+            unlink($root . '/src/b.php');
+            file_put_contents($root . '/lib/new.php', "<?php\n");
+
+            $brief = (new SessionBriefService($pdo))->gather($root);
+
+            assertSame('stale', $brief->state);
+            assertSame(3, $brief->changedFiles, 'One changed, one deleted and one added file.');
+            assertSame(3, $brief->trackedFiles, 'The scan tracked three files.');
+            // The fixture backdates the scan by five seconds.
+            assertSame(true, is_int($brief->ageSeconds) && $brief->ageSeconds >= 5);
+            assertSame($projectId, $brief->projectId);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A graph whose root has gone cannot be fingerprinted, which is no drift rather than invented drift. */
+    #[Group('query')]
+    public function testAnUnverifiedGraphReportsNoDrift(): void
+    {
+        [$pdo, , $root] = $this->seedProjectWithFiles(['src/a.php']);
+        $this->removeTempTree($root);
+
+        $brief = (new SessionBriefService($pdo))->gather($root);
+
+        assertSame('unverified', $brief->state);
+        assertSame(0, $brief->changedFiles);
+        assertSame(1, $brief->trackedFiles);
+    }
+
+    #[Group('query')]
+    public function testAnUnscannedPathHasNoDriftAgeOrTrackedFiles(): void
+    {
+        $brief = SessionBriefService::unscanned('/root/Elsewhere');
+
+        assertSame(0, $brief->changedFiles);
+        assertSame(0, $brief->trackedFiles);
+        assertSame(null, $brief->ageSeconds);
+    }
+
+    /** Every usable policy becomes one rule, in declaration order; one without a source boundary is skipped. */
+    #[Group('query')]
+    public function testBoundaryPoliciesBecomeRulesAnAgentCanRead(): void
+    {
+        [$pdo, , $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            file_put_contents($root . '/knossos.json', json_encode([
+                'version' => 1,
+                'boundaries' => [
+                    ['name' => 'core', 'path_prefix' => 'src'],
+                    ['name' => 'app', 'path_prefix' => 'app'],
+                    ['name' => 'tests', 'path_prefix' => 'tests'],
+                ],
+                'policies' => [
+                    ['id' => 'core-stays-clean', 'from_boundary' => 'core', 'deny_targets' => ['tests', 'app']],
+                    ['id' => 'app-uses-core', 'from_boundary' => 'app', 'allow_targets' => ['core']],
+                ],
+            ], JSON_THROW_ON_ERROR));
+
+            $brief = (new SessionBriefService($pdo))->gather($root);
+
+            assertSame(['core -x-> tests, app', 'app --> only core'], $brief->rules);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A caller that already holds a topology service passes it, and that one ranks the hubs. */
+    #[Group('query')]
+    public function testAnInjectedTopologyIsTheOneThatRanksHubs(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('php-scanner');
+        try {
+            $this->seedRouteAndHub($pdo, $projectId);
+            $overAnEmptyGraph = new GraphTopologyQueryService($this->freshTestDatabase());
+
+            $default = (new SessionBriefService($pdo))->gather($root);
+            $injected = (new SessionBriefService($pdo, null, $overAnEmptyGraph))->gather($root);
+
+            assertSame(true, in_array('PaymentGateway (class, degree 10)', $default->hubs, true));
+            assertSame([], $injected->hubs, 'The injected service reads a graph with no hubs.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * `KNOSSOS_ALLOWED_ROOTS` grants a root to the brief exactly as it does to
+     * the server, blank entries from a stray separator included.
+     */
+    #[Group('query')]
+    public function testARootFromTheEnvironmentIsAllowedDespiteBlankEntries(): void
+    {
+        [$pdo, $root, $databasePath] = $this->rootsFileFixture(['roots' => []]);
+        $previous = getenv('KNOSSOS_ALLOWED_ROOTS');
+        try {
+            putenv('KNOSSOS_ALLOWED_ROOTS=' . PATH_SEPARATOR . realpath($root) . PATH_SEPARATOR);
+
+            $brief = (new SessionBriefService($pdo, $databasePath))->gather($root);
+
+            assertSame(true, $brief->pathAllowed);
+        } finally {
+            putenv(is_string($previous) ? 'KNOSSOS_ALLOWED_ROOTS=' . $previous : 'KNOSSOS_ALLOWED_ROOTS');
+            $this->removeTempTree($root);
+        }
     }
 
     /**

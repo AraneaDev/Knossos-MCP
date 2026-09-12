@@ -1092,6 +1092,129 @@ SQL
         ];
     }
 
+    // ----- mutation-audit gaps (2026-09-11) -----
+
+    /**
+     * An imported file has no mtime on this machine, and a bundle that omits a
+     * line count means none was recorded.
+     *
+     * 0 is the sentinel: no file on disk carries it, so the next fast scan
+     * fingerprints the file rather than trusting a foreign timestamp.
+     */
+    public function testAnImportedFileHasNoLocalMtimeAndDefaultsItsLineCount(): void
+    {
+        $file = $this->fileRow('f1', 'src/A.php');
+        unset($file['line_count']);
+
+        $this->expectImportSuccess(['files' => [$file]]);
+
+        $row = $this->pdo->query('SELECT mtime, line_count FROM files')->fetch();
+        assertSame(0, (int) $row['mtime']);
+        assertSame(0, (int) $row['line_count']);
+    }
+
+    public function testTextFieldsAcceptExactlyOneMegabyte(): void
+    {
+        $this->expectImportSuccess(['nodes' => [$this->nodeRowWith('n1', ['display_name' => str_repeat('x', 1_000_000)])]]);
+        $this->setUp();
+        $this->assertStringContainsString(
+            'invalid text',
+            $this->expectImportError(['nodes' => [$this->nodeRowWith('n1', ['display_name' => str_repeat('x', 1_000_001)])]])->getMessage(),
+        );
+    }
+
+    /** Attributes up to one megabyte and 63 levels of nesting import; one byte or one level more does not. */
+    public function testAttributesAreBoundedInSizeAndDepth(): void
+    {
+        $sized = static fn(int $bytes): string => '{"a":"' . str_repeat('x', $bytes - 8) . '"}';
+        $nested = static fn(int $levels): string => str_repeat('{"a":', $levels) . '1' . str_repeat('}', $levels);
+        assertSame(1_000_000, strlen($sized(1_000_000)));
+
+        $this->expectImportSuccess(['nodes' => [$this->nodeRowWith('n1', ['attributes_json' => $sized(1_000_000)])]]);
+        $this->setUp();
+        $this->expectImportSuccess(['nodes' => [$this->nodeRowWith('n1', ['attributes_json' => $nested(63)])]]);
+        foreach ([$sized(1_000_001), $nested(64), '{"a":', ['a' => 1]] as $invalid) {
+            // Each import writes its project before the node fails, so each
+            // needs a database of its own; the caller's transaction is what
+            // discards a failed import in production.
+            $this->setUp();
+            // Refused as a bad bundle, which the client sees as an invalid
+            // argument rather than as an unexpected failure.
+            assertSame(
+                'Bundle JSON attributes are invalid.',
+                $this->expectImportError(['nodes' => [$this->nodeRowWith('n1', ['attributes_json' => $invalid])]])->getMessage(),
+            );
+        }
+    }
+
+    /**
+     * A node's own language wins; without one it comes from an external
+     * reference's ecosystem, then from the scanner that owns it.
+     */
+    public function testANodeLanguageIsItsOwnThenItsReferenceThenItsScanner(): void
+    {
+        $cases = [
+            'own' => [['language' => str_repeat('k', 100), 'owner_key' => 'knossos.php:file:a'], str_repeat('k', 100)],
+            'too long' => [['language' => str_repeat('k', 101), 'owner_key' => 'knossos.php:file:a'], 'php'],
+            'empty' => [['language' => '', 'owner_key' => 'knossos.typescript:file:a'], 'ts'],
+            'external' => [['kind' => 'external_class', 'attributes_json' => '{"reference":"composer:acme/lib"}', 'owner_key' => 'knossos.php:file:a'], 'composer'],
+            'no ecosystem' => [['kind' => 'external_class', 'attributes_json' => '{"reference":"acme/lib"}', 'owner_key' => 'knossos.python:file:a'], 'py'],
+            'not external' => [['kind' => 'class', 'attributes_json' => '{"reference":"composer:acme/lib"}', 'owner_key' => 'knossos.php:file:a'], 'php'],
+            'other scanner' => [['owner_key' => 'acme.go:file:a'], 'acme.go'],
+        ];
+        $nodes = [];
+        foreach ($cases as $label => [$fields, $expected]) {
+            $nodes[] = array_merge($this->nodeRow('n-' . $label), ['language' => null], $fields);
+        }
+
+        $this->expectImportSuccess(['nodes' => $nodes]);
+
+        $maps = (new BundleIdMapBuilder())->build(self::PROJECT_ID, $this->payloadWith(['nodes' => $nodes]));
+        foreach ($cases as $label => [, $expected]) {
+            $statement = $this->pdo->prepare('SELECT language FROM nodes WHERE id = ?');
+            $statement->execute([$maps['nodes']['n-' . $label]]);
+            assertSame($expected, $statement->fetchColumn(), $label);
+        }
+    }
+
+    public function testImportRejectsABackslashTraversal(): void
+    {
+        $this->assertStringContainsString(
+            'unsafe file path',
+            $this->expectImportError(['files' => [$this->fileRow('f1', 'src\\..\\..\\etc\\passwd')]])->getMessage(),
+        );
+    }
+
+    /** Both patterns are anchored at each end, and a trailing newline is not the end. */
+    public function testTimestampsAndHashesMustMatchTheirWholeValue(): void
+    {
+        foreach (["2025-01-01T00:00:00+00:00\n", 'x2025-01-01T00:00:00+00:00', '2025-01-01T00:00:00+00:00x'] as $timestamp) {
+            $this->setUp();
+            $payload = $this->payloadWith([]);
+            $payload['scan']['finished_at'] = $timestamp;
+            assertSame('Bundle timestamp is malformed.', captureThrows(fn() => $this->callImportWithPayload($payload), InvalidArgumentException::class)->getMessage());
+        }
+        foreach (["abcdef\n", 'zzabcdef', 'abcdefzz'] as $hash) {
+            $this->setUp();
+            assertSame('Bundle hash is malformed.', $this->expectImportError(['files' => [array_merge($this->fileRow('f1', 'src/A.php'), ['content_hash' => $hash])]])->getMessage());
+        }
+    }
+
+    /** Edge and classification attributes travel with them, and a classification keeps a mapped id. */
+    public function testEdgeAndClassificationRowsKeepTheirAttributesAndIds(): void
+    {
+        $this->expectImportSuccess([
+            'nodes' => [$this->nodeRow('n1')],
+            'edges' => [array_merge($this->edgeRow('e1', 'n1', 'n1'), ['attributes_json' => '{"via":"constructor"}'])],
+            'classifications' => [array_merge($this->classificationRow('c1', 'n1', null), ['attributes_json' => '{"rule":"suffix"}'])],
+        ]);
+
+        assertSame('{"via":"constructor"}', $this->pdo->query('SELECT attributes_json FROM edges')->fetchColumn());
+        $classification = $this->pdo->query('SELECT id, attributes_json FROM classifications')->fetch();
+        assertSame(BundleIdMapBuilder::mappedId(self::PROJECT_ID, 'classifications', 'c1'), $classification['id']);
+        assertSame('{"rule":"suffix"}', $classification['attributes_json']);
+    }
+
     // ----- helpers -----
 
     private function callImport(array $payload, array $manifest): void

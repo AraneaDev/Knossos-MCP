@@ -44,12 +44,12 @@ final class MaintenanceTest extends KnossosTestCase
             $pdo->exec("UPDATE scans SET status = 'cancelled', started_at = '2000-01-01T00:00:00+00:00' WHERE id = '" . $protected . "'");
 
             $service = new DatabaseMaintenanceService($pdo, $path);
-            $cleanupPreview = $service->cleanupStaleScans($project);
+            $cleanupPreview = $service->cleanupStaleScans($project, 24);
             assertSame(false, $cleanupPreview->data['executed']);
             assertSame([$stale], $cleanupPreview->data['removable_scan_ids']);
             assertSame([$protected], $cleanupPreview->data['protected_scan_ids']);
             assertSame(1, (int) $pdo->query("SELECT COUNT(*) FROM scans WHERE id = '" . $stale . "'")->fetchColumn());
-            assertSame(true, $service->cleanupStaleScans($project, execute: true)->data['executed']);
+            assertSame(true, $service->cleanupStaleScans($project, 24, execute: true)->data['executed']);
             assertSame(0, (int) $pdo->query("SELECT COUNT(*) FROM scans WHERE id = '" . $stale . "'")->fetchColumn());
             assertSame(1, (int) $pdo->query("SELECT COUNT(*) FROM scans WHERE id = '" . $protected . "'")->fetchColumn());
             assertThrows(fn() => $service->cleanupStaleScans($project, 0), InvalidArgumentException::class);
@@ -83,7 +83,7 @@ final class MaintenanceTest extends KnossosTestCase
             assertSame(false, $service->removeProject($project)->data['executed']);
             assertSame(true, $service->removeProject($project, true)->data['executed']);
             assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM projects')->fetchColumn());
-            assertThrows(fn() => $service->cleanupStaleScans($project), InvalidArgumentException::class);
+            assertThrows(fn() => $service->cleanupStaleScans($project, 24), InvalidArgumentException::class);
             assertThrows(fn() => $service->maintain('invalid'), InvalidArgumentException::class);
             assertThrows(fn() => (new DatabaseMaintenanceService($pdo, ':memory:'))->maintain('backup'), InvalidArgumentException::class);
         } finally {

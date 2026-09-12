@@ -1790,6 +1790,40 @@ final class GraphReconcilerTest extends TestCase
         // cannot be asserted without wall-clock duration assertions, which would be flaky.
     }
 
+    /**
+     * No phase can have lasted longer than the call that measured it.
+     *
+     * `>= 0.0` above is satisfied by any positive number, so it passed happily
+     * when the elapsed-time subtraction was mutated into an addition —
+     * `hrtime(true) + $phaseStarted` yields a reading around a billion
+     * milliseconds, because `hrtime` counts from boot rather than from the start
+     * of the phase. Those numbers reach users as `metrics.stages_ms` on every
+     * scan result, so the nonsense would have been reported as timing.
+     *
+     * An UPPER bound is what the earlier note dismissed as flaky, and a tight
+     * one would be. This one is not: it allows the whole call's wall clock plus
+     * a second of slack, which is several orders of magnitude below the mutant
+     * and far above anything a real phase over a fixture takes.
+     */
+    public function testNoPhaseTimingExceedsTheCallThatMeasuredIt(): void
+    {
+        $request = $this->buildRequest();
+        $reconciler = new GraphReconciler($this->repo);
+
+        $startedAt = hrtime(true);
+        $result = $reconciler->reconcile($request);
+        $callMilliseconds = (hrtime(true) - $startedAt) / 1_000_000;
+
+        $ceiling = $callMilliseconds + 1_000.0;
+        foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
+            assertSame(
+                true,
+                $milliseconds <= $ceiling,
+                sprintf('Phase %s reported %.3fms, longer than the %.3fms call that measured it.', $phase, $milliseconds, $ceiling),
+            );
+        }
+    }
+
     // ----- helpers -----
 
     /**
