@@ -30,16 +30,42 @@ use Throwable;
  * the change set rather than to the repository, which is what lets this answer
  * for a tree far above the walk's own ceiling.
  *
- * One gap survives even the index cross-check: a file `.gitignore` excludes
- * that the scanner would track for the *first* time — new since the active
- * scan, so it has no `files` row yet — appears in neither `diff` nor
- * `ls-files --others --exclude-standard`, and the cross-check has nothing
- * stored to notice it by. Only the walk catches it. Declining whenever the
- * cross-check finds any gitignored-but-scanned row was considered and
- * rejected: it would hand every large project with even one such file
- * permanently to the walk's own ceiling, trading the fast path away for
- * exactly the repositories it exists to serve, to close a gap that a full
- * scan or the walk already closes on its own.
+ * git's own universe still cannot show it a file `.gitignore` excludes that
+ * the scanner tracks anyway, which is what the index cross-check is for:
+ * whenever it runs (at or below {@see self::MAX_CROSS_CHECKED_FILES} tracked
+ * files) and finds a tracked row absent from git's index, this oracle
+ * declines outright — null, never a zero or a partial count — so {@see
+ * FirstAnsweringDriftOracle} falls through to the walk, which sees such a
+ * file directly through {@see ScannedPaths} rather than through git.
+ *
+ * That guarantee holds only where the cross-check actually ran clean. Two
+ * cases deliberately proceed instead of declining: above the file-count
+ * bound, where the cross-check is skipped entirely, and when the
+ * `ls-files --cached` call itself fails (its own try/catch, below — most
+ * likely on a large repository with long paths, approaching
+ * {@see \Knossos\Git\GitProcessRunner}'s own output ceiling). Declining in
+ * either case would strip this oracle from exactly the large repositories it
+ * exists to serve: the walk cannot take over for them either, since its
+ * ceiling is the same number, so both oracles would return null and every
+ * probe on such a project would report `unverified` forever. Honest, but a
+ * larger regression than the gap declining there would close.
+ *
+ * One gap survives even where the guarantee holds: a file `.gitignore`
+ * excludes that the scanner would track for the *first* time has no `files`
+ * row yet, so the cross-check has nothing to compare it against — it appears
+ * in neither `diff` nor `ls-files --others --exclude-standard` either. This
+ * does not heal on its own: nothing rescans a repository where that new file
+ * is the only change, so it stays invisible indefinitely, until something
+ * else triggers a rescan or a full one is run by hand. Once such a file has
+ * been scanned once, though, its row exists and every later edit or deletion
+ * to it is caught by the cross-check like any other tracked file.
+ *
+ * The cross-check also declines on a state that is not actually a problem: a
+ * file leaving git's index (an uncommitted removal, or a rename's departing
+ * half under `--no-renames`) while its `files` row survives until the next
+ * scan looks identical, from here, to a permanent gitignore. That spurious
+ * decline is harmless — it only hands an ordinary case to the walk one probe
+ * early — and is not worth telling apart from the real one.
  */
 final readonly class GitDriftOracle implements DriftOracle
 {
@@ -53,15 +79,17 @@ final readonly class GitDriftOracle implements DriftOracle
     private const MAX_CANDIDATES = 20_000;
 
     /**
-     * Tracked files up to which the index is cross-checked against the graph.
+     * Tracked files up to which the index is cross-checked against the graph,
+     * and the boundary of the decline guarantee described in the class
+     * docblock, not only a performance cutoff.
      *
-     * The cross-check is what keeps this oracle as sensitive as the walk for a
-     * file `.gitignore` excludes and the scanner tracks anyway: git reports no
-     * change to a file it does not follow, and a zero from here ends the chain
-     * before the walk can look. Reading the tracked set costs one query and no
-     * file I/O, so it is affordable exactly as far as the walk's ceiling; above
-     * it this oracle is the only one that answers at all, and answering from
-     * git's narrower universe beats reporting the graph unverified.
+     * At or below it, a tracked row absent from git's index declines the
+     * oracle outright, so the walk answers from a complete view instead of
+     * this one from an incomplete one. Above it, the cross-check is skipped
+     * and this oracle proceeds as though git's universe were complete anyway:
+     * the walk cannot help a project this large either, so declining here
+     * would only trade a possible miss for a certain `unverified` on every
+     * probe against it.
      */
     private const MAX_CROSS_CHECKED_FILES = 20_000;
 
@@ -135,23 +163,32 @@ final readonly class GitDriftOracle implements DriftOracle
                 // paths it is the call most likely to approach
                 // GitProcessRunner's maxOutputBytes, and at exactly the
                 // repository size where the walk is also near its own
-                // ceiling. Losing it costs only the gitignored-but-scanned
-                // coverage the cross-check adds; folding its failure into the
-                // block above would cost the whole oracle instead, for a
-                // reason unrelated to whether diff and untracked candidates
-                // could still answer.
+                // ceiling. Losing it costs the decline guarantee documented
+                // on the class and on MAX_CROSS_CHECKED_FILES, not just the
+                // gitignored-but-scanned coverage the cross-check adds: this
+                // oracle proceeds from diff and untracked candidates alone,
+                // deliberately, for the same reason the size bound proceeds
+                // rather than declines above its own ceiling. Folding this
+                // failure into the block above would cost the whole oracle
+                // instead, for a reason unrelated to whether diff and
+                // untracked candidates could still answer.
                 error_log('knossos drift query: git ls-files --cached could not answer, cross-check skipped (' . $error->getMessage() . ')');
                 $crossCheck = false;
             }
         }
 
         $tracked = $crossCheck ? $this->trackedHashes($projectId, $activeScanId, null) : [];
-        $candidates = self::entries($changedOutput) + self::entries($untrackedOutput);
-        if ($crossCheck) {
-            // Files the graph holds that git does not follow at all. Edits to
-            // them are invisible to `diff`, so they are decided every probe.
-            $candidates += array_fill_keys(array_keys(array_diff_key($tracked, self::entries($indexedOutput))), true);
+        if ($crossCheck && array_diff_key($tracked, self::entries($indexedOutput)) !== []) {
+            // A tracked row git does not follow at all: this oracle's view of
+            // the project is incomplete, not merely thin. Declining outright
+            // — null, not a zero or a partial count over just the candidates
+            // diff and untracked already named — is what lets the walk answer
+            // from a complete view instead. See the class docblock for where
+            // this guarantee holds, where it deliberately does not, and the
+            // harmless spurious decline this same check also produces.
+            return null;
         }
+        $candidates = self::entries($changedOutput) + self::entries($untrackedOutput);
         if (count($candidates) > self::MAX_CANDIDATES) {
             return null;
         }

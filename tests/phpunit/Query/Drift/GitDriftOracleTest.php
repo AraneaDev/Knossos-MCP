@@ -6,7 +6,9 @@ namespace Knossos\Tests\Phpunit\Query\Drift;
 
 use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Query\Drift\DriftCounts;
+use Knossos\Query\Drift\FirstAnsweringDriftOracle;
 use Knossos\Query\Drift\GitDriftOracle;
+use Knossos\Query\Drift\WalkDriftOracle;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
@@ -15,7 +17,9 @@ use RuntimeException;
 /**
  * Driven through a faked runner, because CI has no git binary and no checkout.
  * What is under test is how the oracle reasons about what git says, not git
- * itself: git names candidates, and the graph's own stored hashes decide them.
+ * itself: git names candidates, and the graph's own stored hashes decide
+ * them — except when the index cross-check finds a tracked row git does not
+ * follow at all, where the oracle must decline outright rather than decide.
  */
 final class GitDriftOracleTest extends KnossosTestCase
 {
@@ -119,12 +123,15 @@ final class GitDriftOracleTest extends KnossosTestCase
 
     /**
      * `--no-renames` makes git emit a rename as an unrelated delete plus add,
-     * so the oracle must not need renames at all: the old path has a `files`
-     * row and no file on disk (a deletion), the new path has no row but is
-     * trackable (an addition), and the two must not cancel into a false zero.
+     * and the departing path also leaves the index while its `files` row
+     * survives until the next scan — exactly the spurious-decline state
+     * documented on the class docblock: indistinguishable, from here, from a
+     * permanently gitignored-but-scanned file. The oracle must decline rather
+     * than guess; the walk still resolves the rename correctly once it does
+     * (see testWhenGitDeclinesTheWalkAnswersInstead for that property).
      */
     #[Group('git')]
-    public function testARenameIsADeletionAndAnAdditionNotAWash(): void
+    public function testARenameLeavesTheOldPathOutOfTheIndexAndDeclines(): void
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
@@ -133,10 +140,7 @@ final class GitDriftOracleTest extends KnossosTestCase
 
             $drift = $this->drift($pdo, $projectId, $scanId, $root, ['src/a.php', 'src/renamed.php'], [], ['src/renamed.php']);
 
-            self::assertNotNull($drift);
-            self::assertSame(1, $drift->added, 'The new path has no files row but is trackable.');
-            self::assertSame(1, $drift->deleted, 'The old path has a files row and no file on disk.');
-            self::assertSame(0, $drift->changed, 'Neither half of a rename is a content change.');
+            self::assertNull($drift, "src/a.php's files row survives outside git's index until the next scan; the oracle must decline rather than decide it alone.");
         } finally {
             $this->removeTempTree($root);
         }
@@ -144,12 +148,15 @@ final class GitDriftOracleTest extends KnossosTestCase
 
     /**
      * A file `.gitignore` excludes and the scanner tracks anyway is invisible
-     * to `git diff`, and a zero from this oracle ends the chain before the walk
-     * can look. Cross-checking the index against the graph is what keeps this
-     * oracle as sensitive as the walk it answers ahead of.
+     * to `git diff`. Deciding it from the graph's own stored hash was the
+     * original design; it is no longer what this oracle does. A tracked row
+     * git does not follow at all means this oracle's view is incomplete, so
+     * it must decline outright — null, not a count, however confidently the
+     * graph's hash could answer for this one file — and let the walk, which
+     * sees the file directly, answer from a complete view instead.
      */
     #[Group('git')]
-    public function testAFileGitDoesNotFollowIsStillDecided(): void
+    public function testAFileGitDoesNotFollowMakesTheOracleDecline(): void
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
@@ -157,8 +164,63 @@ final class GitDriftOracleTest extends KnossosTestCase
 
             $drift = $this->drift($pdo, $projectId, $scanId, $root, [], [], []);
 
-            self::assertNotNull($drift);
-            self::assertSame(1, $drift->changed, 'The index does not hold this file, so only the graph can decide it.');
+            self::assertNull($drift, 'The index does not hold this tracked file at all; the oracle must hand over to the walk, not decide it alone.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The cross-check must not fire on an ordinary project where git's index
+     * covers everything the graph tracks. Without this guard, a decline could
+     * regress into firing on every project, silently routing every probe to
+     * the walk and losing the fast path this oracle exists to provide.
+     */
+    #[Group('git')]
+    public function testCrossCheckWithNothingExtraStillAnswersNormally(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            file_put_contents($root . '/src/a.php', "<?php\nfinal class A {}\n");
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, ['src/a.php'], [], ['src/a.php']);
+
+            self::assertNotNull($drift, "Git's index names every tracked file; the cross-check finds nothing extra and must not decline.");
+            self::assertSame(1, $drift->changed);
+            self::assertSame(0, $drift->added);
+            self::assertSame(0, $drift->deleted);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The property the whole change exists for, pinned through the real
+     * chain rather than only at GitDriftOracle's own boundary: once this
+     * oracle declines, FirstAnsweringDriftOracle must fall through to the
+     * walk, and the walk — which reads the file directly through
+     * ScannedPaths rather than through git — must be the one whose answer
+     * surfaces. A unit test of GitDriftOracle's null alone would not catch a
+     * chain that swallowed it instead of falling through.
+     */
+    #[Group('git')]
+    public function testWhenGitDeclinesTheWalkAnswersInstead(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            file_put_contents($root . '/src/a.php', "<?php\nfinal class A {}\n");
+            // The index does not hold src/a.php at all (as `.gitignore` would
+            // produce), so the cross-check must decline the git oracle
+            // outright and hand this probe to the walk.
+            $oracle = new FirstAnsweringDriftOracle(
+                new GitDriftOracle($pdo, $this->fakeRunner([], [], [])),
+                new WalkDriftOracle($pdo),
+            );
+
+            $drift = $oracle->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+
+            self::assertNotNull($drift, 'The walk must answer once the git oracle defers, not leave the probe with nothing.');
+            self::assertSame(1, $drift->changed, "The walk's answer, not a false zero, must be what surfaces.");
         } finally {
             $this->removeTempTree($root);
         }
