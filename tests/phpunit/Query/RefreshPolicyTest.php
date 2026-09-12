@@ -158,6 +158,45 @@ final class RefreshPolicyTest extends KnossosTestCase
     }
 
     /**
+     * `scanCost()` guards its file count with `$files < 1`, mutable to `<=`.
+     * A scan whose active files count is exactly one is a legitimate,
+     * measurable scan, not the divide-by-zero case that guard exists to
+     * catch: it must still produce a cost estimate. Flipping the guard to
+     * `<=` would treat a one-file project as unmeasurable and decline with
+     * "No recorded scan duration", which this test would catch since it
+     * asserts an allow instead.
+     */
+    #[Group('query')]
+    public function testExactlyOneTrackedFileStillEstimatesACost(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 100, files: 1);
+
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, 1);
+
+        self::assertTrue($decision->refresh, 'One tracked file is a measurable scan (100 ms / 1 file), well under budget; it must not be declined as unmeasurable.');
+        self::assertNull($decision->reason);
+    }
+
+    /**
+     * `scanCost()` floors a recorded duration at `max(0.0, ...)`, mutable to
+     * `max(1.0, ...)`. A scan that timed at exactly zero milliseconds is a
+     * genuine, cheap-to-repeat answer and must stay zero, not become a
+     * phantom one millisecond: the class docblock calls this distinction
+     * load-bearing, separate from the null case that means "unknown".
+     * Pinned with a zero budget so the two costs (0 ms vs 1 ms) fall on
+     * opposite sides of the `> budget` decision instead of both fitting.
+     */
+    #[Group('query')]
+    public function testARecordedZeroDurationStaysZeroNotOneMillisecond(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 0, files: 1);
+
+        $decision = (new RefreshPolicy($pdo, budgetMs: 0))->decide($projectId, 1);
+
+        self::assertTrue($decision->refresh, 'A true zero-cost scan estimates 0 ms, which fits even a 0 ms budget; max(1.0, ...) would estimate 1 ms and be declined instead.');
+    }
+
+    /**
      * Seeds a project whose completed scan recorded $durationMs over $files
      * files, so RefreshPolicy's cost estimate is a fixed, known quantity for
      * the arithmetic each test asserts against. A null duration stands for a
