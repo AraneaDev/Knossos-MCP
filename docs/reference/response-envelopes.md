@@ -208,9 +208,14 @@ of them carry `readOnlyHint: true` any more: a call to one of them can write
 Knossos's own graph and start language worker subprocesses, which is exactly
 what that annotation promises a client does not happen. `destructiveHint:
 false` and `idempotentHint: true` still hold, since a rescan neither destroys
-data nor makes the tool behave differently when repeated. Pass
-`refresh_if_stale: false`, or set `KNOSSOS_AUTO_REFRESH=0` on the server
-process, for behaviour a client can rely on as genuinely read-only.
+data nor makes the tool behave differently when repeated.
+
+For a call a client can rely on as genuinely read-only, pass
+`refresh_if_stale: false`. `KNOSSOS_AUTO_REFRESH=0` is not enough on its own:
+it turns the default off, but an explicit `refresh_if_stale: true` still wins
+over it, so a caller that asks for a refresh gets one on a server with the
+kill switch set. The variable makes the server not refresh unasked; only the
+argument makes a particular call read-only.
 
 ## Next steps
 

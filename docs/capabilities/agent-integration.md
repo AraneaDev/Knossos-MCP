@@ -44,9 +44,10 @@ graph and spawn language worker subprocesses when it repairs a stale project
 first, so a client that uses the annotation to decide whether to ask before
 calling should treat these tools accordingly. They still carry
 `destructiveHint: false` and `idempotentHint: true`, both of which remain
-true regardless of whether a rescan runs. Pass `refresh_if_stale: false`, or
-set `KNOSSOS_AUTO_REFRESH=0` on the server process, to get genuinely
-read-only behaviour back.
+true regardless of whether a rescan runs. Pass `refresh_if_stale: false` to
+get genuinely read-only behaviour back on a call. `KNOSSOS_AUTO_REFRESH=0`
+does not do that on its own: it only turns the default off, and an explicit
+`refresh_if_stale: true` still wins over it.
 
 ## Agent brief
 

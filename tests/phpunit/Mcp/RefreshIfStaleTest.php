@@ -452,4 +452,43 @@ final class RefreshIfStaleTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * The kill switch turns the default off; it does not make the server
+     * read-only. An explicit `refresh_if_stale: true` still rescans with it
+     * set, which is the documented precedence and the reason the reference
+     * cannot offer the variable alone as a way to get a genuinely read-only
+     * call.
+     *
+     * Pinned because the claim is the kind that reads as obviously true and
+     * is not: an operator who set the variable to keep a server from writing
+     * would find a caller writing anyway.
+     */
+    #[Group('mcp')]
+    public function testAnExplicitRequestStillRefreshesWithTheKillSwitchSet(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        // Captured rather than assumed absent, for the reason the neighbouring
+        // kill-switch test gives.
+        $previous = getenv('KNOSSOS_AUTO_REFRESH');
+        putenv('KNOSSOS_AUTO_REFRESH=0');
+        try {
+            $file = $root . '/src/CheckoutService.php';
+            file_put_contents($file, "\n// drift\n", FILE_APPEND);
+            touch($file, filemtime($file) + 60);
+            $before = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+
+            $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => true]);
+
+            assertSame('fresh', $result->staleness['state'], 'The caller asked for a refresh and got one, kill switch or no kill switch.');
+            assertSame($before + 1, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn(), 'A rescan really ran, so the variable alone cannot be offered as a read-only guarantee.');
+        } finally {
+            if ($previous === false) {
+                putenv('KNOSSOS_AUTO_REFRESH');
+            } else {
+                putenv('KNOSSOS_AUTO_REFRESH=' . $previous);
+            }
+            $this->removeTempTree($root);
+        }
+    }
 }
