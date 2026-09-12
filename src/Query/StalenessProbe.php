@@ -6,6 +6,8 @@ namespace Knossos\Query;
 
 use Closure;
 use Knossos\Query\Drift\DriftOracle;
+use Knossos\Query\Drift\FirstAnsweringDriftOracle;
+use Knossos\Query\Drift\GitDriftOracle;
 use Knossos\Query\Drift\WalkDriftOracle;
 use PDO;
 
@@ -25,7 +27,7 @@ final readonly class StalenessProbe
     public function __construct(private PDO $pdo, ?Closure $wallClock = null, ?DriftOracle $oracle = null)
     {
         $this->wallClock = $wallClock ?? static fn(): int => time();
-        $this->oracle = $oracle ?? new WalkDriftOracle($pdo);
+        $this->oracle = $oracle ?? new FirstAnsweringDriftOracle(new GitDriftOracle($pdo), new WalkDriftOracle($pdo));
     }
 
     /**
