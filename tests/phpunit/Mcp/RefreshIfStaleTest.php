@@ -314,6 +314,43 @@ final class RefreshIfStaleTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The other half of the $drifted < 1 guard: changed_files_since absent
+     * entirely because drift could not be measured at all, rather than present
+     * and summing to zero. Both sub-cases must decline identically, but only
+     * one of them was covered before this test existed.
+     */
+    #[Group('mcp')]
+    public function testAStaleGraphWithUnmeasurableDriftDeclines(): void
+    {
+        [$tools, $projectId, $root, $pdo] = $this->buildToolServiceWithScan('mixed');
+        try {
+            // Removing the root makes WalkDriftOracle decline (is_dir() reads
+            // false), and this fixture never records a git head, so
+            // GitDriftOracle already declines on its own. Neither oracle
+            // answers, so changed_files_since is absent from the verdict
+            // rather than present and zero.
+            $this->removeTempTree($root);
+            $pdo->prepare(
+                'INSERT INTO scans(id, project_id, mode, status, scanner_set_hash, started_at) ' .
+                "VALUES ('later-attempt', :project, 'incremental', 'failed', 'x', :started)",
+            )->execute(['project' => $projectId, 'started' => gmdate('Y-m-d\TH:i:s\Z', time() + 60)]);
+            $probe = (new StalenessProbe($pdo))->probe($projectId);
+            assertSame('stale', $probe['state']);
+            assertSame(false, array_key_exists('changed_files_since', $probe), 'Drift must be genuinely unmeasured for this test to exercise the intended branch.');
+            $before = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+
+            $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => true]);
+
+            assertSame($before, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn(), 'An unmeasurable change set must not scan.');
+            assertSame(true, str_contains(implode(' ', $result->warnings), 'change set is unknown'));
+        } finally {
+            if (is_dir($root)) {
+                $this->removeTempTree($root);
+            }
+        }
+    }
+
     /** The default is the feature: an agent that must ask for a fresh graph pays two round trips discovering it needed one. */
     #[Group('mcp')]
     public function testRefreshHappensWithoutBeingAsked(): void

@@ -111,6 +111,43 @@ final class RefreshPolicyTest extends KnossosTestCase
         );
     }
 
+    /**
+     * decide() compares with strict `>`, so an estimate exactly equal to the
+     * budget is allowed, not declined. Pinned on its own budget rather than
+     * riding the default one so a later change to FIXED_OVERHEAD_MS or
+     * DEFAULT_BUDGET_MS cannot make this test's boundary drift along with it.
+     */
+    #[Group('query')]
+    public function testAnEstimateExactlyAtTheBudgetIsAllowed(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_000, files: 1000);
+
+        self::assertTrue(
+            (new RefreshPolicy($pdo, budgetMs: 550))->decide($projectId, 5)->refresh,
+            '500 ms overhead plus 10 ms/file times 5 files is exactly 550 ms; a tie must fall on the side of allowing the refresh.',
+        );
+        self::assertFalse(
+            (new RefreshPolicy($pdo, budgetMs: 549))->decide($projectId, 5)->refresh,
+            'One ms over the budget must still decline.',
+        );
+    }
+
+    /**
+     * round() rounds to nearest, so a true cost of 5000.45 ms would round down
+     * to 5000 and read as fitting a 5000 ms budget it never actually fit.
+     * Rounding the estimate up instead keeps the error on the safe side.
+     */
+    #[Group('query')]
+    public function testAFractionalMillisecondOverBudgetIsNotRoundedAway(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 10_001, files: 1000);
+
+        self::assertFalse(
+            (new RefreshPolicy($pdo))->decide($projectId, 450)->refresh,
+            'perFile is 10.001 ms/file; 450 files plus the 500 ms overhead cost 5000.45 ms, over the 5000 ms budget even though round() alone would hide the excess.',
+        );
+    }
+
     /** A drift of zero declines without even reading scan cost, because there is nothing to refresh. */
     #[Group('query')]
     public function testZeroDriftDeclinesWithoutMeasuring(): void

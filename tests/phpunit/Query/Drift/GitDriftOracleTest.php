@@ -118,6 +118,31 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
+     * `--no-renames` makes git emit a rename as an unrelated delete plus add,
+     * so the oracle must not need renames at all: the old path has a `files`
+     * row and no file on disk (a deletion), the new path has no row but is
+     * trackable (an addition), and the two must not cancel into a false zero.
+     */
+    #[Group('git')]
+    public function testARenameIsADeletionAndAnAdditionNotAWash(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            unlink($root . '/src/a.php');
+            file_put_contents($root . '/src/renamed.php', "<?php\n");
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, ['src/a.php', 'src/renamed.php'], [], ['src/renamed.php']);
+
+            self::assertNotNull($drift);
+            self::assertSame(1, $drift->added, 'The new path has no files row but is trackable.');
+            self::assertSame(1, $drift->deleted, 'The old path has a files row and no file on disk.');
+            self::assertSame(0, $drift->changed, 'Neither half of a rename is a content change.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * A file `.gitignore` excludes and the scanner tracks anyway is invisible
      * to `git diff`, and a zero from this oracle ends the chain before the walk
      * can look. Cross-checking the index against the graph is what keeps this
@@ -179,6 +204,29 @@ final class GitDriftOracleTest extends KnossosTestCase
                 ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
 
             self::assertNull($drift, 'A rebased or garbage-collected commit must hand over to the walk, not report zero drift.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The index cross-check is the call most likely to hit a large repository's
+     * output ceiling, and it must fail on its own: losing it should cost only
+     * the gitignored-but-scanned coverage it adds, not the whole oracle's
+     * answer, which diff and untracked candidates can still decide.
+     */
+    #[Group('git')]
+    public function testTheIndexCrossCheckFailsSoftInsteadOfSilencingTheOracle(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            file_put_contents($root . '/src/a.php', "<?php\nfinal class A {}\n");
+
+            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', ['src/a.php'], [])))
+                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+
+            self::assertNotNull($drift, 'diff and untracked candidates can still decide the oracle even when the cross-check cannot run.');
+            self::assertSame(1, $drift->changed);
         } finally {
             $this->removeTempTree($root);
         }
@@ -330,6 +378,56 @@ final class GitDriftOracleTest extends KnossosTestCase
             public function run(array $command, int $timeoutMs, string $operation): string
             {
                 throw new RuntimeException('bad revision');
+            }
+        };
+    }
+
+    /**
+     * A runner that answers every subcommand normally except the one named by
+     * $failingFlag, which it throws for — standing in for an index listing
+     * that overruns GitProcessRunner's output ceiling while diff and
+     * untracked candidates still answer fine.
+     *
+     * @param list<string> $changed
+     * @param list<string> $untracked
+     */
+    private function runnerFailingOnlyOn(string $failingFlag, array $changed, array $untracked): GitProcessRunnerInterface
+    {
+        return new class ($failingFlag, self::HEAD, $changed, $untracked) implements GitProcessRunnerInterface {
+            /**
+             * @param list<string> $changed
+             * @param list<string> $untracked
+             */
+            public function __construct(
+                private readonly string $failingFlag,
+                private readonly string $head,
+                private readonly array $changed,
+                private readonly array $untracked,
+            ) {}
+
+            /** Throws for $failingFlag, otherwise answers as fakeRunner() does. */
+            public function run(array $command, int $timeoutMs, string $operation): string
+            {
+                if (in_array($this->failingFlag, $command, true)) {
+                    throw new RuntimeException('output too large');
+                }
+
+                return match (true) {
+                    in_array('rev-parse', $command, true) => $this->head . "\n",
+                    in_array('diff', $command, true) => self::framed($this->changed),
+                    in_array('--others', $command, true) => self::framed($this->untracked),
+                    default => '',
+                };
+            }
+
+            /**
+             * Git's own `-z` framing: every entry terminated by a NUL.
+             *
+             * @param list<string> $paths
+             */
+            private static function framed(array $paths): string
+            {
+                return $paths === [] ? '' : implode("\0", $paths) . "\0";
             }
         };
     }

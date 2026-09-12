@@ -79,6 +79,20 @@ final class WalkDriftOracleTest extends KnossosTestCase
         }
     }
 
+    /** A mtime moved backwards without touching the bytes must not read as drift either, for the same reason a forward touch does not. */
+    #[Group('query')]
+    public function testAMtimeMovedBackwardsWithoutAContentChangeIsNotDrift(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            touch($root . '/src/a.php', time() - 3600);
+
+            self::assertSame(0, self::drift($pdo, $projectId, $root)->changed, 'A `git checkout` that restores identical bytes moves mtime backwards for free.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** A real edit must still be caught now that mtime is no longer part of the verdict. */
     #[Group('query')]
     public function testAContentChangeIsDrift(): void
