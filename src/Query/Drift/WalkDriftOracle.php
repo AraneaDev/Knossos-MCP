@@ -80,6 +80,15 @@ final readonly class WalkDriftOracle implements DriftOracle
             'SELECT relative_path, content_hash FROM files WHERE project_id = :project AND last_scan_id = :scan LIMIT ' . self::MAX_PROBED_FILES,
         );
         $statement->execute(['project' => $projectId, 'scan' => $activeScanId]);
+        // A scan that recorded nothing about the manifests it read cannot have
+        // them compared, and an input that cannot be compared must not be
+        // passed over as an unchanged one: that is how "could not determine"
+        // becomes a `fresh` nothing verified. Declining hands the caller an
+        // honest `unverified` instead.
+        $units = RecordedUnitInputs::forScan($this->pdo, $activeScanId);
+        if ($units === null) {
+            return null;
+        }
         $tracked = [];
         foreach ($statement->fetchAll() as $file) {
             $tracked[(string) $file['relative_path']] = (string) $file['content_hash'];
@@ -87,7 +96,7 @@ final readonly class WalkDriftOracle implements DriftOracle
         // Unioned with `+`, so a path that is both a `files` row and a manifest
         // keeps the row's hash: one path, one stored answer, and one pass over
         // it below rather than two.
-        $tracked += RecordedUnitInputs::forScan($this->pdo, $activeScanId);
+        $tracked += $units;
         $changed = 0;
         $deleted = 0;
         $directories = [];

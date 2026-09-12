@@ -182,6 +182,13 @@ final readonly class GitDriftOracle implements DriftOracle
         if ($dirty === null) {
             return null;
         }
+        // Same rule, same reason: a scan that recorded nothing about the
+        // manifests it read leaves every one of them undecidable, and an
+        // undecidable input must not be counted as an unchanged one.
+        $units = RecordedUnitInputs::forScan($this->pdo, $activeScanId);
+        if ($units === null) {
+            return null;
+        }
         $crossCheck = $this->trackedFileCount($projectId, $activeScanId) <= self::MAX_CROSS_CHECKED_FILES;
         try {
             // Verify first. Handing a garbage-collected or rebased-away commit
@@ -261,7 +268,7 @@ final readonly class GitDriftOracle implements DriftOracle
         // Unioned with `+`, so a path that is both a `files` row and a
         // manifest keeps the row's hash: one path, one stored answer.
         $hashes = ($crossCheck ? $tracked : $this->trackedHashes($projectId, $activeScanId, array_keys($candidates)))
-            + RecordedUnitInputs::forScan($this->pdo, $activeScanId);
+            + $units;
 
         return $this->decide($projectId, $root, array_keys($candidates), $hashes);
     }

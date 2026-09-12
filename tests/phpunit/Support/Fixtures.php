@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Support;
 
 use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Discovery\UnitInputSet;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\ToolService;
 use Knossos\Query\ArchitectureQueryService;
@@ -148,7 +149,7 @@ trait Fixtures
         $edge = StableId::edge($project, 'calls', $checkout, $invoice, 'src/Checkout.php:12');
 
         $repository->saveProject($project, 'Fixture Shop', '/workspace/fixture-shop');
-        $repository->createScan($scan, $project, 'full', hash('sha256', 'scanner-set'));
+        $repository->createScan($scan, $project, 'full', hash('sha256', 'scanner-set'), unitInputsJson: UnitInputSet::of([])->encode());
         $repository->saveFile(
             $file,
             $project,
@@ -334,7 +335,19 @@ trait Fixtures
         $scanId = StableId::scan($projectId, 'scan-1');
         $repository = new SqliteGraphRepository($pdo);
         $repository->saveProject($projectId, 'Stale Probe Fixture', $root);
-        $repository->createScan($scanId, $projectId, 'full', hash('sha256', 'stale-probe'));
+        // An empty-but-recorded set of manifest inputs, which is what this
+        // fixture's tree honestly holds: it writes source files and nothing
+        // else. Recorded rather than left null, because null means "this scan
+        // said nothing about its manifests" and both oracles decline on it —
+        // a fixture that left it null would exercise the decline path on every
+        // test that uses this helper rather than the drift it means to test.
+        $repository->createScan(
+            $scanId,
+            $projectId,
+            'full',
+            hash('sha256', 'stale-probe'),
+            unitInputsJson: UnitInputSet::of([])->encode(),
+        );
         foreach ($relativePaths as $relativePath) {
             $absolute = $root . '/' . $relativePath;
             $repository->saveFile(
@@ -459,7 +472,7 @@ trait Fixtures
         $repository->completeScan($ids['project'], $ids['scan']);
         $repository->archiveActiveSnapshot($ids['project'], hash('sha256', '{}'), 5);
         $next = StableId::scan($ids['project'], 'diff-next');
-        $repository->createScan($next, $ids['project'], 'incremental', hash('sha256', 'scanner-next'));
+        $repository->createScan($next, $ids['project'], 'incremental', hash('sha256', 'scanner-next'), unitInputsJson: UnitInputSet::of([])->encode());
 
         for ($i = 1; $i <= 8; $i++) {
             $node = StableId::symbol($ids['project'], 'php', 'class', "App\\Extra{$i}");

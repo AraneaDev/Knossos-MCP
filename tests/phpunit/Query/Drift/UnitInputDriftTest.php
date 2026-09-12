@@ -106,7 +106,7 @@ final class UnitInputDriftTest extends KnossosTestCase
             file_put_contents($root . '/src/composer.json', "{}\n");
             touch($root . '/src', time() + 60);
 
-            self::assertSame(1, $this->walkDrift($pdo, $projectId, $root)->added, 'A manifest discovery would read is an input, whether or not any language claims it.');
+            self::assertSame(1, $this->walkDrift($pdo, $projectId, $root)?->added, 'A manifest discovery would read is an input, whether or not any language claims it.');
             self::assertTrue(
                 ScannedPaths::forProject($pdo, $projectId)->tracks('src/composer.json', $root . '/src/composer.json'),
                 'Both oracles must give the same answer for the same path, or freshness depends on which one answered.',
@@ -114,6 +114,72 @@ final class UnitInputDriftTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /**
+     * The distinction the whole record turns on: a scan that recorded nothing
+     * about its manifests has not said they are unchanged, and reading its
+     * silence as an empty set makes every manifest drop out of the comparison
+     * while the probe reports `fresh`.
+     *
+     * Asserted through the probe rather than the oracle, because `unverified`
+     * against `fresh` is the difference a caller actually sees, and it is the
+     * whole point of declining.
+     */
+    #[Group('query')]
+    public function testAScanThatRecordedNothingAboutItsManifestsIsNotReportedFresh(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $this->forgetUnitInputs($pdo, $projectId);
+
+            $staleness = (new StalenessProbe($pdo))->probe($projectId);
+
+            self::assertSame('unverified', $staleness['state'], 'Absence of evidence is not evidence of absence; the graph was never verified, so it must not be called fresh.');
+            self::assertArrayNotHasKey('changed_files_since', $staleness, 'An oracle that declined has no counts to offer, and offering zero would be the same false claim in another shape.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The git oracle declines on the same silence, and for the same reason: a
+     * manifest it holds no stored hash for cannot be decided, and its own
+     * candidate listings never name one that has simply been deleted.
+     */
+    #[Group('query')]
+    public function testTheWalkDeclinesRatherThanCountingUnrecordedManifestsAsUnchanged(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $this->forgetUnitInputs($pdo, $projectId);
+
+            self::assertNull($this->walkDrift($pdo, $projectId, $root, expectAnswer: false), 'The walk cannot compare what the scan never recorded, and must say so.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A corrupt record is as unusable as an absent one, and must not be read as an empty set either. */
+    #[Group('query')]
+    public function testACorruptRecordDeclinesLikeAnAbsentOne(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $statement = $pdo->prepare('UPDATE scans SET unit_inputs_json = :units WHERE id = (SELECT active_scan_id FROM projects WHERE id = :id)');
+            $statement->execute(['units' => '{"inputs":{"composer.json":"abc"}}', 'id' => $projectId]);
+
+            self::assertSame('unverified', (new StalenessProbe($pdo))->probe($projectId)['state']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Drops the recorded manifest set, standing in for a graph built before the column existed. */
+    private function forgetUnitInputs(PDO $pdo, string $projectId): void
+    {
+        $statement = $pdo->prepare('UPDATE scans SET unit_inputs_json = NULL WHERE id = (SELECT active_scan_id FROM projects WHERE id = :id)');
+        $statement->execute(['id' => $projectId]);
     }
 
     /** Every shape that is not a trustworthy record decodes to nothing, so no caller has to guess which of them it is holding. */
@@ -144,14 +210,23 @@ final class UnitInputDriftTest extends KnossosTestCase
         self::assertNull(UnitInputSet::decode($set->encode()));
     }
 
-    /** Runs the walk oracle against the project's active scan, which is what the probe does. */
-    private function walkDrift(PDO $pdo, string $projectId, string $root): \Knossos\Query\Drift\DriftCounts
+    /**
+     * Runs the walk oracle against the project's active scan, which is what
+     * the probe does.
+     *
+     * `$expectAnswer` is false for the cases that are about the oracle
+     * declining: asserting non-null inside the helper would turn a correct
+     * decline into a helper failure rather than a reportable result.
+     */
+    private function walkDrift(PDO $pdo, string $projectId, string $root, bool $expectAnswer = true): ?\Knossos\Query\Drift\DriftCounts
     {
         $statement = $pdo->prepare('SELECT s.id, s.finished_at FROM projects p JOIN scans s ON s.id = p.active_scan_id WHERE p.id = :id');
         $statement->execute(['id' => $projectId]);
         $scan = $statement->fetch();
         $drift = (new WalkDriftOracle($pdo))->drift($projectId, (string) $scan['id'], $root, (string) $scan['finished_at']);
-        self::assertNotNull($drift);
+        if ($expectAnswer) {
+            self::assertNotNull($drift);
+        }
 
         return $drift;
     }
