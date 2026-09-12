@@ -115,8 +115,21 @@ final readonly class WalkDriftOracle implements DriftOracle
      * directories are worth opening; the count comes from the entries
      * themselves — those absent from the tracked-path set, that {@see
      * ScannedPaths} says the scanner would have picked up, and whose own inode
-     * change time is later than the scan, so an untracked entry that has sat
-     * there since before the scan is not counted every time a sibling moves.
+     * change time is not earlier than the scan, so an untracked entry that has
+     * sat there since before the scan is not counted every time a sibling
+     * moves.
+     *
+     * Both time comparisons are inclusive, and that is the whole of their
+     * correctness. These timestamps have second resolution, so a file created
+     * after the scan completed but inside the same clock second carries a
+     * directory mtime and an inode change time equal to `finished_at`. An
+     * exclusive boundary dismissed it — and dismissed it permanently, because
+     * neither timestamp ever moves again, so every later probe repeated the
+     * same `fresh`. An inclusive boundary errs the other way: an entry that
+     * really did predate the scan by less than a second is considered, and
+     * costs at most one wasted rescan that finds nothing. Over-considering is
+     * recoverable; a permanent false `fresh` is the failure this whole probe
+     * exists to prevent.
      *
      * Two limits remain, both consequences of the {@see
      * self::MAX_PROBED_FILES} bound this probe works under rather than
@@ -148,7 +161,11 @@ final readonly class WalkDriftOracle implements DriftOracle
         $added = 0;
         foreach ($directories as $directory => $tracked) {
             $mtime = @filemtime($directory);
-            if ($mtime === false || $mtime <= $scannedAt) {
+            // Inclusive: equal means "within the same second as the scan
+            // finished", which is exactly where a same-second addition hides.
+            // See the docblock above for why the tie is walked rather than
+            // skipped.
+            if ($mtime === false || $mtime < $scannedAt) {
                 continue;
             }
             // Read incrementally rather than with scandir(): the bound below
@@ -179,7 +196,11 @@ final readonly class WalkDriftOracle implements DriftOracle
                         continue;
                     }
                     $createdAt = @filectime($absolute);
-                    if ($createdAt !== false && $createdAt > $scannedAt) {
+                    // Inclusive for the same reason the directory mtime is: an
+                    // entry created inside the scan's own finishing second has
+                    // a ctime equal to it, and dismissing it here dismisses it
+                    // for good.
+                    if ($createdAt !== false && $createdAt >= $scannedAt) {
                         ++$added;
                     }
                     // Enough drift to report; what the rest of the tree holds

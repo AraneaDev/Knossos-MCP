@@ -145,15 +145,21 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
     }
 
     /**
-     * The directory-mtime guard `$mtime <= $scannedAt` (mutable to `<`)
+     * The directory-mtime guard `$mtime < $scannedAt` (mutable to `<=`)
      * decides whether a directory is walked at all. At the exact tie —
      * directory mtime equal to the scan's finish time — the directory must
-     * not be walked: `<=` skips it, `<` would not (equal is not less than),
-     * and a genuinely new, trackable file sitting inside would then be found
-     * and wrongly counted.
+     * be walked: `<` walks it (equal is not less than), `<=` would skip it.
+     *
+     * These timestamps have second resolution, so a file created after the
+     * scan completed but inside the same clock second lands exactly on this
+     * tie, and neither its directory's mtime nor its own ctime ever moves
+     * again. The exclusive boundary this replaces therefore did not merely
+     * miss such a file once; it reported the graph `fresh` on every probe
+     * afterwards, permanently. Walking the tie costs at most one rescan that
+     * finds nothing.
      */
     #[Group('query')]
-    public function testADirectoryMtimeExactlyAtScanTimeIsNotWalked(): void
+    public function testADirectoryMtimeExactlyAtScanTimeIsStillWalked(): void
     {
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/existing.php']);
         try {
@@ -162,24 +168,29 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
             self::assertIsInt($scannedAt);
             touch($root . '/src', $scannedAt);
 
-            self::assertSame(0, self::drift($pdo, $projectId, $root)->added, 'A directory mtime equal to the scan time must not be walked at all, even though the new file inside it is genuinely trackable and newer than the scan.');
+            self::assertSame(1, self::drift($pdo, $projectId, $root)->added, 'A directory mtime equal to the scan time is where a same-second addition hides, so the tie must be walked and the trackable file inside it counted.');
         } finally {
             $this->removeTempTree($root);
         }
     }
 
     /**
-     * The entry-createdAt guard `$createdAt > $scannedAt` (mutable to `>=`)
+     * The entry-createdAt guard `$createdAt >= $scannedAt` (mutable to `>`)
      * decides whether one directory entry counts as an addition. At the
      * exact tie — an entry's own inode change time equal to the scan's
-     * finish time — it must not count: `>` excludes it, `>=` would count it.
-     * ctime cannot be set directly, so the scan's finished_at is set to the
-     * new file's actual ctime after creating it, making the tie real rather
-     * than approximate. The directory's own mtime is set comfortably later
-     * so only the entry-level guard is under test here.
+     * finish time — it must count: `>=` counts it, `>` would not. ctime
+     * cannot be set directly, so the scan's finished_at is set to the new
+     * file's actual ctime after creating it, making the tie real rather than
+     * approximate. The directory's own mtime is set comfortably later so
+     * only the entry-level guard is under test here.
+     *
+     * The tie is not a hypothetical: a file created inside the scan's own
+     * finishing second has exactly this ctime, and it never changes, so the
+     * strict boundary this replaces hid that file from every probe for the
+     * life of the graph.
      */
     #[Group('query')]
-    public function testAnEntryCreatedAtExactlyScanTimeIsNotAnAddition(): void
+    public function testAnEntryCreatedAtExactlyScanTimeIsAnAddition(): void
     {
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/existing.php']);
         try {
@@ -190,7 +201,33 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
                 ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', $ctime), 'id' => $scanId]);
             touch($root . '/src', $ctime + 60);
 
-            self::assertSame(0, self::drift($pdo, $projectId, $root)->added, "An entry's own createdAt exactly equal to the scan time must not count as an addition; only strictly later than the scan does.");
+            self::assertSame(1, self::drift($pdo, $projectId, $root)->added, "An entry's own createdAt exactly equal to the scan time is a same-second addition, and dismissing it dismisses it for the life of the graph.");
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The inclusive boundaries must not swallow their own purpose: an entry
+     * that genuinely predates the scan still has to read as no drift, or
+     * every probe of a project with an untracked file beside its sources
+     * would report a permanent addition no rescan could clear.
+     */
+    #[Group('query')]
+    public function testAnEntryOlderThanTheScanIsStillNotAnAddition(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/existing.php']);
+        try {
+            file_put_contents($root . '/src/new.php', "<?php\n");
+            $ctime = (int) filectime($root . '/src/new.php');
+            $scanId = $this->activeScanId($pdo, $projectId);
+            // The scan finished a second after the entry appeared, which is
+            // the ordinary case for anything the scan itself already saw.
+            $pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
+                ->execute(['finished' => gmdate('Y-m-d\TH:i:s\Z', $ctime + 1), 'id' => $scanId]);
+            touch($root . '/src', $ctime + 60);
+
+            self::assertSame(0, self::drift($pdo, $projectId, $root)->added, 'An entry older than the scan is not an addition, however inclusive the tie is.');
         } finally {
             $this->removeTempTree($root);
         }

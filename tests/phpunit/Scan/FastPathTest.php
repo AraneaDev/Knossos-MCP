@@ -71,6 +71,15 @@ final class FastPathTest extends KnossosTestCase
      * explicitly into the past and a real untracked artefact is written, so the
      * "appeared later than the scan" relation is established here rather than
      * inherited.
+     *
+     * The wait for the next clock second is what makes the retraction
+     * observable at all. The probe's boundaries are inclusive by design — at
+     * second resolution an entry created inside the scan's own finishing
+     * second is indistinguishable from one created just after it, and the
+     * probe errs toward reporting drift rather than hiding it permanently — so
+     * a restamp landing in the same second as the artefact retracts nothing.
+     * Production heals on the next rescan, a second later; a test cannot
+     * assert a retraction it has not let the clock reach.
      */
     #[Group('scan')]
     public function testDirectoryMtimeBumpIsRetractedByTheFastPath(): void
@@ -89,6 +98,7 @@ final class FastPathTest extends KnossosTestCase
             // nothing without descending -- only the fast path's restamp
             // retracts the staleness it causes.
             mkdir($root . '/src/drafts');
+            self::waitForNextSecond();
 
             $probe = new StalenessProbe($pdo);
             $before = $probe->probe($projectId);
@@ -109,6 +119,21 @@ final class FastPathTest extends KnossosTestCase
             assertSame($scanId, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
         } finally {
             $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Blocks until the wall clock reaches its next whole second, so a restamp
+     * taken afterwards is strictly later than a filesystem timestamp taken
+     * before it. Bounded by construction: at most one second, and it polls
+     * rather than sleeping a fixed amount so it costs only what is left of
+     * the current second.
+     */
+    private static function waitForNextSecond(): void
+    {
+        $second = time();
+        while (time() === $second) {
+            usleep(10_000);
         }
     }
 
