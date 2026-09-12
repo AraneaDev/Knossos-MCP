@@ -24,7 +24,7 @@ trait TempTrees
     /**
      * Pushes every directory under $root's mtime $seconds into the past.
      *
-     * StalenessProbe::addedSince() flags an addition when a tracked file's
+     * WalkDriftOracle's addedSince() flags an addition when a tracked file's
      * directory mtime reads later than the scan's finished_at. Those are two
      * separate clock reads (a later stat() vs. an earlier DB write) that are
      * not guaranteed to agree on which integer second an instant rounds to,

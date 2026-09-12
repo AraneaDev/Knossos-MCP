@@ -389,7 +389,7 @@ trait Fixtures
         return [$pdo, $result->projectId, $root];
     }
 
-    /** Backdates a scan's finished_at by 5 seconds; used by seedProjectWithFiles() to give a later mutation headroom against StalenessProbe::addedSince()'s directory-mtime comparison. */
+    /** Backdates a scan's finished_at by 5 seconds; used by seedProjectWithFiles() to give a later mutation headroom against WalkDriftOracle's addedSince() directory-mtime comparison. */
     private static function backdateScanFinishedAt(PDO $pdo, string $scanId): void
     {
         $pdo->prepare('UPDATE scans SET finished_at = :finished WHERE id = :id')
