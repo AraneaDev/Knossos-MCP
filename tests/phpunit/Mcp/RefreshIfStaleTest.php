@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Mcp;
 
 use InvalidArgumentException;
+use Knossos\Git\DirtyPathResolver;
+use Knossos\Git\DirtyPathSet;
+use Knossos\Git\GitHeadResolver;
 use Knossos\Git\GitProcessRunnerInterface;
 use Knossos\Maintenance\DatabaseMaintenanceService;
 use Knossos\Mcp\NextStepPlanner;
@@ -53,23 +56,43 @@ final class RefreshIfStaleTest extends KnossosTestCase
      * Saving a file does not move HEAD, so every scan of such a repository
      * records the same commit the previous one did, and a drift oracle that
      * reads `git diff <recorded head>` as the verdict reports the edit the
-     * scan already absorbed forever. The trigger reproduces that condition
-     * exactly; the runner is faked because CI has neither a git binary nor a
-     * checkout, and what is under test is the oracle's own reasoning rather
-     * than git's.
+     * scan already absorbed forever. This is the one test in this file that
+     * exercises the git oracle end to end; every other fixture here is
+     * gitless, so the walk is all they ever reach.
+     *
+     * Which is why the scan runs with faked resolvers rather than having its
+     * scan rows patched afterwards. A graph whose scan recorded no dirty set
+     * makes the git oracle decline before it issues a single subprocess, and
+     * the chain then answers from the walk — green, and covering none of what
+     * this test names. The assertions below are chosen so the walk cannot
+     * satisfy them: a recorded, trusted dirty set is something only the git
+     * path produces, and an oracle asked on its own cannot be standing in for
+     * another one.
      */
     #[Group('mcp')]
     public function testARefreshOnAGitBackedProjectAnswersFreshAgain(): void
     {
-        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
         try {
-            $tracked = $pdo->query('SELECT relative_path FROM files')->fetchAll(PDO::FETCH_COLUMN);
-            $pdo->prepare('UPDATE scans SET git_head = :head')->execute(['head' => self::GIT_HEAD]);
-            // Every later scan records the same commit, because nothing here commits.
-            $pdo->exec(
-                'CREATE TRIGGER stamp_git_head AFTER INSERT ON scans BEGIN ' .
-                "UPDATE scans SET git_head = '" . self::GIT_HEAD . "' WHERE id = NEW.id; END",
+            $pdo = $this->freshTestDatabase();
+            // Every scan, the first and the refresh, records this commit and
+            // the dirty set derived against its tree: nothing here commits, so
+            // the commit never moves and the edit below stays uncommitted.
+            $scanner = new ProjectScanService(
+                $pdo,
+                self::repositoryRoot(),
+                [$root],
+                new GitHeadResolver($this->runnerAnswering(self::GIT_HEAD . "\n")),
+                new DirtyPathResolver($this->runnerAnswering(
+                    '100644 blob 1111111111111111111111111111111111111111' . "\tsrc/CheckoutService.php\0",
+                )),
             );
+            $projectId = $scanner->scan($root)->projectId;
+            // See scanTempFixture(): the directories this copy just created can
+            // otherwise read as being at or after the scan's own finished_at.
+            $this->backdateDirectories($root, 10);
+            $tracked = $pdo->query('SELECT relative_path FROM files')->fetchAll(PDO::FETCH_COLUMN);
             file_put_contents($root . '/src/CheckoutService.php', "\n// drift\n", FILE_APPEND);
 
             $oracle = new FirstAnsweringDriftOracle(
@@ -77,7 +100,7 @@ final class RefreshIfStaleTest extends KnossosTestCase
                 new WalkDriftOracle($pdo),
             );
             $tools = new ToolService(
-                new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+                $scanner,
                 new ArchitectureQueryService($pdo, driftOracle: $oracle),
                 new DatabaseMaintenanceService($pdo, ':memory:'),
                 new ResultEnricher(new StalenessProbe($pdo, oracle: $oracle), new NextStepPlanner()),
@@ -88,9 +111,65 @@ final class RefreshIfStaleTest extends KnossosTestCase
 
             assertSame('fresh', $result->staleness['state'], 'A refresh that rebuilt the graph must clear the staleness that triggered it.');
             assertSame([], $result->warnings, 'A refresh that succeeded says so by the state alone; a warning would fire on every call.');
+
+            $refreshed = $this->activeScanId($pdo, $projectId);
+            $recorded = DirtyPathSet::decode($this->dirtyPathsJson($pdo, $refreshed));
+            assertSame(
+                ['src/CheckoutService.php'],
+                $recorded?->paths,
+                'The rescan has to record a trusted dirty set, or the git oracle declines on the graph it just rebuilt and every later probe is the walk answering.',
+            );
+            self::assertNotNull(
+                (new GitDriftOracle($pdo, $this->gitRunnerReporting([], $tracked)))
+                    ->drift($projectId, $refreshed, $root, $this->finishedAt($pdo, $refreshed)),
+                'Asked on its own, with no walk behind it to cover for a decline, the git oracle must actually answer for this graph.',
+            );
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /** The project's active scan id, looked up by parameter binding rather than string interpolation. */
+    private function activeScanId(PDO $pdo, string $projectId): string
+    {
+        $statement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+
+        return (string) $statement->fetchColumn();
+    }
+
+    /** What a scan recorded about the paths that differed from its commit, bound rather than interpolated. */
+    private function dirtyPathsJson(PDO $pdo, string $scanId): ?string
+    {
+        $statement = $pdo->prepare('SELECT dirty_paths_json FROM scans WHERE id = :id');
+        $statement->execute(['id' => $scanId]);
+        $recorded = $statement->fetchColumn();
+
+        return is_string($recorded) ? $recorded : null;
+    }
+
+    /** A scan's finish time, which the oracles take as the reference point for every age comparison. */
+    private function finishedAt(PDO $pdo, string $scanId): ?string
+    {
+        $statement = $pdo->prepare('SELECT finished_at FROM scans WHERE id = :id');
+        $statement->execute(['id' => $scanId]);
+        $finished = $statement->fetchColumn();
+
+        return is_string($finished) ? $finished : null;
+    }
+
+    /** A scan-time runner answering with fixed output, standing in for a git binary CI does not have. */
+    private function runnerAnswering(string $output): GitProcessRunnerInterface
+    {
+        return new class ($output) implements GitProcessRunnerInterface {
+            public function __construct(private string $output) {}
+
+            /** Answers the fixed output whatever it is asked. */
+            public function run(array $command, int $timeoutMs, string $operation): string
+            {
+                return $this->output;
+            }
+        };
     }
 
     /**
