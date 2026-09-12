@@ -15,8 +15,8 @@ use PDO;
  */
 final readonly class WalkDriftOracle implements DriftOracle
 {
-    /** Tracked files above which content probing is skipped and freshness reported as unverified. */
-    private const MAX_PROBED_FILES = 500;
+    /** Tracked files above which the walk is skipped and freshness reported as unverified. */
+    private const MAX_PROBED_FILES = 20_000;
 
     public function __construct(private PDO $pdo) {}
 
@@ -43,7 +43,7 @@ final readonly class WalkDriftOracle implements DriftOracle
             return null; // bound exceeded; omit best-effort fields
         }
         $statement = $this->pdo->prepare(
-            'SELECT relative_path, mtime FROM files WHERE project_id = :project AND last_scan_id = :scan LIMIT ' . self::MAX_PROBED_FILES,
+            'SELECT relative_path, content_hash FROM files WHERE project_id = :project AND last_scan_id = :scan LIMIT ' . self::MAX_PROBED_FILES,
         );
         $statement->execute(['project' => $projectId, 'scan' => $activeScanId]);
         $changed = 0;
@@ -51,14 +51,24 @@ final readonly class WalkDriftOracle implements DriftOracle
         $directories = [];
         foreach ($statement->fetchAll() as $file) {
             $absolute = $root . '/' . $file['relative_path'];
-            $current = @filemtime($absolute);
-            if ($current === false) {
+            // filemtime() here is only an existence probe, not a comparison: a
+            // moved mtime does not prove the bytes changed (a `touch` or a
+            // `git checkout` that restores identical content moves it for
+            // free), and an unmoved one does not prove they didn't (a
+            // filesystem with a coarse clock can hide a real edit inside the
+            // same tick). Both cases require reading the file, so the mtime
+            // buys nothing as a prefilter; it only tells us the file is still
+            // there.
+            if (@filemtime($absolute) === false) {
                 ++$deleted;
                 continue;
             }
-            // `!==`, not `>`: a checkout of an older revision moves mtime
-            // backwards, and that is a change like any other.
-            if ($current !== (int) $file['mtime']) {
+            $contents = @file_get_contents($absolute);
+            if ($contents === false) {
+                ++$deleted;
+                continue;
+            }
+            if (hash('sha256', $contents) !== (string) $file['content_hash']) {
                 ++$changed;
             }
             $directories[dirname($absolute)][basename($absolute)] = true;
