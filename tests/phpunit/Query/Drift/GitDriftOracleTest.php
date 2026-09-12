@@ -397,6 +397,155 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
+     * The defect trackedHashes() can hide with no test to notice: chunking
+     * the narrowed hash lookup over `array_chunk($paths, PLACEHOLDERS_PER_QUERY)`
+     * and accumulating with `+=`. Mutating that to `=` keeps only the last
+     * chunk's rows, but every existing test stayed under 400 candidates, so
+     * the loop only ever ran once and the mutation was invisible. This seeds
+     * 405 tracked files (400 in one directory, 5 in another, spanning two
+     * chunks) and forces the narrowed, chunked lookup path by failing the
+     * index cross-check, then edits one file in each chunk. `+=` finds both
+     * edits; `=` would drop the first chunk's hashes entirely and
+     * misreport its untouched files as fresh additions instead.
+     */
+    #[Group('git')]
+    public function testTheChunkedHashLookupAccumulatesAcrossChunks(): void
+    {
+        $paths = [];
+        for ($index = 0; $index < 400; ++$index) {
+            $paths[] = sprintf('src/chunk1/f%04d.php', $index);
+        }
+        for ($index = 0; $index < 5; ++$index) {
+            $paths[] = sprintf('src/chunk2/g%04d.php', $index);
+        }
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles($paths);
+        try {
+            $project = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :project');
+            $project->execute(['project' => $projectId]);
+            $scanId = (string) $project->fetchColumn();
+            $pdo->prepare('UPDATE scans SET git_head = :head WHERE id = :id')->execute(['head' => self::HEAD, 'id' => $scanId]);
+
+            file_put_contents($root . '/src/chunk1/f0005.php', "<?php\nfinal class Chunk1Edit {}\n");
+            file_put_contents($root . '/src/chunk2/g0002.php', "<?php\nfinal class Chunk2Edit {}\n");
+
+            // Failing the index cross-check is what routes trackedHashes()
+            // through the narrowed, chunked call rather than the whole-scan
+            // one: with the cross-check answering, $hashes would come from
+            // the single unchunked query instead, and the chunking bug would
+            // never run at all.
+            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', $paths, [])))
+                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+
+            self::assertNotNull($drift);
+            self::assertSame(2, $drift->changed, 'One edit in each of the two chunks must both be found; += becoming = would drop the first chunk entirely.');
+            self::assertSame(0, $drift->added, 'Every path has a files row; none should read as a fresh addition.');
+            self::assertSame(0, $drift->deleted);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The malformed-head guard (`return null;` right after the sha regex
+     * check) has no test proving it actually stops the oracle: the existing
+     * malformed-head test also happens to decline via the index cross-check
+     * finding the tracked file invisible, so deleting the guard would still
+     * leave that test green. Here the tracked file is named by the indexed
+     * listing, so the cross-check finds nothing invisible and would let the
+     * oracle answer normally (0 candidates, 0 drift) if the guard were gone;
+     * only the guard itself can be why this stays null.
+     */
+    #[Group('git')]
+    public function testAMalformedHeadStopsTheOracleEvenWhenNothingElseWouldDecline(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(str_repeat('a', 50));
+        try {
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, [], [], ['src/a.php']);
+
+            self::assertNull($drift, 'A head of a length git never emits must stop the oracle by itself; with the tracked file visible through the cross-check, nothing else here would decline.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The fail-soft catch's `$crossCheck = false;` has no test proving the
+     * assignment actually disables the cross-check rather than leaving it
+     * enabled to run against the failed call's empty result. The tracked
+     * file here is untouched and would only ever have been named by the
+     * (failing) indexed listing, so a cross-check that wrongly stayed
+     * enabled would see it in none of the three listings and decline
+     * outright; disabling it correctly lets diff and untracked answer from
+     * nothing changed.
+     */
+    #[Group('git')]
+    public function testAFailedIndexCrossCheckStaysDisabledRatherThanProceedingOnAnEmptyListing(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
+                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+
+            self::assertNotNull($drift, 'A failed cross-check must disable the cross-check entirely, not proceed as though its failed, empty listing were real: that would make the untouched tracked file look invisible and decline the oracle outright.');
+            self::assertSame(0, $drift->total(), 'Nothing actually changed; diff and untracked both reported nothing.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * `trackedFileCount(...) <= MAX_CROSS_CHECKED_FILES` decides whether the
+     * cross-check runs at all, and no test pins the boundary itself: at
+     * exactly 20,000 tracked files the cross-check must still run (`<=`
+     * true), not be skipped a row early (`<` false). Every one of the
+     * 20,000 tracked rows is left out of all three git listings, so a
+     * cross-check that runs must decline; one that is skipped answers
+     * normally instead.
+     */
+    #[Group('git')]
+    public function testCrossCheckStillRunsAtExactlyItsFileCountBound(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $this->addTrackedFileRows($pdo, $projectId, $scanId, 19_999, 'src/bulk');
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, [], [], []);
+
+            self::assertNull($drift, 'At exactly 20,000 tracked files the cross-check must still run and decline once it finds every tracked row invisible to git.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * `count($candidates) > MAX_CANDIDATES` decides whether the oracle
+     * declines for size, and no test pins the boundary itself: exactly
+     * 20,000 candidates must still be decided (`>` false), not declined one
+     * candidate early (`>=` true). None of the synthetic candidates exist on
+     * disk or have a files row, so once past the size check they cost
+     * nothing to decide and drift stays at zero either way — only the
+     * decline itself (a null result) tells the two branches apart.
+     */
+    #[Group('git')]
+    public function testCandidateCountAtExactlyItsCeilingStillAnswers(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $changed = [];
+            for ($index = 0; $index < 20_000; ++$index) {
+                $changed[] = sprintf('nonexistent/f%05d.php', $index);
+            }
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, $changed, [], ['src/a.php']);
+
+            self::assertNotNull($drift, 'Exactly 20,000 candidates is still at the ceiling, not over it; the oracle must decide them rather than decline for size.');
+            self::assertSame(0, $drift->total(), 'None of the synthetic paths exist on disk or have a files row, so nothing about them can register as drift.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * Runs the oracle against a runner answering with the given listings.
      *
      * @param list<string> $changed what `git diff` reports against the recorded commit
@@ -425,6 +574,33 @@ final class GitDriftOracleTest extends KnossosTestCase
         $pdo->prepare('UPDATE scans SET git_head = :head WHERE id = :id')->execute(['head' => $head, 'id' => $scanId]);
 
         return [$pdo, $projectId, $root, $scanId];
+    }
+
+    /**
+     * Inserts $count additional `files` rows for the active scan, with no
+     * files created on disk, so a boundary test can reach thousands of
+     * tracked rows without paying for a real tree of that size: what
+     * MAX_CROSS_CHECKED_FILES counts is the row count, not disk content.
+     */
+    private function addTrackedFileRows(PDO $pdo, string $projectId, string $scanId, int $count, string $prefix): void
+    {
+        $insert = $pdo->prepare(
+            'INSERT INTO files(id, project_id, relative_path, content_hash, size, mtime, language, scanner_version, last_scan_id) ' .
+            'VALUES (:id, :project, :path, :hash, 1, 1, :language, :version, :scan)',
+        );
+        $pdo->beginTransaction();
+        for ($index = 0; $index < $count; ++$index) {
+            $insert->execute([
+                'id' => $prefix . '-' . $index,
+                'project' => $projectId,
+                'path' => $prefix . '/f' . $index . '.php',
+                'hash' => hash('sha256', (string) $index),
+                'language' => 'php',
+                'version' => '0.1.0',
+                'scan' => $scanId,
+            ]);
+        }
+        $pdo->commit();
     }
 
     /** Looks up a scan's finish time by parameter binding, not string interpolation. */
