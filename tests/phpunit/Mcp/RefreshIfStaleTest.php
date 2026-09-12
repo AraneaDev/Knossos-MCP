@@ -127,6 +127,30 @@ final class RefreshIfStaleTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The memo belongs to the read tools, and only to them.
+     *
+     * `refresh_if_stale` is honoured for every tool the catalog declares it on,
+     * but the probe that decides it runs for the others too, and a tool that
+     * mutates the graph invalidates the verdict by doing its own work.
+     * `remove_project` is the sharpest case: it deletes the project and returns
+     * an envelope still naming it, so a reused snapshot described the staleness
+     * of a graph that no longer exists.
+     */
+    #[Group('mcp')]
+    public function testRemovingAProjectReportsNoStalenessForIt(): void
+    {
+        [$tools, $projectId, $root] = $this->buildToolServiceWithScan('mixed');
+        try {
+            $result = $tools->call('remove_project', ['project_id' => $projectId, 'execute' => true]);
+
+            assertSame('missing', $result->staleness['state'], 'A deleted project has no graph, so it cannot be reported fresh.');
+            assertSame(null, $result->staleness['scanned_at'], 'Nothing about the removed graph may survive into the answer.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** An oracle that counts how often it was consulted and otherwise answers exactly as the one it wraps. */
     private function countingOracle(DriftOracle $inner)
     {

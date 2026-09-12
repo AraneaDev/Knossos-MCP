@@ -17,7 +17,7 @@ use PDO;
  * all — a file discovery would skip cannot be absorbed by a rescan, so counting
  * it reports a staleness no amount of scanning can clear.
  */
-final readonly class ScannedPaths
+final readonly class ScannedPaths implements TrackedPathPredicate
 {
     public function __construct(private IgnoreMatcher $ignores) {}
 

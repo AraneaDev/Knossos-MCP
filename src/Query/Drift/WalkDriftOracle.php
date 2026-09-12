@@ -38,7 +38,14 @@ final readonly class WalkDriftOracle implements DriftOracle
      */
     private const MAX_ADDITIONS_COUNTED = 500;
 
-    public function __construct(private PDO $pdo) {}
+    /**
+     * @param ?TrackedPathPredicate $paths what counts as a path the scanner
+     *        tracks. Production passes null and the project's own ignores and
+     *        languages are loaded per probe; injected only so a test can count
+     *        how often the question is asked, which is the one thing the
+     *        per-directory budget bounds and nothing else can observe.
+     */
+    public function __construct(private PDO $pdo, private ?TrackedPathPredicate $paths = null) {}
 
     /**
      * What changed on disk since the scan: content edits, additions, and
@@ -94,7 +101,7 @@ final readonly class WalkDriftOracle implements DriftOracle
             $directories[dirname($absolute)][basename($absolute)] = true;
         }
 
-        return new DriftCounts($changed, $this->addedSince($directories, $finishedAt, ScannedPaths::forProject($this->pdo, $projectId), $root), $deleted);
+        return new DriftCounts($changed, $this->addedSince($directories, $finishedAt, $this->paths ?? ScannedPaths::forProject($this->pdo, $projectId), $root), $deleted);
     }
 
     /**
@@ -129,7 +136,7 @@ final readonly class WalkDriftOracle implements DriftOracle
      * @param array<string, array<string, true>> $directories directory => tracked basenames within it
      * @param ?string $finishedAt when the active scan finished
      */
-    private function addedSince(array $directories, ?string $finishedAt, ScannedPaths $scanned, string $root): int
+    private function addedSince(array $directories, ?string $finishedAt, TrackedPathPredicate $scanned, string $root): int
     {
         if ($finishedAt === null) {
             return 0;
@@ -148,9 +155,7 @@ final readonly class WalkDriftOracle implements DriftOracle
             // has to stop the enumeration itself, and scandir() materialises
             // the whole listing before the first entry is looked at. A
             // directory holding a hundred thousand untracked entries must not
-            // turn a freshness probe into a full enumeration, and counting
-            // only the entries that turned out to be additions bounded the
-            // stat() calls while leaving the listing unbounded.
+            // turn a freshness probe into a full enumeration.
             $handle = @opendir($directory);
             if ($handle === false) {
                 continue;
@@ -163,10 +168,16 @@ final readonly class WalkDriftOracle implements DriftOracle
                     }
                     $absolute = $directory . '/' . $entry;
                     $relative = ltrim(substr($absolute, strlen($root)), '/');
+                    // Counted before the question is asked, not after it is
+                    // answered. Asking is the expensive half — a stat, and for
+                    // an extensionless file a read of its first line — so a
+                    // budget that only counted the entries that passed left a
+                    // directory of a hundred thousand log files enumerated in
+                    // full, which is precisely what the budget exists to stop.
+                    ++$examined;
                     if (!$scanned->tracks($relative, $absolute)) {
                         continue;
                     }
-                    ++$examined;
                     $createdAt = @filectime($absolute);
                     if ($createdAt !== false && $createdAt > $scannedAt) {
                         ++$added;

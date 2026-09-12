@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query\Drift;
 
+use Knossos\Query\Drift\TrackedPathPredicate;
 use Knossos\Query\Drift\WalkDriftOracle;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
@@ -81,6 +82,72 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /**
+     * The per-directory budget bounds the entries the walk looks at, and it is
+     * the only thing standing between a freshness probe and a full enumeration
+     * of a directory holding a hundred thousand logs, snapshots or swap files.
+     *
+     * Counted rather than inferred from the drift totals: an entry the scanner
+     * would not track changes no count whether it was examined or skipped, so
+     * how often the question was asked is the only observable difference
+     * between a bounded walk and an unbounded one. It regressed once already,
+     * silently, when the filter in front of the counter grew stricter.
+     */
+    #[Group('query')]
+    public function testItStopsExaminingEntriesAtThePerDirectoryBound(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            // Comfortably past the 500-entry budget, and cheap to create.
+            for ($index = 0; $index < 700; ++$index) {
+                file_put_contents($root . '/src/noise' . $index . '.log', 'x');
+            }
+            file_put_contents($root . '/src/b.php', "<?php\n");
+            touch($root . '/src', time() + 60);
+            $predicate = $this->countingPredicate();
+
+            (new WalkDriftOracle($pdo, $predicate))->drift($projectId, $this->activeScanId($pdo, $projectId), $root, $this->finishedAt($pdo, $projectId));
+
+            self::assertSame(500, $predicate->calls, 'The walk must stop at its budget, not enumerate all 701 entries.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A predicate that counts how often the walk asked, and answers no, so nothing else stops the loop. */
+    private function countingPredicate()
+    {
+        return new class implements TrackedPathPredicate {
+            public int $calls = 0;
+
+            /** Counts the question and answers that nothing is trackable, so only the budget can end the walk. */
+            public function tracks(string $relativePath, string $absolutePath): bool
+            {
+                ++$this->calls;
+
+                return false;
+            }
+        };
+    }
+
+    /** The active scan id, looked up by parameter binding rather than string interpolation. */
+    private function activeScanId(PDO $pdo, string $projectId): string
+    {
+        $statement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+
+        return (string) $statement->fetchColumn();
+    }
+
+    /** The active scan's finish time, looked up by parameter binding rather than string interpolation. */
+    private function finishedAt(PDO $pdo, string $projectId): string
+    {
+        $statement = $pdo->prepare('SELECT s.finished_at FROM projects p JOIN scans s ON s.id = p.active_scan_id WHERE p.id = :id');
+        $statement->execute(['id' => $projectId]);
+
+        return (string) $statement->fetchColumn();
     }
 
     private static function drift(PDO $pdo, string $projectId, string $root): \Knossos\Query\Drift\DriftCounts
