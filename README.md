@@ -276,7 +276,10 @@ Docker, native, and client-specific variants are in
 A separate, optional plugin injects a short
 [session brief](docs/capabilities/session-brief.md) at the start of each Claude Code session:
 whether the graph is fresh, the project's boundary rules and recorded notes, and its entry
-points and hubs.
+points and hubs. The same plugin ships a
+[routing skill](docs/capabilities/agent-skill.md) that the brief arms at the end
+of every session it renders: it decides which questions a session brings back to
+the graph, and which it keeps answering by grepping and reading files.
 
 ```sh
 knossos install-agent-plugin           # previews; add --execute to apply
