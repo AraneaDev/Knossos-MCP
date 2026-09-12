@@ -2,9 +2,11 @@
 
 Three surfaces exist for coding agents rather than for people: a paste-ready
 orientation brief, a bounded task-shaped evidence bundle, and durable
-annotations an agent can write back to the graph. The fourth, the
-per-session brief injected at the start of a Claude Code session, has its own
-page: [session brief](session-brief.md).
+annotations an agent can write back to the graph. Two more have their own
+pages: the brief injected at the start of a Claude Code session
+([session brief](session-brief.md)), and the skill that decides which
+questions reach any of these tools at all
+([the routing skill](agent-skill.md)).
 
 | Tool                   | CLI                    | Answers                                           |
 | ---------------------- | ---------------------- | ------------------------------------------------- |

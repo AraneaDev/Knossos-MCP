@@ -39,6 +39,8 @@ limits stated. The groups match the tool tables in the
   orientation brief, task-shaped evidence bundles, and durable annotations.
 - [Session brief](capabilities/session-brief.md): the path-addressed,
   five-state orientation text a Claude Code session sees at start.
+- [The routing skill](capabilities/agent-skill.md): which questions that
+  session brings back to the graph, and which it answers by reading the tree.
 
 ## Guides
 
