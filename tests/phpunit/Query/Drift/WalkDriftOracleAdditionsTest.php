@@ -17,6 +17,7 @@ use PHPUnit\Framework\Attributes\Group;
  */
 final class WalkDriftOracleAdditionsTest extends KnossosTestCase
 {
+    /** A dependency directory appearing under a tracked one must not read as an architectural change. */
     #[Group('query')]
     public function testAnIgnoredAdditionIsNotDrift(): void
     {
@@ -32,6 +33,7 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
         }
     }
 
+    /** A file the scanner would actually track is exactly the case additions counting exists to catch. */
     #[Group('query')]
     public function testATrackableAdditionIsDrift(): void
     {
@@ -46,6 +48,7 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
         }
     }
 
+    /** The oracle must honour a project's own configured ignores, not only IgnoreMatcher's built-in defaults. */
     #[Group('query')]
     public function testAProjectIgnoreIsHonoured(): void
     {
@@ -82,8 +85,14 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
 
     private static function drift(PDO $pdo, string $projectId, string $root): \Knossos\Query\Drift\DriftCounts
     {
-        $scanId = (string) $pdo->query("SELECT active_scan_id FROM projects WHERE id = '{$projectId}'")->fetchColumn();
-        $finishedAt = (string) $pdo->query("SELECT finished_at FROM scans WHERE id = '{$scanId}'")->fetchColumn();
+        $activeScan = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
+        $activeScan->execute(['id' => $projectId]);
+        $scanId = (string) $activeScan->fetchColumn();
+
+        $finished = $pdo->prepare('SELECT finished_at FROM scans WHERE id = :id');
+        $finished->execute(['id' => $scanId]);
+        $finishedAt = (string) $finished->fetchColumn();
+
         $drift = (new WalkDriftOracle($pdo))->drift($projectId, $scanId, $root, $finishedAt);
         self::assertNotNull($drift);
         return $drift;
