@@ -769,6 +769,86 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
+     * A manifest that was never committed and has since been deleted appears
+     * in none of git's three listings: `diff` has no committed version to
+     * compare, `--others` no longer sees a file that is gone, and the index
+     * never held it. Holding its stored hash is not enough — the path has to
+     * reach the decision, or the graph goes on holding a manifest that is not
+     * there while the oracle reports nothing.
+     */
+    #[Group('git')]
+    public function testADeletedUntrackedManifestIsADeletionThoughGitNamesItNowhere(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $this->recordManifest($pdo, $scanId, $root, 'composer.json', '{"name":"fixture/scanned"}');
+            unlink($root . '/composer.json');
+
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, [], [], ['src/a.php']);
+
+            self::assertNotNull($drift);
+            self::assertSame(1, $drift->deleted, 'The graph holds a hash for a manifest that is gone, whatever git can still name.');
+            self::assertSame(0, $drift->changed);
+            self::assertSame(0, $drift->added);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The manifests join the candidate set before the ceiling is applied, so
+     * the bound governs what this probe is actually about to hash. Applied
+     * after them, a probe already over the ceiling would go on and do the work
+     * the ceiling exists to refuse.
+     *
+     * Pinned exactly on the boundary and only through the manifests\' own
+     * contribution to it: 19,999 changed paths is under the 20,000 ceiling and
+     * is decided, and the two recorded manifests are what carry the same probe
+     * to 20,001 and over it. A ceiling counted before they join sees 19,999
+     * both times and never declines.
+     */
+    #[Group('git')]
+    public function testTheCandidateCeilingCountsTheManifestsToo(): void
+    {
+        [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
+        try {
+            $changed = [];
+            for ($index = 0; $index < 19_999; ++$index) {
+                $changed[] = sprintf('nonexistent/f%05d.php', $index);
+            }
+            self::assertNotNull(
+                $this->drift($pdo, $projectId, $scanId, $root, $changed, [], ['src/a.php']),
+                'Without the manifests the same probe is under the ceiling, which is what makes their contribution to it the thing under test.',
+            );
+
+            $pdo->prepare('UPDATE scans SET unit_inputs_json = :units WHERE id = :id')->execute([
+                'units' => UnitInputSet::of([
+                    new ProjectUnit('composer', 'composer.json', hash('sha256', 'a')),
+                    new ProjectUnit('node', 'package.json', hash('sha256', 'b')),
+                ])->encode(),
+                'id' => $scanId,
+            ]);
+
+            self::assertNull(
+                $this->drift($pdo, $projectId, $scanId, $root, $changed, [], ['src/a.php']),
+                'Two manifests carry the probe from 19,999 candidates to 20,001, and the ceiling has to see that total rather than the one before they joined.',
+            );
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Writes a manifest to disk and records it on the scan as the input it was read as. */
+    private function recordManifest(PDO $pdo, string $scanId, string $root, string $relativePath, string $contents): void
+    {
+        file_put_contents($root . '/' . $relativePath, $contents);
+        $pdo->prepare('UPDATE scans SET unit_inputs_json = :units WHERE id = :id')->execute([
+            'units' => UnitInputSet::of([new ProjectUnit('composer', $relativePath, hash('sha256', $contents))])->encode(),
+            'id' => $scanId,
+        ]);
+    }
+
+    /**
      * Seeds a project with one file and stamps its scan's `git_head` and
      * recorded dirty set, so each test controls what the oracle finds without
      * touching the fixture's own scan-creation path.

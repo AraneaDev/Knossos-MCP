@@ -258,10 +258,22 @@ final readonly class GitDriftOracle implements DriftOracle
                 return null;
             }
         }
-        // The dirty set joins the candidates rather than the drift count:
-        // each of its paths is still decided against the hash the scan stored
-        // for it, so one that has not actually moved reports no drift.
-        $candidates = $changedEntries + $untrackedEntries + $dirty->asKeys();
+        // The dirty set and the recorded manifests join the candidates rather
+        // than the drift count: each of their paths is still decided against
+        // the hash the scan stored for it, so one that has not actually moved
+        // reports no drift.
+        //
+        // The manifests have to be here and not only in the hash lookup. An
+        // untracked composer.json that was scanned and has since been deleted
+        // appears in none of git's three listings: not in `diff` (git has no
+        // committed version to diff), not in `--others` (it is gone), not in
+        // the index (it was never added). Holding its stored hash while never
+        // handing `decide()` its path meant it contributed nothing and the
+        // oracle returned zero for a graph whose manifest had vanished.
+        $candidates = $changedEntries + $untrackedEntries + $dirty->asKeys() + array_fill_keys(array_keys($units), true);
+        // After the manifests join, not before: the bound has to govern the
+        // real total this probe is about to hash, or it bounds something that
+        // is not what runs.
         if (count($candidates) > self::MAX_CANDIDATES) {
             return null;
         }
