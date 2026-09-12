@@ -63,6 +63,23 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
         }
     }
 
+    /** A malformed config must degrade to the default matcher, not fail the probe: discovery reports the same fault properly elsewhere. */
+    #[Group('query')]
+    public function testMalformedConfigJsonDoesNotThrow(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            $pdo->prepare('UPDATE projects SET config_json = :config WHERE id = :id')
+                ->execute(['config' => 'not valid json', 'id' => $projectId]);
+            file_put_contents($root . '/src/b.php', "<?php\n");
+            touch($root . '/src', time() + 60);
+
+            self::assertSame(1, self::drift($pdo, $projectId, $root)->added, 'Malformed config must still let the probe answer, falling back to the default matcher.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     private static function drift(PDO $pdo, string $projectId, string $root): \Knossos\Query\Drift\DriftCounts
     {
         $scanId = (string) $pdo->query("SELECT active_scan_id FROM projects WHERE id = '{$projectId}'")->fetchColumn();
