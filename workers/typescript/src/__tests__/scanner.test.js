@@ -854,6 +854,27 @@ function scanOnce(scanner, root, files) {
     return Object.fromEntries(contributions.map((c) => [c.owner_key, c]));
 }
 
+// Run `callback` with every fs.readFileSync of a path ending in `suffix`
+// failing as unreadable, the way a permission change after discovery would.
+function withUnreadable(suffix, callback) {
+    const readFileSync = fs.readFileSync;
+    const spy = vi
+        .spyOn(fs, "readFileSync")
+        .mockImplementation((file, ...rest) => {
+            if (String(file).endsWith(suffix)) {
+                throw Object.assign(new Error("EACCES: permission denied"), {
+                    code: "EACCES",
+                });
+            }
+            return readFileSync(file, ...rest);
+        });
+    try {
+        return callback();
+    } finally {
+        spy.mockRestore();
+    }
+}
+
 describe("content_hash", () => {
     it("hashes raw bytes, so a byte-order mark is part of the hash", () => {
         const bom = Buffer.concat([
@@ -950,15 +971,25 @@ describe("content_hash", () => {
         expect(contribution.content_hash).toBe(sha256(Buffer.from(script)));
     });
 
-    it("sends no hash for a file it never read", () => {
-        const root = fixture({});
+    it("sends no hash for a file that passed validation but could not be read", () => {
+        // Validation only stats the file; the read that would hash and parse it
+        // fails. No bytes were read, so no hash, while the file beside it has one.
+        const root = fixture({
+            "src/gone.ts": "export class Gone {}\n",
+            "src/kept.ts": "export class Kept {}\n",
+        });
+        const byOwner = withUnreadable(join("src", "gone.ts"), () =>
+            scanOnce(new TypeScriptScanner(), root, [
+                "src/gone.ts",
+                "src/kept.ts",
+            ]),
+        );
 
-        const byOwner = scanOnce(new TypeScriptScanner(), root, [
-            "src/missing.ts",
-        ]);
-
-        const contribution = byOwner["knossos.typescript:file:src/missing.ts"];
-        expect(contribution.nodes).toEqual([]);
-        expect(contribution).not.toHaveProperty("content_hash");
+        const { content_hash: kept } =
+            byOwner["knossos.typescript:file:src/kept.ts"];
+        const gone = byOwner["knossos.typescript:file:src/gone.ts"];
+        expect(gone).not.toHaveProperty("content_hash");
+        expect([gone.nodes, gone.diagnostics.length]).toEqual([[], 1]);
+        expect(kept).toBe(sha256(Buffer.from("export class Kept {}\n")));
     });
 });
