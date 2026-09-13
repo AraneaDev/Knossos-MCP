@@ -180,6 +180,49 @@ final class ScanDirtyPathCaptureTest extends KnossosTestCase
         };
     }
 
+    /**
+     * A repository created with `--object-format=sha256` names every object by
+     * SHA-256, so a scan of one has to name its blob ids the same way. Named
+     * the other way they match nothing in that repository's trees, every
+     * tracked file is recorded dirty, the recorded set blows its own bound,
+     * and the git oracle declines for the life of the graph: the feature
+     * quietly disappears for a whole class of repositories.
+     *
+     * The head is the only thing at hand that knows the format, by its length,
+     * which is why it is the 64-character one here.
+     */
+    #[Group('scan')]
+    public function testASha256RepositoryGetsSha256BlobIds(): void
+    {
+        $content = "<?php\n\nfinal class Existing {}\n";
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        file_put_contents($root . '/src/Existing.php', $content);
+        try {
+            $pdo = $this->freshTestDatabase();
+            // The committed blob, named the way a SHA-256 repository names it,
+            // for content that is exactly what is on disk. Nothing is dirty.
+            $tree = '100644 blob ' . hash('sha256', 'blob ' . strlen($content) . "\0" . $content) . "\tsrc/Existing.php\0";
+            $service = new ProjectScanService(
+                $pdo,
+                self::repositoryRoot(),
+                [$root],
+                new GitHeadResolver($this->fixedRunner(str_repeat('a', 64) . "\n")),
+                new DirtyPathResolver($this->fixedRunner($tree)),
+            );
+
+            $result = $service->scan($root);
+
+            $row = $pdo->prepare('SELECT dirty_paths_json FROM scans WHERE id = :id');
+            $row->execute(['id' => $result->snapshotId]);
+            $recorded = DirtyPathSet::decode((string) $row->fetchColumn());
+            self::assertNotNull($recorded);
+            self::assertSame([], $recorded->paths, 'The file matches its committed blob, and would only read as dirty if the scan had named it with the wrong hash.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** A runner answering with fixed output, standing in for a git binary CI does not have. */
     private function fixedRunner(string $output): GitProcessRunnerInterface
     {

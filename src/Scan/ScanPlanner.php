@@ -110,6 +110,14 @@ final readonly class ScanPlanner
             ignorePatterns: $configuration->ignores,
             maxFiles: $maxFiles,
             maxFileBytes: $maxFileBytes,
+            // Read off the commit just captured, because that is the only
+            // thing here that knows the repository's object format: git emits
+            // a 40-character id for a SHA-1 repository and a 64-character one
+            // for a SHA-256 repository, and the blob ids discovery records
+            // have to be named the same way or they match nothing in that
+            // repository's trees. A gitless project compares them against
+            // nothing, so its default is arbitrary.
+            gitObjectHash: $gitHead !== null && strlen($gitHead) === 64 ? 'sha256' : 'sha1',
         )))->discover($root);
         $discoveryMilliseconds = self::elapsedMilliseconds($started);
         // Derived from the bytes the walk just read, against the commit

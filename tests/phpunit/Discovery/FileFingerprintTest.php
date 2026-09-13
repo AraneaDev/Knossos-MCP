@@ -31,6 +31,39 @@ final class FileFingerprintTest extends TestCase
         return $path;
     }
 
+    // ----- git blob id -----
+
+    /**
+     * The default names a blob the way a SHA-1 repository does, which is what
+     * the overwhelming majority of checkouts are.
+     */
+    public function testItNamesABlobTheWayASha1RepositoryDoes(): void
+    {
+        $path = $this->writeTempFile("hello\n");
+
+        $fingerprint = FileFingerprint::compute($path);
+
+        $this->assertNotNull($fingerprint);
+        assertSame(sha1("blob 6\0hello\n"), $fingerprint->gitBlobHash);
+    }
+
+    /**
+     * And a SHA-256 repository names the same bytes differently. Computing the
+     * SHA-1 id for such a repository is not a near miss: it matches nothing in
+     * its trees, so every tracked file reads as dirty and the drift comparison
+     * that depends on the id stops working altogether.
+     */
+    public function testItNamesABlobTheWayASha256RepositoryDoes(): void
+    {
+        $path = $this->writeTempFile("hello\n");
+
+        $fingerprint = FileFingerprint::compute($path, 'sha256');
+
+        $this->assertNotNull($fingerprint);
+        assertSame(hash('sha256', "blob 6\0hello\n"), $fingerprint->gitBlobHash);
+        assertSame(hash('sha256', "hello\n"), $fingerprint->contentHash, "The graph's own content hash is SHA-256 whatever the repository is, and must not move with the object format.");
+    }
+
     // ----- compute() -----
 
     public function testComputeReturnsNullWhenFileDoesNotExist(): void

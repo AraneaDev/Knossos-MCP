@@ -139,7 +139,7 @@ final readonly class ProjectDiscoverer
                     continue;
                 }
 
-                $fingerprint = FileFingerprint::compute($absolute);
+                $fingerprint = FileFingerprint::compute($absolute, $this->config->gitObjectHash);
                 if ($fingerprint === null) {
                     $diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
