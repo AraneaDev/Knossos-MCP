@@ -28,4 +28,9 @@ final class ProtocolTest extends TestCase
         $this->assertNotNull($constructor);
         $this->assertTrue($constructor->isPrivate());
     }
+
+    public function testTheContentHashCapabilityName(): void
+    {
+        assertSame('content_hash', Protocol::CAPABILITY_CONTENT_HASH);
+    }
 }

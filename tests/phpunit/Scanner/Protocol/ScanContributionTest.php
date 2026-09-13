@@ -111,4 +111,36 @@ final class ScanContributionTest extends TestCase
         assertSame([], $json['edges']);
         assertSame([], $json['diagnostics']);
     }
+
+    // ----- content hash -----
+
+    public function testAContributionWithoutAHashSerialisesExactlyAsBefore(): void
+    {
+        $contribution = new ScanContribution('knossos.php:file:src/Foo.php');
+
+        assertSame(
+            ['owner_key', 'nodes', 'edges', 'diagnostics'],
+            array_keys($contribution->jsonSerialize()),
+        );
+        assertSame(null, $contribution->contentHash);
+    }
+
+    public function testAContributionWithAHashSerialisesIt(): void
+    {
+        $hash = hash('sha256', "<?php\n");
+        $contribution = new ScanContribution('knossos.php:file:src/Foo.php', [], [], [], $hash);
+
+        assertSame($hash, $contribution->jsonSerialize()['content_hash']);
+    }
+
+    public function testAHashThatIsNotLowercaseSha256HexIsRefused(): void
+    {
+        foreach ([strtoupper(hash('sha256', 'x')), substr(hash('sha256', 'x'), 1), '', hash('sha256', 'x') . "\n"] as $bad) {
+            $error = captureThrows(
+                fn() => new ScanContribution('knossos.php:file:src/Foo.php', [], [], [], $bad),
+                InvalidArgumentException::class,
+            );
+            assertSame('Contribution content hash must be lowercase SHA-256 hex.', $error->getMessage());
+        }
+    }
 }

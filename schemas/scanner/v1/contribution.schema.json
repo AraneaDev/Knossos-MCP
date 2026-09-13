@@ -12,7 +12,8 @@
     "diagnostics": {
       "type": "array",
       "items": { "$ref": "#/$defs/diagnostic" }
-    }
+    },
+    "content_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
   },
   "$defs": {
     "evidence": {

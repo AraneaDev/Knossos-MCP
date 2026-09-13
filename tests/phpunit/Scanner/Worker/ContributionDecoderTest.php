@@ -341,4 +341,36 @@ final class ContributionDecoderTest extends TestCase
         assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
         $this->assertInstanceOf(\ValueError::class, $error->getPrevious());
     }
+
+    // ----- content_hash -----
+
+    public function testAContentHashIsDecoded(): void
+    {
+        $hash = hash('sha256', 'source');
+        $decoded = ContributionDecoder::decode([
+            'owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'content_hash' => $hash,
+        ]);
+
+        assertSame($hash, $decoded->contentHash);
+    }
+
+    public function testAMissingContentHashDecodesToNull(): void
+    {
+        $decoded = ContributionDecoder::decode(['owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => []]);
+
+        assertSame(null, $decoded->contentHash);
+    }
+
+    public function testAMalformedContentHashIsAnInvalidContribution(): void
+    {
+        foreach (['ABC', 42, null, strtoupper(hash('sha256', 'x'))] as $bad) {
+            $error = captureThrows(
+                fn() => ContributionDecoder::decode([
+                    'owner_key' => 'demo:file:a.demo', 'nodes' => [], 'edges' => [], 'diagnostics' => [], 'content_hash' => $bad,
+                ]),
+                WorkerException::class,
+            );
+            assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
+        }
+    }
 }

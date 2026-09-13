@@ -20,15 +20,22 @@ final readonly class ScanContribution implements JsonSerializable
      * @param list<NodeFact> $nodes
      * @param list<EdgeFact> $edges
      * @param list<Diagnostic> $diagnostics
+     * @param ?string $contentHash lowercase SHA-256 hex of the raw bytes these
+     *        facts were parsed from; null when the worker does not report it or
+     *        never read the file
      */
     public function __construct(
         public string $ownerKey,
         public array $nodes = [],
         public array $edges = [],
         public array $diagnostics = [],
+        public ?string $contentHash = null,
     ) {
         if ($ownerKey === '') {
             throw new InvalidArgumentException('Contribution owner key must not be empty.');
+        }
+        if ($contentHash !== null && preg_match('/\A[0-9a-f]{64}\z/', $contentHash) !== 1) {
+            throw new InvalidArgumentException('Contribution content hash must be lowercase SHA-256 hex.');
         }
 
         self::assertInstances($nodes, NodeFact::class, 'nodes');
@@ -43,12 +50,19 @@ final readonly class ScanContribution implements JsonSerializable
      */
     public function jsonSerialize(): array
     {
-        return [
+        $wire = [
             'owner_key' => $this->ownerKey,
             'nodes' => $this->nodes,
             'edges' => $this->edges,
             'diagnostics' => $this->diagnostics,
         ];
+        // Only when set, so every contribution from a worker that does not report
+        // it, and every payload already in the cache, keeps its exact bytes.
+        if ($this->contentHash !== null) {
+            $wire['content_hash'] = $this->contentHash;
+        }
+
+        return $wire;
     }
 
     /**
