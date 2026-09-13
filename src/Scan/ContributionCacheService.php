@@ -7,8 +7,9 @@ namespace Knossos\Scan;
 use InvalidArgumentException;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Reconciliation\ContributionCacheEntry;
-use Knossos\Scanner\Protocol\{Diagnostic, Evidence, ScanContribution, ScannerManifest};
+use Knossos\Scanner\Protocol\{Diagnostic, Evidence, Protocol, ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\ContributionDecoder;
+use Knossos\Scanner\Worker\WorkerException;
 use Throwable;
 
 /**
@@ -110,6 +111,9 @@ final readonly class ContributionCacheService
                 $omitted = true;
                 continue;
             }
+            // Before anything is kept or cached: facts parsed from bytes other
+            // than the ones discovery hashed must never reach the graph.
+            $cacheable = self::parsedContentIsCacheable($contribution, $file, $manifest);
             if (isset($duplicated[$owner])) {
                 // Only the last answer survived the index above, so the facts
                 // of every earlier one are already gone and nothing here can
@@ -128,7 +132,7 @@ final readonly class ContributionCacheService
             // reverts. Re-fingerprint now: only cache the entry when the on-disk bytes
             // still match the discovery hash; otherwise keep this scan's contribution but
             // let the next scan re-scan from source.
-            if ($this->contentStillMatchesDiscovery($file)) {
+            if ($cacheable && $this->contentStillMatchesDiscovery($file)) {
                 $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution);
             }
         }
@@ -157,6 +161,47 @@ final readonly class ContributionCacheService
 
         return $fingerprint->contentHash === $file->contentHash;
     }
+
+    /**
+     * Check a worker's reported parsed-content hash against discovery, and say
+     * whether the contribution may be cached.
+     *
+     * A present hash is compared whatever the manifest declares, since a
+     * mismatch is evidence of a changed tree whoever reports it. Without one, a
+     * contribution carrying no facts is a worker's report on a file it could not
+     * read, so there were no bytes to hash; it is kept, but a worker that does
+     * hash is not allowed to have that empty answer cached. Facts without a hash
+     * from a worker that declared it would hash are a defect in that worker.
+     *
+     * @throws ScanSnapshotChangedException when the hash differs from discovery
+     * @throws WorkerException when a declaring worker sent facts without a hash
+     */
+    private static function parsedContentIsCacheable(ScanContribution $contribution, object $file, ScannerManifest $manifest): bool
+    {
+        $declared = in_array(Protocol::CAPABILITY_CONTENT_HASH, $manifest->capabilities, true);
+        if ($contribution->contentHash !== null) {
+            $expected = isset($file->contentHash) && is_string($file->contentHash) ? $file->contentHash : null;
+            if ($expected !== null && !hash_equals($expected, $contribution->contentHash)) {
+                throw ScanSnapshotChangedException::parsedDifferently($file->relativePath);
+            }
+
+            return true;
+        }
+        if ($contribution->nodes === [] && $contribution->edges === []) {
+            return !$declared;
+        }
+        if ($declared) {
+            throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf(
+                '%s declares the %s capability but reported no content hash for %s.',
+                $manifest->id,
+                Protocol::CAPABILITY_CONTENT_HASH,
+                $file->relativePath,
+            ));
+        }
+
+        return true;
+    }
+
     /** One cache entry for a scanned file. */
 
     private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
@@ -223,7 +268,7 @@ final readonly class ContributionCacheService
                 ),
                 new Evidence($relativePath, 1, 1),
             ),
-        ]);
+        ], $contribution->contentHash);
     }
 
     /**

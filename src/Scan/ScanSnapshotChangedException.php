@@ -72,4 +72,21 @@ final class ScanSnapshotChangedException extends RuntimeException
             $relativePath,
         ));
     }
+
+    /**
+     * The worker reported parsing bytes whose hash is not the one discovery
+     * recorded.
+     *
+     * The case the post-worker re-read cannot see: the file changed while the
+     * worker read it and changed back before the scan checked, so disk and
+     * record agree again while the facts describe neither. Only the worker's own
+     * hash of what it parsed shows it.
+     */
+    public static function parsedDifferently(string $relativePath): self
+    {
+        return new self(sprintf(
+            'Scan aborted: %s was parsed from different content than the scan hashed, so its graph facts match no recorded hash. Rerun the scan once the tree has settled.',
+            $relativePath,
+        ));
+    }
 }

@@ -9,8 +9,11 @@ use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
 use Knossos\Scan\ContributionPartition;
 use Knossos\Scan\ScanCancelledException;
+use Knossos\Scan\ScanSnapshotChangedException;
+use Knossos\Scanner\Protocol\{Confidence, Evidence, NodeFact, Origin};
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
+use Knossos\Scanner\Worker\WorkerException;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
@@ -36,6 +39,16 @@ final class ContributionCacheServiceTest extends TestCase
     private function manifest(): ScannerManifest
     {
         return new ScannerManifest('knossos.php', '0.1.0', '1', '1', ['php'], ['php'], ['scan']);
+    }
+
+    private function hashingManifest(): ScannerManifest
+    {
+        return new ScannerManifest('knossos.php', '0.1.0', '1', '1', ['php'], ['php'], ['scan', 'content_hash']);
+    }
+
+    private function node(string $path): NodeFact
+    {
+        return new NodeFact('class:Foo', 'class', 'Foo', 'Foo', Origin::Ast, Confidence::Certain, new Evidence($path, 1, 1), []);
     }
 
     private function writeFile(string $name, string $contents): DiscoveredFile
@@ -258,5 +271,104 @@ final class ContributionCacheServiceTest extends TestCase
         self::assertSame('SCANNER_DUPLICATE_CONTRIBUTION', $diagnostic->code);
         self::assertStringContainsString('b.php', $diagnostic->message);
         self::assertCount(0, $result['cache_entries']);
+    }
+
+    public function testAHashThatMatchesDiscoveryIsCached(): void
+    {
+        $file = $this->writeFile('Foo.php', "<?php // stable\n");
+        $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
+
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg');
+
+        assertSame(1, count($result['contributions']));
+        assertSame(1, count($result['cache_entries']));
+    }
+
+    /**
+     * The race #79 cannot see: the file on disk still matches discovery, so
+     * only the worker's own hash reveals it parsed something else.
+     */
+    public function testAHashThatDiffersFromDiscoveryFailsTheScanEvenWhenDiskStillMatches(): void
+    {
+        $file = $this->writeFile('Foo.php', "<?php // A\n");
+        $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], hash('sha256', "<?php // B\n"));
+
+        $error = captureThrows(
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg'),
+            ScanSnapshotChangedException::class,
+        );
+
+        assertContains('Foo.php', $error->getMessage());
+        assertContains('was parsed from different content', $error->getMessage());
+    }
+
+    /** A present hash is evidence whoever sent it, so it is checked without the capability too. */
+    public function testAHashIsVerifiedEvenWhenTheCapabilityIsNotDeclared(): void
+    {
+        $file = $this->writeFile('Foo.php', "<?php // A\n");
+        $contribution = new ScanContribution('knossos.php:file:Foo.php', [], [], [], hash('sha256', "<?php // B\n"));
+
+        $error = captureThrows(
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg'),
+            ScanSnapshotChangedException::class,
+        );
+
+        assertContains('Foo.php', $error->getMessage());
+    }
+
+    public function testFactsWithoutAHashFromADeclaringWorkerAreAContractViolation(): void
+    {
+        $file = $this->writeFile('Foo.php', "<?php // A\n");
+        $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')]);
+
+        $error = captureThrows(
+            fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg'),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
+        assertContains('knossos.php', $error->getMessage());
+        assertContains('Foo.php', $error->getMessage());
+    }
+
+    /** A worker cannot hash a file it failed to read; that diagnostic is kept but never cached. */
+    public function testADiagnosticWithoutAHashFromADeclaringWorkerIsAcceptedButNotCached(): void
+    {
+        $file = $this->writeFile('Foo.php', "<?php // A\n");
+        $contribution = new ScanContribution('knossos.php:file:Foo.php', [], [], [
+            new \Knossos\Scanner\Protocol\Diagnostic('error', 'PHP_UNSCANNABLE_FILE', 'unreadable', new Evidence('Foo.php', 1, 1)),
+        ]);
+
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->hashingManifest(), 'cfg');
+
+        assertSame(1, count($result['contributions']));
+        assertSame(0, count($result['cache_entries']));
+    }
+
+    public function testFactsWithoutAHashFromANonDeclaringWorkerAreCachedAsBefore(): void
+    {
+        $file = $this->writeFile('Foo.php', "<?php // A\n");
+        $contribution = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')]);
+
+        $result = (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $this->manifest(), 'cfg');
+
+        assertSame(1, count($result['cache_entries']));
+    }
+
+    public function testADuplicatedContributionKeepsItsHashAndIsStillVerified(): void
+    {
+        $file = $this->writeFile('Foo.php', "<?php // A\n");
+        $first = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
+        $second = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], $file->contentHash);
+
+        $result = (new ContributionCacheService())->entriesForScanned([$first, $second], [$file], $this->hashingManifest(), 'cfg');
+
+        assertSame($file->contentHash, $result['contributions'][0]->contentHash);
+
+        $bad = new ScanContribution('knossos.php:file:Foo.php', [$this->node('Foo.php')], [], [], hash('sha256', 'other'));
+        captureThrows(
+            fn() => (new ContributionCacheService())->entriesForScanned([$first, $bad], [$file], $this->hashingManifest(), 'cfg'),
+            ScanSnapshotChangedException::class,
+        );
     }
 }

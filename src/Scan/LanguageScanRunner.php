@@ -62,6 +62,12 @@ final readonly class LanguageScanRunner
                 if ($cancellation->isCancelled() || ($error instanceof WorkerException && $error->diagnosticCode === 'WORKER_CANCELLED')) {
                     throw new ScanCancelledException('Scan was cancelled.', previous: $error);
                 }
+                // A changed tree is a fault of the whole scan, not of this
+                // language. Degrading it would commit a graph missing this
+                // language's facts while every recorded hash still matched disk.
+                if ($error instanceof ScanSnapshotChangedException) {
+                    throw $error;
+                }
                 // Everything else costs this language only. The other languages'
                 // facts are already collected and are still worth a graph.
                 $workerDiagnostics[] = [
