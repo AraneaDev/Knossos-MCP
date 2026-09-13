@@ -32,6 +32,36 @@ final class RefreshIfStaleTest extends KnossosTestCase
     /** The commit every scan of the git-backed fixture records, spelled as a literal so no test value is ever interpolated into SQL. */
     private const GIT_HEAD = '3f1a9c2b4d5e6f708192a3b4c5d6e7f8091a2b3c';
 
+    /** What the environment held on the way in, so tearDown can put back exactly that, absence included. */
+    private string|false $ambientAutoRefresh = false;
+
+    /**
+     * Take the operator kill switch out of the environment for every test here.
+     *
+     * Several of these calls pass no refresh_if_stale argument and assert what
+     * the default did. KNOSSOS_AUTO_REFRESH=0 in the shell turns that default
+     * off, so on a developer's machine or a CI runner that sets it, those
+     * tests assert a rescan that never ran, or pass while never reaching the
+     * branch they exist for. A suite has to report on the code rather than on
+     * the machine it happens to run on, and the two kill-switch tests below
+     * set the variable themselves, so nothing here needs it inherited.
+     */
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->ambientAutoRefresh = getenv('KNOSSOS_AUTO_REFRESH');
+        putenv('KNOSSOS_AUTO_REFRESH');
+    }
+
+    /** Put the variable back as it was, which for a variable that was never set means unsetting it. */
+    protected function tearDown(): void
+    {
+        putenv(is_string($this->ambientAutoRefresh)
+            ? 'KNOSSOS_AUTO_REFRESH=' . $this->ambientAutoRefresh
+            : 'KNOSSOS_AUTO_REFRESH');
+        parent::tearDown();
+    }
+
     /** A graph rebuilt because it was stale must come back fresh, or the refresh bought the caller nothing. */
     #[Group('mcp')]
     public function testStaleGraphIsRescannedBeforeAnswering(): void
