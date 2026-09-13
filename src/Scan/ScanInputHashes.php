@@ -32,6 +32,15 @@ use Knossos\Scanner\Worker\WorkerException;
  * verified is refused rather than trusted. A path discovery never hashed, such as
  * a dependency outside the scanned tree, has no recorded content to disagree with
  * and is ignored.
+ *
+ * One limitation comes from how frames are decoded. The channel decodes JSON
+ * into PHP arrays, which turns a numeric-string object key into an int, and
+ * an object whose keys are exactly "0", "1", ... into a list that cannot be told
+ * apart from a JSON array. Int keys are read back as the path they spelled. A
+ * non-empty list is refused as malformed, so a worker reporting a read of
+ * root-level files named `0` (and `1`, ...) and nothing else degrades its
+ * language. That costs a rerun on a tree nobody has; accepting lists instead
+ * would let a worker that sends an array of hashes pass unverified.
  */
 final class ScanInputHashes
 {
@@ -58,16 +67,17 @@ final class ScanInputHashes
         }
         $inputHashes = $result[self::FIELD];
         // `{}` decodes to an empty array, as does `[]`; both say nothing else
-        // was read. Any other list is not the object the protocol defines.
+        // was read. Any other list is not the object the protocol defines (see
+        // the class docblock for the one object that decodes to a list too).
         if (!is_array($inputHashes) || ($inputHashes !== [] && array_is_list($inputHashes))) {
             throw self::invalid($manifest, sprintf('sent %s that is not an object; it must be an object keyed by path', self::FIELD));
         }
         // Shape first, for the whole map, so a malformed entry is reported as
         // such even when an earlier one would have failed the scan.
-        foreach ($inputHashes as $path => $hash) {
-            if (!is_string($path)) {
-                throw self::invalid($manifest, sprintf('sent a %s key that is not a project-relative path', self::FIELD));
-            }
+        $reads = [];
+        foreach ($inputHashes as $key => $hash) {
+            // A key like "123" arrives as the int 123; it is still that path.
+            $path = (string) $key;
             try {
                 RelativePath::assertValid($path, self::FIELD . ' key ' . $path);
             } catch (InvalidArgumentException $error) {
@@ -76,8 +86,10 @@ final class ScanInputHashes
             if ($hash !== null && (!is_string($hash) || preg_match('/\A[0-9a-f]{64}\z/', $hash) !== 1)) {
                 throw self::invalid($manifest, sprintf('sent %s for %s that is neither null nor a lowercase SHA-256 hex digest', self::FIELD, $path));
             }
+            $reads[$path] = $hash;
         }
-        foreach ($inputHashes as $path => $hash) {
+        foreach ($reads as $path => $hash) {
+            $path = (string) $path;
             $file = $discoveredByPath[$path] ?? null;
             if ($file === null) {
                 continue;

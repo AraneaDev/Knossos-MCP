@@ -182,13 +182,14 @@ final readonly class ContributionCacheService
      *
      * A reported hash for a file discovery recorded no hash for cannot be
      * verified, and treating it as verified would let facts from any bytes
-     * through as fresh. That is a caller handing this service a file it never
-     * fingerprinted, so it is refused outright rather than kept uncached: kept,
-     * the facts would still reach the graph unverified.
+     * through as fresh. It is refused outright rather than kept uncached: kept,
+     * the facts would still reach the graph unverified. Refused as an invalid
+     * contribution, like {@see ScanInputHashes} refuses an unverifiable read, so
+     * the language degrades with a code that says why rather than as a bare
+     * WORKER_FAILED.
      *
      * @throws ScanSnapshotChangedException when the hash differs from discovery
-     * @throws WorkerException when a declaring worker sent facts without a hash
-     * @throws InvalidArgumentException when there is no discovery hash to compare with
+     * @throws WorkerException when a declaring worker sent facts without a hash, or a hash there is no discovery hash to compare with
      */
     private static function parsedContentIsCacheable(ScanContribution $contribution, object $file, ScannerManifest $manifest): bool
     {
@@ -196,8 +197,9 @@ final readonly class ContributionCacheService
         if ($contribution->contentHash !== null) {
             $expected = $file->contentHash ?? null;
             if (!is_string($expected)) {
-                throw new InvalidArgumentException(sprintf(
-                    'No discovery hash was recorded for %s, so its reported content hash cannot be verified.',
+                throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf(
+                    '%s reported a content hash for %s, but discovery recorded no hash for it, so the hash cannot be verified.',
+                    $manifest->id,
                     $file->relativePath,
                 ));
             }

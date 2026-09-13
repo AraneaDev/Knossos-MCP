@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scan;
 
-use InvalidArgumentException;
 use Knossos\Reconciliation\ContributionCacheEntry;
 use Knossos\Scan\CancellationToken;
 use Knossos\Scan\ContributionCacheService;
@@ -13,6 +12,7 @@ use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
+use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 use stdClass;
@@ -200,11 +200,12 @@ final class ContributionCacheDiagnosticsTest extends KnossosTestCase
             $contribution = new ScanContribution($manifest->id . ':file:src/Unhashed.php', [], [], [], hash('sha256', 'anything'));
             $error = captureThrows(
                 static fn() => (new ContributionCacheService())->entriesForScanned([$contribution], [$file], $manifest, 'cfg'),
-                InvalidArgumentException::class,
+                WorkerException::class,
             );
 
+            assertSame('WORKER_CONTRIBUTION_INVALID', $error->diagnosticCode);
             assertSame(
-                'No discovery hash was recorded for src/Unhashed.php, so its reported content hash cannot be verified.',
+                'knossos.test reported a content hash for src/Unhashed.php, but discovery recorded no hash for it, so the hash cannot be verified.',
                 $error->getMessage(),
             );
         }

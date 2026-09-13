@@ -36,7 +36,8 @@ final class ScanInputHashesTest extends TestCase
     {
         yield 'a list rather than an object' => [[hash('sha256', 'x')], 'must be an object'];
         yield 'a string rather than an object' => ['src/Other.ts', 'must be an object'];
-        yield 'a non-string key' => [['src/Other.ts' => hash('sha256', 'x'), 7 => hash('sha256', 'x')], 'project-relative path'];
+        yield 'an empty key' => [['' => hash('sha256', 'x')], 'project-relative path'];
+        yield 'a list, which is also what an object keyed only "0" decodes to' => [[0 => hash('sha256', 'x')], 'must be an object'];
         yield 'an absolute path' => [['/etc/passwd' => hash('sha256', 'x')], 'must not be absolute'];
         yield 'a parent traversal' => [['src/../../secret.ts' => hash('sha256', 'x')], 'invalid path segment'];
         yield 'an uppercase hash' => [['src/Other.ts' => strtoupper(hash('sha256', 'x'))], 'lowercase SHA-256'];
@@ -91,14 +92,14 @@ final class ScanInputHashesTest extends TestCase
         // decodes to; both mean the same thing, so both are accepted.
         ScanInputHashes::verify(['input_hashes' => []], $this->declaring(), $this->discovery());
 
-        assertSame(1, count($this->discovery()));
+        $this->addToAssertionCount(1);
     }
 
     public function testAMatchingHashForADiscoveredFilePasses(): void
     {
         ScanInputHashes::verify(['input_hashes' => ['src/Other.ts' => hash('sha256', self::OTHER)]], $this->declaring(), $this->discovery());
 
-        assertSame(hash('sha256', self::OTHER), $this->discovery()['src/Other.ts']->contentHash);
+        $this->addToAssertionCount(1);
     }
 
     public function testADifferentHashForADiscoveredFileFailsTheScan(): void
@@ -131,14 +132,14 @@ final class ScanInputHashesTest extends TestCase
             $this->discovery(),
         );
 
-        assertSame(false, isset($this->discovery()['node_modules/dep/index.d.ts']));
+        $this->addToAssertionCount(1);
     }
 
     public function testAWorkerThatDidNotDeclareTheCapabilityNeedNotSendIt(): void
     {
         ScanInputHashes::verify(['count' => 1], $this->plain(), $this->discovery());
 
-        assertSame(false, in_array('input_hashes', $this->plain()->capabilities, true));
+        $this->addToAssertionCount(1);
     }
 
     public function testAHashFromAWorkerThatDidNotDeclareTheCapabilityIsStillChecked(): void
@@ -176,6 +177,54 @@ final class ScanInputHashesTest extends TestCase
         );
 
         assertContains('could not be read while the scan resolved other files', $error->getMessage());
+    }
+
+    public function testANumericPathDecodedToAnIntKeyIsStillThatPath(): void
+    {
+        // json_decode turns {"123": "..."} into [123 => "..."].
+        $discovery = self::numericDiscovery('123');
+        $decoded = json_decode('{"input_hashes": {"123": "' . hash('sha256', 'swapped') . '"}}', true);
+
+        $error = captureThrows(fn() => ScanInputHashes::verify($decoded, $this->declaring(), $discovery), ScanSnapshotChangedException::class);
+
+        assertContains('123 was read from different content', $error->getMessage());
+    }
+
+    public function testAMatchingNumericPathPasses(): void
+    {
+        $discovery = self::numericDiscovery('123');
+        $decoded = json_decode('{"input_hashes": {"123": "' . hash('sha256', self::OTHER) . '", "src/x.ts": null}}', true);
+
+        ScanInputHashes::verify($decoded, $this->declaring(), $discovery);
+
+        $this->addToAssertionCount(1);
+    }
+
+    public function testAFailedReadOfANumericPathNamesIt(): void
+    {
+        $discovery = self::numericDiscovery('7');
+        $decoded = json_decode('{"input_hashes": {"src/x.ts": null, "7": null}}', true);
+
+        $error = captureThrows(fn() => ScanInputHashes::verify($decoded, $this->declaring(), $discovery), ScanSnapshotChangedException::class);
+
+        assertContains('7 could not be read', $error->getMessage());
+    }
+
+    public function testAnObjectKeyedOnlyByZeroIsRefusedBecauseItDecodesToAList(): void
+    {
+        // The documented limitation: indistinguishable from a JSON array.
+        $decoded = json_decode('{"input_hashes": {"0": "' . hash('sha256', self::OTHER) . '"}}', true);
+
+        $error = captureThrows(fn() => ScanInputHashes::verify($decoded, $this->declaring(), self::numericDiscovery('0')), WorkerException::class);
+
+        assertSame('WORKER_RESPONSE_INVALID', $error->diagnosticCode);
+        assertContains('must be an object', $error->getMessage());
+    }
+
+    /** @return array<string, DiscoveredFile> */
+    private static function numericDiscovery(string $path): array
+    {
+        return [$path => new DiscoveredFile($path, '/nonexistent/' . $path, 'typescript', strlen(self::OTHER), 0, hash('sha256', self::OTHER))];
     }
 
     /** @return array<string, DiscoveredFile> */
