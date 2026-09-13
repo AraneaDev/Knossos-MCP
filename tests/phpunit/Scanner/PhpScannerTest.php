@@ -998,6 +998,62 @@ final class PhpScannerTest extends KnossosTestCase
         }
     }
 
+    /**
+     * This worker resolves nothing across files, so `input_hashes` is exactly
+     * the requested files whose bytes it read: a BOM file and a file that
+     * fails to parse both got read (and hashed), even though the broken one
+     * contributes no nodes or edges.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReportsInputHashesForEveryFileItRead(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Bom.php' => "\xEF\xBB\xBF<?php\nclass Bom {}\n",
+            'src/Broken.php' => "<?php\nclass {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->phpWorkerClient();
+            assertSame(true, in_array('input_hashes', $client->initialize()->capabilities, true));
+            iterator_to_array($client->scan(['root' => $root, 'files' => array_keys($files)]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            assertSame(true, is_array($inputHashes));
+            assertSame(count($files), count($inputHashes));
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $inputHashes[$relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A requested file the worker never read (over the byte cap, so it costs
+     * only a diagnostic) must be absent from `input_hashes`, not `null`: this
+     * worker only reports a read it actually attempted.
+     */
+    #[Group('php-scanner')]
+    public function testAnUnreadableRequestedFileIsAbsentFromInputHashes(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $client = $this->phpWorkerClient();
+        iterator_to_array($client->scan([
+            'root' => $root,
+            'files' => ['src/Architecture.php'],
+            'limits' => ['max_file_bytes' => 1],
+        ]));
+        $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+        $client->shutdown();
+
+        assertSame(false, array_key_exists('src/Architecture.php', (array) $inputHashes));
+    }
+
     #[Group('php-scanner')]
     public function testAFileWithoutFileScopeCallsDeclaresNoModule(): void
     {

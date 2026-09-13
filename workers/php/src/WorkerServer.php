@@ -92,7 +92,7 @@ final class WorkerServer
             'output_schema_version' => '1.0',
             'languages' => ['php'],
             'file_extensions' => ['php'],
-            'capabilities' => ['partial_ast', 'content_hash'],
+            'capabilities' => ['partial_ast', 'content_hash', 'input_hashes'],
         ];
     }
 
@@ -122,6 +122,7 @@ final class WorkerServer
         }
 
         $count = 0;
+        $inputs = [];
         foreach ($files as $relativePath) {
             if (!is_string($relativePath)) {
                 throw new WorkerInputException('Scan file paths must be strings.');
@@ -150,6 +151,15 @@ final class WorkerServer
             } catch (Throwable $error) {
                 $contribution = self::rejection($relativePath, 'PHP_INTERNAL_ERROR', $error->getMessage());
             }
+            // No second read: this worker resolves nothing across files, so the
+            // one read the scanner already did for this file's own contribution
+            // is the only read there is. A contribution that carries no hash
+            // means the read never happened (validation failed before it) or
+            // failed outright, and either way this worker has nothing more to
+            // report for that path.
+            if (isset($contribution['content_hash'])) {
+                $inputs[$relativePath] = $contribution['content_hash'];
+            }
             $this->write([
                 'jsonrpc' => '2.0',
                 'method' => 'scan/contribution',
@@ -158,7 +168,7 @@ final class WorkerServer
             ++$count;
         }
 
-        return ['files_scanned' => $count];
+        return ['files_scanned' => $count, 'input_hashes' => (object) $inputs];
     }
 
     /**

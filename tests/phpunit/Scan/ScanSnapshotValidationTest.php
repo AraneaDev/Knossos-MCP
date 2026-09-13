@@ -55,12 +55,15 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
             );
 
             assertContains('src/CheckoutService.php', $error->getMessage());
-            // The PHP worker now declares content_hash, so the mismatch is
-            // caught from its own reported hash (parsedDifferently()) rather
-            // than from a core re-read (contentChanged()) — a deliberate
-            // consequence of the worker declaring the capability, not a
-            // change to what is detected or when the scan aborts.
-            assertContains('was parsed from different content than the scan hashed', $error->getMessage());
+            // The PHP worker now declares input_hashes as well as content_hash,
+            // and reports every file it read (including this one) in both. The
+            // core checks input_hashes first, so the mismatch is now caught
+            // there (inputReadDifferently()) rather than from the contribution's
+            // own content_hash (parsedDifferently()) or a core re-read
+            // (contentChanged()) — a deliberate consequence of the worker
+            // declaring the capability, not a change to what is detected or
+            // when the scan aborts.
+            assertContains('was read from different content than the scan hashed', $error->getMessage());
             // The seam actually fired: without this the test could pass on a
             // scan that failed for some unrelated reason.
             assertNotSame($original, (string) file_get_contents($file));
