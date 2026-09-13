@@ -962,6 +962,40 @@ final class PhpScannerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    /**
+     * The hash has to be of the bytes the parser got, so a BOM, CRLF line
+     * endings, and a file that does not parse all hash exactly as written.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReportsTheHashOfTheRawBytesItParsed(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Bom.php' => "\xEF\xBB\xBF<?php\nclass Bom {}\n",
+            'src/Crlf.php' => "<?php\r\nclass Crlf {}\r\n",
+            'src/Broken.php' => "<?php\nclass {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->phpWorkerClient();
+            assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+            $client->shutdown();
+
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $byOwner['knossos.php:file:' . $relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('php-scanner')]
     public function testAFileWithoutFileScopeCallsDeclaresNoModule(): void
     {

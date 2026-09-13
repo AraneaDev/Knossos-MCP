@@ -14,7 +14,7 @@ use Throwable;
  */
 final class WorkerServer
 {
-    public const VERSION = '0.6.0';
+    public const VERSION = '0.7.0';
 
     /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
     private const SHEBANG_PROBE_BYTES = 256;
@@ -92,7 +92,7 @@ final class WorkerServer
             'output_schema_version' => '1.0',
             'languages' => ['php'],
             'file_extensions' => ['php'],
-            'capabilities' => ['partial_ast'],
+            'capabilities' => ['partial_ast', 'content_hash'],
         ];
     }
 
