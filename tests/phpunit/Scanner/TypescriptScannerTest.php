@@ -274,4 +274,40 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame([], $contributions[0]->nodes);
         assertSame('TS_UNSCANNABLE_FILE', $contributions[0]->diagnostics[0]->code);
     }
+
+    /**
+     * The core compares each contribution's hash with discovery's hash of the
+     * file on disk, so the TypeScript worker has to hash the bytes it read, not
+     * the text the compiler decoded from them: a byte-order mark is dropped by
+     * the decoder but is part of the file.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReportsTheHashOfTheRawBytesItParsed(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Bom.ts' => "\xEF\xBB\xBFexport class Bom {}\n",
+            'src/Crlf.ts' => "export class Crlf {}\r\n",
+            'src/Broken.ts' => "export class {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->typescriptWorkerClient();
+            assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+            $client->shutdown();
+
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $byOwner['knossos.typescript:file:' . $relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

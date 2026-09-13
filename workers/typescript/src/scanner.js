@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
@@ -63,6 +64,13 @@ function isExcludedDirectoryName(name) {
 // least-recently-used program never affects correctness — an evicted config is
 // simply rebuilt from scratch on its next scan.
 const MAX_CACHED_PROGRAMS = 2;
+
+// The hash of the raw bytes each SourceFile was created from, keyed by the
+// SourceFile object itself. Keyed by object rather than by path because
+// programs are cached across requests and several programs can read the same
+// path: a path-keyed map could pair one read's facts with another read's hash,
+// which is precisely the false match the hash exists to prevent.
+const parsedContentHashes = new WeakMap();
 
 /**
  * Performs bounded compiler-backed scanning without executing target modules.
@@ -263,6 +271,13 @@ export class TypeScriptScanner {
                         },
                     ],
                 };
+            }
+            // Every SourceFile the restricted host creates has an entry. One
+            // without would reach the core with facts but no hash, which it
+            // refuses as a contract violation instead of trusting the read.
+            const contentHash = parsedContentHashes.get(sourceFile);
+            if (contentHash !== undefined) {
+                contribution.content_hash = contentHash;
             }
             emit(contribution);
             emitted.add(relative);
@@ -830,6 +845,59 @@ function parseConfig(root, configPath) {
     return parsed;
 }
 
+/**
+ * Decode a file's bytes into the string ts.sys.readFile would return, so
+ * reading the buffer ourselves (to hash it) changes nothing the compiler sees.
+ * Mirrors TypeScript 6.0's node `readFile`: UTF-16 BE and LE byte-order marks
+ * decode as UTF-16, a UTF-8 BOM is dropped, anything else is UTF-8.
+ */
+function decodeLikeTypeScript(buffer) {
+    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+        // Copied before swapping: the caller's buffer is what was hashed.
+        const swapped = Buffer.from(buffer.subarray(0, buffer.length & ~1));
+        swapped.swap16();
+        return swapped.toString("utf16le", 2);
+    }
+    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+        return buffer.toString("utf16le", 2);
+    }
+    if (
+        buffer.length >= 3 &&
+        buffer[0] === 0xef &&
+        buffer[1] === 0xbb &&
+        buffer[2] === 0xbf
+    ) {
+        return buffer.toString("utf8", 3);
+    }
+    return buffer.toString("utf8");
+}
+
+/**
+ * Read, hash and parse one file in a single read, so the hash is over exactly
+ * the bytes the SourceFile was built from. Returns undefined when the file
+ * cannot be read, the same "skip this input" signal ts.sys.readFile gives.
+ */
+function readHashedSourceFile(readPath, fileName, languageVersion, scriptKind) {
+    let buffer;
+    try {
+        buffer = fs.readFileSync(readPath);
+    } catch {
+        return undefined;
+    }
+    const sourceFile = ts.createSourceFile(
+        fileName,
+        decodeLikeTypeScript(buffer),
+        languageVersion,
+        true,
+        scriptKind,
+    );
+    parsedContentHashes.set(
+        sourceFile,
+        createHash("sha256").update(buffer).digest("hex"),
+    );
+    return sourceFile;
+}
+
 function createRestrictedProgram(
     root,
     parsed,
@@ -849,13 +917,7 @@ function createRestrictedProgram(
         skipDefaultLibCheck: true,
     };
     const host = ts.createCompilerHost(options, true);
-    const getSourceFile = host.getSourceFile.bind(host);
-    host.getSourceFile = (
-        fileName,
-        languageVersion,
-        onError,
-        shouldCreateNewSourceFile,
-    ) => {
+    host.getSourceFile = (fileName, languageVersion) => {
         if (!allowedCompilerPath(root, fileName)) return undefined;
         // The per-file byte cap is enforced on requested files, but the program
         // also pulls in import-reachable and included sources. Guard those too so
@@ -863,25 +925,20 @@ function createRestrictedProgram(
         // fully parsed, bounding peak memory.
         if (exceedsByteCap(fileName, maxFileBytes)) return undefined;
         if (fileName.endsWith(SHEBANG_ALIAS_SUFFIX)) {
-            // ts.sys.readFile yields undefined rather than throwing when the
-            // file has gone, which is the same "skip this input" signal the
-            // guards above use.
-            const text = ts.sys.readFile(shebangSourcePath(fileName));
-            return text === undefined
-                ? undefined
-                : ts.createSourceFile(
-                      fileName,
-                      text,
-                      languageVersion,
-                      true,
-                      ts.ScriptKind.JS,
-                  );
+            return readHashedSourceFile(
+                shebangSourcePath(fileName),
+                fileName,
+                languageVersion,
+                ts.ScriptKind.JS,
+            );
         }
-        return getSourceFile(
+        // Read here rather than through the default host, which reads via
+        // ts.sys.readFile and so never exposes the bytes it decoded.
+        return readHashedSourceFile(
+            fileName,
             fileName,
             languageVersion,
-            onError,
-            shouldCreateNewSourceFile,
+            undefined,
         );
     };
     host.fileExists = (file) =>

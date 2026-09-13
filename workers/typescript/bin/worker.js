@@ -56,7 +56,7 @@ async function handle(request) {
         case "initialize":
             result = {
                 id: "knossos.typescript",
-                version: "0.4.0",
+                version: "0.5.0",
                 protocol_version: "1.0",
                 output_schema_version: "1.0",
                 languages: ["typescript", "javascript"],
@@ -70,7 +70,11 @@ async function handle(request) {
                     "mjs",
                     "cjs",
                 ],
-                capabilities: ["project_program", "partial_ast"],
+                capabilities: [
+                    "project_program",
+                    "partial_ast",
+                    "content_hash",
+                ],
             };
             break;
         case "scan":

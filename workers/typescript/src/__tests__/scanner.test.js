@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs, { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { TypeScriptScanner, discoverConfigFiles } from "../scanner.js";
@@ -840,5 +841,124 @@ describe("TypeScriptScanner.scan backstop", () => {
                 .map((file) => `knossos.typescript:file:${file}`)
                 .sort(),
         );
+    });
+});
+
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+function scanOnce(scanner, root, files) {
+    const contributions = [];
+    scanner.scan({ root, files }, (contribution) =>
+        contributions.push(contribution),
+    );
+    return Object.fromEntries(contributions.map((c) => [c.owner_key, c]));
+}
+
+describe("content_hash", () => {
+    it("hashes raw bytes, so a byte-order mark is part of the hash", () => {
+        const bom = Buffer.concat([
+            Buffer.from([0xef, 0xbb, 0xbf]),
+            Buffer.from("export class Bom {}\n"),
+        ]);
+        const utf16le = Buffer.concat([
+            Buffer.from([0xff, 0xfe]),
+            Buffer.from("export class Wide {}\n", "utf16le"),
+        ]);
+        const utf16beText = Buffer.from("export class Big {}\n", "utf16le");
+        utf16beText.swap16();
+        const utf16be = Buffer.concat([Buffer.from([0xfe, 0xff]), utf16beText]);
+        const root = fixture({ "src/plain.ts": "export class Plain {}\n" });
+        writeFileSync(join(root, "src/bom.ts"), bom);
+        writeFileSync(join(root, "src/wide.ts"), utf16le);
+        writeFileSync(join(root, "src/big.ts"), utf16be);
+
+        const byOwner = scanOnce(new TypeScriptScanner(), root, [
+            "src/plain.ts",
+            "src/bom.ts",
+            "src/wide.ts",
+            "src/big.ts",
+        ]);
+
+        const names = (file) =>
+            byOwner[`knossos.typescript:file:${file}`].nodes.map(
+                (n) => n.display_name,
+            );
+        expect(
+            byOwner["knossos.typescript:file:src/plain.ts"].content_hash,
+        ).toBe(sha256(Buffer.from("export class Plain {}\n")));
+        expect(byOwner["knossos.typescript:file:src/bom.ts"].content_hash).toBe(
+            sha256(bom),
+        );
+        expect(
+            byOwner["knossos.typescript:file:src/wide.ts"].content_hash,
+        ).toBe(sha256(utf16le));
+        expect(byOwner["knossos.typescript:file:src/big.ts"].content_hash).toBe(
+            sha256(utf16be),
+        );
+        // Decoding still matches what the compiler would have read: the class
+        // behind the BOM and both UTF-16 files are found under their own names.
+        expect(names("src/plain.ts")).toContain("Plain");
+        expect(names("src/bom.ts")).toContain("Bom");
+        expect(names("src/wide.ts")).toContain("Wide");
+        expect(names("src/big.ts")).toContain("Big");
+        expect(
+            byOwner["knossos.typescript:file:src/bom.ts"].diagnostics,
+        ).toEqual([]);
+    });
+
+    it("binds each request's hash to the program that parsed it, across cached programs", () => {
+        const root = fixture({ "src/a.ts": "export class First {}\n" });
+        const scanner = new TypeScriptScanner();
+
+        const first = scanOnce(scanner, root, ["src/a.ts"]);
+        writeFileSync(join(root, "src/a.ts"), "export class Second {}\n");
+        const second = scanOnce(scanner, root, ["src/a.ts"]);
+
+        const owner = "knossos.typescript:file:src/a.ts";
+        expect(first[owner].content_hash).toBe(
+            sha256(Buffer.from("export class First {}\n")),
+        );
+        expect(second[owner].content_hash).toBe(
+            sha256(Buffer.from("export class Second {}\n")),
+        );
+        expect(second[owner].nodes.map((n) => n.display_name)).toContain(
+            "Second",
+        );
+    });
+
+    it("hashes a file that does not parse cleanly", () => {
+        const root = fixture({ "src/broken.ts": "export class {\n" });
+
+        const byOwner = scanOnce(new TypeScriptScanner(), root, [
+            "src/broken.ts",
+        ]);
+
+        expect(
+            byOwner["knossos.typescript:file:src/broken.ts"].content_hash,
+        ).toBe(sha256(Buffer.from("export class {\n")));
+    });
+
+    it("hashes an extensionless shebang script's own bytes", () => {
+        const script =
+            "#!/usr/bin/env node\nexport function run() {\n    return 1;\n}\n";
+        const root = fixture({ "bin/cli": script });
+
+        const byOwner = scanOnce(new TypeScriptScanner(), root, ["bin/cli"]);
+
+        const contribution = byOwner["knossos.typescript:file:bin/cli"];
+        expect(contribution.nodes.length).toBeGreaterThan(0);
+        expect(contribution.content_hash).toBe(sha256(Buffer.from(script)));
+    });
+
+    it("sends no hash for a file it never read", () => {
+        const root = fixture({});
+
+        const byOwner = scanOnce(new TypeScriptScanner(), root, [
+            "src/missing.ts",
+        ]);
+
+        const contribution = byOwner["knossos.typescript:file:src/missing.ts"];
+        expect(contribution.nodes).toEqual([]);
+        expect(contribution).not.toHaveProperty("content_hash");
     });
 });
