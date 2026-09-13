@@ -34,9 +34,12 @@ final readonly class ContributionCacheService
         $scan = [];
         $added = 0;
         $changed = 0;
-        $seen = 0;
+        $sinceLastPoll = 0;
         foreach ($files as $file) {
-            if ($cancellation !== null && (++$seen % 256) === 0) {
+            // Once per 256 files. A counter that restarts, rather than a
+            // modulo, so a counter running the wrong way never reaches it.
+            if ($cancellation !== null && ++$sinceLastPoll === 256) {
+                $sinceLastPoll = 0;
                 $cancellation->throwIfCancelled();
             }
             $row = $cache[$manifest->id . "\0" . $file->relativePath] ?? null;
@@ -144,14 +147,18 @@ final readonly class ContributionCacheService
 
     /**
      * True when the current on-disk content of a scanned file still hashes to the
-     * fingerprint recorded at discovery time. When the path/hash are unavailable
-     * (non-DiscoveredFile inputs) verification is skipped and the entry is kept, to
-     * preserve prior behaviour; when the file is unreadable at scan time the entry is
-     * dropped rather than caching a possibly stale mapping.
+     * fingerprint recorded at discovery time. A file with no string discovery hash
+     * has nothing a cache entry could be keyed on, so it is never cached. When only
+     * the path is unavailable (non-DiscoveredFile inputs) the re-read is skipped and
+     * the entry is kept, to preserve prior behaviour; when the file is unreadable at
+     * scan time the entry is dropped rather than caching a possibly stale mapping.
      */
     private function contentStillMatchesDiscovery(object $file): bool
     {
-        if (!isset($file->absolutePath, $file->contentHash) || !is_string($file->absolutePath) || !is_string($file->contentHash)) {
+        if (!is_string($file->contentHash ?? null)) {
+            return false;
+        }
+        if (!is_string($file->absolutePath ?? null)) {
             return true;
         }
         $fingerprint = FileFingerprint::compute($file->absolutePath);
@@ -173,15 +180,28 @@ final readonly class ContributionCacheService
      * hash is not allowed to have that empty answer cached. Facts without a hash
      * from a worker that declared it would hash are a defect in that worker.
      *
+     * A reported hash for a file discovery recorded no hash for cannot be
+     * verified, and treating it as verified would let facts from any bytes
+     * through as fresh. That is a caller handing this service a file it never
+     * fingerprinted, so it is refused outright rather than kept uncached: kept,
+     * the facts would still reach the graph unverified.
+     *
      * @throws ScanSnapshotChangedException when the hash differs from discovery
      * @throws WorkerException when a declaring worker sent facts without a hash
+     * @throws InvalidArgumentException when there is no discovery hash to compare with
      */
     private static function parsedContentIsCacheable(ScanContribution $contribution, object $file, ScannerManifest $manifest): bool
     {
         $declared = in_array(Protocol::CAPABILITY_CONTENT_HASH, $manifest->capabilities, true);
         if ($contribution->contentHash !== null) {
-            $expected = isset($file->contentHash) && is_string($file->contentHash) ? $file->contentHash : null;
-            if ($expected !== null && !hash_equals($expected, $contribution->contentHash)) {
+            $expected = $file->contentHash ?? null;
+            if (!is_string($expected)) {
+                throw new InvalidArgumentException(sprintf(
+                    'No discovery hash was recorded for %s, so its reported content hash cannot be verified.',
+                    $file->relativePath,
+                ));
+            }
+            if (!hash_equals($expected, $contribution->contentHash)) {
                 throw ScanSnapshotChangedException::parsedDifferently($file->relativePath);
             }
 
