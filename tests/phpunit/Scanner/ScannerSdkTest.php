@@ -36,28 +36,56 @@ final class ScannerSdkTest extends KnossosTestCase
         $error = captureThrows(fn() => $this->fakeWorkerClient('compliant')->requireCapabilities(['incremental']), WorkerException::class);
         assertSame('WORKER_CAPABILITY_MISMATCH', $error->diagnosticCode);
 
+        [$exitCode, $report] = $this->runConformance(['--require=partial_ast'], 'compliant');
+        if ($exitCode !== 0) {
+            throw new RuntimeException('Conformance runner failed: ' . json_encode($report));
+        }
+        assertSame(true, $report['conformant']);
+        assertSame(['initialize', 'empty_scan', 'shutdown'], array_column($report['checks'], 'name'));
+    }
+
+    /**
+     * @param list<string> $options
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function runConformance(array $options, string $mode): array
+    {
         $process = proc_open([
             PHP_BINARY,
             self::repositoryRoot() . '/tools/scanner-conformance',
-            '--require=partial_ast',
+            ...$options,
             '--',
             PHP_BINARY,
             self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php',
-            'compliant',
+            $mode,
         ], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
         if (!is_resource($process)) {
             throw new RuntimeException('Unable to start scanner conformance runner.');
         }
         $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
+        stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
         $exitCode = proc_close($process);
-        if ($exitCode !== 0) {
-            throw new RuntimeException('Conformance runner failed: ' . ($stderr === false ? '' : $stderr));
-        }
-        $report = json_decode($stdout === false ? '' : $stdout, true, 512, JSON_THROW_ON_ERROR);
-        assertSame(true, $report['conformant']);
+
+        return [$exitCode, json_decode($stdout === false ? '' : $stdout, true, 512, JSON_THROW_ON_ERROR)];
+    }
+
+    #[Group('scanner-sdk')]
+    public function testConformanceChecksTheContentHashOfAWorkerThatDeclaresIt(): void
+    {
+        [$exit, $report] = $this->runConformance([], 'hash_honest');
+        assertSame(0, $exit);
+        assertSame(['initialize', 'empty_scan', 'content_hash', 'shutdown'], array_column($report['checks'], 'name'));
+
+        [$exit, $report] = $this->runConformance([], 'hash_missing');
+        assertSame(1, $exit);
+        assertSame(false, $report['conformant']);
+        assertSame('fail', array_column($report['checks'], 'status', 'name')['content_hash']);
+
+        // A worker that does not declare it is not asked.
+        [$exit, $report] = $this->runConformance([], 'compliant');
+        assertSame(0, $exit);
         assertSame(['initialize', 'empty_scan', 'shutdown'], array_column($report['checks'], 'name'));
     }
 }

@@ -44,7 +44,10 @@ while (($line = fgets(STDIN)) !== false) {
             continue;
         }
 
-        respond($id, manifest($mode === 'mismatch' ? '999.0' : '1.0'));
+        respond($id, manifest(
+            $mode === 'mismatch' ? '999.0' : '1.0',
+            str_starts_with($mode, 'hash_') ? ['partial_ast', 'content_hash'] : ['partial_ast'],
+        ));
         continue;
     }
 
@@ -116,6 +119,41 @@ while (($line = fgets(STDIN)) !== false) {
         if ($mode === 'stderr_flood') {
             fwrite(STDERR, str_repeat('x', 2048));
             fflush(STDERR);
+        }
+        if (str_starts_with($mode, 'hash_')) {
+            $root = (string) ($request['params']['root'] ?? '');
+            foreach ($request['params']['files'] ?? [] as $relativePath) {
+                $relativePath = (string) $relativePath;
+                $owner = 'knossos.fake:file:' . $relativePath;
+                $absolute = $root . '/' . $relativePath;
+                if ($mode === 'hash_unreadable') {
+                    // What every bundled worker sends for a file it could not
+                    // read: a diagnostic, and no hash, because there were no bytes.
+                    notifyContribution([
+                        'owner_key' => $owner, 'nodes' => [], 'edges' => [],
+                        'diagnostics' => [['severity' => 'error', 'code' => 'FAKE_UNSCANNABLE_FILE', 'message' => 'unreadable',
+                            'evidence' => ['path' => $relativePath, 'start_line' => 1, 'end_line' => 1]]],
+                    ]);
+                    continue;
+                }
+                $contribution = fileContribution($owner, $relativePath);
+                if ($mode === 'hash_swap') {
+                    // A genuine change-then-restore around this worker's own read:
+                    // the file holds other bytes exactly while it is read, and is
+                    // back to what discovery hashed before the scan can re-check.
+                    $original = (string) file_get_contents($absolute);
+                    file_put_contents($absolute, $original . "\n// swapped while the worker read it\n");
+                    $parsed = (string) file_get_contents($absolute);
+                    file_put_contents($absolute, $original);
+                    $contribution['content_hash'] = hash('sha256', $parsed);
+                } elseif ($mode === 'hash_honest') {
+                    $contribution['content_hash'] = hash('sha256', (string) file_get_contents($absolute));
+                }
+                // hash_missing: facts, capability declared, no hash.
+                notifyContribution($contribution);
+            }
+            respond($id, ['count' => count($request['params']['files'] ?? [])]);
+            continue;
         }
         if (str_starts_with($mode, 'per_file')) {
             $requested = $request['params']['files'] ?? [];
@@ -220,8 +258,11 @@ while (($line = fgets(STDIN)) !== false) {
     ]);
 }
 
-/** @return array<string, mixed> */
-function manifest(string $protocol): array
+/**
+ * @param list<string> $capabilities
+ * @return array<string, mixed>
+ */
+function manifest(string $protocol, array $capabilities = ['partial_ast']): array
 {
     return [
         'id' => 'knossos.fake',
@@ -230,7 +271,7 @@ function manifest(string $protocol): array
         'output_schema_version' => '1.0',
         'languages' => ['typescript'],
         'file_extensions' => ['ts'],
-        'capabilities' => ['partial_ast'],
+        'capabilities' => $capabilities,
     ];
 }
 

@@ -38,6 +38,11 @@ Consumers may require named optional capabilities with
 `WORKER_CAPABILITY_MISMATCH` before any scan. Unknown optional
 capabilities may be ignored unless a consumer explicitly requires them.
 
+The `content_hash` capability promises that every contribution for a file the
+worker read carries the SHA-256 of those raw bytes; see
+[`scanner-protocol-v1.md`](scanner-protocol-v1.md). `tools/scanner-conformance`
+scans one fixture file and checks that promise whenever a worker declares it.
+
 Every contribution owns its facts through a stable `owner_key`. Re-emission
 replaces that owner's facts. IDs must be deterministic, evidence paths must be
 project-relative, and repeated edges should be collapsed to the persistence

@@ -86,6 +86,27 @@ Each contribution has one stable owner key and lists node facts, unresolved edge
 facts, and diagnostics. Re-emitting an owner replaces that owner's previous
 facts atomically during reconciliation.
 
+A contribution may also carry `content_hash`: the lowercase SHA-256 hex of the
+raw bytes the worker read for that contribution's file, exactly as they came
+off disk, before any decoding, byte-order-mark stripping or newline
+normalisation. A worker that sends it declares the `content_hash` capability.
+
+The core compares it against the hash discovery recorded for the file and
+fails the scan with `KNOSSOS_SCAN_SNAPSHOT_CHANGED` when they differ, because
+the facts were then parsed from content no stored hash describes. That catches
+a file that changes and changes back while the scan runs, which a later re-read
+cannot see.
+
+A worker declaring the capability attaches the hash to every contribution for
+which it read bytes, including one that only reports a syntax error. It omits
+the hash only when the read itself failed, and such a contribution must carry
+no nodes or edges. Facts without a hash from a declaring worker are refused as
+`WORKER_CONTRIBUTION_INVALID`.
+
+The byte-order mark is the usual way to get this wrong: a runtime that strips
+it while reading text hashes different bytes than discovery did, and every
+scan of such a file fails. Hash the buffer, then decode it.
+
 Required fact properties are defined by the DTOs under
 `src/Scanner/Protocol`. Paths are project-relative, source lines are one-based,
 and confidence is `certain`, `probable`, or `possible`.

@@ -30,11 +30,27 @@ if (!mkdir($temporary, 0o700)) {
 
 $checks = [];
 $client = new ProcessScannerClient($command);
+$exitCode = 1;
 try {
     $manifest = $client->requireCapabilities($required);
     $checks[] = ['name' => 'initialize', 'status' => 'pass'];
     $contributions = iterator_to_array($client->scan(['root' => $temporary, 'files' => []]));
     $checks[] = ['name' => 'empty_scan', 'status' => $contributions === [] ? 'pass' : 'fail'];
+    if (in_array(\Knossos\Scanner\Protocol\Protocol::CAPABILITY_CONTENT_HASH, $manifest->capabilities, true)) {
+        // A declared capability is a promise about every contribution, and an
+        // optional schema field cannot enforce it, so check it here: one file,
+        // one contribution, carrying the hash of the exact bytes on disk.
+        $extension = $manifest->fileExtensions[0] ?? 'txt';
+        $bytes = "\n";
+        file_put_contents($temporary . '/conformance.' . $extension, $bytes);
+        $hashed = iterator_to_array($client->scan(['root' => $temporary, 'files' => ['conformance.' . $extension]]), false);
+        $matches = $hashed !== [] && array_filter(
+            $hashed,
+            static fn($contribution): bool => $contribution->contentHash !== hash('sha256', $bytes),
+        ) === [];
+        $checks[] = ['name' => 'content_hash', 'status' => $matches ? 'pass' : 'fail'];
+        @unlink($temporary . '/conformance.' . $extension);
+    }
     $client->shutdown();
     $checks[] = ['name' => 'shutdown', 'status' => 'pass'];
     $passed = !in_array('fail', array_column($checks, 'status'), true);
@@ -47,7 +63,7 @@ try {
         'capabilities' => $manifest->capabilities,
         'checks' => $checks,
     ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-    exit($passed ? 0 : 1);
+    $exitCode = $passed ? 0 : 1;
 } catch (WorkerException $error) {
     echo json_encode([
         'conformant' => false,
@@ -55,8 +71,15 @@ try {
         'message' => $error->getMessage(),
         'checks' => $checks,
     ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-    exit(1);
+    $exitCode = 1;
 } finally {
+    // exit() inside try/catch would skip this block entirely, leaving the
+    // fixture root behind on every run; the exit code is carried out instead
+    // and applied once cleanup has actually happened.
     $client->shutdown();
+    foreach (glob($temporary . '/conformance.*') ?: [] as $leftover) {
+        @unlink($leftover);
+    }
     @rmdir($temporary);
 }
+exit($exitCode);
