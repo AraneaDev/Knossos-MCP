@@ -74,6 +74,54 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
     }
 
     /**
+     * A rewrite that lands after a hashing worker has already read the file is
+     * invisible to that worker's hash, which matches discovery. Only the
+     * validator's own re-read before anything is persisted can see it, so this
+     * is the end-to-end case for contentChanged() on a scan that runs workers.
+     *
+     * The checkpoint it relies on: ProjectScanService::scan() consults the
+     * token itself before prepare(), after prepare(), and immediately before
+     * ScanSnapshotValidator::validate(), after every language worker has
+     * returned. The closure counts only polls made from scan() itself, so
+     * polls from inside the language runner and the worker clients do not
+     * move it, and writes from the third one on. Add a checkpoint of scan()'s
+     * own before validate() and this test stops producing a mismatch; it then
+     * fails loudly and the count has to move with it.
+     */
+    #[Group('scan')]
+    public function testScanAbortsWhenAFileIsRewrittenAfterTheWorkersReturned(): void
+    {
+        $root = $this->copyFixtureTree('mixed');
+        try {
+            $pdo = $this->freshTestDatabase();
+            $file = $root . '/src/CheckoutService.php';
+            $original = (string) file_get_contents($file);
+            $scanPolls = 0;
+            $token = new CancellationToken(function () use (&$scanPolls, $file, $original): bool {
+                $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 4)[3] ?? [];
+                if (($caller['class'] ?? null) === ProjectScanService::class && ++$scanPolls >= 3) {
+                    file_put_contents($file, $original . "\n// rewritten after the workers returned\n");
+                }
+
+                return false;
+            });
+
+            $error = captureThrows(
+                fn() => (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, cancellation: $token),
+                ScanSnapshotChangedException::class,
+            );
+
+            assertContains('src/CheckoutService.php', $error->getMessage());
+            assertContains('changed while the scan was running', $error->getMessage());
+            assertSame(3, $scanPolls);
+            assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM nodes')->fetchColumn());
+            assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM edges')->fetchColumn());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * The no-change fast path writes too — it refreshes stored mtimes and
      * restamps the active scan's completion — so it has to be validated as well.
      * Without that, the cheapest and most frequent scan is the one that can
