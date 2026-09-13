@@ -19,7 +19,9 @@ use Knossos\Query\Drift\DriftOracle;
 use Knossos\Query\Drift\FirstAnsweringDriftOracle;
 use Knossos\Query\Drift\GitDriftOracle;
 use Knossos\Query\Drift\WalkDriftOracle;
+use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessProbe;
+use Knossos\Query\StalenessSnapshot;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
@@ -249,6 +251,66 @@ final class RefreshIfStaleTest extends KnossosTestCase
 
             $tools->call('architecture_summary', ['project_id' => $projectId]);
             assertSame(2, $oracle->calls, 'The next call probes again; staleness is not cached across calls.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A memo describing one graph must not annotate an answer that came out of
+     * another.
+     *
+     * The probe runs before dispatch and the answer is built after it, so any
+     * scan completing in between — another session's, a watcher's, a
+     * concurrent call's — leaves the two describing different graphs while
+     * still agreeing about the project. The response then carries the new
+     * graph's snapshot id beside the old graph's verdict, and nothing in it
+     * says so. Arranged directly on the enricher because that mid-call scan is
+     * not something a test can schedule from the outside, and the identity
+     * check is what the arrangement is about.
+     */
+    #[Group('mcp')]
+    public function testAVerdictMeasuredAgainstAnotherScanIsNotReused(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+            $answered = $this->activeScanId($pdo, $projectId);
+            // The verdict the caller probed before the dispatch, against the
+            // scan that was active then. The answer below came out of a later
+            // one.
+            $stale = new StalenessSnapshot($projectId, ['state' => 'stale', 'scanned_at' => null, 'age_seconds' => null], 'scan-that-was-active-then');
+
+            $result = $enricher->enrich(new ResultEnvelope($projectId, $answered, 'ok', []), 'architecture_summary', 'compact', null, $stale);
+
+            assertSame('fresh', $result->staleness['state'], 'The answer came out of the current graph, so the verdict attached to it has to be that graph\'s.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The memo is still a memo: an answer from the very scan the verdict was
+     * measured against takes that verdict without probing again.
+     *
+     * Pinned beside the test above because the cheap way to fix a stale memo
+     * is to stop reusing it at all, which would quietly restore the two full
+     * oracle runs per call the snapshot exists to avoid. The verdict handed in
+     * here is one the database would never produce, so a result carrying it
+     * can only have come from the memo.
+     */
+    #[Group('mcp')]
+    public function testAVerdictMeasuredAgainstTheAnsweringScanIsReused(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $enricher = new ResultEnricher(new StalenessProbe($pdo), new NextStepPlanner());
+            $answered = $this->activeScanId($pdo, $projectId);
+            $probed = new StalenessSnapshot($projectId, ['state' => 'unverified', 'scanned_at' => null, 'age_seconds' => null], $answered);
+
+            $result = $enricher->enrich(new ResultEnvelope($projectId, $answered, 'ok', []), 'architecture_summary', 'compact', null, $probed);
+
+            assertSame('unverified', $result->staleness['state'], 'Same graph, same question, one answer: probing again is the cost this memo exists to avoid.');
         } finally {
             $this->removeTempTree($root);
         }

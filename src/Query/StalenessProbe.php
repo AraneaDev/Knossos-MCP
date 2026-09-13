@@ -37,20 +37,36 @@ final readonly class StalenessProbe
      */
     public function probe(string $projectId): ?array
     {
+        return $this->snapshot($projectId)->staleness;
+    }
+
+    /**
+     * The same verdict, together with the scan it was measured against.
+     *
+     * The pair comes from here rather than being assembled by the caller
+     * because only this method knows which scan the oracle was pointed at. A
+     * caller that probed and then looked the active scan up again would be
+     * naming a second moment, which is the very gap the identity is meant to
+     * close: reuse is safe exactly when the answer being annotated came out of
+     * the graph the verdict describes, and a scan completing in between makes
+     * that false without anything observable changing.
+     */
+    public function snapshot(string $projectId): StalenessSnapshot
+    {
         // 'catalog' and 'server' are scopes, not projects: the tools using them
         // describe the server itself. Probing them found no project row and
         // reported state 'missing' with advice to run scan_project — a project
         // that does not exist, and a scan that would not change the answer.
         if ($projectId === '' || $projectId === 'catalog' || $projectId === 'server') {
-            return null;
+            return new StalenessSnapshot($projectId, null, null);
         }
         $project = $this->fetchProject($projectId);
         if ($project === null) {
-            return $this->missing();
+            return new StalenessSnapshot($projectId, $this->missing(), null);
         }
         $activeScanId = $project['active_scan_id'];
         if (!is_string($activeScanId) || $activeScanId === '') {
-            return $this->missing();
+            return new StalenessSnapshot($projectId, $this->missing(), null);
         }
 
         $finishedAt = $this->activeFinishedAt($activeScanId);
@@ -89,7 +105,8 @@ final readonly class StalenessProbe
         } elseif ($state === 'unverified') {
             $result['guidance'] = 'Change detection was skipped (project root unavailable or too many files); freshness is unconfirmed. Rescan with scan_project to be certain.';
         }
-        return $result;
+
+        return new StalenessSnapshot($projectId, $result, $activeScanId);
     }
 
     /**

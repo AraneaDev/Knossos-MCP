@@ -198,8 +198,11 @@ final readonly class ToolService
         if ($projectId === '') {
             return [[], null];
         }
-        $staleness = $this->queries->staleness($projectId);
-        $snapshot = new StalenessSnapshot($projectId, $staleness);
+        // The snapshot comes from the probe rather than being assembled here,
+        // so the verdict and the scan it describes cannot be read at two
+        // different moments.
+        $snapshot = $this->queries->stalenessSnapshot($projectId);
+        $staleness = $snapshot->staleness;
         if (($staleness['state'] ?? null) !== 'stale') {
             return [[], $snapshot];
         }

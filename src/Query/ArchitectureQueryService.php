@@ -84,6 +84,17 @@ final readonly class ArchitectureQueryService
         return $this->stalenessProbe->probe($projectId);
     }
 
+    /**
+     * The verdict together with the scan it was measured against, for a caller
+     * that will hand it on to be attached to an answer.
+     *
+     * {@see StalenessProbe::snapshot()}
+     */
+    public function stalenessSnapshot(string $projectId): \Knossos\Query\StalenessSnapshot
+    {
+        return $this->stalenessProbe->snapshot($projectId);
+    }
+
     /** Root path recorded at scan time; used by the MCP layer to self-heal stale graphs. */
     public function projectRoot(string $projectId): ?string
     {

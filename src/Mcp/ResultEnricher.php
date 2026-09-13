@@ -46,16 +46,28 @@ final readonly class ResultEnricher
      * Trim, budget, and annotate a result for an agent rather than a human.
      *
      * $probed is a staleness verdict the caller already has for this project,
-     * reused rather than re-derived. It is accepted only for the project the
-     * envelope names, and the caller withholds it whenever a rescan has run in
-     * between, because the answer has changed by then.
+     * reused rather than re-derived. It is accepted only for an answer that
+     * came out of the very scan the verdict was measured against, and the
+     * caller withholds it whenever a rescan of its own has run in between,
+     * because the answer has changed by then.
+     *
+     * The project id alone was not enough. Any scan completing between the
+     * caller's probe and its dispatch — another session's, a watcher's, a
+     * concurrent tool call's — leaves the two naming the same project and
+     * describing different graphs, and the result then carries the new
+     * snapshot id beside the old graph's verdict. Nothing in the response says
+     * so, and the verdict is exactly the field a caller consults to decide
+     * whether to trust the rest. Matching the scan ids costs a re-probe in the
+     * rare case they differ and makes the mismatch impossible in every case.
      */
     public function enrich(ResultEnvelope $envelope, string $toolName, string $verbosity, ?int $maxChars = null, ?StalenessSnapshot $probed = null): ResultEnvelope
     {
         $total = count($envelope->evidence);
         $base = $verbosity === 'compact' ? $this->compact($envelope) : $envelope;
 
-        $staleness = $probed !== null && $probed->projectId === $envelope->projectId
+        $staleness = $probed !== null
+            && $probed->projectId === $envelope->projectId
+            && $probed->activeScanId === $envelope->snapshotId
             ? $probed->staleness
             : $this->probe->probe($envelope->projectId);
         $steps = $this->planner->plan($toolName, $envelope);
