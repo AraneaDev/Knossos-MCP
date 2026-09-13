@@ -85,6 +85,18 @@ def test_an_index_read_then_a_differing_own_read_records_null(monkeypatch, worke
     assert result["input_hashes"]["pkg/b.py"] is None
 
 
+def test_a_failed_index_read_then_a_successful_own_read_stays_null(monkeypatch, worker: ModuleType, project) -> None:
+    # a's import resolved against nothing because the index read of b failed;
+    # b's own read succeeding afterwards does not make that resolution verified.
+    root = project({"pkg/a.py": IMPORTER, "pkg/b.py": DECLARES.decode()})
+    reads = _serve(monkeypatch, "b.py", [None, DECLARES])
+    result, contributions = _scan(worker, root, ["pkg/a.py", "pkg/b.py"])
+
+    assert len(reads) == 2
+    assert contributions["pkg/b.py"]["content_hash"] == _sha(DECLARES)
+    assert result["input_hashes"]["pkg/b.py"] is None
+
+
 def test_an_own_read_then_a_differing_index_read_records_null(monkeypatch, worker: ModuleType, project) -> None:
     # b sorts first and its own bytes fail to parse, so it seeds nothing and
     # c's import makes the index read b again. The facts c resolves come from
