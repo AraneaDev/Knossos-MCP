@@ -84,6 +84,11 @@ final class ScannerSdkTest extends KnossosTestCase
         assertSame(false, $report['conformant']);
         assertSame('fail', array_column($report['checks'], 'status', 'name')['content_hash']);
 
+        // The fixture starts with a byte-order mark, so hashing decoded text fails.
+        [$exit, $report] = $this->runConformance([], 'hash_decoded');
+        assertSame(1, $exit);
+        assertSame('fail', array_column($report['checks'], 'status', 'name')['content_hash']);
+
         // A worker that does not declare it is not asked.
         [$exit, $report] = $this->runConformance([], 'compliant');
         assertSame(0, $exit);

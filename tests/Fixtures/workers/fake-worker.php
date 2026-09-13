@@ -148,6 +148,11 @@ while (($line = fgets(STDIN)) !== false) {
                     $contribution['content_hash'] = hash('sha256', $parsed);
                 } elseif ($mode === 'hash_honest') {
                     $contribution['content_hash'] = hash('sha256', (string) file_get_contents($absolute));
+                } elseif ($mode === 'hash_decoded') {
+                    // The usual mistake: hashing text after the byte-order mark
+                    // was stripped, rather than the bytes that came off disk.
+                    $text = (string) file_get_contents($absolute);
+                    $contribution['content_hash'] = hash('sha256', str_starts_with($text, "\xEF\xBB\xBF") ? substr($text, 3) : $text);
                 }
                 // hash_missing: facts, capability declared, no hash.
                 notifyContribution($contribution);

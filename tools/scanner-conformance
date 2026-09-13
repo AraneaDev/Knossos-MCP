@@ -56,7 +56,9 @@ try {
         // optional schema field cannot enforce it, so check it here: one file,
         // one contribution, carrying the hash of the exact bytes on disk.
         $extension = $manifest->fileExtensions[0] ?? 'txt';
-        $bytes = "\n";
+        // A byte-order mark, so a worker that hashes decoded text instead of
+        // the raw buffer fails here rather than on its first real BOM file.
+        $bytes = "\xEF\xBB\xBF\n";
         file_put_contents($temporary . '/conformance.' . $extension, $bytes);
         $hashed = iterator_to_array($client->scan(['root' => $temporary, 'files' => ['conformance.' . $extension]]), false);
         $matches = $hashed !== [] && array_filter(
