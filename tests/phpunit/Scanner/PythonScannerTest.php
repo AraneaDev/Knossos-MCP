@@ -525,6 +525,54 @@ PYTHON);
     }
 
     /**
+     * Two more ways one path is read twice in a request, both with identical
+     * bytes, so the entry keeps the hash. `pkg/b.py` sorts first and fails to
+     * parse, so it seeds nothing and `pkg/c.py`'s import reads it again
+     * (own read, then index read). `app.py` names `src/pkg/b.py` under two
+     * module ids, `pkg.b` and `src.pkg.b`, and the index reads it for each.
+     * Only reads that disagree turn an entry into null.
+     */
+    #[Group('python-scanner')]
+    public function testIdenticalRepeatReadsOfOnePathKeepTheirHash(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        // Two separate trees: `pkg/b.py` at the first tree's root would shadow `pkg.b`.
+        mkdir($root . '/one/pkg', 0o777, true);
+        mkdir($root . '/two/src/pkg', 0o777, true);
+        $files = [
+            'one/pkg/b.py' => "class :\n",
+            'one/pkg/c.py' => "from pkg.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
+            'two/src/pkg/b.py' => "class Thing:\n    pass\n",
+            'two/app.py' => "from pkg.b import Thing\nfrom src.pkg.b import Thing as T2\n\n\nclass One(Thing):\n    pass\n\n\nclass Two(T2):\n    pass\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->pythonWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root . '/one', 'files' => ['pkg/b.py', 'pkg/c.py']]));
+            $ownThenIndex = $client->lastScanResult()['input_hashes'] ?? null;
+            $edges = [];
+            foreach ($client->scan(['root' => $root . '/two', 'files' => ['app.py']]) as $contribution) {
+                foreach ($contribution->edges as $edge) {
+                    $edges[] = $edge->kind . ' ' . $edge->sourceReference . ' ' . $edge->targetReference;
+                }
+            }
+            $indexThenIndex = $client->lastScanResult()['input_hashes'] ?? null;
+
+            $hash = static fn(string $relative): string => hash('sha256', $files[$relative]);
+            assertSame(['pkg/b.py' => $hash('one/pkg/b.py'), 'pkg/c.py' => $hash('one/pkg/c.py')], $ownThenIndex);
+            // Both ids really resolved through src/pkg/b.py, so both reads happened.
+            assertArrayContains('extends py:class:app.One py:class:pkg.b.Thing', $edges);
+            assertArrayContains('extends py:class:app.Two py:class:src.pkg.b.Thing', $edges);
+            assertSame(['app.py' => $hash('two/app.py'), 'src/pkg/b.py' => $hash('two/src/pkg/b.py')], $indexThenIndex);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * Discovery never follows a symlink, so the only path it tracks for a
      * module reached through a linked directory is the target's. The index
      * read has to be keyed there; spelled through the link, it would name a

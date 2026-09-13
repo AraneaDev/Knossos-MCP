@@ -169,9 +169,13 @@ class ProjectModuleIndex:
 
     ``read_hashes`` records every file a request read, keyed by its
     project-relative path, for the result's ``input_hashes``: the SHA-256 of
-    the bytes read, or ``None`` when the read was attempted and failed. The
-    first value recorded for a path wins, so a second read of the same file
-    cannot overwrite what the first one saw.
+    the bytes read, or ``None`` when the read was attempted and failed. One
+    path can be read more than once in a request: by an importer's resolution
+    and by its own scan, or under two module ids. Two reads that disagree, in
+    hash or in whether they succeeded, record ``None``, because at least one
+    of them differs from what discovery hashed or failed, and either may have
+    fed facts. Keeping either value alone would leave the other read
+    unverified.
     """
 
     def __init__(self, root: Path, max_bytes: int) -> None:
@@ -182,21 +186,26 @@ class ProjectModuleIndex:
         self.read_hashes: dict[str, str | None] = {}
 
     def record_read(self, relative: str, content_hash: str | None) -> None:
-        """Record one read for ``input_hashes`` unless the path already has an entry."""
-        self.read_hashes.setdefault(relative, content_hash)
+        """Record one read for ``input_hashes``; a disagreeing repeat read records ``None``."""
+        if relative in self.read_hashes and self.read_hashes[relative] != content_hash:
+            content_hash = None
+        self.read_hashes[relative] = content_hash
 
-    def _relative_to_root(self, path: Path) -> str:
-        """The path discovery would report for the file ``path`` reads through.
+    def _resolved_in_root(self, path: Path) -> tuple[Path, str] | None:
+        """The file ``path`` names and the path discovery would report for it.
 
         Discovery never follows a symlink, so a module reached through a linked
-        file or directory is keyed by where its bytes actually live; that is the
-        path whose recorded hash describes them. ``_is_project_file`` already
-        confined the target to the root.
+        file or directory is keyed, and read, where its bytes actually live;
+        that is the path whose recorded hash describes them. ``None`` when the
+        target no longer resolves inside the root (a link retargeted since
+        ``_is_project_file`` checked it): no path the core tracks could verify
+        that read, so the caller reads nothing and derives nothing from it.
         """
         try:
-            return path.resolve().relative_to(self.root).as_posix()
+            resolved = path.resolve(strict=True)
+            return resolved, resolved.relative_to(self.root).as_posix()
         except (OSError, RuntimeError, ValueError):
-            return path.relative_to(self.root).as_posix()
+            return None
 
     def _source_root_prefixes(self) -> list[tuple[str, ...]]:
         prefixes: list[tuple[str, ...]] = [()]
@@ -246,10 +255,11 @@ class ProjectModuleIndex:
             return cached
         declarations: dict[str, str] = {}
         path = self.module_file(module)
-        if path is not None:
-            relative = self._relative_to_root(path)
+        target = None if path is None else self._resolved_in_root(path)
+        if target is not None:
+            resolved, relative = target
             try:
-                source = path.read_bytes()
+                source = resolved.read_bytes()
             except OSError:
                 self.record_read(relative, None)
             else:
@@ -1178,9 +1188,8 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Ca
     # BOM handling, so the core can refuse facts parsed from a file that
     # changed after discovery hashed it.
     content_hash = hashlib.sha256(source).hexdigest()
-    # An importer earlier in the batch may already have read this file through
-    # the index; that first read keeps its entry, and this one stays verified
-    # through the contribution's own content_hash.
+    # The index may read this file too, before or after this read, for an
+    # importer's sake; if the two reads disagree, the entry becomes None.
     index.record_read(relative, content_hash)
     try:
         tree = ast.parse(source, filename=relative, type_comments=True)

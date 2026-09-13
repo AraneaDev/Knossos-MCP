@@ -3,7 +3,8 @@
 The PHPUnit suite drives the real worker process and covers the ordinary reads.
 These cases reach what a real process cannot be made to do on demand: a read
 that fails after the index found the file (running as root, a chmod does not
-stop the read), and a file whose bytes change between two reads in one request.
+stop the read), a file whose bytes change between two reads in one request, and
+a link retargeted between the index's checks.
 """
 
 from __future__ import annotations
@@ -47,31 +48,105 @@ def test_a_failed_index_read_is_reported_as_null(monkeypatch, worker: ModuleType
     }
 
 
-def test_the_first_read_of_a_path_wins_over_a_later_one(monkeypatch, worker: ModuleType, project) -> None:
-    root = project(
-        {
-            "pkg/a.py": "from pkg.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
-            "pkg/b.py": "class Thing:\n    pass\n",
-        }
-    )
-    first = (root / "pkg/b.py").read_bytes()
-    second = b"class Thing:\n    changed = True\n"
+def _serve(monkeypatch, name: str, outcomes: list[bytes | None]) -> list[str]:
+    """Make successive reads of files called ``name`` return ``outcomes`` in order.
+
+    ``None`` makes that read raise ``OSError``. Returns the list the reads are
+    appended to, so a test can prove the reads it describes really happened.
+    """
     real_read_bytes = Path.read_bytes
     reads: list[str] = []
 
-    def rewriting(self: Path) -> bytes:
-        if self.name != "b.py":
+    def served(self: Path) -> bytes:
+        if self.name != name:
             return real_read_bytes(self)
-        reads.append(self.name)
-        return first if len(reads) == 1 else second
+        outcome = outcomes[len(reads)]
+        reads.append(self.as_posix())
+        if outcome is None:
+            raise OSError("unreadable on this read")
+        return outcome
 
-    monkeypatch.setattr(Path, "read_bytes", rewriting)
+    monkeypatch.setattr(Path, "read_bytes", served)
+    return reads
+
+
+IMPORTER = "from pkg.b import Thing\n\n\nclass Local(Thing):\n    pass\n"
+DECLARES = b"class Thing:\n    pass\n"
+CHANGED = b"class Thing:\n    changed = True\n"
+
+
+def test_an_index_read_then_a_differing_own_read_records_null(monkeypatch, worker: ModuleType, project) -> None:
+    root = project({"pkg/a.py": IMPORTER, "pkg/b.py": DECLARES.decode()})
+    reads = _serve(monkeypatch, "b.py", [DECLARES, CHANGED])
     result, contributions = _scan(worker, root, ["pkg/a.py", "pkg/b.py"])
 
-    # The index read b.py for a's import, then b's own scan read it again.
+    assert len(reads) == 2  # a's import resolution, then b's own scan
+    assert contributions["pkg/b.py"]["content_hash"] == _sha(CHANGED)
+    assert result["input_hashes"]["pkg/b.py"] is None
+
+
+def test_an_own_read_then_a_differing_index_read_records_null(monkeypatch, worker: ModuleType, project) -> None:
+    # b sorts first and its own bytes fail to parse, so it seeds nothing and
+    # c's import makes the index read b again. The facts c resolves come from
+    # that second read, which no content_hash describes.
+    root = project({"pkg/b.py": "class :\n", "pkg/c.py": IMPORTER})
+    broken = b"class :\n"
+    reads = _serve(monkeypatch, "b.py", [broken, DECLARES])
+    result, contributions = _scan(worker, root, ["pkg/b.py", "pkg/c.py"])
+
     assert len(reads) == 2
-    assert result["input_hashes"]["pkg/b.py"] == _sha(first)
-    assert contributions["pkg/b.py"]["content_hash"] == _sha(second)
+    assert contributions["pkg/b.py"]["content_hash"] == _sha(broken)
+    assert ("extends", "py:class:c.Local", "py:class:pkg.b.Thing") in [
+        (edge["kind"], edge["source"], edge["target"]) for edge in contributions["pkg/c.py"]["edges"]
+    ]
+    assert result["input_hashes"]["pkg/b.py"] is None
+
+
+def _two_module_ids(project) -> Path:
+    # `src` is a non-package source root, so src/pkg/b.py is both `pkg.b` and
+    # `src.pkg.b`: two cache entries, two index reads of one path.
+    return project(
+        {
+            "src/pkg/b.py": DECLARES.decode(),
+            "app.py": "from pkg.b import Thing\nfrom src.pkg.b import Thing as T2\n\n\n"
+            "class One(Thing):\n    pass\n\n\nclass Two(T2):\n    pass\n",
+        }
+    )
+
+
+def test_two_differing_index_reads_of_one_path_record_null(monkeypatch, worker: ModuleType, project) -> None:
+    root = _two_module_ids(project)
+    reads = _serve(monkeypatch, "b.py", [DECLARES, CHANGED])
+    result, _ = _scan(worker, root, ["app.py"])
+
+    assert len(reads) == 2
+    assert result["input_hashes"]["src/pkg/b.py"] is None
+
+
+def test_a_hashed_read_then_a_failed_read_of_one_path_records_null(monkeypatch, worker: ModuleType, project) -> None:
+    root = _two_module_ids(project)
+    reads = _serve(monkeypatch, "b.py", [DECLARES, None])
+    result, _ = _scan(worker, root, ["app.py"])
+
+    assert len(reads) == 2
+    assert result["input_hashes"]["src/pkg/b.py"] is None
+
+
+def test_a_module_that_no_longer_resolves_inside_the_root_is_not_read(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    # A link retargeted outside the root after _is_project_file accepted it:
+    # no tracked path could verify a read of it, so nothing is read or recorded.
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "b.py").write_text("class Thing:\n    pass\n", encoding="utf-8")
+    root = project({"app.py": IMPORTER})
+    (root / "pkg").mkdir()
+    (root / "pkg" / "b.py").symlink_to(outside / "b.py")
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    index._is_project_file = lambda path: path.exists()
+
+    assert index.module_declarations("pkg.b") == {}
+    assert index.read_hashes == {}
 
 
 def test_an_unreadable_requested_file_is_absent_and_an_empty_request_reports_an_empty_map(

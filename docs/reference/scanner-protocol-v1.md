@@ -137,6 +137,14 @@ check one of its files. A worker that declares the `input_hashes` capability,
 separate from `content_hash` so a third-party worker is unaffected, promises
 to send the field on every result.
 
+A worker can read one path more than once within a request, for example once
+to resolve an importer and again for that file's own contribution. When those
+reads disagree, whether two different hashes or one read that succeeded and
+one that failed, the worker must report the path as `null`. At least one of
+the reads then differs from what discovery hashed or failed, and either may
+have fed facts, so keeping one value would leave the other read unverified.
+Reads that all produced the same hash report that hash.
+
 The core decodes and verifies whatever `input_hashes` contains whenever a
 result carries it, whether or not the worker's manifest declares the
 capability, because a hash is evidence of a changed tree whoever sends it. A
