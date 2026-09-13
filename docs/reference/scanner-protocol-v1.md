@@ -133,20 +133,29 @@ hex of the raw bytes read, or to `null` when a read was attempted and failed.
 This covers files the worker read for another file's sake, not only the file a
 contribution describes: a module index built by reading every module to
 resolve one file's imports, or a type checker that loads a whole program to
-check one of its files. A worker that sends it declares the `input_hashes`
-capability, separate from `content_hash` so a third-party worker is
-unaffected.
+check one of its files. A worker that declares the `input_hashes` capability,
+separate from `content_hash` so a third-party worker is unaffected, promises
+to send the field on every result.
+
+The core decodes and verifies whatever `input_hashes` contains whenever a
+result carries it, whether or not the worker's manifest declares the
+capability, because a hash is evidence of a changed tree whoever sends it. A
+worker that never sends the field is untouched by any of this, same as a
+worker that never sends `content_hash`. Declaring the capability changes only
+one thing: an absent or malformed field then becomes a violation the core
+would otherwise say nothing about, per the next paragraph.
 
 The core compares every path the result names against what discovery recorded,
 the same as it does for `content_hash`. A path discovery does not track, such
 as a dependency outside the scanned tree, is ignored: freshness never covered
 it. A hash that differs from discovery's, or a `null` for a path discovery
 does track, fails the scan with `KNOSSOS_SCAN_SNAPSHOT_CHANGED`, the same as a
-`content_hash` mismatch. A worker that declares the capability but omits the
-field, or sends one that is not an object keyed by path, is refused as
-`WORKER_RESPONSE_INVALID` and degrades its language for the scan, whether or
-not the request read anything: an empty result still carries `input_hashes`
-as `{}`.
+`content_hash` mismatch, regardless of declaration. A worker that declares the
+capability but omits the field, or sends one that is not an object keyed by
+path, is refused as `WORKER_RESPONSE_INVALID` and degrades its language for
+the scan, whether or not the request read anything: an empty result still
+carries `input_hashes` as `{}`. A worker that does not declare the capability
+and simply omits the field triggers none of this.
 
 One decoding limitation to know about: an object keyed only by consecutive
 integers starting at `"0"` is indistinguishable on the wire from a JSON array,
