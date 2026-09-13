@@ -37,12 +37,12 @@ scanner manifest:
 ```json
 {
     "id": "knossos.typescript",
-    "version": "0.1.0",
+    "version": "0.5.0",
     "protocol_version": "1.0",
     "output_schema_version": "1.0",
     "languages": ["typescript", "javascript"],
-    "file_extensions": ["ts", "tsx", "mts", "cts"],
-    "capabilities": ["project_program", "partial_ast"]
+    "file_extensions": ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
+    "capabilities": ["project_program", "partial_ast", "content_hash"]
 }
 ```
 
