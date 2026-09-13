@@ -22,6 +22,21 @@ foreach (array_slice($argv, 1, $separator - 1) as $option) {
     $required[] = substr($option, 10);
 }
 $command = array_slice($argv, $separator + 1);
+// The worker is started with the fixture root as its working directory, so a
+// path argument written relative to where you ran this tool would name
+// nothing there. Anchor every such argument to the caller's directory. The
+// program itself is only anchored when it contains a slash, because a bare
+// name such as `python3` is looked up on PATH, whatever lies in this
+// directory; options are never paths.
+$callerDirectory = getcwd();
+if ($callerDirectory !== false) {
+    foreach ($command as $position => $argument) {
+        $isPath = $position === 0 ? str_contains($argument, '/') : !str_starts_with($argument, '-');
+        if ($isPath && !str_starts_with($argument, '/') && file_exists($callerDirectory . '/' . $argument)) {
+            $command[$position] = $callerDirectory . '/' . $argument;
+        }
+    }
+}
 $temporary = sys_get_temp_dir() . '/knossos-conformance-' . bin2hex(random_bytes(8));
 if (!mkdir($temporary, 0o700)) {
     fwrite(STDERR, "unable to create conformance fixture root\n");

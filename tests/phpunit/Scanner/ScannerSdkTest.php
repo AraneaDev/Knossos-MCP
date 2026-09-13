@@ -48,17 +48,18 @@ final class ScannerSdkTest extends KnossosTestCase
      * @param list<string> $options
      * @return array{0: int, 1: array<string, mixed>}
      */
-    private function runConformance(array $options, string $mode): array
+    private function runConformance(array $options, string $mode, bool $relativeWorkerPath = false): array
     {
+        $worker = 'tests/Fixtures/workers/fake-worker.php';
         $process = proc_open([
             PHP_BINARY,
             self::repositoryRoot() . '/tools/scanner-conformance',
             ...$options,
             '--',
             PHP_BINARY,
-            self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php',
+            $relativeWorkerPath ? $worker : self::repositoryRoot() . '/' . $worker,
             $mode,
-        ], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+        ], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, self::repositoryRoot());
         if (!is_resource($process)) {
             throw new RuntimeException('Unable to start scanner conformance runner.');
         }
@@ -87,5 +88,20 @@ final class ScannerSdkTest extends KnossosTestCase
         [$exit, $report] = $this->runConformance([], 'compliant');
         assertSame(0, $exit);
         assertSame(['initialize', 'empty_scan', 'shutdown'], array_column($report['checks'], 'name'));
+    }
+
+    /**
+     * The worker runs with the fixture root as its working directory, so the
+     * documented `-- python3 worker.py` form only works because the tool
+     * anchors a relative path to the directory it was started from.
+     */
+    #[Group('scanner-sdk')]
+    public function testConformanceAcceptsAWorkerPathRelativeToTheCallersDirectory(): void
+    {
+        [$exit, $report] = $this->runConformance([], 'hash_honest', relativeWorkerPath: true);
+
+        assertSame(0, $exit, json_encode($report, JSON_THROW_ON_ERROR));
+        assertSame(true, $report['conformant']);
+        assertSame(['initialize', 'empty_scan', 'content_hash', 'shutdown'], array_column($report['checks'], 'name'));
     }
 }
