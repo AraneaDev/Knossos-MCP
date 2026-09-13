@@ -28,12 +28,11 @@ Start here to find a project_id. Lists scanned projects with freshness and graph
 | --- | --- | --- | --- |
 | `verbosity` | string | no | default="compact"; enum=compact, full |
 | `max_chars` | integer | no | minimum=4000; maximum=100000; default=30000 |
-| `refresh_if_stale` | boolean | no | default=true |
 | `limit` | integer | no | minimum=1; maximum=100; default=50 |
 | `offset` | integer | no | minimum=0; maximum=100000; default=0 |
 | `include_roots` | boolean | no | default=false |
 
-Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
+Annotations: read-only `yes`; destructive `no`; idempotent `yes`; open-world `no`.
 
 ## `scan_project`
 

@@ -70,6 +70,40 @@ final class ToolCatalogPolicyTest extends KnossosTestCase
         }
     }
 
+    /**
+     * A tool may declare refresh_if_stale only if it takes the project_id the
+     * refresh needs.
+     *
+     * ToolService::refreshIfStale() reads project_id from the arguments and
+     * returns before scanning anything when there is none, so on a tool that
+     * declares no project_id the option is inert: it advertises a rescan that
+     * cannot happen, and validateKeys() rejects the project_id a caller might
+     * supply to make it happen. list_projects advertised exactly that, and
+     * carried the readOnlyHint: false that goes with a tool able to write.
+     *
+     * Stated as a rule over the whole catalogue rather than as a fix to one
+     * entry, because the option is added by a shared helper and the next tool
+     * to spread it in gets the same defect for free.
+     */
+    #[Group('mcp')]
+    public function testOnlyAToolTakingAProjectIdMayOfferToRefreshIt(): void
+    {
+        foreach (self::definitions() as $name => $definition) {
+            // server_info declares its empty property map as an object, so
+            // that it encodes as `{}` rather than as a JSON array.
+            $declared = $definition['inputSchema']['properties'] ?? [];
+            $properties = array_keys(is_array($declared) ? $declared : (array) $declared);
+            if (!in_array('refresh_if_stale', $properties, true)) {
+                continue;
+            }
+            assertSame(
+                true,
+                in_array('project_id', $properties, true),
+                sprintf('%s offers refresh_if_stale with no project to refresh.', $name),
+            );
+        }
+    }
+
     #[Group('mcp')]
     public function testIdempotencyMatchesWhetherRepeatingAToolChangesTheOutcome(): void
     {
