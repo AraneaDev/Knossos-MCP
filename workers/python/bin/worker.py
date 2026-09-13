@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -11,7 +12,7 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 EXCLUDED = {
     ".git",
     ".knossos",
@@ -1090,46 +1091,57 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
 
     index = ProjectModuleIndex(root, max_bytes)
     for absolute, relative in resolved:
-        # Parse and collect one file at a time and release its tree before the
-        # next, so peak memory stays bounded by the largest single file rather
-        # than the whole batch. Each file is isolated: a syntax error, an
-        # oversized recursion, or an unexpected fault degrades to a per-file
-        # diagnostic and never discards facts for the other inputs.
-        try:
-            source = absolute.read_bytes()
-        except OSError as error:
-            # `safe_file` stats the path, and the file can still be deleted or
-            # made unreadable before this read. Nothing about that is specific
-            # to the batch, so it costs only its own file — the same treatment
-            # discovery gives a file it could not resolve.
-            emit(_unscannable_contribution(relative, str(error)))
-            continue
-        try:
-            tree = ast.parse(source, filename=relative, type_comments=True)
-        except (SyntaxError, UnicodeDecodeError, ValueError) as error:
-            emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error)))
-            continue
-        except RecursionError as error:
-            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
-            continue
-        # The shebang lives in a comment the parser drops, so it has to be read
-        # off the source. Reduce it to a flag and release the bytes here, so the
-        # loop's memory bound stays the largest single tree.
-        shebang = starts_with_shebang(source)
-        del source
-        try:
-            collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
-            contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
-        except RecursionError as error:
-            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
-            continue
-        except Exception as error:
-            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
-            continue
-        finally:
-            del tree  # drop the parsed tree before the next file to bound memory
-        emit(contribution)
+        _scan_one(absolute, relative, index, emit)
     return {"files_scanned": len(resolved) + len(rejected), "parser": "python.ast"}
+
+
+def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Callable[[dict[str, Any]], None]) -> None:
+    """Parse and collect a single file, emitting exactly one owned contribution.
+
+    Isolated per file so peak memory stays bounded by the largest single file
+    rather than the whole batch, and so a syntax error, an oversized recursion,
+    or an unexpected fault degrades to a per-file diagnostic and never discards
+    facts for the other inputs in the same request.
+    """
+    try:
+        source = absolute.read_bytes()
+    except OSError as error:
+        # `safe_file` stats the path, and the file can still be deleted or made
+        # unreadable before this read. Nothing about that is specific to the
+        # batch, so it costs only its own file — the same treatment discovery
+        # gives a file it could not resolve.
+        emit(_unscannable_contribution(relative, str(error)))
+        return
+    # Of the exact bytes handed to ast.parse, which does its own decoding and
+    # BOM handling, so the core can refuse facts parsed from a file that
+    # changed after discovery hashed it.
+    content_hash = hashlib.sha256(source).hexdigest()
+    try:
+        tree = ast.parse(source, filename=relative, type_comments=True)
+    except (SyntaxError, UnicodeDecodeError, ValueError) as error:
+        emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error), content_hash))
+        return
+    except RecursionError as error:
+        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
+        return
+    # The shebang lives in a comment the parser drops, so it has to be read off
+    # the source. Reduce it to a flag and release the bytes here, so the loop's
+    # memory bound stays the largest single tree.
+    shebang = starts_with_shebang(source)
+    del source
+    try:
+        collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
+        contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
+    except RecursionError as error:
+        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
+        return
+    except Exception as error:
+        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
+        return
+    finally:
+        del tree  # drop the parsed tree before the next file to bound memory
+    contribution["content_hash"] = content_hash
+    emit(contribution)
 
 
 def line_of(error: BaseException) -> int:
@@ -1137,9 +1149,9 @@ def line_of(error: BaseException) -> int:
 
 
 def _diagnostic_contribution(
-    relative: str, code: str, severity: str, error: BaseException, line: int
+    relative: str, code: str, severity: str, error: BaseException, line: int, content_hash: str | None = None
 ) -> dict[str, Any]:
-    return {
+    contribution: dict[str, Any] = {
         "owner_key": f"knossos.python:file:{relative}",
         "nodes": [],
         "edges": [],
@@ -1152,6 +1164,9 @@ def _diagnostic_contribution(
             }
         ],
     }
+    if content_hash is not None:
+        contribution["content_hash"] = content_hash
+    return contribution
 
 
 def _unscannable_contribution(relative: str, message: str) -> dict[str, Any]:
@@ -1189,7 +1204,7 @@ def handle(request: dict[str, Any]) -> None:
             "output_schema_version": "1.0",
             "languages": ["python"],
             "file_extensions": ["py", "pyi"],
-            "capabilities": ["partial_ast"],
+            "capabilities": ["partial_ast", "content_hash"],
         }
     elif method == "scan":
         result = scan(

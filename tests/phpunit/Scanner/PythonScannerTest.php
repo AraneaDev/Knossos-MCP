@@ -28,7 +28,7 @@ final class PythonScannerTest extends KnossosTestCase
         // A cancel capability is deliberately absent: handle() returns at once
         // and the process is blocked inside scan(), so a cancel frame is not
         // read until the scan it names has already finished.
-        assertSame(['partial_ast'], $manifest->capabilities);
+        assertSame(['partial_ast', 'content_hash'], $manifest->capabilities);
 
         $contributions = iterator_to_array($client->scan([
             'root' => $root,
@@ -407,6 +407,36 @@ PYTHON);
         } finally {
             @unlink($root . '/toplevel.py');
             @rmdir($root);
+        }
+    }
+
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsTheHashOfTheRawBytesItParsed(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $files = [
+            'pkg/bom.py' => "\xEF\xBB\xBFclass Bom:\n    pass\n",
+            'pkg/crlf.py' => "class Crlf:\r\n    pass\r\n",
+            'pkg/broken.py' => "class :\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->pythonWorkerClient();
+            assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+            $client->shutdown();
+
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $byOwner['knossos.python:file:' . $relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
         }
     }
 }
