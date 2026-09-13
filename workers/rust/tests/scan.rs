@@ -5,15 +5,18 @@ use std::io::Cursor;
 use knossos_rust_worker::server::run;
 use serde_json::Value;
 
-/// Write `files` into a fresh temporary root and run a scan request with
-/// `params` merged over the base (`root`, `files`), returning contributions.
-pub fn scan_fixture_with(name: &str, files: &[(&str, &str)], params: &Value) -> Vec<Value> {
+/// Write `files` (raw bytes) into a fresh temporary root and run a scan
+/// request with `params` merged over the base (`root`, `files`), returning
+/// contributions. The byte-oriented base every other fixture helper here
+/// builds on, so a fixture that needs non-UTF-8 content does not have to
+/// duplicate the request/response plumbing.
+pub fn scan_fixture_with_bytes(name: &str, files: &[(&str, &[u8])], params: &Value) -> Vec<Value> {
     let root = std::env::temp_dir().join(format!("knossos-rust-{name}"));
     let _ = std::fs::remove_dir_all(&root);
-    for (relative, source) in files {
+    for (relative, bytes) in files {
         let path = root.join(relative);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, source).unwrap();
+        std::fs::write(&path, bytes).unwrap();
     }
     let base = serde_json::json!({
         "root": std::fs::canonicalize(&root).unwrap().to_str().unwrap(),
@@ -44,6 +47,16 @@ pub fn scan_fixture_with(name: &str, files: &[(&str, &str)], params: &Value) -> 
         .filter(|reply| reply["method"] == "scan/contribution")
         .map(|reply| reply["params"].clone())
         .collect()
+}
+
+/// Write `files` into a fresh temporary root and run a scan request with
+/// `params` merged over the base (`root`, `files`), returning contributions.
+pub fn scan_fixture_with(name: &str, files: &[(&str, &str)], params: &Value) -> Vec<Value> {
+    let byte_files: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(relative, source)| (*relative, source.as_bytes()))
+        .collect();
+    scan_fixture_with_bytes(name, &byte_files, params)
 }
 
 /// Write `files` into a fresh temporary root and scan them, returning contributions.
@@ -1532,6 +1545,30 @@ fn a_file_that_was_never_read_reports_no_hash() {
 
     assert_eq!(1, contributions.len());
     assert!(contributions[0].get("content_hash").is_none());
+}
+
+#[test]
+fn a_file_that_is_not_utf8_still_reports_the_hash_of_its_raw_bytes() {
+    // `prepare_one` reads bytes before it ever tries to decode them, so a file
+    // that fails the UTF-8 check has still been read: it must carry the hash
+    // of exactly those bytes, the same as a file that goes on to parse
+    // successfully or fails later with a syntax error.
+    let bytes: &[u8] = b"pub fn go() {\xff}\n";
+    let contributions = scan_fixture_with_bytes(
+        "content-hash-non-utf8",
+        &[("src/binary.rs", bytes)],
+        &serde_json::json!({}),
+    );
+
+    assert_eq!(1, contributions.len());
+    let contribution = &contributions[0];
+    assert_eq!(sha256_hex(bytes), contribution["content_hash"]);
+    assert_eq!(0, contribution["nodes"].as_array().unwrap().len());
+    assert!(contribution["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "RS_UNSCANNABLE_FILE"));
 }
 
 #[test]
