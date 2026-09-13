@@ -30,6 +30,10 @@ final class ConformanceArgumentAnchor
     private function __construct() {}
 
     /**
+     * Rewrites each argument that names a file relative to the caller's
+     * directory into an absolute path under it, leaving every other argument
+     * unchanged.
+     *
      * @param list<string> $command
      * @return list<string>
      */
@@ -44,6 +48,11 @@ final class ConformanceArgumentAnchor
         return $command;
     }
 
+    /**
+     * Whether an argument plainly names a relative file: not empty, not a flag,
+     * not absolute, and either containing a separator or ending in a
+     * recognised script extension.
+     */
     private static function looksLikeCallerRelativePath(string $argument): bool
     {
         if ($argument === '' || str_starts_with($argument, '-') || str_starts_with($argument, '/')) {
