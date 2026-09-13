@@ -189,6 +189,13 @@ final class ProjectScanService implements ProjectScanner
     /**
      * The project's stored configuration, needed to honour snapshot retention on completion.
      *
+     * The ignores are recorded because the staleness probe has to exclude what
+     * this scan excluded, and the scan is the only thing that knows what that
+     * was: knossos.json can be edited or deleted after the fact, and a probe
+     * rebuilding the set from the file it finds later would be describing a
+     * different walk. Stored, a probe counting an ignored path as drift is
+     * impossible rather than merely unlikely.
+     *
      * @return array<string, mixed>
      */
     private function projectConfig(ScanPreparation $preparation): array
@@ -196,6 +203,7 @@ final class ProjectScanService implements ProjectScanner
         return [
             'input_hash' => $preparation->discovery->inputHash,
             'configuration_hash' => $preparation->discovery->configurationHash,
+            'ignores' => $preparation->configuration->ignores,
             'snapshot_retention' => $preparation->snapshotRetention,
             'dead_code_suppressions' => $preparation->configuration->deadCodeSuppressions,
         ];

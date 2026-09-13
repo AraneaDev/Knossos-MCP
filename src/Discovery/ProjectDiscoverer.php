@@ -81,8 +81,7 @@ final readonly class ProjectDiscoverer
 
                 $absolute = str_replace('\\', '/', $entry->getPathname());
                 $relative = $this->relative($root, $absolute);
-                $configurationFile = in_array(strtolower(basename($relative)), ['knossos.json', 'knossos.jsonc'], true);
-                if (!$configurationFile && $this->ignoreMatcher->matches($relative)) {
+                if (!self::isConfigurationFile($relative) && $this->ignoreMatcher->matches($relative)) {
                     continue;
                 }
 
@@ -1401,6 +1400,22 @@ final readonly class ProjectDiscoverer
             'paths' => is_array($compiler['paths'] ?? null) ? $compiler['paths'] : [],
             'references' => $references,
         ];
+    }
+
+    /**
+     * Whether a path is the project's own Knossos configuration, which the
+     * walk reads whatever the ignores say about it.
+     *
+     * The exception exists because a project that ignores its own settings
+     * file would be configuring a scan that never reads the configuration. It
+     * is public for the same reason {@see self::languageFor()} is: the drift
+     * oracles decide the same question about a path they were handed, and a
+     * second copy of this list would let a probe count a path discovery
+     * exempts, reporting drift no rescan can clear.
+     */
+    public static function isConfigurationFile(string $relativePath): bool
+    {
+        return in_array(strtolower(basename($relativePath)), ['knossos.json', 'knossos.jsonc'], true);
     }
 
     /**

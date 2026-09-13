@@ -31,7 +31,16 @@ final readonly class ScannedPaths implements TrackedPathPredicate
 {
     public function __construct(private IgnoreMatcher $ignores) {}
 
-    /** The project's own configured ignores on top of the defaults IgnoreMatcher already applies. */
+    /**
+     * The project's own configured ignores on top of the defaults IgnoreMatcher already applies.
+     *
+     * The patterns are the ones the scan itself recorded, so what the probe
+     * excludes is what discovery excluded rather than a second guess at it. The
+     * scan used to persist no ignores at all and this rebuilt the defaults
+     * alone, so every path a project ignored on its own account counted as
+     * drift here: a staleness a rescan could never clear, because the rescan
+     * would skip the very files that produced it.
+     */
     public static function forProject(PDO $pdo, string $projectId): self
     {
         $statement = $pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
@@ -60,10 +69,14 @@ final readonly class ScannedPaths implements TrackedPathPredicate
      *
      * A manifest answers yes for the reason given in the class docblock: the
      * scan read it, and what it says changes what a rescan would produce.
+     *
+     * The project's own configuration file is exempt from the ignores here
+     * because it is exempt from them in the walk. Asked through the walk's own
+     * predicate rather than restated, so the two cannot come apart.
      */
     public function tracks(string $relativePath, string $absolutePath): bool
     {
-        if ($this->ignores->matches($relativePath)) {
+        if (!ProjectDiscoverer::isConfigurationFile($relativePath) && $this->ignores->matches($relativePath)) {
             return false;
         }
 
