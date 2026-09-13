@@ -310,4 +310,35 @@ final class TypescriptScannerTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * The checker resolves `src/User.ts` against `src/Base.ts`, so the result
+     * names both reads, each by the hash of its raw bytes: the BOM that the
+     * decoder drops is still in the hash discovery computes.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReportsEveryFileItsProgramRead(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Base.ts' => "\xEF\xBB\xBFexport class Base {}\n",
+            'src/User.ts' => "import { Base } from './Base';\nexport class User extends Base {}\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->typescriptWorkerClient();
+        try {
+            assertSame(true, in_array('input_hashes', $client->initialize()->capabilities, true));
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['src/User.ts']]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
+            assertSame($expected, $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
 }

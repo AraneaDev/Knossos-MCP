@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import fs, { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import fs, {
+    mkdtempSync,
+    mkdirSync,
+    writeFileSync,
+    rmSync,
+    symlinkSync,
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -991,5 +997,310 @@ describe("content_hash", () => {
         expect(gone).not.toHaveProperty("content_hash");
         expect([gone.nodes, gone.diagnostics.length]).toEqual([[], 1]);
         expect(kept).toBe(sha256(Buffer.from("export class Kept {}\n")));
+    });
+});
+
+// Run one scan and keep its result as well as its contributions.
+function scanWithResult(scanner, root, files, extra = {}) {
+    const contributions = [];
+    const result = scanner.scan({ root, files, ...extra }, (contribution) =>
+        contributions.push(contribution),
+    );
+    return {
+        result,
+        byOwner: Object.fromEntries(contributions.map((c) => [c.owner_key, c])),
+    };
+}
+
+// Answer the reads of a path ending in `suffix` from `outcomes`, one per read in
+// order: a string is returned as the file's bytes, `null` fails the read. Reads
+// beyond the list, and of every other path, reach the disk.
+function withReads(suffix, outcomes, callback) {
+    const readFileSync = fs.readFileSync;
+    const remaining = [...outcomes];
+    const spy = vi
+        .spyOn(fs, "readFileSync")
+        .mockImplementation((file, ...rest) => {
+            if (String(file).endsWith(suffix) && remaining.length > 0) {
+                const outcome = remaining.shift();
+                if (outcome === null) {
+                    throw Object.assign(
+                        new Error("EACCES: permission denied"),
+                        {
+                            code: "EACCES",
+                        },
+                    );
+                }
+                return Buffer.from(outcome);
+            }
+            return readFileSync(file, ...rest);
+        });
+    try {
+        return callback();
+    } finally {
+        spy.mockRestore();
+    }
+}
+
+// The importer and the file its checker reads to resolve it.
+const A = 'import { B } from "./b";\nexport class A extends B {}\n';
+const B = "export class B {}\n";
+
+describe("input_hashes: the reads a request reports", () => {
+    it("reports a file the checker read to resolve a requested one", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": sha256(Buffer.from(B)),
+        });
+    });
+
+    it("carries an empty map when nothing was read", () => {
+        const root = fixture({ "src/a.ts": A });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, []);
+
+        expect(result.input_hashes).toEqual({});
+    });
+
+    it("reports null for a file whose read failed", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = withUnreadable(join("src", "b.ts"), () =>
+            scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
+        );
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+});
+
+describe("input_hashes: programs reused across requests", () => {
+    it("reports this request's read of a file in a program reused from an earlier request", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const scanner = new TypeScriptScanner();
+        const changed = "export class B { changed = 1; }\n";
+
+        scanWithResult(scanner, root, ["src/a.ts"]);
+        writeFileSync(join(root, "src/b.ts"), changed);
+        const { result } = scanWithResult(scanner, root, ["src/a.ts"]);
+
+        expect(result.programs_reused).toBe(1);
+        expect(result.input_hashes["src/b.ts"]).toBe(
+            sha256(Buffer.from(changed)),
+        );
+    });
+
+    it("reads every file again when TypeScript reuses an unchanged program's structure", () => {
+        // Pins TypeScript's behaviour rather than the worker's: structure reuse
+        // asks the host for every file of the old program, so a reused program
+        // holds only SourceFiles this request created from its own reads.
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const scanner = new TypeScriptScanner();
+        scanWithResult(scanner, root, ["src/a.ts"]);
+
+        const readFileSync = fs.readFileSync;
+        const reads = [];
+        const spy = vi
+            .spyOn(fs, "readFileSync")
+            .mockImplementation((file, ...rest) => {
+                reads.push(String(file));
+                return readFileSync(file, ...rest);
+            });
+        let second;
+        try {
+            second = scanWithResult(scanner, root, ["src/a.ts"]);
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(second.result.programs_reused).toBe(1);
+        expect(reads.filter((file) => file.endsWith("/src/b.ts"))).toHaveLength(
+            1,
+        );
+        expect(second.result.input_hashes["src/b.ts"]).toBe(
+            sha256(Buffer.from(B)),
+        );
+    });
+});
+
+describe("input_hashes: the key each read goes under", () => {
+    it("leaves out a module resolution only probed for", () => {
+        const root = fixture({
+            "src/a.ts": 'import { M } from "./missing";\nexport const a = M;\n',
+        });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(Object.keys(result.input_hashes)).toEqual(["src/a.ts"]);
+    });
+
+    it("leaves out files under node_modules", () => {
+        const root = fixture({
+            "src/a.ts": 'import { dep } from "dep";\nexport const a = dep;\n',
+            "node_modules/dep/package.json":
+                '{"name":"dep","types":"index.d.ts"}\n',
+            "node_modules/dep/index.d.ts":
+                "export declare const dep: number;\n",
+        });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(Object.keys(result.input_hashes)).toEqual(["src/a.ts"]);
+    });
+
+    it("keys an extensionless shebang script by its real path", () => {
+        const script = "#!/usr/bin/env node\nexport function run() {}\n";
+        const root = fixture({ "bin/cli": script });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "bin/cli",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "bin/cli": sha256(Buffer.from(script)),
+        });
+    });
+
+    it("keys a file read through a symlink by where its bytes live", () => {
+        // Discovery skips symlinks, so the linked name is not a path the core
+        // tracks; the target is, and it is the file whose bytes were read.
+        const root = fixture({
+            "tsconfig.json": '{"include":["src"]}\n',
+            "src/a.ts": A,
+            "lib/b.ts": B,
+        });
+        symlinkSync(join(root, "lib/b.ts"), join(root, "src/b.ts"));
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "lib/b.ts": sha256(Buffer.from(B)),
+        });
+    });
+});
+
+// allowedCompilerPath resolves a path first; the read resolves it again.
+// `second` answers the read's own resolution of src/b.ts, standing in for a
+// link retargeted or removed in between. Picked by caller name: the checks
+// before it resolve the same path a varying number of times.
+function withSecondResolution(second, callback) {
+    const realpathSync = fs.realpathSync;
+    const readFileSync = fs.readFileSync;
+    const readsMade = [];
+    const resolve = vi
+        .spyOn(fs, "realpathSync")
+        .mockImplementation((file, ...rest) => {
+            if (
+                String(file).endsWith("/src/b.ts") &&
+                new Error().stack.includes("readHashedSourceFile")
+            ) {
+                return second(realpathSync(file, ...rest));
+            }
+            return realpathSync(file, ...rest);
+        });
+    const read = vi
+        .spyOn(fs, "readFileSync")
+        .mockImplementation((file, ...rest) => {
+            readsMade.push(String(file));
+            return readFileSync(file, ...rest);
+        });
+    try {
+        return { ...callback(), readsMade };
+    } finally {
+        resolve.mockRestore();
+        read.mockRestore();
+    }
+}
+
+describe("input_hashes: a path that changes under the read", () => {
+    it("does not read a file whose target has left the root since it was allowed", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const outside = fixture({ "b.ts": B });
+
+        const { result, readsMade } = withSecondResolution(
+            () => join(outside, "b.ts"),
+            () => scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
+        );
+
+        expect(readsMade).not.toContain(join(outside, "b.ts"));
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+        });
+    });
+
+    it("reports null for a file whose path no longer resolves", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = withSecondResolution(
+            () => {
+                throw Object.assign(new Error("ENOENT: no such file"), {
+                    code: "ENOENT",
+                });
+            },
+            () => scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
+        );
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+});
+
+describe("input_hashes: a path read by more than one program in a request", () => {
+    // Each tsconfig builds its own program and each reads src/b.ts.
+    const files = {
+        "tsconfig.one.json": '{"files":["src/a.ts"]}\n',
+        "tsconfig.two.json": '{"files":["src/c.ts"]}\n',
+        "src/a.ts": A,
+        "src/c.ts": 'import { B } from "./b";\nexport class C extends B {}\n',
+        "src/b.ts": B,
+    };
+    const other = "export class B { other = 2; }\n";
+    const scan = (outcomes) => {
+        const root = fixture(files);
+        return withReads(join("src", "b.ts"), outcomes, () =>
+            scanWithResult(
+                new TypeScriptScanner(),
+                root,
+                ["src/a.ts", "src/c.ts"],
+                { config_files: ["tsconfig.one.json", "tsconfig.two.json"] },
+            ),
+        ).result;
+    };
+
+    it("keeps a hash both reads agree on", () => {
+        const result = scan([B, B]);
+        expect(result.programs).toBe(2);
+        expect(result.input_hashes["src/b.ts"]).toBe(sha256(Buffer.from(B)));
+    });
+
+    it("reports null when the second read hashes differently", () => {
+        const result = scan([B, other]);
+        expect(result.programs).toBe(2);
+        expect(result.input_hashes["src/b.ts"]).toBeNull();
+    });
+
+    it("reports null when a successful read is followed by a failed one", () => {
+        expect(scan([B, null]).input_hashes["src/b.ts"]).toBeNull();
+    });
+
+    it("reports null when a failed read is followed by a successful one", () => {
+        expect(scan([null, B]).input_hashes["src/b.ts"]).toBeNull();
     });
 });

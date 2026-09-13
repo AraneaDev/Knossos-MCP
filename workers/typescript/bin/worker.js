@@ -74,6 +74,7 @@ async function handle(request) {
                     "project_program",
                     "partial_ast",
                     "content_hash",
+                    "input_hashes",
                 ],
             };
             break;

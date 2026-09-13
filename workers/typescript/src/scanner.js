@@ -73,6 +73,65 @@ const MAX_CACHED_PROGRAMS = 2;
 const parsedContentHashes = new WeakMap();
 
 /**
+ * Every project file one scan request read to derive facts, for the result's
+ * `input_hashes`: project-relative path to the SHA-256 of the bytes read, or
+ * null when a read was attempted and failed.
+ *
+ * The checker resolves a requested file against every source file in its
+ * program, so the map covers each file each program read, not only the requested
+ * ones. One request can build several programs (one per tsconfig, plus the
+ * fallback) and each reads its files afresh, so a path can be read more than
+ * once. When those reads disagree, whether two different hashes or a hash and a
+ * failure in either order, no single hash describes what the request's facts
+ * came from, and the entry becomes null for good.
+ *
+ * One recorder per request, handed to each program's host: nothing about a read
+ * outlives the request that made it.
+ */
+class InputReadRecorder {
+    constructor() {
+        this.hashes = new Map();
+        this.sourceFiles = new WeakSet();
+    }
+
+    /** Record one read; a read disagreeing with an earlier one records null. */
+    record(relative, contentHash) {
+        if (
+            this.hashes.has(relative) &&
+            this.hashes.get(relative) !== contentHash
+        ) {
+            contentHash = null;
+        }
+        this.hashes.set(relative, contentHash);
+    }
+
+    /** Remember a SourceFile this request created from its own read. */
+    created(sourceFile) {
+        this.sourceFiles.add(sourceFile);
+    }
+
+    /**
+     * Whether this request created the SourceFile a program holds. A redirect
+     * SourceFile (a duplicate package resolved to an already loaded copy) is a
+     * view of its target, so its target is what must have been read.
+     */
+    createdThisRequest(sourceFile) {
+        return this.sourceFiles.has(
+            sourceFile.redirectInfo?.redirectTarget ?? sourceFile,
+        );
+    }
+
+    /** The map as the result field, keys sorted for deterministic output. */
+    toResult() {
+        return Object.fromEntries(
+            [...this.hashes].sort(([left], [right]) =>
+                left < right ? -1 : left > right ? 1 : 0,
+            ),
+        );
+    }
+}
+
+/**
  * Performs bounded compiler-backed scanning without executing target modules.
  * Instances retain TypeScript programs for incremental reuse.
  */
@@ -86,7 +145,7 @@ export class TypeScriptScanner {
      *
      * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown}} params
      * @param {(contribution: object) => void} emit
-     * @returns {{files_scanned: number, programs: number, programs_reused: number}}
+     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
      */
     scan(params, emit) {
         const root = validateRoot(params.root);
@@ -107,6 +166,7 @@ export class TypeScriptScanner {
         const configPaths = configFilesForScan(root, params.config_files);
         const maxFileBytes = maxFileBytesFrom(params.limits);
         const emitted = new Set();
+        const reads = new InputReadRecorder();
         let programs = 0;
         let programsReused = 0;
 
@@ -120,9 +180,11 @@ export class TypeScriptScanner {
                 parsed,
                 oldProgram,
                 maxFileBytes,
+                reads,
             );
             this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
+            recordUnreadSourceFiles(root, program, reads);
             this.#emitProgram(root, program, requestedSet, emitted, emit);
             ++programs;
             if (emitted.size === requestedSet.size) break;
@@ -161,9 +223,11 @@ export class TypeScriptScanner {
                 parsed,
                 oldProgram,
                 maxFileBytes,
+                reads,
             );
             this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
+            recordUnreadSourceFiles(root, program, reads);
             this.#emitProgram(root, program, requestedSet, emitted, emit);
             ++programs;
         }
@@ -189,6 +253,7 @@ export class TypeScriptScanner {
             files_scanned: emitted.size + rejected.length,
             programs,
             programs_reused: programsReused,
+            input_hashes: reads.toResult(),
         };
     }
 
@@ -874,16 +939,47 @@ function decodeLikeTypeScript(buffer) {
 
 /**
  * Read, hash and parse one file in a single read, so the hash is over exactly
- * the bytes the SourceFile was built from. Returns undefined when the file
- * cannot be read, the same "skip this input" signal ts.sys.readFile gives.
+ * the bytes the SourceFile was built from, and record the read for the request.
+ * Returns undefined when the file cannot be read, the same "skip this input"
+ * signal ts.sys.readFile gives.
+ *
+ * The bytes are read from the path's resolved target, and the read is keyed by
+ * that target. Discovery never follows a symlink, so the linked name is not a
+ * path the core tracks, while the target is, and it is the file those bytes
+ * came from. A tsconfig `include` walks through links (and `preserveSymlinks`
+ * keeps linked import paths), so both names do reach this host. A target that
+ * no longer resolves inside the root (a link retargeted since
+ * allowedCompilerPath checked it) is not read at all: no path the core tracks
+ * could verify it, so nothing is derived from it. A path that cannot be resolved
+ * is recorded as a failed read under its own name.
  */
-function readHashedSourceFile(readPath, fileName, languageVersion, scriptKind) {
-    let buffer;
+function readHashedSourceFile(
+    root,
+    readPath,
+    fileName,
+    languageVersion,
+    scriptKind,
+    reads,
+) {
+    const absolute = normalize(path.resolve(readPath));
+    let real;
     try {
-        buffer = fs.readFileSync(readPath);
+        real = normalize(fs.realpathSync(absolute));
     } catch {
+        recordRead(reads, root, absolute, null);
         return undefined;
     }
+    if (!contains(root, real) && !contains(defaultLibDirectory(), absolute)) {
+        return undefined;
+    }
+    let buffer;
+    try {
+        buffer = fs.readFileSync(real);
+    } catch {
+        recordRead(reads, root, real, null);
+        return undefined;
+    }
+    const contentHash = createHash("sha256").update(buffer).digest("hex");
     const sourceFile = ts.createSourceFile(
         fileName,
         decodeLikeTypeScript(buffer),
@@ -891,18 +987,72 @@ function readHashedSourceFile(readPath, fileName, languageVersion, scriptKind) {
         true,
         scriptKind,
     );
-    parsedContentHashes.set(
-        sourceFile,
-        createHash("sha256").update(buffer).digest("hex"),
-    );
+    parsedContentHashes.set(sourceFile, contentHash);
+    reads.created(sourceFile);
+    recordRead(reads, root, real, contentHash);
     return sourceFile;
+}
+
+/**
+ * The key a read of `absolute` goes under in `input_hashes`, or null for a read
+ * the core cannot track: outside the root (the default library) or below a
+ * node_modules directory, which discovery never reports.
+ */
+function inputHashKey(root, absolute) {
+    const relative = relativeInside(root, absolute);
+    if (
+        relative === null ||
+        relative === "" ||
+        relative === "node_modules" ||
+        relative.startsWith("node_modules/") ||
+        relative.includes("/node_modules/")
+    ) {
+        return null;
+    }
+    return relative;
+}
+
+function recordRead(reads, root, absolute, contentHash) {
+    const key = inputHashKey(root, absolute);
+    if (key !== null) reads.record(key, contentHash);
+}
+
+/**
+ * Record null for every project file a program holds that this request did not
+ * create from its own read.
+ *
+ * TypeScript 6.0 asks the host for every file again when it reuses an old
+ * program's structure, and this host always returns a fresh SourceFile, so a
+ * reused program holds only this request's reads and this finds nothing. It is
+ * here so that a compiler that kept an earlier request's SourceFile would make
+ * that file's facts unverifiable rather than vouched for by the earlier read.
+ */
+function recordUnreadSourceFiles(root, program, reads) {
+    for (const sourceFile of program.getSourceFiles()) {
+        if (reads.createdThisRequest(sourceFile)) continue;
+        const absolute = normalize(
+            path.resolve(shebangSourcePath(sourceFile.fileName)),
+        );
+        let real = absolute;
+        try {
+            real = normalize(fs.realpathSync(absolute));
+        } catch {
+            // Keyed where the program named it.
+        }
+        recordRead(reads, root, real, null);
+    }
+}
+
+function defaultLibDirectory() {
+    return normalize(path.dirname(ts.getDefaultLibFilePath({})));
 }
 
 function createRestrictedProgram(
     root,
     parsed,
-    oldProgram = undefined,
-    maxFileBytes = 2_000_000,
+    oldProgram,
+    maxFileBytes,
+    reads,
 ) {
     // Architecture scanning only needs diagnostics for the project's own
     // sources, not for the internals of declaration files. Type-checking the
@@ -924,21 +1074,18 @@ function createRestrictedProgram(
         // one giant generated file (e.g. a multi-MB bundled `.d.ts`) is never
         // fully parsed, bounding peak memory.
         if (exceedsByteCap(fileName, maxFileBytes)) return undefined;
-        if (fileName.endsWith(SHEBANG_ALIAS_SUFFIX)) {
-            return readHashedSourceFile(
-                shebangSourcePath(fileName),
-                fileName,
-                languageVersion,
-                ts.ScriptKind.JS,
-            );
-        }
         // Read here rather than through the default host, which reads via
-        // ts.sys.readFile and so never exposes the bytes it decoded.
+        // ts.sys.readFile and so never exposes the bytes it decoded. A shebang
+        // alias is read, and recorded, under the script's real path.
         return readHashedSourceFile(
-            fileName,
+            root,
+            shebangSourcePath(fileName),
             fileName,
             languageVersion,
-            undefined,
+            fileName.endsWith(SHEBANG_ALIAS_SUFFIX)
+                ? ts.ScriptKind.JS
+                : undefined,
+            reads,
         );
     };
     host.fileExists = (file) =>
@@ -1355,8 +1502,7 @@ function maxFileBytesFrom(limits) {
 // resolution for every file. Only project sources under the root are capped.
 function exceedsByteCap(fileName, maxFileBytes) {
     const normalized = shebangSourcePath(normalize(path.resolve(fileName)));
-    const defaultLib = normalize(path.dirname(ts.getDefaultLibFilePath({})));
-    if (contains(defaultLib, normalized)) return false;
+    if (contains(defaultLibDirectory(), normalized)) return false;
     try {
         return fs.statSync(normalized).size > maxFileBytes;
     } catch {
@@ -1509,8 +1655,7 @@ function validatedInside(root, relative) {
 
 function allowedCompilerPath(root, candidate) {
     const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
-    const defaultLib = normalize(path.dirname(ts.getDefaultLibFilePath({})));
-    if (contains(defaultLib, normalized)) return true;
+    if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
     try {
         return contains(root, normalize(fs.realpathSync(normalized)));
