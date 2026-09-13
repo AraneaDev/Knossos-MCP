@@ -439,4 +439,33 @@ PYTHON);
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * A deeply nested unary expression parses fine (`ast.parse` has its own
+     * guard against runaway nesting), but the visitor's recursive descent
+     * through `PythonAstFactCollector.collect()` exhausts Python's own
+     * recursion limit, which is the real, worker-triggered route to
+     * PY_INTERNAL_ERROR — the diagnostic still has to carry the hash of the
+     * bytes that were genuinely read and parsed.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsTheHashOnAnInternalErrorDuringCollection(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o777, true);
+        $bytes = 'x = ' . str_repeat('-', 4000) . "1\n";
+        file_put_contents($root . '/deep.py', $bytes);
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['deep.py']]));
+            $contribution = $contributions[0];
+            assertSame([], $contribution->nodes);
+            assertSame([], $contribution->edges);
+            assertSame('PY_INTERNAL_ERROR', $contribution->diagnostics[0]->code);
+            assertSame(hash('sha256', $bytes), $contribution->contentHash);
+            $client->shutdown();
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

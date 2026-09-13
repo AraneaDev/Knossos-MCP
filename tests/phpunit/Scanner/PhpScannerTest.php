@@ -629,10 +629,8 @@ final class PhpScannerTest extends KnossosTestCase
             throw new \RuntimeException('Unable to create deep PHP fixture.');
         }
         $nesting = 700;
-        file_put_contents(
-            $root . '/Deep.php',
-            "<?php\n\$x = " . str_repeat('[', $nesting) . '1' . str_repeat(']', $nesting) . ";\n",
-        );
+        $bytes = "<?php\n\$x = " . str_repeat('[', $nesting) . '1' . str_repeat(']', $nesting) . ";\n";
+        file_put_contents($root . '/Deep.php', $bytes);
         try {
             $client = $this->phpWorkerClient();
             $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['Deep.php']]));
@@ -640,6 +638,10 @@ final class PhpScannerTest extends KnossosTestCase
             assertSame([], $contribution->nodes);
             assertSame([], $contribution->edges);
             assertSame('PHP_AST_TOO_DEEP', $contribution->diagnostics[0]->code);
+            // The too-deep return still hashes the bytes it read, so the core
+            // can tell this diagnostic-only contribution apart from one a
+            // declaring worker produced without ever reading the file.
+            assertSame(hash('sha256', $bytes), $contribution->contentHash);
             $client->shutdown();
         } finally {
             @unlink($root . '/Deep.php');

@@ -102,6 +102,13 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
             );
 
             assertContains('src/CheckoutService.php', $error->getMessage());
+            // The fast path never invokes a worker, so this is the one
+            // remaining end-to-end route to ScanSnapshotValidator's own
+            // re-read (contentChanged()) rather than a worker-reported hash
+            // mismatch (parsedDifferently()) — pin the exact wording so a
+            // regression that routed this through a worker hash instead
+            // would fail here rather than passing on the path substring alone.
+            assertContains('changed while the scan was running', $error->getMessage());
             // The fast path's write never happened: the active scan still
             // carries the completion stamp the previous scan left on it.
             assertSame($finishedAt, (string) $pdo->query(
