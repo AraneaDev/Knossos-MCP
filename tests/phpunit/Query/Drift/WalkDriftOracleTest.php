@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query\Drift;
 
+use Knossos\Discovery\ProjectUnit;
+use Knossos\Discovery\UnitInputSet;
 use Knossos\Query\Drift\DriftCounts;
 use Knossos\Query\Drift\WalkDriftOracle;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -135,6 +137,102 @@ final class WalkDriftOracleTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /**
+     * The bound has to count what the probe will read and hash, which is the
+     * `files` rows and the recorded manifests together. Counted over the rows
+     * alone, a project of 20,000 files and 5,000 manifests hashed 25,000
+     * inputs on every probe, under a ceiling whose whole purpose is to keep
+     * that work off a freshness check.
+     *
+     * Pinned on the boundary and only through the manifests' own contribution
+     * to it: 19,999 rows plus one manifest is exactly the ceiling and is
+     * answered, and one more manifest is what carries the same probe to 20,001
+     * and over it. A ceiling counted before they join sees 19,999 both times.
+     */
+    #[Group('query')]
+    public function testTheProbeBoundCountsTheManifestsToo(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
+        try {
+            $scanId = $this->activeScanId($pdo, $projectId);
+            $this->addTrackedFileRows($pdo, $projectId, $scanId, 19_998, 'filler');
+            $this->recordManifests($pdo, $scanId, ['composer.json']);
+
+            self::assertNotNull(
+                (new WalkDriftOracle($pdo))->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId)),
+                '19,999 rows and one manifest is exactly the ceiling, which is answered rather than declined one input early.',
+            );
+
+            $this->recordManifests($pdo, $scanId, ['composer.json', 'package.json']);
+
+            self::assertNull(
+                (new WalkDriftOracle($pdo))->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId)),
+                'One more manifest is one input past the ceiling, and the ceiling has to see the total rather than the rows it started from.',
+            );
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Inserts $count additional `files` rows for the active scan, with nothing
+     * on disk: what the bound counts is inputs the probe would read, and a row
+     * costs the same to count whether or not the file behind it exists.
+     */
+    private function addTrackedFileRows(PDO $pdo, string $projectId, string $scanId, int $count, string $prefix): void
+    {
+        $insert = $pdo->prepare(
+            'INSERT INTO files(id, project_id, relative_path, content_hash, size, mtime, language, scanner_version, last_scan_id) ' .
+            'VALUES (:id, :project, :path, :hash, 1, 1, :language, :version, :scan)',
+        );
+        $pdo->beginTransaction();
+        for ($index = 0; $index < $count; ++$index) {
+            $insert->execute([
+                'id' => $prefix . '-' . $index,
+                'project' => $projectId,
+                'path' => $prefix . '/f' . $index . '.php',
+                'hash' => hash('sha256', (string) $index),
+                'language' => 'php',
+                'version' => '0.1.0',
+                'scan' => $scanId,
+            ]);
+        }
+        $pdo->commit();
+    }
+
+    /**
+     * Records the given manifest paths as the scan's unit inputs.
+     *
+     * @param list<string> $paths
+     */
+    private function recordManifests(PDO $pdo, string $scanId, array $paths): void
+    {
+        $units = [];
+        foreach ($paths as $path) {
+            $units[] = new ProjectUnit('composer', $path, hash('sha256', $path));
+        }
+        $pdo->prepare('UPDATE scans SET unit_inputs_json = :units WHERE id = :id')
+            ->execute(['units' => UnitInputSet::of($units)->encode(), 'id' => $scanId]);
+    }
+
+    /** The project's active scan id, looked up by parameter binding rather than string interpolation. */
+    private function activeScanId(PDO $pdo, string $projectId): string
+    {
+        $statement = $pdo->prepare('SELECT active_scan_id FROM projects WHERE id = :id');
+        $statement->execute(['id' => $projectId]);
+
+        return (string) $statement->fetchColumn();
+    }
+
+    /** A scan's finish time, which the additions walk takes as its reference point. */
+    private function finishedAt(PDO $pdo, string $scanId): string
+    {
+        $statement = $pdo->prepare('SELECT finished_at FROM scans WHERE id = :id');
+        $statement->execute(['id' => $scanId]);
+
+        return (string) $statement->fetchColumn();
     }
 
     /** Looks up the active scan and its finish time by parameter binding, not string interpolation, then runs the oracle. */

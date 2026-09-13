@@ -10,8 +10,10 @@ use PDO;
  * Detects drift by walking the filesystem directly against the tracked-file rows.
  *
  * Bounded to keep a freshness check cheap: above {@see self::MAX_PROBED_FILES}
- * tracked files it declines to answer rather than turn a probe into a full
- * tree walk.
+ * inputs it declines to answer rather than turn a probe into a full tree walk.
+ * Inputs, not rows: the manifests below join the same pass, and a bound that
+ * counted only the rows capped something other than the work it was protecting
+ * against.
  *
  * What it walks against is every input the scan recorded a hash for, which is
  * wider than the `files` rows: discovery also reads composer.json,
@@ -32,7 +34,12 @@ use PDO;
  */
 final readonly class WalkDriftOracle implements DriftOracle
 {
-    /** Tracked files above which the walk is skipped and freshness reported as unverified. */
+    /**
+     * Inputs above which the walk is skipped and freshness reported as
+     * unverified. Counted over everything the probe would read and hash, the
+     * `files` rows and the recorded manifests together, because that total is
+     * what the bound exists to keep off a freshness check.
+     */
     private const MAX_PROBED_FILES = 20_000;
 
     /** Entries examined per directory when looking for additions; opening directories is the expensive half. */
@@ -71,6 +78,9 @@ final readonly class WalkDriftOracle implements DriftOracle
         if (!is_dir($root)) {
             return null;
         }
+        // A cheap early exit on the rows alone, so a project far past the
+        // bound is declined without reading them. It is not the bound itself:
+        // the manifests join the set below, and the real check is after that.
         $count = $this->pdo->prepare('SELECT COUNT(*) FROM files WHERE project_id = :project AND last_scan_id = :scan');
         $count->execute(['project' => $projectId, 'scan' => $activeScanId]);
         if ((int) $count->fetchColumn() > self::MAX_PROBED_FILES) {
@@ -97,6 +107,18 @@ final readonly class WalkDriftOracle implements DriftOracle
         // keeps the row's hash: one path, one stored answer, and one pass over
         // it below rather than two.
         $tracked += $units;
+        // The bound applies to what this probe is about to read and hash, not
+        // to the rows it started from. Counting only `files` let a project of
+        // 20,000 files and 5,000 manifests hash 25,000 inputs on every probe,
+        // under a ceiling whose whole purpose is to cap exactly that work.
+        //
+        // Declining rather than trimming to the limit, for the reason the
+        // additions ceiling now carries a flag: a partial pass reports a
+        // count that is really a floor, and a floor read as a count is how a
+        // graph nothing verified gets called fresh.
+        if (count($tracked) > self::MAX_PROBED_FILES) {
+            return null;
+        }
         $changed = 0;
         $deleted = 0;
         $directories = [];
