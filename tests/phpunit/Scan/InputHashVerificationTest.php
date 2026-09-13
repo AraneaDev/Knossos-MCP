@@ -90,7 +90,7 @@ final class InputHashVerificationTest extends KnossosTestCase
         $error = captureThrows(fn(): LanguageScanResult => $this->runScan('inputs_unreadable'), ScanSnapshotChangedException::class);
 
         assertContains('src/Other.ts', $error->getMessage());
-        assertContains('could not be read while the scan resolved other files', $error->getMessage());
+        assertContains('could not be read while the scan derived graph facts from it', $error->getMessage());
     }
 
     public function testAReadOutsideTheDiscoveredTreeIsIgnored(): void

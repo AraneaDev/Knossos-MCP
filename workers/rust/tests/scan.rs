@@ -1613,12 +1613,12 @@ fn the_result_reports_input_hashes_for_every_file_it_read() {
 }
 
 #[test]
-fn an_unreadable_requested_file_is_absent_from_input_hashes() {
+fn an_oversized_requested_file_is_absent_from_input_hashes() {
     // The oversized file's own read never happened (`prepare_one` checks the
     // byte limit before reading), so it must not appear in `input_hashes` at
     // all: neither its (never computed) hash nor a `null` placeholder.
     let result = scan_result_with_bytes(
-        "input-hashes-unreadable",
+        "input-hashes-oversized",
         &[("src/big.rs", b"pub fn big() {}\n")],
         &serde_json::json!({"limits": {"max_file_bytes": 1}}),
     );

@@ -134,7 +134,7 @@ final class RustWorkerTest extends KnossosTestCase
      * only a diagnostic) must be absent from `input_hashes`, not `null`: this
      * worker only reports a read it actually attempted.
      */
-    public function testAnUnreadableRequestedFileIsAbsentFromInputHashes(): void
+    public function testAnOversizedRequestedFileIsAbsentFromInputHashes(): void
     {
         $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
         mkdir($root . '/src', 0o777, true);

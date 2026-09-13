@@ -28,9 +28,10 @@ final class Protocol
 
     /**
      * A worker declaring this reports, on every scan result, an `input_hashes`
-     * object: the SHA-256 of the raw bytes of every other project file it read
-     * to derive facts, or null for a read of such a file that failed. The core
-     * refuses facts resolved against bytes discovery did not hash.
+     * object: the SHA-256 of the raw bytes of every project file it read to
+     * derive facts, including the requested files themselves, or null for a
+     * read of such a file that failed. The core refuses facts derived from
+     * bytes discovery did not hash.
      */
     public const CAPABILITY_INPUT_HASHES = 'input_hashes';
 

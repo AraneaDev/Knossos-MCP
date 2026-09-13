@@ -1039,7 +1039,7 @@ final class PhpScannerTest extends KnossosTestCase
      * worker only reports a read it actually attempted.
      */
     #[Group('php-scanner')]
-    public function testAnUnreadableRequestedFileIsAbsentFromInputHashes(): void
+    public function testAnOversizedRequestedFileIsAbsentFromInputHashes(): void
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
         $client = $this->phpWorkerClient();

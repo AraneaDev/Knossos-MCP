@@ -121,7 +121,7 @@ final class ScanInputHashesTest extends TestCase
         );
 
         assertContains('src/Other.ts', $error->getMessage());
-        assertContains('could not be read while the scan resolved other files', $error->getMessage());
+        assertContains('could not be read while the scan derived graph facts from it', $error->getMessage());
     }
 
     public function testAPathDiscoveryNeverHashedIsIgnored(): void
@@ -176,7 +176,7 @@ final class ScanInputHashesTest extends TestCase
             ScanSnapshotChangedException::class,
         );
 
-        assertContains('could not be read while the scan resolved other files', $error->getMessage());
+        assertContains('could not be read while the scan derived graph facts from it', $error->getMessage());
     }
 
     public function testANumericPathDecodedToAnIntKeyIsStillThatPath(): void

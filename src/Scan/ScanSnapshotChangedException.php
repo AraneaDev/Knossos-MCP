@@ -91,34 +91,39 @@ final class ScanSnapshotChangedException extends RuntimeException
     }
 
     /**
-     * A worker reported reading another file, to resolve facts about the files
-     * it was asked for, from bytes whose hash is not the one discovery recorded.
+     * A worker reported reading a file, via `input_hashes`, from bytes whose
+     * hash is not the one discovery recorded. The read named is usually the
+     * requested file's own — a worker lists every file it read, including the
+     * one it was asked for — but the same check also catches a file read only
+     * to resolve another's facts, which carries no content_hash of its own.
      *
-     * The facts at fault belong to other files, which is why the per-file hash
-     * cannot show it: each requested file was parsed from the right bytes, but
-     * what they were resolved against was not. Named after the read rather than
-     * the file's own facts so the reader looks at the right file.
+     * Distinct from parsedDifferently(): that one fires from a contribution's
+     * own content_hash, this one from the broader input_hashes map, and the
+     * two can name the same file for the same rewrite depending on which
+     * check the core runs first.
      */
     public static function inputReadDifferently(string $relativePath): self
     {
         return new self(sprintf(
-            'Scan aborted: %s was read from different content than the scan hashed while resolving other files, so facts resolved against it match no recorded hash. Rerun the scan once the tree has settled.',
+            'Scan aborted: %s was read from different content than the scan hashed, so graph facts derived from it match no recorded hash. Rerun the scan once the tree has settled.',
             $relativePath,
         ));
     }
 
     /**
-     * A worker tried to read a discovered file while resolving other files'
-     * facts, and the read failed.
+     * A worker reported, via `input_hashes`, that it tried to read a
+     * discovered file and failed. The file named is usually a requested file
+     * itself, but the same check also catches a file read only to resolve
+     * another's facts.
      *
      * Discovery read it moments earlier, so a failure now means the file was
-     * removed or its permissions changed mid-scan, and the facts resolved
+     * removed or its permissions changed mid-scan, and the facts derived
      * without it describe a tree that existed at no point.
      */
     public static function inputUnreadable(string $relativePath): self
     {
         return new self(sprintf(
-            'Scan aborted: %s could not be read while the scan resolved other files, so facts resolved against it cannot be verified. Check the path is still a readable file, then rerun the scan.',
+            'Scan aborted: %s could not be read while the scan derived graph facts from it, so those facts cannot be verified. Check the path is still a readable file, then rerun the scan.',
             $relativePath,
         ));
     }
