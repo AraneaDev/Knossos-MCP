@@ -9,6 +9,8 @@ processes are supervised within explicit protocol and resource limits.
 | Worker crash or broken pipe    | `WORKER_EXITED` or `WORKER_PIPE_BROKEN`                           | Worker and Linux descendants are terminated; that language degrades to an `error` diagnostic and the rest of the scan proceeds.                                          |
 | Worker timeout or flood        | `WORKER_TIMEOUT`, `WORKER_OUTPUT_LIMIT`, or `WORKER_STDERR_LIMIT` | Request is aborted and the process tree terminated; that language degrades to a diagnostic, and the limits in force are reported in the scan's `worker_execution` block. |
 | Cancellation or signal         | `KNOSSOS_SCAN_CANCELLED` / watch `stopped` event                  | Worker cleanup and transaction rollback run; lease is released.                                                                                                          |
+| Tree changed under a scan      | `KNOSSOS_SCAN_SNAPSHOT_CHANGED`                                   | No graph row is written and the previous active graph stays queryable; a `failed` scan row is recorded for the reaper. Rerun once writes to the tree have stopped.       |
+| File unreadable under a scan   | `KNOSSOS_SCAN_SNAPSHOT_CHANGED`                                   | Same preserved state, different remedy: waiting does not restore readability, so make the named path a readable file again before rerunning.                             |
 | Concurrent writer              | `KNOSSOS_SCAN_BUSY`                                               | Current active graph remains queryable; retry after the writer finishes or stale lease recovery.                                                                         |
 | SQLite locked/full/I/O failure | `KNOSSOS_STORAGE_ERROR`                                           | Transaction fails closed; free capacity or release the lock, then retry.                                                                                                 |
 | Partial reconciliation write   | `KNOSSOS_STORAGE_ERROR` or runtime error                          | The graph transaction rolls back and prior active scan remains selected.                                                                                                 |
@@ -88,6 +90,19 @@ worker leaves a usable PHP and Python graph rather than no graph at all.
   a caller reading only the warnings still learns the answer is incomplete.
 - Cancellation is not a degradation. `KNOSSOS_SCAN_CANCELLED` still aborts the
   entire scan, because stopping is the caller's decision rather than a fault.
+- A tree that changes mid-scan is not a degradation either. Discovery hashes
+  every file and the language workers read those same paths again for
+  themselves, so a write landing between the two reads leaves graph facts that
+  no recorded hash describes, which every later drift check would then report
+  as `fresh`. The scan re-hashes what it discovered before it writes anything
+  to the graph and aborts on the first file that no longer matches, was
+  removed, or can no longer be read. The message names that file, and its
+  wording says which of the three happened, because the last one is not a race
+  to wait out: a rewritten or removed file is resolved by rerunning once the
+  tree has settled, while an unreadable path stays unreadable and fails the
+  next scan in the same place until it is corrected. As with any terminal
+  attempt, the aborted scan is recorded as a `failed` scan row so stale-scan
+  cleanup can reap it; no graph row is touched.
 
 ## Fault-injection coverage
 

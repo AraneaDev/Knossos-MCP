@@ -13,6 +13,7 @@ use Knossos\Cli\CliOptionParser;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Discovery\RootGuard;
 use Knossos\Scan\ScanBusyException;
+use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
@@ -623,6 +624,10 @@ final class CliTest extends KnossosTestCase
             [new PDOException('msg'), 'KNOSSOS_STORAGE_ERROR'],
             [new WorkerException('WORKER_TIMEOUT', 'msg'), 'WORKER_TIMEOUT'],
             [new ScanBusyException('msg'), 'KNOSSOS_SCAN_BUSY'],
+            // A tree that moved under a scan is retryable and expected, so it
+            // gets a code an automated caller can branch on rather than the
+            // runtime default it would otherwise fall through to.
+            [new ScanSnapshotChangedException('msg'), 'KNOSSOS_SCAN_SNAPSHOT_CHANGED'],
             [new DiscoveryException('msg'), 'KNOSSOS_DISCOVERY_ERROR'],
         ] as [$error, $expectedCode]) {
             $stream = fopen('php://memory', 'w+');

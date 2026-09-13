@@ -12,7 +12,7 @@ use Knossos\Query\ResultEnvelope;
 use Knossos\Query\StalenessSnapshot;
 use Knossos\Runtime\ServerEnvironment;
 use Knossos\Scan\CancellationToken;
-use Knossos\Scan\ProjectScanService;
+use Knossos\Scan\ProjectScanner;
 
 /**
  * The MCP tool surface: schemas, validation, and dispatch.
@@ -33,7 +33,12 @@ final readonly class ToolService
     private const DEFAULT_MAX_CHARS = 30_000;
 
     public function __construct(
-        private ProjectScanService $scanner,
+        // The interface rather than ProjectScanService: scan() is the only
+        // thing ever called on it, and WatchService and WatchScanAttempt
+        // already take ProjectScanner, so this was the last consumer naming
+        // the implementation for no reason. A test injecting a scanner that
+        // fails a particular way follows from that; it is not the reason.
+        private ProjectScanner $scanner,
         private ArchitectureQueryService $queries,
         private DatabaseMaintenanceService $maintenance,
         private ResultEnricher $enricher,

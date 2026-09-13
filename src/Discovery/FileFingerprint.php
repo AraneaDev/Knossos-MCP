@@ -64,6 +64,34 @@ final readonly class FileFingerprint
     }
 
     /**
+     * Just the content hash of a file, for a caller comparing one read against
+     * another rather than describing a file.
+     *
+     * Lives here, beside {@see self::compute()} and {@see self::fromContents()},
+     * because a second implementation of "the hash discovery stored" is exactly
+     * how two hashes that must agree stop agreeing. It is the same algorithm
+     * over the same bytes, so a value from any of the three is comparable with
+     * a value from either other one.
+     *
+     * Separate from compute() because compute() also derives a line count and a
+     * Git blob id, and a caller that only needs to know whether a file still
+     * hashes the same pays for both: measured over 553 files, compute() costs
+     * about 1.4x this. That is a real cost on a pass a scan pays for every file
+     * it discovered.
+     *
+     * Null means the bytes could not be read, never "it matched".
+     */
+    public static function contentHashOf(string $absolutePath): ?string
+    {
+        // Suppressed, not guarded by is_readable(): a check followed by a read
+        // is two moments, and only the read's own failure says what this call
+        // actually got.
+        $hash = @hash_file('sha256', $absolutePath);
+
+        return $hash === false ? null : $hash;
+    }
+
+    /**
      * Physical line count is the number of newline terminators plus a trailing
      * unterminated line: an empty file is 0 lines, "a\n" and "a" are both 1,
      * and CRLF terminators are counted once (by their "\n").

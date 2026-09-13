@@ -241,6 +241,10 @@ final class StdioServer
             } catch (Throwable $error) {
                 $code = match (true) {
                     $error instanceof \Knossos\Scan\ScanBusyException => 'KNOSSOS_SCAN_BUSY',
+                    // Mapped so the message survives: the generic branch below
+                    // replaces it, and the file this exception names is the
+                    // whole of what the caller needs to act on.
+                    $error instanceof \Knossos\Scan\ScanSnapshotChangedException => 'KNOSSOS_SCAN_SNAPSHOT_CHANGED',
                     $error instanceof \Knossos\Scanner\Worker\WorkerException => $error->diagnosticCode,
                     $error instanceof \Knossos\Discovery\DiscoveryException => 'KNOSSOS_UNSAFE_PATH',
                     $error instanceof \InvalidArgumentException => 'KNOSSOS_INVALID_ARGUMENT',

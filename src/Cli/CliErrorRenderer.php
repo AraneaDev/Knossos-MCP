@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Discovery\DiscoveryException;
 use Knossos\Scan\ScanBusyException;
 use Knossos\Scan\ScanCancelledException;
+use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Worker\WorkerException;
 use PDOException;
 use Throwable;
@@ -53,6 +54,10 @@ final class CliErrorRenderer
             $error instanceof WorkerException => $error->diagnosticCode,
             $error instanceof ScanBusyException => 'KNOSSOS_SCAN_BUSY',
             $error instanceof ScanCancelledException => 'KNOSSOS_SCAN_CANCELLED',
+            // Its own code rather than the runtime default: a tree that moved
+            // under a scan is an expected, retryable condition an automated
+            // caller should be able to recognise without parsing prose.
+            $error instanceof ScanSnapshotChangedException => 'KNOSSOS_SCAN_SNAPSHOT_CHANGED',
             $error instanceof DiscoveryException => 'KNOSSOS_DISCOVERY_ERROR',
             $error instanceof PDOException => 'KNOSSOS_STORAGE_ERROR',
             $error instanceof InvalidArgumentException => 'KNOSSOS_INVALID_ARGUMENT',
