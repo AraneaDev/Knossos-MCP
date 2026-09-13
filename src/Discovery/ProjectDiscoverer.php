@@ -22,11 +22,20 @@ final readonly class ProjectDiscoverer
     private const SHEBANG_PROBE_BYTES = 256;
     private RootGuard $rootGuard;
     private IgnoreMatcher $ignoreMatcher;
+    private FileContentReader $contents;
 
-    public function __construct(private DiscoveryConfig $config)
+    /**
+     * @param ?FileContentReader $contents how a file discovery uses twice is
+     *        read. Production reads the filesystem; injected only so a test
+     *        can answer a second read with different bytes, which is the one
+     *        way to show that a manifest's hash and its metadata come from a
+     *        single read rather than from two that can disagree.
+     */
+    public function __construct(private DiscoveryConfig $config, ?FileContentReader $contents = null)
     {
         $this->rootGuard = new RootGuard($config->allowedRoots);
         $this->ignoreMatcher = new IgnoreMatcher($config->ignorePatterns);
+        $this->contents = $contents ?? new FilesystemContentReader();
     }
     /** Walk the tree and select the files worth analysing, within the configured caps. */
 
@@ -139,7 +148,19 @@ final readonly class ProjectDiscoverer
                     continue;
                 }
 
-                $fingerprint = FileFingerprint::compute($absolute, $this->config->gitObjectHash);
+                // A manifest is read once, here, and that one buffer
+                // answers both the hash and the parse below. Fingerprinting it
+                // separately from parsing it meant two reads of one path with
+                // nothing tying them together, so an edit landing between them
+                // left the unit's hash describing bytes its metadata never came
+                // from. A path that is both a manifest and a source file gets
+                // its `files` row hash from the same buffer for the same
+                // reason. Bounded: the size check above has already rejected
+                // anything over maxFileBytes.
+                $buffer = $unitKind === null ? null : $this->contents->read($absolute);
+                $fingerprint = $buffer === null
+                    ? FileFingerprint::compute($absolute, $this->config->gitObjectHash)
+                    : FileFingerprint::fromContents($buffer, $this->config->gitObjectHash);
                 if ($fingerprint === null) {
                     $diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
@@ -165,7 +186,7 @@ final readonly class ProjectDiscoverer
                 }
 
                 if ($unitKind !== null) {
-                    $unit = $this->readUnit($unitKind, $relative, $absolute, $contentHash, $diagnostics);
+                    $unit = $this->readUnit($unitKind, $relative, $absolute, $contentHash, $buffer, $diagnostics);
                     if ($unit !== null) {
                         $units[] = $unit;
                     }
@@ -198,8 +219,14 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * Read one project manifest, recording a diagnostic rather than failing when it is unreadable.
+     * Parse one project manifest from the bytes the caller already read,
+     * recording a diagnostic rather than failing when there are none.
      *
+     * Takes the content rather than the path on purpose: $contentHash is the
+     * hash of exactly these bytes, and reading the file again here is what let
+     * the two describe different content.
+     *
+     * @param ?string $contents the bytes this unit's hash was taken over, or null when the read failed
      * @param list<DiscoveryDiagnostic> $diagnostics
      */
     private function readUnit(
@@ -207,10 +234,10 @@ final readonly class ProjectDiscoverer
         string $relative,
         string $absolute,
         string $contentHash,
+        ?string $contents,
         array &$diagnostics,
     ): ?ProjectUnit {
-        $contents = file_get_contents($absolute);
-        if ($contents === false) {
+        if ($contents === null) {
             $diagnostics[] = new DiscoveryDiagnostic(
                 'warning',
                 'DISCOVERY_CONFIG_UNREADABLE',

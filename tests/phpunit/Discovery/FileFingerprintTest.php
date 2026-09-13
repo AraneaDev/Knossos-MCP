@@ -64,6 +64,33 @@ final class FileFingerprintTest extends TestCase
         assertSame(hash('sha256', "hello\n"), $fingerprint->contentHash, "The graph's own content hash is SHA-256 whatever the repository is, and must not move with the object format.");
     }
 
+    // ----- fromContents() -----
+
+    /**
+     * Discovery streams most files and buffers the ones it also has to parse,
+     * so the two paths have to agree on every field. If they drift, a
+     * manifest's stored hash stops matching what the same bytes would hash to
+     * through the other path, and the drift oracles compare one against the
+     * other for ever.
+     *
+     * Spelled over several shapes because the line count is where the two
+     * implementations actually differ: one counts terminators as it streams,
+     * the other over a whole buffer.
+     */
+    public function testBufferedAndStreamedFingerprintsAgree(): void
+    {
+        foreach (['', "a\n", 'a', "a\nb", "a\nb\n", "\n", "line\r\nline\r\n"] as $contents) {
+            $path = $this->writeTempFile($contents);
+            $streamed = FileFingerprint::compute($path, 'sha256');
+            $buffered = FileFingerprint::fromContents($contents, 'sha256');
+
+            $this->assertNotNull($streamed);
+            assertSame($streamed->contentHash, $buffered->contentHash, 'Same bytes, same content hash, whichever path read them.');
+            assertSame($streamed->lineCount, $buffered->lineCount, 'Same bytes, same line count: ' . var_export($contents, true));
+            assertSame($streamed->gitBlobHash, $buffered->gitBlobHash, 'Same bytes, same blob id, or a manifest matches nothing in its own repository.');
+        }
+    }
+
     // ----- compute() -----
 
     public function testComputeReturnsNullWhenFileDoesNotExist(): void

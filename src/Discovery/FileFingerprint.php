@@ -37,6 +37,33 @@ final readonly class FileFingerprint
     public function __construct(public string $contentHash, public int $lineCount, public ?string $gitBlobHash = null) {}
 
     /**
+     * The same fingerprint over bytes the caller has already read.
+     *
+     * For a file discovery has to read twice anyway, once to fingerprint and
+     * once to parse, streaming it here would mean two reads of one path with
+     * nothing tying them together: the hash would describe one moment and the
+     * parse another. Deriving both from one buffer is what makes a manifest's
+     * hash and its metadata describe the same content by construction.
+     *
+     * Cannot fail, and returns no null blob id: the length the Git header
+     * needs is the buffer's own, so there is no size to race against the way
+     * {@see self::compute()} has to.
+     */
+    public static function fromContents(string $contents, string $gitObjectHash = 'sha1'): self
+    {
+        $lines = substr_count($contents, "\n");
+        if ($contents !== '' && !str_ends_with($contents, "\n")) {
+            ++$lines;
+        }
+
+        return new self(
+            hash('sha256', $contents),
+            $lines,
+            hash($gitObjectHash, 'blob ' . strlen($contents) . "\0" . $contents),
+        );
+    }
+
+    /**
      * Physical line count is the number of newline terminators plus a trailing
      * unterminated line: an empty file is 0 lines, "a\n" and "a" are both 1,
      * and CRLF terminators are counted once (by their "\n").
