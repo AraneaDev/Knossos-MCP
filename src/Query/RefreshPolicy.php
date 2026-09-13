@@ -60,6 +60,19 @@ final readonly class RefreshPolicy
         if ($driftedFiles < 1) {
             return RefreshDecision::decline('Nothing drifted.');
         }
+        // A saturated count is a floor, not a size. Costing a rescan against
+        // it prices whatever the walk stopped looking at at nothing, and the
+        // estimate lands under a budget the real change set would have
+        // cleared: at 9 ms a file, a reported 500 fits a 5000 ms budget to the
+        // millisecond while the 501st file puts it over. An unmeasurable
+        // change set cannot be capped, so it is declined for the same reason
+        // an unmeasurable cost is.
+        if ($drift->additionsTruncated) {
+            return RefreshDecision::decline(sprintf(
+                'At least %d files drifted and the change-detection walk stopped counting, so a rescan cannot be costed; call scan_project to refresh.',
+                $driftedFiles,
+            ));
+        }
 
         $cost = $this->scanCost($projectId);
         if ($cost === null) {

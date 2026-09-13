@@ -216,6 +216,7 @@ final readonly class ToolService
                 (int) $staleness['changed_files_since'],
                 (int) $staleness['added_files_since'],
                 (int) $staleness['deleted_files_since'],
+                ($staleness['added_files_truncated'] ?? false) === true,
             )
             : new \Knossos\Query\Drift\DriftCounts(0, 0, 0);
         if ($drift->total() < 1) {

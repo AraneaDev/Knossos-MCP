@@ -129,6 +129,54 @@ final class RefreshIfStaleTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The qualification has to survive the trip the count makes: oracle to
+     * probe, probe to the envelope's staleness array, array back to the policy
+     * that costs the rescan. It is passed through an array along the way, so a
+     * flag that is set and never read would look exactly like this test
+     * passing.
+     *
+     * The count is one the policy would otherwise allow, so the decline can
+     * only come from knowing it is a floor.
+     */
+    #[Group('mcp')]
+    public function testATruncatedChangeSetDeclinesTheAutomaticRefresh(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture('mixed');
+        try {
+            $oracle = $this->oracleReporting(new DriftCounts(0, 500, 0, true));
+            $tools = new ToolService(
+                new ProjectScanService($pdo, self::repositoryRoot(), [$root]),
+                new ArchitectureQueryService($pdo, driftOracle: $oracle),
+                new DatabaseMaintenanceService($pdo, ':memory:'),
+                new ResultEnricher(new StalenessProbe($pdo, oracle: $oracle), new NextStepPlanner()),
+            );
+            $before = (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn();
+
+            $result = $tools->call('architecture_summary', ['project_id' => $projectId, 'refresh_if_stale' => true]);
+
+            assertSame($before, (int) $pdo->query('SELECT COUNT(*) FROM scans')->fetchColumn(), 'A change set that cannot be costed must not buy a rescan inside a query the caller is waiting on.');
+            assertSame(1, count($result->warnings));
+            self::assertStringContainsString('stopped counting', $result->warnings[0], 'The caller is told why it was declined and what to call instead.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** An oracle answering with a fixed verdict, so a chain can be driven past the filesystem that would produce one. */
+    private function oracleReporting(DriftCounts $counts): DriftOracle
+    {
+        return new class ($counts) implements DriftOracle {
+            public function __construct(private DriftCounts $counts) {}
+
+            /** Answers the fixed verdict whatever it is asked about. */
+            public function drift(string $projectId, string $activeScanId, string $root, ?string $finishedAt): ?DriftCounts
+            {
+                return $this->counts;
+            }
+        };
+    }
+
     /** The project's active scan id, looked up by parameter binding rather than string interpolation. */
     private function activeScanId(PDO $pdo, string $projectId): string
     {

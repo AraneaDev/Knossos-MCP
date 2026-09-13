@@ -125,7 +125,9 @@ final readonly class WalkDriftOracle implements DriftOracle
             $directories[dirname($absolute)][basename($absolute)] = true;
         }
 
-        return new DriftCounts($changed, $this->addedSince($directories, $finishedAt, $this->paths ?? ScannedPaths::forProject($this->pdo, $projectId), $root), $deleted);
+        $additions = $this->addedSince($directories, $finishedAt, $this->paths ?? ScannedPaths::forProject($this->pdo, $projectId), $root);
+
+        return new DriftCounts($changed, $additions['added'], $deleted, $additions['truncated']);
     }
 
     /**
@@ -170,17 +172,23 @@ final readonly class WalkDriftOracle implements DriftOracle
      *   small source tree must not exhaust the budget and report the tree as
      *   fresh.
      *
+     * The count comes back with whether the walk stopped at
+     * {@see self::MAX_ADDITIONS_COUNTED} rather than running out of entries.
+     * Returning the saturated number on its own made a floor look like a
+     * count, and a floor cannot be costed: see {@see DriftCounts}.
+     *
      * @param array<string, array<string, true>> $directories directory => tracked basenames within it
      * @param ?string $finishedAt when the active scan finished
+     * @return array{added: int, truncated: bool}
      */
-    private function addedSince(array $directories, ?string $finishedAt, TrackedPathPredicate $scanned, string $root): int
+    private function addedSince(array $directories, ?string $finishedAt, TrackedPathPredicate $scanned, string $root): array
     {
         if ($finishedAt === null) {
-            return 0;
+            return ['added' => 0, 'truncated' => false];
         }
         $scannedAt = strtotime($finishedAt);
         if ($scannedAt === false) {
-            return 0;
+            return ['added' => 0, 'truncated' => false];
         }
         $added = 0;
         foreach ($directories as $directory => $tracked) {
@@ -227,10 +235,13 @@ final readonly class WalkDriftOracle implements DriftOracle
                     if ($createdAt !== false && $createdAt >= $scannedAt) {
                         ++$added;
                     }
-                    // Enough drift to report; what the rest of the tree holds
-                    // cannot change the answer.
+                    // Enough drift to report; what the rest of the tree
+                    // holds cannot change whether this graph is stale. It can
+                    // change what repairing it costs, so the caller is told
+                    // the number is a floor rather than left to read it as a
+                    // count.
                     if ($added >= self::MAX_ADDITIONS_COUNTED) {
-                        return $added;
+                        return ['added' => $added, 'truncated' => true];
                     }
                 }
             } finally {
@@ -238,6 +249,6 @@ final readonly class WalkDriftOracle implements DriftOracle
             }
         }
 
-        return $added;
+        return ['added' => $added, 'truncated' => false];
     }
 }

@@ -75,6 +75,13 @@ final readonly class StalenessProbe
         if ($drift !== null) {
             $result['changed_files_since'] = $drift->changed;
             $result['added_files_since'] = $drift->added;
+            if ($drift->additionsTruncated) {
+                // Present only when it is true, and named so it cannot be read
+                // as part of the count: the walk stopped at its ceiling, so
+                // added_files_since is a floor. A caller that costs a rescan
+                // against it would be costing the wrong change set.
+                $result['added_files_truncated'] = true;
+            }
             $result['deleted_files_since'] = $drift->deleted;
         }
         if ($state === 'stale') {

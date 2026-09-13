@@ -113,6 +113,29 @@ final class RefreshPolicyTest extends KnossosTestCase
     }
 
     /**
+     * A saturated addition count is a floor, and a floor cannot be costed. The
+     * arithmetic here fits to the millisecond: 9 ms a file times the reported
+     * 500, plus the 500 ms overhead, is exactly the 5000 ms budget, so the
+     * reported number is allowed while the 501st file the walk never counted
+     * would have put it over. Declining is the only answer that does not
+     * depend on how much the walk happened not to see.
+     */
+    #[Group('query')]
+    public function testASaturatedAdditionCountIsDeclinedThoughItsArithmeticFits(): void
+    {
+        [$pdo, $projectId] = $this->seedScanCosting(durationMs: 9000, files: 1000);
+        $policy = new RefreshPolicy($pdo);
+
+        self::assertTrue(
+            $policy->decide($projectId, new DriftCounts(0, 500, 0))->refresh,
+            'An exact 500 costs exactly the budget and is allowed, which is what makes the truncated case below a decision about the truncation and not about the arithmetic.',
+        );
+        $decision = $policy->decide($projectId, new DriftCounts(0, 500, 0, true));
+        self::assertFalse($decision->refresh, 'The same number, known to be a floor, cannot be costed at all.');
+        self::assertStringContainsString('At least 500', (string) $decision->reason, 'The caller is told the count is a floor rather than being handed it as a size.');
+    }
+
+    /**
      * The historical cap is an upper bound only while the rescan is a subset
      * of the scan it is compared against. Additions break that: a small
      * project that has gained thousands of files has a next scan far larger

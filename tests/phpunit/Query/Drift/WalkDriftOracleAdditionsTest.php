@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Query\Drift;
 
 use Knossos\Query\Drift\TrackedPathPredicate;
 use Knossos\Query\Drift\WalkDriftOracle;
+use Knossos\Query\StalenessProbe;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
@@ -228,6 +229,66 @@ final class WalkDriftOracleAdditionsTest extends KnossosTestCase
             touch($root . '/src', $ctime + 60);
 
             self::assertSame(0, self::drift($pdo, $projectId, $root)->added, 'An entry older than the scan is not an addition, however inclusive the tie is.');
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The walk stops at its ceiling, which makes the number it returns a floor
+     * rather than a count. Nothing downstream could tell the two apart, and
+     * they are not interchangeable: staleness only needs "more than nothing",
+     * but costing a rescan needs the size, and an estimate built on a floor
+     * sits below the real one by however much the walk never looked at.
+     *
+     * 501 reachable additions in one directory, of which the walk counts 500
+     * and then stops: the flag is the only thing that says the 501st exists.
+     */
+    #[Group('query')]
+    public function testASaturatedAdditionCountSaysSoRatherThanPassingForACount(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/existing.php']);
+        try {
+            for ($index = 0; $index < 501; ++$index) {
+                file_put_contents($root . sprintf('/src/new%04d.php', $index), "<?php\n");
+            }
+            touch($root . '/src', time() + 60);
+
+            $drift = self::drift($pdo, $projectId, $root);
+
+            self::assertSame(500, $drift->added, 'The walk stops at its own ceiling, which is what the ceiling is for.');
+            self::assertTrue($drift->additionsTruncated, 'And it has to say that it stopped, or 500 reads as the whole change set.');
+            self::assertTrue(
+                (new StalenessProbe($pdo))->probe($projectId)['added_files_truncated'] ?? false,
+                'The caller sees the count through the probe, so the qualification has to travel with it.',
+            );
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The flag has to mean something, so a walk that simply ran out of entries
+     * must not raise it. Otherwise every probe would report an uncostable
+     * change set and the automatic refresh would decline for ever.
+     */
+    #[Group('query')]
+    public function testAWalkThatRanOutOfEntriesIsNotTruncated(): void
+    {
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/existing.php']);
+        try {
+            file_put_contents($root . '/src/new.php', "<?php\n");
+            touch($root . '/src', time() + 60);
+
+            $drift = self::drift($pdo, $projectId, $root);
+
+            self::assertSame(1, $drift->added);
+            self::assertFalse($drift->additionsTruncated);
+            self::assertArrayNotHasKey(
+                'added_files_truncated',
+                (new StalenessProbe($pdo))->probe($projectId),
+                'An exact count carries no qualification, so the key is absent rather than false.',
+            );
         } finally {
             $this->removeTempTree($root);
         }
