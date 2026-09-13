@@ -30,16 +30,17 @@ selects safe incremental work.
 
 ## Common symptoms
 
-| Symptom or code                 | Meaning                                                                            | Safe action                                                                                                                        |
-| ------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `KNOSSOS_SCAN_BUSY`             | Another writer owns the project scan lease.                                        | Wait for that scan or terminate its owning process cleanly, then retry.                                                            |
-| `KNOSSOS_SCAN_CANCELLED`        | The client or signal cancelled work.                                               | Retry; the prior active snapshot remains available.                                                                                |
-| `KNOSSOS_SCAN_SNAPSHOT_CHANGED` | A file changed, was removed, or stopped being readable while the scan was running. | Rerun once writes to the tree have stopped; the message names the file. No graph row was written, so the previous graph is intact. |
-| `KNOSSOS_DISCOVERY_ERROR`       | Root, symlink, ignore, count, or byte limits rejected input.                       | Correct the path/configuration; do not expand allowed roots blindly.                                                               |
-| `KNOSSOS_STORAGE_ERROR`         | SQLite is locked, full, unwritable, or corrupt.                                    | Free capacity/release the lock, run integrity, and restore an atomic backup if required.                                           |
-| Worker diagnostic prefix        | A scanner crashed, timed out, or violated its protocol/output limits.              | Inspect stderr diagnostics and the affected language file; other snapshots remain intact.                                          |
-| MCP `-32002`                    | The client called a tool before initialization completed.                          | Fix client lifecycle framing; send `notifications/initialized` first.                                                              |
-| Server drops when idle          | The host closed a stdio connection that sat silent between calls.                  | None; `serve` pings every 25s. Ensure the client tolerates server `ping` requests.                                                 |
+| Symptom or code                 | Meaning                                                               | Safe action                                                                                                                        |
+| ------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `KNOSSOS_SCAN_BUSY`             | Another writer owns the project scan lease.                           | Wait for that scan or terminate its owning process cleanly, then retry.                                                            |
+| `KNOSSOS_SCAN_CANCELLED`        | The client or signal cancelled work.                                  | Retry; the prior active snapshot remains available.                                                                                |
+| `KNOSSOS_SCAN_SNAPSHOT_CHANGED` | A file changed or was removed while the scan was running.             | Rerun once writes to the tree have stopped; the message names the file. No graph row was written, so the previous graph is intact. |
+| `KNOSSOS_SCAN_SNAPSHOT_CHANGED` | A discovered file stopped being readable while the scan was running.  | Waiting does not help: make the named path a readable file again, then rerun. The message wording tells this from a rewrite.       |
+| `KNOSSOS_DISCOVERY_ERROR`       | Root, symlink, ignore, count, or byte limits rejected input.          | Correct the path/configuration; do not expand allowed roots blindly.                                                               |
+| `KNOSSOS_STORAGE_ERROR`         | SQLite is locked, full, unwritable, or corrupt.                       | Free capacity/release the lock, run integrity, and restore an atomic backup if required.                                           |
+| Worker diagnostic prefix        | A scanner crashed, timed out, or violated its protocol/output limits. | Inspect stderr diagnostics and the affected language file; other snapshots remain intact.                                          |
+| MCP `-32002`                    | The client called a tool before initialization completed.             | Fix client lifecycle framing; send `notifications/initialized` first.                                                              |
+| Server drops when idle          | The host closed a stdio connection that sat silent between calls.     | None; `serve` pings every 25s. Ensure the client tolerates server `ping` requests.                                                 |
 
 ## Idle stdio connections
 
