@@ -50,8 +50,9 @@ for that scan, and an unhashed contribution with only diagnostics is kept but
 never cached.
 
 The `input_hashes` capability promises the same, per request rather than per
-contribution, for every other project file the worker read to resolve a
-requested file's facts; see `scanner-protocol-v1.md` for the field and its
+contribution, for every project file the worker read while deriving a
+request's facts, the requested files included, and with `null` for a read it
+attempted that failed; see `scanner-protocol-v1.md` for the field and its
 verification rules. `tools/scanner-conformance` checks a declaring worker's
 empty scan and its one-file fixture scan both carry the field correctly.
 

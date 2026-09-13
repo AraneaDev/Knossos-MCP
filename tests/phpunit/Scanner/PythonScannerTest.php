@@ -28,7 +28,7 @@ final class PythonScannerTest extends KnossosTestCase
         // A cancel capability is deliberately absent: handle() returns at once
         // and the process is blocked inside scan(), so a cancel frame is not
         // read until the scan it names has already finished.
-        assertSame(['partial_ast', 'content_hash'], $manifest->capabilities);
+        assertSame(['partial_ast', 'content_hash', 'input_hashes'], $manifest->capabilities);
 
         $contributions = iterator_to_array($client->scan([
             'root' => $root,
@@ -436,6 +436,122 @@ PYTHON);
             }
         } finally {
             $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The module index resolves `pkg/a.py`'s imports by reading `pkg/b.py` and
+     * `pkg/broken.py`, neither of which was requested, so those reads have to be
+     * reported beside the requested file's own: a file changed and restored
+     * while the index read it would otherwise leave facts resolved against
+     * bytes no recorded hash describes. A module that fails to parse was still
+     * read, so its hash is reported too.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsEveryModuleFileTheIndexRead(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $files = [
+            'pkg/a.py' => "from pkg.b import Thing\nfrom pkg.broken import Gone\n\n\nclass Local(Thing):\n    pass\n",
+            'pkg/b.py' => "\xEF\xBB\xBFclass Thing:\n    pass\n",
+            'pkg/broken.py' => "class :\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->pythonWorkerClient();
+        try {
+            assertSame(true, in_array('input_hashes', $client->initialize()->capabilities, true));
+            $edges = [];
+            foreach ($client->scan(['root' => $root, 'files' => ['pkg/a.py']]) as $contribution) {
+                foreach ($contribution->edges as $edge) {
+                    $edges[] = $edge->kind . ' ' . $edge->targetReference;
+                }
+            }
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            // The read really fed resolution: the base class resolved to b.py's declaration.
+            assertArrayContains('extends py:class:pkg.b.Thing', $edges);
+            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
+            ksort($expected);
+            assertSame(true, is_array($inputHashes));
+            ksort($inputHashes);
+            assertSame($expected, $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * `pkg/a.py` sorts first, so the index reads `pkg/b.py` for a's imports
+     * before b's own scan reads it again. Both reads land on one key; the map
+     * keeps the first and the second stays verified through b's content_hash.
+     * An empty request still carries the field, as `{}`.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsAModuleReadBothForAnImporterAndItsOwnScan(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $files = [
+            'pkg/a.py' => "from pkg.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
+            'pkg/b.py' => "class Thing:\r\n    pass\r\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->pythonWorkerClient();
+        try {
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            iterator_to_array($client->scan(['root' => $root, 'files' => []]));
+            $empty = $client->lastScanResult();
+
+            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
+            assertSame($expected, $inputHashes);
+            assertSame($expected['pkg/b.py'], $byOwner['knossos.python:file:pkg/b.py'] ?? null);
+            assertSame(true, array_key_exists('input_hashes', $empty));
+            assertSame([], $empty['input_hashes']);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Discovery never follows a symlink, so the only path it tracks for a
+     * module reached through a linked directory is the target's. The index
+     * read has to be keyed there; spelled through the link, it would name a
+     * path the core ignores and the read would go unverified.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerKeysAModuleReadThroughASymlinkByItsTarget(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/real', 0o777, true);
+        $files = [
+            'app.py' => "from linked.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
+            'real/b.py' => "class Thing:\n    pass\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        symlink($root . '/real', $root . '/linked');
+        $client = $this->pythonWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['app.py']]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            assertSame(array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files), $inputHashes);
+        } finally {
+            $client->shutdown();
+            @unlink($root . '/linked');
             $this->removeTempTree($root);
         }
     }

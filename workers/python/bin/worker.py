@@ -166,6 +166,12 @@ class ProjectModuleIndex:
     and each referenced module's top-level declarations are parsed lazily and
     memoized. Only files that live under the validated root and stay within the
     byte cap are read.
+
+    ``read_hashes`` records every file a request read, keyed by its
+    project-relative path, for the result's ``input_hashes``: the SHA-256 of
+    the bytes read, or ``None`` when the read was attempted and failed. The
+    first value recorded for a path wins, so a second read of the same file
+    cannot overwrite what the first one saw.
     """
 
     def __init__(self, root: Path, max_bytes: int) -> None:
@@ -173,6 +179,24 @@ class ProjectModuleIndex:
         self.max_bytes = max_bytes
         self.prefixes = self._source_root_prefixes()
         self._cache: dict[str, dict[str, str]] = {}
+        self.read_hashes: dict[str, str | None] = {}
+
+    def record_read(self, relative: str, content_hash: str | None) -> None:
+        """Record one read for ``input_hashes`` unless the path already has an entry."""
+        self.read_hashes.setdefault(relative, content_hash)
+
+    def _relative_to_root(self, path: Path) -> str:
+        """The path discovery would report for the file ``path`` reads through.
+
+        Discovery never follows a symlink, so a module reached through a linked
+        file or directory is keyed by where its bytes actually live; that is the
+        path whose recorded hash describes them. ``_is_project_file`` already
+        confined the target to the root.
+        """
+        try:
+            return path.resolve().relative_to(self.root).as_posix()
+        except (OSError, RuntimeError, ValueError):
+            return path.relative_to(self.root).as_posix()
 
     def _source_root_prefixes(self) -> list[tuple[str, ...]]:
         prefixes: list[tuple[str, ...]] = [()]
@@ -223,10 +247,19 @@ class ProjectModuleIndex:
         declarations: dict[str, str] = {}
         path = self.module_file(module)
         if path is not None:
+            relative = self._relative_to_root(path)
             try:
-                declarations = top_level_declarations(ast.parse(path.read_bytes()), module)
-            except (SyntaxError, ValueError, OSError, RecursionError):
-                declarations = {}
+                source = path.read_bytes()
+            except OSError:
+                self.record_read(relative, None)
+            else:
+                # Hashed before parsing, so a module that fails to parse still
+                # reports the bytes this request saw.
+                self.record_read(relative, hashlib.sha256(source).hexdigest())
+                try:
+                    declarations = top_level_declarations(ast.parse(source), module)
+                except (SyntaxError, ValueError, RecursionError):
+                    declarations = {}
         self._cache[module] = declarations
         return declarations
 
@@ -1117,7 +1150,11 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     index = ProjectModuleIndex(root, max_bytes)
     for absolute, relative in resolved:
         _scan_one(absolute, relative, index, emit)
-    return {"files_scanned": len(resolved) + len(rejected), "parser": "python.ast"}
+    return {
+        "files_scanned": len(resolved) + len(rejected),
+        "parser": "python.ast",
+        "input_hashes": index.read_hashes,
+    }
 
 
 def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Callable[[dict[str, Any]], None]) -> None:
@@ -1141,6 +1178,10 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Ca
     # BOM handling, so the core can refuse facts parsed from a file that
     # changed after discovery hashed it.
     content_hash = hashlib.sha256(source).hexdigest()
+    # An importer earlier in the batch may already have read this file through
+    # the index; that first read keeps its entry, and this one stays verified
+    # through the contribution's own content_hash.
+    index.record_read(relative, content_hash)
     try:
         tree = ast.parse(source, filename=relative, type_comments=True)
     except (SyntaxError, UnicodeDecodeError, ValueError) as error:
@@ -1230,7 +1271,7 @@ def handle(request: dict[str, Any]) -> None:
             "output_schema_version": "1.0",
             "languages": ["python"],
             "file_extensions": ["py", "pyi"],
-            "capabilities": ["partial_ast", "content_hash"],
+            "capabilities": ["partial_ast", "content_hash", "input_hashes"],
         }
     elif method == "scan":
         result = scan(
