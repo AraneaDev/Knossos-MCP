@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Knossos\Boundary\BoundaryFact;
 use Knossos\Classification\ClassificationFact;
 use Knossos\Discovery\DiscoveryResult;
+use Knossos\Git\DirtyPathSet;
 use Knossos\Scanner\Protocol\ScanContribution;
 use Knossos\Scanner\Protocol\ScannerManifest;
 
@@ -24,6 +25,16 @@ final readonly class FullScanRequest
      * @param list<array{owner: string, code: string, message: string}> $workerDiagnostics
      *        Languages whose worker failed, persisted so a degraded scan is
      *        visible in the graph and not only in the scan response.
+     * @param ?string $gitHead the commit the root was at when discovery started,
+     *        or null when the root is not a Git repository. Captured by the
+     *        caller rather than resolved here, because it has to precede the
+     *        file reads this request carries the results of: a commit landing
+     *        between the reads and the resolve would record a commit the graph
+     *        was never built against, and drift measured from it reads as none.
+     * @param ?DirtyPathSet $dirtyPaths the tracked paths that differed from
+     *        $gitHead when the scan read them, or null when git could not be
+     *        asked. Persisted so the drift oracle keeps asking about a file
+     *        whose stored hash is of uncommitted content.
      */
     public function __construct(
         public string $projectIdentity,
@@ -37,6 +48,8 @@ final readonly class FullScanRequest
         public string $mode = 'full',
         public array $contributionCache = [],
         public array $workerDiagnostics = [],
+        public ?string $gitHead = null,
+        public ?DirtyPathSet $dirtyPaths = null,
     ) {
         if ($projectIdentity === '' || $projectName === '') {
             throw new InvalidArgumentException('Project identity and name must not be empty.');

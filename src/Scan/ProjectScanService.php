@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Git\DirtyPathResolver;
+use Knossos\Git\GitHeadResolver;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResult};
 use Knossos\Store\SqliteGraphRepository;
@@ -25,13 +27,20 @@ final class ProjectScanService implements ProjectScanner
     private readonly ScanAnalysisPipeline $analysisPipeline;
     private readonly ScanResultFactory $resultFactory;
 
-    /** @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots */
+    /**
+     * @param \Knossos\Discovery\AllowedRoots|list<string> $allowedRoots
+     * @param ?GitHeadResolver $gitHead injected only so a test can drive the
+     *        commit capture without a subprocess; production builds its own.
+     * @param ?DirtyPathResolver $dirtyPaths injected for the same reason.
+     */
     public function __construct(
         private PDO $pdo,
         string $installationRoot,
         \Knossos\Discovery\AllowedRoots|array $allowedRoots,
+        ?GitHeadResolver $gitHead = null,
+        ?DirtyPathResolver $dirtyPaths = null,
     ) {
-        $this->planner = new ScanPlanner($pdo, $allowedRoots);
+        $this->planner = new ScanPlanner($pdo, $allowedRoots, $gitHead, $dirtyPaths);
         $this->workerPool = new LanguageWorkerPool();
         $this->languageRunner = new LanguageScanRunner(
             LanguageDescriptor::installed($installationRoot),
@@ -126,11 +135,25 @@ final class ProjectScanService implements ProjectScanner
                 $plan->effectiveMode,
                 $language->cacheEntries,
                 $language->workerDiagnostics,
+                // Captured before discovery walked the tree, so the commit the
+                // scan records is one its own bytes cannot predate.
+                $preparation->gitHead,
+                $preparation->dirtyPaths,
             ));
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
             }
             $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
+            // What rebuilding this graph cost, end to end, recorded here
+            // because this is the only place that knows it: reconciliation
+            // completes the scan row but sees neither discovery nor analysis.
+            // RefreshPolicy reads it to decide whether repeating the work fits
+            // inside a query the caller is already waiting on.
+            (new SqliteGraphRepository($this->pdo))->recordScanDuration(
+                $result->projectId,
+                $result->scanId,
+                (int) round(self::elapsedMilliseconds($startedAt)),
+            );
 
             return $this->resultFactory->create($plan, $language, $result, $startedAt, $stageMilliseconds);
         } catch (\Throwable $error) {
@@ -166,6 +189,13 @@ final class ProjectScanService implements ProjectScanner
     /**
      * The project's stored configuration, needed to honour snapshot retention on completion.
      *
+     * The ignores are recorded because the staleness probe has to exclude what
+     * this scan excluded, and the scan is the only thing that knows what that
+     * was: knossos.json can be edited or deleted after the fact, and a probe
+     * rebuilding the set from the file it finds later would be describing a
+     * different walk. Stored, a probe counting an ignored path as drift is
+     * impossible rather than merely unlikely.
+     *
      * @return array<string, mixed>
      */
     private function projectConfig(ScanPreparation $preparation): array
@@ -173,6 +203,7 @@ final class ProjectScanService implements ProjectScanner
         return [
             'input_hash' => $preparation->discovery->inputHash,
             'configuration_hash' => $preparation->discovery->configurationHash,
+            'ignores' => $preparation->configuration->ignores,
             'snapshot_retention' => $preparation->snapshotRetention,
             'dead_code_suppressions' => $preparation->configuration->deadCodeSuppressions,
         ];

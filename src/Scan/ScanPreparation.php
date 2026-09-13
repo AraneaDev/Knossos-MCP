@@ -6,6 +6,7 @@ namespace Knossos\Scan;
 
 use Knossos\Configuration\ProjectConfiguration;
 use Knossos\Discovery\DiscoveryResult;
+use Knossos\Git\DirtyPathSet;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 
 /** A prepared scan: its plan, discovery result, and the timings spent getting there. */
@@ -43,5 +44,19 @@ final readonly class ScanPreparation
          * @var list<string>
          */
         public array $rustFrameworks = [],
+        /**
+         * The commit the scan root was at when the walk started, or null when
+         * the root is not a Git repository. Captured before discovery reads a
+         * single file so the scan records a commit its own bytes cannot
+         * predate; see {@see ScanPlanner}.
+         */
+        public ?string $gitHead = null,
+        /**
+         * The tracked paths that differed from {@see self::$gitHead} once the
+         * walk had read them, or null when git could not be asked. See
+         * {@see DirtyPathSet}: a path in it cannot be assumed to hash equal to
+         * the commit, so the drift oracle has to keep asking about it.
+         */
+        public ?DirtyPathSet $dirtyPaths = null,
     ) {}
 }

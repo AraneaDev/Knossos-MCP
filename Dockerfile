@@ -1,18 +1,18 @@
-FROM node:26-trixie-slim@sha256:deae974a69e140f44f434ab29cb519fb5f8fe250fd364b8ca446bd0761acdc6a AS node_runtime
+FROM node:26-trixie-slim@sha256:14bf3eac4bf209d906d3c41256597d3ab1f926b2e93a79e9bdfe1efd32454239 AS node_runtime
 
 RUN npm install --global npm@12.0.2 --ignore-scripts --no-audit --no-fund
 
-FROM composer:2@sha256:629d4ef35e75349d452851637d37a40ac33a09d6ac010139020603d79713d9bf AS composer_runtime
+FROM composer:2@sha256:d8f6343d3fae98107426bc49163ccad46ef85aabd4a27d80a74401fab4aba332 AS composer_runtime
 
 # The Rust worker is compiled here and copied in as a binary, so the shipped
 # runtime image carries no Rust toolchain. Same Debian release as the runtime
 # stage, so the glibc the binary links against is the one it runs on.
-FROM rust:1-slim-trixie@sha256:cc0448b41c3b7b7fea44f5dc50eacba729a56db365b65b7bd5e8a82d5b3db078 AS rust_builder
+FROM rust:1-slim-trixie@sha256:bce1476d4be4d78b83705bc5f428b86d640eeeea33e9dadafbc037b5703a53bf AS rust_builder
 WORKDIR /build
 COPY workers/rust ./
 RUN cargo build --release --locked
 
-FROM php:8.5-cli-trixie@sha256:f5d2b71350cdc3c2fc807d6679f5bdac2898d7558945105e46308e4659fb37ac AS runtime
+FROM php:8.5-cli-trixie@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc3dfe7ee23df51e0 AS runtime
 
 # x-release-please-start-version
 LABEL org.opencontainers.image.title="Knossos MCP" \

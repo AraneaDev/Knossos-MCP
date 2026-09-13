@@ -22,11 +22,20 @@ final readonly class ProjectDiscoverer
     private const SHEBANG_PROBE_BYTES = 256;
     private RootGuard $rootGuard;
     private IgnoreMatcher $ignoreMatcher;
+    private FileContentReader $contents;
 
-    public function __construct(private DiscoveryConfig $config)
+    /**
+     * @param ?FileContentReader $contents how a file discovery uses twice is
+     *        read. Production reads the filesystem; injected only so a test
+     *        can answer a second read with different bytes, which is the one
+     *        way to show that a manifest's hash and its metadata come from a
+     *        single read rather than from two that can disagree.
+     */
+    public function __construct(private DiscoveryConfig $config, ?FileContentReader $contents = null)
     {
         $this->rootGuard = new RootGuard($config->allowedRoots);
         $this->ignoreMatcher = new IgnoreMatcher($config->ignorePatterns);
+        $this->contents = $contents ?? new FilesystemContentReader();
     }
     /** Walk the tree and select the files worth analysing, within the configured caps. */
 
@@ -72,8 +81,7 @@ final readonly class ProjectDiscoverer
 
                 $absolute = str_replace('\\', '/', $entry->getPathname());
                 $relative = $this->relative($root, $absolute);
-                $configurationFile = in_array(strtolower(basename($relative)), ['knossos.json', 'knossos.jsonc'], true);
-                if (!$configurationFile && $this->ignoreMatcher->matches($relative)) {
+                if (!self::isConfigurationFile($relative) && $this->ignoreMatcher->matches($relative)) {
                     continue;
                 }
 
@@ -139,7 +147,38 @@ final readonly class ProjectDiscoverer
                     continue;
                 }
 
-                $fingerprint = FileFingerprint::compute($absolute);
+                // A manifest is read once, here, and that one buffer
+                // answers both the hash and the parse below. Fingerprinting it
+                // separately from parsing it meant two reads of one path with
+                // nothing tying them together, so an edit landing between them
+                // left the unit's hash describing bytes its metadata never came
+                // from. A path that is both a manifest and a source file gets
+                // its `files` row hash from the same buffer for the same
+                // reason.
+                //
+                // The limit goes with the request rather than being taken as
+                // already enforced by the size check above: that check and this
+                // read are two moments, and a file that grows between them is
+                // over the limit by the time the bytes are asked for. Reading
+                // it whole on the strength of a stale size is an unbounded
+                // allocation driven by the tree being scanned.
+                $read = $unitKind === null ? null : $this->contents->read($absolute, $this->config->maxFileBytes);
+                if ($read !== null && $read->oversized) {
+                    // The same diagnostic a file already too large when its
+                    // size was checked gets: it is the same fact, learned one
+                    // moment later, and a caller acts on it the same way.
+                    $diagnostics[] = new DiscoveryDiagnostic(
+                        'warning',
+                        'DISCOVERY_FILE_TOO_LARGE',
+                        sprintf('File exceeds the %d-byte discovery limit.', $this->config->maxFileBytes),
+                        $relative,
+                    );
+                    continue;
+                }
+                $buffer = $read?->bytes;
+                $fingerprint = $buffer === null
+                    ? FileFingerprint::compute($absolute, $this->config->gitObjectHash)
+                    : FileFingerprint::fromContents($buffer, $this->config->gitObjectHash);
                 if ($fingerprint === null) {
                     $diagnostics[] = new DiscoveryDiagnostic(
                         'warning',
@@ -160,11 +199,12 @@ final readonly class ProjectDiscoverer
                         $mtime,
                         $contentHash,
                         $fingerprint->lineCount,
+                        $fingerprint->gitBlobHash,
                     );
                 }
 
                 if ($unitKind !== null) {
-                    $unit = $this->readUnit($unitKind, $relative, $absolute, $contentHash, $diagnostics);
+                    $unit = $this->readUnit($unitKind, $relative, $absolute, $contentHash, $buffer, $diagnostics);
                     if ($unit !== null) {
                         $units[] = $unit;
                     }
@@ -197,8 +237,14 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * Read one project manifest, recording a diagnostic rather than failing when it is unreadable.
+     * Parse one project manifest from the bytes the caller already read,
+     * recording a diagnostic rather than failing when there are none.
      *
+     * Takes the content rather than the path on purpose: $contentHash is the
+     * hash of exactly these bytes, and reading the file again here is what let
+     * the two describe different content.
+     *
+     * @param ?string $contents the bytes this unit's hash was taken over, or null when the read failed
      * @param list<DiscoveryDiagnostic> $diagnostics
      */
     private function readUnit(
@@ -206,10 +252,10 @@ final readonly class ProjectDiscoverer
         string $relative,
         string $absolute,
         string $contentHash,
+        ?string $contents,
         array &$diagnostics,
     ): ?ProjectUnit {
-        $contents = file_get_contents($absolute);
-        if ($contents === false) {
+        if ($contents === null) {
             $diagnostics[] = new DiscoveryDiagnostic(
                 'warning',
                 'DISCOVERY_CONFIG_UNREADABLE',
@@ -1357,6 +1403,22 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * Whether a path is the project's own Knossos configuration, which the
+     * walk reads whatever the ignores say about it.
+     *
+     * The exception exists because a project that ignores its own settings
+     * file would be configuring a scan that never reads the configuration. It
+     * is public for the same reason {@see self::languageFor()} is: the drift
+     * oracles decide the same question about a path they were handed, and a
+     * second copy of this list would let a probe count a path discovery
+     * exempts, reporting drift no rescan can clear.
+     */
+    public static function isConfigurationFile(string $relativePath): bool
+    {
+        return in_array(strtolower(basename($relativePath)), ['knossos.json', 'knossos.jsonc'], true);
+    }
+
+    /**
      * The language a file belongs to, or null when it is not source.
      *
      * Extension first, then a shebang for extensionless files. Executable entry
@@ -1365,10 +1427,17 @@ final readonly class ProjectDiscoverer
      * look unreferenced, so dead-code detection reports a live entry point as a
      * deletion candidate.
      *
+     * Public because the drift oracles have to answer the same question this
+     * loop answers, about a path they were handed rather than one they walked
+     * to: whether a file appearing beside the graph is source the scanner would
+     * have tracked, or a README the graph was never going to hold. Two
+     * definitions of "source" would let a probe report drift a rescan cannot
+     * clear.
+     *
      * @param string|null $absolutePath needed only to read a shebang; omit and
      *        extensionless files are simply not classified
      */
-    private static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
+    public static function languageFor(string $relativePath, ?string $absolutePath = null): ?string
     {
         $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
         $byExtension = match ($extension) {
@@ -1418,9 +1487,16 @@ final readonly class ProjectDiscoverer
             default => null,
         };
     }
-    /** Which manifest kind a filename is, or null when it is not one. */
-
-    private static function unitKindFor(string $relativePath): ?string
+    /**
+     * Which manifest kind a filename is, or null when it is not one.
+     *
+     * Public because it is half of what "an input this scanner reads" means,
+     * and the drift oracles need the same half: a path that is a unit here but
+     * not a language file has no `files` row, and a probe that asked only
+     * {@see self::languageFor()} treated editing composer.json as nothing at
+     * all. {@see \Knossos\Query\Drift\ScannedPaths} asks both.
+     */
+    public static function unitKindFor(string $relativePath): ?string
     {
         $basename = strtolower(basename($relativePath));
         if ($basename === 'composer.json') {

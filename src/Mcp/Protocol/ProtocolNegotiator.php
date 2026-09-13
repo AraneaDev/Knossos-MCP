@@ -30,6 +30,13 @@ final class ProtocolNegotiator
      * 2.1.220 ships `2025-11-25` as its newest supported revision and does not
      * recognise `2026-07-28`. Set `KNOSSOS_LEGACY_PROTOCOL=0` to refuse it, so
      * removal can be rehearsed against real clients before the code is deleted.
+     *
+     * Only the literal string '0' disables it: 'false', 'off', 'no' and even
+     * 'FALSE' all still read as enabled, the same idiom {@see
+     * \Knossos\Mcp\ToolService} uses for KNOSSOS_AUTO_REFRESH. Consistency
+     * between the two operator switches is worth more than accommodating
+     * spellings nobody has asked for; if that ever changes, change both
+     * switches together, not just one.
      */
     public static function legacyEnabled(): bool
     {

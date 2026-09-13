@@ -31,6 +31,66 @@ final class FileFingerprintTest extends TestCase
         return $path;
     }
 
+    // ----- git blob id -----
+
+    /**
+     * The default names a blob the way a SHA-1 repository does, which is what
+     * the overwhelming majority of checkouts are.
+     */
+    public function testItNamesABlobTheWayASha1RepositoryDoes(): void
+    {
+        $path = $this->writeTempFile("hello\n");
+
+        $fingerprint = FileFingerprint::compute($path);
+
+        $this->assertNotNull($fingerprint);
+        assertSame(sha1("blob 6\0hello\n"), $fingerprint->gitBlobHash);
+    }
+
+    /**
+     * And a SHA-256 repository names the same bytes differently. Computing the
+     * SHA-1 id for such a repository is not a near miss: it matches nothing in
+     * its trees, so every tracked file reads as dirty and the drift comparison
+     * that depends on the id stops working altogether.
+     */
+    public function testItNamesABlobTheWayASha256RepositoryDoes(): void
+    {
+        $path = $this->writeTempFile("hello\n");
+
+        $fingerprint = FileFingerprint::compute($path, 'sha256');
+
+        $this->assertNotNull($fingerprint);
+        assertSame(hash('sha256', "blob 6\0hello\n"), $fingerprint->gitBlobHash);
+        assertSame(hash('sha256', "hello\n"), $fingerprint->contentHash, "The graph's own content hash is SHA-256 whatever the repository is, and must not move with the object format.");
+    }
+
+    // ----- fromContents() -----
+
+    /**
+     * Discovery streams most files and buffers the ones it also has to parse,
+     * so the two paths have to agree on every field. If they drift, a
+     * manifest's stored hash stops matching what the same bytes would hash to
+     * through the other path, and the drift oracles compare one against the
+     * other for ever.
+     *
+     * Spelled over several shapes because the line count is where the two
+     * implementations actually differ: one counts terminators as it streams,
+     * the other over a whole buffer.
+     */
+    public function testBufferedAndStreamedFingerprintsAgree(): void
+    {
+        foreach (['', "a\n", 'a', "a\nb", "a\nb\n", "\n", "line\r\nline\r\n"] as $contents) {
+            $path = $this->writeTempFile($contents);
+            $streamed = FileFingerprint::compute($path, 'sha256');
+            $buffered = FileFingerprint::fromContents($contents, 'sha256');
+
+            $this->assertNotNull($streamed);
+            assertSame($streamed->contentHash, $buffered->contentHash, 'Same bytes, same content hash, whichever path read them.');
+            assertSame($streamed->lineCount, $buffered->lineCount, 'Same bytes, same line count: ' . var_export($contents, true));
+            assertSame($streamed->gitBlobHash, $buffered->gitBlobHash, 'Same bytes, same blob id, or a manifest matches nothing in its own repository.');
+        }
+    }
+
     // ----- compute() -----
 
     public function testComputeReturnsNullWhenFileDoesNotExist(): void

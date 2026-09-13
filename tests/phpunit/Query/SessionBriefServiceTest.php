@@ -163,8 +163,8 @@ final class SessionBriefServiceTest extends KnossosTestCase
     public function testFreshStateGathersEntryPointsAndHubs(): void
     {
         // storeFixture()'s root, /workspace/fixture-shop, does not exist on
-        // disk, so StalenessProbe::changedFilesSince() always bails out to
-        // null there and 'fresh' can never actually be observed. A real scan
+        // disk, so WalkDriftOracle::drift() always bails out to null there
+        // and 'fresh' can never actually be observed. A real scan
         // of a real temp checkout is needed so this positive case is genuine,
         // not assumed. This is the counterpart to the negative case below:
         // asserting an empty entryPoints/hubs on its own would also pass if

@@ -11,7 +11,7 @@ use PHPUnit\Framework\Attributes\Group;
 
 /**
  * The staleness verdict on its boundaries: the age against an injected clock,
- * the 500-file probe bound, drift found in any tracked directory, and the
+ * the 20,000-file probe bound, drift found in any tracked directory, and the
  * guidance each state carries.
  *
  * StalenessProbe scored 83% under mutation testing. Its tests used the real
@@ -57,16 +57,16 @@ final class StalenessProbeBoundaryTest extends KnossosTestCase
         }
     }
 
-    /** Five hundred tracked files are probed; five hundred and one are reported unverified. */
+    /** Twenty thousand tracked files are probed; twenty thousand and one are reported unverified. */
     #[Group('query')]
-    public function testTheProbeBoundIsFiveHundredFiles(): void
+    public function testTheProbeBoundIsTwentyThousandFiles(): void
     {
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
         try {
-            self::trackMissingFiles($pdo, $projectId, 499);
+            self::trackMissingFiles($pdo, $projectId, 19_999);
             $atBound = (new StalenessProbe($pdo))->probe($projectId);
-            assertSame('stale', $atBound['state'], 'Five hundred files are walked, and the 499 missing ones are drift.');
-            assertSame(499, $atBound['deleted_files_since']);
+            assertSame('stale', $atBound['state'], 'Twenty thousand files are walked, and the 19,999 missing ones are drift.');
+            assertSame(19_999, $atBound['deleted_files_since']);
 
             self::trackMissingFiles($pdo, $projectId, 1, 'extra');
             assertSame('unverified', (new StalenessProbe($pdo))->probe($projectId)['state']);

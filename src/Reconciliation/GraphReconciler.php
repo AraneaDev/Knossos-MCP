@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Reconciliation;
 
 use Knossos\Discovery\DiscoveredFile;
+use Knossos\Discovery\UnitInputSet;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\Evidence;
@@ -68,7 +69,9 @@ final readonly class GraphReconciler
      */
     private const UNRESOLVABLE_TARGET_CODE = 'reconciler.unresolvable_edge_target';
 
-    public function __construct(private GraphRepository $repository) {}
+    public function __construct(
+        private GraphRepository $repository,
+    ) {}
     /** Merge a scan's contributions into the graph, in one transaction. */
 
     public function reconcile(FullScanRequest $request): ReconciliationResult
@@ -109,6 +112,15 @@ final readonly class GraphReconciler
 
         $mark('prepare');
 
+        // Taken from the request, not resolved here. Two reasons, and the
+        // second is the one that matters: shelling out while the graph write
+        // lock is held would hold that lock for a subprocess timeout, and
+        // resolving at this point resolves *after* discovery has read every
+        // file, so a commit landing in between records a commit this graph was
+        // never built against. The caller captures it before the walk; see
+        // {@see \Knossos\Scan\ScanPlanner}.
+        $gitHead = $request->gitHead;
+
         $diagnosticCount = 0;
         // A rewrite of this size is dominated by per-statement foreign-key
         // enforcement, so integrity is verified once before the commit instead.
@@ -117,6 +129,7 @@ final readonly class GraphReconciler
             $projectId,
             $scanId,
             $scannerSetHash,
+            $gitHead,
             $fileIds,
             $nodes,
             $edges,
@@ -137,14 +150,27 @@ final readonly class GraphReconciler
             // saveProject/createScan fall inside the read_existing window per the
             // phase-timing contract: they are cheap bookkeeping writes that
             // immediately precede the read, and splitting them into their own
-            // phase would add noise without profiling value.
+            // phase would add noise without profiling value. The HEAD itself was
+            // already resolved before the transaction opened; only the write
+            // of it happens here.
             $this->repository->saveProject(
                 $projectId,
                 $request->projectName,
                 $request->discovery->rootRealpath,
                 $request->projectConfig,
             );
-            $this->repository->createScan($scanId, $projectId, $request->mode, $scannerSetHash);
+            $this->repository->createScan(
+                $scanId,
+                $projectId,
+                $request->mode,
+                $scannerSetHash,
+                $gitHead,
+                $request->dirtyPaths?->encode(),
+                // The manifests this scan read but stores no files row for.
+                // Without them, editing composer.json changes what a scan
+                // would produce while the graph reports itself fresh.
+                UnitInputSet::of($request->discovery->units)->encode(),
+            );
             // What the graph holds now, so what this scan does not produce can be
             // deleted afterwards. Reading ids is what makes the write proportional
             // to the change: clearing the project first meant every row had to be

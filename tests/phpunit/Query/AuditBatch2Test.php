@@ -437,12 +437,14 @@ final class AuditBatch2Test extends KnossosTestCase
     }
 
     #[Group('query')]
-    public function testMtimeMovedBackwardsMakesTheGraphStale(): void
+    public function testCheckingOutAnOlderRevisionMakesTheGraphStaleEvenThoughItsMtimeMovesBackwards(): void
     {
         // `git checkout` of an older revision and `tar -x` both restore older
-        // mtimes; a strictly-greater comparison read that as unchanged.
+        // mtimes alongside older content. Drift is decided on the content
+        // hash, so the backward mtime move must not hide the reverted bytes.
         [$pdo, $projectId, $root] = $this->seedProjectWithFiles(['src/a.php']);
         try {
+            file_put_contents($root . '/src/a.php', "<?php\n// older revision\n");
             touch($root . '/src/a.php', time() - 86_400);
 
             $probe = (new StalenessProbe($pdo))->probe($projectId);

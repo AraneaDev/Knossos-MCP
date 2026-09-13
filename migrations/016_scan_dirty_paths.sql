@@ -1,0 +1,20 @@
+-- The tracked paths that differed from the recorded commit when the scan read
+-- them, as JSON: {"paths": [...], "complete": true|false}.
+--
+-- Without it the drift oracle cannot see a file that was scanned dirty and
+-- later restored to its committed content: `diff <head>` reports nothing
+-- (the file matches HEAD again), the untracked listing omits it (it is
+-- tracked), and the index cross-check omits it (it is in the index) — while
+-- the hash the scan stored is of content that no longer exists on disk. Such
+-- a path has to be a candidate on every probe, because its stored hash cannot
+-- be assumed to equal HEAD's.
+--
+-- `complete` is false when the dirty set was larger than the recorded bound,
+-- which the oracle treats the same way it treats this column being NULL.
+--
+-- Nullable: a gitless project has no commit to be dirty against, a scan taken
+-- before this migration recorded no such set, and neither may be backfilled
+-- with a guess. An unrecorded set means the oracle cannot rule out the
+-- restore above, so it declines rather than reporting a graph fresh it never
+-- verified.
+ALTER TABLE scans ADD COLUMN dirty_paths_json TEXT NULL;

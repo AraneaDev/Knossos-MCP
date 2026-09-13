@@ -182,10 +182,9 @@ final class BundleTest extends KnossosTestCase
             assertSame(true, is_int($fresh['age_seconds']));
             assertSame(0, $fresh['changed_files_since']);
 
-            // Touch a scanned file into the future so its mtime beats the stored mtime.
+            // Rewrite a scanned file's contents so its hash no longer matches the stored one.
             $target = $root . '/src/Architecture.php';
-            touch($target, time() + 3600);
-            clearstatcache();
+            file_put_contents($target, file_get_contents($target) . "\n// drift\n");
             $stale = (new \Knossos\Query\StalenessProbe($pdo, fn(): int => time() + 5))->probe($projectId);
             assertSame('stale', $stale['state']);
             assertContains('rescan', $stale['guidance']);

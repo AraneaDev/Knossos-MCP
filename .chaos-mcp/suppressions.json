@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 3,
   "entries": {
     "src/Mcp/Protocol/ProtocolNegotiator.php": [
       {
@@ -41,6 +41,60 @@
         "mutator": "IncrementInteger",
         "reason": "Unreachable: differs only when the '/' after '**' is the final character, but trim($pattern, '/') strips a trailing slash before translation, so no surviving pattern can reach that boundary.",
         "addedAt": 1785406210218
+      }
+    ],
+    "src/Query/Drift/WalkDriftOracle.php": [
+      {
+        "line": 101,
+        "mutator": "TrueValue",
+        "addedAt": 1789241856287,
+        "change": "$directories[dirname($absolute)][basename($absolute)] = true; → $directories[dirname($absolute)][basename($absolute)] = false;",
+        "reason": "$directories is a key-set consumed by array_diff_key and +; the value is never read, so true and false are indistinguishable",
+        "fingerprint": "ee206d5b4bd1"
+      },
+      {
+        "line": 170,
+        "mutator": "UnwrapLtrim",
+        "addedAt": 1789241856287,
+        "change": "$relative = ltrim(substr($absolute, strlen($root)), '/'); → $relative = substr($absolute, strlen($root));",
+        "reason": "IgnoreMatcher::matches() opens with trim(..., '/') so it strips leading slashes itself; the caller's ltrim is redundant defensive code and removing it changes no behaviour",
+        "fingerprint": "b822f07f221b"
+      }
+    ],
+    "src/Query/Drift/GitDriftOracle.php": [
+      {
+        "line": 343,
+        "mutator": "TrueValue",
+        "addedAt": 1789241948934,
+        "change": "$entries[$entry] = true; → $entries[$entry] = false;",
+        "reason": "$entries is a key-set consumed by array_diff_key and +; the value is never read, so true and false are indistinguishable",
+        "fingerprint": "64d1cdc5a14a"
+      },
+      {
+        "line": 255,
+        "mutator": "AssignCoalesce",
+        "addedAt": 1789241948934,
+        "change": "$scanned ??= ScannedPaths::forProject($this->pdo, $projectId); → $scanned = ScannedPaths::forProject($this->pdo, $projectId);",
+        "reason": "??= to = only rebuilds ScannedPaths per iteration; identical behaviour, a performance detail no assertion can or should pin",
+        "fingerprint": "4910d114c491"
+      },
+      {
+        "line": 341,
+        "mutator": "UnwrapRtrim",
+        "addedAt": 1789243121064,
+        "change": "foreach (explode(\"\\0\", rtrim($output, \"\\0\")) as $entry) { → foreach (explode(\"\\0\", $output) as $entry) {",
+        "reason": "the loop body already discards empty entries with $entry !== '', so the trailing empty element that rtrim removes is filtered anyway; with or without it the same key-set is built",
+        "fingerprint": "34da8517555b"
+      }
+    ],
+    "src/Query/Drift/FirstAnsweringDriftOracle.php": [
+      {
+        "line": 21,
+        "mutator": "UnwrapArrayValues",
+        "addedAt": 1789242142984,
+        "change": "$this->oracles = array_values($oracles); → $this->oracles = $oracles;",
+        "reason": "a variadic parameter is already a zero-indexed list, so array_values is a no-op and its removal cannot change behaviour",
+        "fingerprint": "cf7de059e8a5"
       }
     ]
   }
