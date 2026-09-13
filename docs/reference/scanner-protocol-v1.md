@@ -42,7 +42,7 @@ scanner manifest:
     "output_schema_version": "1.0",
     "languages": ["typescript", "javascript"],
     "file_extensions": ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
-    "capabilities": ["project_program", "partial_ast", "content_hash"]
+    "capabilities": ["project_program", "partial_ast", "content_hash", "input_hashes"]
 }
 ```
 
@@ -67,8 +67,11 @@ Two consequences for a worker author:
 - **Every integer in the result is a per-request count, and the core sums it
   across a language's requests.** `files_scanned`, and any counter of its own a
   worker adds, must report what THIS request did, not a running total: a worker
-  that returns a cumulative figure will be double-counted. Non-integer result
-  fields are not summed; the last request's value is the one reported.
+  that returns a cumulative figure will be double-counted. Other non-integer
+  result fields are not summed; the last request's value is the one reported.
+  `input_hashes` (below) is the exception: the core verifies it against
+  discovery on every request and then discards it, so it never reaches
+  `scanner_metadata` at all, summed or otherwise.
 - **Work that can be amortised across requests should be cached on the session.**
   The packaged TypeScript worker keeps its `ts.Program` cache on the scanner
   instance for exactly this reason, and the core in turn gives TypeScript a much
@@ -102,7 +105,8 @@ those. Derive that file's nodes, edges and local name resolution from exactly
 those bytes: if you read the same file a second time, for example to index its
 declarations for another file's imports, never use that second read for the
 file's own facts. Declarations read from other files to resolve an edge's
-target are outside what the hash covers.
+target are outside what the hash covers; the `input_hashes` field below closes
+that gap for a worker that declares it.
 
 A worker declaring the capability attaches the hash to every contribution for
 which it read bytes, including one that only reports a syntax error. It omits
@@ -122,6 +126,40 @@ purged by a version change.
 The byte-order mark is the usual way to get this wrong: a runtime that strips
 it while reading text hashes different bytes than discovery did, and every
 scan of such a file fails. Hash the buffer, then decode it.
+
+A result may also carry `input_hashes`: an object mapping every project file
+the worker read while deriving that request's facts to the lowercase SHA-256
+hex of the raw bytes read, or to `null` when a read was attempted and failed.
+This covers files the worker read for another file's sake, not only the file a
+contribution describes: a module index built by reading every module to
+resolve one file's imports, or a type checker that loads a whole program to
+check one of its files. A worker that sends it declares the `input_hashes`
+capability, separate from `content_hash` so a third-party worker is
+unaffected.
+
+The core compares every path the result names against what discovery recorded,
+the same as it does for `content_hash`. A path discovery does not track, such
+as a dependency outside the scanned tree, is ignored: freshness never covered
+it. A hash that differs from discovery's, or a `null` for a path discovery
+does track, fails the scan with `KNOSSOS_SCAN_SNAPSHOT_CHANGED`, the same as a
+`content_hash` mismatch. A worker that declares the capability but omits the
+field, or sends one that is not an object keyed by path, is refused as
+`WORKER_RESPONSE_INVALID` and degrades its language for the scan, whether or
+not the request read anything: an empty result still carries `input_hashes`
+as `{}`.
+
+One decoding limitation to know about: an object keyed only by consecutive
+integers starting at `"0"` is indistinguishable on the wire from a JSON array,
+and decodes to one, so it is refused as malformed rather than trusted
+unverified. A worker that reads root-level project files literally named `0`,
+`1`, and so on, and nothing else, in one request degrades its language for
+that reason alone. In practice this only matters for a project with files
+named that way.
+
+`input_hashes` is evidence for this check alone. The core strips it from the
+result before folding the rest into `scanner_metadata`, so it never reaches a
+scan report and is never summed or otherwise merged across a language's
+requests.
 
 Required fact properties are defined by the DTOs under
 `src/Scanner/Protocol`. Paths are project-relative, source lines are one-based,

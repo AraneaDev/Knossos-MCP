@@ -59,7 +59,13 @@ while (($line = fgets(STDIN)) !== false) {
         if (($request['params']['files'] ?? null) === []) {
             // Echoed back so a test can observe which ids the host cancelled
             // without a discover round trip, which the protocol no longer has.
-            respond($id, ['count' => 0, 'cancelled' => $cancelled]);
+            $result = ['count' => 0, 'cancelled' => $cancelled];
+            if (str_starts_with($mode, 'inputs_') && $mode !== 'inputs_missing') {
+                // A declaring worker's result carries the field on every
+                // request, empty when a request read nothing.
+                $result['input_hashes'] = (object) [];
+            }
+            respond($id, $result);
             continue;
         }
         if ($mode === 'blocked_scan') {
