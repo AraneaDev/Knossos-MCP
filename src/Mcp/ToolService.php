@@ -34,9 +34,10 @@ final readonly class ToolService
 
     public function __construct(
         // The interface rather than ProjectScanService: scan() is the only
-        // thing called on it, and taking the interface is what lets a test
-        // drive the transport's handling of a scan that fails a particular way
-        // without standing up a real worker pool to fail that way for real.
+        // thing ever called on it, and WatchService and WatchScanAttempt
+        // already take ProjectScanner, so this was the last consumer naming
+        // the implementation for no reason. A test injecting a scanner that
+        // fails a particular way follows from that; it is not the reason.
         private ProjectScanner $scanner,
         private ArchitectureQueryService $queries,
         private DatabaseMaintenanceService $maintenance,

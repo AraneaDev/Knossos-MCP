@@ -39,10 +39,12 @@ final readonly class ScanSnapshotValidator
      *
      * Hashing goes through {@see FileFingerprint}, the same class the discovery
      * walk fingerprints with, so the two values are comparable by construction
-     * rather than because two hand-written implementations happen to agree. Only
-     * the content hash is compared; the Git blob id the fingerprint also carries
-     * is about a commit, not about this read, so the object format is irrelevant
-     * here and the default is left alone.
+     * rather than because two hand-written implementations happen to agree.
+     * Through its content-hash-only entry point, because that is the whole
+     * question here: the line count and the Git blob id
+     * {@see FileFingerprint::compute()} also derives describe a file and a
+     * commit, and neither is compared, so computing them would be work this
+     * pass pays for on every file it re-reads and then throws away.
      *
      * Fails on the first offending file rather than collecting them all: the
      * scan is discarded either way, and one named path is what a reader acts on.
@@ -54,8 +56,8 @@ final readonly class ScanSnapshotValidator
     public function validate(array $files): void
     {
         foreach ($files as $file) {
-            $fingerprint = FileFingerprint::compute($file->absolutePath);
-            if ($fingerprint === null) {
+            $contentHash = FileFingerprint::contentHashOf($file->absolutePath);
+            if ($contentHash === null) {
                 // Two reasons a re-read fails, kept apart because they lead an
                 // operator somewhere different. Which one it is comes from a
                 // later look at the filesystem than the failed read, so it is
@@ -64,7 +66,7 @@ final readonly class ScanSnapshotValidator
                     ? ScanSnapshotChangedException::unreadable($file->relativePath)
                     : ScanSnapshotChangedException::disappeared($file->relativePath);
             }
-            if ($fingerprint->contentHash !== $file->contentHash) {
+            if ($contentHash !== $file->contentHash) {
                 throw ScanSnapshotChangedException::contentChanged($file->relativePath);
             }
         }

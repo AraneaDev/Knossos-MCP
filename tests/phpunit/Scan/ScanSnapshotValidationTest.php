@@ -18,13 +18,19 @@ use PHPUnit\Framework\Attributes\Group;
  * discovery hashed.
  *
  * The end-to-end tests drive a real rewrite through the cancellation token's
- * poll closure, which the scan consults once before discovery walks the tree
- * and again after it, immediately before the workers run. A closure that writes
- * from the second poll onward therefore lands its write inside the exact window
- * the guard exists for: discovery has hashed the old content, the workers read
- * the new content. Nothing in the test reaches into the validator to arrange
- * the mismatch — the file on disk genuinely differs from the recorded hash, so
- * a suite without the guard completes the scan and these tests fail.
+ * poll closure. Nothing in them reaches into the validator to arrange the
+ * mismatch — the file on disk genuinely differs from the recorded hash, so a
+ * suite without the guard completes the scan and these tests fail.
+ *
+ * What they depend on, precisely, so a later change to the pipeline can see
+ * what it is breaking: `ScanPlanner::prepare()` is not handed the token, so no
+ * poll happens while discovery walks and hashes the tree. The scan's first poll
+ * is therefore the checkpoint before prepare() and its second is the checkpoint
+ * after it, which is the gap between discovery's hash and the workers' own read
+ * of the same paths. A closure that writes from the second poll onward lands
+ * its write in exactly that gap. Add a cancellation checkpoint inside discovery
+ * and these two tests break — loudly, by no longer producing a mismatch, rather
+ * than by passing hollowly — and the closure then has to skip one poll more.
  */
 final class ScanSnapshotValidationTest extends KnossosTestCase
 {
@@ -249,8 +255,9 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
     /**
      * A token that rewrites the file from its second consultation onward.
      *
-     * The scan polls once before discovery and again after it, so skipping the
-     * first poll is what puts the write between discovery's hash and the
+     * The scan polls once before prepare() and again after it, and nothing
+     * polls in between because discovery is never handed the token, so skipping
+     * the first poll is what puts the write between discovery's hash and the
      * workers' read. The same bytes are written on every later poll, which makes
      * the closure idempotent however often the pipeline consults the token.
      */

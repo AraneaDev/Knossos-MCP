@@ -30,7 +30,12 @@ final class ProjectScanServiceContractTest extends KnossosTestCase
         try {
             $stages = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full')->data['metrics']['stages_ms'];
 
-            foreach (['configuration', 'discovery', 'planning', 'analysis', 'reconciliation'] as $stage) {
+            // 'snapshot_validation' is in the list for the same reason the rest
+            // are, with one extra edge: it is the only stage whose work is pure
+            // verification, so dropping it would cost no visible output and
+            // leave the scan reporting the same graph it always did while no
+            // longer proving that graph came from the bytes it hashed.
+            foreach (['configuration', 'discovery', 'planning', 'snapshot_validation', 'analysis', 'reconciliation'] as $stage) {
                 assertSame(true, array_key_exists($stage, $stages), sprintf('%s is not timed.', $stage));
             }
             foreach (['prepare', 'archive_snapshot', 'read_existing', 'save_nodes', 'prune', 'commit'] as $phase) {

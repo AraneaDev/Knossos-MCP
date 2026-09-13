@@ -211,6 +211,43 @@ final class FileFingerprintTest extends TestCase
         assertSame(42, $fingerprint->lineCount);
     }
 
+    // ----- contentHashOf() -----
+
+    /**
+     * The cheap entry point must agree with the full fingerprint on every
+     * input, because a scan compares a hash from one against a hash from the
+     * other: discovery records `compute()`'s (or `fromContents()`'s) value and
+     * the post-worker snapshot check re-reads with this one. A divergence here
+     * would not read as a bug, it would read as the tree having changed, and
+     * every scan would fail.
+     *
+     * Exercised over the shapes that have caught divergence before: empty,
+     * unterminated, CRLF, and bytes that are not valid UTF-8.
+     */
+    public function testItAgreesWithTheFullFingerprintOnEveryShapeOfFile(): void
+    {
+        foreach (['', "a", "a\n", "a\r\nb\r\n", "\x00\xff\xfe binary \x01"] as $contents) {
+            $path = $this->writeTempFile($contents);
+
+            $fingerprint = FileFingerprint::compute($path);
+
+            $this->assertNotNull($fingerprint);
+            assertSame($fingerprint->contentHash, FileFingerprint::contentHashOf($path));
+            assertSame(FileFingerprint::fromContents($contents)->contentHash, FileFingerprint::contentHashOf($path));
+        }
+    }
+
+    /**
+     * Null is "these bytes could not be read", never "they matched". The
+     * snapshot check treats it as a reason to abort a scan, so a false hash or
+     * a thrown warning here would either hide a real fault or fail the suite's
+     * fail-on-warning contract.
+     */
+    public function testItReturnsNullForAPathItCannotRead(): void
+    {
+        assertSame(null, FileFingerprint::contentHashOf(sys_get_temp_dir() . '/knossos-absent-' . bin2hex(random_bytes(6))));
+    }
+
     public function testClassIsFinalAndReadonly(): void
     {
         $reflection = new \ReflectionClass(FileFingerprint::class);
