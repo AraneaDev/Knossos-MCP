@@ -24,11 +24,16 @@ namespace Knossos\Discovery;
 interface FileContentReader
 {
     /**
-     * The whole file, or null when it cannot be read.
+     * The file, bounded by $maxBytes, or the reason there are no bytes to use.
      *
-     * Null rather than an exception or an empty string: an unreadable manifest
-     * is a diagnostic and a dropped unit, not a failed scan, and an empty
-     * string is a legitimate file this must not be confused with.
+     * The bound is an argument rather than an assumption about the caller
+     * because it is the only thing standing between this and an unbounded
+     * allocation: discovery checks a file's size before asking, and a file that
+     * grows between that check and this read is read whole unless the limit
+     * travels with the request. A result rather than a nullable string for the
+     * reason {@see FileContent} gives: unreadable and oversized are different
+     * answers that deserve different diagnostics, and an empty file is a
+     * legitimate third thing neither may be confused with.
      */
-    public function read(string $absolutePath): ?string;
+    public function read(string $absolutePath, int $maxBytes): FileContent;
 }

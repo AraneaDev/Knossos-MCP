@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Discovery;
 
 use Knossos\Discovery\DiscoveryConfig;
+use Knossos\Discovery\FileContent;
 use Knossos\Discovery\FileContentReader;
 use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Discovery\ProjectUnit;
@@ -179,11 +180,11 @@ final class UnitReadConsistencyTest extends KnossosTestCase
             public int $reads = 0;
 
             /** Answers the scanned bytes and records that it was asked. */
-            public function read(string $absolutePath): ?string
+            public function read(string $absolutePath, int $maxBytes): FileContent
             {
                 ++$this->reads;
 
-                return UnitReadConsistencyTest::asRead();
+                return FileContent::of(UnitReadConsistencyTest::asRead());
             }
         };
     }
@@ -193,9 +194,9 @@ final class UnitReadConsistencyTest extends KnossosTestCase
     {
         return new class implements FileContentReader {
             /** Fails the way an unreadable file does. */
-            public function read(string $absolutePath): ?string
+            public function read(string $absolutePath, int $maxBytes): FileContent
             {
-                return null;
+                return FileContent::unreadable();
             }
         };
     }

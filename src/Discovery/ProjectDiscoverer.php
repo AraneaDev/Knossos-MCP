@@ -155,9 +155,28 @@ final readonly class ProjectDiscoverer
                 // left the unit's hash describing bytes its metadata never came
                 // from. A path that is both a manifest and a source file gets
                 // its `files` row hash from the same buffer for the same
-                // reason. Bounded: the size check above has already rejected
-                // anything over maxFileBytes.
-                $buffer = $unitKind === null ? null : $this->contents->read($absolute);
+                // reason.
+                //
+                // The limit goes with the request rather than being taken as
+                // already enforced by the size check above: that check and this
+                // read are two moments, and a file that grows between them is
+                // over the limit by the time the bytes are asked for. Reading
+                // it whole on the strength of a stale size is an unbounded
+                // allocation driven by the tree being scanned.
+                $read = $unitKind === null ? null : $this->contents->read($absolute, $this->config->maxFileBytes);
+                if ($read !== null && $read->oversized) {
+                    // The same diagnostic a file already too large when its
+                    // size was checked gets: it is the same fact, learned one
+                    // moment later, and a caller acts on it the same way.
+                    $diagnostics[] = new DiscoveryDiagnostic(
+                        'warning',
+                        'DISCOVERY_FILE_TOO_LARGE',
+                        sprintf('File exceeds the %d-byte discovery limit.', $this->config->maxFileBytes),
+                        $relative,
+                    );
+                    continue;
+                }
+                $buffer = $read?->bytes;
                 $fingerprint = $buffer === null
                     ? FileFingerprint::compute($absolute, $this->config->gitObjectHash)
                     : FileFingerprint::fromContents($buffer, $this->config->gitObjectHash);
