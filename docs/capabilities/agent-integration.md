@@ -22,11 +22,14 @@ per-project resources at `knossos://<project_id>/summary`, `/boundaries`, and
 
 ## Refreshing a stale graph without asking twice
 
-`refresh_if_stale` is accepted by every read tool, and it defaults to
+Most read tools accept `refresh_if_stale`, and where they do it defaults to
 `true`, so a call that lands on a stale graph rescans before
 answering instead of leaving you to read a staleness banner, call
 `scan_project`, and ask again: the round trip a session would otherwise spend
-discovering it needed a fresh graph.
+discovering it needed a fresh graph. A tool's entry in
+[the MCP tool reference](../reference/mcp-tools.md) says whether it takes the
+argument. `architecture_context` does not, and passing it there is rejected as
+an unknown argument rather than ignored.
 
 The rescan only runs when it is cheap enough to fit inside the call you are
 already waiting on; a project whose own scan history says it would cost more
