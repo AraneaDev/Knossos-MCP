@@ -97,6 +97,13 @@ the facts were then parsed from content no stored hash describes. That catches
 a file that changes and changes back while the scan runs, which a later re-read
 cannot see.
 
+The hash covers the bytes a contribution's own file was parsed from, and only
+those. Derive that file's nodes, edges and local name resolution from exactly
+those bytes: if you read the same file a second time, for example to index its
+declarations for another file's imports, never use that second read for the
+file's own facts. Declarations read from other files to resolve an edge's
+target are outside what the hash covers.
+
 A worker declaring the capability attaches the hash to every contribution for
 which it read bytes, including one that only reports a syntax error. It omits
 the hash only when the read itself failed, and such a contribution must carry

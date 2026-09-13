@@ -224,16 +224,29 @@ class ProjectModuleIndex:
         path = self.module_file(module)
         if path is not None:
             try:
-                tree = ast.parse(path.read_bytes())
-                for child in tree.body:
-                    if isinstance(child, ast.ClassDef):
-                        declarations[child.name] = ref("class", f"{module}.{child.name}")
-                    elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        declarations[child.name] = ref("function", f"{module}.{child.name}")
+                declarations = top_level_declarations(ast.parse(path.read_bytes()), module)
             except (SyntaxError, ValueError, OSError, RecursionError):
                 declarations = {}
         self._cache[module] = declarations
         return declarations
+
+    def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> None:
+        """Make a scanned file's own declarations come from the tree just parsed.
+
+        ``module_declarations`` reads a module's file on its own, so an earlier
+        file in the batch that imports this one may have cached declarations
+        from bytes other than the ones this scan hashed. Overwriting the entry
+        with the hashed tree ties the file's own local resolution to its
+        ``content_hash``. The entry is only replaced when the module id resolves
+        to this very file: for the loser of a ``mod.py``/``mod/__init__.py``
+        collision the id names the package, and seeding it from the module file
+        would make every later importer's targets depend on batch order.
+        """
+        module = self.module_for(relative)
+        owner = self.module_file(module)
+        if owner is None or owner.resolve() != absolute:
+            return
+        self._cache[module] = top_level_declarations(tree, module)
 
     def collides(self, absolute: Path, is_package: bool) -> bool:
         """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id."""
@@ -245,6 +258,18 @@ class ProjectModuleIndex:
             return competitor.is_file()
         except OSError:
             return False
+
+
+def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
+    """Map each top-level class and function name in ``tree`` to its symbol reference."""
+
+    declarations: dict[str, str] = {}
+    for child in tree.body:
+        if isinstance(child, ast.ClassDef):
+            declarations[child.name] = ref("class", f"{module}.{child.name}")
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            declarations[child.name] = ref("function", f"{module}.{child.name}")
+    return declarations
 
 
 def ref(kind: str, canonical: str) -> str:
@@ -1130,6 +1155,7 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Ca
     shebang = starts_with_shebang(source)
     del source
     try:
+        index.adopt_parsed(absolute, relative, tree)
         collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
         contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
     except RecursionError as error:

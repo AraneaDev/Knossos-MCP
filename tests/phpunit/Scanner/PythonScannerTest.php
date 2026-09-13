@@ -468,4 +468,50 @@ PYTHON);
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * A scanned file seeds the module index with its own declarations, so its
+     * local references resolve against the bytes it hashed. The loser of a
+     * `mod.py`/`mod/__init__.py` collision must not seed the shared id: the
+     * package owns it, and an importer's targets would otherwise depend on
+     * whether the module file happened to share its batch.
+     */
+    #[Group('python-scanner')]
+    public function testACollidingModuleFileDoesNotSeedTheIdThePackageOwns(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/mod', 0o777, true);
+        file_put_contents($root . '/mod.py', "class OnlyInModule:\n    pass\n");
+        file_put_contents($root . '/mod/__init__.py', '');
+        file_put_contents($root . '/user.py', "from mod import OnlyInModule\n\n\nclass Local(OnlyInModule):\n    pass\n");
+        try {
+            $client = $this->pythonWorkerClient();
+            $targets = function (array $files) use ($client, $root): array {
+                foreach ($client->scan(['root' => $root, 'files' => $files]) as $contribution) {
+                    if ($contribution->ownerKey === 'knossos.python:file:user.py') {
+                        return array_map(
+                            fn(EdgeFact $edge): string => $edge->kind . ' ' . $edge->targetReference,
+                            array_values(array_filter(
+                                $contribution->edges,
+                                fn(EdgeFact $edge): bool => $edge->sourceReference === 'py:class:user.Local',
+                            )),
+                        );
+                    }
+                }
+
+                return [];
+            };
+            try {
+                $alone = $targets(['user.py']);
+                $together = $targets(['mod.py', 'user.py']);
+            } finally {
+                $client->shutdown();
+            }
+
+            assertSame(['extends py:external_symbol:mod.OnlyInModule'], $alone);
+            assertSame($alone, $together);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }
