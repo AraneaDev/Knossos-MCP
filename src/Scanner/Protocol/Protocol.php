@@ -26,6 +26,14 @@ final class Protocol
      */
     public const CAPABILITY_CONTENT_HASH = 'content_hash';
 
+    /**
+     * A worker declaring this reports, on every scan result, an `input_hashes`
+     * object: the SHA-256 of the raw bytes of every other project file it read
+     * to derive facts, or null for a read of such a file that failed. The core
+     * refuses facts resolved against bytes discovery did not hash.
+     */
+    public const CAPABILITY_INPUT_HASHES = 'input_hashes';
+
     public const METHOD_INITIALIZE = 'initialize';
     public const METHOD_SCAN = 'scan';
     public const METHOD_CANCEL = 'cancel';

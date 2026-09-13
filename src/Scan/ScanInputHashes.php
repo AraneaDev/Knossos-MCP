@@ -1,0 +1,103 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Knossos\Scan;
+
+use InvalidArgumentException;
+use Knossos\Scanner\Protocol\Protocol;
+use Knossos\Scanner\Protocol\RelativePath;
+use Knossos\Scanner\Protocol\ScannerManifest;
+use Knossos\Scanner\Worker\WorkerException;
+
+/**
+ * Checks the files a worker read for another file's sake against what
+ * discovery hashed.
+ *
+ * A contribution's own `content_hash` proves the file it describes was parsed
+ * from the bytes discovery recorded. It proves nothing about the other files the
+ * worker read to get there: Python resolves imports against a module index it
+ * built by reading every module, and the TypeScript checker reads whole programs
+ * to type one file. When one of those files is rewritten while the worker reads
+ * it and restored before the scan re-checks it, every requested file still
+ * hashes correctly and disk still matches the record, yet the edges resolved
+ * against the rewritten bytes describe a tree that never existed. The graph is
+ * then committed and reported `fresh`, which is the outcome this subsystem
+ * exists to prevent.
+ *
+ * So each scan result may carry `input_hashes`, the hash of every such read, and
+ * they are compared here before the request's contributions are kept. The same
+ * stance as {@see ContributionCacheService}'s per-contribution check holds: a
+ * hash is evidence of a changed tree whoever sends it, and a hash that cannot be
+ * verified is refused rather than trusted. A path discovery never hashed, such as
+ * a dependency outside the scanned tree, has no recorded content to disagree with
+ * and is ignored.
+ */
+final class ScanInputHashes
+{
+    private const FIELD = 'input_hashes';
+
+    private function __construct() {}
+
+    /**
+     * Verify one scan request's `input_hashes` against discovery.
+     *
+     * @param array<string, mixed> $result the request's final result
+     * @param array<string, object> $discoveredByPath every file the scan discovered, keyed by relative path
+     * @throws WorkerException when a declaring worker omitted the field, it is malformed, or a hash cannot be verified
+     * @throws ScanSnapshotChangedException when a discovered file was read from other bytes, or could not be read
+     */
+    public static function verify(array $result, ScannerManifest $manifest, array $discoveredByPath): void
+    {
+        if (!array_key_exists(self::FIELD, $result)) {
+            if (in_array(Protocol::CAPABILITY_INPUT_HASHES, $manifest->capabilities, true)) {
+                throw self::invalid($manifest, sprintf('declares the %s capability but its scan result carries no %s', Protocol::CAPABILITY_INPUT_HASHES, self::FIELD));
+            }
+
+            return;
+        }
+        $inputHashes = $result[self::FIELD];
+        // `{}` decodes to an empty array, as does `[]`; both say nothing else
+        // was read. Any other list is not the object the protocol defines.
+        if (!is_array($inputHashes) || ($inputHashes !== [] && array_is_list($inputHashes))) {
+            throw self::invalid($manifest, sprintf('sent %s that is not an object; it must be an object keyed by path', self::FIELD));
+        }
+        // Shape first, for the whole map, so a malformed entry is reported as
+        // such even when an earlier one would have failed the scan.
+        foreach ($inputHashes as $path => $hash) {
+            if (!is_string($path)) {
+                throw self::invalid($manifest, sprintf('sent a %s key that is not a project-relative path', self::FIELD));
+            }
+            try {
+                RelativePath::assertValid($path, self::FIELD . ' key ' . $path);
+            } catch (InvalidArgumentException $error) {
+                throw self::invalid($manifest, 'sent ' . lcfirst($error->getMessage()));
+            }
+            if ($hash !== null && (!is_string($hash) || preg_match('/\A[0-9a-f]{64}\z/', $hash) !== 1)) {
+                throw self::invalid($manifest, sprintf('sent %s for %s that is neither null nor a lowercase SHA-256 hex digest', self::FIELD, $path));
+            }
+        }
+        foreach ($inputHashes as $path => $hash) {
+            $file = $discoveredByPath[$path] ?? null;
+            if ($file === null) {
+                continue;
+            }
+            if ($hash === null) {
+                throw ScanSnapshotChangedException::inputUnreadable($path);
+            }
+            $expected = $file->contentHash ?? null;
+            if (!is_string($expected)) {
+                throw self::invalid($manifest, sprintf('reported reading %s, but discovery recorded no hash for it, so the read cannot be verified', $path));
+            }
+            if (!hash_equals($expected, $hash)) {
+                throw ScanSnapshotChangedException::inputReadDifferently($path);
+            }
+        }
+    }
+
+    /** A malformed or unverifiable result, which costs the worker's language rather than the scan. */
+    private static function invalid(ScannerManifest $manifest, string $detail): WorkerException
+    {
+        return new WorkerException('WORKER_RESPONSE_INVALID', sprintf('%s %s.', $manifest->id, $detail));
+    }
+}

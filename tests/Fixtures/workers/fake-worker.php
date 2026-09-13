@@ -46,7 +46,11 @@ while (($line = fgets(STDIN)) !== false) {
 
         respond($id, manifest(
             $mode === 'mismatch' ? '999.0' : '1.0',
-            str_starts_with($mode, 'hash_') ? ['partial_ast', 'content_hash'] : ['partial_ast'],
+            match (true) {
+                str_starts_with($mode, 'inputs_') => ['partial_ast', 'content_hash', 'input_hashes'],
+                str_starts_with($mode, 'hash_') => ['partial_ast', 'content_hash'],
+                default => ['partial_ast'],
+            },
         ));
         continue;
     }
@@ -158,6 +162,42 @@ while (($line = fgets(STDIN)) !== false) {
                 notifyContribution($contribution);
             }
             respond($id, ['count' => count($request['params']['files'] ?? [])]);
+            continue;
+        }
+        if (str_starts_with($mode, 'inputs_')) {
+            // Every requested file is parsed honestly; what differs per mode is
+            // the report on src/Other.ts, a file read only to resolve the
+            // requested files' facts, as a module index or a type checker does.
+            $root = (string) ($request['params']['root'] ?? '');
+            $requested = array_map('strval', $request['params']['files'] ?? []);
+            $inputs = [];
+            foreach ($requested as $relativePath) {
+                $contribution = fileContribution('knossos.fake:file:' . $relativePath, $relativePath);
+                $contribution['content_hash'] = hash('sha256', (string) file_get_contents($root . '/' . $relativePath));
+                notifyContribution($contribution);
+                $inputs[$relativePath] = $contribution['content_hash'];
+            }
+            $other = $root . '/src/Other.ts';
+            if ($mode === 'inputs_honest' && is_file($other)) {
+                $inputs['src/Other.ts'] = hash('sha256', (string) file_get_contents($other));
+            } elseif ($mode === 'inputs_swap') {
+                // The same change-then-restore as hash_swap, but around a file
+                // this request only read for the others' sake.
+                $original = (string) file_get_contents($other);
+                file_put_contents($other, $original . "\n// swapped while the worker read it\n");
+                $read = (string) file_get_contents($other);
+                file_put_contents($other, $original);
+                $inputs['src/Other.ts'] = hash('sha256', $read);
+            } elseif ($mode === 'inputs_unreadable') {
+                $inputs['src/Other.ts'] = null;
+            } elseif ($mode === 'inputs_outside') {
+                $inputs['node_modules/dep/index.d.ts'] = hash('sha256', 'x');
+            }
+            $result = ['count' => count($requested)];
+            if ($mode !== 'inputs_missing') {
+                $result['input_hashes'] = (object) $inputs;
+            }
+            respond($id, $result);
             continue;
         }
         if (str_starts_with($mode, 'per_file')) {

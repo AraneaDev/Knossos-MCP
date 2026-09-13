@@ -89,4 +89,37 @@ final class ScanSnapshotChangedException extends RuntimeException
             $relativePath,
         ));
     }
+
+    /**
+     * A worker reported reading another file, to resolve facts about the files
+     * it was asked for, from bytes whose hash is not the one discovery recorded.
+     *
+     * The facts at fault belong to other files, which is why the per-file hash
+     * cannot show it: each requested file was parsed from the right bytes, but
+     * what they were resolved against was not. Named after the read rather than
+     * the file's own facts so the reader looks at the right file.
+     */
+    public static function inputReadDifferently(string $relativePath): self
+    {
+        return new self(sprintf(
+            'Scan aborted: %s was read from different content than the scan hashed while resolving other files, so facts resolved against it match no recorded hash. Rerun the scan once the tree has settled.',
+            $relativePath,
+        ));
+    }
+
+    /**
+     * A worker tried to read a discovered file while resolving other files'
+     * facts, and the read failed.
+     *
+     * Discovery read it moments earlier, so a failure now means the file was
+     * removed or its permissions changed mid-scan, and the facts resolved
+     * without it describe a tree that existed at no point.
+     */
+    public static function inputUnreadable(string $relativePath): self
+    {
+        return new self(sprintf(
+            'Scan aborted: %s could not be read while the scan resolved other files, so facts resolved against it cannot be verified. Check the path is still a readable file, then rerun the scan.',
+            $relativePath,
+        ));
+    }
 }

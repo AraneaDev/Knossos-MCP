@@ -165,6 +165,12 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
+        // Every discovered file, not only this language's: a worker may read a
+        // file another language claims, and that read is checked all the same.
+        $discoveredByPath = [];
+        foreach ($plan->preparation->discovery->files as $discoveredFile) {
+            $discoveredByPath[$discoveredFile->relativePath] = $discoveredFile;
+        }
         $full = $descriptor->scanBatchSourceBytes;
         $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0);
         while ($pending !== []) {
@@ -210,10 +216,17 @@ final readonly class LanguageScanRunner
                 ];
                 continue;
             }
+            $batchResult = $client->lastScanResult();
+            // Before this batch's contributions are kept: facts resolved against
+            // another file's bytes must match what discovery hashed for it too.
+            ScanInputHashes::verify($batchResult, $manifest, $discoveredByPath);
+            // Evidence for this check only, not a statistic: kept out of the
+            // scanner metadata a scan report carries.
+            unset($batchResult['input_hashes']);
             foreach ($received as $contribution) {
                 $scanned[] = $contribution;
             }
-            $metadata = self::mergeScanResult($metadata, $client->lastScanResult());
+            $metadata = self::mergeScanResult($metadata, $batchResult);
             // Inside the loop so a cancelled scan stops at the next batch
             // boundary instead of running the language to completion.
             $cancellation->throwIfCancelled();
