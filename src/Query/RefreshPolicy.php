@@ -40,11 +40,11 @@ final readonly class RefreshPolicy
      * Whether to rescan before answering, given what drifted.
      *
      * Takes the three counts rather than one total because the historical cap
-     * below depends on their composition: a change set of additions describes
-     * a scan larger than the last one, and the last one's duration is then not
-     * an upper bound on anything. A caller that knows only a total must
-     * present it as additions, which is the uncapped and therefore
-     * conservative side.
+     * below depends on their composition: additions describe a scan larger
+     * than the last one and changes describe files whose current cost nothing
+     * measured, so in neither case is the last scan's duration an upper bound
+     * on anything. A caller that knows only a total must present it as
+     * additions, which is the uncapped and therefore conservative side.
      *
      * Wrong in the direction of allowing a rescan holds a query open past the
      * client's own timeout, which returns the caller nothing at all — worse
@@ -108,24 +108,37 @@ final readonly class RefreshPolicy
      * cap actually holds.
      *
      * It holds only when the rescan is a subset of the scan it is compared
-     * against: no rescan of part of a graph can be dearer than building all of
-     * it. Additions break that. A project of ten files that has gained two
-     * thousand is not rescanning a subset of anything — the next scan is far
-     * larger than the last — and capping there shrank a correctly large
-     * estimate down to the cost of the smaller old graph, which is how an
-     * over-budget refresh was allowed to run inside a query the caller was
-     * waiting on.
+     * against, in work as well as in file count: no rescan of part of a graph
+     * can be dearer than building all of it, provided the parts cost what they
+     * cost last time.
      *
-     * So the cap applies only to a change set with no additions in it. Where
-     * there are additions the uncapped estimate stands, which is the
-     * conservative side: too large an estimate costs a decline and a warning,
-     * too small a one costs the caller their whole answer.
+     * Additions break that outright. A project of ten files that has gained
+     * two thousand is not rescanning a subset of anything, and capping there
+     * shrank a correctly large estimate down to the cost of the smaller old
+     * graph, which is how an over-budget refresh was allowed to run inside a
+     * query the caller was waiting on.
+     *
+     * Changed files break it more quietly and in exactly the same way. The
+     * file count is a subset, but the cost is unknown: a file that has doubled
+     * in size, or gained the construct its analyzer is slowest on, costs more
+     * to scan than the average the old duration was divided into, and nothing
+     * measured it. The cap then asserts an upper bound derived from bytes that
+     * no longer exist — and it does not even hold for a rescan costing exactly
+     * the old scan, because the rescan also pays the fixed overhead the cap
+     * discards. Either way the refresh runs over budget while the estimate
+     * says it did not.
+     *
+     * So the cap applies only to a change set of deletions alone, where
+     * nothing has to be read at all. Everywhere else the uncapped estimate
+     * stands, which is the conservative side: too large an estimate costs a
+     * decline and a warning, too small a one costs the caller their whole
+     * answer.
      *
      * @param array{total: float, perFile: float} $cost
      */
     private function cap(array $cost, DriftCounts $drift, float $estimate): float
     {
-        return $drift->added > 0 ? $estimate : min($cost['total'], $estimate);
+        return $drift->added > 0 || $drift->changed > 0 ? $estimate : min($cost['total'], $estimate);
     }
 
     /**

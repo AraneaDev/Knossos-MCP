@@ -209,8 +209,8 @@ final readonly class ToolService
         //
         // Passed on split three ways rather than summed: the policy caps its
         // estimate at the previous full scan's duration, and that cap only
-        // holds for a change set that has no additions in it. A total alone
-        // would hide the difference.
+        // holds for a change set of deletions alone. A total alone would hide
+        // the difference.
         $drift = isset($staleness['changed_files_since'])
             ? new \Knossos\Query\Drift\DriftCounts(
                 (int) $staleness['changed_files_since'],

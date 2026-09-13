@@ -100,15 +100,24 @@ final class RefreshPolicyTest extends KnossosTestCase
         self::assertFalse($policy->decide($projectId, new DriftCounts(460, 0, 0))->refresh, '4600 ms of files plus the same overhead is over it.');
     }
 
-    /** No rescan of part of a graph can cost more than the scan that built all of it, so the estimate is capped there. */
+    /**
+     * A drift of deletions alone keeps the historical cap, which is the whole
+     * reason the cap exists: a large drift on a cheap project must not be
+     * modelled out of reach when the rescan really is bounded by the scan it
+     * is compared against.
+     *
+     * Deletions are where that bound genuinely holds. Nothing is read, so
+     * nothing can have grown since it was last read, and what is left to scan
+     * is strictly less than what the 4800 ms already paid for.
+     */
     #[Group('query')]
-    public function testTheEstimateIsCappedAtWhatAFullScanCost(): void
+    public function testADeletionOnlyDriftKeepsTheHistoricalCap(): void
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 4800, files: 1000);
 
         self::assertTrue(
-            (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(1000, 0, 0))->refresh,
-            'Every file drifted, so the rescan is the full scan, which took 4800 ms and fits.',
+            (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(0, 0, 1000))->refresh,
+            'Nothing has to be read, so the rescan cannot be dearer than the 4800 ms scan it is a subset of.',
         );
     }
 
@@ -178,20 +187,27 @@ final class RefreshPolicyTest extends KnossosTestCase
     }
 
     /**
-     * Deletions and changes keep the cap, which is the whole reason it
-     * exists: a large drift on a cheap project must not be modelled out of
-     * reach when the rescan really is a subset of the scan being compared
-     * against.
+     * A changed file lifts the cap the way an addition does, because the
+     * previous scan's duration says what those files cost when they held
+     * different bytes.
+     *
+     * The file count is a subset and the cost is not: a changed file that has
+     * grown, or gained the construct its analyzer is slowest on, is dearer
+     * than the average the old duration divides into, and nothing has
+     * measured it. Even setting that aside the cap is not an upper bound, as
+     * this fixture shows: a rescan costing exactly the old 4800 ms still pays
+     * the 500 ms of fixed overhead the cap discards, so the capped estimate
+     * of 4800 waved a 5300 ms refresh through a 5000 ms budget.
      */
     #[Group('query')]
-    public function testDeletionsAndChangesKeepTheHistoricalCap(): void
+    public function testAChangedFileLiftsTheHistoricalCapTheWayAnAdditionDoes(): void
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 4800, files: 1000);
 
-        self::assertTrue(
-            (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(600, 0, 400))->refresh,
-            'Nothing was added, so the rescan cannot be dearer than the 4800 ms full scan it is a subset of.',
-        );
+        $decision = (new RefreshPolicy($pdo))->decide($projectId, new DriftCounts(600, 0, 400));
+
+        self::assertFalse($decision->refresh, 'The old duration bounds a rescan of bytes that are no longer there.');
+        self::assertStringContainsString('5300 ms', (string) $decision->reason, 'And the caller is told the uncapped estimate it was actually declined on.');
     }
 
     /**
@@ -267,14 +283,18 @@ final class RefreshPolicyTest extends KnossosTestCase
      * phantom one millisecond: the class docblock calls this distinction
      * load-bearing, separate from the null case that means "unknown".
      * Pinned with a zero budget so the two costs (0 ms vs 1 ms) fall on
-     * opposite sides of the `> budget` decision instead of both fitting.
+     * opposite sides of the `> budget` decision instead of both fitting, and
+     * on a deletion-only drift because the historical cap is what carries the
+     * recorded duration into the decision at all: any other change set is
+     * estimated from the per-file rate plus the fixed overhead, where a
+     * difference of one millisecond in a total nobody caps is invisible.
      */
     #[Group('query')]
     public function testARecordedZeroDurationStaysZeroNotOneMillisecond(): void
     {
         [$pdo, $projectId] = $this->seedScanCosting(durationMs: 0, files: 1);
 
-        $decision = (new RefreshPolicy($pdo, budgetMs: 0))->decide($projectId, new DriftCounts(1, 0, 0));
+        $decision = (new RefreshPolicy($pdo, budgetMs: 0))->decide($projectId, new DriftCounts(0, 0, 1));
 
         self::assertTrue($decision->refresh, 'A true zero-cost scan estimates 0 ms, which fits even a 0 ms budget; max(1.0, ...) would estimate 1 ms and be declined instead.');
     }
