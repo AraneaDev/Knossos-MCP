@@ -554,4 +554,53 @@ final class McpTest extends KnossosTestCase
             );
         }
     }
+
+    /**
+     * A scan that aborts because the tree moved underneath it must reach the
+     * client as its own diagnostic code carrying its own message.
+     *
+     * The transport replaces the message of anything it does not recognise with
+     * "an unexpected error occurred" and logs the detail instead, which for this
+     * fault would throw away the one thing the caller needs: the file that
+     * changed. The code is also what lets a client retry automatically rather
+     * than treat the scan as broken.
+     */
+    #[Group('mcp')]
+    public function testSnapshotChangedScanReachesTheClientWithItsFileNamed(): void
+    {
+        [$pdo] = $this->storeFixture();
+        $tools = new ToolService(
+            new class () implements \Knossos\Scan\ProjectScanner {
+                public function scan(
+                    string $root,
+                    ?string $name = null,
+                    ?int $maxFiles = null,
+                    ?int $maxFileBytes = null,
+                    ?array $explicitBoundaries = null,
+                    ?string $mode = null,
+                    ?\Knossos\Scan\CancellationToken $cancellation = null,
+                    ?int $snapshotRetention = null,
+                    ?int $workerTimeoutMs = null,
+                    ?int $workerMemoryMb = null,
+                ): \Knossos\Query\ResultEnvelope {
+                    throw \Knossos\Scan\ScanSnapshotChangedException::contentChanged('src/Checkout.php');
+                }
+            },
+            new ArchitectureQueryService($pdo),
+            new DatabaseMaintenanceService($pdo, ':memory:'),
+            new \Knossos\Mcp\ResultEnricher(new \Knossos\Query\StalenessProbe($pdo), new \Knossos\Mcp\NextStepPlanner()),
+        );
+        $server = new StdioServer($tools);
+        $server->handle(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'initialize', 'params' => ['protocolVersion' => StdioServer::PROTOCOL_VERSION]]);
+        $server->handle(['jsonrpc' => '2.0', 'method' => 'notifications/initialized']);
+
+        $response = $server->handle([
+            'jsonrpc' => '2.0', 'id' => 2, 'method' => 'tools/call',
+            'params' => ['name' => 'scan_project', 'arguments' => ['path' => self::repositoryRoot() . '/tests/Fixtures/mixed']],
+        ]);
+
+        assertSame(true, $response['result']['isError']);
+        assertSame('KNOSSOS_SCAN_SNAPSHOT_CHANGED', $response['result']['structuredContent']['error']['code']);
+        assertContains('src/Checkout.php', $response['result']['content'][0]['text']);
+    }
 }

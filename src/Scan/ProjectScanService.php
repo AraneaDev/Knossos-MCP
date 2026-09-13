@@ -12,7 +12,8 @@ use Knossos\Store\SqliteGraphRepository;
 use PDO;
 
 /**
- * Runs a scan end to end: plan, discover, analyse, reconcile, report.
+ * Runs a scan end to end: plan, discover, analyse, verify the snapshot the
+ * workers read, reconcile, report.
  *
  * Holds the worker pool for the scan's duration and shuts it down on the way out,
  * including when a scan fails or is cancelled. Nothing here loads or executes the
@@ -25,6 +26,7 @@ final class ProjectScanService implements ProjectScanner
     private readonly LanguageWorkerPool $workerPool;
     private readonly LanguageScanRunner $languageRunner;
     private readonly ScanAnalysisPipeline $analysisPipeline;
+    private readonly ScanSnapshotValidator $snapshotValidator;
     private readonly ScanResultFactory $resultFactory;
 
     /**
@@ -48,6 +50,7 @@ final class ProjectScanService implements ProjectScanner
             new ContributionCacheService(),
         );
         $this->analysisPipeline = new ScanAnalysisPipeline();
+        $this->snapshotValidator = new ScanSnapshotValidator();
         $this->resultFactory = new ScanResultFactory();
     }
     /** Shut the worker pool down, including when a scan failed or was cancelled. */
@@ -104,6 +107,22 @@ final class ProjectScanService implements ProjectScanner
 
             $language = $this->languageRunner->run($plan, $cancellation);
             $stageMilliseconds += $language->stageMilliseconds;
+            // The workers read every file themselves, so their facts descend
+            // from bytes this process never hashed. Prove the tree still hashes
+            // to what discovery recorded before anything is persisted -- which
+            // means before the no-change fast path too, since that path also
+            // writes: it refreshes stored mtimes and restamps the active scan's
+            // completion, and a graph restamped as verified against content that
+            // moved underneath it is exactly the false `fresh` this guards.
+            //
+            // Cancellation is checked first so a caller who asked to stop still
+            // gets ScanCancelledException: a scan being abandoned has nothing to
+            // report about its own fidelity, and the transports distinguish the
+            // two.
+            $cancellation->throwIfCancelled();
+            $validationStarted = hrtime(true);
+            $this->snapshotValidator->validate($preparation->discovery->files);
+            $stageMilliseconds['snapshot_validation'] = self::elapsedMilliseconds($validationStarted);
             $analysisStarted = hrtime(true);
             $analysis = $this->analysisPipeline->analyze($plan, $language->contributions);
             $stageMilliseconds['analysis'] = self::elapsedMilliseconds($analysisStarted);
