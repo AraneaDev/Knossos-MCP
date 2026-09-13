@@ -108,7 +108,16 @@ A worker declaring the capability attaches the hash to every contribution for
 which it read bytes, including one that only reports a syntax error. It omits
 the hash only when the read itself failed, and such a contribution must carry
 no nodes or edges. Facts without a hash from a declaring worker are refused as
-`WORKER_CONTRIBUTION_INVALID`.
+`WORKER_CONTRIBUTION_INVALID`, and that refusal degrades the worker's whole
+language for the scan: none of its contributions from that scan reach the
+graph. A contribution with no hash, no nodes and no edges from a declaring
+worker is kept, so its diagnostics still reach the graph, but it is never
+cached, and the next scan asks for that file again.
+
+Bump your worker's version when you start declaring `content_hash`. A cache hit
+is served without being verified again, and cached contributions are keyed on
+the worker version, so entries your worker wrote before it hashed are only
+purged by a version change.
 
 The byte-order mark is the usual way to get this wrong: a runtime that strips
 it while reading text hashes different bytes than discovery did, and every

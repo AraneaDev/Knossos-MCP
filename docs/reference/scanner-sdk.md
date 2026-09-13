@@ -41,7 +41,13 @@ capabilities may be ignored unless a consumer explicitly requires them.
 The `content_hash` capability promises that every contribution for a file the
 worker read carries the SHA-256 of those raw bytes; see
 [`scanner-protocol-v1.md`](scanner-protocol-v1.md). `tools/scanner-conformance`
-scans one fixture file and checks that promise whenever a worker declares it.
+scans one fixture file, which starts with a byte-order mark, and checks that
+promise whenever a worker declares it. When you add the capability to an
+existing worker, bump its version in the same change: cache hits are not
+verified again, so only a version change purges the contributions it cached
+before it hashed. Facts without a hash degrade your worker's whole language
+for that scan, and an unhashed contribution with only diagnostics is kept but
+never cached.
 
 Every contribution owns its facts through a stable `owner_key`. Re-emission
 replaces that owner's facts. IDs must be deterministic, evidence paths must be
