@@ -223,7 +223,6 @@ final readonly class ContributionCacheService
     }
 
     /** One cache entry for a scanned file. */
-
     private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
     {
         return new ContributionCacheEntry($file->relativePath, $file->contentHash, $manifest->id, $manifest->version, $configurationHash, $contribution);

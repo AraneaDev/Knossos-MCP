@@ -423,19 +423,19 @@ PYTHON);
         foreach ($files as $relative => $bytes) {
             file_put_contents($root . '/' . $relative, $bytes);
         }
+        $client = $this->pythonWorkerClient();
         try {
-            $client = $this->pythonWorkerClient();
             assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
             $byOwner = [];
             foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
                 $byOwner[$contribution->ownerKey] = $contribution->contentHash;
             }
-            $client->shutdown();
 
             foreach ($files as $relative => $bytes) {
                 assertSame(hash('sha256', $bytes), $byOwner['knossos.python:file:' . $relative] ?? null, $relative);
             }
         } finally {
+            $client->shutdown();
             $this->removeTempTree($root);
         }
     }
@@ -455,16 +455,16 @@ PYTHON);
         mkdir($root, 0o777, true);
         $bytes = 'x = ' . str_repeat('-', 4000) . "1\n";
         file_put_contents($root . '/deep.py', $bytes);
+        $client = $this->pythonWorkerClient();
         try {
-            $client = $this->pythonWorkerClient();
             $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['deep.py']]));
             $contribution = $contributions[0];
             assertSame([], $contribution->nodes);
             assertSame([], $contribution->edges);
             assertSame('PY_INTERNAL_ERROR', $contribution->diagnostics[0]->code);
             assertSame(hash('sha256', $bytes), $contribution->contentHash);
-            $client->shutdown();
         } finally {
+            $client->shutdown();
             $this->removeTempTree($root);
         }
     }

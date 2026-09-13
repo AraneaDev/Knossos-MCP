@@ -76,7 +76,7 @@ final class ParsedContentVerificationTest extends KnossosTestCase
         assertSame(1, count($result->cacheEntries));
     }
 
-    public function testFactsWithoutAHashFromADeclaringWorkerDegradeOnlyThatLanguage(): void
+    public function testFactsWithoutAHashFromADeclaringWorkerDegradeThatLanguage(): void
     {
         $result = $this->runScan('hash_missing', $this->discovered());
 

@@ -294,19 +294,19 @@ final class TypescriptScannerTest extends KnossosTestCase
         foreach ($files as $relative => $bytes) {
             file_put_contents($root . '/' . $relative, $bytes);
         }
+        $client = $this->typescriptWorkerClient();
         try {
-            $client = $this->typescriptWorkerClient();
             assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
             $byOwner = [];
             foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
                 $byOwner[$contribution->ownerKey] = $contribution->contentHash;
             }
-            $client->shutdown();
 
             foreach ($files as $relative => $bytes) {
                 assertSame(hash('sha256', $bytes), $byOwner['knossos.typescript:file:' . $relative] ?? null, $relative);
             }
         } finally {
+            $client->shutdown();
             $this->removeTempTree($root);
         }
     }
