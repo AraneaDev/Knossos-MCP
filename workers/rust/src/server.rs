@@ -102,7 +102,14 @@ enum Prepared {
         content_hash: String,
     },
     /// A failed file, reduced to its final (diagnostic-only) contribution.
-    Err(Contribution),
+    Err {
+        /// Project-relative path, kept alongside the contribution so pass 3
+        /// can attribute `input_hashes` without parsing it back out of the
+        /// owner key.
+        relative: String,
+        /// The diagnostic-only contribution itself.
+        contribution: Contribution,
+    },
 }
 
 /// Parse a bounded file set, emitting one owned contribution per input.
@@ -171,9 +178,13 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
 
     // Pass 3: walk and emit, in the batch's sorted order.
     let mut scanned = 0_usize;
+    let mut input_hashes: BTreeMap<String, String> = BTreeMap::new();
     for item in prepared {
-        let contribution = match item {
-            Prepared::Err(contribution) => contribution,
+        let (relative, contribution) = match item {
+            Prepared::Err {
+                relative,
+                contribution,
+            } => (relative, contribution),
             Prepared::Parsed {
                 relative,
                 parsed,
@@ -208,14 +219,25 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                     let module_id = crate::facts::reference("module", &module);
                     facts.edge("contains", &package_id, &module_id, "certain", span);
                 }
-                facts.finish()
+                (relative, facts.finish())
             }
         };
+        // The relative path comes from the `Prepared` item itself, not by
+        // parsing it back out of the contribution's owner key, so a future
+        // owner key format change can never desync this map from what was
+        // actually read.
+        if let Some(hash) = &contribution.content_hash {
+            input_hashes.insert(relative, hash.clone());
+        }
         emit(&serde_json::to_value(&contribution).map_err(|e| e.to_string())?);
         scanned += 1;
     }
 
-    Ok(json!({"files_scanned": scanned, "parser": "rust.syn"}))
+    Ok(json!({
+        "files_scanned": scanned,
+        "parser": "rust.syn",
+        "input_hashes": input_hashes,
+    }))
 }
 
 /// Read, validate, and parse one file into a [`Prepared`].
@@ -236,7 +258,10 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
         Ok(canonical) => canonical,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+            };
         }
     };
     if !canonical.starts_with(root) {
@@ -246,7 +271,10 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
             "Scan path escapes the project root.",
             1,
         );
-        return Prepared::Err(facts.finish());
+        return Prepared::Err {
+            relative: relative.to_owned(),
+            contribution: facts.finish(),
+        };
     }
     match std::fs::metadata(&canonical) {
         Ok(metadata) if metadata.len() > max_file_bytes => {
@@ -256,12 +284,18 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
                 "File exceeds the scan byte limit.",
                 1,
             );
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+            };
         }
         Ok(_) => {}
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+            };
         }
     }
     // Read bytes, not a string: the hash must be of exactly what is on disk,
@@ -270,7 +304,10 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
         Ok(bytes) => bytes,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+            };
         }
     };
     let content_hash = sha256_hex(&bytes);
@@ -279,7 +316,10 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
         Ok(source) => source,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+            };
         }
     };
     match syn::parse_file(&source) {
@@ -291,7 +331,10 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
         Err(error) => {
             let line = error.span().start().line.max(1);
             facts.diagnostic("error", "RS_SYNTAX_ERROR", &error.to_string(), line);
-            Prepared::Err(facts.finish())
+            Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+            }
         }
     }
 }

@@ -94,4 +94,64 @@ final class RustWorkerTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * This worker resolves nothing across files, so `input_hashes` is exactly
+     * the requested files whose bytes it read: a BOM file and a file that
+     * fails to parse both got read (and hashed), even though the broken one
+     * contributes no nodes or edges.
+     */
+    public function testRustWorkerReportsInputHashesForEveryFileItRead(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/bom.rs' => "\xEF\xBB\xBFpub fn bom() {}\n",
+            'src/broken.rs' => "pub fn {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->rustWorkerClient();
+            self::assertTrue(in_array('input_hashes', $client->initialize()->capabilities, true));
+            iterator_to_array($client->scan(['root' => $root, 'files' => array_keys($files)]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            self::assertIsArray($inputHashes);
+            self::assertSame(count($files), count($inputHashes));
+            foreach ($files as $relative => $bytes) {
+                self::assertSame(hash('sha256', $bytes), $inputHashes[$relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A requested file the worker never read (over the byte cap, so it costs
+     * only a diagnostic) must be absent from `input_hashes`, not `null`: this
+     * worker only reports a read it actually attempted.
+     */
+    public function testAnUnreadableRequestedFileIsAbsentFromInputHashes(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        file_put_contents($root . '/src/big.rs', "pub fn big() {}\n");
+        try {
+            $client = $this->rustWorkerClient();
+            iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['src/big.rs'],
+                'limits' => ['max_file_bytes' => 1],
+            ]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            self::assertSame(false, array_key_exists('src/big.rs', (array) $inputHashes));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
 }

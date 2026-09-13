@@ -46,7 +46,7 @@ impl Manifest {
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             languages: vec!["rust"],
             file_extensions: vec!["rs"],
-            capabilities: vec!["partial_ast", "content_hash"],
+            capabilities: vec!["partial_ast", "content_hash", "input_hashes"],
         }
     }
 }

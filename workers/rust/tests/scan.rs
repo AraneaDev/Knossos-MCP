@@ -49,6 +49,47 @@ pub fn scan_fixture_with_bytes(name: &str, files: &[(&str, &[u8])], params: &Val
         .collect()
 }
 
+/// Like [`scan_fixture_with_bytes`], but returns the request's final `result`
+/// object (where `input_hashes` lives) instead of its contributions.
+pub fn scan_result_with_bytes(name: &str, files: &[(&str, &[u8])], params: &Value) -> Value {
+    let root = std::env::temp_dir().join(format!("knossos-rust-{name}"));
+    let _ = std::fs::remove_dir_all(&root);
+    for (relative, bytes) in files {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+    }
+    let base = serde_json::json!({
+        "root": std::fs::canonicalize(&root).unwrap().to_str().unwrap(),
+        "files": files.iter().map(|(relative, _)| *relative).collect::<Vec<_>>(),
+    });
+    let mut merged = base.as_object().unwrap().clone();
+    for (key, value) in params.as_object().unwrap() {
+        merged.insert(key.clone(), value.clone());
+    }
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "scan",
+        "params": merged,
+    });
+    let mut output: Vec<u8> = Vec::new();
+    run(Cursor::new(request.to_string().into_bytes()), &mut output).unwrap();
+    let replies: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let _ = std::fs::remove_dir_all(&root);
+
+    replies
+        .into_iter()
+        .find(|reply| reply.get("result").is_some())
+        .map(|reply| reply["result"].clone())
+        .expect("scan request produced no result")
+}
+
 /// Write `files` into a fresh temporary root and run a scan request with
 /// `params` merged over the base (`root`, `files`), returning contributions.
 pub fn scan_fixture_with(name: &str, files: &[(&str, &str)], params: &Value) -> Vec<Value> {
@@ -1545,6 +1586,50 @@ fn a_file_that_was_never_read_reports_no_hash() {
 
     assert_eq!(1, contributions.len());
     assert!(contributions[0].get("content_hash").is_none());
+}
+
+#[test]
+fn the_result_reports_input_hashes_for_every_file_it_read() {
+    // The exact requested-files map: a BOM file and a syntax-error file both
+    // get read (and hashed), so both belong in `input_hashes` even though the
+    // syntax-error file contributes no nodes or edges.
+    let files: [(&str, &[u8]); 2] = [
+        ("src/bom.rs", "\u{feff}pub fn bom() {}\n".as_bytes()),
+        ("src/broken.rs", b"pub fn {\n"),
+    ];
+    let result = scan_result_with_bytes("input-hashes", &files, &serde_json::json!({}));
+
+    let input_hashes = result["input_hashes"]
+        .as_object()
+        .expect("input_hashes must be a JSON object");
+    assert_eq!(2, input_hashes.len());
+    for (relative, bytes) in files {
+        assert_eq!(
+            Value::String(sha256_hex(bytes)),
+            input_hashes[relative],
+            "{relative}"
+        );
+    }
+}
+
+#[test]
+fn an_unreadable_requested_file_is_absent_from_input_hashes() {
+    // The oversized file's own read never happened (`prepare_one` checks the
+    // byte limit before reading), so it must not appear in `input_hashes` at
+    // all: neither its (never computed) hash nor a `null` placeholder.
+    let result = scan_result_with_bytes(
+        "input-hashes-unreadable",
+        &[("src/big.rs", b"pub fn big() {}\n")],
+        &serde_json::json!({"limits": {"max_file_bytes": 1}}),
+    );
+
+    let input_hashes = result["input_hashes"]
+        .as_object()
+        .expect("input_hashes must be a JSON object");
+    assert!(
+        !input_hashes.contains_key("src/big.rs"),
+        "input_hashes: {input_hashes:?}"
+    );
 }
 
 #[test]
