@@ -1491,6 +1491,49 @@ fn an_expr_struct_instantiation_emits_a_calls_edge() {
     );
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[test]
+fn every_read_file_reports_the_hash_of_its_raw_bytes() {
+    let files = [
+        ("src/bom.rs", "\u{feff}pub fn bom() {}\n"),
+        ("src/crlf.rs", "pub fn crlf() {}\r\n"),
+        ("src/broken.rs", "pub fn {\n"),
+    ];
+    let contributions = scan_fixture("content-hash", &files);
+
+    for (relative, source) in files {
+        let owner = format!("knossos.rust:file:{relative}");
+        let contribution = contributions
+            .iter()
+            .find(|c| c["owner_key"] == owner.as_str())
+            .unwrap_or_else(|| panic!("no contribution for {relative}"));
+        assert_eq!(
+            sha256_hex(source.as_bytes()),
+            contribution["content_hash"],
+            "{relative}"
+        );
+    }
+}
+
+#[test]
+fn a_file_that_was_never_read_reports_no_hash() {
+    let contributions = scan_fixture_with(
+        "content-hash-unread",
+        &[("src/big.rs", "pub fn big() {}\n")],
+        &serde_json::json!({"limits": {"max_file_bytes": 1}}),
+    );
+
+    assert_eq!(1, contributions.len());
+    assert!(contributions[0].get("content_hash").is_none());
+}
+
 #[test]
 fn self_in_impl_block_resolves_to_the_impl_type() {
     let facts = scan_fixture(

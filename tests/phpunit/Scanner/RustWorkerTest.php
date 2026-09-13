@@ -39,6 +39,7 @@ final class RustWorkerTest extends KnossosTestCase
         self::assertSame('knossos.rust', $manifest->id);
         self::assertSame('1.0', $manifest->protocolVersion);
         self::assertSame(['rust'], $manifest->languages);
+        self::assertContains('content_hash', $manifest->capabilities);
     }
 
     public function testScanningARustFileProducesDecodableFacts(): void
@@ -63,5 +64,34 @@ final class RustWorkerTest extends KnossosTestCase
         self::assertContains('module', $kinds);
         self::assertContains('class', $kinds);
         self::assertContains('method', $kinds);
+    }
+
+    public function testRustWorkerReportsTheHashOfTheRawBytesItParsed(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/bom.rs' => "\xEF\xBB\xBFpub fn bom() {}\n",
+            'src/crlf.rs' => "pub fn crlf() {}\r\n",
+            'src/broken.rs' => "pub fn {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->rustWorkerClient();
+            self::assertTrue(in_array('content_hash', $client->initialize()->capabilities, true));
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+            $client->shutdown();
+
+            foreach ($files as $relative => $bytes) {
+                self::assertSame(hash('sha256', $bytes), $byOwner['knossos.rust:file:' . $relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 }

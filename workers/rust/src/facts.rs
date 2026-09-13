@@ -67,6 +67,10 @@ pub struct Facts {
     /// declares a top-level `fn main`, or (for an extensionless script) a
     /// shebang. Applied to the module node in `finish()`.
     executable: bool,
+    /// SHA-256 hex of the raw bytes this file was parsed from; absent until
+    /// [`Facts::set_content_hash`] is called, which happens only for a file
+    /// that was actually read.
+    content_hash: Option<String>,
 }
 
 impl Facts {
@@ -84,6 +88,7 @@ impl Facts {
             pending_attributes: Vec::new(),
             executable: false,
             test_scope: 0,
+            content_hash: None,
         }
     }
 
@@ -208,6 +213,11 @@ impl Facts {
     /// off the dead-code report.
     pub fn mark_executable(&mut self) {
         self.executable = true;
+    }
+
+    /// Record the hash of the bytes this file's facts come from.
+    pub fn set_content_hash(&mut self, hash: String) {
+        self.content_hash = Some(hash);
     }
 
     /// Record one relationship.
@@ -363,6 +373,7 @@ impl Facts {
             nodes: self.nodes,
             edges: self.edges,
             diagnostics: self.diagnostics,
+            content_hash: self.content_hash,
         }
     }
 }

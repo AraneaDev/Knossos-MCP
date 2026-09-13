@@ -98,6 +98,8 @@ enum Prepared {
         relative: String,
         /// The parsed syntax tree.
         parsed: syn::File,
+        /// SHA-256 hex of the raw bytes `parsed` came from.
+        content_hash: String,
     },
     /// A failed file, reduced to its final (diagnostic-only) contribution.
     Err(Contribution),
@@ -157,7 +159,10 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     let mut declarations = Declarations::new();
     let mut test_modules = crate::visit::TestModules::new();
     for item in &prepared {
-        if let Prepared::Parsed { relative, parsed } = item {
+        if let Prepared::Parsed {
+            relative, parsed, ..
+        } = item
+        {
             let module = module_path_for_file(relative, has_library_root);
             crate::visit::collect_declarations(&module, &parsed.items, &mut declarations);
             crate::visit::collect_test_modules(&module, &parsed.items, &mut test_modules);
@@ -169,10 +174,15 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     for item in prepared {
         let contribution = match item {
             Prepared::Err(contribution) => contribution,
-            Prepared::Parsed { relative, parsed } => {
+            Prepared::Parsed {
+                relative,
+                parsed,
+                content_hash,
+            } => {
                 let module = module_path_for_file(&relative, has_library_root);
                 let display = module.rsplit("::").next().unwrap_or(&module).to_owned();
                 let mut facts = Facts::new(&relative);
+                facts.set_content_hash(content_hash);
                 let span = proc_macro2::Span::call_site();
                 facts.node("module", &module, &display, span, span);
                 crate::visit::walk(
@@ -254,7 +264,18 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
             return Prepared::Err(facts.finish());
         }
     }
-    let source = match std::fs::read_to_string(&canonical) {
+    // Read bytes, not a string: the hash must be of exactly what is on disk,
+    // and a file that is not UTF-8 is still a file whose bytes were read.
+    let bytes = match std::fs::read(&canonical) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
+            return Prepared::Err(facts.finish());
+        }
+    };
+    let content_hash = sha256_hex(&bytes);
+    facts.set_content_hash(content_hash.clone());
+    let source = match String::from_utf8(bytes) {
         Ok(source) => source,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
@@ -265,6 +286,7 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
         Ok(parsed) => Prepared::Parsed {
             relative: relative.to_owned(),
             parsed,
+            content_hash,
         },
         Err(error) => {
             let line = error.span().start().line.max(1);
@@ -272,6 +294,18 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
             Prepared::Err(facts.finish())
         }
     }
+}
+
+/// Lowercase SHA-256 hex, the form discovery records in the core.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
 }
 
 /// The crate roots and names declared by the request's manifest `config_files`.
