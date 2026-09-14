@@ -79,11 +79,11 @@ def test_a_scan_sends_all_but_the_last_part_ahead_of_its_result(monkeypatch, wor
     for message in parts:
         merged.update(message["params"]["input_hashes"])
     merged.update(result["result"]["input_hashes"])
-    assert sorted(merged) == files
+    # Every requested file's read, beside the probes the index recorded.
+    assert set(files) <= set(merged)
     # Each entry travels once: the result keeps only the last part.
-    assert sum(len(message["params"]["input_hashes"]) for message in parts) + len(
-        result["result"]["input_hashes"]
-    ) == len(files)
+    total = sum(len(message["params"]["input_hashes"]) for message in parts) + len(result["result"]["input_hashes"])
+    assert total == len(merged)
     assert result["result"]["input_hashes"] != {}
     # Every notification precedes the result.
     assert written.index(parts[-1]) < len(written) - 1

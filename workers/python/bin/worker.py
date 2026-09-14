@@ -217,9 +217,21 @@ class ProjectModuleIndex:
     def __init__(self, root: Path, max_bytes: int) -> None:
         self.root = root
         self.max_bytes = max_bytes
-        self.prefixes = self._source_root_prefixes()
-        self._cache: dict[str, dict[str, str]] = {}
         self.read_hashes: dict[str, str | None] = {}
+        self._prefixes: list[tuple[str, ...]] | None = None
+        self._cache: dict[str, dict[str, str]] = {}
+
+    @property
+    def prefixes(self) -> list[tuple[str, ...]]:
+        """The source roots, detected on first use.
+
+        Detecting them probes the tree, and those probes are recorded, so a
+        request that resolves nothing, such as one whose every file was
+        refused, reports no reads it did not need.
+        """
+        if self._prefixes is None:
+            self._prefixes = self._source_root_prefixes()
+        return self._prefixes
 
     def record_read(self, relative: str, content_hash: str | None) -> None:
         """Record one read for ``input_hashes``; a disagreeing repeat read records ``None``."""
@@ -241,18 +253,44 @@ class ProjectModuleIndex:
         return Path(walked.location)
 
     def _record_walk(self, walked: PathWalk, content_hash: str | None) -> None:
-        """Record a read under the key its walk gives, if it gives one."""
-        relative = walk_key(self.root, walked)
-        if relative is not None:
+        """Record a read, hashed or failed, under every key its walk gives."""
+        final, linked = walk_keys(self.root, walked)
+        for relative in ([final] if final is not None else []) + linked:
             self.record_read(relative, content_hash)
 
+    def _record_probe(self, walked: PathWalk, present: bool) -> None:
+        """Record an existence probe whose answer feeds facts.
+
+        A probe answering absent, or not a file, records ``None`` under every key
+        its walk gives: resolution goes on as if the file were not there, so a
+        discovered file missing for that moment must fail verification. A probe
+        answering present read no bytes, so it vouches for nothing at the
+        location it reached, which a read records; it records ``None`` only
+        under the linked keys, so a discovered path that had become a link is
+        still caught. Discovery never reports an absent path or a link, so a
+        stable tree is unaffected.
+        """
+        final, linked = walk_keys(self.root, walked)
+        if not present and final is not None:
+            self.record_read(final, None)
+        for relative in linked:
+            self.record_read(relative, None)
+
     def _source_root_prefixes(self) -> list[tuple[str, ...]]:
+        """The source roots: the bare root, and each top-level directory that is not a package.
+
+        Whether ``child/__init__.py`` is a file decides every module id below
+        ``child``, so that probe is recorded (:meth:`_record_probe`).
+        """
         prefixes: list[tuple[str, ...]] = [()]
         try:
             for child in sorted(self.root.iterdir()):
                 if is_excluded(child.name) or not child.is_dir():
                     continue
-                if not (child / "__init__.py").is_file():
+                marker = child / "__init__.py"
+                present = marker.is_file()
+                self._record_probe(walk_path(marker), present)
+                if not present:
                     prefixes.append((child.name,))
         except OSError:
             pass
@@ -282,28 +320,24 @@ class ProjectModuleIndex:
     def _is_project_file(self, path: Path) -> bool:
         """Whether ``path`` is a module file this index may read.
 
-        A candidate that does not exist was only probed for. One that exists
-        but is refused (it links out of the root, it is over the byte cap, or
-        it cannot be examined) is left out of resolution, so every importer's
-        facts are computed as if it did not exist; it is recorded as a failed
-        read under its own path. A stable layout never trips over that, since
-        discovery reports neither a symlink nor an over-cap file and the core
-        ignores a path it did not discover, while a discovered file that became
-        one mid-scan fails verification.
+        A candidate that is absent, not a file, or refused (it links out of the
+        root, it is over the byte cap, or it cannot be examined) is left out of
+        resolution, so every importer's facts are computed as if it did not
+        exist; it is recorded as a failed read under the keys a read of it
+        would go under. A stable layout never trips over that, since discovery
+        reports no absent path, symlink or over-cap file and the core ignores a
+        path it did not discover, while a discovered file that became one
+        mid-scan fails verification. An accepted candidate is recorded as a
+        probe that found it present.
         """
-        try:
-            if not path.is_file():
-                return False
-        except OSError:
-            pass
         walked = walk_path(path)
         location = self._in_root_file(walked)
         try:
             if location is not None and location.stat().st_size <= self.max_bytes:
+                self._record_probe(walked, True)
                 return True
         except OSError:
             pass
-        # Keyed by the same walk a successful read of it is keyed by.
         self._record_walk(walked, None)
         return False
 
@@ -317,11 +351,11 @@ class ProjectModuleIndex:
         # are read from, and the key the read goes under, so none can disagree.
         walked = None if path is None else walk_path(path)
         location = None if walked is None else self._in_root_file(walked)
-        if walked is not None and location is None:
+        if path is not None and walked is not None and location is None:
             # Accepted by module_file, then retargeted out of the root or gone
             # before this read resolved it: not read, and recorded as refused.
             self._record_walk(walked, None)
-        if walked is not None and location is not None:
+        if path is not None and walked is not None and location is not None:
             try:
                 source = read_bounded(location, self.max_bytes)
             except OSError:
@@ -361,15 +395,21 @@ class ProjectModuleIndex:
         self._cache[module] = top_level_declarations(tree, module)
 
     def collides(self, absolute: Path, is_package: bool) -> bool:
-        """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id."""
+        """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id.
+
+        The answer decides the file's module identity, so the probe is recorded
+        (:meth:`_record_probe`).
+        """
+        if is_package:
+            competitor = absolute.parent.with_suffix(".py")
+        else:
+            competitor = absolute.with_suffix("") / "__init__.py"
         try:
-            if is_package:
-                competitor = absolute.parent.with_suffix(".py")
-            else:
-                competitor = absolute.with_suffix("") / "__init__.py"
-            return competitor.is_file()
+            present = competitor.is_file()
         except OSError:
-            return False
+            present = False
+        self._record_probe(walk_path(competitor), present)
+        return present
 
 
 # Linux's MAXSYMLINKS: one lookup follows at most this many links, and the next
@@ -520,6 +560,41 @@ def walk_key(root: Path, walked: PathWalk) -> str | None:
     if location == os.fspath(root):
         return None
     return PurePosixPath(os.path.relpath(location, root)).as_posix()
+
+
+def walk_keys(root: Path, walked: PathWalk) -> tuple[str | None, list[str]]:
+    """Every key a walk goes under in ``input_hashes``.
+
+    The first is :func:`walk_key`, the location the walk reached. The rest are
+    the other in-root keys the walk passed through a link: each link followed,
+    and each link with the components still to walk below it. The first of
+    those is the path as written, since every path the index walks is joined
+    from the real root without a ``..``. A ``..`` among the components below a
+    later link could only be applied by the walk, so such a path is left out,
+    as is anything outside the root or below ``node_modules``.
+
+    Discovery never reports a link and never descends into a linked directory,
+    so on a stable tree every linked key names a path the core ignores.
+    Mid-scan, a discovered file swapped for a link (to another file, or to a
+    directory) is keyed where discovery saw it, so the read or probe that went
+    through it is checked against discovery's hash.
+    """
+    final = walk_key(root, walked)
+    linked: list[str] = []
+
+    def add(location: str) -> None:
+        if not _inside(root, location) or location == os.fspath(root):
+            return
+        relative = PurePosixPath(os.path.relpath(location, root)).as_posix()
+        if relative != final and relative not in linked and "node_modules" not in relative.split("/"):
+            linked.append(relative)
+
+    for location, remaining in walked.links:
+        add(location)
+        rest = [name for name in remaining if name not in ("", os.curdir)]
+        if rest and os.pardir not in rest:
+            add(os.path.join(location, *rest))
+    return final, linked
 
 
 def input_key(root: Path, path: str | os.PathLike[str]) -> str | None:

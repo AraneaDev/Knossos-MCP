@@ -10,6 +10,7 @@ a link retargeted between the index's checks.
 from __future__ import annotations
 
 import hashlib
+import os
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
@@ -20,6 +21,34 @@ import pytest
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _discovered(root: Path, max_bytes: int = 2_000_000) -> dict[str, str]:
+    """What discovery would hash: regular files within the cap, reached without following a link."""
+    found: dict[str, str] = {}
+    for directory, directories, files in os.walk(root):
+        directories[:] = [name for name in directories if not (Path(directory) / name).is_symlink()]
+        for name in files:
+            path = Path(directory) / name
+            if path.is_symlink() or not path.is_file() or path.stat().st_size > max_bytes:
+                continue
+            found[path.relative_to(root).as_posix()] = _sha(path.read_bytes())
+    return found
+
+
+def _disagreements(read_hashes: dict[str, str | None], discovery: dict[str, str]) -> list[str]:
+    """The paths the core would fail the scan on: discovered, with a value other than discovery's hash."""
+    return sorted(key for key, value in read_hashes.items() if key in discovery and value != discovery[key])
+
+
+def _includes(read_hashes: dict[str, str | None], expected: dict[str, str | None]) -> None:
+    """Every expected key is recorded with its expected value.
+
+    Probes add ``None`` entries for candidates that do not exist and for links
+    they passed; those never name a discovered path, which ``_disagreements``
+    checks where a test's tree is stable.
+    """
+    assert {key: read_hashes.get(key, "absent") for key in expected} == expected
 
 
 def _scan(worker: ModuleType, root: Path, files: list[str]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -43,12 +72,11 @@ def test_a_failed_index_read_is_reported_as_null(monkeypatch, worker: ModuleType
         return real_read(path, max_bytes)
 
     monkeypatch.setattr(worker, "read_bounded", failing)
+    discovery = _discovered(root)
     result, _ = _scan(worker, root, ["pkg/a.py"])
 
-    assert result["input_hashes"] == {
-        "pkg/a.py": _sha((root / "pkg/a.py").read_bytes()),
-        "pkg/b.py": None,
-    }
+    _includes(result["input_hashes"], {"pkg/a.py": _sha((root / "pkg/a.py").read_bytes()), "pkg/b.py": None})
+    assert _disagreements(result["input_hashes"], discovery) == ["pkg/b.py"]
 
 
 def _serve(monkeypatch, worker: ModuleType, name: str, outcomes: list[bytes | None]) -> list[str]:
@@ -177,7 +205,7 @@ def test_a_module_that_no_longer_resolves_inside_the_root_is_null_and_not_read(
 
     assert index.module_declarations("pkg.b") == {}
     assert reads == []
-    assert index.read_hashes == {"pkg/b.py": None}
+    _includes(index.read_hashes, {"pkg/b.py": None})
 
 
 def test_a_module_that_no_longer_resolves_at_all_is_null(worker: ModuleType, project) -> None:
@@ -197,7 +225,7 @@ def test_a_module_refused_as_over_the_byte_cap_is_null_and_not_read(monkeypatch,
 
     assert index.module_declarations("pkg.b") == {}
     assert reads == []
-    assert index.read_hashes == {"pkg/b.py": None}
+    _includes(index.read_hashes, {"pkg/b.py": None})
 
 
 def test_a_module_refused_for_linking_out_of_the_root_is_null(worker: ModuleType, project, tmp_path_factory) -> None:
@@ -210,18 +238,51 @@ def test_a_module_refused_for_linking_out_of_the_root_is_null(worker: ModuleType
 
     assert index.module_file("pkg.b") is None
     assert index.module_declarations("pkg.b") == {}
-    assert index.read_hashes == {"pkg/b.py": None}
+    _includes(index.read_hashes, {"pkg/b.py": None})
 
 
-def test_a_candidate_that_does_not_exist_is_a_probe_not_a_read(worker: ModuleType, project) -> None:
+def test_a_candidate_that_does_not_exist_is_recorded_as_null(worker: ModuleType, project) -> None:
+    # Resolution goes on as if an absent candidate were not there, so a
+    # discovered candidate missing for that moment must fail verification.
+    # Discovery never reports an absent path, so a stable tree is unaffected.
     root = project({"app.py": IMPORTER, "pkg/b.py": "class Thing:\n    pass\n"})
+    discovery = _discovered(root)
     index = worker.ProjectModuleIndex(root, 2_000_000)
 
     index.module_declarations("pkg.b")
     index.module_declarations("pkg.missing")
 
-    # pkg/b/__init__.py was probed first and is absent; only the read is recorded.
-    assert index.read_hashes == {"pkg/b.py": _sha(b"class Thing:\n    pass\n")}
+    _includes(
+        index.read_hashes,
+        {
+            "pkg/b/__init__.py": None,
+            "pkg/b.py": _sha(b"class Thing:\n    pass\n"),
+            "pkg/missing/__init__.py": None,
+            "pkg/missing.py": None,
+        },
+    )
+    assert _disagreements(index.read_hashes, discovery) == []
+
+
+def test_a_discovered_module_absent_while_the_index_probes_it_fails_verification(worker: ModuleType, project) -> None:
+    # Reproduction: pkg/b.py swapped for a directory while module_file probed
+    # it, then restored. The import's target became external, and the map
+    # named only the importer.
+    root = project({"app.py": IMPORTER, "pkg/b.py": DECLARES.decode()})
+    discovery = _discovered(root)
+    b = root / "pkg" / "b.py"
+    b.unlink()
+    b.mkdir()
+    try:
+        result, contributions = _scan(worker, root, ["app.py"])
+    finally:
+        b.rmdir()
+        b.write_bytes(DECLARES)
+
+    assert ("extends", "py:class:app.Local", "py:class:pkg.b.Thing") not in [
+        (edge["kind"], edge["source"], edge["target"]) for edge in contributions["app.py"]["edges"]
+    ]
+    assert _disagreements(result["input_hashes"], discovery) == ["pkg/b.py"]
 
 
 def test_an_unreadable_requested_file_is_null_and_an_empty_request_reports_an_empty_map(
@@ -265,6 +326,8 @@ def test_a_requested_file_the_filesystem_refuses_is_null_and_a_policy_refusal_is
         emitted.append,
     )
 
+    # Nothing was resolved, so no source-root probe ran either (dir.py is a
+    # top-level directory it would have probed).
     assert result["input_hashes"] == {"big.py": None, "dir.py": None, "gone.py": None, "out.py": None}
     messages = {item["owner_key"].rsplit(":", 1)[-1]: item["diagnostics"][0]["message"] for item in emitted}
     assert messages["big.py"] == "Python input exceeds the configured byte limit."
@@ -339,7 +402,14 @@ def _scan_limited(
 # A refused module reached through a linked file name (pkg/alias.py links to
 # pkg/real.py) and through a linked directory (lnk links to real/). Discovery
 # never follows a link, so the null must land on the real in-root path.
-REFUSED_ON_REAL_KEYS = {"pkg/real.py": None, "real/c.py": None}
+REFUSED_ON_REAL_KEYS = {
+    "pkg/real.py": None,
+    "real/c.py": None,
+    # The linked names, as written and at the link.
+    "pkg/alias.py": None,
+    "lnk": None,
+    "lnk/c.py": None,
+}
 
 
 def _linked_layout(project, real: str = "class R:\n    pass\n", c: str = "class C:\n    pass\n") -> Path:
@@ -366,7 +436,7 @@ def test_a_module_refused_over_the_byte_cap_is_keyed_by_its_real_path(worker: Mo
 
     _declarations_of_linked_modules(index)
 
-    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+    _includes(index.read_hashes, REFUSED_ON_REAL_KEYS)
 
 
 def test_a_module_refused_for_linking_out_of_the_root_is_keyed_by_the_in_root_link(
@@ -380,7 +450,7 @@ def test_a_module_refused_for_linking_out_of_the_root_is_keyed_by_the_in_root_li
 
     _declarations_of_linked_modules(index)
 
-    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+    _includes(index.read_hashes, REFUSED_ON_REAL_KEYS)
 
 
 def test_a_module_retargeted_out_of_the_root_before_the_read_is_keyed_by_the_in_root_link(
@@ -395,7 +465,7 @@ def test_a_module_retargeted_out_of_the_root_before_the_read_is_keyed_by_the_in_
 
     _declarations_of_linked_modules(index)
 
-    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+    _includes(index.read_hashes, REFUSED_ON_REAL_KEYS)
 
 
 def test_a_module_removed_before_the_read_is_keyed_by_where_it_was(worker: ModuleType, project) -> None:
@@ -407,7 +477,7 @@ def test_a_module_removed_before_the_read_is_keyed_by_where_it_was(worker: Modul
 
     _declarations_of_linked_modules(index)
 
-    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+    _includes(index.read_hashes, REFUSED_ON_REAL_KEYS)
 
 
 def test_a_module_under_a_directory_swapped_for_a_link_out_of_the_root_is_keyed_by_where_it_was(
@@ -423,7 +493,7 @@ def test_a_module_under_a_directory_swapped_for_a_link_out_of_the_root_is_keyed_
 
     assert index.module_declarations("sub.c") == {}
 
-    assert index.read_hashes == {"sub/c.py": None}
+    _includes(index.read_hashes, {"sub/c.py": None, "sub": None})
 
 
 # pkg/lnk.py links to d/../c.py and pkg/d links to ../deep/dir. The kernel
@@ -441,10 +511,13 @@ def _dot_dot_layout(project, deep: bytes = DEEP) -> Path:
 
 
 def test_a_read_through_a_link_with_dot_dot_is_keyed_by_the_file_the_kernel_opened(worker: ModuleType, project) -> None:
-    index = worker.ProjectModuleIndex(_dot_dot_layout(project), 2_000_000)
+    root = _dot_dot_layout(project)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert "Deep" in index.module_declarations("pkg.lnk")
-    assert index.read_hashes == {"deep/c.py": _sha(DEEP)}
+    _includes(index.read_hashes, {"deep/c.py": _sha(DEEP), "pkg/lnk.py": None, "pkg/d": None})
+    assert "pkg/c.py" not in index.read_hashes
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
 
 
 def test_a_removed_target_behind_a_link_with_dot_dot_is_keyed_by_the_file_the_kernel_would_open(
@@ -456,23 +529,27 @@ def test_a_removed_target_behind_a_link_with_dot_dot_is_keyed_by_the_file_the_ke
     (root / "deep" / "c.py").unlink()
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {"deep/c.py": None}
+    _includes(index.read_hashes, {"deep/c.py": None})
 
 
 def test_a_stable_over_cap_target_behind_a_link_with_dot_dot_is_not_keyed_by_a_textual_collapse(
     worker: ModuleType, project
 ) -> None:
-    index = worker.ProjectModuleIndex(_dot_dot_layout(project, DEEP + b"#" * 100), 60)
+    root = _dot_dot_layout(project, DEEP + b"#" * 100)
+    index = worker.ProjectModuleIndex(root, 60)
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {"deep/c.py": None}
+    _includes(index.read_hashes, {"deep/c.py": None})
+    assert "pkg/c.py" not in index.read_hashes
+    assert _disagreements(index.read_hashes, _discovered(root, 60)) == []
 
 
 # The cases below follow each path the way the kernel's lookup does. A module
 # name only reaches ``module_declarations`` through ``_is_project_file``, whose
-# ``is_file()`` is itself a kernel lookup, so a path the kernel cannot resolve is
-# a probe in a stable tree; the ``_is_project_file`` override stands in for the
-# tree changing between that check and the read.
+# walk is itself a kernel lookup, so a path the kernel cannot resolve is refused
+# there and recorded as None under keys discovery never reports; the
+# ``_is_project_file`` override stands in for the tree changing between that
+# check and the read.
 DECOY = "class Decoy:\n    pass\n"
 
 
@@ -495,10 +572,12 @@ def _out_and_back_layout(project, tmp_path_factory, deep: bytes = DEEP) -> Path:
 def test_a_read_through_a_chain_that_leaves_the_root_and_returns_is_keyed_by_the_file_it_ends_at(
     worker: ModuleType, project, tmp_path_factory
 ) -> None:
-    index = worker.ProjectModuleIndex(_out_and_back_layout(project, tmp_path_factory), 2_000_000)
+    root = _out_and_back_layout(project, tmp_path_factory)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert "Deep" in index.module_declarations("pkg.lnk")
-    assert index.read_hashes == {"deep/c.py": _sha(DEEP)}
+    _includes(index.read_hashes, {"deep/c.py": _sha(DEEP), "pkg/lnk.py": None})
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
 
 
 def test_a_removed_target_at_the_end_of_a_chain_that_leaves_the_root_is_keyed_by_that_target(
@@ -510,16 +589,18 @@ def test_a_removed_target_at_the_end_of_a_chain_that_leaves_the_root_is_keyed_by
     (root / "deep" / "c.py").unlink()
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {"deep/c.py": None}
+    _includes(index.read_hashes, {"deep/c.py": None})
 
 
 def test_a_stable_over_cap_target_at_the_end_of_a_chain_that_leaves_the_root_is_keyed_by_that_target(
     worker: ModuleType, project, tmp_path_factory
 ) -> None:
-    index = worker.ProjectModuleIndex(_out_and_back_layout(project, tmp_path_factory, DEEP + b"#" * 100), 60)
+    root = _out_and_back_layout(project, tmp_path_factory, DEEP + b"#" * 100)
+    index = worker.ProjectModuleIndex(root, 60)
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {"deep/c.py": None}
+    _includes(index.read_hashes, {"deep/c.py": None})
+    assert _disagreements(index.read_hashes, _discovered(root, 60)) == []
 
 
 def _dot_dot_after_missing(root: Path) -> None:
@@ -547,7 +628,7 @@ UNAPPLIABLE_DOT_DOT = [
 
 
 @pytest.mark.parametrize(("layout", "link"), UNAPPLIABLE_DOT_DOT)
-def test_a_stable_link_with_dot_dot_the_kernel_cannot_apply_is_only_a_probe(
+def test_a_stable_link_with_dot_dot_the_kernel_cannot_apply_never_disagrees_with_discovery(
     worker: ModuleType, project, layout: Callable[[Path], None], link: str
 ) -> None:
     root = project({"app.py": "x = 1\n", "pkg/c.py": DECOY})
@@ -555,7 +636,9 @@ def test_a_stable_link_with_dot_dot_the_kernel_cannot_apply_is_only_a_probe(
     index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {}
+    _includes(index.read_hashes, {link: None})
+    assert "pkg/c.py" not in index.read_hashes
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
 
 
 @pytest.mark.parametrize(("layout", "link"), UNAPPLIABLE_DOT_DOT)
@@ -568,7 +651,8 @@ def test_a_read_through_a_link_with_dot_dot_the_kernel_cannot_apply_is_keyed_by_
     _accepting(index, "lnk.py")
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {link: None}
+    _includes(index.read_hashes, {link: None})
+    assert "pkg/c.py" not in index.read_hashes
     assert worker.input_key(root, root / "pkg" / "lnk.py") == link
 
 
@@ -581,7 +665,8 @@ def test_a_read_through_a_directory_link_with_dot_dot_that_resolves_is_keyed_by_
     index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert "Deep" in index.module_declarations("pkg.lnk")
-    assert index.read_hashes == {"gone/c.py": _sha(DEEP)}
+    _includes(index.read_hashes, {"gone/c.py": _sha(DEEP)})
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
 
 
 @pytest.mark.parametrize("change", ["removed", "replaced by a file"])
@@ -598,7 +683,7 @@ def test_a_module_under_a_directory_changed_before_the_read_is_keyed_where_it_wa
         (root / "sub").write_text("x = 1\n", encoding="utf-8")
 
     assert index.module_declarations("sub.c") == {}
-    assert index.read_hashes == {"sub/c.py": None}
+    _includes(index.read_hashes, {"sub/c.py": None})
 
 
 def _absolute_link_layout(project, contents: bytes = DEEP) -> Path:
@@ -609,10 +694,12 @@ def _absolute_link_layout(project, contents: bytes = DEEP) -> Path:
 
 
 def test_a_read_through_an_absolute_link_inside_the_root_is_keyed_by_the_target(worker: ModuleType, project) -> None:
-    index = worker.ProjectModuleIndex(_absolute_link_layout(project), 2_000_000)
+    root = _absolute_link_layout(project)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert "Deep" in index.module_declarations("pkg.lnk")
-    assert index.read_hashes == {"lib/b.py": _sha(DEEP)}
+    _includes(index.read_hashes, {"lib/b.py": _sha(DEEP), "pkg/lnk.py": None})
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
 
 
 def test_a_removed_target_of_an_absolute_link_inside_the_root_is_keyed_by_the_target(
@@ -624,16 +711,18 @@ def test_a_removed_target_of_an_absolute_link_inside_the_root_is_keyed_by_the_ta
     (root / "lib" / "b.py").unlink()
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {"lib/b.py": None}
+    _includes(index.read_hashes, {"lib/b.py": None})
 
 
 def test_a_stable_over_cap_target_of_an_absolute_link_inside_the_root_is_keyed_by_the_target(
     worker: ModuleType, project
 ) -> None:
-    index = worker.ProjectModuleIndex(_absolute_link_layout(project, DEEP + b"#" * 100), 60)
+    root = _absolute_link_layout(project, DEEP + b"#" * 100)
+    index = worker.ProjectModuleIndex(root, 60)
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {"lib/b.py": None}
+    _includes(index.read_hashes, {"lib/b.py": None})
+    assert _disagreements(index.read_hashes, _discovered(root, 60)) == []
 
 
 def _chain(project, links: int) -> Path:
@@ -647,17 +736,23 @@ def _chain(project, links: int) -> Path:
 
 
 def test_a_chain_of_40_links_is_followed_to_its_file(worker: ModuleType, project) -> None:
-    index = worker.ProjectModuleIndex(_chain(project, 40), 2_000_000)
+    root = _chain(project, 40)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert "Deep" in index.module_declarations("pkg.l0")
-    assert index.read_hashes == {"pkg/real.py": _sha(DEEP)}
+    # Every link is keyed too; the probe that accepted the chain recorded them as
+    # None, and the read's hash disagrees into None.
+    _includes(index.read_hashes, {"pkg/real.py": _sha(DEEP)} | {f"pkg/l{n}.py": None for n in range(40)})
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
 
 
-def test_a_chain_of_41_links_is_a_probe_in_a_stable_tree(worker: ModuleType, project) -> None:
-    index = worker.ProjectModuleIndex(_chain(project, 41), 2_000_000)
+def test_a_chain_of_41_links_never_disagrees_with_discovery_in_a_stable_tree(worker: ModuleType, project) -> None:
+    root = _chain(project, 41)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
 
     assert index.module_declarations("pkg.l0") == {}
-    assert index.read_hashes == {}
+    assert "pkg/real.py" not in index.read_hashes
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
 
 
 def test_a_read_through_a_chain_of_41_links_is_keyed_by_the_last_link_followed(worker: ModuleType, project) -> None:
@@ -665,7 +760,8 @@ def test_a_read_through_a_chain_of_41_links_is_keyed_by_the_last_link_followed(w
     _accepting(index, "l0.py")
 
     assert index.module_declarations("pkg.l0") == {}
-    assert index.read_hashes == {"pkg/l39.py": None}
+    _includes(index.read_hashes, {"pkg/l39.py": None})
+    assert "pkg/real.py" not in index.read_hashes
 
 
 def _swap_to_directory(file: Path) -> None:
@@ -683,7 +779,7 @@ def test_a_module_replaced_by_a_directory_before_the_read_is_keyed_where_it_was(
     _swap_to_directory(root / "pkg" / "c.py")
 
     assert index.module_declarations("pkg.c") == {}
-    assert index.read_hashes == {"pkg/c.py": None}
+    _includes(index.read_hashes, {"pkg/c.py": None})
 
 
 def test_a_link_target_replaced_by_a_directory_before_the_read_is_keyed_by_that_target(
@@ -695,7 +791,7 @@ def test_a_link_target_replaced_by_a_directory_before_the_read_is_keyed_by_that_
     _swap_to_directory(root / "lib" / "b.py")
 
     assert index.module_declarations("pkg.lnk") == {}
-    assert index.read_hashes == {"lib/b.py": None}
+    _includes(index.read_hashes, {"lib/b.py": None})
 
 
 def test_an_absolute_link_target_with_a_doubled_leading_slash_is_followed_inside_the_root(
@@ -707,4 +803,187 @@ def test_an_absolute_link_target_with_a_doubled_leading_slash_is_followed_inside
 
     assert index.module_file("q.l6") is not None
     assert "Deep" in index.module_declarations("q.l6")
-    assert index.read_hashes == {"q/c.py": _sha(DEEP)}
+    _includes(index.read_hashes, {"q/c.py": _sha(DEEP)})
+    assert _disagreements(index.read_hashes, _discovered(root)) == []
+
+
+def test_a_module_swapped_for_a_directory_while_module_file_probes_it_fails_verification(
+    monkeypatch, worker: ModuleType, project
+) -> None:
+    # The reviewer's reproduction: the swap lasts exactly as long as the probe
+    # stage, with no _is_project_file override, and is restored before any read.
+    root = project({"app.py": IMPORTER, "pkg/b.py": DECLARES.decode()})
+    discovery = _discovered(root)
+    original = worker.ProjectModuleIndex.module_file
+
+    def swapping(self: Any, module: str) -> Path | None:
+        if module != "pkg.b":
+            return original(self, module)
+        b = root / "pkg" / "b.py"
+        b.unlink()
+        b.mkdir()
+        try:
+            return original(self, module)
+        finally:
+            b.rmdir()
+            b.write_bytes(DECLARES)
+
+    monkeypatch.setattr(worker.ProjectModuleIndex, "module_file", swapping)
+    result, _ = _scan(worker, root, ["app.py"])
+
+    assert _disagreements(result["input_hashes"], discovery) == ["pkg/b.py"]
+
+
+def test_the_collision_probe_records_an_absent_competitor_and_not_a_present_one(worker: ModuleType, project) -> None:
+    root = project({"pkg/mod.py": "", "pkg/lone.py": "", "pkg/both/__init__.py": "", "pkg/both.py": ""})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    index.read_hashes.clear()
+
+    assert index.collides(root / "pkg" / "lone.py", False) is False
+    assert index.collides(root / "pkg" / "both.py", False) is True
+    assert index.collides(root / "pkg" / "both" / "__init__.py", True) is True
+
+    assert index.read_hashes == {"pkg/lone/__init__.py": None}
+
+
+def test_a_competitor_absent_while_the_collision_probe_runs_fails_verification(worker: ModuleType, project) -> None:
+    root = project({"pkg/both/__init__.py": "", "pkg/both.py": ""})
+    discovery = _discovered(root)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    competitor = root / "pkg" / "both" / "__init__.py"
+    competitor.unlink()
+    try:
+        assert index.collides(root / "pkg" / "both.py", False) is False
+    finally:
+        competitor.write_text("", encoding="utf-8")
+
+    assert _disagreements(index.read_hashes, discovery) == ["pkg/both/__init__.py"]
+
+
+def test_the_source_root_probe_records_an_absent_package_marker_and_not_a_present_one(
+    worker: ModuleType, project
+) -> None:
+    # Whether a top-level directory holds __init__.py decides every module id
+    # below it.
+    root = project({"src/app.py": "", "pkg/__init__.py": "", "top.py": ""})
+
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.prefixes == [(), ("src",)]
+    assert index.read_hashes == {"src/__init__.py": None}
+
+
+def test_a_package_marker_absent_while_the_source_roots_are_detected_fails_verification(
+    monkeypatch, worker: ModuleType, project
+) -> None:
+    root = project({"pkg/__init__.py": "", "pkg/a.py": ""})
+    discovery = _discovered(root)
+    marker = root / "pkg" / "__init__.py"
+    marker.unlink()
+    try:
+        index = worker.ProjectModuleIndex(root, 2_000_000)
+        prefixes = index.prefixes
+    finally:
+        marker.write_text("", encoding="utf-8")
+
+    assert prefixes == [(), ("pkg",)]
+    assert _disagreements(index.read_hashes, discovery) == ["pkg/__init__.py"]
+
+
+def _swapped_for(link: Path, target: str, restore: Callable[[], None], run: Callable[[], Any]) -> Any:
+    """Run ``run`` with ``link`` replaced by a symlink to ``target``, then put it back with ``restore``."""
+    if link.is_dir() and not link.is_symlink():
+        for child in link.iterdir():
+            child.unlink()
+        link.rmdir()
+    else:
+        link.unlink()
+    link.symlink_to(target)
+    try:
+        return run()
+    finally:
+        link.unlink()
+        restore()
+
+
+OTHER = b"class Thing:\n    other = True\n"
+
+
+def test_an_imported_module_swapped_for_a_link_to_another_discovered_file_fails_verification(
+    worker: ModuleType, project
+) -> None:
+    root = project({"app.py": IMPORTER, "pkg/b.py": DECLARES.decode(), "pkg/c.py": OTHER.decode()})
+    discovery = _discovered(root)
+    b = root / "pkg" / "b.py"
+
+    result, _ = _swapped_for(b, "c.py", lambda: b.write_bytes(DECLARES), lambda: _scan(worker, root, ["app.py"]))
+
+    assert result["input_hashes"]["pkg/c.py"] == _sha(OTHER)
+    assert _disagreements(result["input_hashes"], discovery) == ["pkg/b.py"]
+
+
+def test_a_module_under_a_directory_swapped_for_a_link_to_another_discovered_directory_fails_verification(
+    worker: ModuleType, project
+) -> None:
+    root = project({"app.py": IMPORTER, "pkg/b.py": DECLARES.decode(), "other/b.py": OTHER.decode()})
+    discovery = _discovered(root)
+    pkg = root / "pkg"
+
+    def restore() -> None:
+        pkg.mkdir()
+        (pkg / "b.py").write_bytes(DECLARES)
+
+    result, _ = _swapped_for(pkg, "other", restore, lambda: _scan(worker, root, ["app.py"]))
+
+    assert result["input_hashes"]["other/b.py"] == _sha(OTHER)
+    assert _disagreements(result["input_hashes"], discovery) == ["pkg/b.py"]
+
+
+def test_a_stable_tree_with_links_never_disagrees_with_discovery(worker: ModuleType, project, tmp_path_factory) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "out.py").write_text("class Out:\n    pass\n", encoding="utf-8")
+    root = project(
+        {
+            "app.py": "\n".join(
+                [
+                    "from pkg.alias import R",
+                    "from lnk.c import C",
+                    "from pkg.up import U",
+                    "from pkg.lnk2 import D",
+                    "from pkg.out import Out",
+                    "from pkg.dangling import X",
+                    "from pkg.missing import M",
+                    "from vendored.node_modules.dep.mod import V",
+                    "",
+                ]
+            ),
+            "pkg/__init__.py": "",
+            "pkg/real.py": "class R:\n    pass\n",
+            "real/c.py": "class C:\n    pass\n",
+            "deep/up.py": "class U:\n    pass\n",
+            # pkg/lnk2.py -> d/../c2.py opens deep/c2.py; collapsing the ``..``
+            # as text would name the discovered decoy pkg/c2.py.
+            "deep/c2.py": "class D:\n    pass\n",
+            "pkg/c2.py": "class D:\n    decoy = True\n",
+            "deep/dir/keep.txt": "",
+            "packages/dep/mod.py": "class V:\n    pass\n",
+            "vendored/node_modules/keep.txt": "",
+        }
+    )
+    (root / "vendored" / "node_modules" / "dep").symlink_to("../../packages/dep")
+    (root / "pkg" / "alias.py").symlink_to("real.py")
+    (root / "lnk").symlink_to("real")
+    (root / "pkg" / "d").symlink_to("../deep/dir")
+    (root / "pkg" / "up.py").symlink_to(root / "deep" / "up.py")
+    (root / "pkg" / "lnk2.py").symlink_to("d/../c2.py")
+    (root / "pkg" / "out.py").symlink_to(outside / "out.py")
+    (root / "pkg" / "dangling.py").symlink_to("gone.py")
+    discovery = _discovered(root)
+
+    result, contributions = _scan(worker, root, sorted(key for key in discovery if key.endswith(".py")))
+
+    assert _disagreements(result["input_hashes"], discovery) == []
+    assert None in result["input_hashes"].values()
+    # A link below node_modules is never keyed.
+    assert not [key for key in result["input_hashes"] if "node_modules" in key.split("/")]
+    assert all("content_hash" in contribution for contribution in contributions.values())

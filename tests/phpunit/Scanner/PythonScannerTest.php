@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scanner;
 
+use Knossos\Discovery\DiscoveryConfig;
+use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Scan\ProjectScanService;
+use Knossos\Scan\ScanInputHashes;
+use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\NodeFact;
@@ -475,10 +479,9 @@ PYTHON);
             // The read really fed resolution: the base class resolved to b.py's declaration.
             assertArrayContains('extends py:class:pkg.b.Thing', $edges);
             $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
-            ksort($expected);
             assertSame(true, is_array($inputHashes));
-            ksort($inputHashes);
-            assertSame($expected, $inputHashes);
+            self::assertInputHashesInclude($expected, $inputHashes);
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
         } finally {
             $client->shutdown();
             $this->removeTempTree($root);
@@ -487,9 +490,9 @@ PYTHON);
 
     /**
      * `pkg/a.py` sorts first, so the index reads `pkg/b.py` for a's imports
-     * before b's own scan reads it again. Both reads land on one key; the map
-     * keeps the first and the second stays verified through b's content_hash.
-     * An empty request still carries the field, as `{}`.
+     * before b's own scan reads it again. Both reads land on one key with the
+     * same hash, which the map keeps. An empty request still carries the field,
+     * as `{}`.
      */
     #[Group('python-scanner')]
     public function testPythonWorkerReportsAModuleReadBothForAnImporterAndItsOwnScan(): void
@@ -514,7 +517,8 @@ PYTHON);
             $empty = $client->lastScanResult();
 
             $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
-            assertSame($expected, $inputHashes);
+            self::assertInputHashesInclude($expected, $inputHashes);
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
             assertSame($expected['pkg/b.py'], $byOwner['knossos.python:file:pkg/b.py'] ?? null);
             assertSame(true, array_key_exists('input_hashes', $empty));
             assertSame([], $empty['input_hashes']);
@@ -561,11 +565,13 @@ PYTHON);
             $indexThenIndex = $client->lastScanResult()['input_hashes'] ?? null;
 
             $hash = static fn(string $relative): string => hash('sha256', $files[$relative]);
-            assertSame(['pkg/b.py' => $hash('one/pkg/b.py'), 'pkg/c.py' => $hash('one/pkg/c.py')], $ownThenIndex);
+            self::assertInputHashesInclude(['pkg/b.py' => $hash('one/pkg/b.py'), 'pkg/c.py' => $hash('one/pkg/c.py')], $ownThenIndex);
+            self::assertInputHashesVerify($root . '/one', $ownThenIndex, $client->initialize());
             // Both ids really resolved through src/pkg/b.py, so both reads happened.
             assertArrayContains('extends py:class:app.One py:class:pkg.b.Thing', $edges);
             assertArrayContains('extends py:class:app.Two py:class:src.pkg.b.Thing', $edges);
-            assertSame(['app.py' => $hash('two/app.py'), 'src/pkg/b.py' => $hash('two/src/pkg/b.py')], $indexThenIndex);
+            self::assertInputHashesInclude(['app.py' => $hash('two/app.py'), 'src/pkg/b.py' => $hash('two/src/pkg/b.py')], $indexThenIndex);
+            self::assertInputHashesVerify($root . '/two', $indexThenIndex, $client->initialize());
         } finally {
             $client->shutdown();
             $this->removeTempTree($root);
@@ -575,8 +581,10 @@ PYTHON);
     /**
      * Discovery never follows a symlink, so the only path it tracks for a
      * module reached through a linked directory is the target's. The index
-     * read has to be keyed there; spelled through the link, it would name a
-     * path the core ignores and the read would go unverified.
+     * read has to be keyed there; spelled through the link alone, it would
+     * name a path the core ignores and the read would go unverified. The link
+     * and the path through it are keyed too, as null here (the probe that
+     * accepted the module read no bytes), and discovery ignores both.
      */
     #[Group('python-scanner')]
     public function testPythonWorkerKeysAModuleReadThroughASymlinkByItsTarget(): void
@@ -596,7 +604,11 @@ PYTHON);
             iterator_to_array($client->scan(['root' => $root, 'files' => ['app.py']]));
             $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
 
-            assertSame(array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files), $inputHashes);
+            self::assertInputHashesInclude(
+                array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files) + ['linked' => null, 'linked/b.py' => null],
+                $inputHashes,
+            );
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
         } finally {
             $client->shutdown();
             @unlink($root . '/linked');
@@ -698,7 +710,9 @@ PYTHON);
             iterator_to_array($client->scan(['root' => $root, 'files' => ['pkg/a.py'], 'limits' => ['max_file_bytes' => 100]]));
             $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
 
-            assertSame(['pkg/a.py' => hash('sha256', $importer), 'pkg/big.py' => null], $inputHashes);
+            self::assertInputHashesInclude(['pkg/a.py' => hash('sha256', $importer), 'pkg/big.py' => null], $inputHashes);
+            // Discovery does not report the over-cap file either, so the null is ignored.
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize(), 100);
         } finally {
             $client->shutdown();
             $this->removeTempTree($root);
@@ -735,7 +749,7 @@ PYTHON);
             ]), false);
             $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
 
-            assertSame(['app/big.py' => null, 'app/dir.py' => null, 'app/gone.py' => null, 'app/out.py' => null], $inputHashes);
+            self::assertInputHashesInclude(['app/big.py' => null, 'app/dir.py' => null, 'app/gone.py' => null, 'app/out.py' => null], $inputHashes);
             assertSame(5, count($contributions));
             foreach ($contributions as $contribution) {
                 assertSame('PY_UNSCANNABLE_FILE', $contribution->diagnostics[0]->code);
@@ -745,5 +759,40 @@ PYTHON);
             $this->removeTempTree($root);
             $this->removeTempTree($outside);
         }
+    }
+
+    /**
+     * Every expected entry is in the map with its value. Probes add null entries
+     * for candidates that are absent and for links they passed, none of which
+     * discovery reports; assertInputHashesVerify() checks exactly that.
+     *
+     * @param array<string, string|null> $expected
+     * @param mixed $inputHashes
+     */
+    private static function assertInputHashesInclude(array $expected, mixed $inputHashes): void
+    {
+        assertSame(true, is_array($inputHashes));
+        $actual = [];
+        foreach (array_keys($expected) as $path) {
+            $actual[$path] = array_key_exists($path, $inputHashes) ? $inputHashes[$path] : 'absent';
+        }
+        assertSame($expected, $actual);
+    }
+
+    /**
+     * The map passes the core's own check against what discovery reports for
+     * the tree as it stands: a stable tree never fails a scan.
+     *
+     * @param mixed $inputHashes
+     */
+    private static function assertInputHashesVerify(string $root, mixed $inputHashes, ScannerManifest $manifest, int $maxFileBytes = 2_000_000): void
+    {
+        $discovery = (new ProjectDiscoverer(new DiscoveryConfig([$root], maxFileBytes: $maxFileBytes)))->discover($root);
+        $byPath = [];
+        foreach ($discovery->files as $file) {
+            $byPath[$file->relativePath] = $file;
+        }
+        assertSame(true, $byPath !== []);
+        ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, $byPath);
     }
 }
