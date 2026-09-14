@@ -136,7 +136,7 @@ RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates curl docker-cli python3-pip shellcheck $PHPIZE_DEPS \
     && curl --fail --location --silent --show-error \
         --output /tmp/pcov.tar.gz \
-        https://github.com/krakjoe/pcov/archive/refs/tags/v1.0.12.tar.gz \
+        https://codeload.github.com/krakjoe/pcov/tar.gz/refs/tags/v1.0.12 \
     && printf '%s  %s\n' fdd07cad8e2ff42f0c9f095d84aeef11dab0fde7a008805f61883cbcb1b3f12b /tmp/pcov.tar.gz > /tmp/pcov.sha256 \
     && sha256sum --check --strict /tmp/pcov.sha256 \
     && mkdir -p /tmp/pcov \
