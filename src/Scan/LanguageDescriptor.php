@@ -20,7 +20,11 @@ final readonly class LanguageDescriptor
      * @param int $scanBatchFiles most files in one scan request, guarding the deadline
      * @param int $scanBatchSourceBytes most source bytes in one scan request, guarding the output-byte cap
      * @param bool $optional whether a missing worker binary is tolerated
-     * @param ?int $workerMemoryMb heap/memory cap in mebibytes, or null when the runtime decides
+     * @param ?int $workerMemoryMb heap/memory cap in mebibytes, or null when the runtime decides.
+     *                             It caps a heap, not the process: the TypeScript worker runs a
+     *                             second V8 isolate (the scan thread) that mirrors the same heap
+     *                             cap, so its resident memory can exceed this value (1.16 GB RSS
+     *                             was observed at a 1024 MB cap).
      */
     public function __construct(
         public string $key,
