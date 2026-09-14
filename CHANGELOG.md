@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.15.0...v0.15.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **gate:** allow larger architecture snapshots ([70f5ede](https://github.com/AraneaDev/Knossos-MCP/commit/70f5edec4a8c153ef0a839b68371c37d8b6be93e))
+* **gate:** allow larger architecture snapshots ([d855431](https://github.com/AraneaDev/Knossos-MCP/commit/d8554312dc372f0c07de9e4ff36cbbfea2d4b81c))
+
 ## [0.15.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.14.1...v0.15.0) (2026-09-14)
 
 
