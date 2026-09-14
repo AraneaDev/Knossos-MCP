@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, NamedTuple
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 EXCLUDED = {
     ".git",
     ".knossos",
