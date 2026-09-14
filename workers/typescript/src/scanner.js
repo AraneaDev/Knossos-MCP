@@ -1072,10 +1072,16 @@ const MAX_SYMLINK_HOPS = 40;
  * `current` is always a real directory. A `..` steps to its parent, which is
  * where the kernel's `..` goes once the links before it have been followed. A
  * symlink's target is put in front of the components still to walk, raw, so
- * its own `..` is applied the same way; nothing is ever collapsed as text. A
- * component that is missing with more to walk, a non-directory with more to
- * walk, a lookup error, or more than MAX_SYMLINK_HOPS links makes the path
- * unresolvable, as ENOENT, ENOTDIR or ELOOP would make its read fail.
+ * its own `..` is applied the same way; nothing is ever collapsed as text.
+ *
+ * - "file": the walk reached a non-directory as its last component.
+ * - "directory": the walk ended at a directory.
+ * - "missing": a component does not exist, or is a non-directory with more to
+ *   walk (ENOENT, ENOTDIR), and `location` is the path the read was to open
+ *   (see absentBelow).
+ * - "unresolvable": no such path can be named: a `..` left to apply below a
+ *   missing component, another lookup error, or more than MAX_SYMLINK_HOPS
+ *   links (ELOOP).
  *
  * `links` lists every symlink followed, in order, with the components that
  * were still to walk after it at that moment.
@@ -1103,10 +1109,9 @@ function walkPath(absolute) {
         try {
             stat = fs.lstatSync(candidate);
         } catch (error) {
-            if (error?.code === "ENOENT" && remaining.length === 0) {
-                return { kind: "missing", location: candidate, links };
-            }
-            return { kind: "unresolvable", links };
+            return error?.code === "ENOENT"
+                ? absentBelow(candidate, remaining, links)
+                : { kind: "unresolvable", links };
         }
         if (stat.isSymbolicLink()) {
             if (++hops > MAX_SYMLINK_HOPS)
@@ -1126,12 +1131,26 @@ function walkPath(absolute) {
         } else if (stat.isDirectory()) {
             current = candidate;
         } else if (remaining.length > 0) {
-            return { kind: "unresolvable", links };
+            return absentBelow(candidate, remaining, links);
         } else {
             return { kind: "file", location: candidate, links };
         }
     }
     return { kind: "directory", location: current, links };
+}
+
+/**
+ * The walk's result when the lookup fails at `candidate` because it does not
+ * exist, or is not a directory while more remains to walk. Nothing exists below
+ * it, so nothing below it can be a link, and without a `..` still to apply the
+ * remaining components name exactly the file the read was to open: a "missing"
+ * location. A `..` still to apply could only be resolved against a directory
+ * that is not there, so the path is unresolvable.
+ */
+function absentBelow(candidate, remaining, links) {
+    const rest = remaining.filter((name) => name !== "" && name !== ".");
+    if (rest.includes("..")) return { kind: "unresolvable", links };
+    return { kind: "missing", location: [candidate, ...rest].join("/"), links };
 }
 
 /**
@@ -1154,7 +1173,7 @@ function parentDirectory(directory, top) {
  * The absolute location a walked read goes under in `input_hashes`, or null
  * when no location the walk passed lies inside the root.
  *
- * - A walk that ended at a file, or at a missing last component, inside the
+ * - A walk that ended at a file, or at a missing location, inside the
  *   root: that location, the file the read opened or would have opened.
  * - Otherwise the last link followed inside the root. A link followed as a
  *   directory component keys the path below it as it was about to be walked

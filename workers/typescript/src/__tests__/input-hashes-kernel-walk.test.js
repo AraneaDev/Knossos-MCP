@@ -164,6 +164,51 @@ describe("input_hashes: `..` the kernel cannot apply", () => {
     });
 });
 
+describe("input_hashes: a directory changed under the read", () => {
+    // Discovery hashed src/sub/c.ts. The directory goes, or becomes a file,
+    // before the read; the kernel fails the read at src/sub, yet the path it
+    // was to open is fully known, and it is the discovered one.
+    const importer = 'import { c } from "./sub/c";\nexport const a = c;\n';
+
+    function underDirectory(change) {
+        const root = fixture({ "src/a.ts": importer, "src/sub/c.ts": C });
+        let pending = true;
+        const scanner = new TypeScriptScanner({
+            observeHostPath: (stage, absolute) => {
+                if (stage !== "read" || !pending) return;
+                if (!absolute.endsWith("/src/sub/c.ts")) return;
+                pending = false;
+                change(root);
+            },
+        });
+        return scanner.scan({ root, files: ["src/a.ts"] }, () => {})
+            .input_hashes;
+    }
+
+    it("keys a file under a directory removed before the read where it was", () => {
+        const hashes = underDirectory((root) =>
+            fs.rmSync(join(root, "src/sub"), { recursive: true }),
+        );
+
+        expect(hashes).toEqual({
+            "src/a.ts": sha256(importer),
+            "src/sub/c.ts": null,
+        });
+    });
+
+    it("keys a file under a directory replaced by a file where it was", () => {
+        const hashes = underDirectory((root) => {
+            fs.rmSync(join(root, "src/sub"), { recursive: true });
+            writeFileSync(join(root, "src/sub"), C);
+        });
+
+        expect(hashes).toEqual({
+            "src/a.ts": sha256(importer),
+            "src/sub/c.ts": null,
+        });
+    });
+});
+
 describe("input_hashes: an absolute link target inside the root", () => {
     function absoluteLink(contents = C) {
         const root = fixture({
