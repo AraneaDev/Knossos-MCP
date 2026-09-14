@@ -171,7 +171,7 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
         assert_scannable_str(config)?;
     }
     let mut input_hashes: BTreeMap<String, Option<String>> = BTreeMap::new();
-    let crates = cargo_crates(&root, &config_files, &mut input_hashes);
+    let crates = cargo_crates(&root, &config_files, max_file_bytes, &mut input_hashes);
     let has_library_root = crates
         .iter()
         .any(|(root_file, _)| root_file.ends_with("src/lib.rs"));
@@ -456,11 +456,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
 fn cargo_crates(
     root: &Path,
     config_files: &[String],
+    max_file_bytes: u64,
     input_hashes: &mut BTreeMap<String, Option<String>>,
 ) -> Vec<(String, String)> {
     let mut crates: Vec<(String, String)> = Vec::new();
     for config in config_files {
-        let Ok(contents) = std::fs::read_to_string(root.join(config)) else {
+        // The manifest names the crate, so its bytes feed facts: recorded by
+        // the hash of the raw bytes read, or null when the read failed or went
+        // over the cap. Discovery hashes a Cargo.toml as a project unit, so
+        // the core checks the entry.
+        let bytes = match read_bounded(&root.join(config), max_file_bytes) {
+            Ok(bytes) if bytes.len() as u64 <= max_file_bytes => bytes,
+            _ => {
+                record_read(input_hashes, config, None);
+                continue;
+            }
+        };
+        record_read(input_hashes, config, Some(sha256_hex(&bytes)));
+        let Ok(contents) = String::from_utf8(bytes) else {
             continue;
         };
         let Some(name) = manifest_crate_name(&contents) else {

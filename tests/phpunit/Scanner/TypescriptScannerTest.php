@@ -404,4 +404,31 @@ final class TypescriptScannerTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * A tsconfig and the config it extends decide the program, so both reads
+     * are recorded by the hash of their raw bytes, comments and all.
+     */
+    #[Group('typescript-scanner')]
+    public function testTsconfigReadsAreRecordedByTheHashOfTheirRawBytes(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $base = "{\n  // shared\n  \"compilerOptions\": {\"strict\": true}\n}\n";
+        $config = "\xEF\xBB\xBF{\"extends\": \"./tsconfig.base.json\", \"include\": [\"src\"]}\n";
+        file_put_contents($root . '/tsconfig.base.json', $base);
+        file_put_contents($root . '/tsconfig.json', $config);
+        file_put_contents($root . '/src/a.ts', "export const a = 1;\n");
+        $client = $this->typescriptWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['src/a.ts'], 'config_files' => ['tsconfig.json']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? [];
+
+            assertSame(hash('sha256', $config), $inputHashes['tsconfig.json'] ?? 'absent');
+            assertSame(hash('sha256', $base), $inputHashes['tsconfig.base.json'] ?? 'absent');
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
 }

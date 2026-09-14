@@ -1719,6 +1719,7 @@ fn an_absent_crate_root_probe_is_reported_as_null_and_a_present_unread_one_is_no
 
     assert_eq!(
         serde_json::json!({
+            "Cargo.toml": sha256_hex(b"[package]\nname = \"probe\"\n"),
             "src/lib.rs": null,
             "src/other.rs": sha256_hex(b"pub fn other() {}\n"),
         }),
@@ -1742,7 +1743,11 @@ fn a_crate_root_that_is_not_a_regular_file_is_reported_as_null() {
     let _ = std::fs::remove_dir_all(&root);
 
     assert_eq!(
-        serde_json::json!({"src/lib.rs": null, "src/main.rs": null}),
+        serde_json::json!({
+            "Cargo.toml": sha256_hex(b"[package]\nname = \"probe\"\n"),
+            "src/lib.rs": null,
+            "src/main.rs": null,
+        }),
         result["input_hashes"]
     );
 }
@@ -1865,4 +1870,67 @@ fn an_input_hashes_map_larger_than_one_part_goes_out_ahead_of_the_result_in_part
     assert!(result_seen);
     assert!(parts >= 1, "the map went out on the result's line alone");
     assert_eq!(expected, merged);
+}
+
+#[test]
+fn a_cargo_manifest_read_for_its_crate_name_reports_the_hash_of_its_raw_bytes() {
+    // The manifest names the crate, so its bytes feed facts, and discovery
+    // hashes it as a project unit that the core checks the entry against. A
+    // manifest that is not UTF-8 was still read and names no crate.
+    let root = fresh_root("input-hashes-cargo-manifest");
+    std::fs::create_dir_all(root.join("app/src")).unwrap();
+    std::fs::create_dir_all(root.join("bad")).unwrap();
+    let manifest = b"[package]\nname = \"app\"\n";
+    std::fs::write(root.join("app/Cargo.toml"), manifest).unwrap();
+    std::fs::write(root.join("app/src/lib.rs"), "pub fn app() {}\n").unwrap();
+    std::fs::write(root.join("bad/Cargo.toml"), b"[package]\nname = \"\xff\"\n").unwrap();
+
+    let (contributions, result) = scan_existing_root(
+        &root,
+        &["app/src/lib.rs"],
+        &serde_json::json!({"config_files": ["app/Cargo.toml", "bad/Cargo.toml", "gone/Cargo.toml"]}),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        Value::String(sha256_hex(manifest)),
+        result["input_hashes"]["app/Cargo.toml"]
+    );
+    assert_eq!(
+        Value::String(sha256_hex(b"[package]\nname = \"\xff\"\n")),
+        result["input_hashes"]["bad/Cargo.toml"]
+    );
+    assert_eq!(Value::Null, result["input_hashes"]["gone/Cargo.toml"]);
+    assert!(result["input_hashes"].get("bad/src/lib.rs").is_none());
+    assert!(contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["kind"] == "package" && node["canonical_name"] == "app"));
+}
+
+#[test]
+fn a_cargo_manifest_over_the_byte_cap_is_reported_as_null_and_names_no_crate() {
+    let root = fresh_root("input-hashes-cargo-manifest-cap");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        format!("[package]\nname = \"big\"\n#{}\n", "x".repeat(64)),
+    )
+    .unwrap();
+    std::fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+
+    let (contributions, result) = scan_existing_root(
+        &root,
+        &["src/lib.rs"],
+        &serde_json::json!({"config_files": ["Cargo.toml"], "limits": {"max_file_bytes": 40}}),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(Value::Null, result["input_hashes"]["Cargo.toml"]);
+    assert!(!contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["kind"] == "package"));
 }

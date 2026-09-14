@@ -194,7 +194,7 @@ export class TypeScriptScanner {
         let programsReused = 0;
 
         for (const configPath of configPaths) {
-            const parsed = parseConfig(root, configPath);
+            const parsed = parseConfig(root, configPath, reads);
             const key = `${root}\0${configPath}`;
             this.#reserveProgramSlot(key);
             const oldProgram = this.programCache.get(key);
@@ -899,12 +899,21 @@ class TypeScriptLanguageFactCollector {
     }
 }
 
-function parseConfig(root, configPath) {
+function parseConfig(root, configPath, reads) {
     const absolute = validatedInside(root, configPath);
     const host = {
         ...ts.sys,
+        // A config and every config it extends or references decides the
+        // program's files and options, so each read is recorded under its
+        // walk's keys like any other: the hash of the raw bytes read, or null
+        // for a read that failed. Discovery hashes a tsconfig as a project
+        // unit, so the core checks these. Configs were never held to the
+        // per-file source cap, and still are not: a config discovery skipped
+        // as too large is not a unit, so its key is ignored.
         readFile: (file) =>
-            allowedCompilerPath(root, file) ? ts.sys.readFile(file) : undefined,
+            allowedCompilerPath(root, file)
+                ? readRecorded(root, file, reads, Number.MAX_SAFE_INTEGER)
+                : undefined,
         fileExists: (file) =>
             allowedCompilerPath(root, file) && ts.sys.fileExists(file),
         readDirectory: (directory, extensions, excludes, includes, depth) => {
@@ -962,6 +971,37 @@ function parseConfig(root, configPath) {
  * Mirrors TypeScript 6.0's node `readFile`: UTF-16 BE and LE byte-order marks
  * decode as UTF-16, a UTF-8 BOM is dropped, anything else is UTF-8.
  */
+/**
+ * Read a file for the compiler within the byte cap, decoded as TypeScript
+ * decodes it, recording the read under its walk's keys: the hash of the raw
+ * bytes read, or null when the read failed or went over the cap. A default
+ * library file is exempt from the cap and never recorded, since discovery
+ * never reports one.
+ */
+function readRecorded(root, file, reads, maxFileBytes) {
+    const normalized = realSourcePath(normalize(path.resolve(file)));
+    const library = contains(defaultLibDirectory(), normalized);
+    let buffer;
+    try {
+        buffer = readBounded(
+            normalized,
+            library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
+        );
+    } catch {
+        buffer = undefined;
+    }
+    if (!library)
+        recordWalked(
+            reads,
+            root,
+            walkPath(normalized),
+            buffer === undefined
+                ? null
+                : createHash("sha256").update(buffer).digest("hex"),
+        );
+    return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
+}
+
 function decodeLikeTypeScript(buffer) {
     if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
         // Copied before swapping: the caller's buffer is what was hashed.
@@ -1445,33 +1485,12 @@ function createRestrictedProgram(
     // fields decide an import's target, so every in-root read is recorded
     // under its walk's keys like any other: the hash of the bytes read, or null
     // for a read that failed. A path refused here was first answered by
-    // host.fileExists, which recorded its walk. Discovery tracks package.json
-    // as a unit rather than a file, so today the core ignores these keys,
-    // which also means they cost a stable tree nothing.
-    host.readFile = (file) => {
-        if (!allowedCompilerPath(root, file)) return undefined;
-        const normalized = realSourcePath(normalize(path.resolve(file)));
-        const library = contains(defaultLibDirectory(), normalized);
-        let buffer;
-        try {
-            buffer = readBounded(
-                normalized,
-                library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
-            );
-        } catch {
-            buffer = undefined;
-        }
-        if (!library)
-            recordWalked(
-                reads,
-                root,
-                walkPath(normalized),
-                buffer === undefined
-                    ? null
-                    : createHash("sha256").update(buffer).digest("hex"),
-            );
-        return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
-    };
+    // host.fileExists, which recorded its walk. Discovery hashes package.json
+    // as a project unit, and the core checks the entry against that hash.
+    host.readFile = (file) =>
+        allowedCompilerPath(root, file)
+            ? readRecorded(root, file, reads, maxFileBytes)
+            : undefined;
     return ts.createProgram({
         rootNames: parsed.fileNames,
         options,

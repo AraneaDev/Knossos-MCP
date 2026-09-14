@@ -1247,6 +1247,7 @@ describe("input_hashes: the key each read goes under", () => {
             "src/a.ts": sha256(Buffer.from(A)),
             "src/b.ts": null,
             "lib/b.ts": sha256(Buffer.from(B)),
+            "tsconfig.json": sha256(Buffer.from('{"include":["src"]}\n')),
         });
     });
 });
