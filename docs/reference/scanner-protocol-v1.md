@@ -250,11 +250,24 @@ one does.
   root) goes under the same keys as `null`: the facts that needed it were
   computed without it.
 - **A requested file whose read failed** for a filesystem reason (it is gone,
-  is not a regular file, is over the byte cap, resolves outside the root, or
-  resolves to a path other than the one requested) goes under the requested
+  is not a regular file, or is over the byte cap) goes under the requested
   path as `null`, and its contribution under that path's own owner key carries
   no facts. A refusal by policy, such as an extension your worker does not
   scan, says nothing about the tree and goes unreported.
+- **A requested file that resolves to a path other than the one requested**
+  (discovery never follows a link, so this can only happen when a component of
+  the requested path became a link since discovery ran) may be reported either
+  way: as `null`, the same as any other failed read of that path, or as the
+  hash of the bytes your worker actually read from wherever the walk ended,
+  keyed under the requested path. Both keep a stable tree safe. A `null` never
+  matches a discovered file's hash by chance, so it always fails verification
+  and the language degrades. A hash of the wrong file's bytes fails
+  verification too, unless the file the link now points to holds the same
+  bytes discovery hashed for the requested path, in which case the facts your
+  worker computed from it are the correct facts anyway. Choose whichever your
+  worker already has cheaply to hand: the packaged PHP, Python and Rust
+  workers read through the link and report the hash of what they read; the
+  packaged TypeScript worker does not follow it and reports `null`.
 - **An existence check whose answer decides facts**, such as a module
   resolution candidate, a realpath, or a check for a package marker, goes under
   the keys of its walk as `null` when it finds nothing or finds something that
