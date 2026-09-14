@@ -114,7 +114,12 @@ final readonly class FileFingerprint
         }
     }
 
-    /** @param array<array-key, int>|false $stat */
+    /**
+     * Whether a stat() or fstat() result describes a regular file; false for a
+     * failed stat, a directory, a FIFO, or any other file type.
+     *
+     * @param array<array-key, int>|false $stat
+     */
     private static function isRegular(array|false $stat): bool
     {
         return is_array($stat) && (($stat['mode'] ?? 0) & 0o170000) === 0o100000;

@@ -48,6 +48,9 @@ use Knossos\Scanner\Protocol\RelativePath;
 final class UndiscoveredInputVerifier
 {
     /**
+     * Re-read every undiscovered input a worker reported and fail the scan on
+     * the first one whose current state no longer matches the reported value.
+     *
      * @param string $rootRealpath the project root as discovery resolved it
      * @param array<array-key, string|null> $inputs path to SHA-256 hex, or null for a failed read
      * @param int $maxFileBytes the discovery byte cap the scan ran under
@@ -134,7 +137,12 @@ final class UndiscoveredInputVerifier
         return is_array($stat) && ($stat['mode'] & 0o170000) === 0o100000;
     }
 
-    /** @param resource $handle */
+    /**
+     * Whether an open handle is a regular file, checked after the open because
+     * the path may have been swapped since regularAt() looked.
+     *
+     * @param resource $handle
+     */
     private static function isRegular($handle): bool
     {
         $stat = fstat($handle);
