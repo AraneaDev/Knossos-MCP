@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+use Knossos\Filesystem\RegularFileOpener;
+
 /**
  * Bounded single-pass fingerprint of a discovered file. Streams the byte
  * content exactly once to compute the SHA-256 content hash, the physical line
@@ -79,16 +81,26 @@ final readonly class FileFingerprint
      * about 1.4x this. That is a real cost on a pass a scan pays for every file
      * it discovered.
      *
-     * Null means the bytes could not be read, never "it matched".
+     * Null means the bytes could not be read, never "it matched". A path that
+     * is not a regular file, such as a directory or a FIFO, is null too: a
+     * directory yields no bytes and would hash like an empty file, and opening
+     * a FIFO blocks until a writer appears. RegularFileOpener acquires the
+     * descriptor non-blockingly and checks its type again after the open.
      */
     public static function contentHashOf(string $absolutePath): ?string
     {
-        // Suppressed, not guarded by is_readable(): a check followed by a read
-        // is two moments, and only the read's own failure says what this call
-        // actually got.
-        $hash = @hash_file('sha256', $absolutePath);
+        $handle = RegularFileOpener::open($absolutePath);
+        if (!is_resource($handle)) {
+            return null;
+        }
+        try {
+            $context = hash_init('sha256');
+            hash_update_stream($context, $handle);
 
-        return $hash === false ? null : $hash;
+            return hash_final($context);
+        } finally {
+            fclose($handle);
+        }
     }
 
     /**
@@ -101,11 +113,17 @@ final readonly class FileFingerprint
      * leave it at the default; the blob id is then simply never compared
      * against anything. {@see \Knossos\Discovery\DiscoveryConfig} is where the
      * value is validated.
+     *
+     * Null for a path that is not a regular file, for the reasons
+     * {@see self::contentHashOf()} gives: discovery only fingerprints regular
+     * files, but the contribution cache re-reads a discovered path later, and a
+     * file swapped for a FIFO by then must not block the open instead of reading
+     * as unreadable.
      */
     public static function compute(string $absolutePath, string $gitObjectHash = 'sha1'): ?self
     {
-        $handle = @fopen($absolutePath, 'rb');
-        if ($handle === false) {
+        $handle = RegularFileOpener::open($absolutePath);
+        if (!is_resource($handle)) {
             return null;
         }
         $context = hash_init('sha256');
@@ -114,9 +132,10 @@ final readonly class FileFingerprint
         // stream actually yielded below rather than trusted: a file that grew
         // or shrank underneath the read would otherwise produce a blob id that
         // matches nothing and silently reads as "not dirty".
-        $size = @filesize($absolutePath);
+        $stat = fstat($handle);
+        $size = is_array($stat) && is_int($stat['size'] ?? null) ? $stat['size'] : null;
         $blob = hash_init($gitObjectHash);
-        hash_update($blob, 'blob ' . (is_int($size) ? $size : 0) . "\0");
+        hash_update($blob, 'blob ' . ($size ?? 0) . "\0");
         $read = 0;
         $lines = 0;
         $sawContent = false;
@@ -143,6 +162,6 @@ final readonly class FileFingerprint
         if ($sawContent && !$endsWithNewline) {
             ++$lines;
         }
-        return new self(hash_final($context), $lines, $size === $read ? hash_final($blob) : null);
+        return new self(hash_final($context), $lines, $size !== null && $size === $read ? hash_final($blob) : null);
     }
 }

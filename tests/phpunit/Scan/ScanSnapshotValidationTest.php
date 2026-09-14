@@ -259,6 +259,34 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
      * same open() for every user, and quietly, so it also keeps the suite's
      * fail-on-warning contract intact.
      */
+    /**
+     * A discovered file swapped for a FIFO while the scan ran. Opening a FIFO
+     * blocks until a writer appears, so a read that does not check the file
+     * type first hangs the scan instead of failing it.
+     */
+    #[Group('scan')]
+    public function testAFileReplacedByAFifoAbortsTheScanWithoutBlocking(): void
+    {
+        $root = $this->tempRootWithFile('src/Pipe.php', "<?php\n");
+        try {
+            $path = $root . '/src/Pipe.php';
+            $discovered = $this->discoveredFile($root, 'src/Pipe.php');
+            unlink($path);
+            if (!function_exists('posix_mkfifo') || !posix_mkfifo($path, 0o600)) {
+                self::markTestSkipped('FIFOs are unavailable here.');
+            }
+
+            $error = captureThrows(
+                fn() => (new ScanSnapshotValidator())->validate([$discovered]),
+                ScanSnapshotChangedException::class,
+            );
+
+            assertSame(ScanSnapshotChangedException::unreadable('src/Pipe.php')->getMessage(), $error->getMessage());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('scan')]
     public function testUnreadablePathAbortsTheScanWithItsOwnWording(): void
     {
@@ -268,7 +296,17 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
             $path = $root . '/src/Unreadable.php';
             $discovered = $this->discoveredFile($root, 'src/Unreadable.php');
             unlink($path);
-            $socket = stream_socket_server('unix://' . $path, $errorCode, $errorMessage);
+            // Bound by name from inside its directory: a socket path is capped
+            // at 108 bytes, and an absolute one under a deep temp directory
+            // (a mutation sandbox, say) is silently truncated to a different
+            // path, which then reads as a removed file instead of an unreadable one.
+            $cwd = (string) getcwd();
+            chdir(dirname($path));
+            try {
+                $socket = stream_socket_server('unix://' . basename($path), $errorCode, $errorMessage);
+            } finally {
+                chdir($cwd);
+            }
             if ($socket === false) {
                 self::markTestSkipped(sprintf('Unix sockets unavailable here: %s (%d).', $errorMessage, $errorCode));
             }

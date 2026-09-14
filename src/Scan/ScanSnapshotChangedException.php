@@ -128,4 +128,42 @@ final class ScanSnapshotChangedException extends RuntimeException
             $relativePath,
         ));
     }
+
+    /**
+     * A file discovery never hashed, such as a `node_modules` declaration, an
+     * ignored module or a file that existed only briefly, was read by a worker
+     * during the scan and no longer matches that read when the scan is about to
+     * commit: its bytes differ, it has since appeared, or it has since
+     * disappeared.
+     *
+     * Such a file has no recorded hash, so the re-read just before commit is
+     * the only evidence of what the workers derived facts from. It is not
+     * tracked for freshness afterwards; this only keeps a scan from committing
+     * facts that match no state of the file at commit.
+     */
+    public static function inputChangedAfterRead(string $relativePath): self
+    {
+        return new self(sprintf(
+            'Scan aborted: %s was read during the scan with different content than it has now, or has since appeared or disappeared, so graph facts derived from it cannot be verified. Rerun the scan once the tree has settled.',
+            $relativePath,
+        ));
+    }
+
+    /**
+     * Two reads of one file discovery never hashed, in different scan requests,
+     * reported different results: two hashes, or a hash and a failed read.
+     *
+     * At least one of them describes content the file no longer has, and the
+     * re-read before commit could only vouch for one, so the scan fails as soon
+     * as the second report arrives. Named apart from inputChangedAfterRead()
+     * because nothing has been compared with disk yet: the workers disagree
+     * with each other.
+     */
+    public static function inputReadInconsistently(string $relativePath): self
+    {
+        return new self(sprintf(
+            'Scan aborted: %s was read more than once during the scan with different results, so graph facts derived from it cannot be verified. Rerun the scan once the tree has settled.',
+            $relativePath,
+        ));
+    }
 }

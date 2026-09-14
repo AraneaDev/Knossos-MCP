@@ -226,7 +226,7 @@ final class FileFingerprintTest extends TestCase
      */
     public function testItAgreesWithTheFullFingerprintOnEveryShapeOfFile(): void
     {
-        foreach (['', "a", "a\n", "a\r\nb\r\n", "\x00\xff\xfe binary \x01"] as $contents) {
+        foreach (['', 'a', "a\n", "a\r\nb\r\n", "\x00\xff\xfe binary \x01"] as $contents) {
             $path = $this->writeTempFile($contents);
 
             $fingerprint = FileFingerprint::compute($path);
@@ -246,6 +246,44 @@ final class FileFingerprintTest extends TestCase
     public function testItReturnsNullForAPathItCannotRead(): void
     {
         assertSame(null, FileFingerprint::contentHashOf(sys_get_temp_dir() . '/knossos-absent-' . bin2hex(random_bytes(6))));
+    }
+
+    /** A FIFO would block the open until a writer appears; a directory yields no bytes. Neither is a file's content. */
+    public function testItReturnsNullForAPathThatIsNotARegularFileWithoutBlocking(): void
+    {
+        $directory = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($directory);
+        try {
+            assertSame(null, FileFingerprint::contentHashOf($directory));
+            if (!function_exists('posix_mkfifo') || !posix_mkfifo($directory . '/pipe', 0o600)) {
+                self::markTestSkipped('FIFOs are unavailable here.');
+            }
+            assertSame(null, FileFingerprint::contentHashOf($directory . '/pipe'));
+        } finally {
+            @unlink($directory . '/pipe');
+            rmdir($directory);
+        }
+    }
+
+    /**
+     * The full fingerprint re-reads a discovered file for the contribution
+     * cache, so a file swapped for a FIFO mid-scan must read as unreadable
+     * there too instead of blocking the open until a writer appears.
+     */
+    public function testComputeReturnsNullForAPathThatIsNotARegularFileWithoutBlocking(): void
+    {
+        $directory = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($directory);
+        try {
+            assertSame(null, FileFingerprint::compute($directory));
+            if (!function_exists('posix_mkfifo') || !posix_mkfifo($directory . '/pipe', 0o600)) {
+                self::markTestSkipped('FIFOs are unavailable here.');
+            }
+            assertSame(null, FileFingerprint::compute($directory . '/pipe'));
+        } finally {
+            @unlink($directory . '/pipe');
+            rmdir($directory);
+        }
     }
 
     public function testClassIsFinalAndReadonly(): void

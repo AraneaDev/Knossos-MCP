@@ -132,11 +132,14 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # runners ("No releases available for package"), which broke the image build for
 # reasons unrelated to the change under test. Every other third-party binary in
 # this stage is already fetched by URL and verified by SHA-256; pcov now matches.
+# GitHub's release and codeload edges occasionally return a transient 5xx, so
+# every download retries before the checksum turns any partial response into a
+# hard failure.
 RUN apt-get update \
     && apt-get install --no-install-recommends -y ca-certificates curl docker-cli python3-pip shellcheck $PHPIZE_DEPS \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /tmp/pcov.tar.gz \
-        https://github.com/krakjoe/pcov/archive/refs/tags/v1.0.12.tar.gz \
+        https://codeload.github.com/krakjoe/pcov/tar.gz/refs/tags/v1.0.12 \
     && printf '%s  %s\n' fdd07cad8e2ff42f0c9f095d84aeef11dab0fde7a008805f61883cbcb1b3f12b /tmp/pcov.tar.gz > /tmp/pcov.sha256 \
     && sha256sum --check --strict /tmp/pcov.sha256 \
     && mkdir -p /tmp/pcov \
@@ -151,7 +154,7 @@ RUN apt-get update \
     && docker-php-ext-enable pcov \
     && python3 -m pip install --break-system-packages --no-cache-dir \
         coverage==7.14.3 mypy==2.3.0 pre-commit==4.6.0 pytest==8.4.2 ruff==0.15.12 \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /usr/local/bin/hadolint \
         https://github.com/hadolint/hadolint/releases/download/v2.14.0/hadolint-linux-x86_64 \
     && printf '%s  %s\n' 6bf226944684f56c84dd014e8b979d27425c0148f61b3bd99bcc6f39e9dc5a47 /usr/local/bin/hadolint > /tmp/hadolint.sha256 \
@@ -160,14 +163,14 @@ RUN apt-get update \
     && apt-get purge -y --auto-remove $PHPIZE_DEPS \
     && rm -rf /var/lib/apt/lists/* /tmp/hadolint.sha256
 
-RUN curl --fail --location --silent --show-error \
+RUN curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /tmp/trivy.tar.gz \
         https://github.com/aquasecurity/trivy/releases/download/v0.69.3/trivy_0.69.3_Linux-64bit.tar.gz \
     && printf '%s  %s\n' 1816b632dfe529869c740c0913e36bd1629cb7688bd5634f4a858c1d57c88b75 /tmp/trivy.tar.gz \
         > /tmp/trivy.sha256 \
     && sha256sum --check --strict /tmp/trivy.sha256 \
     && tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /usr/local/bin/cosign \
         https://github.com/sigstore/cosign/releases/download/v3.0.6/cosign-linux-amd64 \
     && printf '%s  %s\n' c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74 /usr/local/bin/cosign \
@@ -181,7 +184,7 @@ RUN curl --fail --location --silent --show-error \
 # `tools/quality` would skip or fail its `docker compose config` gate. Install
 # the plugin explicitly.
 RUN mkdir -p /usr/libexec/docker/cli-plugins \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /usr/libexec/docker/cli-plugins/docker-compose \
         https://github.com/docker/compose/releases/download/v5.3.1/docker-compose-linux-x86_64 \
     && printf '%s  %s\n' f9ebc6ebdb19d769b793c245a736caaeb198c62587f13b25c660c13b4987f959 \
@@ -216,7 +219,7 @@ COPY workers/rust ./workers/rust
 RUN apt-get update \
     && apt-get install --no-install-recommends -y gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /tmp/llvm-cov.tar.gz \
         https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.0/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz \
     && printf '%s  %s\n' b068f7c98841aacb9c4f382b4a0c184ae82f49b56a32d442b429b2961c73be15 /tmp/llvm-cov.tar.gz \
@@ -225,7 +228,7 @@ RUN apt-get update \
     && tar -xzf /tmp/llvm-cov.tar.gz -C /usr/local/cargo/bin cargo-llvm-cov \
     && chmod 0755 /usr/local/cargo/bin/cargo-llvm-cov \
     && rm -f /tmp/llvm-cov.tar.gz /tmp/llvm-cov.sha256 \
-    && curl --fail --location --silent --show-error \
+    && curl --fail --location --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors \
         --output /tmp/cargo-audit.tar.gz \
         https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.2/cargo-audit-x86_64-unknown-linux-gnu-v0.22.2.tgz \
     && printf '%s  %s\n' ab28a1bdb54db4d5d8ad5981cf1f959410370b3d28250dbd35f6a44248620e39 /tmp/cargo-audit.tar.gz \

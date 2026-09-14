@@ -40,17 +40,22 @@ trait WorkerClients
         );
     }
 
-    public function typescriptWorkerClient(): ProcessScannerClient
+    /**
+     * @param array<string, string> $environment extra variables for the worker,
+     *        passed through `env` because the supervisor's allowlist drops them
+     */
+    public function typescriptWorkerClient(array $environment = []): ProcessScannerClient
     {
         $coverageDirectory = getenv('KNOSSOS_JS_COVERAGE_DIR');
-        $command = is_string($coverageDirectory) && $coverageDirectory !== ''
-            ? [
-                'env',
-                'NODE_V8_COVERAGE=' . $coverageDirectory,
-                'node',
-                self::repositoryRoot() . '/workers/typescript/bin/worker.js',
-            ]
-            : ['node', self::repositoryRoot() . '/workers/typescript/bin/worker.js'];
+        if (is_string($coverageDirectory) && $coverageDirectory !== '') {
+            $environment['NODE_V8_COVERAGE'] = $coverageDirectory;
+        }
+        $assignments = [];
+        foreach ($environment as $name => $value) {
+            $assignments[] = $name . '=' . $value;
+        }
+        $worker = ['node', self::repositoryRoot() . '/workers/typescript/bin/worker.js'];
+        $command = $assignments === [] ? $worker : ['env', ...$assignments, ...$worker];
         return new ProcessScannerClient(
             $command,
             new WorkerLimits(requestTimeoutMs: 20_000, maxLineBytes: 2_000_000, maxOutputBytes: 30_000_000),

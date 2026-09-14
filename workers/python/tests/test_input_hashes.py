@@ -11,12 +11,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import pytest
+from conftest import WORKER_PATH
 
 
 def _sha(data: bytes) -> str:
@@ -992,8 +995,14 @@ def test_a_stable_tree_with_links_never_disagrees_with_discovery(worker: ModuleT
 
     assert _disagreements(result["input_hashes"], discovery) == []
     assert None in result["input_hashes"].values()
-    # A link below node_modules is never keyed.
-    assert not [key for key in result["input_hashes"] if "node_modules" in key.split("/")]
+    # A link below node_modules is keyed like any other: the probes through it
+    # read no bytes, and a null there is what the core accepts at commit for a
+    # path reached through a link.
+    assert {key: value for key, value in result["input_hashes"].items() if "node_modules" in key.split("/")} == {
+        "vendored/node_modules/dep": None,
+        "vendored/node_modules/dep/mod/__init__.py": None,
+        "vendored/node_modules/dep/mod.py": None,
+    }
     assert all("content_hash" in contribution for contribution in contributions.values())
 
 
@@ -1050,3 +1059,42 @@ def test_shebang_refusal_evidence_is_null_unless_the_whole_file_still_refuses(
     assert worker.shebang_refusal_evidence(tmp_path / "python", 1000) is None
     assert worker.shebang_refusal_evidence(tmp_path / "late", 1000) == _sha(late)
     assert worker.shebang_refusal_evidence(tmp_path / "gone", 1000) is None
+
+
+_READ_A_FIFO = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("knossos_python_worker", sys.argv[1])
+worker = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(worker)
+from pathlib import Path
+try:
+    worker.read_bounded(Path(sys.argv[2]), 64)
+except OSError as error:
+    print("refused:", error)
+else:
+    print("read")
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are unavailable here.")
+def test_a_bounded_read_refuses_a_fifo_without_blocking(tmp_path: Path) -> None:
+    # Opening a FIFO for reading blocks until a writer appears, so the read runs
+    # in a child process a timeout can kill instead of hanging the suite. A
+    # FIFO swapped in after the walk's lstat reaches this read directly.
+    fifo = tmp_path / "pipe.py"
+    os.mkfifo(fifo)
+
+    child = subprocess.run(
+        [sys.executable, "-c", _READ_A_FIFO, str(WORKER_PATH), str(fifo)],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=True,
+    )
+
+    assert child.stdout == f"refused: Not a regular file: {fifo}\n"
+
+
+def test_a_bounded_read_refuses_a_directory(worker: ModuleType, tmp_path: Path) -> None:
+    with pytest.raises(OSError, match="Not a regular file"):
+        worker.read_bounded(tmp_path, 64)

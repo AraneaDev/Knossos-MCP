@@ -37,7 +37,7 @@ scanner manifest:
 ```json
 {
     "id": "knossos.typescript",
-    "version": "0.5.0",
+    "version": "0.6.0",
     "protocol_version": "1.0",
     "output_schema_version": "1.0",
     "languages": ["typescript", "javascript"],
@@ -162,11 +162,12 @@ absent field then becomes a violation the core would otherwise say nothing
 about, per the next paragraph.
 
 The core compares every path the result names against what discovery recorded,
-the same as it does for `content_hash`. A path discovery does not track, such
-as a dependency outside the scanned tree, is ignored: freshness never covered
-it. A hash that differs from discovery's, or a `null` for a path discovery
-does track, fails the scan with `KNOSSOS_SCAN_SNAPSHOT_CHANGED`, the same as a
-`content_hash` mismatch, regardless of declaration. A worker that declares the
+the same as it does for `content_hash`. A path discovery does not track is
+not compared with discovery: it is re-read when the scan commits, as described
+below, and a dependency outside the scanned tree has no key at all. A hash that
+differs from discovery's, or a `null` for a path discovery does track, fails
+the scan with `KNOSSOS_SCAN_SNAPSHOT_CHANGED`, the same as a `content_hash`
+mismatch, regardless of declaration. A worker that declares the
 capability but omits the field, or sends one that is not an object keyed by
 path, is refused as `WORKER_RESPONSE_INVALID` and degrades its language for
 the scan, whether or not the request read anything: an empty result still
@@ -238,14 +239,31 @@ one does.
   reached, as a path relative to the root, with the hash of the bytes read.
 - **A read that followed links** also goes under every link it followed inside
   the root, and under each such link joined with the path components that were
-  still to be walked below it, with the same value. The first of those is the
-  path as your worker wrote it. Leave out a joined path that still holds a
-  `..`, because only the kernel's lookup could apply it, and leave out anything
-  below `node_modules` or outside the root. A discovered file swapped for a
-  link to another file, or a discovered directory swapped for a link to another
-  directory, is then checked against its own hash. Resolve links component by
-  component, the way the kernel does, applying a `..` after the link before it
-  has been followed: collapsing `a/link/../b` as text names a different file.
+  still to be walked below it. The first of those is the path as your worker
+  wrote it. A joined path, and a link followed as the last component, take the
+  read's value. A link followed with components still to walk below it takes
+  the value the link names as itself, whichever file below it was read: `null`
+  when it leads to a directory or to nothing, and the hash of the file within
+  the byte cap when it leads to a file, so the walk failed below it. Leave
+  out a joined path that still holds a `..`, because only the kernel's lookup
+  could apply it, and leave out anything outside the root. A discovered file
+  swapped for a link to another file, or a discovered directory swapped for a
+  link to another directory, is then checked against its own hash. Resolve
+  links component by component, the way the kernel does, applying a `..` after
+  the link before it has been followed: collapsing `a/link/../b` as text names
+  a different file.
+- **One key, one value.** The core re-reads every key discovery did not hash
+  when the scan commits, and fails a scan in which two requests report one key
+  with two values. On a tree that is not changing, give each key the value its
+  path has, whichever read or probe reached it: the hash of the in-root regular
+  file it resolves to within the byte cap, or `null`. The packaged TypeScript
+  worker reports `node_modules` reads this way. An existence probe that finds a
+  file present through a link hashes that file for the link's keys, so a
+  package probed through a pnpm-style link in one request and read through it
+  in another reports the same values in both. A worker may instead report
+  `null` under every link key, in every request, since a `null` is valid for a
+  path reached through a link; the file the walk reached is still keyed and
+  verified at its own location. The packaged Python worker does this.
 - **A read your worker refused** (over the byte cap, or resolving outside the
   root) goes under the same keys as `null`: the facts that needed it were
   computed without it.
@@ -281,10 +299,15 @@ one does.
 - **An existence check whose answer decides facts**, such as a module
   resolution candidate, a realpath, or a check for a package marker, goes under
   the keys of its walk as `null` when it finds nothing or finds something that
-  is not a file. When it finds the file, it read no bytes, so record `null`
-  only under the link keys of its walk; the read that follows records the
-  location. Discovery never reports an absent path or a link, so these entries
-  cost a stable tree nothing.
+  is not a file. When it finds the file, leave the location itself to the read
+  that follows, and give the walk's link keys the values a read through the
+  same path would: the hash of the file within the byte cap under the joined
+  paths and a link followed as the last component, and a link followed with
+  components below it as above. A check that recorded `null` there while a read
+  in another request recorded the hash would fail every scan of that tree. The
+  alternative is `null` under the link keys for the check and for every read
+  through the link, as the packaged Python worker records them: its index
+  checks a module before each read, and the two disagree into `null`.
 - **Reads that disagree** about one key within a request, in hash or in
   whether they succeeded, go under that key as `null`.
 
@@ -293,23 +316,33 @@ the project units beside them, the manifests and configuration files such as
 `package.json`, `tsconfig.json`, `Cargo.toml`, `pyproject.toml` and
 `composer.json` (a manifest discovery read but could not parse is checked too).
 Record a read of one of those like any other read: the hash of its raw bytes
-under the walk's keys, or `null` when the read failed or went over the cap. The
-core ignores any other key, so an extra `null` for a path discovery does not
-track is always safe. A key that names a checked path with the wrong value is
-not: it fails every scan of that tree. After every worker has returned, the
-core also re-hashes each of those paths, units included, and fails the scan
-when one no longer matches.
+under the walk's keys, or `null` when the read failed or went over the cap. A
+key that names a checked path with the wrong value fails every scan of that
+tree. After every worker has returned, the core also re-hashes each of those
+paths, units included, and fails the scan when one no longer matches.
+
+Every other key, a path discovery did not hash, is verified when the scan
+commits, after the discovered paths. A hash must still equal the SHA-256 of
+the in-root file the path leads to, read within the byte cap. A `null` is valid
+only while the path is absent, not a regular file, reached through a link, or
+over the cap: a `null` for an in-root, readable regular file fails the scan.
+So an extra `null` is not free. Report one only for a read or check that
+really failed or found nothing.
 
 #### Known limits
 
 - A file discovery never hashed (below `node_modules`, in an ignored path, over
   the cap, or not a recognised manifest, such as an `extends` target not named
-  `tsconfig*.json`), including one created and removed while a request reads
-  it, is not verified. The core checks only paths discovery hashed, so a read
-  of any other file that fed facts leaves no entry it can compare.
+  `tsconfig*.json`) is verified at commit against a re-read, and so is one
+  created and removed while a request reads it, and a `node_modules`
+  declaration the TypeScript worker reads. It is not tracked for freshness:
+  discovery records no hash for it, so a later scan cannot tell that it
+  changed, and facts derived from it stay until the files that read it are
+  scanned again for another reason.
 - On a case-insensitive volume, a worker's key and discovery's path can spell
   the same file differently. The core compares paths exactly, so such a read
-  is ignored rather than checked.
+  is not checked against discovery's hash, only re-read at commit like any
+  other undiscovered key.
 - The tree can change between a worker's walk of a path and its read. The read
   is still verified: it hashes the bytes it actually got and records them under
   the walk's keys, where they disagree with discovery's hash unless they are
@@ -319,8 +352,9 @@ when one no longer matches.
 
 `input_hashes` is evidence for this check alone. The core strips it from the
 result before folding the rest into `scanner_metadata`, so it never reaches a
-scan report and is never summed or otherwise merged across a language's
-requests.
+scan report and is never summed into that metadata. It is compared across
+requests instead: the same key reported with two values by two requests, of
+one language or of different languages, fails the scan as a conflict.
 
 Required fact properties are defined by the DTOs under
 `src/Scanner/Protocol`. Paths are project-relative, source lines are one-based,

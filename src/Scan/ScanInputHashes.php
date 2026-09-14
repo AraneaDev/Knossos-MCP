@@ -32,8 +32,10 @@ use Knossos\Scanner\Worker\WorkerException;
  * stance as {@see ContributionCacheService}'s per-contribution check holds: a
  * hash is evidence of a changed tree whoever sends it, and a hash that cannot be
  * verified is refused rather than trusted. A path discovery never hashed, such as
- * a dependency outside the scanned tree, has no recorded content to disagree with
- * and is ignored.
+ * a `node_modules` declaration or a module under an ignored path, has no
+ * recorded content to disagree with here, so its entry is returned instead and
+ * the caller collects it in {@see UndiscoveredInputs}, to be re-read by
+ * {@see UndiscoveredInputVerifier} just before the scan commits.
  *
  * One limitation comes from how frames are decoded. The channel decodes JSON
  * into PHP arrays, which turns a numeric-string object key into an int, and
@@ -56,25 +58,28 @@ final class ScanInputHashes
      *
      * @param array<string, mixed> $result the request's final result
      * @param array<string, object> $discoveredByPath every path discovery hashed (source files, project units, unparsed manifests), keyed by relative path
+     * @return array<string, string|null> the entries for paths discovery did not hash, keyed by a validated project-relative path
      * @throws WorkerException when a declaring worker omitted the field, it is malformed, or a hash cannot be verified
      * @throws ScanSnapshotChangedException when a discovered file was read from other bytes, or could not be read
      */
-    public static function verify(array $result, ScannerManifest $manifest, array $discoveredByPath): void
+    public static function verify(array $result, ScannerManifest $manifest, array $discoveredByPath): array
     {
         if (!array_key_exists(self::FIELD, $result)) {
             if (in_array(Protocol::CAPABILITY_INPUT_HASHES, $manifest->capabilities, true)) {
                 throw self::invalid($manifest, sprintf('declares the %s capability but its scan result carries no %s', Protocol::CAPABILITY_INPUT_HASHES, self::FIELD));
             }
 
-            return;
+            return [];
         }
         // Shape first, for the whole map, so a malformed entry is reported as
         // such even when an earlier one would have failed the scan.
         $reads = InputHashesMap::decode($result[self::FIELD], $manifest->id);
+        $undiscovered = [];
         foreach ($reads as $path => $hash) {
             $path = (string) $path;
             $file = $discoveredByPath[$path] ?? null;
             if ($file === null) {
+                $undiscovered[$path] = $hash;
                 continue;
             }
             if ($hash === null) {
@@ -88,6 +93,8 @@ final class ScanInputHashes
                 throw ScanSnapshotChangedException::inputReadDifferently($path);
             }
         }
+
+        return $undiscovered;
     }
 
     /** A malformed or unverifiable result, which costs the worker's language rather than the scan. */

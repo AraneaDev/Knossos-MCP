@@ -338,10 +338,14 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $drift = (new GitDriftOracle($pdo, $this->failingRunner()))
-                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            $drift = false;
+            $logged = $this->errorLogOf(function () use (&$drift, $pdo, $projectId, $scanId, $root): void {
+                $drift = (new GitDriftOracle($pdo, $this->failingRunner()))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
 
             self::assertNull($drift, 'A rebased or garbage-collected commit must hand over to the walk, not report zero drift.');
+            self::assertStringContainsString('knossos drift query: git could not answer', $logged, 'A declined oracle must leave a breadcrumb.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -366,10 +370,14 @@ final class GitDriftOracleTest extends KnossosTestCase
         try {
             file_put_contents($root . '/src/a.php', "<?php\nfinal class A {}\n");
 
-            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', ['src/a.php'], [])))
-                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            $drift = false;
+            $logged = $this->errorLogOf(function () use (&$drift, $pdo, $projectId, $scanId, $root): void {
+                $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', ['src/a.php'], [])))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
 
             self::assertNull($drift, 'A failed index cross-check must decline the oracle outright, not decide from diff and untracked candidates alone.');
+            self::assertStringContainsString('knossos drift query: git ls-files --cached could not answer', $logged);
         } finally {
             $this->removeTempTree($root);
         }
@@ -494,10 +502,14 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
-                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            $drift = false;
+            $logged = $this->errorLogOf(function () use (&$drift, $pdo, $projectId, $scanId, $root): void {
+                $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
 
             self::assertNull($drift, 'A failed index cross-check must decline the oracle even when diff and untracked both report nothing changed.');
+            self::assertStringContainsString('knossos drift query: git ls-files --cached could not answer', $logged);
         } finally {
             $this->removeTempTree($root);
         }
@@ -594,7 +606,7 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $log = $this->captureErrorLog(function () use ($pdo, $projectId, $scanId, $root): void {
+            $log = $this->errorLogOf(function () use ($pdo, $projectId, $scanId, $root): void {
                 (new GitDriftOracle($pdo, $this->failingRunner()))
                     ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
             });
@@ -615,7 +627,7 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $log = $this->captureErrorLog(function () use ($pdo, $projectId, $scanId, $root): void {
+            $log = $this->errorLogOf(function () use ($pdo, $projectId, $scanId, $root): void {
                 (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
                     ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
             });
@@ -908,30 +920,6 @@ final class GitDriftOracleTest extends KnossosTestCase
         $statement->execute(['id' => $scanId]);
 
         return (string) $statement->fetchColumn();
-    }
-
-    /**
-     * Points PHP's `error_log` ini directive at a temporary file for the
-     * duration of $trigger, so `error_log()` calls land somewhere assertable
-     * instead of stderr or syslog, then restores the previous setting in a
-     * `finally` — the same restore-in-finally discipline the putenv
-     * kill-switch tests use, so nothing leaks into a later test. Never
-     * touches stdout, which carries MCP protocol frames rather than
-     * diagnostics.
-     */
-    private function captureErrorLog(callable $trigger): string
-    {
-        $previous = ini_get('error_log');
-        $tmpFile = tempnam(sys_get_temp_dir(), 'knossos-errlog-');
-        ini_set('error_log', $tmpFile);
-        try {
-            $trigger();
-
-            return (string) file_get_contents($tmpFile);
-        } finally {
-            ini_set('error_log', $previous === false ? '' : $previous);
-            @unlink($tmpFile);
-        }
     }
 
     /**

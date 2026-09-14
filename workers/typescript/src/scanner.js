@@ -193,23 +193,23 @@ export class TypeScriptScanner {
         let programs = 0;
         let programsReused = 0;
 
+        const request = {
+            root,
+            maxFileBytes,
+            reads,
+            requestedSet,
+            emitted,
+            emit,
+        };
+        const tally = (outcome) => {
+            if (outcome === undefined) return;
+            ++programs;
+            if (outcome.reused) ++programsReused;
+        };
+
         for (const configPath of configPaths) {
             const parsed = parseConfig(root, configPath, reads);
-            const key = `${root}\0${configPath}`;
-            this.#reserveProgramSlot(key);
-            const oldProgram = this.programCache.get(key);
-            const program = createRestrictedProgram(
-                root,
-                parsed,
-                oldProgram,
-                maxFileBytes,
-                reads,
-            );
-            this.#cacheProgram(key, program);
-            if (oldProgram) ++programsReused;
-            recordUnreadSourceFiles(root, program, reads);
-            this.#emitProgram(root, program, requestedSet, emitted, emit);
-            ++programs;
+            tally(this.#scanProgram(`${root}\0${configPath}`, parsed, request));
             if (emitted.size === requestedSet.size) break;
         }
 
@@ -236,21 +236,7 @@ export class TypeScriptScanner {
                 ),
                 projectReferences: undefined,
             };
-            const key = `${root}\0<fallback>`;
-            this.#reserveProgramSlot(key);
-            const oldProgram = this.programCache.get(key);
-            const program = createRestrictedProgram(
-                root,
-                parsed,
-                oldProgram,
-                maxFileBytes,
-                reads,
-            );
-            this.#cacheProgram(key, program);
-            if (oldProgram) ++programsReused;
-            recordUnreadSourceFiles(root, program, reads);
-            this.#emitProgram(root, program, requestedSet, emitted, emit);
-            ++programs;
+            tally(this.#scanProgram(`${root}\0<fallback>`, parsed, request));
         }
 
         // Backstop: the PHP side requires exactly one contribution per requested
@@ -284,6 +270,70 @@ export class TypeScriptScanner {
             programs_reused: programsReused,
             input_hashes: reads.toResult(),
         };
+    }
+
+    /**
+     * Build one program and emit the requested files it covers.
+     *
+     * The compiler recurses once per import while it builds a program, so an
+     * import chain deeper than the thread's stack throws a RangeError out of
+     * `createProgram` (or out of the checker walking the same chain). That
+     * costs the files of this one program, not the whole request: each gets a
+     * facts-free contribution saying why, and the remaining configs and the
+     * fallback still run. Whatever reads were recorded before the overflow stay
+     * recorded.
+     *
+     * @returns {{reused: boolean}|undefined} undefined when the stack overflowed
+     */
+    #scanProgram(
+        key,
+        parsed,
+        { root, maxFileBytes, reads, requestedSet, emitted, emit },
+    ) {
+        this.#reserveProgramSlot(key);
+        const oldProgram = this.programCache.get(key);
+        let program;
+        try {
+            program = createRestrictedProgram(
+                root,
+                parsed,
+                oldProgram,
+                maxFileBytes,
+                reads,
+            );
+            this.#cacheProgram(key, program);
+            recordUnreadSourceFiles(root, program, reads, maxFileBytes);
+            this.#emitProgram(root, program, requestedSet, emitted, emit);
+        } catch (error) {
+            if (!isStackOverflow(error)) throw error;
+            const covered = [
+                ...parsed.fileNames,
+                ...(program?.getSourceFiles() ?? []).map(
+                    (file) => file.fileName,
+                ),
+            ];
+            for (const fileName of covered) {
+                const relative = relativeInside(root, fileName);
+                if (
+                    relative === null ||
+                    belowNodeModules(relative) ||
+                    !requestedSet.has(relative) ||
+                    emitted.has(relative)
+                ) {
+                    continue;
+                }
+                emit(
+                    factFreeContribution(
+                        relative,
+                        "TS_PROGRAM_TOO_DEEP",
+                        "The TypeScript compiler exceeded its stack building the program for this file's configuration (for example, an import chain too deep to follow), so its facts are omitted.",
+                    ),
+                );
+                emitted.add(relative);
+            }
+            return undefined;
+        }
+        return { reused: oldProgram !== undefined };
     }
 
     // Free a slot before the next program is built. A program is constructed
@@ -323,7 +373,7 @@ export class TypeScriptScanner {
             const relative = relativeInside(root, sourceFile.fileName);
             if (
                 relative === null ||
-                relative.includes("/node_modules/") ||
+                belowNodeModules(relative) ||
                 !requestedSet.has(relative) ||
                 emitted.has(relative)
             ) {
@@ -830,8 +880,7 @@ class TypeScriptLanguageFactCollector {
         );
         if (!declaration) return null;
         const relative = relativeInside(this.root, declaration.fileName);
-        if (relative === null || relative.includes("/node_modules/"))
-            return null;
+        if (relative === null || belowNodeModules(relative)) return null;
         return reference("module", relative);
     }
 
@@ -852,7 +901,7 @@ class TypeScriptLanguageFactCollector {
             this.root,
             declaration.getSourceFile().fileName,
         );
-        if (relative === null || relative.includes("/node_modules/")) {
+        if (relative === null || belowNodeModules(relative)) {
             const name = symbol?.getName();
             return name && !name.startsWith("__")
                 ? reference(`external_${hint}`, name)
@@ -981,7 +1030,8 @@ function readRecorded(root, file, reads, maxFileBytes) {
             normalized,
             library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
         );
-    } catch {
+    } catch (error) {
+        rethrowStackOverflow(error);
         buffer = undefined;
     }
     if (!library)
@@ -992,6 +1042,7 @@ function readRecorded(root, file, reads, maxFileBytes) {
             buffer === undefined
                 ? null
                 : createHash("sha256").update(buffer).digest("hex"),
+            maxFileBytes,
         );
     return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
 }
@@ -1066,7 +1117,7 @@ function readHashedSourceFile(
         walked.kind !== "file" ||
         !(contains(root, walked.location) || library)
     ) {
-        recordWalked(reads, root, walked, null);
+        recordWalked(reads, root, walked, null, maxFileBytes);
         return undefined;
     }
     let buffer;
@@ -1077,11 +1128,12 @@ function readHashedSourceFile(
             walked.location,
             library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
         );
-    } catch {
+    } catch (error) {
+        rethrowStackOverflow(error);
         buffer = undefined;
     }
     if (buffer === undefined) {
-        recordWalked(reads, root, walked, null);
+        recordWalked(reads, root, walked, null, maxFileBytes);
         return undefined;
     }
     const contentHash = createHash("sha256").update(buffer).digest("hex");
@@ -1094,17 +1146,28 @@ function readHashedSourceFile(
     );
     parsedContentHashes.set(sourceFile, contentHash);
     reads.created(sourceFile);
-    recordWalked(reads, root, walked, contentHash);
+    recordWalked(reads, root, walked, contentHash, maxFileBytes);
     return sourceFile;
 }
 
 /**
  * Read a file's bytes, or undefined when it holds more than `maxBytes`: at most
  * one byte past the cap is ever read.
+ *
+ * Throws for anything but a regular file. Opening a FIFO for reading blocks
+ * until a writer appears, and a walk reports any non-directory as a file, so
+ * the path is opened without blocking (which changes nothing for a regular
+ * file) and the handle, not the path, is checked, so a path swapped for a FIFO
+ * after a check of it cannot slip through.
  */
 function readBounded(file, maxBytes) {
-    const handle = fs.openSync(file, "r");
+    const handle = fs.openSync(
+        file,
+        fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+    );
     try {
+        if (!fs.fstatSync(handle).isFile())
+            throw new Error(`Not a regular file: ${file}`);
         const chunks = [];
         let total = 0;
         const limit = maxBytes + 1;
@@ -1125,17 +1188,20 @@ function readBounded(file, maxBytes) {
 
 /**
  * The key a read of `absolute` goes under in `input_hashes`, or null for a read
- * the core cannot track: outside the root (the default library) or below a
- * node_modules directory, which discovery never reports.
+ * the core cannot track: the root itself, anything outside it, or the default
+ * library, which is the worker's own and never the project's, even under a
+ * root that happens to contain the worker.
+ *
+ * A path below node_modules is keyed like any other. Discovery never hashes
+ * one, so the core re-reads it when the scan commits: declarations resolved
+ * through a dependency decide the facts of every file importing it.
  */
 function inputHashKey(root, absolute) {
     const relative = relativeInside(root, absolute);
     if (
         relative === null ||
         relative === "" ||
-        relative === "node_modules" ||
-        relative.startsWith("node_modules/") ||
-        relative.includes("/node_modules/")
+        contains(defaultLibDirectory(), absolute)
     ) {
         return null;
     }
@@ -1151,44 +1217,106 @@ function inputHashKey(root, absolute) {
  * below it. The first of those is the path as written, which the host always
  * receives normalised, without a `..`. A `..` among the components below a
  * later link could only be applied by the walk, so such a path is left out, as
- * is anything outside the root or below node_modules.
+ * is anything inputHashKey refuses: the root itself, anything outside it, and
+ * the default library.
  *
  * Discovery never reports a link and never descends into a linked directory,
- * so on a stable tree every linked key names a path the core ignores. Mid-scan,
- * a discovered file swapped for a link (to another file, to a directory, or on
- * a package's resolved path) is keyed where discovery saw it, so the read or
- * probe that went through it is checked against discovery's hash.
+ * so on a stable tree every linked key names a path discovery did not hash.
+ * Mid-scan, a discovered file swapped for a link (to another file, to a
+ * directory, or on a package's resolved path) is keyed where discovery saw it,
+ * so the read or probe that went through it is checked against discovery's
+ * hash.
  *
- * @returns {{final: string|null, linked: string[]}}
+ * The core re-reads every key discovery did not hash when the scan commits,
+ * and fails the scan when two requests, or two programs, report one key with
+ * two values. So a key's value must be what that path itself names on a stable
+ * tree, whichever read or probe reported it. Linked keys come in two kinds:
+ *
+ * - `through`: the path as written, and a link with the components below it.
+ *   Each resolves exactly as the walk does, so it takes the walk's value.
+ * - `directories`: a link the walk followed with components still to apply
+ *   below it. It never names the file the walk reached: a hash of that file
+ *   would differ from one read below it to the next. Its value is the link's
+ *   own (see recordLinked): null for a directory or nothing, and the hash of
+ *   the file it leads to when the walk failed below it because it is a file.
+ *
+ * A link followed as the last component is a `through` key even when the walk
+ * ends at a directory or at nothing; a read of either records null anyway.
+ *
+ * @returns {{final: string|null, through: string[], directories: string[]}}
  */
 function walkKeys(root, walked) {
     const location = inputKeyLocation(root, walked);
     const final = location === null ? null : inputHashKey(root, location);
-    const linked = new Set();
-    const add = (candidate) => {
+    const through = new Set();
+    const directories = new Set();
+    const add = (set, candidate) => {
         const key = inputHashKey(root, candidate);
-        if (key !== null && key !== final) linked.add(key);
+        if (key !== null && key !== final) set.add(key);
     };
     for (const link of walked.links) {
         if (!contains(root, link.location)) continue;
-        add(link.location);
         const rest = link.rest.filter((name) => name !== "" && name !== ".");
-        if (rest.length > 0 && !rest.includes(".."))
-            add(`${link.location}/${rest.join("/")}`);
+        if (rest.length === 0) {
+            add(through, link.location);
+            continue;
+        }
+        add(directories, link.location);
+        if (!rest.includes(".."))
+            add(through, `${link.location}/${rest.join("/")}`);
     }
-    return { final, linked: [...linked] };
+    return { final, through: [...through], directories: [...directories] };
 }
 
 /** Record a read, hashed or failed, under every key its walk gives. */
-function recordWalked(reads, root, walked, contentHash) {
-    const { final, linked } = walkKeys(root, walked);
-    if (final !== null) reads.record(final, contentHash);
-    for (const key of linked) reads.record(key, contentHash);
+function recordWalked(reads, root, walked, contentHash, maxFileBytes) {
+    const keys = walkKeys(root, walked);
+    if (keys.final !== null) reads.record(keys.final, contentHash);
+    recordLinked(reads, root, walked, keys, contentHash, maxFileBytes);
+}
+
+/**
+ * Record a walk's linked keys: its `through` keys with the value given, and its
+ * `directories` keys with the value the link itself names, whatever was read
+ * below it (see walkKeys).
+ *
+ * A walk that reached a file or a directory went through every such link as a
+ * directory, so each is null. A walk that failed may have failed at the link's
+ * own target, a file with more still to walk below it (ENOTDIR), and a
+ * `/// <reference path="./lnk.ts/x.d.ts" />` does exactly that to a link a
+ * read in another request opens as a file. So the link is walked again as
+ * itself and keyed as a read of it would be: the hash of the in-root file it
+ * leads to within the byte cap, or null.
+ */
+function recordLinked(
+    reads,
+    root,
+    walked,
+    { through, directories },
+    throughValue,
+    maxFileBytes,
+) {
+    for (const key of through) reads.record(key, throughValue);
+    const traversed = walked.kind === "file" || walked.kind === "directory";
+    for (const key of directories) {
+        reads.record(
+            key,
+            traversed ? null : linkedFileHash(root, key, maxFileBytes),
+        );
+    }
+}
+
+/** The hash of the in-root file a project-relative path leads to, or null. */
+function linkedFileHash(root, relative, maxFileBytes) {
+    const walked = walkPath(`${root}/${relative}`);
+    return walked.kind === "file" && contains(root, walked.location)
+        ? boundedHash(walked.location, maxFileBytes)
+        : null;
 }
 
 /** Record a path the host would not or could not read as a failed read. */
-function recordRefused(reads, root, absolute) {
-    recordWalked(reads, root, walkPath(absolute), null);
+function recordRefused(reads, root, absolute, maxFileBytes) {
+    recordWalked(reads, root, walkPath(absolute), null, maxFileBytes);
 }
 
 /**
@@ -1197,16 +1325,46 @@ function recordRefused(reads, root, absolute) {
  *
  * A probe answering absent, or not a file, records null under every key its
  * walk gives: the compiler goes on as if the file were not there, so a
- * discovered file missing for that moment must fail verification. A probe
- * answering present read no bytes, so it vouches for nothing at the location it
- * reached, which a read will record; it records null only under the linked
- * keys, so a discovered path that had become a link is still caught. Discovery
- * never reports an absent path or a link, so a stable tree is unaffected.
+ * discovered file missing for that moment must fail verification.
+ *
+ * A probe answering present vouches for nothing at the location it reached,
+ * which a read will record. Its linked keys still need a value, so that a
+ * discovered path that had become a link is caught. That value must be the one
+ * a read through the same path records (see walkKeys): a module resolution
+ * probes a package's files through its link in one request, while a
+ * `/// <reference path>` reads them through it in another, and the core fails
+ * a scan whose requests disagree on a key. So when the walk ended at a file and
+ * has `through` keys, the file is read within the byte cap and those keys get
+ * its hash, or null when that read fails or goes over the cap, as a read of it
+ * would. Anything else a present probe reached, a directory, gives them null.
  */
-function recordProbe(reads, root, walked, present) {
-    const { final, linked } = walkKeys(root, walked);
-    if (!present && final !== null) reads.record(final, null);
-    for (const key of linked) reads.record(key, null);
+function recordProbe(reads, root, walked, present, maxFileBytes) {
+    const keys = walkKeys(root, walked);
+    if (!present && keys.final !== null) reads.record(keys.final, null);
+    recordLinked(
+        reads,
+        root,
+        walked,
+        keys,
+        present && walked.kind === "file" && keys.through.length > 0
+            ? boundedHash(walked.location, maxFileBytes)
+            : null,
+        maxFileBytes,
+    );
+}
+
+/** The hash of a file read within the byte cap, or null when that read fails. */
+function boundedHash(file, maxFileBytes) {
+    let buffer;
+    try {
+        buffer = readBounded(file, maxFileBytes);
+    } catch (error) {
+        rethrowStackOverflow(error);
+        return null;
+    }
+    return buffer === undefined
+        ? null
+        : createHash("sha256").update(buffer).digest("hex");
 }
 
 // Linux's MAXSYMLINKS: one lookup follows at most this many links, and the
@@ -1257,6 +1415,7 @@ function walkPath(absolute) {
         try {
             stat = fs.lstatSync(candidate);
         } catch (error) {
+            rethrowStackOverflow(error);
             return error?.code === "ENOENT"
                 ? absentBelow(candidate, remaining, links)
                 : { kind: "unresolvable", links };
@@ -1268,7 +1427,8 @@ function walkPath(absolute) {
             let target;
             try {
                 target = normalize(fs.readlinkSync(candidate));
-            } catch {
+            } catch (error) {
+                rethrowStackOverflow(error);
                 return { kind: "unresolvable", links };
             }
             if (path.isAbsolute(target)) {
@@ -1323,9 +1483,9 @@ function parentDirectory(directory, top) {
  *
  * - A walk that ended at a file, a missing location or a directory inside the
  *   root: that location, the path the read opened or would have opened. A
- *   directory read fails (EISDIR); discovery never reports a directory, so the
- *   key is ignored on a stable tree, while a discovered file replaced by one
- *   mid-scan fails verification.
+ *   directory read fails (EISDIR) and is recorded as null, which the core
+ *   accepts at commit for a path that is not a regular file, while a
+ *   discovered file replaced by one mid-scan fails verification.
  * - Otherwise the last link followed inside the root. A link followed as a
  *   directory component keys the path below it as it was about to be walked
  *   (a discovered `src/sub/c.ts` whose `src/sub` became a link out of the root
@@ -1334,8 +1494,12 @@ function parentDirectory(directory, top) {
  *
  * Every key a stable layout produces this way names either the file the
  * kernel reaches, or a link or a path through one, which discovery never
- * reports and the core ignores. A discovered file changed into one of those
- * mid-scan is keyed where discovery saw it, so it fails verification.
+ * reports. The core verifies such an undiscovered key when the scan commits: a
+ * hash must still match the in-root regular file within the cap that the path
+ * names, and a null is valid only while the path is absent, not a regular
+ * file, a link, or over the cap. A discovered file changed into one of those
+ * mid-scan is keyed where discovery saw it, so it fails verification against
+ * discovery's hash.
  */
 function inputKeyLocation(root, walked) {
     if (walked.kind !== "unresolvable" && contains(root, walked.location)) {
@@ -1360,7 +1524,7 @@ function inputKeyLocation(root, walked) {
  * here so that a compiler that kept an earlier request's SourceFile would make
  * that file's facts unverifiable rather than vouched for by the earlier read.
  */
-function recordUnreadSourceFiles(root, program, reads) {
+function recordUnreadSourceFiles(root, program, reads, maxFileBytes) {
     for (const sourceFile of program.getSourceFiles()) {
         if (reads.createdThisRequest(sourceFile)) continue;
         const absolute = normalize(
@@ -1373,6 +1537,7 @@ function recordUnreadSourceFiles(root, program, reads) {
             root,
             walkPath(absolute),
             parsedContentHashes.get(sourceFile) ?? null,
+            maxFileBytes,
         );
     }
 }
@@ -1405,14 +1570,16 @@ function createRestrictedProgram(
         // A refused path is left out of the program, so the facts of every file
         // that imports or includes it are computed as if it did not exist. It
         // is recorded as a failed read under the key a read of it would have
-        // gone under (walkPath, inputKeyLocation): a stable layout never trips over
-        // that, since discovery reports neither a symlink nor an over-cap file
-        // and the core ignores a path it did not discover, while a discovered
-        // file that became one mid-scan fails verification.
+        // gone under (walkPath, inputKeyLocation). A stable layout never trips
+        // over that null: discovery reports neither a symlink nor an over-cap
+        // file, and the core verifies an undiscovered key at commit, where a
+        // null is valid only for a path that is absent, not a regular file, a
+        // link, or over the cap, which is what a refusal names. A discovered
+        // file that became one mid-scan fails verification against discovery.
         const absolute = normalize(path.resolve(realSourcePath(fileName)));
         reads.observe("load", absolute);
         const refused = () => {
-            recordRefused(reads, root, absolute);
+            recordRefused(reads, root, absolute, maxFileBytes);
             return undefined;
         };
         if (!allowedCompilerPath(root, fileName)) return refused();
@@ -1446,7 +1613,7 @@ function createRestrictedProgram(
         const walked = walkPath(absolute);
         const present =
             walked.kind === "file" && contains(root, walked.location);
-        recordProbe(reads, root, walked, present);
+        recordProbe(reads, root, walked, present, maxFileBytes);
         return present;
     };
     // Resolution realpaths a package's files before the host is asked for
@@ -1459,7 +1626,8 @@ function createRestrictedProgram(
         let real;
         try {
             real = realpathNative(file);
-        } catch {
+        } catch (error) {
+            rethrowStackOverflow(error);
             real = normalize(file);
         }
         const absolute = normalize(path.resolve(file));
@@ -1471,7 +1639,7 @@ function createRestrictedProgram(
             const present =
                 (walked.kind === "file" || walked.kind === "directory") &&
                 walked.location === real;
-            recordProbe(reads, root, walked, present);
+            recordProbe(reads, root, walked, present, maxFileBytes);
         }
         return real;
     };
@@ -1506,7 +1674,7 @@ function diagnosticsForProgram(program, root) {
         if (!diagnostic.file) continue;
         if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
         const relative = relativeInside(root, diagnostic.file.fileName);
-        if (relative === null || relative.includes("/node_modules/")) continue;
+        if (relative === null || belowNodeModules(relative)) continue;
         const start = diagnostic.start ?? 0;
         const startPosition =
             diagnostic.file.getLineAndCharacterOfPosition(start);
@@ -1899,7 +2067,8 @@ function exceedsByteCap(fileName, maxFileBytes) {
     if (contains(defaultLibDirectory(), normalized)) return false;
     try {
         return fs.statSync(normalized).size > maxFileBytes;
-    } catch {
+    } catch (error) {
+        rethrowStackOverflow(error);
         return false;
     }
 }
@@ -2049,6 +2218,24 @@ function redirectReadsAgree(redirect) {
     return own !== undefined && own === target;
 }
 
+// V8's own message for a JavaScript stack overflow. Any other RangeError is a
+// real fault and keeps propagating.
+function isStackOverflow(error) {
+    return (
+        error instanceof RangeError &&
+        error.message.includes("Maximum call stack size exceeded")
+    );
+}
+
+// For a catch that reads any failure as the filesystem's answer. A stack
+// overflow is not one: a host callback is a leaf frame of a deep program build,
+// so swallowing the overflow there would drop one read and let the build carry
+// on, truncating the program instead of reaching the TS_PROGRAM_TOO_DEEP
+// backstop in #scanProgram.
+function rethrowStackOverflow(error) {
+    if (isStackOverflow(error)) throw error;
+}
+
 // A contribution that carries nothing but the reason one file was skipped.
 function unscannableContribution(relative, message) {
     return factFreeContribution(relative, "TS_UNSCANNABLE_FILE", message);
@@ -2082,8 +2269,16 @@ function namesJavaScriptInShebang(absolute) {
     let buffer;
     let read;
     try {
-        const handle = fs.openSync(absolute, "r");
+        // Non-blocking, and checked on the handle, as readBounded does: the
+        // path may have been swapped for a FIFO, whose open would otherwise
+        // block until a writer appears.
+        const handle = fs.openSync(
+            absolute,
+            fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+        );
         try {
+            if (!fs.fstatSync(handle).isFile())
+                throw new Error(`Not a regular file: ${absolute}`);
             buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
             read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
         } finally {
@@ -2190,6 +2385,19 @@ function allowedCompilerPath(root, candidate) {
     if (!contains(root, normalized)) return false;
     const walked = walkPath(normalized);
     return walked.location === undefined || contains(root, walked.location);
+}
+
+/**
+ * Whether a project-relative path lies below a node_modules directory, at the
+ * top level of the project or nested. A relative path has no leading slash, so
+ * "/node_modules/" alone would miss the project's own node_modules.
+ */
+function belowNodeModules(relative) {
+    return (
+        relative === "node_modules" ||
+        relative.startsWith("node_modules/") ||
+        relative.includes("/node_modules/")
+    );
 }
 
 function relativeInside(root, candidate) {

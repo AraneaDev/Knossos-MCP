@@ -11,9 +11,9 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 EXCLUDED = {
     ".git",
     ".knossos",
@@ -101,8 +101,29 @@ def read_bounded(path: Path, max_bytes: int) -> bytes:
     A size checked before the read can belong to a file replaced before it, and
     the replacement must not be read unbounded.
     """
-    with path.open("rb") as handle:
+    with open_regular(path) as handle:
         return handle.read(max_bytes + 1)
+
+
+def open_regular(path: Path) -> BinaryIO:
+    """Open ``path`` for binary reading, raising ``OSError`` unless it is a regular file.
+
+    Opened without blocking and checked on the handle: a FIFO's open blocks
+    until a writer appears, which would stall the worker until its request
+    timeout, and a type checked before the open can belong to a path swapped
+    after it. A directory is refused the same way. Every caller already maps
+    ``OSError`` to a failed read.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if os.fstat(descriptor).st_mode & S_IFMT != S_IFREG:
+            raise OSError(f"Not a regular file: {path}")
+        # Blocking again for the read itself; a regular file never waits.
+        os.set_blocking(descriptor, True)
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def names_python_in_shebang(absolute: Path) -> bool:
@@ -118,7 +139,7 @@ def names_python_in_shebang(absolute: Path) -> bool:
     if absolute.suffix:
         return False
     try:
-        with absolute.open("rb") as handle:
+        with open_regular(absolute) as handle:
             first = handle.readline(SHEBANG_PROBE_BYTES)
     except OSError as error:
         # Only ever asked of a path just found to be a regular file, so a failed
@@ -372,20 +393,22 @@ class ProjectModuleIndex:
     def _is_project_file(self, path: Path) -> bool:
         """Whether ``path`` is a module file this index may read.
 
-        A candidate that is absent, not a file, or refused (it links out of the
-        root, it is over the byte cap, or it cannot be examined) is left out of
-        resolution, so every importer's facts are computed as if it did not
+        A candidate that is absent, not a regular file (a FIFO, say), or
+        refused (it links out of the root, it is over the byte cap, or it
+        cannot be examined) is left out of resolution, so every importer's facts are computed as if it did not
         exist; it is recorded as a failed read under the keys a read of it
-        would go under. A stable layout never trips over that, since discovery
-        reports no absent path, symlink or over-cap file and the core ignores a
-        path it did not discover, while a discovered file that became one
-        mid-scan fails verification. An accepted candidate is recorded as a
-        probe that found it present.
+        would go under. A stable layout never trips over that: discovery
+        reports no absent path, symlink or over-cap file, and the core accepts
+        a ``None`` at commit for an undiscovered path that is absent, not a
+        regular file, reached through a link, or over the cap, while a
+        discovered file that became one mid-scan fails verification. An
+        accepted candidate is recorded as a probe that found it present.
         """
         walked = walk_path(path)
         location = self._in_root_file(walked)
         try:
-            if location is not None and location.stat().st_size <= self.max_bytes:
+            status = None if location is None else location.stat()
+            if status is not None and status.st_mode & S_IFMT == S_IFREG and status.st_size <= self.max_bytes:
                 self._record_probe(walked, True)
                 return True
         except OSError:
@@ -468,11 +491,12 @@ class ProjectModuleIndex:
 # one fails it with ELOOP.
 MAX_SYMLINK_HOPS = 40
 # The file-type bits of ``st_mode``, spelled out rather than imported from
-# ``stat``: three constants do not earn a module dependency, and this file's
+# ``stat``: four constants do not earn a module dependency, and this file's
 # import count is a budgeted maintainability metric.
 S_IFMT = 0o170000
 S_IFDIR = 0o040000
 S_IFLNK = 0o120000
+S_IFREG = 0o100000
 
 
 class PathWalk(NamedTuple):
@@ -584,9 +608,9 @@ def walk_key(root: Path, walked: PathWalk) -> str | None:
 
     - A walk that ended at a file, a missing location or a directory inside
       the root: that location, the path the read opened or would have opened.
-      A directory read fails (EISDIR); discovery never reports a directory, so
-      the key is ignored on a stable tree, while a discovered file replaced by
-      one mid-scan fails verification.
+      A directory read fails (EISDIR) and is recorded as ``None``, which the
+      core accepts at commit for a path that is not a regular file, while a
+      discovered file replaced by one mid-scan fails verification.
     - Otherwise the last link followed inside the root. A link followed as a
       directory component keys the path below it as it was about to be walked
       (a discovered ``sub/c.py`` whose ``sub`` became a link out of the root
@@ -596,9 +620,13 @@ def walk_key(root: Path, walked: PathWalk) -> str | None:
     ``None`` when no location the walk passed lies inside the root. Every key a
     stable layout produces names either the file the kernel reaches, or a link
     or a path through one or through a missing component, none of which
-    discovery reports, so the core ignores it; a discovered file changed into
-    one of those mid-scan is keyed where discovery saw it and fails
-    verification. ``root`` must be a real path, as :func:`safe_root` makes it.
+    discovery reports. The core verifies such a key when the scan commits: a
+    hash must still match the in-root regular file within the cap the path
+    names, and a ``None`` is valid only while the path is absent, not a regular
+    file, reached through a link, or over the cap. A discovered file changed
+    into one of those mid-scan is keyed where discovery saw it and fails
+    verification against discovery's hash. ``root`` must be a real path, as
+    :func:`safe_root` makes it.
     """
     location = walked.location
     if location is None or not _inside(root, location):
@@ -623,10 +651,13 @@ def walk_keys(root: Path, walked: PathWalk) -> tuple[str | None, list[str]]:
     those is the path as written, since every path the index walks is joined
     from the real root without a ``..``. A ``..`` among the components below a
     later link could only be applied by the walk, so such a path is left out,
-    as is anything outside the root or below ``node_modules``.
+    as is anything outside the root. A path below ``node_modules`` is keyed like
+    any other.
 
     Discovery never reports a link and never descends into a linked directory,
-    so on a stable tree every linked key names a path the core ignores.
+    so on a stable tree every linked key names a path discovery did not hash,
+    which the core verifies when the scan commits: a ``None`` there is valid
+    while the path is a link or passes through one.
     Mid-scan, a discovered file swapped for a link (to another file, or to a
     directory) is keyed where discovery saw it, so the read or probe that went
     through it is checked against discovery's hash.
@@ -638,7 +669,7 @@ def walk_keys(root: Path, walked: PathWalk) -> tuple[str | None, list[str]]:
         if not _inside(root, location) or location == os.fspath(root):
             return
         relative = PurePosixPath(os.path.relpath(location, root)).as_posix()
-        if relative != final and relative not in linked and "node_modules" not in relative.split("/"):
+        if relative != final and relative not in linked:
             linked.append(relative)
 
     for location, remaining in walked.links:

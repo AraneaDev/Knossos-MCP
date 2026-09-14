@@ -23,12 +23,13 @@ final readonly class SessionBriefRenderer
     /**
      * Bounds on the optional sections per state, not on the whole output.
      *
-     * The verdict line and the skill pointer sit below this budget as an
-     * irreducible floor: the verdict embeds the project path, which is
-     * unbounded, so "never exceed the budget" and "never drop the verdict or
-     * pointer" cannot both hold for every path. The floor wins, because the
-     * path must be verbatim or `scan_project path=...` is not a command
-     * anyone can run, and the pointer is what arms the skill.
+     * The verdict line, the identity line and the skill pointer sit below this
+     * budget as an irreducible floor: the verdict and the identity embed paths,
+     * which are unbounded, so "never exceed the budget" and "never drop the
+     * floor" cannot both hold for every path. The floor wins, because the path
+     * must be verbatim or `scan_project path=...` is not a command anyone can
+     * run, the identity is what says which project the brief describes, and the
+     * pointer is what arms the skill.
      */
     public const BUDGETS = [
         'fresh' => 1200,
@@ -40,16 +41,15 @@ final readonly class SessionBriefRenderer
 
     private const POINTER = 'Ask before grepping for structure: the `knossos` skill.';
 
-    /** The brief as injected text: optional sections kept within budget, verdict and pointer always present. */
+    /** The brief as injected text: optional sections kept within budget, verdict, identity and pointer always present. */
     public function render(SessionBrief $brief): string
     {
         $budget = self::BUDGETS[$brief->state] ?? self::BUDGETS['unscanned'];
         $verdict = $this->verdict($brief);
         if ($brief->state === 'unscanned') {
-            return $this->fit([$verdict], $budget);
+            return $this->fit([$verdict], [], $budget);
         }
 
-        $lines = [$verdict, $this->identity($brief)];
         $sections = [
             $this->section('Rules', $brief->rules),
             $this->section('Notes', $brief->notes),
@@ -58,12 +58,11 @@ final readonly class SessionBriefRenderer
             $sections[] = $this->section('Entry', $brief->entryPoints);
             $sections[] = $this->section('Hubs', $brief->hubs);
         }
-        foreach ($sections as $section) {
-            if ($section !== null) {
-                $lines[] = $section;
-            }
-        }
-        return $this->fit($lines, $budget);
+        return $this->fit(
+            [$verdict, $this->identity($brief)],
+            array_filter($sections, static fn(?string $section): bool => $section !== null),
+            $budget,
+        );
     }
 
     /**
@@ -81,10 +80,11 @@ final readonly class SessionBriefRenderer
      * So the ancestry is disclosed rather than guessed at, and it is disclosed
      * here rather than as a section of its own: the sections are optional and
      * this qualifies the identity, which is the thing that would otherwise be
-     * read as an answer about the queried directory. It shares that line's fate
-     * under the budget, which is the right coupling. If the line is dropped for
-     * length, the project id goes with it, so there is no claim left standing
-     * for the disclosure to have qualified.
+     * read as an answer about the queried directory. The line is part of the
+     * floor, never dropped for length: it names two paths, so on a deep checkout
+     * it alone can outgrow the tighter budgets, and dropping it then removed the
+     * project id and this disclosure while the rest of the brief still spoke
+     * for the ancestor.
      */
     private function identity(SessionBrief $brief): string
     {
@@ -234,11 +234,13 @@ final readonly class SessionBriefRenderer
      * Assemble within budget, dropping whole sections rather than truncating.
      *
      * A list cut mid-entry reads as a complete list that happens to be wrong,
-     * which is worse than a shorter one. The verdict and the pointer are the
-     * floor beneath the budget, not subject to it: dropping the pointer to
-     * honour the budget would silence the very thing that arms the skill, and
-     * truncating the verdict would hand back a `scan_project path=...` that
-     * nobody can run. Both are appended unconditionally, so an unusually long
+     * which is worse than a shorter one. The floor lines (the verdict, and the
+     * identity when there is a project) and the pointer are the floor beneath
+     * the budget, not subject to it: dropping the pointer to honour the budget
+     * would silence the very thing that arms the skill, truncating the verdict
+     * would hand back a `scan_project path=...` that nobody can run, and
+     * dropping the identity would leave a brief that no longer says which
+     * project it describes. All are kept unconditionally, so an unusually long
      * path can push the final output past its nominal budget.
      *
      * A section that does not fit is skipped, not read as the end of the list:
@@ -254,14 +256,14 @@ final readonly class SessionBriefRenderer
      * also why every section carries its own label rather than relying on
      * position.
      *
-     * @param list<string> $lines the verdict first, then optional sections
+     * @param list<string> $floor lines always kept, in order
+     * @param array<int, string> $sections optional sections in order, kept while they fit
      */
-    private function fit(array $lines, int $budget): string
+    private function fit(array $floor, array $sections, int $budget): string
     {
-        $verdict = array_shift($lines) ?? '';
         $tail = "\n" . self::POINTER;
-        $out = $verdict;
-        foreach ($lines as $line) {
+        $out = implode("\n", $floor);
+        foreach ($sections as $line) {
             $candidate = $out . "\n" . $line;
             if (strlen($candidate) + strlen($tail) <= $budget) {
                 $out = $candidate;

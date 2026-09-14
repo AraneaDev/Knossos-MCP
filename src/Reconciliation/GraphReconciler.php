@@ -72,9 +72,14 @@ final readonly class GraphReconciler
     public function __construct(
         private GraphRepository $repository,
     ) {}
-    /** Merge a scan's contributions into the graph, in one transaction. */
+    /**
+     * Merge a scan's contributions into the graph, in one transaction.
+     *
+     * @param ?callable(): void $beforeBulkTransaction an optional final check
+     *        run after reconciliation preparation and before persistence
+     */
 
-    public function reconcile(FullScanRequest $request): ReconciliationResult
+    public function reconcile(FullScanRequest $request, ?callable $beforeBulkTransaction = null): ReconciliationResult
     {
         $projectId = StableId::project($request->projectIdentity);
         $scannerSetHash = self::scannerSetHash($request->scanners);
@@ -122,6 +127,9 @@ final readonly class GraphReconciler
         $gitHead = $request->gitHead;
 
         $diagnosticCount = 0;
+        if ($beforeBulkTransaction !== null) {
+            $beforeBulkTransaction();
+        }
         // A rewrite of this size is dominated by per-statement foreign-key
         // enforcement, so integrity is verified once before the commit instead.
         $this->repository->bulkTransaction(function () use (

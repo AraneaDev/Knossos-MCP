@@ -12,8 +12,9 @@ use PHPUnit\Framework\Attributes\Group;
  * The TypeScript and Python workers report a file they refuse to read as a
  * failed read, because an importer's facts are then computed without it. That
  * must never fail a scan of a layout that simply holds such files: discovery
- * reports neither a symlink nor a file over the byte cap, and the core ignores
- * a null for a path it did not discover.
+ * reports neither a symlink nor a file over the byte cap, and the re-read at
+ * commit accepts a null for an undiscovered path that is a link or over the
+ * cap.
  */
 final class RefusedInputScanTest extends KnossosTestCase
 {

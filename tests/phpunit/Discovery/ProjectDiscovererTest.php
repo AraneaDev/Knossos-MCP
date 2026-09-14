@@ -28,7 +28,10 @@ final class ProjectDiscovererTest extends KnossosTestCase
 
     protected function setUp(): void
     {
-        $this->base = sys_get_temp_dir() . '/knossos-pd-test-' . bin2hex(random_bytes(6));
+        // Resolved, because the link tests compare targets against the real
+        // root: on macOS /tmp is itself a link to /private/tmp, and an absolute
+        // target spelled through it would read as outside the root.
+        $this->base = (string) realpath(sys_get_temp_dir()) . '/knossos-pd-test-' . bin2hex(random_bytes(6));
         $this->root = $this->base . '/project';
         mkdir($this->root, 0700, true);
     }
@@ -127,6 +130,49 @@ final class ProjectDiscovererTest extends KnossosTestCase
 
         $codes = array_column($result->diagnostics, 'code');
         $this->assertContains('DISCOVERY_SYMLINK_SKIPPED', $codes);
+    }
+
+    /**
+     * A link that resolves to nothing cannot escape anything. It used to be
+     * reported as DISCOVERY_SYMLINK_ESCAPE, which told the reader the project
+     * pointed outside itself when it only had a dangling or looping link inside.
+     */
+    public function testDiscoverReportsABrokenSymlinkInsideTheRootAsBroken(): void
+    {
+        mkdir($this->root . '/src');
+        symlink('missing.php', $this->root . '/src/relative.php');
+        symlink($this->root . '/src/gone.php', $this->root . '/src/absolute.php');
+        symlink('loop-b.php', $this->root . '/src/loop-a.php');
+        symlink('loop-a.php', $this->root . '/src/loop-b.php');
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $byPath = [];
+        foreach ($result->diagnostics as $diagnostic) {
+            $byPath[(string) $diagnostic->relativePath] = $diagnostic->code;
+        }
+        foreach (['src/relative.php', 'src/absolute.php', 'src/loop-a.php', 'src/loop-b.php'] as $path) {
+            assertSame('DISCOVERY_SYMLINK_BROKEN', $byPath[$path] ?? null, $path);
+        }
+        assertSame(false, in_array('DISCOVERY_SYMLINK_ESCAPE', array_values($byPath), true));
+    }
+
+    /** A dangling link whose target would lie outside the root still escapes, whether spelled relative or absolute. */
+    public function testDiscoverReportsABrokenSymlinkOutsideTheRootAsAnEscape(): void
+    {
+        symlink('../outside/missing.php', $this->root . '/relative-out.php');
+        symlink($this->base . '/missing-target.txt', $this->root . '/absolute-out.php');
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $byPath = [];
+        foreach ($result->diagnostics as $diagnostic) {
+            $byPath[(string) $diagnostic->relativePath] = $diagnostic->code;
+        }
+        ksort($byPath);
+        assertSame(['absolute-out.php' => 'DISCOVERY_SYMLINK_ESCAPE', 'relative-out.php' => 'DISCOVERY_SYMLINK_ESCAPE'], $byPath);
     }
 
     public function testDiscoverThrowsOnFileLimitExceeded(): void
@@ -551,23 +597,6 @@ final class ProjectDiscovererTest extends KnossosTestCase
             fn($u): bool => $u->kind === 'typescript',
         ));
         $this->assertNotEmpty($tsUnits);
-    }
-
-    // ── Broken symlink ──────────────────────────────────────────────
-
-    public function testDiscoverReportsBrokenSymlinkEscape(): void
-    {
-        // A symlink whose target does not exist: realpath($absolute)
-        // returns false, which means $escapes = true →
-        // DISCOVERY_SYMLINK_ESCAPE.
-        $outside = $this->base . '/missing-target.txt';
-        @symlink($outside, $this->root . '/broken.php');
-
-        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
-        $result = $discoverer->discover($this->root);
-
-        $codes = array_column($result->diagnostics, 'code');
-        assertArrayContains('DISCOVERY_SYMLINK_ESCAPE', $codes);
     }
 
     // ── Python with no name ──────────────────────────────────────────

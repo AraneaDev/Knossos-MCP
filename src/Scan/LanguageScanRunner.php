@@ -30,6 +30,9 @@ final readonly class LanguageScanRunner
         $manifests = $contributions = $cacheEntries = [];
         $parsed = $unchanged = $added = $changed = 0;
         $scannerMetadata = $stages = $workerDiagnostics = $batchBudgets = [];
+        // One for the whole scan: the same file read with different results
+        // by two languages fails the scan just as two requests of one do.
+        $undiscoveredInputs = new UndiscoveredInputs();
         foreach ($this->descriptors as $descriptor) {
             $files = array_values(array_filter(
                 $plan->preparation->discovery->files,
@@ -81,6 +84,11 @@ final readonly class LanguageScanRunner
                 // whose batch bounds the reader wants to see.
                 $batchBudgets[$owner]['source_bytes_used'] = $sourceBytes;
             }
+            // Only once the language is kept: a degraded language's facts are
+            // dropped, so what it read has nothing left to vouch for. Outside
+            // the try above, so a conflict fails the scan rather than
+            // degrading the language that happened to arrive second.
+            $undiscoveredInputs->add($outcome['undiscovered_inputs']);
             $manifests[] = $outcome['manifest'];
             array_push($contributions, ...$outcome['contributions']);
             array_push($cacheEntries, ...$outcome['cache_entries']);
@@ -92,7 +100,7 @@ final readonly class LanguageScanRunner
             $stages[$descriptor->stage] = $outcome['milliseconds'];
         }
 
-        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets);
+        return new LanguageScanResult($manifests, $contributions, $cacheEntries, $parsed, $unchanged, $added, $changed, $scannerMetadata, $stages, $workerDiagnostics, $batchBudgets, $undiscoveredInputs->all());
     }
 
     /**
@@ -114,7 +122,8 @@ final readonly class LanguageScanRunner
      *     added: int,
      *     changed: int,
      *     scanner_metadata: array<string, mixed>,
-     *     milliseconds: float
+     *     milliseconds: float,
+     *     undiscovered_inputs: array<string, string|null>
      * }
      */
     private function runLanguage(
@@ -170,6 +179,9 @@ final readonly class LanguageScanRunner
         // package.json module resolution reads or the Cargo.toml a crate is
         // named by, and that read is checked all the same.
         $discoveredByPath = $plan->preparation->discovery->hashedPaths();
+        // Reads of anything else, checked across this language's requests as
+        // they arrive and handed back for the pre-commit re-read.
+        $undiscovered = new UndiscoveredInputs();
         $full = $descriptor->scanBatchSourceBytes;
         $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0);
         while ($pending !== []) {
@@ -218,7 +230,7 @@ final readonly class LanguageScanRunner
             $batchResult = $client->lastScanResult();
             // Before this batch's contributions are kept: facts resolved against
             // another file's bytes must match what discovery hashed for it too.
-            ScanInputHashes::verify($batchResult, $manifest, $discoveredByPath);
+            $undiscovered->add(ScanInputHashes::verify($batchResult, $manifest, $discoveredByPath));
             // Evidence for this check only, not a statistic: kept out of the
             // scanner metadata a scan report carries.
             unset($batchResult['input_hashes']);
@@ -247,6 +259,7 @@ final readonly class LanguageScanRunner
             'changed' => $partition->changed,
             'scanner_metadata' => $partition->filesToScan === [] ? [] : [$manifest->id => $metadata],
             'milliseconds' => self::elapsedMilliseconds($started),
+            'undiscovered_inputs' => $undiscovered->all(),
         ];
     }
 

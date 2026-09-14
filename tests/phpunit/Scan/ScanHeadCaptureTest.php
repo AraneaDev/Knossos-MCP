@@ -46,7 +46,12 @@ final class ScanHeadCaptureTest extends KnossosTestCase
         try {
             $planner = new ScanPlanner($this->freshTestDatabase(), [$root], $this->resolverCommitting($root));
 
-            $preparation = $planner->prepare($root, null, null, null, 'full', null, null);
+            // The fake commit is not in any repository, so the dirty-path
+            // listing that follows logs why git could not answer.
+            $preparation = null;
+            $this->errorLogOf(function () use (&$preparation, $planner, $root): void {
+                $preparation = $planner->prepare($root, null, null, null, 'full', null, null);
+            });
 
             self::assertSame(self::HEAD, $preparation->gitHead, 'The captured commit is what the scan must record.');
             self::assertContains(
@@ -72,7 +77,10 @@ final class ScanHeadCaptureTest extends KnossosTestCase
             $pdo = $this->freshTestDatabase();
             $service = new ProjectScanService($pdo, self::repositoryRoot(), [$root], $this->resolverCommitting($root));
 
-            $result = $service->scan($root);
+            $result = null;
+            $this->errorLogOf(function () use (&$result, $service, $root): void {
+                $result = $service->scan($root);
+            });
 
             $head = $pdo->prepare('SELECT git_head FROM scans WHERE id = :id');
             $head->execute(['id' => $result->snapshotId]);
