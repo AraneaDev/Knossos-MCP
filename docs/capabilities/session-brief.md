@@ -174,18 +174,26 @@ closing pointer) still fits; a section that would not fit is dropped whole,
 never truncated mid-list. A list cut off partway through reads as a complete
 list that happens to be wrong, which is worse than a shorter list.
 
-The verdict line and the closing skill pointer (`Ask before grepping for
-structure: the knossos skill.`) sit **beneath** this budget as an
-irreducible floor, not subject to it. Both are always emitted, even when the
-verdict line alone would already exceed the budget for that state. The
-verdict line embeds the project path, which has no upper bound, so "never
-exceed the budget" and "never drop the verdict or the pointer" cannot both
-hold for every possible path; the floor wins. Dropping or truncating the
-verdict would hand back a `scan_project path=...` that nobody could actually
-run, and dropping the pointer would mean the `knossos` skill is never armed
-for that session. An unusually long path can therefore push the rendered
-output past its nominal budget; that is accepted as the price of never
-emitting a broken command.
+The verdict line, the identity line and the closing skill pointer (`Ask
+before grepping for structure: the knossos skill.`) sit **beneath** this
+budget as an irreducible floor, not subject to it. The identity line is the
+project id and name (`Knossos {project_id} ({name})`), followed, when the
+path you asked about resolved to an ancestor project, by the sentence that
+discloses the ancestor's root. It is part of the floor whenever there is a
+project, which is every state except `unscanned`. All three lines are always
+emitted, even when the verdict line alone would already exceed the budget for
+that state. The verdict line embeds the project path and the identity line
+can name two paths, neither of which has an upper bound, so "never exceed the
+budget" and "never drop the floor" cannot both hold for every possible path;
+the floor wins. Dropping or truncating the verdict would hand back a
+`scan_project path=...` that nobody could actually run. Dropping the identity
+line would leave a brief that no longer says which project it describes, while
+the rules, entry points and hubs beneath it still speak for that project (on a
+nested checkout, for an ancestor you did not ask about). Dropping the pointer
+would mean the `knossos` skill is never armed for that session. An unusually
+long path can therefore push the rendered output past its nominal budget; that
+is accepted as the price of never emitting a broken command or an unattributed
+brief.
 
 ## What survives a stale verdict, and what does not
 
