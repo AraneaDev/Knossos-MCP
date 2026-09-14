@@ -984,11 +984,11 @@ function readHashedSourceFile(
     try {
         real = normalize(fs.realpathSync(absolute));
     } catch {
-        recordRead(reads, root, absolute, null);
+        recordRefused(reads, root, absolute);
         return undefined;
     }
     if (!contains(root, real) && !contains(defaultLibDirectory(), absolute)) {
-        recordRead(reads, root, absolute, null);
+        recordRefused(reads, root, absolute);
         return undefined;
     }
     let buffer;
@@ -1036,6 +1036,76 @@ function recordRead(reads, root, absolute, contentHash) {
     if (key !== null) reads.record(key, contentHash);
 }
 
+/** Record a path the host would not or could not read as a failed read. */
+function recordRefused(reads, root, absolute) {
+    const location = inRootLocation(root, absolute);
+    if (location !== null) recordRead(reads, root, location, null);
+}
+
+// More links than this in one path is a loop, or near enough to one.
+const MAX_SYMLINK_HOPS = 40;
+
+/**
+ * Where inside the root the bytes of a refused path would have come from: the
+ * key a read of it must go under to be checked against discovery.
+ *
+ * A successful read is keyed by its resolved target, so a refusal has to be
+ * keyed the same way, or a linked name (`src/alias.ts`, `src/linkdir/c.ts`)
+ * would carry the null while discovery tracks the real file (`src/real.ts`,
+ * `real/c.ts`) and the core would skip it as undiscovered. realpath cannot give
+ * that key here, because the path is refused exactly when it does not resolve
+ * inside the root. So the path is walked one component at a time from the root,
+ * following each link while its target stays inside the root:
+ *
+ * - every component resolves inside the root: the fully resolved path, which is
+ *   what realpath gives for a file refused only by the byte cap;
+ * - a component is a link leading out of the root: that link's in-root location
+ *   plus the components after it. It is the place discovery saw a regular file
+ *   or directory, if it saw one there, before it was swapped for the link;
+ * - a component does not exist, or cannot be examined: its location plus the
+ *   components after it, which is where a removed file was.
+ *
+ * null only for a path that is not under the root to begin with, which the host
+ * never reads as a project file. Any key returned for a stable layout names a
+ * link or a missing path, which discovery never reports, so the core ignores it.
+ */
+function inRootLocation(root, absolute) {
+    if (!contains(root, absolute)) return null;
+    const pending = path.relative(root, absolute).split(/[\\/]/);
+    let current = root;
+    let hops = 0;
+    while (pending.length > 0) {
+        const name = pending.shift();
+        if (name === "" || name === ".") continue;
+        if (name === "..") {
+            // Only reached through a link target; `current` is already real,
+            // so stepping up lexically is what the filesystem would do.
+            current = normalize(path.dirname(current));
+            if (!contains(root, current)) return null;
+            continue;
+        }
+        const next = normalize(path.join(current, name));
+        const remainder = () => normalize(path.join(next, ...pending));
+        let target;
+        try {
+            if (!fs.lstatSync(next).isSymbolicLink()) {
+                current = next;
+                continue;
+            }
+            target = fs.readlinkSync(next);
+        } catch {
+            return remainder();
+        }
+        const resolved = normalize(path.resolve(current, target));
+        if (++hops > MAX_SYMLINK_HOPS || !contains(root, resolved)) {
+            return remainder();
+        }
+        pending.unshift(...path.relative(root, resolved).split(/[\\/]/));
+        current = root;
+    }
+    return current;
+}
+
 /**
  * Record null for every project file a program holds that this request did not
  * create from its own read.
@@ -1049,16 +1119,11 @@ function recordRead(reads, root, absolute, contentHash) {
 function recordUnreadSourceFiles(root, program, reads) {
     for (const sourceFile of program.getSourceFiles()) {
         if (reads.createdThisRequest(sourceFile)) continue;
-        const absolute = normalize(
-            path.resolve(shebangSourcePath(sourceFile.fileName)),
+        recordRefused(
+            reads,
+            root,
+            normalize(path.resolve(shebangSourcePath(sourceFile.fileName))),
         );
-        let real = absolute;
-        try {
-            real = normalize(fs.realpathSync(absolute));
-        } catch {
-            // Keyed where the program named it.
-        }
-        recordRead(reads, root, real, null);
     }
 }
 
@@ -1089,16 +1154,16 @@ function createRestrictedProgram(
     host.getSourceFile = (fileName, languageVersion) => {
         // A refused path is left out of the program, so the facts of every file
         // that imports or includes it are computed as if it did not exist. It
-        // is recorded as a failed read under its own name: a stable layout never
-        // trips over that, since discovery reports neither a symlink nor an
-        // over-cap file and the core ignores a path it did not discover, while a
-        // discovered file that became one mid-scan fails verification.
+        // is recorded as a failed read under the in-root path its bytes would
+        // have come from (inRootLocation): a stable layout never trips over
+        // that, since discovery reports neither a symlink nor an over-cap file
+        // and the core ignores a path it did not discover, while a discovered
+        // file that became one mid-scan fails verification.
         const refused = () => {
-            recordRead(
+            recordRefused(
                 reads,
                 root,
                 normalize(path.resolve(shebangSourcePath(fileName))),
-                null,
             );
             return undefined;
         };

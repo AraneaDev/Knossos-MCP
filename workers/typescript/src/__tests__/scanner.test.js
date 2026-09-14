@@ -1440,3 +1440,151 @@ describe("content_hash for a duplicate package copy", () => {
         expect(contribution.input_hashes["copies/two/index.ts"]).toBeNull();
     });
 });
+
+// src/a.ts reaches src/real.ts through the linked file name src/alias.ts,
+// and real/c.ts through the linked directory src/linkdir. Discovery never
+// follows a link, so a refusal only fails verification when it is keyed by
+// the real in-root path the bytes would have come from.
+const IMPORTER =
+    'import { R } from "./alias";\nimport { C } from "./linkdir/c";\nexport class A extends R {}\nexport const c = C;\n';
+const REAL = "export class R {}\n";
+const C = "export const C = 1;\n";
+
+function linkedLayout(real = REAL, c = C) {
+    const root = fixture({
+        "src/a.ts": IMPORTER,
+        "src/real.ts": real,
+        "real/c.ts": c,
+    });
+    symlinkSync(join(root, "src/real.ts"), join(root, "src/alias.ts"));
+    symlinkSync(join(root, "real"), join(root, "src/linkdir"));
+    return root;
+}
+
+const refusedOnRealKeys = {
+    "src/a.ts": sha256(Buffer.from(IMPORTER)),
+    "src/real.ts": null,
+    "real/c.ts": null,
+};
+
+// Run a scan on a linked layout, turning each real file into what `swap`
+// makes of it the first time `calledFrom` resolves the linked name.
+function scanSwapping(calledFrom, swap) {
+    const root = linkedLayout();
+    const outside = fs.realpathSync(fixture({ "x.ts": REAL }));
+    const targets = {
+        "/src/alias.ts": join(root, "src/real.ts"),
+        "/src/linkdir/c.ts": join(root, "real/c.ts"),
+    };
+    const swapped = new Set();
+    const realpathSync = fs.realpathSync;
+    const spy = vi
+        .spyOn(fs, "realpathSync")
+        .mockImplementation((file, ...rest) => {
+            const name = Object.keys(targets).find((suffix) =>
+                String(file).endsWith(suffix),
+            );
+            if (
+                name !== undefined &&
+                !swapped.has(name) &&
+                calledFrom(new Error().stack.split("\n"))
+            ) {
+                swapped.add(name);
+                swap(targets[name], join(outside, "x.ts"));
+            }
+            return realpathSync(file, ...rest);
+        });
+    try {
+        return scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"])
+            .result;
+    } finally {
+        spy.mockRestore();
+    }
+}
+
+const escape = (target, outside) => {
+    fs.unlinkSync(target);
+    symlinkSync(outside, target);
+};
+const remove = (target) => fs.unlinkSync(target);
+const fromGetSourceFileCheck = (frames) => {
+    const checker = frames.findIndex((frame) =>
+        frame.includes("allowedCompilerPath"),
+    );
+    return checker !== -1 && frames[checker + 1].includes("getSourceFile");
+};
+const fromRead = (frames) =>
+    frames.some((frame) => frame.includes("readHashedSourceFile"));
+
+describe("input_hashes: a refused path reached through a symlink", () => {
+    it("keys a file refused over the byte cap by its real path", () => {
+        const padding = "// padding\n".repeat(40);
+        const root = linkedLayout(REAL + padding, C + padding);
+
+        const { result } = scanWithResult(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts"],
+            { limits: { max_file_bytes: 300 } },
+        );
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+
+    it("keys a file refused for now linking out of the root by the in-root link", () => {
+        const result = scanSwapping(fromGetSourceFileCheck, escape);
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+
+    it("keys a file whose target left the root before the read by the in-root link", () => {
+        const result = scanSwapping(fromRead, escape);
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+
+    it("keys a file removed before the read by where it was", () => {
+        const result = scanSwapping(fromRead, remove);
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+});
+
+describe("input_hashes: a refused path under a directory swapped for a link", () => {
+    it("keys a file under a directory swapped for a link out of the root by where it was", () => {
+        // Discovery saw src/sub/c.ts; the directory becomes a link out of the
+        // root before the read, so no component past src resolves inside it.
+        const importer = 'import { C } from "./sub/c";\nexport const c = C;\n';
+        const root = fixture({ "src/a.ts": importer, "src/sub/c.ts": C });
+        const outside = fs.realpathSync(fixture({ "c.ts": C }));
+        const realpathSync = fs.realpathSync;
+        let swapped = false;
+        const spy = vi
+            .spyOn(fs, "realpathSync")
+            .mockImplementation((file, ...rest) => {
+                if (
+                    !swapped &&
+                    String(file).endsWith("/src/sub/c.ts") &&
+                    fromRead(new Error().stack.split("\n"))
+                ) {
+                    swapped = true;
+                    rmSync(join(root, "src/sub"), { recursive: true });
+                    symlinkSync(outside, join(root, "src/sub"));
+                }
+                return realpathSync(file, ...rest);
+            });
+        let result;
+        try {
+            ({ result } = scanWithResult(new TypeScriptScanner(), root, [
+                "src/a.ts",
+            ]));
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "src/sub/c.ts": null,
+        });
+    });
+});
