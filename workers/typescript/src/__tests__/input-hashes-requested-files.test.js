@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { URL } from "node:url";
 
 import { TypeScriptScanner } from "../scanner.js";
 
