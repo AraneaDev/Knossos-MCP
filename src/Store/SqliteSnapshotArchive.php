@@ -28,7 +28,7 @@ final class SqliteSnapshotArchive
         private readonly SqliteScanLifecycle $lifecycle,
         private readonly array $capturedTables,
         private readonly int $maxRowsPerTable = 200_000,
-        private readonly int $maxPayloadBytes = 50_000_000,
+        private readonly int $maxPayloadBytes = 100_000_000,
     ) {}
 
     /**

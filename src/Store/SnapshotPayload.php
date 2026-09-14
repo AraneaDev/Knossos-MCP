@@ -10,11 +10,10 @@ use RuntimeException;
  * How an archived snapshot's facts are stored.
  *
  * A snapshot is a full copy of a project's graph, kept so a later scan can be
- * diffed against it. Stored as plain JSON, this repository's own snapshot is
- * 30 MB, and the five retained per project dominated the database: 328 MB of
- * file for a graph of 8,301 nodes and 39,716 edges. The payload is highly
- * repetitive — the same column names and stable-id prefixes on every row — so
- * it compresses to about a fifth of that.
+ * diffed against it. Stored as plain JSON, a repository's graph can make that
+ * payload tens of megabytes. The payload is highly repetitive — the same
+ * column names and stable-id prefixes on every row — so it compresses to about
+ * a fifth of that.
  *
  * The stored form is base64 behind a sentinel prefix rather than raw deflate
  * bytes: the column is declared TEXT, and keeping it ASCII means a dump, a
