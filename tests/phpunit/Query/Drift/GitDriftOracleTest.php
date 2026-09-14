@@ -338,10 +338,14 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $drift = (new GitDriftOracle($pdo, $this->failingRunner()))
-                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            $drift = false;
+            $logged = $this->errorLogOf(function () use (&$drift, $pdo, $projectId, $scanId, $root): void {
+                $drift = (new GitDriftOracle($pdo, $this->failingRunner()))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
 
             self::assertNull($drift, 'A rebased or garbage-collected commit must hand over to the walk, not report zero drift.');
+            self::assertStringContainsString('knossos drift query: git could not answer', $logged, 'A declined oracle must leave a breadcrumb.');
         } finally {
             $this->removeTempTree($root);
         }
@@ -366,10 +370,14 @@ final class GitDriftOracleTest extends KnossosTestCase
         try {
             file_put_contents($root . '/src/a.php', "<?php\nfinal class A {}\n");
 
-            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', ['src/a.php'], [])))
-                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            $drift = false;
+            $logged = $this->errorLogOf(function () use (&$drift, $pdo, $projectId, $scanId, $root): void {
+                $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', ['src/a.php'], [])))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
 
             self::assertNull($drift, 'A failed index cross-check must decline the oracle outright, not decide from diff and untracked candidates alone.');
+            self::assertStringContainsString('knossos drift query: git ls-files --cached could not answer', $logged);
         } finally {
             $this->removeTempTree($root);
         }
@@ -494,10 +502,14 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
-                ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            $drift = false;
+            $logged = $this->errorLogOf(function () use (&$drift, $pdo, $projectId, $scanId, $root): void {
+                $drift = (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
+                    ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
+            });
 
             self::assertNull($drift, 'A failed index cross-check must decline the oracle even when diff and untracked both report nothing changed.');
+            self::assertStringContainsString('knossos drift query: git ls-files --cached could not answer', $logged);
         } finally {
             $this->removeTempTree($root);
         }
@@ -1064,5 +1076,31 @@ final class GitDriftOracleTest extends KnossosTestCase
                 return $paths === [] ? '' : implode("\0", $paths) . "\0";
             }
         };
+    }
+
+    /**
+     * Run $operation with error_log() pointed at a temporary file and return
+     * what it logged, so a deliberately provoked failure does not print into
+     * the suite's output.
+     *
+     * @param callable(): void $operation
+     */
+    private function errorLogOf(callable $operation): string
+    {
+        $capture = tempnam(sys_get_temp_dir(), 'knossos-errorlog-');
+        if ($capture === false) {
+            throw new \RuntimeException('Unable to allocate an error-log capture file.');
+        }
+        $previous = ini_get('error_log');
+        ini_set('error_log', $capture);
+        try {
+            $operation();
+        } finally {
+            $previous === false ? ini_restore('error_log') : ini_set('error_log', $previous);
+            $logged = (string) @file_get_contents($capture);
+            @unlink($capture);
+        }
+
+        return $logged;
     }
 }

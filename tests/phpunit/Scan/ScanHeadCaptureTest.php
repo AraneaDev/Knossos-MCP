@@ -46,7 +46,12 @@ final class ScanHeadCaptureTest extends KnossosTestCase
         try {
             $planner = new ScanPlanner($this->freshTestDatabase(), [$root], $this->resolverCommitting($root));
 
-            $preparation = $planner->prepare($root, null, null, null, 'full', null, null);
+            // The fake commit is not in any repository, so the dirty-path
+            // listing that follows logs why git could not answer.
+            $preparation = null;
+            $this->errorLogOf(function () use (&$preparation, $planner, $root): void {
+                $preparation = $planner->prepare($root, null, null, null, 'full', null, null);
+            });
 
             self::assertSame(self::HEAD, $preparation->gitHead, 'The captured commit is what the scan must record.');
             self::assertContains(
@@ -72,7 +77,10 @@ final class ScanHeadCaptureTest extends KnossosTestCase
             $pdo = $this->freshTestDatabase();
             $service = new ProjectScanService($pdo, self::repositoryRoot(), [$root], $this->resolverCommitting($root));
 
-            $result = $service->scan($root);
+            $result = null;
+            $this->errorLogOf(function () use (&$result, $service, $root): void {
+                $result = $service->scan($root);
+            });
 
             $head = $pdo->prepare('SELECT git_head FROM scans WHERE id = :id');
             $head->execute(['id' => $result->snapshotId]);
@@ -131,5 +139,31 @@ final class ScanHeadCaptureTest extends KnossosTestCase
     public static function head(): string
     {
         return self::HEAD;
+    }
+
+    /**
+     * Run $operation with error_log() pointed at a temporary file and return
+     * what it logged, so a deliberately provoked failure does not print into
+     * the suite's output.
+     *
+     * @param callable(): void $operation
+     */
+    private function errorLogOf(callable $operation): string
+    {
+        $capture = tempnam(sys_get_temp_dir(), 'knossos-errorlog-');
+        if ($capture === false) {
+            throw new \RuntimeException('Unable to allocate an error-log capture file.');
+        }
+        $previous = ini_get('error_log');
+        ini_set('error_log', $capture);
+        try {
+            $operation();
+        } finally {
+            $previous === false ? ini_restore('error_log') : ini_set('error_log', $previous);
+            $logged = (string) @file_get_contents($capture);
+            @unlink($capture);
+        }
+
+        return $logged;
     }
 }
