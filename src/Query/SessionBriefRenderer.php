@@ -60,7 +60,7 @@ final readonly class SessionBriefRenderer
         }
         return $this->fit(
             [$verdict, $this->identity($brief)],
-            array_values(array_filter($sections, static fn(?string $section): bool => $section !== null)),
+            array_filter($sections, static fn(?string $section): bool => $section !== null),
             $budget,
         );
     }
@@ -257,7 +257,7 @@ final readonly class SessionBriefRenderer
      * position.
      *
      * @param list<string> $floor lines always kept, in order
-     * @param list<string> $sections optional sections, kept while they fit
+     * @param array<int, string> $sections optional sections in order, kept while they fit
      */
     private function fit(array $floor, array $sections, int $budget): string
     {

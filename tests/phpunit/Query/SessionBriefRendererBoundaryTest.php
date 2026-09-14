@@ -36,6 +36,7 @@ final class SessionBriefRendererBoundaryTest extends KnossosTestCase
         yield 'two hours' => [7_200, '2h'];
         yield 'just under a day' => [86_399, '23h'];
         yield 'a day' => [86_400, '1d'];
+        yield 'just under two days' => [172_799, '1d'];
         yield 'two days' => [172_800, '2d'];
     }
 
