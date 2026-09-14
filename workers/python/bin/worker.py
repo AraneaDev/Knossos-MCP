@@ -23,6 +23,7 @@ EXCLUDED = {
     ".tox",
     ".mypy_cache",
     ".pytest_cache",
+    ".worktrees",
     "node_modules",
     "vendor",
     # Kept in sync with the authoritative PHP IgnoreMatcher: generated build
@@ -30,6 +31,7 @@ EXCLUDED = {
     ".stryker-tmp",
     "build",
     "dist",
+    "site",
 }
 # Name prefixes for the namespace this tool owns, kept in sync with the PHP
 # IgnoreMatcher. ".knossos" alone is in the set above; a CI job parks a checkout

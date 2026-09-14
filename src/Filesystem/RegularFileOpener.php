@@ -86,6 +86,13 @@ final class RegularFileOpener
             return null;
         }
 
+        // php://fd duplicates the descriptor for the PHP stream but does not
+        // take ownership of the descriptor returned by libc. Leaving the
+        // original open leaked one descriptor per distinct file; a discovery
+        // pass over a medium repository then placed the worker pipes above
+        // PHP's FD_SETSIZE and every stream_select() failed with WORKER_IO_FAILED.
+        $libc->close($descriptor);
+
         return $handle;
     }
 

@@ -42,8 +42,10 @@ const EXCLUDED_DIRECTORIES = new Set([
     // output and mutation-testing sandboxes (.stryker-tmp holds a full project
     // copy per sandbox) are not source and would multiply program discovery.
     ".stryker-tmp",
+    ".worktrees",
     "build",
     "dist",
+    "site",
 ]);
 
 // Directory-name prefixes, for the namespace this tool owns. ".knossos" alone

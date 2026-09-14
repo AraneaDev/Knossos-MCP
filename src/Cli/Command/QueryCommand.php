@@ -57,6 +57,8 @@ final class QueryCommand implements CliCommand
             'suggest-location' => ['db', 'json', 'limit', 'max-members', 'max-edges', 'timeout-ms'],
             'change-impact' => ['db', 'json', 'since-days', 'max-commits', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
             'changed-files-impact' => ['db', 'json', 'working-tree', 'base-ref', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
+            'test-impact' => ['db', 'json', 'working-tree', 'base-ref', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
+            'review-diff' => ['db', 'json', 'base-ref', 'policies', 'budgets', 'baseline-snapshot', 'max-depth', 'limit', 'min-confidence', 'timeout-ms'],
             'architecture-context' => ['db', 'json', 'task', 'max-chars', 'timeout-ms'],
             'export-diagram' => ['db', 'json', 'format', 'boundary', 'edge-kind', 'min-confidence', 'direction', 'max-nodes', 'max-edges'],
             'export-agent-brief' => ['db', 'json', 'max-chars', 'out'],

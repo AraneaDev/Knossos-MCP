@@ -28,6 +28,11 @@ final readonly class IgnoreMatcher
         '.tox',
         '.mypy_cache',
         '.pytest_cache',
+        // Git worktree checkouts are separate copies of a project, not source
+        // belonging to the checkout that contains the .worktrees directory.
+        // Walking them also creates duplicate manifest boundaries and can make
+        // a scan grow by several complete repositories.
+        '.worktrees',
         // Generated build output and mutation-testing sandboxes are not source.
         // '.stryker-tmp' in particular holds one full project copy per sandbox
         // (each with its own tsconfig), which would otherwise multiply the
@@ -35,6 +40,7 @@ final readonly class IgnoreMatcher
         '.stryker-tmp',
         'build',
         'dist',
+        'site',
     ];
 
     /**
