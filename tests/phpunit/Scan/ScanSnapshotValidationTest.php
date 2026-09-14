@@ -268,7 +268,17 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
             $path = $root . '/src/Unreadable.php';
             $discovered = $this->discoveredFile($root, 'src/Unreadable.php');
             unlink($path);
-            $socket = stream_socket_server('unix://' . $path, $errorCode, $errorMessage);
+            // Bound by name from inside its directory: a socket path is capped
+            // at 108 bytes, and an absolute one under a deep temp directory
+            // (a mutation sandbox, say) is silently truncated to a different
+            // path, which then reads as a removed file instead of an unreadable one.
+            $cwd = (string) getcwd();
+            chdir(dirname($path));
+            try {
+                $socket = stream_socket_server('unix://' . basename($path), $errorCode, $errorMessage);
+            } finally {
+                chdir($cwd);
+            }
             if ($socket === false) {
                 self::markTestSkipped(sprintf('Unix sockets unavailable here: %s (%d).', $errorMessage, $errorCode));
             }
