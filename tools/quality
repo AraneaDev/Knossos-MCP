@@ -99,7 +99,7 @@ fi
 
 if in_lane rust; then
 if [ -x "$root/workers/rust/bin/knossos-rust-worker" ]; then
-    tools/scanner-conformance --require=partial_ast -- workers/rust/bin/knossos-rust-worker
+    tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- workers/rust/bin/knossos-rust-worker
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "the Rust worker binary is required in the quality container" >&2
     exit 1
@@ -110,9 +110,9 @@ if in_lane tests; then
 # conformance is checked unconditionally, not behind an existence probe like
 # the optional Rust one. The paths are relative on purpose: that is the form
 # docs/reference/scanner-sdk.md shows worker authors.
-tools/scanner-conformance --require=partial_ast -- php workers/php/bin/worker
-tools/scanner-conformance --require=partial_ast -- python3 -I -B workers/python/bin/worker.py
-tools/scanner-conformance --require=partial_ast -- node workers/typescript/bin/worker.js
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- php workers/php/bin/worker
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- python3 -I -B workers/python/bin/worker.py
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- node workers/typescript/bin/worker.js
 fi
 
 if in_lane static; then
