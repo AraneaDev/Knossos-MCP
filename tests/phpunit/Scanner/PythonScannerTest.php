@@ -678,4 +678,30 @@ PYTHON);
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * A module the index refuses to read, here for exceeding the byte cap, is
+     * left out of resolution, so the importer's facts are computed without it.
+     * The worker says so by reporting that path as a failed read.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsAModuleItRefusedAsNull(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $importer = "from pkg.big import Thing\n";
+        file_put_contents($root . '/pkg/a.py', $importer);
+        file_put_contents($root . '/pkg/big.py', "class Thing:\n    pass\n" . str_repeat('#', 200) . "\n");
+        $client = $this->pythonWorkerClient();
+        try {
+            $client->initialize();
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['pkg/a.py'], 'limits' => ['max_file_bytes' => 100]]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            assertSame(['pkg/a.py' => hash('sha256', $importer), 'pkg/big.py' => null], $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
 }

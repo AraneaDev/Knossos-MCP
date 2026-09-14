@@ -198,8 +198,8 @@ class ProjectModuleIndex:
         file or directory is keyed, and read, where its bytes actually live;
         that is the path whose recorded hash describes them. ``None`` when the
         target no longer resolves inside the root (a link retargeted since
-        ``_is_project_file`` checked it): no path the core tracks could verify
-        that read, so the caller reads nothing and derives nothing from it.
+        ``_is_project_file`` checked it): nothing outside the root is read, and
+        the caller records the path it asked for as a failed read.
         """
         try:
             resolved = path.resolve(strict=True)
@@ -241,13 +241,34 @@ class ProjectModuleIndex:
         return None
 
     def _is_project_file(self, path: Path) -> bool:
+        """Whether ``path`` is a module file this index may read.
+
+        A candidate that does not exist was only probed for. One that exists
+        but is refused (it links out of the root, it is over the byte cap, or
+        it cannot be examined) is left out of resolution, so every importer's
+        facts are computed as if it did not exist; it is recorded as a failed
+        read under its own path. A stable layout never trips over that, since
+        discovery reports neither a symlink nor an over-cap file and the core
+        ignores a path it did not discover, while a discovered file that became
+        one mid-scan fails verification.
+        """
         try:
             if not path.is_file():
                 return False
             resolved = path.resolve()
-            return resolved.is_relative_to(self.root) and resolved.stat().st_size <= self.max_bytes
+            if resolved.is_relative_to(self.root) and resolved.stat().st_size <= self.max_bytes:
+                return True
         except OSError:
-            return False
+            pass
+        self._record_refused(path)
+        return False
+
+    def _record_refused(self, path: Path) -> None:
+        """Record a module path this index would not or could not read as ``None``."""
+        try:
+            self.record_read(path.relative_to(self.root).as_posix(), None)
+        except ValueError:
+            pass
 
     def module_declarations(self, module: str) -> dict[str, str]:
         cached = self._cache.get(module)
@@ -256,6 +277,10 @@ class ProjectModuleIndex:
         declarations: dict[str, str] = {}
         path = self.module_file(module)
         target = None if path is None else self._resolved_in_root(path)
+        if path is not None and target is None:
+            # Accepted by module_file, then retargeted out of the root or gone
+            # before this read resolved it: not read, and recorded as refused.
+            self._record_refused(path)
         if target is not None:
             resolved, relative = target
             try:

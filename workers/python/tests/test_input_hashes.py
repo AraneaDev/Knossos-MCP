@@ -144,11 +144,25 @@ def test_a_hashed_read_then_a_failed_read_of_one_path_records_null(monkeypatch, 
     assert result["input_hashes"]["src/pkg/b.py"] is None
 
 
-def test_a_module_that_no_longer_resolves_inside_the_root_is_not_read(
-    worker: ModuleType, project, tmp_path_factory
+def _no_reads(monkeypatch) -> list[str]:
+    """Record every ``Path.read_bytes`` call, so a test can assert none happened."""
+    reads: list[str] = []
+    real_read_bytes = Path.read_bytes
+
+    def spying(self: Path) -> bytes:
+        reads.append(self.name)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", spying)
+    return reads
+
+
+def test_a_module_that_no_longer_resolves_inside_the_root_is_null_and_not_read(
+    monkeypatch, worker: ModuleType, project, tmp_path_factory
 ) -> None:
-    # A link retargeted outside the root after _is_project_file accepted it:
-    # no tracked path could verify a read of it, so nothing is read or recorded.
+    # A link retargeted outside the root after _is_project_file accepted it.
+    # Nothing is read from outside, but the importer's facts are now computed
+    # without the module, so its own path is recorded as a failed read.
     outside = tmp_path_factory.mktemp("outside")
     (outside / "b.py").write_text("class Thing:\n    pass\n", encoding="utf-8")
     root = project({"app.py": IMPORTER})
@@ -156,9 +170,54 @@ def test_a_module_that_no_longer_resolves_inside_the_root_is_not_read(
     (root / "pkg" / "b.py").symlink_to(outside / "b.py")
     index = worker.ProjectModuleIndex(root, 2_000_000)
     index._is_project_file = lambda path: path.exists()
+    reads = _no_reads(monkeypatch)
 
     assert index.module_declarations("pkg.b") == {}
-    assert index.read_hashes == {}
+    assert reads == []
+    assert index.read_hashes == {"pkg/b.py": None}
+
+
+def test_a_module_that_no_longer_resolves_at_all_is_null(worker: ModuleType, project) -> None:
+    # Accepted, then removed before the read resolved it.
+    root = project({"app.py": IMPORTER})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    index._is_project_file = lambda path: path.name == "b.py"
+
+    assert index.module_declarations("pkg.b") == {}
+    assert index.read_hashes == {"pkg/b.py": None}
+
+
+def test_a_module_refused_as_over_the_byte_cap_is_null_and_not_read(monkeypatch, worker: ModuleType, project) -> None:
+    root = project({"app.py": IMPORTER, "pkg/b.py": "class Thing:\n    pass\n" + "#" * 100})
+    index = worker.ProjectModuleIndex(root, 60)
+    reads = _no_reads(monkeypatch)
+
+    assert index.module_declarations("pkg.b") == {}
+    assert reads == []
+    assert index.read_hashes == {"pkg/b.py": None}
+
+
+def test_a_module_refused_for_linking_out_of_the_root_is_null(worker: ModuleType, project, tmp_path_factory) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "b.py").write_text("class Thing:\n    pass\n", encoding="utf-8")
+    root = project({"app.py": IMPORTER})
+    (root / "pkg").mkdir()
+    (root / "pkg" / "b.py").symlink_to(outside / "b.py")
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.module_declarations("pkg.b") == {}
+    assert index.read_hashes == {"pkg/b.py": None}
+
+
+def test_a_candidate_that_does_not_exist_is_a_probe_not_a_read(worker: ModuleType, project) -> None:
+    root = project({"app.py": IMPORTER, "pkg/b.py": "class Thing:\n    pass\n"})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    index.module_declarations("pkg.b")
+    index.module_declarations("pkg.missing")
+
+    # pkg/b/__init__.py was probed first and is absent; only the read is recorded.
+    assert index.read_hashes == {"pkg/b.py": _sha(b"class Thing:\n    pass\n")}
 
 
 def test_an_unreadable_requested_file_is_absent_and_an_empty_request_reports_an_empty_map(
