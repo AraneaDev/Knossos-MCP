@@ -1612,23 +1612,138 @@ fn the_result_reports_input_hashes_for_every_file_it_read() {
     }
 }
 
-#[test]
-fn an_oversized_requested_file_is_absent_from_input_hashes() {
-    // The oversized file's own read never happened (`prepare_one` checks the
-    // byte limit before reading), so it must not appear in `input_hashes` at
-    // all: neither its (never computed) hash nor a `null` placeholder.
-    let result = scan_result_with_bytes(
-        "input-hashes-oversized",
-        &[("src/big.rs", b"pub fn big() {}\n")],
-        &serde_json::json!({"limits": {"max_file_bytes": 1}}),
-    );
+/// Scan `requested` under an existing `root`, returning the contributions and
+/// the final result. Unlike the fixture helpers, the requested paths need not
+/// be files the test wrote, so a test can ask for what is missing.
+fn scan_existing_root(
+    root: &std::path::Path,
+    requested: &[&str],
+    params: &Value,
+) -> (Vec<Value>, Value) {
+    let mut merged = serde_json::json!({
+        "root": std::fs::canonicalize(root).unwrap().to_str().unwrap(),
+        "files": requested,
+    });
+    for (key, value) in params.as_object().unwrap() {
+        merged[key] = value.clone();
+    }
+    let request =
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "scan", "params": merged});
+    let mut output: Vec<u8> = Vec::new();
+    run(Cursor::new(request.to_string().into_bytes()), &mut output).unwrap();
+    let replies: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let contributions = replies
+        .iter()
+        .filter(|reply| reply["method"] == "scan/contribution")
+        .map(|reply| reply["params"].clone())
+        .collect();
+    let result = replies
+        .iter()
+        .find(|reply| reply.get("result").is_some())
+        .map(|reply| reply["result"].clone())
+        .expect("scan request produced no result");
 
-    let input_hashes = result["input_hashes"]
-        .as_object()
-        .expect("input_hashes must be a JSON object");
-    assert!(
-        !input_hashes.contains_key("src/big.rs"),
-        "input_hashes: {input_hashes:?}"
+    (contributions, result)
+}
+
+/// A fresh, empty temporary root named for the test.
+fn fresh_root(name: &str) -> std::path::PathBuf {
+    let root = std::env::temp_dir().join(format!("knossos-rust-{name}"));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+#[test]
+fn a_requested_file_whose_read_fails_is_reported_as_null() {
+    // Over the byte cap, gone, a directory, or a link leaving the root: the
+    // filesystem refused the read, and the contribution standing in for the
+    // file carries no facts. Null makes the core fail the scan for a
+    // discovered path instead of keeping a graph without them.
+    let root = fresh_root("input-hashes-read-failures");
+    let outside = fresh_root("input-hashes-read-failures-outside");
+    std::fs::create_dir_all(root.join("src/dir.rs")).unwrap();
+    std::fs::write(root.join("src/big.rs"), "pub fn big() {}\n").unwrap();
+    std::fs::write(outside.join("out.rs"), "pub fn out() {}\n").unwrap();
+    std::os::unix::fs::symlink(outside.join("out.rs"), root.join("src/out.rs")).unwrap();
+
+    let (contributions, result) = scan_existing_root(
+        &root,
+        &["src/big.rs", "src/dir.rs", "src/gone.rs", "src/out.rs"],
+        &serde_json::json!({"limits": {"max_file_bytes": 10}}),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+
+    assert_eq!(
+        serde_json::json!({"src/big.rs": null, "src/dir.rs": null, "src/gone.rs": null, "src/out.rs": null}),
+        result["input_hashes"]
+    );
+    assert_eq!(4, contributions.len());
+    for contribution in &contributions {
+        assert_eq!(serde_json::json!([]), contribution["nodes"]);
+        assert_eq!(
+            "RS_UNSCANNABLE_FILE",
+            contribution["diagnostics"][0]["code"]
+        );
+    }
+    assert_eq!(
+        "Scan path is not a regular file.",
+        contributions[1]["diagnostics"][0]["message"]
+    );
+}
+
+#[test]
+fn an_absent_crate_root_probe_is_reported_as_null_and_a_present_unread_one_is_not() {
+    // Whether `src/lib.rs` exists decides where the package node attaches and
+    // what `src/main.rs`'s module path is. An absent answer is recorded, so a
+    // discovered root missing for that moment fails the scan; a present root
+    // this request never read carries no facts from it and stays unreported.
+    let root = fresh_root("input-hashes-crate-probes");
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"probe\"\n").unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(root.join("src/other.rs"), "pub fn other() {}\n").unwrap();
+
+    let (_, result) = scan_existing_root(
+        &root,
+        &["src/other.rs"],
+        &serde_json::json!({"config_files": ["Cargo.toml"]}),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        serde_json::json!({
+            "src/lib.rs": null,
+            "src/other.rs": sha256_hex(b"pub fn other() {}\n"),
+        }),
+        result["input_hashes"]
+    );
+}
+
+#[test]
+fn a_crate_root_that_is_not_a_regular_file_is_reported_as_null() {
+    // Not a file to the probe and not readable to the request: both answers
+    // are null, and a requested directory must not be mistaken for a crate root.
+    let root = fresh_root("input-hashes-crate-probe-conflict");
+    std::fs::create_dir_all(root.join("src/lib.rs")).unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"probe\"\n").unwrap();
+
+    let (_, result) = scan_existing_root(
+        &root,
+        &["src/lib.rs"],
+        &serde_json::json!({"config_files": ["Cargo.toml"]}),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+
+    assert_eq!(
+        serde_json::json!({"src/lib.rs": null, "src/main.rs": null}),
+        result["input_hashes"]
     );
 }
 

@@ -141,11 +141,18 @@ final class WorkerServer
                 $absolutePath = $this->validatedFile($root, $relativePath);
                 $size = filesize($absolutePath);
                 if ($size === false || $size > $maxFileBytes) {
-                    throw new WorkerInputException(
+                    throw new UnreadableFileException(
                         sprintf('PHP scan file exceeds the size limit: %s', $relativePath),
                     );
                 }
                 $contribution = $this->scanner->scan($root, $absolutePath, $relativePath, $laravel, $symfony);
+            } catch (UnreadableFileException $error) {
+                $contribution = self::rejection($relativePath, 'PHP_UNSCANNABLE_FILE', $error->getMessage());
+                // The file is not what discovery hashed right now, and the
+                // contribution that replaces its facts is empty. Null makes the
+                // core fail the scan for a discovered path instead of keeping a
+                // graph without them.
+                $inputs[$relativePath] = null;
             } catch (WorkerInputException $error) {
                 $contribution = self::rejection($relativePath, 'PHP_UNSCANNABLE_FILE', $error->getMessage());
             } catch (Throwable $error) {
@@ -153,10 +160,9 @@ final class WorkerServer
             }
             // No second read: this worker resolves nothing across files, so the
             // one read the scanner already did for this file's own contribution
-            // is the only read there is. A contribution that carries no hash
-            // means the read never happened (validation failed before it) or
-            // failed outright, and either way this worker has nothing more to
-            // report for that path.
+            // is the only read there is. A contribution that carries no hash was
+            // refused by policy before any read, failed to read (recorded as
+            // null above), or failed after the read without facts.
             if (isset($contribution['content_hash'])) {
                 $inputs[$relativePath] = $contribution['content_hash'];
             }
@@ -252,11 +258,11 @@ final class WorkerServer
 
         $real = realpath($root . '/' . $normalized);
         if ($real === false || !is_file($real)) {
-            throw new WorkerInputException('PHP scan file does not exist.');
+            throw new UnreadableFileException('PHP scan file does not exist.');
         }
         $real = str_replace('\\', '/', $real);
         if (!($real === $root || str_starts_with($real, rtrim($root, '/') . '/'))) {
-            throw new WorkerInputException('PHP scan path escapes the project root.');
+            throw new UnreadableFileException('PHP scan path escapes the project root.');
         }
         // Resolved last: reading the file is only safe once the path is known to
         // be inside the root, so an extensionless path cannot be used to probe
@@ -281,7 +287,9 @@ final class WorkerServer
     {
         $handle = @fopen($absolutePath, 'rb');
         if (!is_resource($handle)) {
-            return false;
+            // Resolved to a regular file a moment ago: a failed open is the
+            // filesystem's answer, not this script's shebang.
+            throw new UnreadableFileException(sprintf('Unable to read PHP file: %s', $absolutePath));
         }
         try {
             $first = (string) fgets($handle, self::SHEBANG_PROBE_BYTES);

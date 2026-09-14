@@ -1034,24 +1034,99 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
-     * A requested file the worker never read (over the byte cap, so it costs
-     * only a diagnostic) must be absent from `input_hashes`, not `null`: this
-     * worker only reports a read it actually attempted.
+     * A requested file the filesystem would not let the worker read as the
+     * file discovery hashed (over the byte cap, gone, a directory, or leaving
+     * the root) is reported as `null`: its contribution carries no facts, so
+     * without the null a discovered file would lose its facts from a graph
+     * reported fresh. A path refused by policy (an extension this worker does
+     * not scan) says nothing about the tree and stays unreported.
      */
     #[Group('php-scanner')]
-    public function testAnOversizedRequestedFileIsAbsentFromInputHashes(): void
+    public function testARequestedFileWhoseReadFailsIsReportedAsNull(): void
     {
-        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
-        $client = $this->phpWorkerClient();
-        iterator_to_array($client->scan([
-            'root' => $root,
-            'files' => ['src/Architecture.php'],
-            'limits' => ['max_file_bytes' => 1],
-        ]));
-        $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
-        $client->shutdown();
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $outside = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src/Dir.php', 0o777, true);
+        mkdir($outside, 0o777, true);
+        file_put_contents($root . '/src/Big.php', "<?php\nclass Big {}\n");
+        file_put_contents($outside . '/Out.php', "<?php\nclass Out {}\n");
+        symlink($outside . '/Out.php', $root . '/src/Out.php');
+        file_put_contents($root . '/src/notes.txt', "text\n");
+        try {
+            $client = $this->phpWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['src/Big.php', 'src/Gone.php', 'src/Dir.php', 'src/Out.php', 'src/notes.txt'],
+                'limits' => ['max_file_bytes' => 10],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
 
-        assertSame(false, array_key_exists('src/Architecture.php', (array) $inputHashes));
+            assertSame(['src/Big.php' => null, 'src/Gone.php' => null, 'src/Dir.php' => null, 'src/Out.php' => null], $inputHashes);
+            assertSame(5, count($contributions));
+            foreach ($contributions as $contribution) {
+                assertSame([], $contribution->nodes);
+                assertSame('PHP_UNSCANNABLE_FILE', $contribution->diagnostics[0]->code);
+            }
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($outside);
+        }
+    }
+
+    /**
+     * The shebang probe runs on a path just resolved to a regular file, so an
+     * open that fails there means the file went away, not that the script names
+     * another interpreter: it is a failed read, reported as null, rather than a
+     * policy refusal the core never hears about.
+     */
+    #[Group('php-scanner')]
+    public function testAShebangProbeThatCannotOpenTheFileIsAFailedRead(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $probe = new \ReflectionMethod(\KnossosPhpScanner\WorkerServer::class, 'namesPhpInShebang');
+        $missing = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6)) . '/artisan';
+
+        $error = captureThrows(static fn() => $probe->invoke(null, $missing), \KnossosPhpScanner\UnreadableFileException::class);
+
+        assertSame('Unable to read PHP file: ' . $missing, $error->getMessage());
+    }
+
+    /** A read that fails inside the scanner is a failed read too, not a policy refusal. */
+    #[Group('php-scanner')]
+    public function testAScannerReadThatFailsIsAFailedRead(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $missing = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6)) . '/Gone.php';
+
+        $error = captureThrows(static fn() => @(new \KnossosPhpScanner\PhpScanner())->scan(dirname($missing), $missing, 'Gone.php'), \KnossosPhpScanner\UnreadableFileException::class);
+
+        assertSame('Unable to read PHP file: Gone.php', $error->getMessage());
+    }
+
+    /**
+     * A requested file swapped for a link to another file in the tree is read
+     * through the link, and the bytes it read are reported under the requested
+     * path, where they disagree with what discovery hashed for it.
+     */
+    #[Group('php-scanner')]
+    public function testARequestedFileReadThroughALinkIsReportedUnderTheRequestedPath(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        file_put_contents($root . '/src/Target.php', "<?php\nclass Target {}\n");
+        symlink('Target.php', $root . '/src/Linked.php');
+        try {
+            $client = $this->phpWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/Linked.php']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            assertSame(['src/Linked.php' => hash('sha256', "<?php\nclass Target {}\n")], $inputHashes);
+            assertSame('knossos.php:file:src/Linked.php', $contributions[0]->ownerKey);
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 
     #[Group('php-scanner')]

@@ -46,7 +46,7 @@ final readonly class PhpScanner
     {
         $source = file_get_contents($absolutePath);
         if ($source === false) {
-            throw new WorkerInputException(sprintf('Unable to read PHP file: %s', $relativePath));
+            throw new UnreadableFileException(sprintf('Unable to read PHP file: %s', $relativePath));
         }
 
         // Of the exact buffer handed to the parser, so the core can tell facts

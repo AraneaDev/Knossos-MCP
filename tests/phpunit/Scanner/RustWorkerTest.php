@@ -130,26 +130,27 @@ final class RustWorkerTest extends KnossosTestCase
     }
 
     /**
-     * A requested file the worker never read (over the byte cap, so it costs
-     * only a diagnostic) must be absent from `input_hashes`, not `null`: this
-     * worker only reports a read it actually attempted.
+     * A requested file the filesystem would not let the worker read as the
+     * file discovery hashed (over the byte cap, gone, or not a regular file) is
+     * reported as `null`: its contribution carries no facts, so without the
+     * null a discovered file would lose its facts from a graph reported fresh.
      */
-    public function testAnOversizedRequestedFileIsAbsentFromInputHashes(): void
+    public function testARequestedFileWhoseReadFailsIsReportedAsNull(): void
     {
         $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
-        mkdir($root . '/src', 0o777, true);
+        mkdir($root . '/src/dir.rs', 0o777, true);
         file_put_contents($root . '/src/big.rs', "pub fn big() {}\n");
         try {
             $client = $this->rustWorkerClient();
             iterator_to_array($client->scan([
                 'root' => $root,
-                'files' => ['src/big.rs'],
-                'limits' => ['max_file_bytes' => 1],
+                'files' => ['src/big.rs', 'src/dir.rs', 'src/gone.rs'],
+                'limits' => ['max_file_bytes' => 10],
             ]));
             $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
             $client->shutdown();
 
-            self::assertSame(false, array_key_exists('src/big.rs', (array) $inputHashes));
+            self::assertSame(['src/big.rs' => null, 'src/dir.rs' => null, 'src/gone.rs' => null], $inputHashes);
         } finally {
             $this->removeTempTree($root);
         }
