@@ -94,12 +94,17 @@ final class InputHashVerificationTest extends KnossosTestCase
         assertContains('could not be read while the scan derived graph facts from it', $error->getMessage());
     }
 
-    public function testAReadOutsideTheDiscoveredTreeIsIgnored(): void
+    public function testAReadOutsideTheDiscoveredTreeIsCollectedForThePreCommitReRead(): void
     {
         $result = $this->runScan('inputs_outside');
 
+        // Not a fault of the request: there is no recorded hash to compare it
+        // with until the scan re-reads it before committing.
         assertSame([], $result->workerDiagnostics);
         assertSame(1, count($result->contributions));
+        assertSame(['node_modules/dep/index.d.ts' => hash('sha256', 'x')], $result->undiscoveredInputs);
+        // Requested and discovered files were verified on the spot and are not collected.
+        assertSame([], $this->runScan('inputs_honest')->undiscoveredInputs);
     }
 
     public function testAWorkerWithoutTheCapabilityScansExactlyAsBefore(): void

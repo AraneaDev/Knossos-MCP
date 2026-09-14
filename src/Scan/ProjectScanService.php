@@ -122,6 +122,17 @@ final class ProjectScanService implements ProjectScanner
             $cancellation->throwIfCancelled();
             $validationStarted = hrtime(true);
             $this->snapshotValidator->validateDiscovery($preparation->discovery);
+            // Then the files the workers read that discovery never hashed,
+            // after discovered files so their messages keep taking precedence.
+            // They have no recorded hash, so this re-read is what makes the
+            // facts derived from them match the tree the scan commits. A scan
+            // that sent no request, as on the no-change fast path below,
+            // collected nothing and has nothing to re-read here.
+            (new UndiscoveredInputVerifier())->verify(
+                $preparation->discovery->rootRealpath,
+                $language->undiscoveredInputs,
+                $preparation->maxFileBytes,
+            );
             $stageMilliseconds['snapshot_validation'] = self::elapsedMilliseconds($validationStarted);
             $analysisStarted = hrtime(true);
             $analysis = $this->analysisPipeline->analyze($plan, $language->contributions);

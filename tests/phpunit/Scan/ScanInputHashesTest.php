@@ -90,16 +90,13 @@ final class ScanInputHashesTest extends TestCase
     {
         // `{}` decodes to an empty PHP array, which is also what an empty list
         // decodes to; both mean the same thing, so both are accepted.
-        ScanInputHashes::verify(['input_hashes' => []], $this->declaring(), $this->discovery());
-
-        $this->addToAssertionCount(1);
+        assertSame([], ScanInputHashes::verify(['input_hashes' => []], $this->declaring(), $this->discovery()));
     }
 
     public function testAMatchingHashForADiscoveredFilePasses(): void
     {
-        ScanInputHashes::verify(['input_hashes' => ['src/Other.ts' => hash('sha256', self::OTHER)]], $this->declaring(), $this->discovery());
-
-        $this->addToAssertionCount(1);
+        // Verified here, so nothing is left for the pre-commit re-read.
+        assertSame([], ScanInputHashes::verify(['input_hashes' => ['src/Other.ts' => hash('sha256', self::OTHER)]], $this->declaring(), $this->discovery()));
     }
 
     public function testADifferentHashForADiscoveredFileFailsTheScan(): void
@@ -148,22 +145,22 @@ final class ScanInputHashesTest extends TestCase
         assertSame($message, $error->getMessage());
     }
 
-    public function testAPathDiscoveryNeverHashedIsIgnored(): void
+    public function testAPathDiscoveryNeverHashedIsReturnedForThePreCommitReRead(): void
     {
-        ScanInputHashes::verify(
-            ['input_hashes' => ['node_modules/dep/index.d.ts' => hash('sha256', 'x'), 'vendor/lib.py' => null]],
+        $undiscovered = ScanInputHashes::verify(
+            ['input_hashes' => ['node_modules/dep/index.d.ts' => hash('sha256', 'x'), 'src/Other.ts' => hash('sha256', self::OTHER), 'vendor/lib.py' => null]],
             $this->declaring(),
             $this->discovery(),
         );
 
-        $this->addToAssertionCount(1);
+        // Neither fails the request, whatever its value: there is nothing to
+        // compare it with until the re-read, and the discovered path is not returned.
+        assertSame(['node_modules/dep/index.d.ts' => hash('sha256', 'x'), 'vendor/lib.py' => null], $undiscovered);
     }
 
     public function testAWorkerThatDidNotDeclareTheCapabilityNeedNotSendIt(): void
     {
-        ScanInputHashes::verify(['count' => 1], $this->plain(), $this->discovery());
-
-        $this->addToAssertionCount(1);
+        assertSame([], ScanInputHashes::verify(['count' => 1], $this->plain(), $this->discovery()));
     }
 
     public function testAHashFromAWorkerThatDidNotDeclareTheCapabilityIsStillChecked(): void
@@ -219,9 +216,7 @@ final class ScanInputHashesTest extends TestCase
         $discovery = self::numericDiscovery('123');
         $decoded = json_decode('{"input_hashes": {"123": "' . hash('sha256', self::OTHER) . '", "src/x.ts": null}}', true);
 
-        ScanInputHashes::verify($decoded, $this->declaring(), $discovery);
-
-        $this->addToAssertionCount(1);
+        assertSame(['src/x.ts' => null], ScanInputHashes::verify($decoded, $this->declaring(), $discovery));
     }
 
     public function testAFailedReadOfANumericPathNamesIt(): void
@@ -232,6 +227,16 @@ final class ScanInputHashesTest extends TestCase
         $error = captureThrows(fn() => ScanInputHashes::verify($decoded, $this->declaring(), $discovery), ScanSnapshotChangedException::class);
 
         assertContains('7 could not be read', $error->getMessage());
+    }
+
+    public function testAnUndiscoveredNumericPathIsReturnedAsTheStringItSpells(): void
+    {
+        $decoded = json_decode('{"input_hashes": {"src/x.ts": null, "42": "' . hash('sha256', 'x') . '"}}', true);
+
+        $undiscovered = ScanInputHashes::verify($decoded, $this->declaring(), $this->discovery());
+
+        assertSame(['src/x.ts', '42'], array_map(strval(...), array_keys($undiscovered)));
+        assertSame(hash('sha256', 'x'), $undiscovered['42']);
     }
 
     public function testAnObjectKeyedOnlyByZeroIsRefusedBecauseItDecodesToAList(): void

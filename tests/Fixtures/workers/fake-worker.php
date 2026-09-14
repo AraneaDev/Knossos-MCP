@@ -210,6 +210,39 @@ while (($line = fgets(STDIN)) !== false) {
                 // different frames: one part, then the result's own field.
                 notifyInputHashes(['src/Other.ts' => hash('sha256', (string) file_get_contents($other))]);
                 $inputs['src/Other.ts'] = hash('sha256', 'swapped while the worker read it');
+            } elseif (str_starts_with($mode, 'inputs_undiscovered_')) {
+                // A read of a file discovery never hashed, which the core can
+                // only re-read just before the scan commits.
+                $dependency = 'node_modules/dep/index.d.ts';
+                if ($mode === 'inputs_undiscovered_stable') {
+                    $inputs[$dependency] = hash('sha256', (string) file_get_contents($root . '/' . $dependency));
+                } elseif ($mode === 'inputs_undiscovered_changed') {
+                    // Read honestly, then changed and left changed.
+                    $inputs[$dependency] = hash('sha256', (string) file_get_contents($root . '/' . $dependency));
+                    file_put_contents($root . '/' . $dependency, "// changed after the worker read it\n", FILE_APPEND);
+                } elseif ($mode === 'inputs_undiscovered_transient') {
+                    // A file that exists only while the worker reads it.
+                    $transient = $root . '/generated/transient.d.ts';
+                    @mkdir(dirname($transient), 0o777, true);
+                    file_put_contents($transient, "export declare const transient: 1;\n");
+                    $inputs['generated/transient.d.ts'] = hash('sha256', (string) file_get_contents($transient));
+                    unlink($transient);
+                } elseif ($mode === 'inputs_undiscovered_appeared') {
+                    // Absent when the worker looked, created before commit.
+                    $inputs['generated/late.d.ts'] = null;
+                    @mkdir($root . '/generated', 0o777, true);
+                    file_put_contents($root . '/generated/late.d.ts', "export declare const late: 1;\n");
+                } elseif ($mode === 'inputs_undiscovered_then_missing') {
+                    // A read no disk state matches, then a language fault on
+                    // the next request: the result without its input_hashes.
+                    $inputs[$dependency] = hash('sha256', 'never on disk');
+                    $undiscoveredRequests = ($undiscoveredRequests ?? 0) + 1;
+                } elseif ($mode === 'inputs_undiscovered_per_request') {
+                    // A different value in every request that names a
+                    // different first file, as two reads of a file rewritten
+                    // between requests would give.
+                    $inputs[$dependency] = hash('sha256', $requested[0] ?? '');
+                }
             } elseif ($mode === 'inputs_parts_flood') {
                 // More part bytes than the client's budget allows.
                 for ($part = 0; $part < 4; ++$part) {
@@ -217,7 +250,7 @@ while (($line = fgets(STDIN)) !== false) {
                 }
             }
             $result = ['count' => count($requested)];
-            if ($mode !== 'inputs_missing') {
+            if ($mode !== 'inputs_missing' && !($mode === 'inputs_undiscovered_then_missing' && $undiscoveredRequests > 1)) {
                 $result['input_hashes'] = (object) $inputs;
             }
             respond($id, $result);

@@ -22,6 +22,11 @@ final readonly class LanguageScanResult
      *        `source_bytes_used` is the narrowest budget any of that language's
      *        requests ran at, so a value below `source_bytes` means a batch
      *        overflowed the worker's output cap and was re-split.
+     * @param array<string, string|null> $undiscoveredInputs
+     *        What the kept languages' workers read of files discovery never
+     *        hashed, path to SHA-256 hex or null for a failed read, for
+     *        {@see UndiscoveredInputVerifier} to re-read before the scan commits.
+     *        A degraded language's reads are left out with its facts.
      */
     public function __construct(
         public array $manifests,
@@ -35,5 +40,6 @@ final readonly class LanguageScanResult
         public array $stageMilliseconds,
         public array $workerDiagnostics = [],
         public array $batchBudgets = [],
+        public array $undiscoveredInputs = [],
     ) {}
 }
