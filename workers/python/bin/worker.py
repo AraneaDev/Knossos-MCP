@@ -6,7 +6,9 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
+import stat
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -264,11 +266,14 @@ class ProjectModuleIndex:
         return False
 
     def _record_refused(self, path: Path) -> None:
-        """Record a module path this index would not or could not read as ``None``."""
-        try:
-            self.record_read(path.relative_to(self.root).as_posix(), None)
-        except ValueError:
-            pass
+        """Record a module path this index would not or could not read as ``None``.
+
+        Keyed by :func:`in_root_location`, the in-root path its bytes would have
+        come from, the same key a successful read of it goes under.
+        """
+        relative = in_root_location(self.root, path)
+        if relative is not None:
+            self.record_read(relative, None)
 
     def module_declarations(self, module: str) -> dict[str, str]:
         cached = self._cache.get(module)
@@ -326,6 +331,67 @@ class ProjectModuleIndex:
             return competitor.is_file()
         except OSError:
             return False
+
+
+# More links than this in one path is a loop, or near enough to one.
+MAX_SYMLINK_HOPS = 40
+
+
+def in_root_location(root: Path, path: Path) -> str | None:
+    """The root-relative path a refused module's bytes would have come from.
+
+    A successful read is keyed by its resolved target, so a refusal has to be
+    keyed the same way, or a linked name (``pkg/alias.py``, ``lnk/c.py``) would
+    carry the ``None`` while discovery tracks the real file (``pkg/real.py``,
+    ``real/c.py``) and the core would skip it as undiscovered. ``resolve()``
+    cannot give that key, because the path is refused exactly when it does not
+    resolve inside the root. So the path is walked one component at a time from
+    the root, following each link while its target stays inside the root:
+
+    - every component resolves inside the root: the fully resolved path, which
+      is what ``resolve()`` gives for a module refused only by the byte cap;
+    - a component is a link leading out of the root: that link's location plus
+      the components after it, where discovery saw a regular file or directory,
+      if it saw one there, before it was swapped for the link;
+    - a component does not exist, or cannot be examined: its location plus the
+      components after it, which is where a removed file was.
+
+    ``None`` only for a path that is not under the root to begin with. Any key
+    returned for a stable layout names a link or a missing path, which discovery
+    never reports, so the core ignores it.
+    """
+    try:
+        pending = list(path.relative_to(root).parts)
+    except ValueError:
+        return None
+    current = root
+    hops = 0
+    while pending:
+        name = pending.pop(0)
+        if name in ("", "."):
+            continue
+        if name == "..":
+            # Only reached through a link target; ``current`` is already real,
+            # so stepping up lexically is what the filesystem would do.
+            current = current.parent
+            if not current.is_relative_to(root):
+                return None
+            continue
+        following = current / name
+        try:
+            if not stat.S_ISLNK(os.lstat(following).st_mode):
+                current = following
+                continue
+            target = os.readlink(following)
+        except OSError:
+            return following.joinpath(*pending).relative_to(root).as_posix()
+        hops += 1
+        resolved = Path(os.path.normpath(current / target))
+        if hops > MAX_SYMLINK_HOPS or not resolved.is_relative_to(root):
+            return following.joinpath(*pending).relative_to(root).as_posix()
+        pending[:0] = resolved.relative_to(root).parts
+        current = root
+    return current.relative_to(root).as_posix()
 
 
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:

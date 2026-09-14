@@ -238,3 +238,93 @@ def test_an_unreadable_requested_file_is_absent_and_an_empty_request_reports_an_
     result, contributions = _scan(worker, root, ["gone.py"])
     assert contributions["gone.py"]["diagnostics"][0]["code"] == "PY_UNSCANNABLE_FILE"
     assert result["input_hashes"] == {}
+
+
+# A refused module reached through a linked file name (pkg/alias.py links to
+# pkg/real.py) and through a linked directory (lnk links to real/). Discovery
+# never follows a link, so the null must land on the real in-root path.
+REFUSED_ON_REAL_KEYS = {"pkg/real.py": None, "real/c.py": None}
+
+
+def _linked_layout(project, real: str = "class R:\n    pass\n", c: str = "class C:\n    pass\n") -> Path:
+    root = project({"app.py": "x = 1\n", "pkg/real.py": real, "real/c.py": c})
+    (root / "pkg" / "alias.py").symlink_to(root / "pkg" / "real.py")
+    (root / "lnk").symlink_to(root / "real")
+    return root
+
+
+def _declarations_of_linked_modules(index: Any) -> None:
+    assert index.module_declarations("pkg.alias") == {}
+    assert index.module_declarations("lnk.c") == {}
+
+
+def _escape(targets: list[Path], outside: Path) -> None:
+    for target in targets:
+        target.unlink()
+        target.symlink_to(outside)
+
+
+def test_a_module_refused_over_the_byte_cap_is_keyed_by_its_real_path(worker: ModuleType, project) -> None:
+    root = _linked_layout(project, "class R:\n    pass\n" + "#" * 100, "class C:\n    pass\n" + "#" * 100)
+    index = worker.ProjectModuleIndex(root, 60)
+
+    _declarations_of_linked_modules(index)
+
+    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+
+
+def test_a_module_refused_for_linking_out_of_the_root_is_keyed_by_the_in_root_link(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside") / "x.py"
+    outside.write_text("class X:\n    pass\n", encoding="utf-8")
+    root = _linked_layout(project)
+    _escape([root / "pkg" / "real.py", root / "real" / "c.py"], outside)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    _declarations_of_linked_modules(index)
+
+    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+
+
+def test_a_module_retargeted_out_of_the_root_before_the_read_is_keyed_by_the_in_root_link(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside") / "x.py"
+    outside.write_text("class X:\n    pass\n", encoding="utf-8")
+    root = _linked_layout(project)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    _escape([root / "pkg" / "real.py", root / "real" / "c.py"], outside)
+    index._is_project_file = lambda path: path.exists()
+
+    _declarations_of_linked_modules(index)
+
+    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+
+
+def test_a_module_removed_before_the_read_is_keyed_by_where_it_was(worker: ModuleType, project) -> None:
+    root = _linked_layout(project)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    (root / "pkg" / "real.py").unlink()
+    (root / "real" / "c.py").unlink()
+    index._is_project_file = lambda path: path.name in {"alias.py", "c.py"}
+
+    _declarations_of_linked_modules(index)
+
+    assert index.read_hashes == REFUSED_ON_REAL_KEYS
+
+
+def test_a_module_under_a_directory_swapped_for_a_link_out_of_the_root_is_keyed_by_where_it_was(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "c.py").write_text("class C:\n    pass\n", encoding="utf-8")
+    root = project({"app.py": "x = 1\n", "sub/c.py": "class C:\n    pass\n"})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    (root / "sub" / "c.py").unlink()
+    (root / "sub").rmdir()
+    (root / "sub").symlink_to(outside)
+
+    assert index.module_declarations("sub.c") == {}
+
+    assert index.read_hashes == {"sub/c.py": None}
