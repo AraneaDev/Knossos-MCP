@@ -68,7 +68,9 @@ final class TypescriptNodeModulesVerificationTest extends KnossosTestCase
         // A FIFO a reference reaches, directly and through a link: opening it
         // for reading would block the worker, so both are reported as null.
         $this->write('src/i.ts', "/// <reference path=\"../node_modules/pipe.d.ts\" />\n/// <reference path=\"../node_modules/piped.d.ts\" />\nexport const i = 1;\n");
-        posix_mkfifo($this->root . '/node_modules/pipe.d.ts', 0o644);
+        if (!function_exists('posix_mkfifo') || !posix_mkfifo($this->root . '/node_modules/pipe.d.ts', 0o644)) {
+            self::markTestSkipped('FIFOs are not available on this platform.');
+        }
         symlink('pipe.d.ts', $this->root . '/node_modules/piped.d.ts');
     }
 
