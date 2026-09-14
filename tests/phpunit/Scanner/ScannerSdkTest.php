@@ -117,6 +117,15 @@ final class ScannerSdkTest extends KnossosTestCase
         assertSame('fail', $statusByName['input_hashes']);
         // The missing behaviour is scoped to input_hashes; content_hash is unaffected.
         assertSame('pass', $statusByName['content_hash']);
+
+        // The fixture's own hash matches, but another key is one the core
+        // refuses, so the map fails its check against the fixture's discovery.
+        [$exit, $report] = $this->runConformance([], 'inputs_escaping_key');
+        assertSame(1, $exit);
+        $statusByName = array_column($report['checks'], 'status', 'name');
+        assertSame('pass', $statusByName['input_hashes_empty']);
+        assertSame('pass', $statusByName['content_hash']);
+        assertSame('fail', $statusByName['input_hashes']);
     }
 
     /**
@@ -172,6 +181,17 @@ final class ScannerSdkTest extends KnossosTestCase
             assertSame('plainname', $anchored('plainname'));
             // A flag is never anchored, whatever it happens to match.
             assertSame('-plainname', $anchored('-plainname'));
+            // A flag's value is anchored under the same rule as an argument.
+            assertSame('--config=' . $directory . '/sub/worker.php', $anchored('--config=sub/worker.php'));
+            assertSame('--script=' . $directory . '/worker.php', $anchored('--script=worker.php'));
+            assertSame('--mode=plainname', $anchored('--mode=plainname'));
+            assertSame('--config=missing/worker.php', $anchored('--config=missing/worker.php'));
+            assertSame('--config=/worker.php', $anchored('--config=/worker.php'));
+            assertSame('--config=', $anchored('--config='));
+            assertSame('--flag', $anchored('--flag'));
+            // Only a flag's value is split off: a plain argument with an `=` in
+            // it is one path, which names nothing here.
+            assertSame('name=sub/worker.php', $anchored('name=sub/worker.php'));
             // A relative path containing a slash is anchored when it exists there.
             assertSame($directory . '/sub/worker.php', $anchored('sub/worker.php'));
             // A bare name ending in a recognised script extension is anchored too.

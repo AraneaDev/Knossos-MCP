@@ -198,6 +198,10 @@ while (($line = fgets(STDIN)) !== false) {
                 $inputs['src/Other.ts'] = null;
             } elseif ($mode === 'inputs_outside') {
                 $inputs['node_modules/dep/index.d.ts'] = hash('sha256', 'x');
+            } elseif ($mode === 'inputs_escaping_key') {
+                // Honest about the requested file, but keys another read by a
+                // path that climbs out of the root, which the core refuses.
+                $inputs['../outside.ts'] = hash('sha256', 'x');
             } elseif ($mode === 'inputs_parts_honest') {
                 // The honest read sent ahead of the result as a part.
                 notifyInputHashes(['src/Other.ts' => hash('sha256', (string) file_get_contents($other))]);

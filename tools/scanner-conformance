@@ -3,6 +3,9 @@
 
 declare(strict_types=1);
 
+use Knossos\Discovery\DiscoveredFile;
+use Knossos\Scan\ScanInputHashes;
+use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Protocol\Protocol;
 use Knossos\Scanner\Sdk\ConformanceArgumentAnchor;
 use Knossos\Scanner\Worker\ProcessScannerClient;
@@ -82,6 +85,18 @@ try {
             $matchesInput = is_array($inputHashes)
                 && array_key_exists($relativePath, $inputHashes)
                 && $inputHashes[$relativePath] === $expectedHash;
+            if ($matchesInput) {
+                // The whole map, through the core's own check with the fixture
+                // as discovery: an entry the core would refuse, such as an
+                // absolute or `..` key, fails conformance here rather than
+                // degrading the worker's language on its first real scan.
+                $fixture = new DiscoveredFile($relativePath, $temporary . '/' . $relativePath, 'conformance', strlen($bytes), (int) filemtime($temporary . '/' . $relativePath), $expectedHash);
+                try {
+                    ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, [$relativePath => $fixture]);
+                } catch (WorkerException | ScanSnapshotChangedException) {
+                    $matchesInput = false;
+                }
+            }
             $checks[] = ['name' => 'input_hashes', 'status' => $matchesInput ? 'pass' : 'fail'];
         }
         @unlink($temporary . '/' . $relativePath);

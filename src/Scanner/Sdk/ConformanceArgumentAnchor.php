@@ -17,7 +17,9 @@ namespace Knossos\Scanner\Sdk;
  * extension. An empty string is never anchored, even though
  * `file_exists($directory . '/')` is true for any existing directory and
  * would otherwise rewrite it to the directory itself. A flag is never
- * anchored. Neither is a bare token with no slash and no recognised
+ * anchored, but the value of a `--option=value` flag is, under the same rule
+ * as a whole argument, since that is where a worker's own path options go.
+ * Neither is a bare token with no slash and no recognised
  * extension, even when it happens to name a real entry in the caller's
  * directory: a bare name such as a scan mode argument or a `python3`
  * interpreter is not a path the caller wrote, and rewriting it on a
@@ -40,12 +42,25 @@ final class ConformanceArgumentAnchor
     public static function anchor(array $command, string $callerDirectory): array
     {
         foreach ($command as $position => $argument) {
-            if (self::looksLikeCallerRelativePath($argument) && file_exists($callerDirectory . '/' . $argument)) {
-                $command[$position] = $callerDirectory . '/' . $argument;
+            if (str_starts_with($argument, '-') && str_contains($argument, '=')) {
+                [$flag, $value] = explode('=', $argument, 2);
+                $command[$position] = $flag . '=' . self::anchored($value, $callerDirectory);
+                continue;
             }
+            $command[$position] = self::anchored($argument, $callerDirectory);
         }
 
         return $command;
+    }
+
+    /** One argument, or one flag's value, anchored when it names a file relative to the caller's directory. */
+    private static function anchored(string $argument, string $callerDirectory): string
+    {
+        if (self::looksLikeCallerRelativePath($argument) && file_exists($callerDirectory . '/' . $argument)) {
+            return $callerDirectory . '/' . $argument;
+        }
+
+        return $argument;
     }
 
     /**
