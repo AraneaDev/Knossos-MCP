@@ -1573,8 +1573,16 @@ final readonly class ProjectDiscoverer
         if ($resolved !== false) {
             $escapes = !RootGuard::contains($root, $resolved);
         } else {
-            $target = readlink($absolute);
-            $escapes = !is_string($target) || !RootGuard::contains($root, self::lexicalTarget($absolute, $target));
+            $target = @readlink($absolute);
+            if (!is_string($target)) {
+                return new DiscoveryDiagnostic(
+                    'warning',
+                    'DISCOVERY_FILE_UNREADABLE',
+                    'Symlink could not be inspected; the link was skipped.',
+                    $relative,
+                );
+            }
+            $escapes = !RootGuard::contains($root, self::lexicalTarget($absolute, $target));
             if (!$escapes) {
                 return new DiscoveryDiagnostic(
                     'warning',

@@ -108,12 +108,9 @@ final class ProjectScanService implements ProjectScanner
             $language = $this->languageRunner->run($plan, $cancellation);
             $stageMilliseconds += $language->stageMilliseconds;
             // The workers read every file themselves, so their facts descend
-            // from bytes this process never hashed. Prove the tree still hashes
-            // to what discovery recorded before anything is persisted -- which
-            // means before the no-change fast path too, since that path also
-            // writes: it refreshes stored mtimes and restamps the active scan's
-            // completion, and a graph restamped as verified against content that
-            // moved underneath it is exactly the false `fresh` this guards.
+            // from bytes this process never hashed. Discovery's own files are
+            // checked before analysis; undiscovered worker inputs are checked at
+            // the final write boundary below, after reconciliation preparation.
             //
             // Cancellation is checked first so a caller who asked to stop still
             // gets ScanCancelledException: a scan being abandoned has nothing to
@@ -122,26 +119,23 @@ final class ProjectScanService implements ProjectScanner
             $cancellation->throwIfCancelled();
             $validationStarted = hrtime(true);
             $this->snapshotValidator->validateDiscovery($preparation->discovery);
-            // Then the files the workers read that discovery never hashed,
-            // after discovered files so their messages keep taking precedence.
-            // They have no recorded hash, so this re-read is what makes the
-            // facts derived from them match the tree the scan commits. A scan
-            // that sent no request, as on the no-change fast path below,
-            // collected nothing and has nothing to re-read here.
-            (new UndiscoveredInputVerifier())->verify(
-                $preparation->discovery->rootRealpath,
-                $language->undiscoveredInputs,
-                $preparation->maxFileBytes,
-            );
             $stageMilliseconds['snapshot_validation'] = self::elapsedMilliseconds($validationStarted);
             $analysisStarted = hrtime(true);
             $analysis = $this->analysisPipeline->analyze($plan, $language->contributions);
             $stageMilliseconds['analysis'] = self::elapsedMilliseconds($analysisStarted);
             $cancellation->throwIfCancelled();
 
+            $verifyUndiscovered = function () use ($preparation, $language): void {
+                (new UndiscoveredInputVerifier())->verify(
+                    $preparation->discovery->rootRealpath,
+                    $language->undiscoveredInputs,
+                    $preparation->maxFileBytes,
+                );
+            };
+
             $reconciliationStarted = hrtime(true);
             $projectConfig = $this->projectConfig($preparation);
-            $fastPath = $this->noChangeFastPath($plan, $language, $preparation, $projectConfig, $name);
+            $fastPath = $this->noChangeFastPath($plan, $language, $preparation, $projectConfig, $name, $verifyUndiscovered);
             if ($fastPath !== null) {
                 $stageMilliseconds['reconciliation'] = self::elapsedMilliseconds($reconciliationStarted);
                 return $this->resultFactory->create($plan, $language, $fastPath, $startedAt, $stageMilliseconds, 'no_change');
@@ -169,7 +163,7 @@ final class ProjectScanService implements ProjectScanner
                 // scan records is one its own bytes cannot predate.
                 $preparation->gitHead,
                 $preparation->dirtyPaths,
-            ));
+            ), $verifyUndiscovered);
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
             }
@@ -248,8 +242,9 @@ final class ProjectScanService implements ProjectScanner
      * refreshed, so the staleness probe agrees with reality.
      *
      * @param array<string, mixed> $projectConfig
+     * @param callable(): void $verifyUndiscovered
      */
-    private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig, ?string $name): ?ReconciliationResult
+    private function noChangeFastPath(ScanPlan $plan, LanguageScanResult $language, ScanPreparation $preparation, array $projectConfig, ?string $name, callable $verifyUndiscovered): ?ReconciliationResult
     {
         // A degraded language contributes nothing to added/changed, so those tallies
         // cannot see it, and the scanner-set hash only differs when the failed
@@ -290,6 +285,7 @@ final class ProjectScanService implements ProjectScanner
         if ($row['scanner_set_hash'] !== GraphReconciler::scannerSetHash($language->manifests)) {
             return null;
         }
+        $verifyUndiscovered();
         $this->recordVerifiedGraph($plan->projectId, (string) $row['active_scan_id'], $preparation->discovery->files);
         return $this->currentGraphCounts($plan->projectId, (string) $row['active_scan_id']);
     }

@@ -6,6 +6,7 @@ namespace Knossos\Scan;
 
 use InvalidArgumentException;
 use Knossos\Discovery\RootGuard;
+use Knossos\Filesystem\RegularFileOpener;
 use Knossos\Scanner\Protocol\RelativePath;
 
 /**
@@ -41,9 +42,9 @@ use Knossos\Scanner\Protocol\RelativePath;
  *   in-root regular file within the cap means the file appeared, or became
  *   readable, after the worker looked.
  *
- * The file type is checked with stat() before anything is opened, and again on
- * the open handle: opening a FIFO blocks until a writer appears, so a path
- * swapped for one mid-scan would hang the scan instead of failing it.
+ * RegularFileOpener acquires descriptors without blocking on a FIFO and checks
+ * the descriptor's type after opening, so a path swapped for one mid-scan
+ * fails the scan instead of hanging it.
  */
 final class UndiscoveredInputVerifier
 {
@@ -86,19 +87,14 @@ final class UndiscoveredInputVerifier
     private static function hashOf(string $root, string $absolute, int $maxFileBytes): ?string
     {
         $resolved = realpath($absolute);
-        if ($resolved === false || !RootGuard::contains($root, $resolved) || !self::regularAt($resolved)) {
+        if ($resolved === false || !RootGuard::contains($root, $resolved)) {
             return null;
         }
-        $handle = @fopen($resolved, 'rb');
-        if ($handle === false) {
+        $handle = RegularFileOpener::open($resolved);
+        if (!is_resource($handle)) {
             return null;
         }
         try {
-            // From the open handle rather than a stat of the path, so the check
-            // is about the file actually read. A directory opens on Linux.
-            if (!self::isRegular($handle)) {
-                return null;
-            }
             $context = hash_init('sha256');
             $read = hash_update_stream($context, $handle, $maxFileBytes + 1);
 
@@ -113,40 +109,19 @@ final class UndiscoveredInputVerifier
     {
         // The root is a realpath, so a path that resolves to its own spelling
         // passed through no link.
-        if (realpath($absolute) !== $absolute || !self::regularAt($absolute)) {
+        if (realpath($absolute) !== $absolute) {
             return false;
         }
-        $handle = @fopen($absolute, 'rb');
-        if ($handle === false) {
+        $handle = RegularFileOpener::open($absolute);
+        if (!is_resource($handle)) {
             return false;
         }
         try {
             $stat = fstat($handle);
 
-            return self::isRegular($handle) && is_array($stat) && $stat['size'] <= $maxFileBytes;
+            return is_array($stat) && is_int($stat['size'] ?? null) && $stat['size'] <= $maxFileBytes;
         } finally {
             fclose($handle);
         }
-    }
-
-    /** Whether the path is a regular file now, asked before an open that would block on a FIFO. */
-    private static function regularAt(string $path): bool
-    {
-        $stat = @stat($path);
-
-        return is_array($stat) && ($stat['mode'] & 0o170000) === 0o100000;
-    }
-
-    /**
-     * Whether an open handle is a regular file, checked after the open because
-     * the path may have been swapped since regularAt() looked.
-     *
-     * @param resource $handle
-     */
-    private static function isRegular($handle): bool
-    {
-        $stat = fstat($handle);
-
-        return is_array($stat) && ($stat['mode'] & 0o170000) === 0o100000;
     }
 }

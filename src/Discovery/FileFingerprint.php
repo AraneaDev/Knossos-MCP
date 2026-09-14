@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Discovery;
 
+use Knossos\Filesystem\RegularFileOpener;
+
 /**
  * Bounded single-pass fingerprint of a discovered file. Streams the byte
  * content exactly once to compute the SHA-256 content hash, the physical line
@@ -82,29 +84,16 @@ final readonly class FileFingerprint
      * Null means the bytes could not be read, never "it matched". A path that
      * is not a regular file, such as a directory or a FIFO, is null too: a
      * directory yields no bytes and would hash like an empty file, and opening
-     * a FIFO blocks until a writer appears, which would hang the scan re-reading
-     * a file swapped for one instead of failing it.
+     * a FIFO blocks until a writer appears. RegularFileOpener acquires the
+     * descriptor non-blockingly and checks its type again after the open.
      */
     public static function contentHashOf(string $absolutePath): ?string
     {
-        // The type is asked before the open, since the open itself is what
-        // blocks on a FIFO. The stat cache is dropped for this path first: a
-        // long-running server may have stat()ed it before it was swapped.
-        clearstatcache(true, $absolutePath);
-        if (!self::isRegular(@stat($absolutePath))) {
-            return null;
-        }
-        // Suppressed, not guarded by is_readable(): a check followed by a read
-        // is two moments, and only the read's own failure says what this call
-        // actually got. Checked again on the handle for a swap after the stat.
-        $handle = @fopen($absolutePath, 'rb');
-        if ($handle === false) {
+        $handle = RegularFileOpener::open($absolutePath);
+        if (!is_resource($handle)) {
             return null;
         }
         try {
-            if (!self::isRegular(fstat($handle))) {
-                return null;
-            }
             $context = hash_init('sha256');
             hash_update_stream($context, $handle);
 
@@ -112,17 +101,6 @@ final readonly class FileFingerprint
         } finally {
             fclose($handle);
         }
-    }
-
-    /**
-     * Whether a stat() or fstat() result describes a regular file; false for a
-     * failed stat, a directory, a FIFO, or any other file type.
-     *
-     * @param array<array-key, int>|false $stat
-     */
-    private static function isRegular(array|false $stat): bool
-    {
-        return is_array($stat) && (($stat['mode'] ?? 0) & 0o170000) === 0o100000;
     }
 
     /**
@@ -139,22 +117,13 @@ final readonly class FileFingerprint
      * Null for a path that is not a regular file, for the reasons
      * {@see self::contentHashOf()} gives: discovery only fingerprints regular
      * files, but the contribution cache re-reads a discovered path later, and a
-     * file swapped for a FIFO by then would block the open instead of reading
+     * file swapped for a FIFO by then must not block the open instead of reading
      * as unreadable.
      */
     public static function compute(string $absolutePath, string $gitObjectHash = 'sha1'): ?self
     {
-        clearstatcache(true, $absolutePath);
-        if (!self::isRegular(@stat($absolutePath))) {
-            return null;
-        }
-        $handle = @fopen($absolutePath, 'rb');
-        if ($handle === false) {
-            return null;
-        }
-        if (!self::isRegular(fstat($handle))) {
-            fclose($handle);
-
+        $handle = RegularFileOpener::open($absolutePath);
+        if (!is_resource($handle)) {
             return null;
         }
         $context = hash_init('sha256');
@@ -163,9 +132,10 @@ final readonly class FileFingerprint
         // stream actually yielded below rather than trusted: a file that grew
         // or shrank underneath the read would otherwise produce a blob id that
         // matches nothing and silently reads as "not dirty".
-        $size = @filesize($absolutePath);
+        $stat = fstat($handle);
+        $size = is_array($stat) && is_int($stat['size'] ?? null) ? $stat['size'] : null;
         $blob = hash_init($gitObjectHash);
-        hash_update($blob, 'blob ' . (is_int($size) ? $size : 0) . "\0");
+        hash_update($blob, 'blob ' . ($size ?? 0) . "\0");
         $read = 0;
         $lines = 0;
         $sawContent = false;
@@ -192,6 +162,6 @@ final readonly class FileFingerprint
         if ($sawContent && !$endsWithNewline) {
             ++$lines;
         }
-        return new self(hash_final($context), $lines, $size === $read ? hash_final($blob) : null);
+        return new self(hash_final($context), $lines, $size !== null && $size === $read ? hash_final($blob) : null);
     }
 }

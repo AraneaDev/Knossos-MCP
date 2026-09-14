@@ -24,7 +24,9 @@ final class SupportTraitsTest extends KnossosTestCase
         $destination = (string) tempnam(sys_get_temp_dir(), 'knossos-errorlog-outer-');
         $previous = ini_set('error_log', $destination);
         try {
-            self::assertSame(true, str_contains($this->errorLogOf(static fn() => error_log('captured line')), 'captured line'));
+            self::assertSame(true, str_contains($this->errorLogOf(static function (): void {
+                error_log('captured line');
+            }), 'captured line'));
             self::assertSame($destination, ini_get('error_log'));
 
             try {
