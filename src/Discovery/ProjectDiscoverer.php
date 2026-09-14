@@ -92,16 +92,7 @@ final readonly class ProjectDiscoverer
                 // diagnostic and keep going rather than failing the whole scan.
                 try {
                     if ($entry->isLink()) {
-                        $target = realpath($absolute);
-                        $escapes = $target === false || !RootGuard::contains($root, str_replace('\\', '/', $target));
-                        $diagnostics[] = new DiscoveryDiagnostic(
-                            'warning',
-                            $escapes ? 'DISCOVERY_SYMLINK_ESCAPE' : 'DISCOVERY_SYMLINK_SKIPPED',
-                            $escapes
-                                ? 'Symlink target escapes the project root and was rejected.'
-                                : 'Symlink was skipped because discovery does not follow symlinks.',
-                            $relative,
-                        );
+                        $diagnostics[] = self::symlinkDiagnostic($root, $absolute, $relative);
                         continue;
                     }
 
@@ -1563,6 +1554,67 @@ final readonly class ProjectDiscoverer
 
         return null;
     }
+    /**
+     * The diagnostic for a symlink discovery skipped.
+     *
+     * A link that resolves stays inside the root or escapes it, and realpath
+     * says which. A link that resolves to nothing, dangling or looping, cannot
+     * escape anything, and calling it an escape told the reader the project
+     * pointed outside itself. So the link's own target is read instead: a target
+     * that lies inside the root is a broken link, one that lies outside is still
+     * an escape. The target is normalised as text, which is enough for naming a
+     * diagnostic, because every link is skipped whatever it is called.
+     */
+    private static function symlinkDiagnostic(string $root, string $absolute, string $relative): DiscoveryDiagnostic
+    {
+        // file_exists() first: PHP's realpath cache can hand back a path for a
+        // link loop created earlier in the same process, where a stat fails.
+        $resolved = file_exists($absolute) ? realpath($absolute) : false;
+        if ($resolved !== false) {
+            $escapes = !RootGuard::contains($root, str_replace('\\', '/', $resolved));
+        } else {
+            $target = readlink($absolute);
+            $escapes = !is_string($target) || !RootGuard::contains($root, self::lexicalTarget($absolute, $target));
+            if (!$escapes) {
+                return new DiscoveryDiagnostic(
+                    'warning',
+                    'DISCOVERY_SYMLINK_BROKEN',
+                    'Symlink target does not exist or cannot be resolved; the link was skipped.',
+                    $relative,
+                );
+            }
+        }
+
+        return new DiscoveryDiagnostic(
+            'warning',
+            $escapes ? 'DISCOVERY_SYMLINK_ESCAPE' : 'DISCOVERY_SYMLINK_SKIPPED',
+            $escapes
+                ? 'Symlink target escapes the project root and was rejected.'
+                : 'Symlink was skipped because discovery does not follow symlinks.',
+            $relative,
+        );
+    }
+
+    /** A link's target as an absolute path, with `.` and `..` applied as text. */
+    private static function lexicalTarget(string $link, string $target): string
+    {
+        $target = str_replace('\\', '/', $target);
+        $path = str_starts_with($target, '/') ? $target : dirname(str_replace('\\', '/', $link)) . '/' . $target;
+        $parts = [];
+        foreach (explode('/', $path) as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+            if ($part === '..') {
+                array_pop($parts);
+                continue;
+            }
+            $parts[] = $part;
+        }
+
+        return '/' . implode('/', $parts);
+    }
+
     /** A path expressed relative to the project root, which is the only form facts carry. */
 
     private function relative(string $root, string $path): string

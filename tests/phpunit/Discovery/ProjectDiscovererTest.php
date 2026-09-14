@@ -129,6 +129,44 @@ final class ProjectDiscovererTest extends KnossosTestCase
         $this->assertContains('DISCOVERY_SYMLINK_SKIPPED', $codes);
     }
 
+    /**
+     * A link that resolves to nothing cannot escape anything. It used to be
+     * reported as DISCOVERY_SYMLINK_ESCAPE, which told the reader the project
+     * pointed outside itself when it only had a dangling or looping link inside.
+     */
+    public function testDiscoverReportsABrokenSymlinkInsideTheRootAsBroken(): void
+    {
+        mkdir($this->root . '/src');
+        symlink('missing.php', $this->root . '/src/relative.php');
+        symlink($this->root . '/src/gone.php', $this->root . '/src/absolute.php');
+        symlink('loop-b.php', $this->root . '/src/loop-a.php');
+        symlink('loop-a.php', $this->root . '/src/loop-b.php');
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $byPath = [];
+        foreach ($result->diagnostics as $diagnostic) {
+            $byPath[(string) $diagnostic->relativePath] = $diagnostic->code;
+        }
+        foreach (['src/relative.php', 'src/absolute.php', 'src/loop-a.php', 'src/loop-b.php'] as $path) {
+            assertSame('DISCOVERY_SYMLINK_BROKEN', $byPath[$path] ?? null, $path);
+        }
+        assertSame(false, in_array('DISCOVERY_SYMLINK_ESCAPE', array_values($byPath), true));
+    }
+
+    /** A dangling link whose target would lie outside the root still escapes, as before. */
+    public function testDiscoverReportsABrokenSymlinkOutsideTheRootAsAnEscape(): void
+    {
+        symlink('../outside/missing.php', $this->root . '/relative-out.php');
+
+        $discoverer = new ProjectDiscoverer(new DiscoveryConfig([$this->root]));
+        $result = $discoverer->discover($this->root);
+
+        $codes = array_column($result->diagnostics, 'code');
+        assertSame(['DISCOVERY_SYMLINK_ESCAPE'], $codes);
+    }
+
     public function testDiscoverThrowsOnFileLimitExceeded(): void
     {
         for ($i = 0; $i < 3; ++$i) {
