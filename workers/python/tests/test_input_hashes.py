@@ -992,8 +992,14 @@ def test_a_stable_tree_with_links_never_disagrees_with_discovery(worker: ModuleT
 
     assert _disagreements(result["input_hashes"], discovery) == []
     assert None in result["input_hashes"].values()
-    # A link below node_modules is never keyed.
-    assert not [key for key in result["input_hashes"] if "node_modules" in key.split("/")]
+    # A link below node_modules is keyed like any other: the probes through it
+    # read no bytes, and a null there is what the core accepts at commit for a
+    # path reached through a link.
+    assert {key: value for key, value in result["input_hashes"].items() if "node_modules" in key.split("/")} == {
+        "vendored/node_modules/dep": None,
+        "vendored/node_modules/dep/mod/__init__.py": None,
+        "vendored/node_modules/dep/mod.py": None,
+    }
     assert all("content_hash" in contribution for contribution in contributions.values())
 
 

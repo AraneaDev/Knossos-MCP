@@ -8,10 +8,11 @@ use Knossos\Discovery\DiscoveryConfig;
 use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ScanInputHashes;
-use Knossos\Scanner\Protocol\ScannerManifest;
+use Knossos\Scan\UndiscoveredInputVerifier;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\NodeFact;
+use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Store\MigrationRunner;
 use Knossos\Store\SqliteConnection;
@@ -620,9 +621,11 @@ PYTHON);
      * Discovery never follows a symlink, so the only path it tracks for a
      * module reached through a linked directory is the target's. The index
      * read has to be keyed there; spelled through the link alone, it would
-     * name a path the core ignores and the read would go unverified. The link
-     * and the path through it are keyed too, as null here (the probe that
-     * accepted the module read no bytes), and discovery ignores both.
+     * name a path discovery never hashed, checked only by the re-read at
+     * commit and never against the hash discovery recorded for the target. The
+     * link and the path through it are keyed too, as null here (the probe that
+     * accepted the module read no bytes), which that re-read accepts for a
+     * path reached through a link.
      */
     #[Group('python-scanner')]
     public function testPythonWorkerKeysAModuleReadThroughASymlinkByItsTarget(): void
@@ -650,6 +653,45 @@ PYTHON);
         } finally {
             $client->shutdown();
             @unlink($root . '/linked');
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A path below `node_modules` is keyed like any other: discovery never
+     * hashes one, but the core verifies every undiscovered key when the scan
+     * commits, so a link the index walked through there is reported rather
+     * than dropped, and the whole map still passes that re-read.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerKeysALinkBelowNodeModulesItReadThrough(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/real', 0o777, true);
+        mkdir($root . '/node_modules', 0o777, true);
+        $files = [
+            'app.py' => "from node_modules.linked.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
+            'real/b.py' => "class Thing:\n    pass\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        symlink('../real', $root . '/node_modules/linked');
+        $client = $this->pythonWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['app.py']]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            self::assertInputHashesInclude(
+                array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files) + ['node_modules/linked' => null, 'node_modules/linked/b.py' => null],
+                $inputHashes,
+            );
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
+            $undiscovered = ScanInputHashes::verify(['input_hashes' => $inputHashes], $client->initialize(), self::discoveredByPath($root));
+            (new UndiscoveredInputVerifier())->verify((string) realpath($root), $undiscovered, 2_000_000);
+        } finally {
+            $client->shutdown();
+            @unlink($root . '/node_modules/linked');
             $this->removeTempTree($root);
         }
     }
@@ -920,12 +962,23 @@ PYTHON);
      */
     private static function assertInputHashesVerify(string $root, mixed $inputHashes, ScannerManifest $manifest, int $maxFileBytes = 2_000_000): void
     {
-        $discovery = (new ProjectDiscoverer(new DiscoveryConfig([$root], maxFileBytes: $maxFileBytes)))->discover($root);
-        $byPath = [];
-        foreach ($discovery->files as $file) {
-            $byPath[$file->relativePath] = $file;
-        }
+        $byPath = self::discoveredByPath($root, $maxFileBytes);
         assertSame(true, $byPath !== []);
         ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, $byPath);
+    }
+
+    /**
+     * What discovery reports for the tree as it stands, by relative path.
+     *
+     * @return array<string, \Knossos\Discovery\DiscoveredFile>
+     */
+    private static function discoveredByPath(string $root, int $maxFileBytes = 2_000_000): array
+    {
+        $byPath = [];
+        foreach ((new ProjectDiscoverer(new DiscoveryConfig([$root], maxFileBytes: $maxFileBytes)))->discover($root)->files as $file) {
+            $byPath[$file->relativePath] = $file;
+        }
+
+        return $byPath;
     }
 }
