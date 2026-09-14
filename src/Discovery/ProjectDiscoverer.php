@@ -1571,7 +1571,7 @@ final readonly class ProjectDiscoverer
         // link loop created earlier in the same process, where a stat fails.
         $resolved = file_exists($absolute) ? realpath($absolute) : false;
         if ($resolved !== false) {
-            $escapes = !RootGuard::contains($root, str_replace('\\', '/', $resolved));
+            $escapes = !RootGuard::contains($root, $resolved);
         } else {
             $target = readlink($absolute);
             $escapes = !is_string($target) || !RootGuard::contains($root, self::lexicalTarget($absolute, $target));
