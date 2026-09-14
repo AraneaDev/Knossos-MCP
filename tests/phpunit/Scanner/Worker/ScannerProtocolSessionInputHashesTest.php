@@ -202,7 +202,7 @@ final class ScannerProtocolSessionInputHashesTest extends TestCase
     }
 
     /**
-     * @param array<string, string|null> $inputHashes
+     * @param array<array-key, string|null> $inputHashes
      * @return array<string, mixed>
      */
     private static function part(array $inputHashes): array
