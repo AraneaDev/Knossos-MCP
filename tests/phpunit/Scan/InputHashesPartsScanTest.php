@@ -23,8 +23,8 @@ use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * An `input_hashes` map larger than one frame, sent through the real TypeScript
- * and Python workers as `scan/input_hashes` parts.
+ * An `input_hashes` map larger than one frame, sent through the real TypeScript,
+ * Python and PHP workers as `scan/input_hashes` parts.
  *
  * The map lists every file a request read, which for a TypeScript program is
  * the whole program however few files the batch names. On one result line it
@@ -100,6 +100,27 @@ final class InputHashesPartsScanTest extends KnossosTestCase
 
         assertSame([], $result->workerDiagnostics);
         assertSame($apps, array_map(static fn($entry): string => $entry->filePath, $result->cacheEntries));
+        $this->assertMapIsLargerThanOneFrameAndMatchesDiscovery($inputHashes, $discovered);
+    }
+
+    /**
+     * The PHP worker's map is bounded by its batch, which is 400 files, but
+     * not by the line cap: paths long enough make 400 entries outgrow a frame.
+     */
+    public function testAPhpBatchWhoseMapOutgrowsOneFrameScansWithoutDegrading(): void
+    {
+        $directory = 'src/' . str_repeat('d', 250) . '/' . str_repeat('e', 250) . '/' . str_repeat('f', 250);
+        mkdir($this->root . '/' . $directory, 0o777, true);
+        $discovered = [];
+        for ($i = 0; $i < WorkerExecutionPolicy::SCAN_BATCH_FILES; ++$i) {
+            $discovered[] = $this->write(sprintf('%s/Value%04d.php', $directory, $i), sprintf("<?php\nfinal class Value%d {}\n", $i), 'php');
+        }
+        $descriptor = new LanguageDescriptor(key: 'php', stage: 'php-analysis', languages: ['php'], command: [PHP_BINARY, self::repositoryRoot() . '/workers/php/bin/worker']);
+
+        [$result, $inputHashes] = $this->runScan($descriptor, $discovered, []);
+
+        assertSame([], $result->workerDiagnostics);
+        assertSame(WorkerExecutionPolicy::SCAN_BATCH_FILES, count($result->cacheEntries));
         $this->assertMapIsLargerThanOneFrameAndMatchesDiscovery($inputHashes, $discovered);
     }
 

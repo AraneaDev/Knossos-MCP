@@ -1201,6 +1201,67 @@ final class PhpScannerTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The map is split into parts of at most the part budget, in order, with
+     * the last part kept for the result: an entry that alone exceeds the
+     * budget travels alone, and an empty map is still one empty part.
+     */
+    #[Group('php-scanner')]
+    public function testInputHashesPartsFitTheirBudget(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $parts = new ReflectionMethod(\KnossosPhpScanner\WorkerServer::class, 'inputHashesParts');
+        $hash = str_repeat('a', 64);
+        $map = ['a/1' => $hash, 'a/2' => null, 'a/3' => $hash, str_repeat('x', 300) => $hash, 7 => null];
+
+        assertSame([[]], $parts->invoke(null, []));
+        assertSame([$map], $parts->invoke(null, $map));
+        assertSame(
+            [['a/1' => $hash, 'a/2' => null], ['a/3' => $hash], [str_repeat('x', 300) => $hash], [7 => null]],
+            $parts->invoke(null, $map, 90),
+        );
+        // The count is the serialized part's exact length: a budget of that
+        // length keeps both entries together, one byte less splits them.
+        $pair = ['a/1' => $hash, 'a/2' => null];
+        $length = strlen((string) json_encode($pair, JSON_UNESCAPED_SLASHES));
+        assertSame([$pair], $parts->invoke(null, $pair, $length));
+        assertSame([['a/1' => $hash], ['a/2' => null]], $parts->invoke(null, $pair, $length - 1));
+        // Keys are measured as write() encodes them, escapes included.
+        $escaped = ["\u{e9}" => null, 'b' => null];
+        $length = strlen((string) json_encode($escaped, JSON_UNESCAPED_SLASHES));
+        assertSame([["\u{e9}" => null], ['b' => null]], $parts->invoke(null, $escaped, $length - 1));
+    }
+
+    /**
+     * Through the real worker: a batch whose map outgrows the part budget still
+     * reports every file it read, merged from its parts by the session.
+     */
+    #[Group('php-scanner')]
+    public function testAMapLargerThanOnePartReportsEveryFile(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $directory = 'src/' . str_repeat('d', 250) . '/' . str_repeat('e', 250) . '/' . str_repeat('f', 250);
+        mkdir($root . '/' . $directory, 0o777, true);
+        $expected = [];
+        for ($i = 0; $i < 400; ++$i) {
+            $relative = sprintf('%s/Value%04d.php', $directory, $i);
+            $contents = sprintf("<?php\nfinal class Value%d {}\n", $i);
+            file_put_contents($root . '/' . $relative, $contents);
+            $expected[$relative] = hash('sha256', $contents);
+        }
+        $client = $this->phpWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => array_keys($expected)]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? [];
+
+            assertSame(true, strlen((string) json_encode($inputHashes)) > 256_000);
+            assertSame($expected, $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
     /** A read that fails inside the scanner is a failed read too, not a policy refusal. */
     #[Group('php-scanner')]
     public function testAScannerReadThatFailsIsAFailedRead(): void

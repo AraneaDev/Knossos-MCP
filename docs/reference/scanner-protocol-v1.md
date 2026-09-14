@@ -202,8 +202,8 @@ final result:
 ```
 
 A worker may send any number of parts, each an object of the same shape as the
-result field and each well under the line limit; the packaged TypeScript and
-Python workers cap a part at 256 KB of serialized entries. The final result
+result field and each well under the line limit; the packaged workers cap a
+part at 256 KB of serialized entries. The final result
 still carries `input_hashes`, holding the last part or `{}`, and for a worker
 that declares the capability that field remains the marker that it finished
 reporting: parts followed by a result without the field are refused as a
@@ -220,10 +220,10 @@ splitting the batch could not shrink it. They have a budget of their own,
 64 MB per request by default (`WorkerLimits::$maxInputHashesBytes`), sized for
 the largest tree a scan accepts: exceeding it fails the request as
 `WORKER_RESPONSE_INVALID`, which degrades the language and is never retried as
-a smaller batch. A worker whose map is bounded by its batch, such as the
-packaged PHP and Rust workers, which report the files they were asked for and
-(Rust) the crate roots they probed for, can keep sending the whole map in the
-result.
+a smaller batch. A map bounded by its batch still needs parts: the packaged PHP
+and Rust workers report little more than the files they were asked for, but a
+batch of 400 files with long enough paths outgrows one line, so they split
+their maps the same way.
 
 #### Keying reads in `input_hashes`
 

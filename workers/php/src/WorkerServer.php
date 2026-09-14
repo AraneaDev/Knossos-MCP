@@ -19,6 +19,13 @@ final class WorkerServer
     /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
     private const SHEBANG_PROBE_BYTES = 256;
 
+    /**
+     * Serialized bytes one `scan/input_hashes` notification carries at most,
+     * well under the core's 1,000,000-byte line cap, and the same as the
+     * packaged Python and TypeScript workers use.
+     */
+    private const INPUT_HASHES_PART_BYTES = 256_000;
+
     public function __construct(private readonly PhpScanner $scanner = new PhpScanner()) {}
     /** The protocol loop: read a request, dispatch it, write the reply. */
 
@@ -180,7 +187,56 @@ final class WorkerServer
             ++$count;
         }
 
-        return ['files_scanned' => $count, 'input_hashes' => (object) $inputs];
+        // A batch's map is bounded by its file count, but not by the line
+        // cap: at 400 files a long enough path makes it outgrow one frame.
+        $parts = self::inputHashesParts($inputs);
+        $last = array_pop($parts);
+        foreach ($parts as $part) {
+            $this->write([
+                'jsonrpc' => '2.0',
+                'method' => 'scan/input_hashes',
+                'params' => ['input_hashes' => (object) $part],
+            ]);
+        }
+
+        return ['files_scanned' => $count, 'input_hashes' => (object) $last];
+    }
+
+    /**
+     * Split a request's `input_hashes` map into parts that each fit one frame.
+     *
+     * All parts but the last go out as `scan/input_hashes` notifications; the
+     * last is the result's own field, which marks that the worker finished
+     * reporting, so there is always at least one part, empty when nothing was
+     * read. A single entry longer than the budget still travels alone. The
+     * budget and the arithmetic match the packaged Python and TypeScript
+     * workers.
+     *
+     * @param array<array-key, string|null> $inputHashes
+     * @return non-empty-list<array<array-key, string|null>>
+     */
+    private static function inputHashesParts(array $inputHashes, int $partBytes = self::INPUT_HASHES_PART_BYTES): array
+    {
+        $parts = [];
+        $part = [];
+        // The serialized part: its braces, less the comma its last entry lacks.
+        $bytes = 1;
+        foreach ($inputHashes as $relative => $hash) {
+            // `"path":"<64 hex>",` or `"path":null,`, encoded as write() encodes it.
+            $entryBytes = strlen(json_encode((string) $relative, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))
+                + ($hash === null ? 4 : 66)
+                + 2;
+            if ($part !== [] && $bytes + $entryBytes > $partBytes) {
+                $parts[] = $part;
+                $part = [];
+                $bytes = 1;
+            }
+            $part[$relative] = $hash;
+            $bytes += $entryBytes;
+        }
+        $parts[] = $part;
+
+        return $parts;
     }
 
     /**

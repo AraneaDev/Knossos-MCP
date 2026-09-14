@@ -17,6 +17,11 @@ const DEFAULT_MAX_FILE_BYTES: u64 = 2_000_000;
 /// Default cap on files in one request, overridden by `params.limits.max_files`.
 const DEFAULT_MAX_FILES: usize = 100_000;
 
+/// Serialized bytes one `scan/input_hashes` notification carries at most, well
+/// under the core's 1,000,000-byte line cap, and the same as the packaged PHP,
+/// Python and TypeScript workers use.
+const INPUT_HASHES_PART_BYTES: usize = 256_000;
+
 /// Read requests until stdin ends or `shutdown` arrives, writing replies to `output`.
 ///
 /// A malformed request becomes a JSON-RPC error reply rather than a crash: the
@@ -56,10 +61,24 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
             write_line(&mut output, notification)?;
         }
         match result {
-            Ok(value) => write_line(
-                &mut output,
-                &json!({"jsonrpc": "2.0", "id": id, "result": value}),
-            )?,
+            Ok(mut value) => {
+                // The map is bounded by the batch and the crates probed, but
+                // not by the line cap: long enough paths outgrow one frame.
+                for part in split_input_hashes(&mut value, INPUT_HASHES_PART_BYTES) {
+                    write_line(
+                        &mut output,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "method": "scan/input_hashes",
+                            "params": {"input_hashes": part},
+                        }),
+                    )?;
+                }
+                write_line(
+                    &mut output,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": value}),
+                )?;
+            }
             Err(message) => write_line(&mut output, &error_reply(&id, &message))?,
         }
         if method == "shutdown" {
@@ -601,6 +620,39 @@ fn assert_scannable_str(raw: &str) -> Result<String, String> {
     Ok(raw.to_owned())
 }
 
+/// Split a result's `input_hashes` object into parts that each fit one frame,
+/// leaving the last part in the result and returning the others, in order, to
+/// go out ahead of it as `scan/input_hashes` notifications.
+///
+/// The result's own field marks that the worker finished reporting, so it
+/// always keeps one part, `{}` when nothing was read. A single entry longer
+/// than the budget still travels alone. A result without the field (any
+/// method but `scan`) is left untouched.
+fn split_input_hashes(result: &mut Value, part_bytes: usize) -> Vec<Value> {
+    let Some(Value::Object(map)) = result.get_mut("input_hashes") else {
+        return Vec::new();
+    };
+    let mut parts: Vec<serde_json::Map<String, Value>> = Vec::new();
+    let mut part = serde_json::Map::new();
+    // The serialized part: its braces, less the comma its last entry lacks.
+    let mut bytes = 1_usize;
+    for (relative, hash) in std::mem::take(map) {
+        // `"path":"<64 hex>",` or `"path":null,`
+        let key_bytes =
+            serde_json::to_string(&relative).map_or(relative.len() + 2, |key| key.len());
+        let entry_bytes = key_bytes + if hash.is_null() { 4 } else { 66 } + 2;
+        if !part.is_empty() && bytes + entry_bytes > part_bytes {
+            parts.push(std::mem::take(&mut part));
+            bytes = 1;
+        }
+        part.insert(relative, hash);
+        bytes += entry_bytes;
+    }
+    *map = part;
+
+    parts.into_iter().map(Value::Object).collect()
+}
+
 /// A JSON-RPC error reply carrying the caller's id.
 fn error_reply(id: &Value, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": message}})
@@ -615,8 +667,48 @@ fn write_line(output: &mut impl Write, message: &Value) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_bounded, record_read};
+    use super::{read_bounded, record_read, split_input_hashes};
+    use serde_json::json;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn input_hashes_split_into_parts_that_fit_their_budget() {
+        let hash = "a".repeat(64);
+        let pair = json!({"a/1": hash, "a/2": null});
+        let length = pair.to_string().len();
+
+        let mut whole = json!({"files_scanned": 2, "input_hashes": pair});
+        assert!(split_input_hashes(&mut whole, length).is_empty());
+        assert_eq!(pair, whole["input_hashes"]);
+
+        let mut split = json!({"files_scanned": 2, "input_hashes": pair});
+        assert_eq!(
+            vec![json!({"a/1": hash})],
+            split_input_hashes(&mut split, length - 1)
+        );
+        assert_eq!(json!({"a/2": null}), split["input_hashes"]);
+        assert_eq!(2, split["files_scanned"]);
+
+        // An entry longer than the budget travels alone; keys are measured
+        // escaped, as they are written.
+        let long = "x".repeat(300);
+        let quoted = json!({"\"": null, "b": null});
+        let mut escaped = json!({"input_hashes": quoted});
+        assert_eq!(
+            vec![json!({"\"": null})],
+            split_input_hashes(&mut escaped, quoted.to_string().len() - 1)
+        );
+        let mut alone = json!({"input_hashes": {"a": null, long.clone(): hash}});
+        assert_eq!(vec![json!({"a": null})], split_input_hashes(&mut alone, 20));
+        assert_eq!(json!({long: hash}), alone["input_hashes"]);
+
+        let mut empty = json!({"input_hashes": {}});
+        assert!(split_input_hashes(&mut empty, 1).is_empty());
+        assert_eq!(json!({}), empty["input_hashes"]);
+        let mut other = json!({"status": "bye"});
+        assert!(split_input_hashes(&mut other, 1).is_empty());
+        assert_eq!(json!({"status": "bye"}), other);
+    }
 
     #[test]
     fn repeated_reads_that_agree_keep_their_value() {

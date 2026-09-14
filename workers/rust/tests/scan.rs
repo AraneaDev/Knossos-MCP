@@ -1799,3 +1799,70 @@ fn self_in_impl_block_resolves_to_the_impl_type() {
         edges
     );
 }
+
+#[test]
+fn an_input_hashes_map_larger_than_one_part_goes_out_ahead_of_the_result_in_parts() {
+    // Long paths make a batch's map outgrow one part; every frame stays within
+    // the part budget and the parts together hold every file read.
+    let root = std::env::temp_dir().join("knossos-rust-input-hashes-parts");
+    let _ = std::fs::remove_dir_all(&root);
+    let directory = format!(
+        "src/{}/{}/{}",
+        "d".repeat(250),
+        "e".repeat(250),
+        "f".repeat(250)
+    );
+    std::fs::create_dir_all(root.join(&directory)).unwrap();
+    let mut expected = serde_json::Map::new();
+    let mut requested = Vec::new();
+    for index in 0..400 {
+        let relative = format!("{directory}/value_{index:04}.rs");
+        let contents = format!("pub struct Value{index};\n");
+        std::fs::write(root.join(&relative), &contents).unwrap();
+        expected.insert(
+            relative.clone(),
+            Value::String(sha256_hex(contents.as_bytes())),
+        );
+        requested.push(relative);
+    }
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "scan",
+        "params": {
+            "root": std::fs::canonicalize(&root).unwrap().to_str().unwrap(),
+            "files": requested,
+        },
+    });
+    let mut output: Vec<u8> = Vec::new();
+    run(Cursor::new(request.to_string().into_bytes()), &mut output).unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+
+    let mut merged = serde_json::Map::new();
+    let mut parts = 0;
+    let mut result_seen = false;
+    for line in String::from_utf8(output).unwrap().lines() {
+        let reply: Value = serde_json::from_str(line).unwrap();
+        let map = if reply["method"] == "scan/input_hashes" {
+            assert!(!result_seen, "a part arrived after the result");
+            assert!(line.len() < 256_100, "a part of {} bytes", line.len());
+            parts += 1;
+            &reply["params"]["input_hashes"]
+        } else if reply.get("result").is_some() {
+            result_seen = true;
+            &reply["result"]["input_hashes"]
+        } else {
+            continue;
+        };
+        for (relative, hash) in map.as_object().unwrap() {
+            assert!(
+                merged.insert(relative.clone(), hash.clone()).is_none(),
+                "{relative} twice"
+            );
+        }
+    }
+
+    assert!(result_seen);
+    assert!(parts >= 1, "the map went out on the result's line alone");
+    assert_eq!(expected, merged);
+}
