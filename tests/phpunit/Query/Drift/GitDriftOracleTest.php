@@ -606,7 +606,7 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $log = $this->captureErrorLog(function () use ($pdo, $projectId, $scanId, $root): void {
+            $log = $this->errorLogOf(function () use ($pdo, $projectId, $scanId, $root): void {
                 (new GitDriftOracle($pdo, $this->failingRunner()))
                     ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
             });
@@ -627,7 +627,7 @@ final class GitDriftOracleTest extends KnossosTestCase
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            $log = $this->captureErrorLog(function () use ($pdo, $projectId, $scanId, $root): void {
+            $log = $this->errorLogOf(function () use ($pdo, $projectId, $scanId, $root): void {
                 (new GitDriftOracle($pdo, $this->runnerFailingOnlyOn('--cached', [], [])))
                     ->drift($projectId, $scanId, $root, $this->finishedAt($pdo, $scanId));
             });
@@ -923,30 +923,6 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
-     * Points PHP's `error_log` ini directive at a temporary file for the
-     * duration of $trigger, so `error_log()` calls land somewhere assertable
-     * instead of stderr or syslog, then restores the previous setting in a
-     * `finally` — the same restore-in-finally discipline the putenv
-     * kill-switch tests use, so nothing leaks into a later test. Never
-     * touches stdout, which carries MCP protocol frames rather than
-     * diagnostics.
-     */
-    private function captureErrorLog(callable $trigger): string
-    {
-        $previous = ini_get('error_log');
-        $tmpFile = tempnam(sys_get_temp_dir(), 'knossos-errlog-');
-        ini_set('error_log', $tmpFile);
-        try {
-            $trigger();
-
-            return (string) file_get_contents($tmpFile);
-        } finally {
-            ini_set('error_log', $previous === false ? '' : $previous);
-            @unlink($tmpFile);
-        }
-    }
-
-    /**
      * A runner that answers each subcommand by name rather than by call order,
      * so a test stays readable when the oracle's call sequence changes.
      *
@@ -1076,31 +1052,5 @@ final class GitDriftOracleTest extends KnossosTestCase
                 return $paths === [] ? '' : implode("\0", $paths) . "\0";
             }
         };
-    }
-
-    /**
-     * Run $operation with error_log() pointed at a temporary file and return
-     * what it logged, so a deliberately provoked failure does not print into
-     * the suite's output.
-     *
-     * @param callable(): void $operation
-     */
-    private function errorLogOf(callable $operation): string
-    {
-        $capture = tempnam(sys_get_temp_dir(), 'knossos-errorlog-');
-        if ($capture === false) {
-            throw new \RuntimeException('Unable to allocate an error-log capture file.');
-        }
-        $previous = ini_get('error_log');
-        ini_set('error_log', $capture);
-        try {
-            $operation();
-        } finally {
-            $previous === false ? ini_restore('error_log') : ini_set('error_log', $previous);
-            $logged = (string) @file_get_contents($capture);
-            @unlink($capture);
-        }
-
-        return $logged;
     }
 }

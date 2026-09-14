@@ -18,6 +18,32 @@ final class SupportTraitsTest extends KnossosTestCase
         self::assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM nodes')->fetchColumn());
     }
 
+    /** The capture returns what was logged and puts the previous destination back, also when the operation throws. */
+    public function testErrorLogOfReturnsTheLogAndRestoresTheSettingEvenWhenTheOperationThrows(): void
+    {
+        $destination = (string) tempnam(sys_get_temp_dir(), 'knossos-errorlog-outer-');
+        $previous = ini_set('error_log', $destination);
+        try {
+            self::assertSame(true, str_contains($this->errorLogOf(static fn() => error_log('captured line')), 'captured line'));
+            self::assertSame($destination, ini_get('error_log'));
+
+            try {
+                $this->errorLogOf(static function (): void {
+                    error_log('before the throw');
+                    throw new \LogicException('provoked');
+                });
+                self::fail('The exception from the operation must propagate.');
+            } catch (\LogicException $error) {
+                self::assertSame('provoked', $error->getMessage());
+            }
+            self::assertSame($destination, ini_get('error_log'));
+            self::assertSame('', (string) file_get_contents($destination), 'Nothing reaches the previous destination.');
+        } finally {
+            ini_set('error_log', $previous === false ? '' : $previous);
+            @unlink($destination);
+        }
+    }
+
     /**
      * A symbolic link to a directory reports isDir(), and rmdir() refuses a
      * link, so a tree holding one used to survive its own cleanup. The link

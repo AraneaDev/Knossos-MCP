@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit;
 
 use PHPUnit\Framework\TestCase;
+use RuntimeException;
 use Throwable;
 
 abstract class KnossosTestCase extends TestCase
@@ -23,6 +24,33 @@ abstract class KnossosTestCase extends TestCase
     protected static function repositoryRoot(): string
     {
         return dirname(__DIR__, 2);
+    }
+
+    /**
+     * Run $operation with error_log() pointed at a temporary file and return
+     * what it logged, so a deliberately provoked failure does not print into
+     * the suite's output. The previous setting is restored even when
+     * $operation throws, so nothing leaks into a later test.
+     *
+     * @param callable(): void $operation
+     */
+    protected function errorLogOf(callable $operation): string
+    {
+        $capture = tempnam(sys_get_temp_dir(), 'knossos-errorlog-');
+        if ($capture === false) {
+            throw new RuntimeException('Unable to allocate an error-log capture file.');
+        }
+        $previous = ini_get('error_log');
+        ini_set('error_log', $capture);
+        try {
+            $operation();
+        } finally {
+            $previous === false ? ini_restore('error_log') : ini_set('error_log', $previous);
+            $logged = (string) @file_get_contents($capture);
+            @unlink($capture);
+        }
+
+        return $logged;
     }
 
     /**

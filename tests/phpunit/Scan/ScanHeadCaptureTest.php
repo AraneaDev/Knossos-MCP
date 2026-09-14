@@ -140,30 +140,4 @@ final class ScanHeadCaptureTest extends KnossosTestCase
     {
         return self::HEAD;
     }
-
-    /**
-     * Run $operation with error_log() pointed at a temporary file and return
-     * what it logged, so a deliberately provoked failure does not print into
-     * the suite's output.
-     *
-     * @param callable(): void $operation
-     */
-    private function errorLogOf(callable $operation): string
-    {
-        $capture = tempnam(sys_get_temp_dir(), 'knossos-errorlog-');
-        if ($capture === false) {
-            throw new \RuntimeException('Unable to allocate an error-log capture file.');
-        }
-        $previous = ini_get('error_log');
-        ini_set('error_log', $capture);
-        try {
-            $operation();
-        } finally {
-            $previous === false ? ini_restore('error_log') : ini_set('error_log', $previous);
-            $logged = (string) @file_get_contents($capture);
-            @unlink($capture);
-        }
-
-        return $logged;
-    }
 }
