@@ -81,7 +81,7 @@ async function handle(request) {
         case "initialize":
             result = {
                 id: "knossos.typescript",
-                version: "0.5.0",
+                version: "0.6.0",
                 protocol_version: "1.0",
                 output_schema_version: "1.0",
                 languages: ["typescript", "javascript"],
