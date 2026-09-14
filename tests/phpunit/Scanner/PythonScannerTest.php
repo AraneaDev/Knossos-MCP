@@ -762,6 +762,101 @@ PYTHON);
     }
 
     /**
+     * Stable link layouts through the real worker process: a link whose target
+     * climbs with `..` after another link, an absolute link inside the root, one
+     * with a doubled leading slash, a chain of 41 links (one past the kernel's
+     * limit), a dangling link, and a linked directory. Each is keyed by the file
+     * the kernel opens and by the links it passed, and the whole map passes the
+     * core's check against real discovery, so none of it can fail a scan of a
+     * tree that is not changing.
+     */
+    #[Group('python-scanner')]
+    public function testStableLinkLayoutsAreKeyedByTheKernelWalkAndPassVerification(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        foreach (['pkg', 'deep/dir', 'lib', 'real', 'chain'] as $directory) {
+            mkdir($root . '/' . $directory, 0o777, true);
+        }
+        $files = [
+            'pkg/__init__.py' => '',
+            'deep/c.py' => "class Deep:\n    pass\n",
+            // What a textual collapse of pkg/lnk.py's `..` would name instead.
+            'pkg/c.py' => "class Decoy:\n    pass\n",
+            'lib/b.py' => "class Lib:\n    pass\n",
+            'lib/s.py' => "class Slash:\n    pass\n",
+            'real/c.py' => "class Real:\n    pass\n",
+            'chain/real.py' => "class Chained:\n    pass\n",
+            'deep/dir/keep.py' => '',
+        ];
+        $files['app.py'] = implode("\n", [
+            'from pkg.lnk import Deep',
+            'from pkg.abs import Lib',
+            'from pkg.slash import Slash',
+            'from chain.l0 import Chained',
+            'from pkg.dangling import Gone',
+            'from linked.c import Real',
+            '',
+            '',
+            'class App(Deep, Lib, Slash, Real):',
+            '    pass',
+            '',
+        ]);
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        symlink('../deep/dir', $root . '/pkg/d');
+        symlink('d/../c.py', $root . '/pkg/lnk.py');
+        symlink($root . '/lib/b.py', $root . '/pkg/abs.py');
+        symlink('/' . $root . '/lib/s.py', $root . '/pkg/slash.py');
+        for ($link = 0; $link < 41; ++$link) {
+            symlink($link === 40 ? 'real.py' : sprintf('l%d.py', $link + 1), sprintf('%s/chain/l%d.py', $root, $link));
+        }
+        symlink('gone.py', $root . '/pkg/dangling.py');
+        symlink('real', $root . '/linked');
+        $client = $this->pythonWorkerClient();
+        try {
+            $manifest = $client->initialize();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => array_keys($files)]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $edges = [];
+            foreach ($contributions as $contribution) {
+                assertSame([], array_map(static fn(Diagnostic $diagnostic): string => $diagnostic->code, array_filter(
+                    $contribution->diagnostics,
+                    static fn(Diagnostic $diagnostic): bool => $diagnostic->severity === 'error',
+                )));
+                foreach ($contribution->edges as $edge) {
+                    $edges[] = $edge->kind . ' ' . $edge->targetReference;
+                }
+            }
+
+            assertSame(count($files), count($contributions));
+            assertArrayContains('extends py:class:pkg.lnk.Deep', $edges);
+            assertArrayContains('extends py:class:pkg.abs.Lib', $edges);
+            assertArrayContains('extends py:class:pkg.slash.Slash', $edges);
+            assertArrayContains('extends py:class:linked.c.Real', $edges);
+            self::assertInputHashesInclude([
+                'deep/c.py' => hash('sha256', $files['deep/c.py']),
+                'pkg/lnk.py' => null,
+                'pkg/d' => null,
+                'lib/b.py' => hash('sha256', $files['lib/b.py']),
+                'pkg/abs.py' => null,
+                'lib/s.py' => hash('sha256', $files['lib/s.py']),
+                'pkg/slash.py' => null,
+                'chain/l39.py' => null,
+                'pkg/dangling.py' => null,
+                'pkg/gone.py' => null,
+                'real/c.py' => hash('sha256', $files['real/c.py']),
+                'linked' => null,
+                'linked/c.py' => null,
+            ], $inputHashes);
+            self::assertInputHashesVerify($root, $inputHashes, $manifest);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * Every expected entry is in the map with its value. Probes add null entries
      * for candidates that are absent and for links they passed, none of which
      * discovery reports; assertInputHashesVerify() checks exactly that.
