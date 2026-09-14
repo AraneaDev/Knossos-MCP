@@ -25,6 +25,11 @@ const SHEBANG_PROBE_BYTES = 256;
 // out. The suffix is deliberately unusual: a real file that collided with it
 // would be reported under the wrong path.
 const SHEBANG_ALIAS_SUFFIX = ".knossos-shebang.js";
+// TypeScript recognises a source extension only in lower case, so a file such as
+// `FOO.TS`, which discovery classifies as TypeScript, would be in no program and
+// lose its facts on every scan. It is offered under its name plus this mark and
+// the lower-cased extension, and mapped back the same way.
+const CASE_ALIAS_MARK = ".knossos-alias";
 const EXCLUDED_DIRECTORIES = new Set([
     ".git",
     ".knossos",
@@ -218,14 +223,12 @@ export class TypeScriptScanner {
             };
             const parsed = {
                 options,
-                // An extensionless script only ever reaches the fallback program:
-                // no tsconfig `include` can name a file with no extension.
-                fileNames: remaining.map((relative) => {
-                    const absolute = path.join(root, relative);
-                    return path.extname(absolute) === ""
-                        ? shebangAliasPath(absolute)
-                        : absolute;
-                }),
+                // An extensionless script, or one whose extension is not in
+                // lower case, only ever reaches the fallback program: no
+                // tsconfig `include` matches either name.
+                fileNames: remaining.map((relative) =>
+                    offeredPath(path.join(root, relative)),
+                ),
                 projectReferences: undefined,
             };
             const key = `${root}\0<fallback>`;
@@ -255,9 +258,9 @@ export class TypeScriptScanner {
             if (emitted.has(key)) continue;
             // A file the host was asked for and could not read was recorded
             // there. One the compiler never asked for is recorded here only if
-            // it is no longer readable as itself: a stable file TypeScript
-            // simply does not load (such as `FOO.TS`, whose upper-case
-            // extension it does not recognise) must not fail every scan.
+            // it is no longer readable as itself: a stable file the compiler
+            // simply leaves out (as it did `FOO.TS` before offeredPath) must
+            // not fail every scan.
             if (!readableAsItself(root, key, maxFileBytes)) {
                 reads.record(key, null);
             }
@@ -1316,7 +1319,7 @@ function recordUnreadSourceFiles(root, program, reads) {
     for (const sourceFile of program.getSourceFiles()) {
         if (reads.createdThisRequest(sourceFile)) continue;
         const absolute = normalize(
-            path.resolve(shebangSourcePath(sourceFile.fileName)),
+            path.resolve(realSourcePath(sourceFile.fileName)),
         );
         // The hash its facts were parsed from, bound to the object, when this
         // worker created it at all; null only when nothing describes it.
@@ -1361,7 +1364,7 @@ function createRestrictedProgram(
         // that, since discovery reports neither a symlink nor an over-cap file
         // and the core ignores a path it did not discover, while a discovered
         // file that became one mid-scan fails verification.
-        const absolute = normalize(path.resolve(shebangSourcePath(fileName)));
+        const absolute = normalize(path.resolve(realSourcePath(fileName)));
         reads.observe("load", absolute);
         const refused = () => {
             recordRefused(reads, root, absolute);
@@ -1378,7 +1381,7 @@ function createRestrictedProgram(
         // alias is read, and recorded, under the script's real path.
         return readHashedSourceFile(
             root,
-            shebangSourcePath(fileName),
+            realSourcePath(fileName),
             fileName,
             languageVersion,
             fileName.endsWith(SHEBANG_ALIAS_SUFFIX)
@@ -1391,7 +1394,7 @@ function createRestrictedProgram(
     // Module resolution decides an import's target by these answers, so an
     // in-root answer is recorded (recordProbe).
     host.fileExists = (file) => {
-        const absolute = normalize(path.resolve(shebangSourcePath(file)));
+        const absolute = normalize(path.resolve(realSourcePath(file)));
         if (contains(defaultLibDirectory(), absolute))
             return ts.sys.fileExists(absolute);
         if (!contains(root, absolute)) return false;
@@ -1429,7 +1432,7 @@ function createRestrictedProgram(
     };
     host.readFile = (file) =>
         allowedCompilerPath(root, file) && !exceedsByteCap(file, maxFileBytes)
-            ? ts.sys.readFile(shebangSourcePath(file))
+            ? ts.sys.readFile(realSourcePath(file))
             : undefined;
     return ts.createProgram({
         rootNames: parsed.fileNames,
@@ -1835,7 +1838,7 @@ function maxFileBytesFrom(limits) {
 // Default-library declaration files are exempt: skipping one would break type
 // resolution for every file. Only project sources under the root are capped.
 function exceedsByteCap(fileName, maxFileBytes) {
-    const normalized = shebangSourcePath(normalize(path.resolve(fileName)));
+    const normalized = realSourcePath(normalize(path.resolve(fileName)));
     if (contains(defaultLibDirectory(), normalized)) return false;
     try {
         return fs.statSync(normalized).size > maxFileBytes;
@@ -2072,7 +2075,7 @@ function validatedInside(root, relative) {
 // not resolve at all is let through, so its read fails and is recorded by
 // readHashedSourceFile under the same walk's key.
 function allowedCompilerPath(root, candidate) {
-    const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
+    const normalized = realSourcePath(normalize(path.resolve(candidate)));
     if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
     const walked = walkPath(normalized);
@@ -2080,7 +2083,7 @@ function allowedCompilerPath(root, candidate) {
 }
 
 function relativeInside(root, candidate) {
-    const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
+    const normalized = realSourcePath(normalize(path.resolve(candidate)));
     if (!contains(root, normalized)) return null;
     return normalize(path.relative(root, normalized));
 }
@@ -2088,15 +2091,24 @@ function relativeInside(root, candidate) {
 // The single chokepoint every relative path passes through, so un-aliasing here
 // keeps canonical names, evidence paths, and the emitted owner keys pointed at
 // the file that actually exists on disk.
-function shebangSourcePath(candidate) {
-    return candidate.endsWith(SHEBANG_ALIAS_SUFFIX)
-        ? candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length)
-        : candidate;
+function realSourcePath(candidate) {
+    if (candidate.endsWith(SHEBANG_ALIAS_SUFFIX))
+        return candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length);
+    const caseAlias = /\.knossos-alias(\.[a-z]+)$/.exec(candidate);
+    if (caseAlias !== null && SOURCE_EXTENSIONS.has(caseAlias[1]))
+        return candidate.slice(0, caseAlias.index);
+    return candidate;
 }
 
-// The name an extensionless script is offered to the program under.
-function shebangAliasPath(candidate) {
-    return `${candidate}${SHEBANG_ALIAS_SUFFIX}`;
+// The name a requested file is offered to the program under: an extensionless
+// script as a `.js` alias, a file whose extension is not in lower case under its
+// lower-cased extension, and anything else as itself.
+function offeredPath(absolute) {
+    const extension = path.extname(absolute);
+    if (extension === "") return `${absolute}${SHEBANG_ALIAS_SUFFIX}`;
+    if (extension !== extension.toLowerCase())
+        return `${absolute}${CASE_ALIAS_MARK}${extension.toLowerCase()}`;
+    return absolute;
 }
 
 function contains(root, candidate) {

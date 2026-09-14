@@ -124,43 +124,30 @@ describe("input_hashes: a requested file whose read fails", () => {
         );
         expect(result.input_hashes).toEqual({ "src/b.ts": null });
     });
+});
 
-    it("does not report a stable requested file the compiler never loads", () => {
-        // TypeScript does not recognise an upper-case extension, so FOO.TS is
-        // in no program on any scan; a null would fail every scan of the tree.
+describe("a requested file whose extension is not in lower case", () => {
+    it("is scanned, hashed and keyed under its own name", () => {
+        // TypeScript recognises only lower-case extensions, so FOO.TS was in
+        // no program and lost its facts on every scan of a stable tree.
         const root = fixture({
-            "src/FOO.TS": "export const foo = 1;\n",
-            "src/bar.ts": "export const bar = 1;\n",
+            "src/FOO.TS": "export class Foo {}\n",
+            "src/Bar.Tsx": "export const Bar = () => null;\n",
         });
 
-        const { result, byOwner } = scan(root, ["src/FOO.TS", "src/bar.ts"]);
+        const { result, byOwner } = scan(root, ["src/Bar.Tsx", "src/FOO.TS"]);
 
         expect(result.input_hashes).toEqual({
-            "src/bar.ts": sha256("export const bar = 1;\n"),
+            "src/Bar.Tsx": sha256("export const Bar = () => null;\n"),
+            "src/FOO.TS": sha256("export class Foo {}\n"),
         });
-        expect(byOwner["src/FOO.TS"].nodes).toEqual([]);
-    });
-
-    it("reports null for a requested file in no program that is no longer readable as itself", () => {
-        const root = fixture({
-            "src/FOO.TS": "export const foo = 1;\n",
-            "src/bar.ts": "export const bar = 1;\n",
-        });
-        let removed = false;
-
-        const { result } = scan(root, ["src/FOO.TS", "src/bar.ts"], {
-            observeHostPath: (stage, absolute) => {
-                if (removed || !absolute.endsWith("/src/bar.ts")) return;
-                removed = true;
-                fs.unlinkSync(join(root, "src/FOO.TS"));
-            },
-        });
-
-        expect(removed).toBe(true);
-        expect(result.input_hashes).toEqual({
-            "src/FOO.TS": null,
-            "src/bar.ts": sha256("export const bar = 1;\n"),
-        });
+        expect(byOwner["src/FOO.TS"].content_hash).toBe(
+            sha256("export class Foo {}\n"),
+        );
+        expect(
+            byOwner["src/FOO.TS"].nodes.map((node) => node.canonical_name),
+        ).toContain("src/FOO.TS#Foo");
+        expect(byOwner["src/Bar.Tsx"].nodes.length).toBeGreaterThan(0);
     });
 });
 

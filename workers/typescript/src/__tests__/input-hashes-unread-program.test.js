@@ -99,3 +99,58 @@ describe("input_hashes for a program this request did not read", () => {
         });
     });
 });
+
+describe("input_hashes for a requested file the compiler leaves out of every program", () => {
+    // Stands in for a compiler that drops a root file without asking the host
+    // for it, which the worker's backstop answers with a facts-free
+    // contribution.
+    const dropping = (dropped) => (createProgram, options) =>
+        createProgram({
+            ...options,
+            rootNames: options.rootNames.filter(
+                (name) => !name.endsWith(dropped),
+            ),
+        });
+
+    function scanDropping(root, onScan = () => {}) {
+        hook.createProgram = (createProgram, options) => {
+            onScan();
+            return dropping("/src/b.ts")(createProgram, options);
+        };
+        const contributions = [];
+        const result = new TypeScriptScanner().scan(
+            { root, files: ["src/a.ts", "src/b.ts"] },
+            (contribution) => contributions.push(contribution),
+        );
+        return { result, contributions };
+    }
+
+    it("reports nothing for a stable file that is still readable as itself", () => {
+        // A null here would fail every scan of a tree that is not changing.
+        const root = fixture({
+            "src/a.ts": "export const a = 1;\n",
+            "src/b.ts": "export const b = 1;\n",
+        });
+
+        const { result, contributions } = scanDropping(root);
+
+        expect(Object.keys(result.input_hashes)).toEqual(["src/a.ts"]);
+        expect(
+            contributions.find((c) => c.owner_key.endsWith(":src/b.ts"))
+                .diagnostics[0].code,
+        ).toBe("TS_UNSCANNABLE_FILE");
+    });
+
+    it("reports null for a file that is no longer readable as itself", () => {
+        const root = fixture({
+            "src/a.ts": "export const a = 1;\n",
+            "src/b.ts": "export const b = 1;\n",
+        });
+
+        const { result } = scanDropping(root, () =>
+            rmSync(join(root, "src/b.ts")),
+        );
+
+        expect(result.input_hashes["src/b.ts"]).toBeNull();
+    });
+});
