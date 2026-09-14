@@ -10,9 +10,12 @@ a link retargeted between the index's checks.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+
+import pytest
 
 
 def _sha(data: bytes) -> str:
@@ -205,6 +208,7 @@ def test_a_module_refused_for_linking_out_of_the_root_is_null(worker: ModuleType
     (root / "pkg" / "b.py").symlink_to(outside / "b.py")
     index = worker.ProjectModuleIndex(root, 2_000_000)
 
+    assert index.module_file("pkg.b") is None
     assert index.module_declarations("pkg.b") == {}
     assert index.read_hashes == {"pkg/b.py": None}
 
@@ -370,3 +374,203 @@ def test_a_stable_over_cap_target_behind_a_link_with_dot_dot_is_not_keyed_by_a_t
 
     assert index.module_declarations("pkg.lnk") == {}
     assert index.read_hashes == {"deep/c.py": None}
+
+
+# The cases below follow each path the way the kernel's lookup does. A module
+# name only reaches ``module_declarations`` through ``_is_project_file``, whose
+# ``is_file()`` is itself a kernel lookup, so a path the kernel cannot resolve is
+# a probe in a stable tree; the ``_is_project_file`` override stands in for the
+# tree changing between that check and the read.
+DECOY = "class Decoy:\n    pass\n"
+
+
+def _accepting(index: Any, name: str) -> None:
+    index._is_project_file = lambda path: path.name == name
+
+
+def _out_and_back_layout(project, tmp_path_factory, deep: bytes = DEEP) -> Path:
+    # pkg/lnk.py -> OUT/u/f.py -> ROOT/deep/c.py: the chain leaves the root and
+    # comes back, so a read of pkg/lnk.py opens deep/c.py.
+    root = project({"app.py": "x = 1\n", "pkg/c.py": DECOY, "deep/keep.txt": ""})
+    (root / "deep" / "c.py").write_bytes(deep)
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "u").mkdir()
+    (outside / "u" / "f.py").symlink_to(root / "deep" / "c.py")
+    (root / "pkg" / "lnk.py").symlink_to(outside / "u" / "f.py")
+    return root
+
+
+def test_a_read_through_a_chain_that_leaves_the_root_and_returns_is_keyed_by_the_file_it_ends_at(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    index = worker.ProjectModuleIndex(_out_and_back_layout(project, tmp_path_factory), 2_000_000)
+
+    assert "Deep" in index.module_declarations("pkg.lnk")
+    assert index.read_hashes == {"deep/c.py": _sha(DEEP)}
+
+
+def test_a_removed_target_at_the_end_of_a_chain_that_leaves_the_root_is_keyed_by_that_target(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    root = _out_and_back_layout(project, tmp_path_factory)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    _accepting(index, "lnk.py")
+    (root / "deep" / "c.py").unlink()
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {"deep/c.py": None}
+
+
+def test_a_stable_over_cap_target_at_the_end_of_a_chain_that_leaves_the_root_is_keyed_by_that_target(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    index = worker.ProjectModuleIndex(_out_and_back_layout(project, tmp_path_factory, DEEP + b"#" * 100), 60)
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {"deep/c.py": None}
+
+
+def _dot_dot_after_missing(root: Path) -> None:
+    (root / "pkg" / "lnk.py").symlink_to("nope/../c.py")
+
+
+def _dot_dot_after_self_loop(root: Path) -> None:
+    (root / "pkg" / "ld").symlink_to("ld")
+    (root / "pkg" / "lnk.py").symlink_to("ld/../c.py")
+
+
+def _dot_dot_through_dangling_directory_link(root: Path) -> None:
+    (root / "pkg" / "d").symlink_to("../gone/dir")
+    (root / "pkg" / "lnk.py").symlink_to("d/../c.py")
+
+
+# Each link target reaches ``..`` through a component that does not resolve, so
+# the kernel fails the read, while a textual collapse names the discovered,
+# unchanged pkg/c.py.
+UNAPPLIABLE_DOT_DOT = [
+    (_dot_dot_after_missing, "pkg/lnk.py"),
+    (_dot_dot_after_self_loop, "pkg/ld"),
+    (_dot_dot_through_dangling_directory_link, "pkg/d"),
+]
+
+
+@pytest.mark.parametrize(("layout", "link"), UNAPPLIABLE_DOT_DOT)
+def test_a_stable_link_with_dot_dot_the_kernel_cannot_apply_is_only_a_probe(
+    worker: ModuleType, project, layout: Callable[[Path], None], link: str
+) -> None:
+    root = project({"app.py": "x = 1\n", "pkg/c.py": DECOY})
+    layout(root)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {}
+
+
+@pytest.mark.parametrize(("layout", "link"), UNAPPLIABLE_DOT_DOT)
+def test_a_read_through_a_link_with_dot_dot_the_kernel_cannot_apply_is_keyed_by_the_last_link(
+    worker: ModuleType, project, layout: Callable[[Path], None], link: str
+) -> None:
+    root = project({"app.py": "x = 1\n", "pkg/c.py": DECOY})
+    layout(root)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    _accepting(index, "lnk.py")
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {link: None}
+    assert worker.input_key(root, root / "pkg" / "lnk.py") == link
+
+
+def test_a_read_through_a_directory_link_with_dot_dot_that_resolves_is_keyed_by_the_file_opened(
+    worker: ModuleType, project
+) -> None:
+    root = project({"app.py": "x = 1\n", "pkg/c.py": DECOY, "gone/dir/keep.txt": ""})
+    (root / "gone" / "c.py").write_bytes(DEEP)
+    _dot_dot_through_dangling_directory_link(root)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert "Deep" in index.module_declarations("pkg.lnk")
+    assert index.read_hashes == {"gone/c.py": _sha(DEEP)}
+
+
+@pytest.mark.parametrize("change", ["removed", "replaced by a file"])
+def test_a_module_under_a_directory_changed_before_the_read_is_keyed_where_it_was(
+    worker: ModuleType, project, change: str
+) -> None:
+    # The kernel fails the read at sub, yet the path it was to open is known.
+    root = project({"app.py": "x = 1\n", "sub/c.py": "class C:\n    pass\n"})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    _accepting(index, "c.py")
+    (root / "sub" / "c.py").unlink()
+    (root / "sub").rmdir()
+    if change == "replaced by a file":
+        (root / "sub").write_text("x = 1\n", encoding="utf-8")
+
+    assert index.module_declarations("sub.c") == {}
+    assert index.read_hashes == {"sub/c.py": None}
+
+
+def _absolute_link_layout(project, contents: bytes = DEEP) -> Path:
+    root = project({"app.py": "x = 1\n", "pkg/c.py": DECOY, "lib/keep.txt": ""})
+    (root / "lib" / "b.py").write_bytes(contents)
+    (root / "pkg" / "lnk.py").symlink_to(root / "lib" / "b.py")
+    return root
+
+
+def test_a_read_through_an_absolute_link_inside_the_root_is_keyed_by_the_target(worker: ModuleType, project) -> None:
+    index = worker.ProjectModuleIndex(_absolute_link_layout(project), 2_000_000)
+
+    assert "Deep" in index.module_declarations("pkg.lnk")
+    assert index.read_hashes == {"lib/b.py": _sha(DEEP)}
+
+
+def test_a_removed_target_of_an_absolute_link_inside_the_root_is_keyed_by_the_target(
+    worker: ModuleType, project
+) -> None:
+    root = _absolute_link_layout(project)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    _accepting(index, "lnk.py")
+    (root / "lib" / "b.py").unlink()
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {"lib/b.py": None}
+
+
+def test_a_stable_over_cap_target_of_an_absolute_link_inside_the_root_is_keyed_by_the_target(
+    worker: ModuleType, project
+) -> None:
+    index = worker.ProjectModuleIndex(_absolute_link_layout(project, DEEP + b"#" * 100), 60)
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {"lib/b.py": None}
+
+
+def _chain(project, links: int) -> Path:
+    # pkg/l0.py -> l1.py ... -> real.py. Linux follows at most 40 links in one
+    # lookup; the 41st fails it with ELOOP.
+    root = project({"app.py": "x = 1\n", "pkg/real.py": DEEP.decode()})
+    for index in range(links):
+        target = "real.py" if index == links - 1 else f"l{index + 1}.py"
+        (root / "pkg" / f"l{index}.py").symlink_to(target)
+    return root
+
+
+def test_a_chain_of_40_links_is_followed_to_its_file(worker: ModuleType, project) -> None:
+    index = worker.ProjectModuleIndex(_chain(project, 40), 2_000_000)
+
+    assert "Deep" in index.module_declarations("pkg.l0")
+    assert index.read_hashes == {"pkg/real.py": _sha(DEEP)}
+
+
+def test_a_chain_of_41_links_is_a_probe_in_a_stable_tree(worker: ModuleType, project) -> None:
+    index = worker.ProjectModuleIndex(_chain(project, 41), 2_000_000)
+
+    assert index.module_declarations("pkg.l0") == {}
+    assert index.read_hashes == {}
+
+
+def test_a_read_through_a_chain_of_41_links_is_keyed_by_the_last_link_followed(worker: ModuleType, project) -> None:
+    index = worker.ProjectModuleIndex(_chain(project, 41), 2_000_000)
+    _accepting(index, "l0.py")
+
+    assert index.module_declarations("pkg.l0") == {}
+    assert index.read_hashes == {"pkg/l39.py": None}

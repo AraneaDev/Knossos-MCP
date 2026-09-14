@@ -11,7 +11,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 VERSION = "0.5.0"
 EXCLUDED = {
@@ -192,21 +192,24 @@ class ProjectModuleIndex:
             content_hash = None
         self.read_hashes[relative] = content_hash
 
-    def _resolved_in_root(self, path: Path) -> tuple[Path, str] | None:
-        """The file ``path`` names and the path discovery would report for it.
+    def _in_root_file(self, walked: PathWalk) -> Path | None:
+        """The file a walked path opens, when that file lies inside the root.
 
         Discovery never follows a symlink, so a module reached through a linked
-        file or directory is keyed, and read, where its bytes actually live;
-        that is the path whose recorded hash describes them. ``None`` when the
-        target no longer resolves inside the root (a link retargeted since
-        ``_is_project_file`` checked it): nothing outside the root is read, and
-        the caller records the path it asked for as a failed read.
+        file or directory is read where its bytes actually live, and keyed
+        there by :func:`walk_key`; that is the path whose recorded hash
+        describes them. ``None`` for a walk that did not end at a file inside
+        the root: nothing outside the root is read.
         """
-        try:
-            resolved = path.resolve(strict=True)
-            return resolved, resolved.relative_to(self.root).as_posix()
-        except (OSError, RuntimeError, ValueError):
+        if walked.kind != "file" or walked.location is None or not _inside(self.root, walked.location):
             return None
+        return Path(walked.location)
+
+    def _record_walk(self, walked: PathWalk, content_hash: str | None) -> None:
+        """Record a read under the key its walk gives, if it gives one."""
+        relative = walk_key(self.root, walked)
+        if relative is not None:
+            self.record_read(relative, content_hash)
 
     def _source_root_prefixes(self) -> list[tuple[str, ...]]:
         prefixes: list[tuple[str, ...]] = [()]
@@ -256,23 +259,18 @@ class ProjectModuleIndex:
         try:
             if not path.is_file():
                 return False
-            resolved = path.resolve()
-            if resolved.is_relative_to(self.root) and resolved.stat().st_size <= self.max_bytes:
+        except OSError:
+            pass
+        walked = walk_path(path)
+        location = self._in_root_file(walked)
+        try:
+            if location is not None and location.stat().st_size <= self.max_bytes:
                 return True
         except OSError:
             pass
-        self._record_refused(path)
+        # Keyed by the same walk a successful read of it is keyed by.
+        self._record_walk(walked, None)
         return False
-
-    def _record_refused(self, path: Path) -> None:
-        """Record a module path this index would not or could not read as ``None``.
-
-        Keyed by :func:`in_root_location`, the in-root path its bytes would have
-        come from, the same key a successful read of it goes under.
-        """
-        relative = in_root_location(self.root, path)
-        if relative is not None:
-            self.record_read(relative, None)
 
     def module_declarations(self, module: str) -> dict[str, str]:
         cached = self._cache.get(module)
@@ -280,21 +278,23 @@ class ProjectModuleIndex:
             return cached
         declarations: dict[str, str] = {}
         path = self.module_file(module)
-        target = None if path is None else self._resolved_in_root(path)
-        if path is not None and target is None:
+        # One walk decides whether the module may be read, the file its bytes
+        # are read from, and the key the read goes under, so none can disagree.
+        walked = None if path is None else walk_path(path)
+        location = None if walked is None else self._in_root_file(walked)
+        if walked is not None and location is None:
             # Accepted by module_file, then retargeted out of the root or gone
             # before this read resolved it: not read, and recorded as refused.
-            self._record_refused(path)
-        if target is not None:
-            resolved, relative = target
+            self._record_walk(walked, None)
+        if walked is not None and location is not None:
             try:
-                source = resolved.read_bytes()
+                source = location.read_bytes()
             except OSError:
-                self.record_read(relative, None)
+                self._record_walk(walked, None)
             else:
                 # Hashed before parsing, so a module that fails to parse still
                 # reports the bytes this request saw.
-                self.record_read(relative, hashlib.sha256(source).hexdigest())
+                self._record_walk(walked, hashlib.sha256(source).hexdigest())
                 try:
                     declarations = top_level_declarations(ast.parse(source), module)
                 except (SyntaxError, ValueError, RecursionError):
@@ -332,62 +332,144 @@ class ProjectModuleIndex:
             return False
 
 
-# More links than this in one path is a loop, or near enough to one.
+# Linux's MAXSYMLINKS: one lookup follows at most this many links, and the next
+# one fails it with ELOOP.
 MAX_SYMLINK_HOPS = 40
+# The file-type bits of ``st_mode``, spelled out rather than imported from
+# ``stat``: three constants do not earn a module dependency, and this file's
+# import count is a budgeted maintainability metric.
+S_IFMT = 0o170000
+S_IFDIR = 0o040000
+S_IFLNK = 0o120000
 
 
-def in_root_location(root: Path, path: Path) -> str | None:
-    """The root-relative path a refused module's bytes would have come from.
+class PathWalk(NamedTuple):
+    """How the kernel's lookup of one path went; see :func:`walk_path`.
 
-    The key its failed read goes under, so it meets discovery's key for that
-    file. For a path that resolves inside the root this is its kernel resolution
-    (``os.path.realpath`` applies each ``..`` after following the link before
-    it), the same key ``resolve(strict=True)`` gives a successful read. A path
-    is refused exactly when it does not, though, so the path is followed one
-    link at a time: each step resolves the link's directory with ``realpath``
-    and reads the link itself, and a link target is joined to that directory
-    unchanged, so its ``..`` is never collapsed as text.
-
-    - The final name is not a link (a regular file, or missing): its location.
-    - The final name is a link whose target's directory leaves the root: the
-      link's location. A chain of links keys to the last one inside the root.
-    - The path's own directory leaves the root: that directory's in-root
-      location, found the same way, plus the name.
-
-    ``None`` when no step of the path lies inside the root. Any key returned
-    for a stable layout names a link or a missing path, which discovery never
-    reports, so the core ignores it, while a discovered file swapped for one
-    mid-scan fails verification.
+    ``links`` holds each symlink followed, in order, with the components that
+    were still to walk after it at that moment.
     """
-    base = os.path.realpath(root)
 
-    def inside(candidate: str) -> bool:
-        return candidate == base or candidate.startswith(base.rstrip(os.sep) + os.sep)
+    kind: str
+    location: str | None
+    links: tuple[tuple[str, tuple[str, ...]], ...]
 
-    def locate(current: str) -> str | None:
-        last_link: str | None = None
-        for _ in range(MAX_SYMLINK_HOPS + 1):
-            parent, name = os.path.dirname(current), os.path.basename(current)
-            if parent == current or not name:
-                return last_link
-            directory = os.path.realpath(parent)
-            if not inside(directory):
-                outer = locate(parent)
-                return last_link if outer is None else os.path.join(outer, name)
-            location = os.path.join(directory, name)
-            if name in (os.curdir, os.pardir):
-                resolved = os.path.realpath(location)
-                return resolved if inside(resolved) else last_link
+
+def walk_path(path: str | os.PathLike[str]) -> PathWalk:
+    """Resolve an absolute path the way the kernel's lookup does, one component at a time.
+
+    The result names the file a read of the path opens. ``current`` is always a
+    real directory, so a ``..`` steps to where the kernel's ``..`` goes once
+    the links before it have been followed. A symlink's target is put in front
+    of the components still to walk, raw, so its own ``..`` is applied the same
+    way; nothing is ever collapsed as text.
+
+    - ``file``: the walk reached a non-directory as its last component.
+    - ``directory``: the walk ended at a directory.
+    - ``missing``: a component does not exist, or is a non-directory with more
+      to walk (ENOENT, ENOTDIR); ``location`` is the path the read was to open
+      (see :func:`_absent_below`).
+    - ``unresolvable``: no such path can be named: a ``..`` left to apply below
+      a missing component, another lookup error, or more than
+      ``MAX_SYMLINK_HOPS`` links (ELOOP).
+
+    ``path`` must be absolute; every module path is built on the real root.
+    """
+    text = os.fspath(path)
+    current = Path(text).anchor
+    remaining = text[len(current) :].split(os.sep)
+    links: list[tuple[str, tuple[str, ...]]] = []
+    hops = 0
+    while remaining:
+        name = remaining.pop(0)
+        if name in ("", os.curdir):
+            continue
+        if name == os.pardir:
+            current = os.path.dirname(current)
+            continue
+        candidate = os.path.join(current, name)
+        try:
+            mode = os.lstat(candidate).st_mode & S_IFMT
+        except FileNotFoundError:
+            return _absent_below(candidate, remaining, links)
+        except OSError:
+            return PathWalk("unresolvable", None, tuple(links))
+        if mode == S_IFLNK:
+            hops += 1
+            if hops > MAX_SYMLINK_HOPS:
+                return PathWalk("unresolvable", None, tuple(links))
+            links.append((candidate, tuple(remaining)))
             try:
-                target = os.readlink(location)
+                target = os.readlink(candidate)
             except OSError:
-                return location
-            last_link = location
-            current = os.path.join(directory, target)
-        return last_link
+                return PathWalk("unresolvable", None, tuple(links))
+            if os.path.isabs(target):
+                current = Path(target).anchor
+                target = target[len(current) :]
+            remaining[:0] = target.split(os.sep)
+        elif mode == S_IFDIR:
+            current = candidate
+        elif remaining:
+            return _absent_below(candidate, remaining, links)
+        else:
+            return PathWalk("file", candidate, tuple(links))
+    return PathWalk("directory", current, tuple(links))
 
-    found = locate(os.fspath(path))
-    return None if found is None else PurePosixPath(os.path.relpath(found, base)).as_posix()
+
+def _absent_below(candidate: str, remaining: list[str], links: list[tuple[str, tuple[str, ...]]]) -> PathWalk:
+    """The walk's result when the lookup fails at ``candidate``, which is absent or not a directory.
+
+    Nothing exists below it, so nothing below it can be a link, and without a
+    ``..`` still to apply the remaining components name exactly the file the
+    read was to open. A ``..`` still to apply could only be resolved against a
+    directory that is not there, so the path is unresolvable.
+    """
+    rest = [name for name in remaining if name not in ("", os.curdir)]
+    if os.pardir in rest:
+        return PathWalk("unresolvable", None, tuple(links))
+    return PathWalk("missing", os.path.join(candidate, *rest), tuple(links))
+
+
+def _inside(root: Path, candidate: str) -> bool:
+    base = os.fspath(root)
+    return candidate == base or candidate.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def walk_key(root: Path, walked: PathWalk) -> str | None:
+    """The root-relative key a walked read goes under in ``input_hashes``.
+
+    - A walk that ended at a file, or at a missing location, inside the root:
+      that location, the file the read opened or would have opened.
+    - Otherwise the last link followed inside the root. A link followed as a
+      directory component keys the path below it as it was about to be walked
+      (a discovered ``sub/c.py`` whose ``sub`` became a link out of the root
+      keys ``sub/c.py``), unless that path holds a ``..``, which only the walk
+      could have applied; then the link itself.
+
+    ``None`` when no location the walk passed lies inside the root. Every key a
+    stable layout produces names either the file the kernel reaches, or a link
+    or a path through one or through a missing component, none of which
+    discovery reports, so the core ignores it; a discovered file changed into
+    one of those mid-scan is keyed where discovery saw it and fails
+    verification. ``root`` must be a real path, as :func:`safe_root` makes it.
+    """
+    location = walked.location
+    if walked.kind not in ("file", "missing") or location is None or not _inside(root, location):
+        inside = [link for link in walked.links if _inside(root, link[0])]
+        if not inside:
+            return None
+        location, remaining = inside[-1]
+        rest = [name for name in remaining if name not in ("", os.curdir)]
+        if rest and os.pardir not in rest:
+            location = os.path.join(location, *rest)
+    if location == os.fspath(root):
+        return None
+    return PurePosixPath(os.path.relpath(location, root)).as_posix()
+
+
+def input_key(root: Path, path: str | os.PathLike[str]) -> str | None:
+    """The key a read of ``path`` goes under: :func:`walk_key` of its walk."""
+    return walk_key(root, walk_path(path))
 
 
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
