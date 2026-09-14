@@ -149,6 +149,29 @@ describe("a requested file whose extension is not in lower case", () => {
         ).toContain("src/FOO.TS#Foo");
         expect(byOwner["src/Bar.Tsx"].nodes.length).toBeGreaterThan(0);
     });
+
+    it("does not touch a real file literally named with the alias mark", () => {
+        // offeredPath only ever appends `.knossos-alias.<ext>` to a name whose
+        // own extension is not lower case. A real file already named this way
+        // has a lower-case extension, so realSourcePath must leave it alone
+        // rather than strip it back to a name (`x`) that does not exist,
+        // which would lose the file's facts under the wrong key.
+        const root = fixture({
+            "src/x.knossos-alias.ts": "export class X {}\n",
+        });
+
+        const { result, byOwner } = scan(root, ["src/x.knossos-alias.ts"]);
+
+        expect(result.input_hashes).toEqual({
+            "src/x.knossos-alias.ts": sha256("export class X {}\n"),
+        });
+        expect(Object.keys(byOwner)).toEqual(["src/x.knossos-alias.ts"]);
+        expect(
+            byOwner["src/x.knossos-alias.ts"].nodes.map(
+                (node) => node.canonical_name,
+            ),
+        ).toContain("src/x.knossos-alias.ts#X");
+    });
 });
 
 describe("input_hashes: a file that grows past the cap before the host reads it", () => {

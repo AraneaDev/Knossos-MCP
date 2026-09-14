@@ -1430,10 +1430,26 @@ function createRestrictedProgram(
         }
         return real;
     };
-    host.readFile = (file) =>
-        allowedCompilerPath(root, file) && !exceedsByteCap(file, maxFileBytes)
-            ? ts.sys.readFile(realSourcePath(file))
-            : undefined;
+    // A stat-then-read (exceedsByteCap followed by ts.sys.readFile) leaves a
+    // window between the two where the file can grow past the cap, making
+    // the read that follows unbounded. readBounded closes it: it reads at
+    // most one byte past the cap itself, so the size actually read is what
+    // is checked, not a size observed earlier.
+    host.readFile = (file) => {
+        if (!allowedCompilerPath(root, file)) return undefined;
+        const normalized = realSourcePath(normalize(path.resolve(file)));
+        const library = contains(defaultLibDirectory(), normalized);
+        let buffer;
+        try {
+            buffer = readBounded(
+                normalized,
+                library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
+            );
+        } catch {
+            buffer = undefined;
+        }
+        return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
+    };
     return ts.createProgram({
         rootNames: parsed.fileNames,
         options,
@@ -2095,8 +2111,23 @@ function realSourcePath(candidate) {
     if (candidate.endsWith(SHEBANG_ALIAS_SUFFIX))
         return candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length);
     const caseAlias = /\.knossos-alias(\.[a-z]+)$/.exec(candidate);
-    if (caseAlias !== null && SOURCE_EXTENSIONS.has(caseAlias[1]))
-        return candidate.slice(0, caseAlias.index);
+    if (caseAlias !== null && SOURCE_EXTENSIONS.has(caseAlias[1])) {
+        const original = candidate.slice(0, caseAlias.index);
+        const originalExtension = path.extname(original);
+        // offeredPath only ever appends this mark to a name whose own
+        // extension is a supported one spelled with some upper case, the
+        // exact case it lower-cases below the mark. A real file that happens
+        // to be named e.g. `x.knossos-alias.ts` already has a lower-case
+        // extension, so stripping the mark here would rename it to `x` and
+        // lose its facts under the wrong key; only strip when undoing that
+        // exact case fold would restore it.
+        if (
+            originalExtension !== "" &&
+            originalExtension !== originalExtension.toLowerCase() &&
+            originalExtension.toLowerCase() === caseAlias[1]
+        )
+            return original;
+    }
     return candidate;
 }
 
