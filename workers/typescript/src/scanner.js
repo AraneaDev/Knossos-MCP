@@ -53,6 +53,10 @@ const EXCLUDED_DIRECTORIES = new Set([
 // database beside the project under the same convention, and those must not be
 // discovered as the project's own source.
 const EXCLUDED_DIRECTORY_PREFIXES = [".knossos-"];
+// Dependency trees may be read for module resolution even though discovery
+// does not scan them as project-owned source. Generated and tool-owned trees
+// remain blocked at this boundary.
+const RESOLUTION_ALLOWED_EXCLUDED = new Set(["node_modules", "vendor"]);
 
 /** Whether a directory entry is excluded from discovery by name alone. */
 function isExcludedDirectoryName(name) {
@@ -2385,6 +2389,18 @@ function allowedCompilerPath(root, candidate) {
     const normalized = realSourcePath(normalize(path.resolve(candidate)));
     if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
+    const relative = normalize(path.relative(root, normalized));
+    if (
+        relative !== "" &&
+        relative
+            .split("/")
+            .some(
+                (segment) =>
+                    isExcludedDirectoryName(segment) &&
+                    !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+            )
+    )
+        return false;
     const walked = walkPath(normalized);
     return walked.location === undefined || contains(root, walked.location);
 }

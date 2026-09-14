@@ -108,6 +108,9 @@ final class ProjectScanService implements ProjectScanner
 
             $language = $this->languageRunner->run($plan, $cancellation);
             $stageMilliseconds += $language->stageMilliseconds;
+            // Cancellation wins over fidelity reporting: an abandoned scan
+            // must surface ScanCancelledException, not a worker degradation.
+            $cancellation->throwIfCancelled();
             // An incremental scan must never reconcile a partial language set:
             // doing so prunes the last good facts for a worker that failed and
             // can replace a healthy graph with an empty one. A full scan has no
@@ -129,11 +132,6 @@ final class ProjectScanService implements ProjectScanner
             // checked before analysis; undiscovered worker inputs are checked at
             // the final write boundary below, after reconciliation preparation.
             //
-            // Cancellation is checked first so a caller who asked to stop still
-            // gets ScanCancelledException: a scan being abandoned has nothing to
-            // report about its own fidelity, and the transports distinguish the
-            // two.
-            $cancellation->throwIfCancelled();
             $validationStarted = hrtime(true);
             $this->snapshotValidator->validateDiscovery($preparation->discovery);
             $stageMilliseconds['snapshot_validation'] = self::elapsedMilliseconds($validationStarted);
