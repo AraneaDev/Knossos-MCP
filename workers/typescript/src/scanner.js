@@ -1030,7 +1030,8 @@ function readRecorded(root, file, reads, maxFileBytes) {
             normalized,
             library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
         );
-    } catch {
+    } catch (error) {
+        rethrowStackOverflow(error);
         buffer = undefined;
     }
     if (!library)
@@ -1127,7 +1128,8 @@ function readHashedSourceFile(
             walked.location,
             library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
         );
-    } catch {
+    } catch (error) {
+        rethrowStackOverflow(error);
         buffer = undefined;
     }
     if (buffer === undefined) {
@@ -1356,7 +1358,8 @@ function boundedHash(file, maxFileBytes) {
     let buffer;
     try {
         buffer = readBounded(file, maxFileBytes);
-    } catch {
+    } catch (error) {
+        rethrowStackOverflow(error);
         return null;
     }
     return buffer === undefined
@@ -1412,6 +1415,7 @@ function walkPath(absolute) {
         try {
             stat = fs.lstatSync(candidate);
         } catch (error) {
+            rethrowStackOverflow(error);
             return error?.code === "ENOENT"
                 ? absentBelow(candidate, remaining, links)
                 : { kind: "unresolvable", links };
@@ -1423,7 +1427,8 @@ function walkPath(absolute) {
             let target;
             try {
                 target = normalize(fs.readlinkSync(candidate));
-            } catch {
+            } catch (error) {
+                rethrowStackOverflow(error);
                 return { kind: "unresolvable", links };
             }
             if (path.isAbsolute(target)) {
@@ -1621,7 +1626,8 @@ function createRestrictedProgram(
         let real;
         try {
             real = realpathNative(file);
-        } catch {
+        } catch (error) {
+            rethrowStackOverflow(error);
             real = normalize(file);
         }
         const absolute = normalize(path.resolve(file));
@@ -2061,7 +2067,8 @@ function exceedsByteCap(fileName, maxFileBytes) {
     if (contains(defaultLibDirectory(), normalized)) return false;
     try {
         return fs.statSync(normalized).size > maxFileBytes;
-    } catch {
+    } catch (error) {
+        rethrowStackOverflow(error);
         return false;
     }
 }
@@ -2218,6 +2225,15 @@ function isStackOverflow(error) {
         error instanceof RangeError &&
         error.message.includes("Maximum call stack size exceeded")
     );
+}
+
+// For a catch that reads any failure as the filesystem's answer. A stack
+// overflow is not one: a host callback is a leaf frame of a deep program build,
+// so swallowing the overflow there would drop one read and let the build carry
+// on, truncating the program instead of reaching the TS_PROGRAM_TOO_DEEP
+// backstop in #scanProgram.
+function rethrowStackOverflow(error) {
+    if (isStackOverflow(error)) throw error;
 }
 
 // A contribution that carries nothing but the reason one file was skipped.

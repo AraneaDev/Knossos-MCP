@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import fs, {
+    mkdtempSync,
+    mkdirSync,
+    writeFileSync,
+    rmSync,
+    symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -45,6 +51,7 @@ function fixture(files) {
 
 afterEach(() => {
     hook.createProgram = null;
+    vi.restoreAllMocks();
     while (created.length > 0) {
         rmSync(created.pop(), { recursive: true, force: true });
     }
@@ -184,6 +191,72 @@ describe("a program that overflows the stack after it was built", () => {
         expect(result.input_hashes["deep/a.ts"]).toEqual(expect.any(String));
         expect(result.input_hashes["deep/b.ts"]).toEqual(expect.any(String));
     });
+});
+
+describe("a stack overflow that starts inside a host callback", () => {
+    // A host callback is a leaf frame of the program build: the compiler asks
+    // it to look up, walk, resolve or read a file. Each case below reaches a
+    // catch that otherwise reads a failure as the filesystem's answer, where a
+    // swallowed overflow would record the file as missing and scan deep/a.ts
+    // against a truncated program.
+    //
+    // `calls` picks which matching calls overflow, counted from 1. deep/b.ts is
+    // opened first by the existence probe hashing it through deep/link.ts and
+    // only then by the compiler's read, so the two open cases split on it.
+    // Resolution realpaths only a module found by package lookup, so that
+    // case overflows on a package's declarations.
+    const every = () => true;
+    const cases = [
+        { via: "lstatSync", on: "/deep/b.ts", calls: every },
+        { via: "readlinkSync", on: "/deep/link.ts", calls: every },
+        { via: "statSync", on: "/deep/b.ts", calls: every },
+        { via: "openSync", on: "/deep/b.ts", calls: (n) => n === 1 },
+        { via: "openSync", on: "/deep/b.ts", calls: (n) => n > 1 },
+        { via: "openSync", on: "/node_modules/pkg/package.json", calls: every },
+        {
+            via: "realpathSync.native",
+            on: "/node_modules/pkg/index.d.ts",
+            calls: every,
+        },
+    ];
+
+    for (const [index, { via, on, calls }] of cases.entries()) {
+        it(`reaches the TS_PROGRAM_TOO_DEEP backstop from ${via} on ${on} (case ${index + 1})`, () => {
+            const root = fixture({
+                "tsconfig.json": JSON.stringify({ files: ["deep/a.ts"] }),
+                "deep/a.ts":
+                    'import { b } from "./b";\nimport { l } from "./link";\nimport { p } from "pkg";\nexport const a = b + l + p;\n',
+                "deep/b.ts": "export const b = 1;\nexport const l = 2;\n",
+                "node_modules/pkg/package.json": JSON.stringify({
+                    name: "pkg",
+                    types: "index.d.ts",
+                }),
+                "node_modules/pkg/index.d.ts":
+                    "export declare const p: number;\n",
+            });
+            symlinkSync("b.ts", join(root, "deep/link.ts"));
+            const [target, name] =
+                via === "realpathSync.native"
+                    ? [fs.realpathSync, "native"]
+                    : [fs, via];
+            const original = target[name];
+            let matched = 0;
+            let thrown = 0;
+            vi.spyOn(target, name).mockImplementation((file, ...rest) => {
+                if (String(file).endsWith(on) && calls(++matched)) {
+                    thrown++;
+                    throw overflow();
+                }
+                return original.call(target, file, ...rest);
+            });
+
+            const { byPath } = scan(root, ["deep/a.ts"], ["tsconfig.json"]);
+
+            expect(thrown).toBeGreaterThan(0);
+            expect(codes(byPath["deep/a.ts"])).toEqual(["TS_PROGRAM_TOO_DEEP"]);
+            expect(byPath["deep/a.ts"].nodes).toEqual([]);
+        });
+    }
 });
 
 describe("scanThreadResourceLimits", () => {
