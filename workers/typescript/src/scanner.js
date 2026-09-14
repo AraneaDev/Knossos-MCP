@@ -301,6 +301,19 @@ export class TypeScriptScanner {
                 continue;
             }
 
+            const redirect = sourceFile.redirectInfo;
+            if (redirect !== undefined && !redirectReadsAgree(redirect)) {
+                emit(
+                    factFreeContribution(
+                        relative,
+                        "TS_REDIRECTED_SOURCE_UNVERIFIED",
+                        "TypeScript resolved this file as a duplicate of another copy of the same package whose bytes differ, so its facts would describe the other copy.",
+                    ),
+                );
+                emitted.add(relative);
+                continue;
+            }
+
             // Isolate per-file collection: a single adversarial/minified file can
             // overflow the visitor recursion (RangeError). One bad file must
             // degrade to a diagnostic, not discard facts for every other file in
@@ -340,7 +353,11 @@ export class TypeScriptScanner {
             // Every SourceFile the restricted host creates has an entry. One
             // without would reach the core with facts but no hash, which it
             // refuses as a contract violation instead of trusting the read.
-            const contentHash = parsedContentHashes.get(sourceFile);
+            // A redirect is a view of its target; with the reads agreeing, its
+            // own bytes are what the facts describe.
+            const contentHash = parsedContentHashes.get(
+                redirect?.unredirected ?? sourceFile,
+            );
             if (contentHash !== undefined) {
                 contribution.content_hash = contentHash;
             }
@@ -949,9 +966,10 @@ function decodeLikeTypeScript(buffer) {
  * came from. A tsconfig `include` walks through links (and `preserveSymlinks`
  * keeps linked import paths), so both names do reach this host. A target that
  * no longer resolves inside the root (a link retargeted since
- * allowedCompilerPath checked it) is not read at all: no path the core tracks
- * could verify it, so nothing is derived from it. A path that cannot be resolved
- * is recorded as a failed read under its own name.
+ * allowedCompilerPath checked it) is not read at all, and a path that cannot be
+ * resolved cannot be read. Either way the compiler goes on as if the file did
+ * not exist, which changes the facts of every file importing it, so the path is
+ * recorded as a failed read under its own name.
  */
 function readHashedSourceFile(
     root,
@@ -970,6 +988,7 @@ function readHashedSourceFile(
         return undefined;
     }
     if (!contains(root, real) && !contains(defaultLibDirectory(), absolute)) {
+        recordRead(reads, root, absolute, null);
         return undefined;
     }
     let buffer;
@@ -1068,12 +1087,27 @@ function createRestrictedProgram(
     };
     const host = ts.createCompilerHost(options, true);
     host.getSourceFile = (fileName, languageVersion) => {
-        if (!allowedCompilerPath(root, fileName)) return undefined;
+        // A refused path is left out of the program, so the facts of every file
+        // that imports or includes it are computed as if it did not exist. It
+        // is recorded as a failed read under its own name: a stable layout never
+        // trips over that, since discovery reports neither a symlink nor an
+        // over-cap file and the core ignores a path it did not discover, while a
+        // discovered file that became one mid-scan fails verification.
+        const refused = () => {
+            recordRead(
+                reads,
+                root,
+                normalize(path.resolve(shebangSourcePath(fileName))),
+                null,
+            );
+            return undefined;
+        };
+        if (!allowedCompilerPath(root, fileName)) return refused();
         // The per-file byte cap is enforced on requested files, but the program
         // also pulls in import-reachable and included sources. Guard those too so
         // one giant generated file (e.g. a multi-MB bundled `.d.ts`) is never
         // fully parsed, bounding peak memory.
-        if (exceedsByteCap(fileName, maxFileBytes)) return undefined;
+        if (exceedsByteCap(fileName, maxFileBytes)) return refused();
         // Read here rather than through the default host, which reads via
         // ts.sys.readFile and so never exposes the bytes it decoded. A shebang
         // alias is read, and recorded, under the script's real path.
@@ -1558,8 +1592,31 @@ function validateRequestedFiles(root, files, limits = {}) {
     return { accepted, rejected };
 }
 
+/**
+ * Whether a redirect SourceFile's facts provably come from its own path's bytes.
+ *
+ * TypeScript loads one copy of a package name@version and makes every further
+ * copy a redirect to it, so a duplicate path's facts are computed from the
+ * first copy. That is only a fact about the duplicate when the host read both
+ * and the two reads hashed the same. Attaching the target's hash instead would
+ * fail verification on every scan of a project whose copies differ.
+ */
+function redirectReadsAgree(redirect) {
+    const own =
+        redirect.unredirected === undefined
+            ? undefined
+            : parsedContentHashes.get(redirect.unredirected);
+    const target = parsedContentHashes.get(redirect.redirectTarget);
+    return own !== undefined && own === target;
+}
+
 // A contribution that carries nothing but the reason one file was skipped.
 function unscannableContribution(relative, message) {
+    return factFreeContribution(relative, "TS_UNSCANNABLE_FILE", message);
+}
+
+// A contribution with no facts, only a diagnostic saying why.
+function factFreeContribution(relative, code, message) {
     return {
         owner_key: `knossos.typescript:file:${relative}`,
         nodes: [],
@@ -1567,7 +1624,7 @@ function unscannableContribution(relative, message) {
         diagnostics: [
             {
                 severity: "error",
-                code: "TS_UNSCANNABLE_FILE",
+                code,
                 message,
                 evidence: { path: relative, start_line: 1, end_line: 1 },
             },

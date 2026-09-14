@@ -1228,18 +1228,76 @@ function withSecondResolution(second, callback) {
 }
 
 describe("input_hashes: a path that changes under the read", () => {
-    it("does not read a file whose target has left the root since it was allowed", () => {
+    it("reports null, without reading, for a file whose target has left the root since it was allowed", () => {
+        // The importer's facts are computed as if b.ts did not exist, so its
+        // own path must fail verification should discovery have hashed it.
         const root = fixture({ "src/a.ts": A, "src/b.ts": B });
-        const outside = fixture({ "b.ts": B });
+        const outside = join(fs.realpathSync(fixture({ "b.ts": B })), "b.ts");
 
         const { result, readsMade } = withSecondResolution(
-            () => join(outside, "b.ts"),
+            () => outside,
             () => scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
         );
 
-        expect(readsMade).not.toContain(join(outside, "b.ts"));
+        expect(readsMade).not.toContain(outside);
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+
+    it("reports null for an in-root path the host refuses because it now links out of the root", () => {
+        // Module resolution saw b.ts inside the root; by the time the program
+        // asks for it, allowedCompilerPath resolves it outside, so the host
+        // refuses it and a.ts's facts are computed without it.
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const outside = join(fs.realpathSync(fixture({ "b.ts": B })), "b.ts");
+        const realpathSync = fs.realpathSync;
+        const spy = vi
+            .spyOn(fs, "realpathSync")
+            .mockImplementation((file, ...rest) => {
+                const frames = new Error().stack.split("\n");
+                const checker = frames.findIndex((frame) =>
+                    frame.includes("allowedCompilerPath"),
+                );
+                if (
+                    String(file).endsWith("/src/b.ts") &&
+                    checker !== -1 &&
+                    frames[checker + 1].includes("getSourceFile")
+                ) {
+                    return outside;
+                }
+                return realpathSync(file, ...rest);
+            });
+        let result;
+        try {
+            ({ result } = scanWithResult(new TypeScriptScanner(), root, [
+                "src/a.ts",
+            ]));
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+
+    it("reports null for an imported file the host refuses as over the byte cap", () => {
+        const big = `export class B {}\n${"// padding\n".repeat(40)}`;
+        const root = fixture({ "src/a.ts": A, "src/b.ts": big });
+
+        const { result } = scanWithResult(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts"],
+            { limits: { max_file_bytes: 200 } },
+        );
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
         });
     });
 
@@ -1302,5 +1360,83 @@ describe("input_hashes: a path read by more than one program in a request", () =
 
     it("reports null when a failed read is followed by a successful one", () => {
         expect(scan([null, B]).input_hashes["src/b.ts"]).toBeNull();
+    });
+});
+
+describe("content_hash for a duplicate package copy", () => {
+    // Two in-root copies of dep@1.0.0, each linked from its own node_modules.
+    // TypeScript loads the first and makes the second a redirect to it, so the
+    // second path's facts come from the first copy's bytes.
+    function duplicatePackages(secondCopy, around = (scan) => scan()) {
+        const pkg = '{"name":"dep","version":"1.0.0","types":"index.ts"}\n';
+        const importer = (name) =>
+            `import { Dep } from "dep";\nexport class ${name} extends Dep {}\n`;
+        const root = fixture({
+            "copies/one/package.json": pkg,
+            "copies/one/index.ts": "export class Dep {}\n",
+            "copies/two/package.json": pkg,
+            "copies/two/index.ts": secondCopy,
+            "app1/main.ts": importer("One"),
+            "app2/main.ts": importer("Two"),
+        });
+        for (const [app, copy] of [
+            ["app1", "one"],
+            ["app2", "two"],
+        ]) {
+            mkdirSync(join(root, app, "node_modules"));
+            symlinkSync(
+                join(root, "copies", copy),
+                join(root, app, "node_modules/dep"),
+            );
+        }
+        const { result, byOwner } = around(() =>
+            scanWithResult(new TypeScriptScanner(), root, [
+                "app1/main.ts",
+                "app2/main.ts",
+                "copies/two/index.ts",
+            ]),
+        );
+        return Object.assign(
+            byOwner["knossos.typescript:file:copies/two/index.ts"],
+            { input_hashes: result.input_hashes },
+        );
+    }
+
+    it("hashes the duplicate's own bytes when both copies are identical", () => {
+        const contribution = duplicatePackages("export class Dep {}\n");
+
+        expect(contribution.content_hash).toBe(
+            sha256(Buffer.from("export class Dep {}\n")),
+        );
+        expect(contribution.nodes.length).toBeGreaterThan(0);
+    });
+
+    it("emits no facts for a duplicate whose bytes differ from the copy it redirects to", () => {
+        const contribution = duplicatePackages(
+            "export class Dep { differs = 1; }\n",
+        );
+
+        expect(contribution).not.toHaveProperty("content_hash");
+        expect([contribution.nodes, contribution.edges]).toEqual([[], []]);
+        expect(contribution.diagnostics.map((d) => d.code)).toEqual([
+            "TS_REDIRECTED_SOURCE_UNVERIFIED",
+        ]);
+        expect(contribution.diagnostics[0].evidence.path).toBe(
+            "copies/two/index.ts",
+        );
+    });
+
+    it("emits no facts for a duplicate whose own read failed", () => {
+        const contribution = duplicatePackages(
+            "export class Dep {}\n",
+            (scan) => withUnreadable(join("two", "index.ts"), scan),
+        );
+
+        expect(contribution).not.toHaveProperty("content_hash");
+        expect([contribution.nodes, contribution.edges]).toEqual([[], []]);
+        expect(contribution.diagnostics.map((d) => d.code)).toEqual([
+            "TS_REDIRECTED_SOURCE_UNVERIFIED",
+        ]);
+        expect(contribution.input_hashes["copies/two/index.ts"]).toBeNull();
     });
 });
