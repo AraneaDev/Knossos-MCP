@@ -376,7 +376,7 @@ def walk_path(path: str | os.PathLike[str]) -> PathWalk:
     ``path`` must be absolute; every module path is built on the real root.
     """
     text = os.fspath(path)
-    current = Path(text).anchor
+    current = _anchor(text)
     remaining = text[len(current) :].split(os.sep)
     links: list[tuple[str, tuple[str, ...]]] = []
     hops = 0
@@ -404,7 +404,7 @@ def walk_path(path: str | os.PathLike[str]) -> PathWalk:
             except OSError:
                 return PathWalk("unresolvable", None, tuple(links))
             if os.path.isabs(target):
-                current = Path(target).anchor
+                current = _anchor(target)
                 target = target[len(current) :]
             remaining[:0] = target.split(os.sep)
         elif mode == S_IFDIR:
@@ -414,6 +414,18 @@ def walk_path(path: str | os.PathLike[str]) -> PathWalk:
         else:
             return PathWalk("file", candidate, tuple(links))
     return PathWalk("directory", current, tuple(links))
+
+
+def _anchor(text: str) -> str:
+    """The filesystem root a path starts from.
+
+    POSIX lets an implementation give exactly two leading slashes a meaning of
+    its own, so ``Path("//tmp").anchor`` is ``//``; Linux treats any run of
+    leading slashes as ``/``, and so must the walk, or every location below it
+    fails the textual containment check.
+    """
+    anchor = Path(text).anchor
+    return os.sep if os.name == "posix" and anchor else anchor
 
 
 def _absent_below(candidate: str, remaining: list[str], links: list[tuple[str, tuple[str, ...]]]) -> PathWalk:
@@ -438,8 +450,11 @@ def _inside(root: Path, candidate: str) -> bool:
 def walk_key(root: Path, walked: PathWalk) -> str | None:
     """The root-relative key a walked read goes under in ``input_hashes``.
 
-    - A walk that ended at a file, or at a missing location, inside the root:
-      that location, the file the read opened or would have opened.
+    - A walk that ended at a file, a missing location or a directory inside
+      the root: that location, the path the read opened or would have opened.
+      A directory read fails (EISDIR); discovery never reports a directory, so
+      the key is ignored on a stable tree, while a discovered file replaced by
+      one mid-scan fails verification.
     - Otherwise the last link followed inside the root. A link followed as a
       directory component keys the path below it as it was about to be walked
       (a discovered ``sub/c.py`` whose ``sub`` became a link out of the root
@@ -454,7 +469,7 @@ def walk_key(root: Path, walked: PathWalk) -> str | None:
     verification. ``root`` must be a real path, as :func:`safe_root` makes it.
     """
     location = walked.location
-    if walked.kind not in ("file", "missing") or location is None or not _inside(root, location):
+    if location is None or not _inside(root, location):
         inside = [link for link in walked.links if _inside(root, link[0])]
         if not inside:
             return None

@@ -574,3 +574,45 @@ def test_a_read_through_a_chain_of_41_links_is_keyed_by_the_last_link_followed(w
 
     assert index.module_declarations("pkg.l0") == {}
     assert index.read_hashes == {"pkg/l39.py": None}
+
+
+def _swap_to_directory(file: Path) -> None:
+    file.unlink()
+    file.mkdir()
+    (file / "keep.txt").write_text("", encoding="utf-8")
+
+
+def test_a_module_replaced_by_a_directory_before_the_read_is_keyed_where_it_was(worker: ModuleType, project) -> None:
+    # Discovery never reports a directory, so keying where it stands is safe on
+    # a stable tree, and a discovered file swapped for one fails verification.
+    root = project({"app.py": "x = 1\n", "pkg/c.py": DECOY})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    _accepting(index, "c.py")
+    _swap_to_directory(root / "pkg" / "c.py")
+
+    assert index.module_declarations("pkg.c") == {}
+    assert index.read_hashes == {"pkg/c.py": None}
+
+
+def test_a_link_target_replaced_by_a_directory_before_the_read_is_keyed_by_that_target(
+    worker: ModuleType, project
+) -> None:
+    root = _absolute_link_layout(project)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    _accepting(index, "lnk.py")
+    _swap_to_directory(root / "lib" / "b.py")
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {"lib/b.py": None}
+
+
+def test_an_absolute_link_target_with_a_doubled_leading_slash_is_followed_inside_the_root(
+    worker: ModuleType, project
+) -> None:
+    root = project({"app.py": "x = 1\n", "q/c.py": DEEP.decode()})
+    (root / "q" / "l6.py").symlink_to("/" + str(root / "q" / "c.py"))
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.module_file("q.l6") is not None
+    assert "Deep" in index.module_declarations("q.l6")
+    assert index.read_hashes == {"q/c.py": _sha(DEEP)}
