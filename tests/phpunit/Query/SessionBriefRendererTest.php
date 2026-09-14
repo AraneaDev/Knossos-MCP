@@ -349,6 +349,52 @@ final class SessionBriefRendererTest extends TestCase
         );
     }
 
+    /**
+     * The identity line names two paths, so on a deep checkout it alone can
+     * outgrow the tighter budgets. It used to be dropped then like an optional
+     * section, taking the project id and the ancestry disclosure with it: a
+     * nested repository was told about its ancestor with nothing saying so.
+     * Both of its forms must survive any path length, while the optional
+     * sections still give way.
+     */
+    #[Group('query')]
+    public function testTheIdentityLineSurvivesAPathLongerThanTheBudget(): void
+    {
+        $root = '/tmp/chaos-mcp-ea4685db-ef65-44db-8c1e-82d3367ff299iXudGI/.chaos-infection-tmp/knossos-stale-0123456789ab';
+        foreach ([true, false] as $exists) {
+            $queried = $root . ($exists ? '/src/nested' : '/src/gone');
+            $brief = new SessionBrief(
+                'stale',
+                'project_1b4f41',
+                'Knossos-MCP',
+                $root,
+                3600,
+                2,
+                402,
+                [str_repeat('A long rule that cannot fit. ', 30)],
+                [],
+                [],
+                [],
+                true,
+                true,
+                $queried,
+                $exists,
+            );
+            $text = (new SessionBriefRenderer())->render($brief);
+
+            $claim = $exists
+                ? $queried . ' lies inside it and is not a scanned project of its own.'
+                : $queried . ' does not exist; this describes the project it would lie inside.';
+            assertSame(
+                true,
+                str_contains($text, "\nKnossos project_1b4f41 (Knossos-MCP), rooted at " . $root . '. ' . $claim . "\n"),
+                $text,
+            );
+            assertSame(true, str_ends_with($text, "\nAsk before grepping for structure: the `knossos` skill."), $text);
+            assertSame(false, str_contains($text, 'A long rule that cannot fit.'), $text);
+        }
+    }
+
     #[Group('query')]
     public function testTheIdentityLineSaysWhenTheQueriedPathIsNotThere(): void
     {
