@@ -52,9 +52,13 @@ never cached.
 The `input_hashes` capability promises the same, per request rather than per
 contribution, for every project file the worker read while deriving a
 request's facts, the requested files included, and with `null` for a read it
-attempted that failed; see `scanner-protocol-v1.md` for the field and its
-verification rules. `tools/scanner-conformance` checks a declaring worker's
-empty scan and its one-file fixture scan both carry the field correctly.
+attempted that failed or a lookup that decided facts and found nothing; see
+`scanner-protocol-v1.md` for the field, how to key reads through links and
+probes, the `scan/input_hashes` notification for a map too large for one
+frame, and the verification rules. `tools/scanner-conformance` checks that a
+declaring worker's empty scan and its one-file fixture scan both carry the
+field, that the fixture's hash matches, and that the whole map passes the
+core's own check against the fixture's discovery.
 
 Every contribution owns its facts through a stable `owner_key`. Re-emission
 replaces that owner's facts. IDs must be deterministic, evidence paths must be

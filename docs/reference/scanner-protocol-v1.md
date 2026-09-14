@@ -135,7 +135,8 @@ scan of such a file fails. Hash the buffer, then decode it.
 
 A result may also carry `input_hashes`: an object mapping every project file
 the worker read while deriving that request's facts to the lowercase SHA-256
-hex of the raw bytes read, or to `null` when a read was attempted and failed.
+hex of the raw bytes read, or to `null` when a read was attempted and failed,
+or a lookup that decides facts found nothing there (see keying reads, below).
 This covers files the worker read for another file's sake, not only the file a
 contribution describes: a module index built by reading every module to
 resolve one file's imports, or a type checker that loads a whole program to
@@ -154,10 +155,11 @@ Reads that all produced the same hash report that hash.
 The core decodes and verifies whatever `input_hashes` contains whenever a
 result carries it, whether or not the worker's manifest declares the
 capability, because a hash is evidence of a changed tree whoever sends it. A
-worker that never sends the field is untouched by any of this, same as a
-worker that never sends `content_hash`. Declaring the capability changes only
-one thing: an absent or malformed field then becomes a violation the core
-would otherwise say nothing about, per the next paragraph.
+malformed field is refused whether or not the capability is declared. A worker
+that never sends the field is untouched by any of this, same as a worker that
+never sends `content_hash`. Declaring the capability changes only one thing: an
+absent field then becomes a violation the core would otherwise say nothing
+about, per the next paragraph.
 
 The core compares every path the result names against what discovery recorded,
 the same as it does for `content_hash`. A path discovery does not track, such
@@ -219,8 +221,68 @@ splitting the batch could not shrink it. They have a budget of their own,
 the largest tree a scan accepts: exceeding it fails the request as
 `WORKER_RESPONSE_INVALID`, which degrades the language and is never retried as
 a smaller batch. A worker whose map is bounded by its batch, such as the
-packaged PHP and Rust workers, which report only the files they were asked
-for, can keep sending the whole map in the result.
+packaged PHP and Rust workers, which report the files they were asked for and
+(Rust) the crate roots they probed for, can keep sending the whole map in the
+result.
+
+#### Keying reads in `input_hashes`
+
+The core compares each entry with the file discovery hashed at that path, so an
+entry only protects a scan when its key names the path discovery saw. Discovery
+reports regular files only, never follows a symbolic link, and never descends
+into a linked directory. Key your reads by these rules and a tree that is not
+changing never fails a scan, while a file that changes and changes back during
+one does.
+
+- **A read that succeeded** goes under the location the kernel's lookup
+  reached, as a path relative to the root, with the hash of the bytes read.
+- **A read that followed links** also goes under every link it followed inside
+  the root, and under each such link joined with the path components that were
+  still to be walked below it, with the same value. The first of those is the
+  path as your worker wrote it. Leave out a joined path that still holds a
+  `..`, because only the kernel's lookup could apply it, and leave out anything
+  below `node_modules` or outside the root. A discovered file swapped for a
+  link to another file, or a discovered directory swapped for a link to another
+  directory, is then checked against its own hash. Resolve links component by
+  component, the way the kernel does, applying a `..` after the link before it
+  has been followed: collapsing `a/link/../b` as text names a different file.
+- **A read your worker refused** (over the byte cap, or resolving outside the
+  root) goes under the same keys as `null`: the facts that needed it were
+  computed without it.
+- **A requested file whose read failed** for a filesystem reason (it is gone,
+  is not a regular file, is over the byte cap, resolves outside the root, or
+  resolves to a path other than the one requested) goes under the requested
+  path as `null`, and its contribution under that path's own owner key carries
+  no facts. A refusal by policy, such as an extension your worker does not
+  scan, says nothing about the tree and goes unreported.
+- **An existence check whose answer decides facts**, such as a module
+  resolution candidate, a realpath, or a check for a package marker, goes under
+  the keys of its walk as `null` when it finds nothing or finds something that
+  is not a file. When it finds the file, it read no bytes, so record `null`
+  only under the link keys of its walk; the read that follows records the
+  location. Discovery never reports an absent path or a link, so these entries
+  cost a stable tree nothing.
+- **Reads that disagree** about one key within a request, in hash or in
+  whether they succeeded, go under that key as `null`.
+
+The core ignores any key that is not a discovered file, so an extra `null` for
+a path discovery does not track is always safe. A key that names a discovered
+file with the wrong value is not: it fails every scan of that tree.
+
+#### Known limits
+
+- A file that discovery never reported, created and removed while a request
+  reads it, is not verified. The core checks only paths discovery tracked, so
+  a transient file that fed facts leaves no entry it can compare.
+- On a case-insensitive volume, a worker's key and discovery's path can spell
+  the same file differently. The core compares paths exactly, so such a read
+  is ignored rather than checked.
+- The tree can change between a worker's walk of a path and its read. The read
+  is still verified: it hashes the bytes it actually got and records them under
+  the walk's keys, where they disagree with discovery's hash unless they are
+  the same bytes, in which case the facts are the same too. A read bounded to
+  one byte past the cap never reads more than an accepted file, whatever it
+  opens.
 
 `input_hashes` is evidence for this check alone. The core strips it from the
 result before folding the rest into `scanner_metadata`, so it never reaches a
