@@ -326,7 +326,7 @@ export class TypeScriptScanner {
                     factFreeContribution(
                         relative,
                         "TS_PROGRAM_TOO_DEEP",
-                        "The TypeScript compiler exceeded its stack building the program for this file's configuration (an import chain too deep to follow), so its facts are omitted.",
+                        "The TypeScript compiler exceeded its stack building the program for this file's configuration (for example, an import chain too deep to follow), so its facts are omitted.",
                     ),
                 );
                 emitted.add(relative);

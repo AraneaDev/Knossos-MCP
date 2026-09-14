@@ -1,6 +1,7 @@
 import { parentPort } from "node:worker_threads";
 
 import { inputHashesParts } from "./input-hashes-parts.js";
+import { TEST_CRASH_VARIABLE } from "./scan-thread-limits.js";
 import { TypeScriptScanner } from "./scanner.js";
 
 // Runs inside the scanner thread bin/worker.js starts with a larger stack. One
@@ -16,6 +17,11 @@ parentPort.on("message", (message) => {
     if (message.type === "close") {
         parentPort.close();
         return;
+    }
+    if (process.env[TEST_CRASH_VARIABLE] === "1") {
+        throw new Error(
+            `Scanner thread crash requested by ${TEST_CRASH_VARIABLE}.`,
+        );
     }
     try {
         const result = scanner.scan(message.params, (contribution) => {

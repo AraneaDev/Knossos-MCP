@@ -26,6 +26,13 @@ export const TEST_HEAP_MB_VARIABLE =
     "KNOSSOS_TYPESCRIPT_TEST_SCAN_THREAD_HEAP_MB";
 
 /**
+ * Test-only: set to "1", the scanner thread throws outside any handler on its
+ * first scan, standing in for a thread that crashes. Production never sets it;
+ * the core starts workers with an allowlisted environment that drops it.
+ */
+export const TEST_CRASH_VARIABLE = "KNOSSOS_TYPESCRIPT_TEST_SCAN_THREAD_CRASH";
+
+/**
  * The `resourceLimits` to start the scanner thread with.
  *
  * The old generation mirrors the process's `--max-old-space-size`, the cap the
