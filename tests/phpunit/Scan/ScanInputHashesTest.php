@@ -120,8 +120,32 @@ final class ScanInputHashesTest extends TestCase
             ScanSnapshotChangedException::class,
         );
 
-        assertContains('src/Other.ts', $error->getMessage());
-        assertContains('could not be read while the scan derived graph facts from it', $error->getMessage());
+        // The message also covers a path that became a link or a directory,
+        // which a worker reports the same way.
+        assertSame(
+            'Scan aborted: src/Other.ts could not be read while the scan derived graph facts from it, because it was missing, unreadable, or had become a link or a directory, so those facts cannot be verified. Check the path is a readable regular file, then rerun the scan.',
+            $error->getMessage(),
+        );
+    }
+
+    /** @return iterable<string, array{string, string}> */
+    public static function refusedKeys(): iterable
+    {
+        yield 'a parent traversal' => ['src/../../secret.ts', 'knossos.fake sent input_hashes key src/../../secret.ts contains an invalid path segment.'];
+        yield 'an absolute path' => ['/etc/passwd', 'knossos.fake sent input_hashes key /etc/passwd must not be absolute.'];
+        yield 'an empty path' => ['', 'knossos.fake sent input_hashes key  must be a normalized project-relative path.'];
+    }
+
+    #[DataProvider('refusedKeys')]
+    public function testARefusedKeyIsNamedInTheExactMessage(string $key, string $message): void
+    {
+        $error = captureThrows(
+            fn() => ScanInputHashes::verify(['input_hashes' => [$key => hash('sha256', 'x')]], $this->declaring(), $this->discovery()),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_RESPONSE_INVALID', $error->diagnosticCode);
+        assertSame($message, $error->getMessage());
     }
 
     public function testAPathDiscoveryNeverHashedIsIgnored(): void

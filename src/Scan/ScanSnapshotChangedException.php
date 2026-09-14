@@ -116,14 +116,15 @@ final class ScanSnapshotChangedException extends RuntimeException
      * itself, but the same check also catches a file read only to resolve
      * another's facts.
      *
-     * Discovery read it moments earlier, so a failure now means the file was
-     * removed or its permissions changed mid-scan, and the facts derived
-     * without it describe a tree that existed at no point.
+     * Discovery read it moments earlier as a regular file, so a failure now
+     * means that, while the scan ran, the file was removed, its permissions
+     * changed, or the path became a link or a directory, and the facts derived
+     * without its bytes describe a tree that existed at no point.
      */
     public static function inputUnreadable(string $relativePath): self
     {
         return new self(sprintf(
-            'Scan aborted: %s could not be read while the scan derived graph facts from it, so those facts cannot be verified. Check the path is still a readable file, then rerun the scan.',
+            'Scan aborted: %s could not be read while the scan derived graph facts from it, because it was missing, unreadable, or had become a link or a directory, so those facts cannot be verified. Check the path is a readable regular file, then rerun the scan.',
             $relativePath,
         ));
     }
