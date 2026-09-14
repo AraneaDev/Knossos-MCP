@@ -164,9 +164,10 @@ about, per the next paragraph.
 The core compares every path the result names against what discovery recorded,
 the same as it does for `content_hash`. A path discovery does not track is
 not compared with discovery: it is re-read when the scan commits, as described
-below, and a dependency outside the scanned tree has no key at all. A hash that differs from discovery's, or a `null` for a path discovery
-does track, fails the scan with `KNOSSOS_SCAN_SNAPSHOT_CHANGED`, the same as a
-`content_hash` mismatch, regardless of declaration. A worker that declares the
+below, and a dependency outside the scanned tree has no key at all. A hash that
+differs from discovery's, or a `null` for a path discovery does track, fails
+the scan with `KNOSSOS_SCAN_SNAPSHOT_CHANGED`, the same as a `content_hash`
+mismatch, regardless of declaration. A worker that declares the
 capability but omits the field, or sends one that is not an object keyed by
 path, is refused as `WORKER_RESPONSE_INVALID` and degrades its language for
 the scan, whether or not the request read anything: an empty result still
@@ -259,7 +260,10 @@ one does.
   worker reports `node_modules` reads this way. An existence probe that finds a
   file present through a link hashes that file for the link's keys, so a
   package probed through a pnpm-style link in one request and read through it
-  in another reports the same values in both.
+  in another reports the same values in both. A worker may instead report
+  `null` under every link key, in every request, since a `null` is valid for a
+  path reached through a link; the file the walk reached is still keyed and
+  verified at its own location. The packaged Python worker does this.
 - **A read your worker refused** (over the byte cap, or resolving outside the
   root) goes under the same keys as `null`: the facts that needed it were
   computed without it.
@@ -300,7 +304,10 @@ one does.
   same path would: the hash of the file within the byte cap under the joined
   paths and a link followed as the last component, and a link followed with
   components below it as above. A check that recorded `null` there while a read
-  in another request recorded the hash would fail every scan of that tree.
+  in another request recorded the hash would fail every scan of that tree. The
+  alternative is `null` under the link keys for the check and for every read
+  through the link, as the packaged Python worker records them: its index
+  checks a module before each read, and the two disagree into `null`.
 - **Reads that disagree** about one key within a request, in hash or in
   whether they succeeded, go under that key as `null`.
 
