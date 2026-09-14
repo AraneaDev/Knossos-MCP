@@ -899,30 +899,136 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
     }
 
-    public function testOutputDrainedDuringASendIsCappedAtBothBudgetsTogether(): void
+    /**
+     * A real worker process that writes $frames 8 KB notifications before it
+     * reads its request line, then answers that request.
+     */
+    private function floodingProcess(int $frames): ProcessSupervisorInterface
     {
-        // send() drains stdout without classifying it, so what it may hold is
-        // bounded by the output and input-hashes budgets together: past their
-        // sum, one of them is exceeded however the bytes split into frames.
-        foreach ([228 => null, 229 => 'WORKER_OUTPUT_LIMIT'] as $bytes => $expected) {
-            $process = $this->pipeOnlyProcess();
-            $process->stdinPipe = fopen('php://temp', 'r+');
-            $process->stdoutPipe = fopen('php://temp', 'r+');
-            $process->stderrPipe = fopen('php://temp', 'r+');
-            fwrite($process->stdoutPipe, str_repeat('x', $bytes));
-            rewind($process->stdoutPipe);
-            $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 128, maxInputHashesBytes: 100));
-            $channel->beginRequest();
+        $script = sprintf(
+            '$line = json_encode(["jsonrpc" => "2.0", "method" => "scan/progress", "params" => ["p" => str_repeat("x", 8000)]]) . "\n";'
+            . ' for ($i = 0; $i < %d; ++$i) { fwrite(STDOUT, $line); }'
+            . ' fgets(STDIN); fwrite(STDOUT, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n");',
+            $frames,
+        );
 
-            $error = null;
-            try {
-                $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan']);
-            } catch (WorkerException $caught) {
-                $error = $caught->diagnosticCode;
+        return new class ($script) implements ProcessSupervisorInterface {
+            /** @var resource|null */
+            private $handle = null;
+            /** @var array<int, resource> */
+            private array $pipes = [];
+
+            public function __construct(private readonly string $script) {}
+
+            public function start(): void
+            {
+                $handle = proc_open([PHP_BINARY, '-r', $this->script], [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $this->pipes);
+                if (!is_resource($handle)) {
+                    throw new \RuntimeException('Unable to start the flooding worker.');
+                }
+                $this->handle = $handle;
+                foreach ($this->pipes as $pipe) {
+                    stream_set_blocking($pipe, false);
+                }
             }
 
-            assertSame($expected, $error, sprintf('%d bytes drained during a send', $bytes));
+            public function isRunning(): bool
+            {
+                return true;
+            }
+
+            /** @return resource */
+            public function stdin()
+            {
+                return $this->pipes[0];
+            }
+
+            /** @return resource */
+            public function stdout()
+            {
+                return $this->pipes[1];
+            }
+
+            /** @return resource */
+            public function stderr()
+            {
+                return $this->pipes[2];
+            }
+
+            /** @return array{command: string, pid: int, running: bool, signaled: bool, stopped: bool, exitcode: int, termsig: int, stopsig: int} */
+            public function status(): array
+            {
+                return proc_get_status($this->handle);
+            }
+
+            public function close(bool $terminate): void
+            {
+                foreach ($this->pipes as $pipe) {
+                    @fclose($pipe);
+                }
+                if (is_resource($this->handle)) {
+                    proc_terminate($this->handle, 9);
+                    proc_close($this->handle);
+                }
+            }
+        };
+    }
+
+    public function testAWorkerFloodingStdoutBeforeReadingItsRequestFailsTheSendAsAnOutputLimit(): void
+    {
+        // Nothing classifies what a send() buffers, and a worker answers only
+        // once it has read the whole request, so more than one frame's worth
+        // there is a flood. Capped only by the sum of both budgets (84 MB), it
+        // was held in full, and then drained one quadratic copy per frame.
+        $process = $this->floodingProcess(400);
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 30_000));
+        $channel->beginRequest();
+        try {
+            $error = captureThrows(
+                static fn() => $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan', 'params' => ['pad' => str_repeat('y', 2_000_000)]]),
+                WorkerException::class,
+            );
+        } finally {
+            $process->close(true);
         }
+
+        assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+    }
+
+    public function testOneFrameWrittenBeforeTheRequestIsReadStillArrives(): void
+    {
+        $process = $this->floodingProcess(1);
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 30_000));
+        $deadline = $channel->beginRequest();
+        try {
+            $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan', 'params' => ['pad' => str_repeat('y', 2_000_000)]]);
+            $messages = self::readAll($channel, $deadline, 2);
+        } finally {
+            $process->close(true);
+        }
+
+        assertSame('scan/progress', $messages[0]['method']);
+        assertSame(1, $messages[1]['id']);
+    }
+
+    public function testManyBufferedFramesAreTakenInOrderAcrossReads(): void
+    {
+        // Frames are taken by offset; a partial frame left behind is kept
+        // intact when the next bytes arrive.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+        $deadline = $channel->beginRequest();
+        $frames = '';
+        for ($i = 0; $i < 3_000; ++$i) {
+            $frames .= json_encode(['jsonrpc' => '2.0', 'method' => 'scan/progress', 'params' => ['i' => $i]]) . "\n";
+        }
+        fwrite($process->pipes[1], $frames . '{"jsonrpc":"2.0","id":7,"result":{}}' . "\n");
+        rewind($process->pipes[1]);
+
+        $messages = self::readAll($channel, $deadline, 3_001);
+
+        assertSame(range(0, 2_999), array_map(static fn(array $message): int => $message['params']['i'], array_slice($messages, 0, 3_000)));
+        assertSame(7, $messages[3_000]['id']);
     }
 
     public function testOtherNotificationsAreStillChargedToTheOutputBudget(): void
