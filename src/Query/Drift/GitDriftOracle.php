@@ -94,13 +94,13 @@ use Throwable;
  *
  * The graph's own inputs are wider than its `files` rows: discovery also
  * reads composer.json, package.json, tsconfig.json and their siblings, and
- * what they say decides framework enrichment, analyzer configuration hashes
- * and entry points. They have no `files` row, so the hashes the scan recorded
- * for them are read separately and merged into the same lookup every other
- * candidate is decided against. A scan that recorded none — one taken before
- * the column existed — leaves such a path without a stored hash, so an edited
- * manifest reads as an addition rather than as a change. That is the harmless
- * direction, it is visible rather than silent, and one rescan settles it.
+ * workers read dependency declarations under ignored paths. What those files
+ * say decides framework enrichment, analyzer configuration hashes, entry
+ * points and external symbol targets. They have no `files` row, so the hashes
+ * the scan recorded for them are read separately and merged into the same
+ * lookup every other candidate is decided against. A scan that recorded none
+ * — one taken before the nested record existed — declines rather than calling
+ * an input it never hashed unchanged.
  *
  * A narrower spurious decline can still occur: a path-normalisation mismatch
  * between what the scan stored and what git reports — a case-insensitive
@@ -189,6 +189,10 @@ final readonly class GitDriftOracle implements DriftOracle
         if ($units === null) {
             return null;
         }
+        $workerInputs = RecordedWorkerInputs::forScan($this->pdo, $activeScanId);
+        if ($workerInputs === null) {
+            return null;
+        }
         $crossCheck = $this->trackedFileCount($projectId, $activeScanId) <= self::MAX_CROSS_CHECKED_FILES;
         try {
             // Verify first. Handing a garbage-collected or rebased-away commit
@@ -270,7 +274,11 @@ final readonly class GitDriftOracle implements DriftOracle
         // the index (it was never added). Holding its stored hash while never
         // handing `decide()` its path meant it contributed nothing and the
         // oracle returned zero for a graph whose manifest had vanished.
-        $candidates = $changedEntries + $untrackedEntries + $dirty->asKeys() + array_fill_keys(array_keys($units), true);
+        $candidates = $changedEntries
+            + $untrackedEntries
+            + $dirty->asKeys()
+            + array_fill_keys(array_keys($units), true)
+            + array_fill_keys(array_keys($workerInputs), true);
         // After the manifests join, not before: the bound has to govern the
         // real total this probe is about to hash, or it bounds something that
         // is not what runs.
@@ -280,7 +288,8 @@ final readonly class GitDriftOracle implements DriftOracle
         // Unioned with `+`, so a path that is both a `files` row and a
         // manifest keeps the row's hash: one path, one stored answer.
         $hashes = ($crossCheck ? $tracked : $this->trackedHashes($projectId, $activeScanId, array_keys($candidates)))
-            + $units;
+            + $units
+            + $workerInputs;
 
         return $this->decide($projectId, $root, array_keys($candidates), $hashes);
     }

@@ -10,6 +10,8 @@ use Knossos\Scan\LanguageDescriptor;
 use Knossos\Scan\LanguageScanRunner;
 use Knossos\Scan\ProjectScanService;
 use Knossos\Scan\ScanSnapshotChangedException;
+use Knossos\Discovery\UnitInputSet;
+use Knossos\Query\StalenessProbe;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 use ReflectionClass;
@@ -98,6 +100,41 @@ final class TypescriptNodeModulesVerificationTest extends KnossosTestCase
             ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/g.ts', 'src/h.ts', 'src/i.ts'],
             $pdo->query('SELECT file_path FROM contribution_cache ORDER BY file_path')->fetchAll(\PDO::FETCH_COLUMN),
         );
+    }
+
+    /** A successful dependency declaration read is persisted and participates in freshness. */
+    public function testAChangedNodeModulesDeclarationMakesTheGraphStale(): void
+    {
+        $pdo = $this->freshTestDatabase();
+
+        $result = $this->service($pdo)->scan($this->root);
+        $unitInputsJson = (string) $pdo->query('SELECT unit_inputs_json FROM scans ORDER BY started_at DESC LIMIT 1')->fetchColumn();
+        $workerInputs = UnitInputSet::decodeWorkerInputs($unitInputsJson);
+        self::assertNotNull($workerInputs);
+        self::assertArrayHasKey('node_modules/plain/index.d.ts', $workerInputs);
+
+        file_put_contents($this->root . '/node_modules/plain/index.d.ts', "export declare class ChangedPlain {}\n");
+
+        $staleness = (new StalenessProbe($pdo))->probe($result->projectId);
+
+        self::assertNotNull($staleness);
+        assertSame('stale', $staleness['state']);
+        assertSame(2, $staleness['changed_files_since'], 'The plain declaration and its recorded file-link alias both changed bytes.');
+    }
+
+    /** A dependency change must invalidate importing-file cache reuse on the next scan. */
+    public function testAChangedNodeModulesDeclarationForcesTheNextIncrementalScanToRebuild(): void
+    {
+        $pdo = $this->freshTestDatabase();
+
+        $this->service($pdo)->scan($this->root);
+        file_put_contents($this->root . '/node_modules/plain/index.d.ts', "export declare class ChangedPlain {}\n");
+
+        $result = $this->service($pdo)->scan($this->root);
+
+        assertSame('incremental', $result->data['mode']);
+        assertSame(9, $result->data['parsed_files']);
+        assertSame(0, $result->data['unchanged_files']);
     }
 
     public function testAPlainPackageDeclarationChangedBeforeTheWorkerReadsItAndRestoredBeforeCommitFailsTheScan(): void

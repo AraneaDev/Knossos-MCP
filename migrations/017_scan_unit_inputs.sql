@@ -1,21 +1,25 @@
 -- The manifests and configuration files a scan read but stored no `files` row
 -- for, as JSON: {"inputs": {"<relative path>": "<content hash>", ...},
--- "complete": true|false}.
+-- "complete": true|false, "worker_inputs": {"inputs": { ... },
+-- "complete": true|false}}. The nested worker set contains successful reads
+-- of files discovery never hashed, such as dependency declarations.
 --
 -- Discovery hashes composer.json, package.json, tsconfig.json, pyproject.toml
 -- and their siblings into DiscoveryResult::$units, and the planner reads them
 -- for framework detection, analyzer configuration hashes and entry-point
 -- classification. Only language-classified paths become `files` rows, though,
--- and both drift oracles inspect only `files` — so editing a manifest could
--- change what a scan would produce while the graph went on reporting itself
--- fresh.
+-- and both drift oracles once inspected only `files` — so editing a manifest
+-- or a dependency declaration could change what a scan would produce while
+-- the graph went on reporting itself fresh.
 --
 -- Recorded here rather than in `files` because these are not files the graph
 -- holds nodes for: a row in `files` would reach file metrics, language counts
 -- and every query that reads the table without filtering, none of which mean
 -- a manifest.
 --
--- `complete` is false when there were more inputs than the recorded bound.
+-- Either `complete` flag is false when that input set exceeded the recorded
+-- bound. The worker set omits null reads because those describe failed probes,
+-- not dependency bytes whose later content can be compared.
 --
 -- Nullable: a scan taken before this migration recorded none, and an absent
 -- set may not be backfilled with a guess. An absent set is not read as "no

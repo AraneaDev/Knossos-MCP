@@ -43,6 +43,11 @@ final class ScanPlannerTest extends TestCase
             payload_json TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )');
+        $pdo->exec('CREATE TABLE scans (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            unit_inputs_json TEXT NULL
+        )');
         return $pdo;
     }
 

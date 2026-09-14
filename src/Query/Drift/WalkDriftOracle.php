@@ -17,10 +17,10 @@ use PDO;
  *
  * What it walks against is every input the scan recorded a hash for, which is
  * wider than the `files` rows: discovery also reads composer.json,
- * package.json, tsconfig.json and their siblings as project units, and what
- * they say decides framework enrichment, analyzer configuration hashes and
- * entry points. Comparing only `files` meant editing a manifest changed what a
- * rescan would produce while this probe reported the graph fresh.
+ * package.json, tsconfig.json and their siblings as project units, while
+ * workers read dependency declarations under ignored paths. Comparing only
+ * `files` meant editing either kind of input changed what a rescan would
+ * produce while this probe reported the graph fresh.
  *
  * Every present tracked file is read and hashed on each call, not stat'd:
  * content is the only thing that decides drift, so there is no cheaper check
@@ -99,6 +99,10 @@ final readonly class WalkDriftOracle implements DriftOracle
         if ($units === null) {
             return null;
         }
+        $workerInputs = RecordedWorkerInputs::forScan($this->pdo, $activeScanId);
+        if ($workerInputs === null) {
+            return null;
+        }
         $tracked = [];
         foreach ($statement->fetchAll() as $file) {
             $tracked[(string) $file['relative_path']] = (string) $file['content_hash'];
@@ -107,6 +111,7 @@ final readonly class WalkDriftOracle implements DriftOracle
         // keeps the row's hash: one path, one stored answer, and one pass over
         // it below rather than two.
         $tracked += $units;
+        $tracked += $workerInputs;
         // The bound applies to what this probe is about to read and hash, not
         // to the rows it started from. Counting only `files` let a project of
         // 20,000 files and 5,000 manifests hash 25,000 inputs on every probe,

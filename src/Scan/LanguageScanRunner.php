@@ -142,7 +142,7 @@ final readonly class LanguageScanRunner
             $manifest,
             $plan->preparation->configurationHashes[$descriptor->key],
             $plan->cacheByScannerPath,
-            $plan->effectiveMode === 'full',
+            $plan->effectiveMode === 'full' || $plan->workerInputsChanged,
             $cancellation,
         );
         // Everything a scan request carries except `files`, which each batch

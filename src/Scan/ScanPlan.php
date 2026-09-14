@@ -14,5 +14,7 @@ final readonly class ScanPlan
         public string $effectiveMode,
         public array $cacheByScannerPath,
         public int $deletedFiles,
+        /** Forces contribution rebuild when a cached dependency declaration changed. */
+        public bool $workerInputsChanged = false,
     ) {}
 }

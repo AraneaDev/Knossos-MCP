@@ -25,7 +25,8 @@ final readonly class LanguageScanResult
      * @param array<string, string|null> $undiscoveredInputs
      *        What the kept languages' workers read of files discovery never
      *        hashed, path to SHA-256 hex or null for a failed read, for
-     *        {@see UndiscoveredInputVerifier} to re-read before the scan commits.
+     *        {@see UndiscoveredInputVerifier} to re-read before the scan commits
+     *        and to retain successful dependency reads for later freshness checks.
      *        A degraded language's reads are left out with its facts.
      */
     public function __construct(

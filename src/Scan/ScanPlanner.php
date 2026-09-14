@@ -194,7 +194,18 @@ final readonly class ScanPlanner
         $current = array_fill_keys(array_map(static fn($file): string => $file->relativePath, $preparation->discovery->files), true);
         $old = array_fill_keys(array_column($cachedRows, 'file_path'), true);
 
-        return new ScanPlan($preparation, $projectId, $effectiveMode, $cache, count(array_diff_key($old, $current)));
+        $workerInputsChanged = $effectiveMode === 'incremental'
+            && is_string($existing['active_scan_id'] ?? null)
+            && WorkerInputFreshness::changed($this->pdo, $existing['active_scan_id'], $preparation->discovery->rootRealpath);
+
+        return new ScanPlan(
+            $preparation,
+            $projectId,
+            $effectiveMode,
+            $cache,
+            count(array_diff_key($old, $current)),
+            $workerInputsChanged,
+        );
     }
 
     /**
