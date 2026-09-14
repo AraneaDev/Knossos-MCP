@@ -161,6 +161,9 @@ final class ScannerSdkTest extends KnossosTestCase
         mkdir($directory);
         mkdir($directory . '/sub');
         touch($directory . '/worker.php');
+        foreach (['py', 'js', 'mjs', 'cjs'] as $extension) {
+            touch($directory . '/worker.' . $extension);
+        }
         touch($directory . '/plainname');
         touch($directory . '/sub/worker.php');
         try {
@@ -194,8 +197,13 @@ final class ScannerSdkTest extends KnossosTestCase
             assertSame('name=sub/worker.php', $anchored('name=sub/worker.php'));
             // A relative path containing a slash is anchored when it exists there.
             assertSame($directory . '/sub/worker.php', $anchored('sub/worker.php'));
-            // A bare name ending in a recognised script extension is anchored too.
+            // A bare name ending in a recognised script extension is anchored
+            // too, for every script a bundled interpreter runs, CommonJS
+            // included: `node worker.cjs` is as ordinary as `node worker.js`.
             assertSame($directory . '/worker.php', $anchored('worker.php'));
+            foreach (['py', 'js', 'mjs', 'cjs'] as $extension) {
+                assertSame($directory . '/worker.' . $extension, $anchored('worker.' . $extension));
+            }
             // An already-absolute path is never rewritten.
             assertSame('/worker.php', $anchored('/worker.php'));
             // A path-shaped argument that names nothing in the directory is left alone.
@@ -204,6 +212,9 @@ final class ScannerSdkTest extends KnossosTestCase
             @unlink($directory . '/sub/worker.php');
             @rmdir($directory . '/sub');
             @unlink($directory . '/worker.php');
+            foreach (['py', 'js', 'mjs', 'cjs'] as $extension) {
+                @unlink($directory . '/worker.' . $extension);
+            }
             @unlink($directory . '/plainname');
             @rmdir($directory);
         }

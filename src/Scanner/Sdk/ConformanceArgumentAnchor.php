@@ -27,7 +27,7 @@ namespace Knossos\Scanner\Sdk;
  */
 final class ConformanceArgumentAnchor
 {
-    private const SCRIPT_EXTENSIONS = ['php', 'py', 'js', 'mjs'];
+    private const SCRIPT_EXTENSIONS = ['php', 'py', 'js', 'mjs', 'cjs'];
 
     private function __construct() {}
 
