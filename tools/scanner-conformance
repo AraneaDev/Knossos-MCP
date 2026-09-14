@@ -3,6 +3,11 @@
 
 declare(strict_types=1);
 
+use Knossos\Discovery\DiscoveredFile;
+use Knossos\Scan\ScanInputHashes;
+use Knossos\Scan\ScanSnapshotChangedException;
+use Knossos\Scanner\Protocol\Protocol;
+use Knossos\Scanner\Sdk\ConformanceArgumentAnchor;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
 
@@ -22,6 +27,15 @@ foreach (array_slice($argv, 1, $separator - 1) as $option) {
     $required[] = substr($option, 10);
 }
 $command = array_slice($argv, $separator + 1);
+// The worker is started with the system temporary directory as its working
+// directory (see WorkerProcessSupervisor::workingDirectory()), not wherever
+// this tool was invoked from, so a path argument written relative to the
+// caller's directory would otherwise name nothing there. See
+// ConformanceArgumentAnchor for exactly which arguments that covers.
+$callerDirectory = getcwd();
+if ($callerDirectory !== false) {
+    $command = ConformanceArgumentAnchor::anchor($command, $callerDirectory);
+}
 $temporary = sys_get_temp_dir() . '/knossos-conformance-' . bin2hex(random_bytes(8));
 if (!mkdir($temporary, 0o700)) {
     fwrite(STDERR, "unable to create conformance fixture root\n");
@@ -30,11 +44,63 @@ if (!mkdir($temporary, 0o700)) {
 
 $checks = [];
 $client = new ProcessScannerClient($command);
+$exitCode = 1;
 try {
     $manifest = $client->requireCapabilities($required);
     $checks[] = ['name' => 'initialize', 'status' => 'pass'];
     $contributions = iterator_to_array($client->scan(['root' => $temporary, 'files' => []]));
     $checks[] = ['name' => 'empty_scan', 'status' => $contributions === [] ? 'pass' : 'fail'];
+    $declaresContentHash = in_array(Protocol::CAPABILITY_CONTENT_HASH, $manifest->capabilities, true);
+    $declaresInputHashes = in_array(Protocol::CAPABILITY_INPUT_HASHES, $manifest->capabilities, true);
+    if ($declaresInputHashes) {
+        // A declaring worker's result carries the field on every request, per
+        // the protocol, even one that read nothing.
+        $emptyInputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+        $shaped = is_array($emptyInputHashes) && ($emptyInputHashes === [] || !array_is_list($emptyInputHashes));
+        $checks[] = ['name' => 'input_hashes_empty', 'status' => $shaped ? 'pass' : 'fail'];
+    }
+    if ($declaresContentHash || $declaresInputHashes) {
+        // A declared capability is a promise about every contribution, and an
+        // optional schema field cannot enforce it, so check it here: one file,
+        // one contribution, carrying the hash of the exact bytes on disk. Both
+        // checks below reuse this one scan when a worker declares both
+        // capabilities.
+        $extension = $manifest->fileExtensions[0] ?? 'txt';
+        $relativePath = 'conformance.' . $extension;
+        // A byte-order mark, so a worker that hashes decoded text instead of
+        // the raw buffer fails here rather than on its first real BOM file.
+        $bytes = "\xEF\xBB\xBF\n";
+        file_put_contents($temporary . '/' . $relativePath, $bytes);
+        $expectedHash = hash('sha256', $bytes);
+        $hashed = iterator_to_array($client->scan(['root' => $temporary, 'files' => [$relativePath]]), false);
+        if ($declaresContentHash) {
+            $matches = $hashed !== [] && array_filter(
+                $hashed,
+                static fn($contribution): bool => $contribution->contentHash !== $expectedHash,
+            ) === [];
+            $checks[] = ['name' => 'content_hash', 'status' => $matches ? 'pass' : 'fail'];
+        }
+        if ($declaresInputHashes) {
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $matchesInput = is_array($inputHashes)
+                && array_key_exists($relativePath, $inputHashes)
+                && $inputHashes[$relativePath] === $expectedHash;
+            if ($matchesInput) {
+                // The whole map, through the core's own check with the fixture
+                // as discovery: an entry the core would refuse, such as an
+                // absolute or `..` key, fails conformance here rather than
+                // degrading the worker's language on its first real scan.
+                $fixture = new DiscoveredFile($relativePath, $temporary . '/' . $relativePath, 'conformance', strlen($bytes), (int) filemtime($temporary . '/' . $relativePath), $expectedHash);
+                try {
+                    ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, [$relativePath => $fixture]);
+                } catch (WorkerException | ScanSnapshotChangedException) {
+                    $matchesInput = false;
+                }
+            }
+            $checks[] = ['name' => 'input_hashes', 'status' => $matchesInput ? 'pass' : 'fail'];
+        }
+        @unlink($temporary . '/' . $relativePath);
+    }
     $client->shutdown();
     $checks[] = ['name' => 'shutdown', 'status' => 'pass'];
     $passed = !in_array('fail', array_column($checks, 'status'), true);
@@ -47,7 +113,7 @@ try {
         'capabilities' => $manifest->capabilities,
         'checks' => $checks,
     ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-    exit($passed ? 0 : 1);
+    $exitCode = $passed ? 0 : 1;
 } catch (WorkerException $error) {
     echo json_encode([
         'conformant' => false,
@@ -55,8 +121,15 @@ try {
         'message' => $error->getMessage(),
         'checks' => $checks,
     ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n";
-    exit(1);
+    $exitCode = 1;
 } finally {
+    // exit() inside try/catch would skip this block entirely, leaving the
+    // fixture root behind on every run; the exit code is carried out instead
+    // and applied once cleanup has actually happened.
     $client->shutdown();
+    foreach (glob($temporary . '/conformance.*') ?: [] as $leftover) {
+        @unlink($leftover);
+    }
     @rmdir($temporary);
 }
+exit($exitCode);

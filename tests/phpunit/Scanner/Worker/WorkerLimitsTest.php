@@ -27,6 +27,7 @@ final class WorkerLimitsTest extends TestCase
         assertSame(1_000_000, $l->maxLineBytes);
         assertSame(20_000_000, $l->maxOutputBytes);
         assertSame(100_000, $l->maxStderrBytes);
+        assertSame(64_000_000, $l->maxInputHashesBytes);
     }
 
     public function testConstructorStoresExplicitValues(): void
@@ -82,5 +83,19 @@ final class WorkerLimitsTest extends TestCase
     {
         $l = new WorkerLimits(maxStderrBytes: 0);
         assertSame(0, $l->maxStderrBytes);
+    }
+
+    public function testRejectsMaxInputHashesBytesBelowZero(): void
+    {
+        assertThrows(
+            static fn() => new WorkerLimits(maxInputHashesBytes: -1),
+            InvalidArgumentException::class,
+        );
+    }
+
+    public function testAcceptsZeroMaxInputHashesBytes(): void
+    {
+        $l = new WorkerLimits(maxInputHashesBytes: 0);
+        assertSame(0, $l->maxInputHashesBytes);
     }
 }

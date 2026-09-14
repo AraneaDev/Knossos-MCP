@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scan;
 
 use Knossos\Discovery\DiscoveredFile;
+use Knossos\Discovery\DiscoveryResult;
 use Knossos\Discovery\FileFingerprint;
 
 /**
@@ -56,19 +57,53 @@ final readonly class ScanSnapshotValidator
     public function validate(array $files): void
     {
         foreach ($files as $file) {
-            $contentHash = FileFingerprint::contentHashOf($file->absolutePath);
-            if ($contentHash === null) {
-                // Two reasons a re-read fails, kept apart because they lead an
-                // operator somewhere different. Which one it is comes from a
-                // later look at the filesystem than the failed read, so it is
-                // descriptive only: both outcomes abort the scan regardless.
-                throw file_exists($file->absolutePath)
-                    ? ScanSnapshotChangedException::unreadable($file->relativePath)
-                    : ScanSnapshotChangedException::disappeared($file->relativePath);
+            self::check($file->relativePath, $file->absolutePath, $file->contentHash);
+        }
+    }
+
+    /**
+     * Throw unless every path discovery hashed still hashes to what it recorded:
+     * the discovered files, and the project units and unparsed manifests beside
+     * them.
+     *
+     * A manifest feeds facts as surely as a source file does: package.json
+     * decides how an import resolves, Cargo.toml names a crate, and discovery
+     * derives entry points and framework detection from them. One left changed
+     * when the workers return fails the scan the same way a source file does.
+     *
+     * @throws ScanSnapshotChangedException when any path no longer matches, has
+     *         been removed, or can no longer be read
+     */
+    public function validateDiscovery(DiscoveryResult $discovery): void
+    {
+        $this->validate($discovery->files);
+        $files = [];
+        foreach ($discovery->files as $file) {
+            $files[$file->relativePath] = true;
+        }
+        $root = rtrim($discovery->rootRealpath, '/');
+        foreach ($discovery->hashedPaths() as $path => $hashed) {
+            if (!isset($files[$path])) {
+                self::check($path, $root . '/' . $path, $hashed->contentHash);
             }
-            if ($contentHash !== $file->contentHash) {
-                throw ScanSnapshotChangedException::contentChanged($file->relativePath);
-            }
+        }
+    }
+
+    /** Throw unless one path still hashes to $expected. */
+    private static function check(string $relativePath, string $absolutePath, string $expected): void
+    {
+        $contentHash = FileFingerprint::contentHashOf($absolutePath);
+        if ($contentHash === null) {
+            // Two reasons a re-read fails, kept apart because they lead an
+            // operator somewhere different. Which one it is comes from a
+            // later look at the filesystem than the failed read, so it is
+            // descriptive only: both outcomes abort the scan regardless.
+            throw file_exists($absolutePath)
+                ? ScanSnapshotChangedException::unreadable($relativePath)
+                : ScanSnapshotChangedException::disappeared($relativePath);
+        }
+        if ($contentHash !== $expected) {
+            throw ScanSnapshotChangedException::contentChanged($relativePath);
         }
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scanner\Worker;
 
 use JsonException;
+use Knossos\Scanner\Protocol\Protocol;
 
 /**
  * Newline-delimited JSON-RPC over a worker's pipes.
@@ -15,10 +16,20 @@ use JsonException;
  */
 final class NdjsonRpcChannel implements RpcChannelInterface
 {
+    /** Bytes read from a descriptor at a time. */
+    private const READ_CHUNK_BYTES = 8192;
+
     private string $stdoutBuffer = '';
+    /** Where the next frame starts in $stdoutBuffer; bytes before it were already taken. */
+    private int $stdoutOffset = 0;
+    /** Stdout bytes buffered during the current send(), which nothing classifies. */
+    private int $sendBufferedBytes = 0;
     private string $stderrBuffer = '';
-    private int $stdoutBytes = 0;
     private int $stderrBytes = 0;
+    /** Bytes of `scan/input_hashes` frames this request, counted apart from the output budget. */
+    private int $inputHashesBytes = 0;
+    /** Bytes of every other complete frame this request, charged to the output budget. */
+    private int $outputBytes = 0;
     private int $deadline = 0;
 
     /**
@@ -42,9 +53,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     {
         $this->process->start();
         $this->stdoutBuffer = '';
-        $this->stdoutBytes = 0;
+        $this->stdoutOffset = 0;
         $this->stderrBuffer = '';
         $this->stderrBytes = 0;
+        $this->inputHashesBytes = 0;
+        $this->outputBytes = 0;
 
         return $this->deadline = hrtime(true) + ($this->limits->requestTimeoutMs * 1_000_000);
     }
@@ -57,6 +70,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      */
     public function send(array $message, ?callable $cancelled = null): void
     {
+        $this->sendBufferedBytes = 0;
         try {
             $line = json_encode($message, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . "\n";
         } catch (JsonException $error) {
@@ -167,7 +181,10 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             if ($message !== null) {
                 return $message;
             }
-            if (strlen($this->stdoutBuffer) > $this->limits->maxLineBytes) {
+            $pending = strlen($this->stdoutBuffer) - $this->stdoutOffset;
+            if ($pending > $this->limits->maxLineBytes) {
+                // Longer than any part may be, so this frame is output.
+                $this->chargeOutput($pending);
                 throw new WorkerException('WORKER_FRAME_TOO_LARGE', 'Worker frame exceeds the line limit.');
             }
 
@@ -198,7 +215,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             }
 
             foreach ($read as $stream) {
-                $chunk = @fread($stream, 8192);
+                $chunk = @fread($stream, self::READ_CHUNK_BYTES);
                 if ($chunk === false) {
                     throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
                 }
@@ -255,7 +272,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      */
     private function absorb($stream, $stderr): bool
     {
-        $chunk = @fread($stream, 8192);
+        $chunk = @fread($stream, self::READ_CHUNK_BYTES);
         if ($chunk === false) {
             // A failed read is a failure to report, not a quiet descriptor to
             // keep selecting on. Reported as "not exhausted" it stayed in the
@@ -272,6 +289,16 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             return false;
         }
         $this->appendStdout($chunk);
+        // Nothing classifies these bytes until the send is done, and a worker
+        // answers a request only once it has read the whole of it, so all a
+        // well-behaved worker can have written meanwhile is the tail of what
+        // it was already writing: one frame's worth. Past that it is flooding,
+        // and holding the flood until the send finishes would let it grow
+        // without bound.
+        $this->sendBufferedBytes += strlen($chunk);
+        if ($this->sendBufferedBytes > $this->limits->maxLineBytes + self::READ_CHUNK_BYTES) {
+            throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
+        }
 
         return false;
     }
@@ -306,13 +333,20 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      */
     private function extractMessage(): ?array
     {
-        $newline = strpos($this->stdoutBuffer, "\n");
+        $newline = strpos($this->stdoutBuffer, "\n", $this->stdoutOffset);
         if ($newline === false) {
             return null;
         }
-        $line = substr($this->stdoutBuffer, 0, $newline);
-        $this->stdoutBuffer = substr($this->stdoutBuffer, $newline + 1);
+        // Taken by offset, not by copying the remainder, so draining many
+        // buffered frames costs their length rather than its square.
+        $line = substr($this->stdoutBuffer, $this->stdoutOffset, $newline - $this->stdoutOffset);
+        $this->stdoutOffset = $newline + 1;
+        if ($this->stdoutOffset === strlen($this->stdoutBuffer)) {
+            $this->stdoutBuffer = '';
+            $this->stdoutOffset = 0;
+        }
         if ($line === '' || strlen($line) > $this->limits->maxLineBytes) {
+            $this->chargeOutput(strlen($line) + 1);
             throw new WorkerException('WORKER_FRAME_INVALID', 'Worker emitted an empty or oversized frame.');
         }
 
@@ -324,18 +358,67 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         if (!is_array($message) || array_is_list($message) || ($message['jsonrpc'] ?? null) !== '2.0') {
             throw new WorkerException('WORKER_FRAME_INVALID', 'Worker emitted an invalid JSON-RPC object.');
         }
+        if (!array_key_exists('id', $message) && ($message['method'] ?? null) === Protocol::NOTIFICATION_INPUT_HASHES) {
+            $this->countInputHashesFrame(strlen($line) + 1);
+        } else {
+            $this->chargeOutput(strlen($line) + 1);
+        }
 
         return $message;
     }
-    /** Buffer stdout, enforcing the byte cap so a flooding worker cannot exhaust memory. */
 
-    private function appendStdout(string $chunk): void
+    /**
+     * Move one `scan/input_hashes` frame from the output budget to its own.
+     *
+     * The map lists what a request read, which for a TypeScript program is the
+     * whole program however few files the batch names, so charging it to the
+     * output budget would let a large program trip WORKER_OUTPUT_LIMIT and send
+     * the batch into halving that cannot shrink it. Its own budget still bounds
+     * what a worker can make the core hold; exceeding it is a worker fault, not
+     * a batch that was too big.
+     *
+     * A frame is classified only once it is complete, and the output budget
+     * is charged at that point too ({@see self::chargeOutput()}), so a part
+     * still arriving never counts against output that is near its budget.
+     */
+    private function countInputHashesFrame(int $bytes): void
     {
-        $this->stdoutBuffer .= $chunk;
-        $this->stdoutBytes += strlen($chunk);
-        if ($this->stdoutBytes > $this->limits->maxOutputBytes) {
+        $this->inputHashesBytes += $bytes;
+        if ($this->inputHashesBytes > $this->limits->maxInputHashesBytes) {
+            throw new WorkerException('WORKER_RESPONSE_INVALID', sprintf(
+                'Worker %s frames exceed the %d-byte limit for one scan request.',
+                Protocol::NOTIFICATION_INPUT_HASHES,
+                $this->limits->maxInputHashesBytes,
+            ));
+        }
+    }
+
+    /** Charge one classified frame (or oversized partial frame) to the output budget. */
+    private function chargeOutput(int $bytes): void
+    {
+        $this->outputBytes += $bytes;
+        if ($this->outputBytes > $this->limits->maxOutputBytes) {
             throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
         }
+    }
+
+    /**
+     * Buffer stdout for classification.
+     *
+     * Frames are charged to their budget when they are classified, which the
+     * read loop does before every read, so there the unclassified buffer is
+     * one partial frame (bounded by the line limit) plus one read chunk. What
+     * a send() buffers is bounded in {@see self::absorb()}. Taken frames are
+     * dropped here, before the next bytes arrive, when only a partial frame
+     * is left to move.
+     */
+    private function appendStdout(string $chunk): void
+    {
+        if ($this->stdoutOffset > 0) {
+            $this->stdoutBuffer = substr($this->stdoutBuffer, $this->stdoutOffset);
+            $this->stdoutOffset = 0;
+        }
+        $this->stdoutBuffer .= $chunk;
     }
     /** Buffer stderr under its own cap, so diagnostics survive without competing with frames. */
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import ModuleType
 
@@ -314,14 +315,14 @@ def test_unreadable_file_costs_only_itself(monkeypatch, worker: ModuleType, proj
     sibling, which is exactly what the loop's isolation is meant to prevent.
     """
     root = project({"good.py": "x = 1\n", "gone.py": "y = 2\n"})
-    real_read = worker.Path.read_bytes
+    real_read = worker.read_bounded
 
-    def flaky(self):  # type: ignore[no-untyped-def]
-        if self.name == "gone.py":
+    def flaky(path, max_bytes):  # type: ignore[no-untyped-def]
+        if path.name == "gone.py":
             raise OSError("No such file or directory")
-        return real_read(self)
+        return real_read(path, max_bytes)
 
-    monkeypatch.setattr(worker.Path, "read_bytes", flaky)
+    monkeypatch.setattr(worker, "read_bounded", flaky)
     contributions = {c["owner_key"].rsplit(":", 1)[-1]: c for c in scan_collect(root, ["good.py", "gone.py"])}
 
     assert _diag_codes(contributions["gone.py"]) == ["PY_UNSCANNABLE_FILE"]
@@ -480,3 +481,27 @@ def test_flask_dynamic_route_path_is_diagnosed_not_guessed(worker: ModuleType, p
     routes = [node for node in contribution["nodes"] if node["kind"] == "route"]
     assert routes == []
     assert "PY_DYNAMIC_ROUTE_PATH" in _diag_codes(contribution)
+
+
+def test_own_declarations_come_from_the_hashed_bytes(worker: ModuleType, project) -> None:
+    # An importer earlier in the batch makes the index read `pkg/b.py` on its
+    # own. If the file changes before `_scan_one` reads and hashes it, the
+    # file's own local references must resolve against the bytes it hashed,
+    # never against the declarations cached from the earlier read.
+    root = project(
+        {
+            "pkg/__init__.py": "",
+            "pkg/b.py": "class Old:\n    pass\n",
+        }
+    )
+    index = worker.ProjectModuleIndex(root.resolve(), 2_000_000)
+    assert index.module_declarations("pkg.b") == {"Old": "py:class:pkg.b.Old"}
+    source = b"class Base:\n    pass\n\n\nclass Child(Base):\n    pass\n"
+    (root / "pkg/b.py").write_bytes(source)
+
+    emitted: list[dict] = []
+    worker._scan_one((root / "pkg/b.py").resolve(), "pkg/b.py", index, emitted.append)
+
+    [contribution] = emitted
+    assert contribution["content_hash"] == hashlib.sha256(source).hexdigest()
+    assert ("extends", "py:class:pkg.b.Child", "py:class:pkg.b.Base") in _edges(contribution)

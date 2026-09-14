@@ -38,6 +38,28 @@ Consumers may require named optional capabilities with
 `WORKER_CAPABILITY_MISMATCH` before any scan. Unknown optional
 capabilities may be ignored unless a consumer explicitly requires them.
 
+The `content_hash` capability promises that every contribution for a file the
+worker read carries the SHA-256 of those raw bytes; see
+[`scanner-protocol-v1.md`](scanner-protocol-v1.md). `tools/scanner-conformance`
+scans one fixture file, which starts with a byte-order mark, and checks that
+promise whenever a worker declares it. When you add the capability to an
+existing worker, bump its version in the same change: cache hits are not
+verified again, so only a version change purges the contributions it cached
+before it hashed. Facts without a hash degrade your worker's whole language
+for that scan, and an unhashed contribution with only diagnostics is kept but
+never cached.
+
+The `input_hashes` capability promises the same, per request rather than per
+contribution, for every project file the worker read while deriving a
+request's facts, the requested files included, and with `null` for a read it
+attempted that failed or a lookup that decided facts and found nothing; see
+`scanner-protocol-v1.md` for the field, how to key reads through links and
+probes, the `scan/input_hashes` notification for a map too large for one
+frame, and the verification rules. `tools/scanner-conformance` checks that a
+declaring worker's empty scan and its one-file fixture scan both carry the
+field, that the fixture's hash matches, and that the whole map passes the
+core's own check against the fixture's discovery.
+
 Every contribution owns its facts through a stable `owner_key`. Re-emission
 replaces that owner's facts. IDs must be deterministic, evidence paths must be
 project-relative, and repeated edges should be collapsed to the persistence

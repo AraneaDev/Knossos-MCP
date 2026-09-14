@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import ts from "typescript";
@@ -24,6 +25,11 @@ const SHEBANG_PROBE_BYTES = 256;
 // out. The suffix is deliberately unusual: a real file that collided with it
 // would be reported under the wrong path.
 const SHEBANG_ALIAS_SUFFIX = ".knossos-shebang.js";
+// TypeScript recognises a source extension only in lower case, so a file such as
+// `FOO.TS`, which discovery classifies as TypeScript, would be in no program and
+// lose its facts on every scan. It is offered under its name plus this mark and
+// the lower-cased extension, and mapped back the same way.
+const CASE_ALIAS_MARK = ".knossos-alias";
 const EXCLUDED_DIRECTORIES = new Set([
     ".git",
     ".knossos",
@@ -64,13 +70,91 @@ function isExcludedDirectoryName(name) {
 // simply rebuilt from scratch on its next scan.
 const MAX_CACHED_PROGRAMS = 2;
 
+// The hash of the raw bytes each SourceFile was created from, keyed by the
+// SourceFile object itself. Keyed by object rather than by path because
+// programs are cached across requests and several programs can read the same
+// path: a path-keyed map could pair one read's facts with another read's hash,
+// which is precisely the false match the hash exists to prevent.
+const parsedContentHashes = new WeakMap();
+
+/**
+ * Every project file one scan request read to derive facts, for the result's
+ * `input_hashes`: project-relative path to the SHA-256 of the bytes read, or
+ * null when a read was attempted and failed.
+ *
+ * The checker resolves a requested file against every source file in its
+ * program, so the map covers each file each program read, not only the requested
+ * ones. One request can build several programs (one per tsconfig, plus the
+ * fallback) and each reads its files afresh, so a path can be read more than
+ * once. When those reads disagree, whether two different hashes or a hash and a
+ * failure in either order, no single hash describes what the request's facts
+ * came from, and the entry becomes null for good.
+ *
+ * One recorder per request, handed to each program's host: nothing about a read
+ * outlives the request that made it.
+ */
+class InputReadRecorder {
+    /**
+     * @param {(stage: "load"|"read", absolute: string) => void} observePath
+     *   Told each path the host is about to examine: "load" before a requested
+     *   SourceFile's admission checks, "read" before the read resolves it. A
+     *   test seam, so a test can change the tree at exactly that point.
+     */
+    constructor(observePath = () => {}) {
+        this.hashes = new Map();
+        this.sourceFiles = new WeakSet();
+        this.observe = observePath;
+    }
+
+    /** Record one read; a read disagreeing with an earlier one records null. */
+    record(relative, contentHash) {
+        if (
+            this.hashes.has(relative) &&
+            this.hashes.get(relative) !== contentHash
+        ) {
+            contentHash = null;
+        }
+        this.hashes.set(relative, contentHash);
+    }
+
+    /** Remember a SourceFile this request created from its own read. */
+    created(sourceFile) {
+        this.sourceFiles.add(sourceFile);
+    }
+
+    /**
+     * Whether this request created the SourceFile a program holds. A redirect
+     * SourceFile (a duplicate package resolved to an already loaded copy) is a
+     * view of its target, so its target is what must have been read.
+     */
+    createdThisRequest(sourceFile) {
+        return this.sourceFiles.has(
+            sourceFile.redirectInfo?.redirectTarget ?? sourceFile,
+        );
+    }
+
+    /** The map as the result field, keys sorted for deterministic output. */
+    toResult() {
+        return Object.fromEntries(
+            [...this.hashes].sort(([left], [right]) =>
+                left < right ? -1 : left > right ? 1 : 0,
+            ),
+        );
+    }
+}
+
 /**
  * Performs bounded compiler-backed scanning without executing target modules.
  * Instances retain TypeScript programs for incremental reuse.
  */
 export class TypeScriptScanner {
-    constructor() {
+    /**
+     * @param {{observeHostPath?: (stage: "load"|"read", absolute: string) => void}} [options]
+     *   `observeHostPath` is a test seam, handed to each request's recorder.
+     */
+    constructor({ observeHostPath } = {}) {
         this.programCache = new Map();
+        this.observeHostPath = observeHostPath;
     }
 
     /**
@@ -78,7 +162,7 @@ export class TypeScriptScanner {
      *
      * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown}} params
      * @param {(contribution: object) => void} emit
-     * @returns {{files_scanned: number, programs: number, programs_reused: number}}
+     * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
      */
     scan(params, emit) {
         const root = validateRoot(params.root);
@@ -87,10 +171,17 @@ export class TypeScriptScanner {
             params.files,
             params.limits,
         );
+        const reads = new InputReadRecorder(this.observeHostPath);
         // Emitted before anything else so a file this worker cannot read still
         // gets its own contribution: raising it to the request would discard the
         // facts every other file in the batch contributes.
         for (const rejection of rejected) {
+            if (rejection.failedRead) reads.record(rejection.relative, null);
+            // Refused on what the file says rather than on its name, so what
+            // was read is evidence: a stable tree matches the hash, a script
+            // swapped and restored around the probe does not.
+            else if (rejection.refusalHash !== undefined)
+                reads.record(rejection.relative, rejection.refusalHash);
             emit(
                 unscannableContribution(rejection.relative, rejection.message),
             );
@@ -103,7 +194,7 @@ export class TypeScriptScanner {
         let programsReused = 0;
 
         for (const configPath of configPaths) {
-            const parsed = parseConfig(root, configPath);
+            const parsed = parseConfig(root, configPath, reads);
             const key = `${root}\0${configPath}`;
             this.#reserveProgramSlot(key);
             const oldProgram = this.programCache.get(key);
@@ -112,9 +203,11 @@ export class TypeScriptScanner {
                 parsed,
                 oldProgram,
                 maxFileBytes,
+                reads,
             );
             this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
+            recordUnreadSourceFiles(root, program, reads);
             this.#emitProgram(root, program, requestedSet, emitted, emit);
             ++programs;
             if (emitted.size === requestedSet.size) break;
@@ -135,14 +228,12 @@ export class TypeScriptScanner {
             };
             const parsed = {
                 options,
-                // An extensionless script only ever reaches the fallback program:
-                // no tsconfig `include` can name a file with no extension.
-                fileNames: remaining.map((relative) => {
-                    const absolute = path.join(root, relative);
-                    return path.extname(absolute) === ""
-                        ? shebangAliasPath(absolute)
-                        : absolute;
-                }),
+                // An extensionless script, or one whose extension is not in
+                // lower case, only ever reaches the fallback program: no
+                // tsconfig `include` matches either name.
+                fileNames: remaining.map((relative) =>
+                    offeredPath(path.join(root, relative)),
+                ),
                 projectReferences: undefined,
             };
             const key = `${root}\0<fallback>`;
@@ -153,9 +244,11 @@ export class TypeScriptScanner {
                 parsed,
                 oldProgram,
                 maxFileBytes,
+                reads,
             );
             this.#cacheProgram(key, program);
             if (oldProgram) ++programsReused;
+            recordUnreadSourceFiles(root, program, reads);
             this.#emitProgram(root, program, requestedSet, emitted, emit);
             ++programs;
         }
@@ -168,6 +261,14 @@ export class TypeScriptScanner {
         for (const relative of requested) {
             const key = normalize(relative);
             if (emitted.has(key)) continue;
+            // A file the host was asked for and could not read was recorded
+            // there. One the compiler never asked for is recorded here only if
+            // it is no longer readable as itself: a stable file the compiler
+            // simply leaves out (as it did `FOO.TS` before offeredPath) must
+            // not fail every scan.
+            if (!readableAsItself(root, key, maxFileBytes)) {
+                reads.record(key, null);
+            }
             emit(
                 unscannableContribution(
                     key,
@@ -181,6 +282,7 @@ export class TypeScriptScanner {
             files_scanned: emitted.size + rejected.length,
             programs,
             programs_reused: programsReused,
+            input_hashes: reads.toResult(),
         };
     }
 
@@ -228,6 +330,19 @@ export class TypeScriptScanner {
                 continue;
             }
 
+            const redirect = sourceFile.redirectInfo;
+            if (redirect !== undefined && !redirectReadsAgree(redirect)) {
+                emit(
+                    factFreeContribution(
+                        relative,
+                        "TS_REDIRECTED_SOURCE_UNVERIFIED",
+                        "TypeScript resolved this file as a duplicate of another copy of the same package whose bytes differ, so its facts would describe the other copy.",
+                    ),
+                );
+                emitted.add(relative);
+                continue;
+            }
+
             // Isolate per-file collection: a single adversarial/minified file can
             // overflow the visitor recursion (RangeError). One bad file must
             // degrade to a diagnostic, not discard facts for every other file in
@@ -263,6 +378,17 @@ export class TypeScriptScanner {
                         },
                     ],
                 };
+            }
+            // Every SourceFile the restricted host creates has an entry. One
+            // without would reach the core with facts but no hash, which it
+            // refuses as a contract violation instead of trusting the read.
+            // A redirect is a view of its target; with the reads agreeing, its
+            // own bytes are what the facts describe.
+            const contentHash = parsedContentHashes.get(
+                redirect?.unredirected ?? sourceFile,
+            );
+            if (contentHash !== undefined) {
+                contribution.content_hash = contentHash;
             }
             emit(contribution);
             emitted.add(relative);
@@ -773,12 +899,21 @@ class TypeScriptLanguageFactCollector {
     }
 }
 
-function parseConfig(root, configPath) {
+function parseConfig(root, configPath, reads) {
     const absolute = validatedInside(root, configPath);
     const host = {
         ...ts.sys,
+        // A config and every config it extends or references decides the
+        // program's files and options, so each read is recorded under its
+        // walk's keys like any other: the hash of the raw bytes read, or null
+        // for a read that failed. Discovery hashes a tsconfig as a project
+        // unit, so the core checks these. Configs were never held to the
+        // per-file source cap, and still are not: a config discovery skipped
+        // as too large is not a unit, so its key is ignored.
         readFile: (file) =>
-            allowedCompilerPath(root, file) ? ts.sys.readFile(file) : undefined,
+            allowedCompilerPath(root, file)
+                ? readRecorded(root, file, reads, Number.MAX_SAFE_INTEGER)
+                : undefined,
         fileExists: (file) =>
             allowedCompilerPath(root, file) && ts.sys.fileExists(file),
         readDirectory: (directory, extensions, excludes, includes, depth) => {
@@ -830,11 +965,428 @@ function parseConfig(root, configPath) {
     return parsed;
 }
 
+/**
+ * Read a file for the compiler within the byte cap, decoded as TypeScript
+ * decodes it, recording the read under its walk's keys: the hash of the raw
+ * bytes read, or null when the read failed or went over the cap. A default
+ * library file is exempt from the cap and never recorded, since discovery
+ * never reports one.
+ */
+function readRecorded(root, file, reads, maxFileBytes) {
+    const normalized = realSourcePath(normalize(path.resolve(file)));
+    const library = contains(defaultLibDirectory(), normalized);
+    let buffer;
+    try {
+        buffer = readBounded(
+            normalized,
+            library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
+        );
+    } catch {
+        buffer = undefined;
+    }
+    if (!library)
+        recordWalked(
+            reads,
+            root,
+            walkPath(normalized),
+            buffer === undefined
+                ? null
+                : createHash("sha256").update(buffer).digest("hex"),
+        );
+    return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
+}
+
+/**
+ * Decode a file's bytes into the string ts.sys.readFile would return, so
+ * reading the buffer ourselves (to hash it) changes nothing the compiler sees.
+ * Mirrors TypeScript 6.0's node `readFile`: UTF-16 BE and LE byte-order marks
+ * decode as UTF-16, a UTF-8 BOM is dropped, anything else is UTF-8.
+ */
+function decodeLikeTypeScript(buffer) {
+    if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+        // Copied before swapping: the caller's buffer is what was hashed.
+        const swapped = Buffer.from(buffer.subarray(0, buffer.length & ~1));
+        swapped.swap16();
+        return swapped.toString("utf16le", 2);
+    }
+    if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+        return buffer.toString("utf16le", 2);
+    }
+    if (
+        buffer.length >= 3 &&
+        buffer[0] === 0xef &&
+        buffer[1] === 0xbb &&
+        buffer[2] === 0xbf
+    ) {
+        return buffer.toString("utf8", 3);
+    }
+    return buffer.toString("utf8");
+}
+
+/**
+ * Read, hash and parse one file in a single read, so the hash is over exactly
+ * the bytes the SourceFile was built from, and record the read for the request.
+ * Returns undefined when the file cannot be read, the same "skip this input"
+ * signal ts.sys.readFile gives.
+ *
+ * The path is resolved once, by walkPath, and that one walk decides everything:
+ * whether the file may be read (it must end at a file inside the root, or be a
+ * default-library file), the path the bytes are read from (the file the walk
+ * ended at), and the key the read goes under (inputKeyLocation). Discovery
+ * never follows a symlink, so a linked name is not a path the core tracks,
+ * while the file its bytes came from is. A tsconfig `include` walks through
+ * links (and `preserveSymlinks` keeps linked import paths), so both names do
+ * reach this host. A path that is refused here is not read at all; the compiler
+ * goes on as if the file did not exist, which changes the facts of every file
+ * importing it, so it is recorded as a failed read under the same key.
+ *
+ * The tree can still change between the walk and the read, and the read is
+ * still verified. A read that fails is recorded as null. A read that opens a
+ * file other than the one the walk reached, because a component became a link
+ * in between, hashes the bytes it actually got and records that hash under the
+ * walk's keys, where it disagrees with what discovery hashed for the keyed path
+ * unless the bytes are the same, in which case so are the facts. The read is
+ * bounded to one byte past the cap for the same reason: whatever it opens, it
+ * never reads more than a file the host would accept.
+ */
+function readHashedSourceFile(
+    root,
+    readPath,
+    fileName,
+    languageVersion,
+    scriptKind,
+    reads,
+    maxFileBytes,
+) {
+    const absolute = normalize(path.resolve(readPath));
+    reads.observe("read", absolute);
+    const walked = walkPath(absolute);
+    const library = contains(defaultLibDirectory(), absolute);
+    if (
+        walked.kind !== "file" ||
+        !(contains(root, walked.location) || library)
+    ) {
+        recordWalked(reads, root, walked, null);
+        return undefined;
+    }
+    let buffer;
+    try {
+        // Default-library declaration files are exempt from the cap, as in
+        // exceedsByteCap.
+        buffer = readBounded(
+            walked.location,
+            library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
+        );
+    } catch {
+        buffer = undefined;
+    }
+    if (buffer === undefined) {
+        recordWalked(reads, root, walked, null);
+        return undefined;
+    }
+    const contentHash = createHash("sha256").update(buffer).digest("hex");
+    const sourceFile = ts.createSourceFile(
+        fileName,
+        decodeLikeTypeScript(buffer),
+        languageVersion,
+        true,
+        scriptKind,
+    );
+    parsedContentHashes.set(sourceFile, contentHash);
+    reads.created(sourceFile);
+    recordWalked(reads, root, walked, contentHash);
+    return sourceFile;
+}
+
+/**
+ * Read a file's bytes, or undefined when it holds more than `maxBytes`: at most
+ * one byte past the cap is ever read.
+ */
+function readBounded(file, maxBytes) {
+    const handle = fs.openSync(file, "r");
+    try {
+        const chunks = [];
+        let total = 0;
+        const limit = maxBytes + 1;
+        while (total < limit) {
+            const chunk = Buffer.alloc(Math.min(65_536, limit - total));
+            const read = fs.readSync(handle, chunk, 0, chunk.length, null);
+            if (read === 0) break;
+            chunks.push(
+                read === chunk.length ? chunk : chunk.subarray(0, read),
+            );
+            total += read;
+        }
+        return total > maxBytes ? undefined : Buffer.concat(chunks, total);
+    } finally {
+        fs.closeSync(handle);
+    }
+}
+
+/**
+ * The key a read of `absolute` goes under in `input_hashes`, or null for a read
+ * the core cannot track: outside the root (the default library) or below a
+ * node_modules directory, which discovery never reports.
+ */
+function inputHashKey(root, absolute) {
+    const relative = relativeInside(root, absolute);
+    if (
+        relative === null ||
+        relative === "" ||
+        relative === "node_modules" ||
+        relative.startsWith("node_modules/") ||
+        relative.includes("/node_modules/")
+    ) {
+        return null;
+    }
+    return relative;
+}
+
+/**
+ * The keys a walk goes under in `input_hashes`.
+ *
+ * `final` is the key of the location the walk reached (inputKeyLocation).
+ * `linked` holds every other in-root key the walk passed through a link: each
+ * link followed, and each link with the components that were still to walk
+ * below it. The first of those is the path as written, which the host always
+ * receives normalised, without a `..`. A `..` among the components below a
+ * later link could only be applied by the walk, so such a path is left out, as
+ * is anything outside the root or below node_modules.
+ *
+ * Discovery never reports a link and never descends into a linked directory,
+ * so on a stable tree every linked key names a path the core ignores. Mid-scan,
+ * a discovered file swapped for a link (to another file, to a directory, or on
+ * a package's resolved path) is keyed where discovery saw it, so the read or
+ * probe that went through it is checked against discovery's hash.
+ *
+ * @returns {{final: string|null, linked: string[]}}
+ */
+function walkKeys(root, walked) {
+    const location = inputKeyLocation(root, walked);
+    const final = location === null ? null : inputHashKey(root, location);
+    const linked = new Set();
+    const add = (candidate) => {
+        const key = inputHashKey(root, candidate);
+        if (key !== null && key !== final) linked.add(key);
+    };
+    for (const link of walked.links) {
+        if (!contains(root, link.location)) continue;
+        add(link.location);
+        const rest = link.rest.filter((name) => name !== "" && name !== ".");
+        if (rest.length > 0 && !rest.includes(".."))
+            add(`${link.location}/${rest.join("/")}`);
+    }
+    return { final, linked: [...linked] };
+}
+
+/** Record a read, hashed or failed, under every key its walk gives. */
+function recordWalked(reads, root, walked, contentHash) {
+    const { final, linked } = walkKeys(root, walked);
+    if (final !== null) reads.record(final, contentHash);
+    for (const key of linked) reads.record(key, contentHash);
+}
+
+/** Record a path the host would not or could not read as a failed read. */
+function recordRefused(reads, root, absolute) {
+    recordWalked(reads, root, walkPath(absolute), null);
+}
+
+/**
+ * Record an existence probe whose answer feeds facts, such as a module
+ * resolution candidate or a realpath.
+ *
+ * A probe answering absent, or not a file, records null under every key its
+ * walk gives: the compiler goes on as if the file were not there, so a
+ * discovered file missing for that moment must fail verification. A probe
+ * answering present read no bytes, so it vouches for nothing at the location it
+ * reached, which a read will record; it records null only under the linked
+ * keys, so a discovered path that had become a link is still caught. Discovery
+ * never reports an absent path or a link, so a stable tree is unaffected.
+ */
+function recordProbe(reads, root, walked, present) {
+    const { final, linked } = walkKeys(root, walked);
+    if (!present && final !== null) reads.record(final, null);
+    for (const key of linked) reads.record(key, null);
+}
+
+// Linux's MAXSYMLINKS: one lookup follows at most this many links, and the
+// next one fails it with ELOOP.
+const MAX_SYMLINK_HOPS = 40;
+
+/**
+ * Resolve an absolute path the way the kernel's path lookup does, one
+ * component at a time, so the result names the file a read of it opens.
+ *
+ * `current` is always a real directory. A `..` steps to its parent, which is
+ * where the kernel's `..` goes once the links before it have been followed. A
+ * symlink's target is put in front of the components still to walk, raw, so
+ * its own `..` is applied the same way; nothing is ever collapsed as text.
+ *
+ * - "file": the walk reached a non-directory as its last component.
+ * - "directory": the walk ended at a directory.
+ * - "missing": a component does not exist, or is a non-directory with more to
+ *   walk (ENOENT, ENOTDIR), and `location` is the path the read was to open
+ *   (see absentBelow).
+ * - "unresolvable": no such path can be named: a `..` left to apply below a
+ *   missing component, another lookup error, or more than MAX_SYMLINK_HOPS
+ *   links (ELOOP).
+ *
+ * `links` lists every symlink followed, in order, with the components that
+ * were still to walk after it at that moment.
+ *
+ * @param {string} absolute
+ * @returns {{kind: "file"|"missing"|"directory"|"unresolvable", location?: string, links: {location: string, rest: string[]}[]}}
+ */
+function walkPath(absolute) {
+    const top = normalize(path.parse(absolute).root);
+    const remaining = normalize(absolute).slice(top.length).split("/");
+    const links = [];
+    let current = top;
+    let hops = 0;
+    while (remaining.length > 0) {
+        const name = remaining.shift();
+        if (name === "" || name === ".") continue;
+        if (name === "..") {
+            current = parentDirectory(current, top);
+            continue;
+        }
+        const candidate = current.endsWith("/")
+            ? `${current}${name}`
+            : `${current}/${name}`;
+        let stat;
+        try {
+            stat = fs.lstatSync(candidate);
+        } catch (error) {
+            return error?.code === "ENOENT"
+                ? absentBelow(candidate, remaining, links)
+                : { kind: "unresolvable", links };
+        }
+        if (stat.isSymbolicLink()) {
+            if (++hops > MAX_SYMLINK_HOPS)
+                return { kind: "unresolvable", links };
+            links.push({ location: candidate, rest: [...remaining] });
+            let target;
+            try {
+                target = normalize(fs.readlinkSync(candidate));
+            } catch {
+                return { kind: "unresolvable", links };
+            }
+            if (path.isAbsolute(target)) {
+                current = normalize(path.parse(target).root);
+                target = target.slice(current.length);
+            }
+            remaining.unshift(...target.split("/"));
+        } else if (stat.isDirectory()) {
+            current = candidate;
+        } else if (remaining.length > 0) {
+            return absentBelow(candidate, remaining, links);
+        } else {
+            return { kind: "file", location: candidate, links };
+        }
+    }
+    return { kind: "directory", location: current, links };
+}
+
+/**
+ * The walk's result when the lookup fails at `candidate` because it does not
+ * exist, or is not a directory while more remains to walk. Nothing exists below
+ * it, so nothing below it can be a link, and without a `..` still to apply the
+ * remaining components name exactly the file the read was to open: a "missing"
+ * location. A `..` still to apply could only be resolved against a directory
+ * that is not there, so the path is unresolvable.
+ */
+function absentBelow(candidate, remaining, links) {
+    const rest = remaining.filter((name) => name !== "" && name !== ".");
+    if (rest.includes("..")) return { kind: "unresolvable", links };
+    return { kind: "missing", location: [candidate, ...rest].join("/"), links };
+}
+
+/**
+ * The kernel's resolution of an existing path, for the root and requested files,
+ * which must exist. Node's JavaScript fs.realpathSync collapses `..` in a link
+ * target as text first; the native one does not.
+ */
+function realpathNative(candidate) {
+    return normalize(fs.realpathSync.native(candidate));
+}
+
+/** The parent of a real directory; a filesystem root is its own parent. */
+function parentDirectory(directory, top) {
+    if (directory === top) return top;
+    const parent = directory.slice(0, directory.lastIndexOf("/"));
+    return parent.length < top.length ? top : parent;
+}
+
+/**
+ * The absolute location a walked read goes under in `input_hashes`, or null
+ * when no location the walk passed lies inside the root.
+ *
+ * - A walk that ended at a file, a missing location or a directory inside the
+ *   root: that location, the path the read opened or would have opened. A
+ *   directory read fails (EISDIR); discovery never reports a directory, so the
+ *   key is ignored on a stable tree, while a discovered file replaced by one
+ *   mid-scan fails verification.
+ * - Otherwise the last link followed inside the root. A link followed as a
+ *   directory component keys the path below it as it was about to be walked
+ *   (a discovered `src/sub/c.ts` whose `src/sub` became a link out of the root
+ *   keys `src/sub/c.ts`), unless that path holds a `..`, which only the walk
+ *   could have applied; then the link itself.
+ *
+ * Every key a stable layout produces this way names either the file the
+ * kernel reaches, or a link or a path through one, which discovery never
+ * reports and the core ignores. A discovered file changed into one of those
+ * mid-scan is keyed where discovery saw it, so it fails verification.
+ */
+function inputKeyLocation(root, walked) {
+    if (walked.kind !== "unresolvable" && contains(root, walked.location)) {
+        return walked.location;
+    }
+    const link = walked.links.findLast((entry) =>
+        contains(root, entry.location),
+    );
+    if (link === undefined) return null;
+    const rest = link.rest.filter((name) => name !== "" && name !== ".");
+    if (rest.length === 0 || rest.includes("..")) return link.location;
+    return `${link.location}/${rest.join("/")}`;
+}
+
+/**
+ * Record null for every project file a program holds that this request did not
+ * create from its own read.
+ *
+ * TypeScript 6.0 asks the host for every file again when it reuses an old
+ * program's structure, and this host always returns a fresh SourceFile, so a
+ * reused program holds only this request's reads and this finds nothing. It is
+ * here so that a compiler that kept an earlier request's SourceFile would make
+ * that file's facts unverifiable rather than vouched for by the earlier read.
+ */
+function recordUnreadSourceFiles(root, program, reads) {
+    for (const sourceFile of program.getSourceFiles()) {
+        if (reads.createdThisRequest(sourceFile)) continue;
+        const absolute = normalize(
+            path.resolve(realSourcePath(sourceFile.fileName)),
+        );
+        // The hash its facts were parsed from, bound to the object, when this
+        // worker created it at all; null only when nothing describes it.
+        recordWalked(
+            reads,
+            root,
+            walkPath(absolute),
+            parsedContentHashes.get(sourceFile) ?? null,
+        );
+    }
+}
+
+function defaultLibDirectory() {
+    return normalize(path.dirname(ts.getDefaultLibFilePath({})));
+}
+
 function createRestrictedProgram(
     root,
     parsed,
-    oldProgram = undefined,
-    maxFileBytes = 2_000_000,
+    oldProgram,
+    maxFileBytes,
+    reads,
 ) {
     // Architecture scanning only needs diagnostics for the project's own
     // sources, not for the internals of declaration files. Type-checking the
@@ -849,49 +1401,95 @@ function createRestrictedProgram(
         skipDefaultLibCheck: true,
     };
     const host = ts.createCompilerHost(options, true);
-    const getSourceFile = host.getSourceFile.bind(host);
-    host.getSourceFile = (
-        fileName,
-        languageVersion,
-        onError,
-        shouldCreateNewSourceFile,
-    ) => {
-        if (!allowedCompilerPath(root, fileName)) return undefined;
+    host.getSourceFile = (fileName, languageVersion) => {
+        // A refused path is left out of the program, so the facts of every file
+        // that imports or includes it are computed as if it did not exist. It
+        // is recorded as a failed read under the key a read of it would have
+        // gone under (walkPath, inputKeyLocation): a stable layout never trips over
+        // that, since discovery reports neither a symlink nor an over-cap file
+        // and the core ignores a path it did not discover, while a discovered
+        // file that became one mid-scan fails verification.
+        const absolute = normalize(path.resolve(realSourcePath(fileName)));
+        reads.observe("load", absolute);
+        const refused = () => {
+            recordRefused(reads, root, absolute);
+            return undefined;
+        };
+        if (!allowedCompilerPath(root, fileName)) return refused();
         // The per-file byte cap is enforced on requested files, but the program
         // also pulls in import-reachable and included sources. Guard those too so
         // one giant generated file (e.g. a multi-MB bundled `.d.ts`) is never
         // fully parsed, bounding peak memory.
-        if (exceedsByteCap(fileName, maxFileBytes)) return undefined;
-        if (fileName.endsWith(SHEBANG_ALIAS_SUFFIX)) {
-            // ts.sys.readFile yields undefined rather than throwing when the
-            // file has gone, which is the same "skip this input" signal the
-            // guards above use.
-            const text = ts.sys.readFile(shebangSourcePath(fileName));
-            return text === undefined
-                ? undefined
-                : ts.createSourceFile(
-                      fileName,
-                      text,
-                      languageVersion,
-                      true,
-                      ts.ScriptKind.JS,
-                  );
-        }
-        return getSourceFile(
+        if (exceedsByteCap(fileName, maxFileBytes)) return refused();
+        // Read here rather than through the default host, which reads via
+        // ts.sys.readFile and so never exposes the bytes it decoded. A shebang
+        // alias is read, and recorded, under the script's real path.
+        return readHashedSourceFile(
+            root,
+            realSourcePath(fileName),
             fileName,
             languageVersion,
-            onError,
-            shouldCreateNewSourceFile,
+            fileName.endsWith(SHEBANG_ALIAS_SUFFIX)
+                ? ts.ScriptKind.JS
+                : undefined,
+            reads,
+            maxFileBytes,
         );
     };
-    host.fileExists = (file) =>
-        allowedCompilerPath(root, file) &&
-        (file.endsWith(SHEBANG_ALIAS_SUFFIX)
-            ? ts.sys.fileExists(shebangSourcePath(file))
-            : ts.sys.fileExists(file));
+    // Module resolution decides an import's target by these answers, so an
+    // in-root answer is recorded (recordProbe).
+    host.fileExists = (file) => {
+        const absolute = normalize(path.resolve(realSourcePath(file)));
+        if (contains(defaultLibDirectory(), absolute))
+            return ts.sys.fileExists(absolute);
+        if (!contains(root, absolute)) return false;
+        const walked = walkPath(absolute);
+        const present =
+            walked.kind === "file" && contains(root, walked.location);
+        recordProbe(reads, root, walked, present);
+        return present;
+    };
+    // Resolution realpaths a package's files before the host is asked for
+    // them, so a link on that path is walked here, where its name is still
+    // known, rather than lost behind the resolved name getSourceFile sees. The
+    // walk follows the resolution: a tree that changed in between gives the
+    // walk a location other than the name resolution returned, and that answer
+    // is recorded as absent, since no single state of the tree describes it.
+    host.realpath = (file) => {
+        let real;
+        try {
+            real = realpathNative(file);
+        } catch {
+            real = normalize(file);
+        }
+        const absolute = normalize(path.resolve(file));
+        if (
+            contains(root, absolute) &&
+            !contains(defaultLibDirectory(), absolute)
+        ) {
+            const walked = walkPath(absolute);
+            const present =
+                (walked.kind === "file" || walked.kind === "directory") &&
+                walked.location === real;
+            recordProbe(reads, root, walked, present);
+        }
+        return real;
+    };
+    // A stat-then-read (exceedsByteCap followed by ts.sys.readFile) leaves a
+    // window between the two where the file can grow past the cap, making
+    // the read that follows unbounded. readBounded closes it: it reads at
+    // most one byte past the cap itself, so the size actually read is what
+    // is checked, not a size observed earlier.
+    //
+    // Module resolution reads package.json files through here, and their
+    // fields decide an import's target, so every in-root read is recorded
+    // under its walk's keys like any other: the hash of the bytes read, or null
+    // for a read that failed. A path refused here was first answered by
+    // host.fileExists, which recorded its walk. Discovery hashes package.json
+    // as a project unit, and the core checks the entry against that hash.
     host.readFile = (file) =>
-        allowedCompilerPath(root, file) && !exceedsByteCap(file, maxFileBytes)
-            ? ts.sys.readFile(shebangSourcePath(file))
+        allowedCompilerPath(root, file)
+            ? readRecorded(root, file, reads, maxFileBytes)
             : undefined;
     return ts.createProgram({
         rootNames: parsed.fileNames,
@@ -1297,14 +1895,53 @@ function maxFileBytesFrom(limits) {
 // Default-library declaration files are exempt: skipping one would break type
 // resolution for every file. Only project sources under the root are capped.
 function exceedsByteCap(fileName, maxFileBytes) {
-    const normalized = shebangSourcePath(normalize(path.resolve(fileName)));
-    const defaultLib = normalize(path.dirname(ts.getDefaultLibFilePath({})));
-    if (contains(defaultLib, normalized)) return false;
+    const normalized = realSourcePath(normalize(path.resolve(fileName)));
+    if (contains(defaultLibDirectory(), normalized)) return false;
     try {
         return fs.statSync(normalized).size > maxFileBytes;
     } catch {
         return false;
     }
+}
+
+/**
+ * Whether a requested path is still an in-root regular file within the byte
+ * cap, reached without following a link.
+ */
+function readableAsItself(root, relative, maxFileBytes) {
+    const absolute = `${root}/${relative}`;
+    const walked = walkPath(absolute);
+    if (walked.kind !== "file" || walked.location !== absolute) return false;
+    try {
+        return fs.statSync(absolute).size <= maxFileBytes;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A requested file the filesystem would not let the worker read as that file.
+ * See validateRequestedFiles.
+ */
+class UnreadableInput extends Error {}
+
+// A requested file refused because of what was read in it: an extensionless
+// script whose shebang does not name JavaScript. Discovery routed it here
+// because its reading of those bytes did, so a script swapped for another one
+// and restored around the probe would otherwise lose its facts from a graph
+// reported fresh. The refusal carries evidence for `input_hashes`: the hash of
+// the whole file from one bounded read that reached the same verdict, which a
+// stable tree matches, or null when that read failed, was over the cap, or
+// found JavaScript after all.
+class RefusedAfterRead extends Error {
+    constructor(message, contentHash) {
+        super(message);
+        this.contentHash = contentHash;
+    }
+}
+
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
 }
 
 function validateRequestedFiles(root, files, limits = {}) {
@@ -1326,6 +1963,14 @@ function validateRequestedFiles(root, files, limits = {}) {
     // A path this worker refuses, or a file that vanished between discovery and
     // scan, is reported per file rather than raised: only a request that cannot
     // be interpreted at all (checked above) is fatal.
+    //
+    // A rejection is either a refusal by policy (an extension or shebang this
+    // worker does not scan), which says nothing about the tree, or a read the
+    // filesystem refused: the path is gone, is not a regular file, is over the
+    // byte cap, or resolves somewhere other than where it was requested. The
+    // second kind is marked `failedRead`, because the facts-free contribution
+    // standing in for the file must not pass verification as if it had been
+    // read.
     const accepted = [];
     const rejected = [];
     for (const relative of files) {
@@ -1333,21 +1978,52 @@ function validateRequestedFiles(root, files, limits = {}) {
         // attribute a diagnostic to, and echoing it into a contribution would
         // emit an owner key the graph rejects anyway.
         assertScannablePath(relative);
+        const requested = normalize(relative);
         try {
-            const absolute = validatedInside(root, relative);
-            if (
-                !SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()) &&
-                !namesJavaScriptInShebang(absolute)
-            )
-                throw new Error(`Unsupported TypeScript input: ${relative}`);
-            const stat = fs.statSync(absolute);
+            let absolute;
+            try {
+                absolute = validatedInside(root, relative);
+            } catch (error) {
+                throw new UnreadableInput(errorMessage(error));
+            }
+            // Discovery never follows a link, so a requested path always names
+            // its own file. One that now resolves elsewhere is read as another
+            // file, whose facts must not stand in for this one's, nor be
+            // emitted under the other file's key.
+            if (normalize(path.relative(root, absolute)) !== requested)
+                throw new UnreadableInput(
+                    `TypeScript input no longer resolves to itself: ${relative}`,
+                );
+            if (!SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase())) {
+                if (path.extname(absolute) !== "")
+                    throw new Error(
+                        `Unsupported TypeScript input: ${relative}`,
+                    );
+                if (!namesJavaScriptInShebang(absolute))
+                    throw new RefusedAfterRead(
+                        `Unsupported TypeScript input: ${relative}`,
+                        shebangRefusalEvidence(absolute, maxFileBytes),
+                    );
+            }
+            let stat;
+            try {
+                stat = fs.statSync(absolute);
+            } catch (error) {
+                throw new UnreadableInput(errorMessage(error));
+            }
             if (!stat.isFile() || stat.size > maxFileBytes)
-                throw new Error(`TypeScript input exceeds limits: ${relative}`);
-            accepted.push(normalize(path.relative(root, absolute)));
+                throw new UnreadableInput(
+                    `TypeScript input exceeds limits: ${relative}`,
+                );
+            accepted.push(requested);
         } catch (error) {
             rejected.push({
-                relative: normalize(relative),
-                message: error instanceof Error ? error.message : String(error),
+                relative: requested,
+                message: errorMessage(error),
+                failedRead: error instanceof UnreadableInput,
+                ...(error instanceof RefusedAfterRead
+                    ? { refusalHash: error.contentHash }
+                    : {}),
             });
         }
     }
@@ -1355,8 +2031,31 @@ function validateRequestedFiles(root, files, limits = {}) {
     return { accepted, rejected };
 }
 
+/**
+ * Whether a redirect SourceFile's facts provably come from its own path's bytes.
+ *
+ * TypeScript loads one copy of a package name@version and makes every further
+ * copy a redirect to it, so a duplicate path's facts are computed from the
+ * first copy. That is only a fact about the duplicate when the host read both
+ * and the two reads hashed the same. Attaching the target's hash instead would
+ * fail verification on every scan of a project whose copies differ.
+ */
+function redirectReadsAgree(redirect) {
+    const own =
+        redirect.unredirected === undefined
+            ? undefined
+            : parsedContentHashes.get(redirect.unredirected);
+    const target = parsedContentHashes.get(redirect.redirectTarget);
+    return own !== undefined && own === target;
+}
+
 // A contribution that carries nothing but the reason one file was skipped.
 function unscannableContribution(relative, message) {
+    return factFreeContribution(relative, "TS_UNSCANNABLE_FILE", message);
+}
+
+// A contribution with no facts, only a diagnostic saying why.
+function factFreeContribution(relative, code, message) {
     return {
         owner_key: `knossos.typescript:file:${relative}`,
         nodes: [],
@@ -1364,7 +2063,7 @@ function unscannableContribution(relative, message) {
         diagnostics: [
             {
                 severity: "error",
-                code: "TS_UNSCANNABLE_FILE",
+                code,
                 message,
                 evidence: { path: relative, start_line: 1, end_line: 1 },
             },
@@ -1380,24 +2079,55 @@ function unscannableContribution(relative, message) {
 // the first line is read, and only for a file that has no known extension.
 function namesJavaScriptInShebang(absolute) {
     if (path.extname(absolute) !== "") return false;
-    let first;
+    let buffer;
+    let read;
     try {
         const handle = fs.openSync(absolute, "r");
         try {
-            const buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
-            const read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
-            first = buffer.toString("utf8", 0, read).split("\n", 1)[0];
+            buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
+            read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
         } finally {
             fs.closeSync(handle);
         }
-    } catch {
-        return false;
+    } catch (error) {
+        // Only ever asked of a path that just resolved, so a failed read is the
+        // filesystem's answer, not this script's interpreter.
+        throw new UnreadableInput(errorMessage(error));
     }
 
+    return probeNamesJavaScript(buffer.subarray(0, read));
+}
+
+// Whether the probe's bytes, the file's first SHEBANG_PROBE_BYTES at most, name
+// JavaScript on their first line.
+function probeNamesJavaScript(bytes) {
+    const first = bytes
+        .toString("utf8", 0, Math.min(bytes.length, SHEBANG_PROBE_BYTES))
+        .split("\n", 1)[0];
     return (
         first.startsWith("#!") &&
         /\b(node|nodejs|bun|deno)[0-9.]*\b/i.test(first)
     );
+}
+
+// What a shebang refusal reports in `input_hashes` for the refused file. The
+// probe read only a line, which no discovery hash can be compared with, so the
+// whole file is read once more, bounded, and judged again on those same bytes.
+// A file that still does not name JavaScript is reported by that read's hash:
+// a tree that is not changing matches what discovery hashed, so a script this
+// rule and discovery's happen to judge apart costs only its diagnostic, while a
+// script swapped for another one does not match. A read that fails, is over the
+// cap, or now names JavaScript saw a file that changed between the two reads,
+// and is reported as null.
+function shebangRefusalEvidence(absolute, maxFileBytes) {
+    let buffer;
+    try {
+        buffer = readBounded(absolute, maxFileBytes);
+    } catch {
+        return null;
+    }
+    if (buffer === undefined || probeNamesJavaScript(buffer)) return null;
+    return createHash("sha256").update(buffer).digest("hex");
 }
 
 // Whether a file opens with a shebang, whatever interpreter it names.
@@ -1415,7 +2145,7 @@ function startsWithShebang(text) {
 function validateRoot(input) {
     if (typeof input !== "string" || input.length === 0)
         throw new Error("A project root is required.");
-    const root = normalize(fs.realpathSync(input));
+    const root = realpathNative(input);
     if (!fs.statSync(root).isDirectory())
         throw new Error("Project root is not a directory.");
     return root;
@@ -1444,26 +2174,26 @@ function assertScannablePath(relative) {
 
 function validatedInside(root, relative) {
     assertScannablePath(relative);
-    const real = normalize(fs.realpathSync(path.join(root, relative)));
+    const real = realpathNative(path.join(root, relative));
     if (!contains(root, real))
         throw new Error("Project-relative path escapes the root.");
     return real;
 }
 
+// Whether the compiler may touch a path: the default library, or a path inside
+// the root that the kernel's lookup (walkPath) keeps inside it. A path that does
+// not resolve at all is let through, so its read fails and is recorded by
+// readHashedSourceFile under the same walk's key.
 function allowedCompilerPath(root, candidate) {
-    const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
-    const defaultLib = normalize(path.dirname(ts.getDefaultLibFilePath({})));
-    if (contains(defaultLib, normalized)) return true;
+    const normalized = realSourcePath(normalize(path.resolve(candidate)));
+    if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
-    try {
-        return contains(root, normalize(fs.realpathSync(normalized)));
-    } catch {
-        return true;
-    }
+    const walked = walkPath(normalized);
+    return walked.location === undefined || contains(root, walked.location);
 }
 
 function relativeInside(root, candidate) {
-    const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
+    const normalized = realSourcePath(normalize(path.resolve(candidate)));
     if (!contains(root, normalized)) return null;
     return normalize(path.relative(root, normalized));
 }
@@ -1471,15 +2201,39 @@ function relativeInside(root, candidate) {
 // The single chokepoint every relative path passes through, so un-aliasing here
 // keeps canonical names, evidence paths, and the emitted owner keys pointed at
 // the file that actually exists on disk.
-function shebangSourcePath(candidate) {
-    return candidate.endsWith(SHEBANG_ALIAS_SUFFIX)
-        ? candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length)
-        : candidate;
+function realSourcePath(candidate) {
+    if (candidate.endsWith(SHEBANG_ALIAS_SUFFIX))
+        return candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length);
+    const caseAlias = /\.knossos-alias(\.[a-z]+)$/.exec(candidate);
+    if (caseAlias !== null && SOURCE_EXTENSIONS.has(caseAlias[1])) {
+        const original = candidate.slice(0, caseAlias.index);
+        const originalExtension = path.extname(original);
+        // offeredPath only ever appends this mark to a name whose own
+        // extension is a supported one spelled with some upper case, the
+        // exact case it lower-cases below the mark. A real file that happens
+        // to be named e.g. `x.knossos-alias.ts` already has a lower-case
+        // extension, so stripping the mark here would rename it to `x` and
+        // lose its facts under the wrong key; only strip when undoing that
+        // exact case fold would restore it.
+        if (
+            originalExtension !== "" &&
+            originalExtension !== originalExtension.toLowerCase() &&
+            originalExtension.toLowerCase() === caseAlias[1]
+        )
+            return original;
+    }
+    return candidate;
 }
 
-// The name an extensionless script is offered to the program under.
-function shebangAliasPath(candidate) {
-    return `${candidate}${SHEBANG_ALIAS_SUFFIX}`;
+// The name a requested file is offered to the program under: an extensionless
+// script as a `.js` alias, a file whose extension is not in lower case under its
+// lower-cased extension, and anything else as itself.
+function offeredPath(absolute) {
+    const extension = path.extname(absolute);
+    if (extension === "") return `${absolute}${SHEBANG_ALIAS_SUFFIX}`;
+    if (extension !== extension.toLowerCase())
+        return `${absolute}${CASE_ALIAS_MARK}${extension.toLowerCase()}`;
+    return absolute;
 }
 
 function contains(root, candidate) {

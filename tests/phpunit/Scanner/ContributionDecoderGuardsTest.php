@@ -56,6 +56,22 @@ final class ContributionDecoderGuardsTest extends KnossosTestCase
         assertSame(true, str_contains($error->getMessage(), 'nodes must be a list.'), $error->getMessage());
     }
 
+    /**
+     * A list field that is present but not an array is refused as a list
+     * problem. It passes the isset half and fails only the is_array half, so a
+     * guard that required both would hand a string to array_is_list() instead.
+     */
+    #[Group('scanner')]
+    public function testAListFieldThatIsNotAnArrayIsRefusedAsAListProblem(): void
+    {
+        $reply = self::reply([]);
+        $reply['edges'] = 'none';
+
+        $error = self::refuse($reply);
+
+        assertSame('edges must be a list.', $error->getMessage());
+    }
+
     /** A field of the wrong type is refused as that field, not as something further on. */
     #[Group('scanner')]
     public function testAFieldOfTheWrongTypeIsRefusedAsThatField(): void

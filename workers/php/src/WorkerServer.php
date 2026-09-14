@@ -14,10 +14,17 @@ use Throwable;
  */
 final class WorkerServer
 {
-    public const VERSION = '0.6.0';
+    public const VERSION = '0.7.0';
 
     /** Bytes read when probing an extensionless file's shebang; one short line is enough. */
     private const SHEBANG_PROBE_BYTES = 256;
+
+    /**
+     * Serialized bytes one `scan/input_hashes` notification carries at most,
+     * well under the core's 1,000,000-byte line cap, and the same as the
+     * packaged Python and TypeScript workers use.
+     */
+    private const INPUT_HASHES_PART_BYTES = 256_000;
 
     public function __construct(private readonly PhpScanner $scanner = new PhpScanner()) {}
     /** The protocol loop: read a request, dispatch it, write the reply. */
@@ -92,7 +99,7 @@ final class WorkerServer
             'output_schema_version' => '1.0',
             'languages' => ['php'],
             'file_extensions' => ['php'],
-            'capabilities' => ['partial_ast'],
+            'capabilities' => ['partial_ast', 'content_hash', 'input_hashes'],
         ];
     }
 
@@ -122,6 +129,7 @@ final class WorkerServer
         }
 
         $count = 0;
+        $inputs = [];
         foreach ($files as $relativePath) {
             if (!is_string($relativePath)) {
                 throw new WorkerInputException('Scan file paths must be strings.');
@@ -137,18 +145,39 @@ final class WorkerServer
             // discard the facts every other file in the batch had already
             // contributed, so one unscannable file produced no graph at all.
             try {
-                $absolutePath = $this->validatedFile($root, $relativePath);
+                $absolutePath = $this->validatedFile($root, $relativePath, $maxFileBytes);
                 $size = filesize($absolutePath);
                 if ($size === false || $size > $maxFileBytes) {
-                    throw new WorkerInputException(
+                    throw new UnreadableFileException(
                         sprintf('PHP scan file exceeds the size limit: %s', $relativePath),
                     );
                 }
                 $contribution = $this->scanner->scan($root, $absolutePath, $relativePath, $laravel, $symfony);
+            } catch (UnreadableFileException $error) {
+                $contribution = self::rejection($relativePath, 'PHP_UNSCANNABLE_FILE', $error->getMessage());
+                // The file is not what discovery hashed right now, and the
+                // contribution that replaces its facts is empty. Null makes the
+                // core fail the scan for a discovered path instead of keeping a
+                // graph without them.
+                $inputs[$relativePath] = null;
+            } catch (RefusedAfterReadException $error) {
+                // Refused on what the file says rather than on its name, so
+                // what was read is evidence: a stable tree matches the hash,
+                // a script swapped and restored around the probe does not.
+                $contribution = self::rejection($relativePath, 'PHP_UNSCANNABLE_FILE', $error->getMessage());
+                $inputs[$relativePath] = $error->contentHash;
             } catch (WorkerInputException $error) {
                 $contribution = self::rejection($relativePath, 'PHP_UNSCANNABLE_FILE', $error->getMessage());
             } catch (Throwable $error) {
                 $contribution = self::rejection($relativePath, 'PHP_INTERNAL_ERROR', $error->getMessage());
+            }
+            // No second read: this worker resolves nothing across files, so the
+            // one read the scanner already did for this file's own contribution
+            // is the only read there is. A contribution that carries no hash was
+            // refused by policy before any read, failed to read (recorded as
+            // null above), or failed after the read without facts.
+            if (isset($contribution['content_hash'])) {
+                $inputs[$relativePath] = $contribution['content_hash'];
             }
             $this->write([
                 'jsonrpc' => '2.0',
@@ -158,7 +187,56 @@ final class WorkerServer
             ++$count;
         }
 
-        return ['files_scanned' => $count];
+        // A batch's map is bounded by its file count, but not by the line
+        // cap: at 400 files a long enough path makes it outgrow one frame.
+        $parts = self::inputHashesParts($inputs);
+        $last = array_pop($parts);
+        foreach ($parts as $part) {
+            $this->write([
+                'jsonrpc' => '2.0',
+                'method' => 'scan/input_hashes',
+                'params' => ['input_hashes' => (object) $part],
+            ]);
+        }
+
+        return ['files_scanned' => $count, 'input_hashes' => (object) $last];
+    }
+
+    /**
+     * Split a request's `input_hashes` map into parts that each fit one frame.
+     *
+     * All parts but the last go out as `scan/input_hashes` notifications; the
+     * last is the result's own field, which marks that the worker finished
+     * reporting, so there is always at least one part, empty when nothing was
+     * read. A single entry longer than the budget still travels alone. The
+     * budget and the arithmetic match the packaged Python and TypeScript
+     * workers.
+     *
+     * @param array<array-key, string|null> $inputHashes
+     * @return non-empty-list<array<array-key, string|null>>
+     */
+    private static function inputHashesParts(array $inputHashes, int $partBytes = self::INPUT_HASHES_PART_BYTES): array
+    {
+        $parts = [];
+        $part = [];
+        // The serialized part: its braces, less the comma its last entry lacks.
+        $bytes = 1;
+        foreach ($inputHashes as $relative => $hash) {
+            // `"path":"<64 hex>",` or `"path":null,`, encoded as write() encodes it.
+            $entryBytes = strlen(json_encode((string) $relative, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE))
+                + ($hash === null ? 4 : 66)
+                + 2;
+            if ($part !== [] && $bytes + $entryBytes > $partBytes) {
+                $parts[] = $part;
+                $part = [];
+                $bytes = 1;
+            }
+            $part[$relative] = $hash;
+            $bytes += $entryBytes;
+        }
+        $parts[] = $part;
+
+        return $parts;
     }
 
     /**
@@ -232,7 +310,7 @@ final class WorkerServer
      * extension alone rejected exactly the files discovery had just resolved, so
      * an extensionless PHP script anywhere in a tree failed the whole scan.
      */
-    private function validatedFile(string $root, string $relativePath): string
+    private function validatedFile(string $root, string $relativePath, int $maxFileBytes): string
     {
         $normalized = str_replace('\\', '/', $relativePath);
         $extension = strtolower(pathinfo($normalized, PATHINFO_EXTENSION));
@@ -242,17 +320,17 @@ final class WorkerServer
 
         $real = realpath($root . '/' . $normalized);
         if ($real === false || !is_file($real)) {
-            throw new WorkerInputException('PHP scan file does not exist.');
+            throw new UnreadableFileException('PHP scan file does not exist.');
         }
         $real = str_replace('\\', '/', $real);
         if (!($real === $root || str_starts_with($real, rtrim($root, '/') . '/'))) {
-            throw new WorkerInputException('PHP scan path escapes the project root.');
+            throw new UnreadableFileException('PHP scan path escapes the project root.');
         }
         // Resolved last: reading the file is only safe once the path is known to
         // be inside the root, so an extensionless path cannot be used to probe
         // the first line of an arbitrary file elsewhere on the host.
         if ($extension === '' && !self::namesPhpInShebang($real)) {
-            throw new WorkerInputException('PHP scan path is invalid.');
+            throw new RefusedAfterReadException('PHP scan path is invalid.', self::refusalEvidence($real, $maxFileBytes));
         }
 
         return $real;
@@ -271,7 +349,9 @@ final class WorkerServer
     {
         $handle = @fopen($absolutePath, 'rb');
         if (!is_resource($handle)) {
-            return false;
+            // Resolved to a regular file a moment ago: a failed open is the
+            // filesystem's answer, not this script's shebang.
+            throw new UnreadableFileException(sprintf('Unable to read PHP file: %s', $absolutePath));
         }
         try {
             $first = (string) fgets($handle, self::SHEBANG_PROBE_BYTES);
@@ -279,7 +359,40 @@ final class WorkerServer
             fclose($handle);
         }
 
+        return self::firstLineNamesPhp($first);
+    }
+
+    /** Whether a shebang line, as the probe reads it, names PHP. */
+    private static function firstLineNamesPhp(string $first): bool
+    {
         return str_starts_with($first, '#!') && preg_match('#\b(php)[0-9.]*\b#i', $first) === 1;
+    }
+
+    /**
+     * What a shebang refusal reports in `input_hashes` for the refused file.
+     *
+     * The probe read only a line, which no discovery hash can be compared
+     * with, so the whole file is read once more, bounded, and judged again on
+     * those same bytes. A file that still does not name PHP is reported by
+     * that read's hash: a tree that is not changing matches what discovery
+     * hashed, so a script this rule and discovery's happen to judge apart
+     * costs only its diagnostic, while a script swapped for another one does
+     * not match. A read that fails, is over the byte cap, or now names PHP
+     * saw a file that changed between the two reads, and is reported as null.
+     */
+    private static function refusalEvidence(string $absolutePath, int $maxFileBytes): ?string
+    {
+        $bytes = @file_get_contents($absolutePath, false, null, 0, $maxFileBytes === PHP_INT_MAX ? PHP_INT_MAX : $maxFileBytes + 1);
+        if (!is_string($bytes) || strlen($bytes) > $maxFileBytes) {
+            return null;
+        }
+        $first = substr($bytes, 0, self::SHEBANG_PROBE_BYTES - 1);
+        $newline = strpos($first, "\n");
+        if ($newline !== false) {
+            $first = substr($first, 0, $newline + 1);
+        }
+
+        return self::firstLineNamesPhp($first) ? null : hash('sha256', $bytes);
     }
 
     /**

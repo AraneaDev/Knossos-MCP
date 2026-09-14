@@ -79,6 +79,12 @@ describe("worker startup", () => {
 
         expect(responses.map((item) => item.id)).toEqual([1, 2]);
         expect(responses[0].result.id).toBe("knossos.typescript");
+        expect(responses[0].result.capabilities).toEqual([
+            "project_program",
+            "partial_ast",
+            "content_hash",
+            "input_hashes",
+        ]);
         expect(responses[1].result.status).toBe("bye");
         expect(loadedCompiler).toBe(false);
     });
@@ -107,6 +113,9 @@ describe("worker startup", () => {
             const scan = responses.find((item) => item.id === 2);
             expect(scan.error).toBeUndefined();
             expect(scan.result.files_scanned).toBe(1);
+            expect(Object.keys(scan.result.input_hashes)).toContain(
+                "packages/shared/src/contracts.ts",
+            );
             expect(loadedCompiler).toBe(true);
         },
         SUBPROCESS_AND_PROGRAM_TIMEOUT_MS,

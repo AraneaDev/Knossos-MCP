@@ -44,7 +44,14 @@ while (($line = fgets(STDIN)) !== false) {
             continue;
         }
 
-        respond($id, manifest($mode === 'mismatch' ? '999.0' : '1.0'));
+        respond($id, manifest(
+            $mode === 'mismatch' ? '999.0' : '1.0',
+            match (true) {
+                str_starts_with($mode, 'inputs_') => ['partial_ast', 'content_hash', 'input_hashes'],
+                str_starts_with($mode, 'hash_') => ['partial_ast', 'content_hash'],
+                default => ['partial_ast'],
+            },
+        ));
         continue;
     }
 
@@ -52,7 +59,13 @@ while (($line = fgets(STDIN)) !== false) {
         if (($request['params']['files'] ?? null) === []) {
             // Echoed back so a test can observe which ids the host cancelled
             // without a discover round trip, which the protocol no longer has.
-            respond($id, ['count' => 0, 'cancelled' => $cancelled]);
+            $result = ['count' => 0, 'cancelled' => $cancelled];
+            if (str_starts_with($mode, 'inputs_') && $mode !== 'inputs_missing') {
+                // A declaring worker's result carries the field on every
+                // request, empty when a request read nothing.
+                $result['input_hashes'] = (object) [];
+            }
+            respond($id, $result);
             continue;
         }
         if ($mode === 'blocked_scan') {
@@ -116,6 +129,99 @@ while (($line = fgets(STDIN)) !== false) {
         if ($mode === 'stderr_flood') {
             fwrite(STDERR, str_repeat('x', 2048));
             fflush(STDERR);
+        }
+        if (str_starts_with($mode, 'hash_')) {
+            $root = (string) ($request['params']['root'] ?? '');
+            foreach ($request['params']['files'] ?? [] as $relativePath) {
+                $relativePath = (string) $relativePath;
+                $owner = 'knossos.fake:file:' . $relativePath;
+                $absolute = $root . '/' . $relativePath;
+                if ($mode === 'hash_unreadable') {
+                    // What every bundled worker sends for a file it could not
+                    // read: a diagnostic, and no hash, because there were no bytes.
+                    notifyContribution([
+                        'owner_key' => $owner, 'nodes' => [], 'edges' => [],
+                        'diagnostics' => [['severity' => 'error', 'code' => 'FAKE_UNSCANNABLE_FILE', 'message' => 'unreadable',
+                            'evidence' => ['path' => $relativePath, 'start_line' => 1, 'end_line' => 1]]],
+                    ]);
+                    continue;
+                }
+                $contribution = fileContribution($owner, $relativePath);
+                if ($mode === 'hash_swap') {
+                    // A genuine change-then-restore around this worker's own read:
+                    // the file holds other bytes exactly while it is read, and is
+                    // back to what discovery hashed before the scan can re-check.
+                    $original = (string) file_get_contents($absolute);
+                    file_put_contents($absolute, $original . "\n// swapped while the worker read it\n");
+                    $parsed = (string) file_get_contents($absolute);
+                    file_put_contents($absolute, $original);
+                    $contribution['content_hash'] = hash('sha256', $parsed);
+                } elseif ($mode === 'hash_honest') {
+                    $contribution['content_hash'] = hash('sha256', (string) file_get_contents($absolute));
+                } elseif ($mode === 'hash_decoded') {
+                    // The usual mistake: hashing text after the byte-order mark
+                    // was stripped, rather than the bytes that came off disk.
+                    $text = (string) file_get_contents($absolute);
+                    $contribution['content_hash'] = hash('sha256', str_starts_with($text, "\xEF\xBB\xBF") ? substr($text, 3) : $text);
+                }
+                // hash_missing: facts, capability declared, no hash.
+                notifyContribution($contribution);
+            }
+            respond($id, ['count' => count($request['params']['files'] ?? [])]);
+            continue;
+        }
+        if (str_starts_with($mode, 'inputs_')) {
+            // Every requested file is parsed honestly; what differs per mode is
+            // the report on src/Other.ts, a file read only to resolve the
+            // requested files' facts, as a module index or a type checker does.
+            $root = (string) ($request['params']['root'] ?? '');
+            $requested = array_map('strval', $request['params']['files'] ?? []);
+            $inputs = [];
+            foreach ($requested as $relativePath) {
+                $contribution = fileContribution('knossos.fake:file:' . $relativePath, $relativePath);
+                $contribution['content_hash'] = hash('sha256', (string) file_get_contents($root . '/' . $relativePath));
+                notifyContribution($contribution);
+                $inputs[$relativePath] = $contribution['content_hash'];
+            }
+            $other = $root . '/src/Other.ts';
+            if ($mode === 'inputs_honest' && is_file($other)) {
+                $inputs['src/Other.ts'] = hash('sha256', (string) file_get_contents($other));
+            } elseif ($mode === 'inputs_swap') {
+                // The same change-then-restore as hash_swap, but around a file
+                // this request only read for the others' sake.
+                $original = (string) file_get_contents($other);
+                file_put_contents($other, $original . "\n// swapped while the worker read it\n");
+                $read = (string) file_get_contents($other);
+                file_put_contents($other, $original);
+                $inputs['src/Other.ts'] = hash('sha256', $read);
+            } elseif ($mode === 'inputs_unreadable') {
+                $inputs['src/Other.ts'] = null;
+            } elseif ($mode === 'inputs_outside') {
+                $inputs['node_modules/dep/index.d.ts'] = hash('sha256', 'x');
+            } elseif ($mode === 'inputs_escaping_key') {
+                // Honest about the requested file, but keys another read by a
+                // path that climbs out of the root, which the core refuses.
+                $inputs['../outside.ts'] = hash('sha256', 'x');
+            } elseif ($mode === 'inputs_parts_honest') {
+                // The honest read sent ahead of the result as a part.
+                notifyInputHashes(['src/Other.ts' => hash('sha256', (string) file_get_contents($other))]);
+            } elseif ($mode === 'inputs_parts_disagree') {
+                // Two reads of one file with different bytes, reported in
+                // different frames: one part, then the result's own field.
+                notifyInputHashes(['src/Other.ts' => hash('sha256', (string) file_get_contents($other))]);
+                $inputs['src/Other.ts'] = hash('sha256', 'swapped while the worker read it');
+            } elseif ($mode === 'inputs_parts_flood') {
+                // More part bytes than the client's budget allows.
+                for ($part = 0; $part < 4; ++$part) {
+                    notifyInputHashes([sprintf('generated/part-%d-%s.ts', $part, str_repeat('x', 2_000)) => null]);
+                }
+            }
+            $result = ['count' => count($requested)];
+            if ($mode !== 'inputs_missing') {
+                $result['input_hashes'] = (object) $inputs;
+            }
+            respond($id, $result);
+            continue;
         }
         if (str_starts_with($mode, 'per_file')) {
             $requested = $request['params']['files'] ?? [];
@@ -220,8 +326,11 @@ while (($line = fgets(STDIN)) !== false) {
     ]);
 }
 
-/** @return array<string, mixed> */
-function manifest(string $protocol): array
+/**
+ * @param list<string> $capabilities
+ * @return array<string, mixed>
+ */
+function manifest(string $protocol, array $capabilities = ['partial_ast']): array
 {
     return [
         'id' => 'knossos.fake',
@@ -230,7 +339,7 @@ function manifest(string $protocol): array
         'output_schema_version' => '1.0',
         'languages' => ['typescript'],
         'file_extensions' => ['ts'],
-        'capabilities' => ['partial_ast'],
+        'capabilities' => $capabilities,
     ];
 }
 
@@ -300,6 +409,16 @@ function notifyContribution(array $contribution): void
         'jsonrpc' => '2.0',
         'method' => 'scan/contribution',
         'params' => $contribution,
+    ]);
+}
+
+/** @param array<string, string|null> $inputHashes */
+function notifyInputHashes(array $inputHashes): void
+{
+    writeMessage([
+        'jsonrpc' => '2.0',
+        'method' => 'scan/input_hashes',
+        'params' => ['input_hashes' => (object) $inputHashes],
     ]);
 }
 

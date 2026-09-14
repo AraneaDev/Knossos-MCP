@@ -58,7 +58,12 @@ trait TempTrees
             \RecursiveIteratorIterator::CHILD_FIRST,
         );
         foreach ($items as $item) {
-            if ($item->isDir()) {
+            // A link to a directory reports isDir() and rmdir() refuses it;
+            // the iterator does not descend into it, so unlinking it removes
+            // the link alone and never what it points at.
+            if ($item->isLink()) {
+                @unlink($item->getPathname());
+            } elseif ($item->isDir()) {
                 @rmdir($item->getPathname());
             } else {
                 @unlink($item->getPathname());

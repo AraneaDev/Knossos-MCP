@@ -46,8 +46,13 @@ final readonly class PhpScanner
     {
         $source = file_get_contents($absolutePath);
         if ($source === false) {
-            throw new WorkerInputException(sprintf('Unable to read PHP file: %s', $relativePath));
+            throw new UnreadableFileException(sprintf('Unable to read PHP file: %s', $relativePath));
         }
+
+        // Of the exact buffer handed to the parser, so the core can tell facts
+        // parsed from these bytes apart from facts parsed from a file that
+        // changed after discovery hashed it.
+        $contentHash = hash('sha256', $source);
 
         $errors = new Collecting();
         $ast = $this->parser->parse($source, $errors) ?? [];
@@ -60,6 +65,7 @@ final readonly class PhpScanner
                 'owner_key' => 'knossos.php:file:' . $relativePath,
                 'nodes' => [],
                 'edges' => [],
+                'content_hash' => $contentHash,
                 'diagnostics' => [[
                     'severity' => 'warning',
                     'code' => 'PHP_AST_TOO_DEEP',
@@ -112,6 +118,7 @@ final readonly class PhpScanner
             'owner_key' => 'knossos.php:file:' . $relativePath,
             'nodes' => [...$collector->nodes(), ...($laravelCollector?->nodes() ?? []), ...($symfonyCollector?->nodes() ?? [])],
             'edges' => [...$collector->edges(), ...($laravelCollector?->edges() ?? []), ...($symfonyCollector?->edges() ?? [])],
+            'content_hash' => $contentHash,
             'diagnostics' => [...$diagnostics, ...($laravelCollector?->diagnostics() ?? []), ...($symfonyCollector?->diagnostics() ?? [])],
         ];
     }

@@ -28,7 +28,10 @@ fn initialize_returns_the_knossos_rust_manifest() {
     assert_eq!("1.0", manifest["output_schema_version"]);
     assert_eq!(serde_json::json!(["rust"]), manifest["languages"]);
     assert_eq!(serde_json::json!(["rs"]), manifest["file_extensions"]);
-    assert_eq!(serde_json::json!(["partial_ast"]), manifest["capabilities"]);
+    assert_eq!(
+        serde_json::json!(["partial_ast", "content_hash", "input_hashes"]),
+        manifest["capabilities"]
+    );
 }
 
 #[test]
@@ -44,6 +47,7 @@ fn an_empty_scan_emits_no_contributions() {
 
     assert_eq!(1, replies.len(), "an empty scan must emit no contributions");
     assert_eq!(0, replies[0]["result"]["files_scanned"]);
+    assert_eq!(serde_json::json!({}), replies[0]["result"]["input_hashes"]);
 }
 
 #[test]

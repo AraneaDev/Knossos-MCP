@@ -1,5 +1,12 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import fs, { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import fs, {
+    mkdtempSync,
+    mkdirSync,
+    writeFileSync,
+    rmSync,
+    symlinkSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { TypeScriptScanner, discoverConfigFiles } from "../scanner.js";
@@ -840,5 +847,802 @@ describe("TypeScriptScanner.scan backstop", () => {
                 .map((file) => `knossos.typescript:file:${file}`)
                 .sort(),
         );
+    });
+});
+
+const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+function scanOnce(scanner, root, files) {
+    const contributions = [];
+    scanner.scan({ root, files }, (contribution) =>
+        contributions.push(contribution),
+    );
+    return Object.fromEntries(contributions.map((c) => [c.owner_key, c]));
+}
+
+// Run `callback` with every source read (the host opens the file with
+// fs.openSync) of a path ending in `suffix` failing as unreadable, the way a
+// permission change after discovery would.
+function withUnreadable(suffix, callback) {
+    const openSync = fs.openSync;
+    const spy = vi.spyOn(fs, "openSync").mockImplementation((file, ...rest) => {
+        if (String(file).endsWith(suffix)) {
+            throw Object.assign(new Error("EACCES: permission denied"), {
+                code: "EACCES",
+            });
+        }
+        return openSync(file, ...rest);
+    });
+    try {
+        return callback();
+    } finally {
+        spy.mockRestore();
+    }
+}
+
+describe("content_hash", () => {
+    it("hashes raw bytes, so a byte-order mark is part of the hash", () => {
+        const bom = Buffer.concat([
+            Buffer.from([0xef, 0xbb, 0xbf]),
+            Buffer.from("export class Bom {}\n"),
+        ]);
+        const utf16le = Buffer.concat([
+            Buffer.from([0xff, 0xfe]),
+            Buffer.from("export class Wide {}\n", "utf16le"),
+        ]);
+        const utf16beText = Buffer.from("export class Big {}\n", "utf16le");
+        utf16beText.swap16();
+        const utf16be = Buffer.concat([Buffer.from([0xfe, 0xff]), utf16beText]);
+        const root = fixture({ "src/plain.ts": "export class Plain {}\n" });
+        writeFileSync(join(root, "src/bom.ts"), bom);
+        writeFileSync(join(root, "src/wide.ts"), utf16le);
+        writeFileSync(join(root, "src/big.ts"), utf16be);
+
+        const byOwner = scanOnce(new TypeScriptScanner(), root, [
+            "src/plain.ts",
+            "src/bom.ts",
+            "src/wide.ts",
+            "src/big.ts",
+        ]);
+
+        const names = (file) =>
+            byOwner[`knossos.typescript:file:${file}`].nodes.map(
+                (n) => n.display_name,
+            );
+        expect(
+            byOwner["knossos.typescript:file:src/plain.ts"].content_hash,
+        ).toBe(sha256(Buffer.from("export class Plain {}\n")));
+        expect(byOwner["knossos.typescript:file:src/bom.ts"].content_hash).toBe(
+            sha256(bom),
+        );
+        expect(
+            byOwner["knossos.typescript:file:src/wide.ts"].content_hash,
+        ).toBe(sha256(utf16le));
+        expect(byOwner["knossos.typescript:file:src/big.ts"].content_hash).toBe(
+            sha256(utf16be),
+        );
+        // Decoding still matches what the compiler would have read: the class
+        // behind the BOM and both UTF-16 files are found under their own names.
+        expect(names("src/plain.ts")).toContain("Plain");
+        expect(names("src/bom.ts")).toContain("Bom");
+        expect(names("src/wide.ts")).toContain("Wide");
+        expect(names("src/big.ts")).toContain("Big");
+        expect(
+            byOwner["knossos.typescript:file:src/bom.ts"].diagnostics,
+        ).toEqual([]);
+    });
+
+    it("binds each request's hash to the program that parsed it, across cached programs", () => {
+        const root = fixture({ "src/a.ts": "export class First {}\n" });
+        const scanner = new TypeScriptScanner();
+
+        const first = scanOnce(scanner, root, ["src/a.ts"]);
+        writeFileSync(join(root, "src/a.ts"), "export class Second {}\n");
+        const second = scanOnce(scanner, root, ["src/a.ts"]);
+
+        const owner = "knossos.typescript:file:src/a.ts";
+        expect(first[owner].content_hash).toBe(
+            sha256(Buffer.from("export class First {}\n")),
+        );
+        expect(second[owner].content_hash).toBe(
+            sha256(Buffer.from("export class Second {}\n")),
+        );
+        expect(second[owner].nodes.map((n) => n.display_name)).toContain(
+            "Second",
+        );
+    });
+
+    it("hashes a file that does not parse cleanly", () => {
+        const root = fixture({ "src/broken.ts": "export class {\n" });
+
+        const byOwner = scanOnce(new TypeScriptScanner(), root, [
+            "src/broken.ts",
+        ]);
+
+        expect(
+            byOwner["knossos.typescript:file:src/broken.ts"].content_hash,
+        ).toBe(sha256(Buffer.from("export class {\n")));
+    });
+
+    it("hashes an extensionless shebang script's own bytes", () => {
+        const script =
+            "#!/usr/bin/env node\nexport function run() {\n    return 1;\n}\n";
+        const root = fixture({ "bin/cli": script });
+
+        const byOwner = scanOnce(new TypeScriptScanner(), root, ["bin/cli"]);
+
+        const contribution = byOwner["knossos.typescript:file:bin/cli"];
+        expect(contribution.nodes.length).toBeGreaterThan(0);
+        expect(contribution.content_hash).toBe(sha256(Buffer.from(script)));
+    });
+
+    it("sends no hash for a file that passed validation but could not be read", () => {
+        // Validation only stats the file; the read that would hash and parse it
+        // fails. No bytes were read, so no hash, while the file beside it has one.
+        const root = fixture({
+            "src/gone.ts": "export class Gone {}\n",
+            "src/kept.ts": "export class Kept {}\n",
+        });
+        const byOwner = withUnreadable(join("src", "gone.ts"), () =>
+            scanOnce(new TypeScriptScanner(), root, [
+                "src/gone.ts",
+                "src/kept.ts",
+            ]),
+        );
+
+        const { content_hash: kept } =
+            byOwner["knossos.typescript:file:src/kept.ts"];
+        const gone = byOwner["knossos.typescript:file:src/gone.ts"];
+        expect(gone).not.toHaveProperty("content_hash");
+        expect([gone.nodes, gone.diagnostics.length]).toEqual([[], 1]);
+        expect(kept).toBe(sha256(Buffer.from("export class Kept {}\n")));
+    });
+});
+
+// Run one scan and keep its result as well as its contributions.
+function scanWithResult(scanner, root, files, extra = {}) {
+    const contributions = [];
+    const result = scanner.scan({ root, files, ...extra }, (contribution) =>
+        contributions.push(contribution),
+    );
+    return {
+        result,
+        byOwner: Object.fromEntries(contributions.map((c) => [c.owner_key, c])),
+    };
+}
+
+// Scan `files` while changing the tree at one point of the host's handling of a
+// path: each entry of `changes` runs once, the first time the host reaches a
+// path ending in its suffix at `stage` ("load": before a SourceFile's admission
+// checks; "read": after them, before the read resolves the path).
+function scanChanging(root, stage, changes, extra = {}, files = ["src/a.ts"]) {
+    const pending = new Map(Object.entries(changes));
+    const scanner = new TypeScriptScanner({
+        observeHostPath: (at, absolute) => {
+            if (at !== stage) return;
+            for (const [suffix, change] of pending) {
+                if (!absolute.endsWith(suffix)) continue;
+                pending.delete(suffix);
+                change();
+            }
+        },
+    });
+    return scanWithResult(scanner, root, files, extra);
+}
+
+// Answer the reads of a path ending in `suffix` from `outcomes`, one per read in
+// order: a string is returned as the file's bytes, `null` fails the read. Reads
+// beyond the list, and of every other path, reach the disk.
+function withReads(suffix, outcomes, callback) {
+    const openSync = fs.openSync;
+    const remaining = [...outcomes];
+    const served = mkdtempSync(join(tmpdir(), "knossos-ts-served-"));
+    created.push(served);
+    let count = 0;
+    const spy = vi.spyOn(fs, "openSync").mockImplementation((file, ...rest) => {
+        if (String(file).endsWith(suffix) && remaining.length > 0) {
+            const outcome = remaining.shift();
+            if (outcome === null) {
+                throw Object.assign(new Error("EACCES: permission denied"), {
+                    code: "EACCES",
+                });
+            }
+            // The host reads through the descriptor, so it is handed one
+            // for a file holding exactly these bytes.
+            const stand = join(served, `read-${count++}`);
+            writeFileSync(stand, outcome);
+            return openSync(stand, ...rest);
+        }
+        return openSync(file, ...rest);
+    });
+    try {
+        return callback();
+    } finally {
+        spy.mockRestore();
+    }
+}
+
+// The importer and the file its checker reads to resolve it.
+const A = 'import { B } from "./b";\nexport class A extends B {}\n';
+const B = "export class B {}\n";
+
+describe("input_hashes: the reads a request reports", () => {
+    it("reports a file the checker read to resolve a requested one", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": sha256(Buffer.from(B)),
+        });
+    });
+
+    it("carries an empty map when nothing was read", () => {
+        const root = fixture({ "src/a.ts": A });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, []);
+
+        expect(result.input_hashes).toEqual({});
+    });
+
+    it("reports null for a file whose read failed", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = withUnreadable(join("src", "b.ts"), () =>
+            scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
+        );
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+});
+
+describe("input_hashes: programs reused across requests", () => {
+    it("reports this request's read of a file in a program reused from an earlier request", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const scanner = new TypeScriptScanner();
+        const changed = "export class B { changed = 1; }\n";
+
+        scanWithResult(scanner, root, ["src/a.ts"]);
+        writeFileSync(join(root, "src/b.ts"), changed);
+        const { result } = scanWithResult(scanner, root, ["src/a.ts"]);
+
+        expect(result.programs_reused).toBe(1);
+        expect(result.input_hashes["src/b.ts"]).toBe(
+            sha256(Buffer.from(changed)),
+        );
+    });
+
+    it("reads every file again when TypeScript reuses an unchanged program's structure", () => {
+        // Pins TypeScript's behaviour rather than the worker's: structure reuse
+        // asks the host for every file of the old program, so a reused program
+        // holds only SourceFiles this request created from its own reads.
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const scanner = new TypeScriptScanner();
+        scanWithResult(scanner, root, ["src/a.ts"]);
+
+        const openSync = fs.openSync;
+        const reads = [];
+        const spy = vi
+            .spyOn(fs, "openSync")
+            .mockImplementation((file, ...rest) => {
+                reads.push(String(file));
+                return openSync(file, ...rest);
+            });
+        let second;
+        try {
+            second = scanWithResult(scanner, root, ["src/a.ts"]);
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(second.result.programs_reused).toBe(1);
+        expect(reads.filter((file) => file.endsWith("/src/b.ts"))).toHaveLength(
+            1,
+        );
+        expect(second.result.input_hashes["src/b.ts"]).toBe(
+            sha256(Buffer.from(B)),
+        );
+    });
+});
+
+describe("input_hashes: the key each read goes under", () => {
+    it("reports null for each candidate a module resolution probed and found absent", () => {
+        // The import resolves to nothing because no candidate exists, so a
+        // discovered candidate missing for that moment must fail verification.
+        // Discovery never reports an absent path, so a stable tree is unaffected.
+        const root = fixture({
+            "src/a.ts": 'import { M } from "./missing";\nexport const a = M;\n',
+        });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(
+                Buffer.from(
+                    'import { M } from "./missing";\nexport const a = M;\n',
+                ),
+            ),
+            "src/missing.ts": null,
+            "src/missing.tsx": null,
+            "src/missing.d.ts": null,
+            "src/missing.js": null,
+            "src/missing.jsx": null,
+        });
+    });
+
+    it("reports nothing for a candidate a module resolution probed and found present", () => {
+        // The probe read no bytes; the read that follows is what is recorded.
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": sha256(Buffer.from(B)),
+        });
+    });
+
+    it("leaves out files under node_modules, keying only the absent manifests above them", () => {
+        const root = fixture({
+            "src/a.ts": 'import { dep } from "dep";\nexport const a = dep;\n',
+            "node_modules/dep/package.json":
+                '{"name":"dep","types":"index.d.ts"}\n',
+            "node_modules/dep/index.d.ts":
+                "export declare const dep: number;\n",
+        });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(Object.keys(result.input_hashes).sort()).toEqual([
+            "package.json",
+            "src/a.ts",
+            "src/package.json",
+        ]);
+    });
+
+    it("keys an extensionless shebang script by its real path", () => {
+        const script = "#!/usr/bin/env node\nexport function run() {}\n";
+        const root = fixture({ "bin/cli": script });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "bin/cli",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "bin/cli": sha256(Buffer.from(script)),
+        });
+    });
+
+    it("keys a file read through a symlink by where its bytes live, and by the link", () => {
+        // Discovery skips symlinks, so the linked name is not a path the core
+        // tracks on a stable tree; the target is, and it is the file whose
+        // bytes were read. The link is keyed too, so a discovered src/b.ts
+        // swapped for a link mid-scan is still checked against its own hash;
+        // the resolution probe that found it present records null there, and
+        // the two disagree into null.
+        const root = fixture({
+            "tsconfig.json": '{"include":["src"]}\n',
+            "src/a.ts": A,
+            "lib/b.ts": B,
+        });
+        symlinkSync(join(root, "lib/b.ts"), join(root, "src/b.ts"));
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+            "lib/b.ts": sha256(Buffer.from(B)),
+            "tsconfig.json": sha256(Buffer.from('{"include":["src"]}\n')),
+        });
+    });
+});
+
+// Swap a file for a link to `outside`, on disk.
+const linkOut = (file, outside) => {
+    fs.unlinkSync(file);
+    symlinkSync(outside, file);
+};
+
+// Every path opened for reading (fs.openSync) while `callback` runs.
+function withReadsRecorded(callback) {
+    const openSync = fs.openSync;
+    const readsMade = [];
+    const read = vi
+        .spyOn(fs, "openSync")
+        .mockImplementation((file, ...rest) => {
+            readsMade.push(String(file));
+            return openSync(file, ...rest);
+        });
+    try {
+        return { ...callback(), readsMade };
+    } finally {
+        read.mockRestore();
+    }
+}
+
+describe("input_hashes: a path that changes under the read", () => {
+    it("reports null, without reading, for a file whose target has left the root since it was allowed", () => {
+        // The importer's facts are computed as if b.ts did not exist, so its
+        // own path must fail verification should discovery have hashed it.
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const outside = join(fs.realpathSync(fixture({ "b.ts": B })), "b.ts");
+
+        const { result, readsMade } = withReadsRecorded(() =>
+            scanChanging(root, "read", {
+                "/src/b.ts": () => linkOut(join(root, "src/b.ts"), outside),
+            }),
+        );
+
+        expect(readsMade).not.toContain(outside);
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+
+    it("reports null for an in-root path the host refuses because it now links out of the root", () => {
+        // Module resolution saw b.ts inside the root; by the time the program
+        // asks for it, allowedCompilerPath resolves it outside, so the host
+        // refuses it and a.ts's facts are computed without it.
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+        const outside = join(fs.realpathSync(fixture({ "b.ts": B })), "b.ts");
+
+        const { result } = scanChanging(root, "load", {
+            "/src/b.ts": () => linkOut(join(root, "src/b.ts"), outside),
+        });
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+
+    it("reports null for an imported file the host refuses as over the byte cap", () => {
+        const big = `export class B {}\n${"// padding\n".repeat(40)}`;
+        const root = fixture({ "src/a.ts": A, "src/b.ts": big });
+
+        const { result } = scanWithResult(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts"],
+            { limits: { max_file_bytes: 200 } },
+        );
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+
+    it("reports null for a file whose path no longer resolves", () => {
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = scanChanging(root, "read", {
+            "/src/b.ts": () => fs.unlinkSync(join(root, "src/b.ts")),
+        });
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
+        });
+    });
+});
+
+describe("input_hashes: a path read by more than one program in a request", () => {
+    // Each tsconfig builds its own program and each reads src/b.ts.
+    const files = {
+        "tsconfig.one.json": '{"files":["src/a.ts"]}\n',
+        "tsconfig.two.json": '{"files":["src/c.ts"]}\n',
+        "src/a.ts": A,
+        "src/c.ts": 'import { B } from "./b";\nexport class C extends B {}\n',
+        "src/b.ts": B,
+    };
+    const other = "export class B { other = 2; }\n";
+    const scan = (outcomes) => {
+        const root = fixture(files);
+        return withReads(join("src", "b.ts"), outcomes, () =>
+            scanWithResult(
+                new TypeScriptScanner(),
+                root,
+                ["src/a.ts", "src/c.ts"],
+                { config_files: ["tsconfig.one.json", "tsconfig.two.json"] },
+            ),
+        ).result;
+    };
+
+    it("keeps a hash both reads agree on", () => {
+        const result = scan([B, B]);
+        expect(result.programs).toBe(2);
+        expect(result.input_hashes["src/b.ts"]).toBe(sha256(Buffer.from(B)));
+    });
+
+    it("reports null when the second read hashes differently", () => {
+        const result = scan([B, other]);
+        expect(result.programs).toBe(2);
+        expect(result.input_hashes["src/b.ts"]).toBeNull();
+    });
+
+    it("reports null when a successful read is followed by a failed one", () => {
+        expect(scan([B, null]).input_hashes["src/b.ts"]).toBeNull();
+    });
+
+    it("reports null when a failed read is followed by a successful one", () => {
+        expect(scan([null, B]).input_hashes["src/b.ts"]).toBeNull();
+    });
+});
+
+describe("content_hash for a duplicate package copy", () => {
+    // Two in-root copies of dep@1.0.0, each linked from its own node_modules.
+    // TypeScript loads the first and makes the second a redirect to it, so the
+    // second path's facts come from the first copy's bytes.
+    function duplicatePackages(secondCopy, around = (scan) => scan()) {
+        const pkg = '{"name":"dep","version":"1.0.0","types":"index.ts"}\n';
+        const importer = (name) =>
+            `import { Dep } from "dep";\nexport class ${name} extends Dep {}\n`;
+        const root = fixture({
+            "copies/one/package.json": pkg,
+            "copies/one/index.ts": "export class Dep {}\n",
+            "copies/two/package.json": pkg,
+            "copies/two/index.ts": secondCopy,
+            "app1/main.ts": importer("One"),
+            "app2/main.ts": importer("Two"),
+        });
+        for (const [app, copy] of [
+            ["app1", "one"],
+            ["app2", "two"],
+        ]) {
+            mkdirSync(join(root, app, "node_modules"));
+            symlinkSync(
+                join(root, "copies", copy),
+                join(root, app, "node_modules/dep"),
+            );
+        }
+        const { result, byOwner } = around(() =>
+            scanWithResult(new TypeScriptScanner(), root, [
+                "app1/main.ts",
+                "app2/main.ts",
+                "copies/two/index.ts",
+            ]),
+        );
+        return Object.assign(
+            byOwner["knossos.typescript:file:copies/two/index.ts"],
+            { input_hashes: result.input_hashes },
+        );
+    }
+
+    it("hashes the duplicate's own bytes when both copies are identical", () => {
+        const contribution = duplicatePackages("export class Dep {}\n");
+
+        expect(contribution.content_hash).toBe(
+            sha256(Buffer.from("export class Dep {}\n")),
+        );
+        expect(contribution.nodes.length).toBeGreaterThan(0);
+    });
+
+    it("emits no facts for a duplicate whose bytes differ from the copy it redirects to", () => {
+        const contribution = duplicatePackages(
+            "export class Dep { differs = 1; }\n",
+        );
+
+        expect(contribution).not.toHaveProperty("content_hash");
+        expect([contribution.nodes, contribution.edges]).toEqual([[], []]);
+        expect(contribution.diagnostics.map((d) => d.code)).toEqual([
+            "TS_REDIRECTED_SOURCE_UNVERIFIED",
+        ]);
+        expect(contribution.diagnostics[0].evidence.path).toBe(
+            "copies/two/index.ts",
+        );
+    });
+
+    it("emits no facts for a duplicate whose own read failed", () => {
+        const contribution = duplicatePackages(
+            "export class Dep {}\n",
+            (scan) => withUnreadable(join("two", "index.ts"), scan),
+        );
+
+        expect(contribution).not.toHaveProperty("content_hash");
+        expect([contribution.nodes, contribution.edges]).toEqual([[], []]);
+        expect(contribution.diagnostics.map((d) => d.code)).toEqual([
+            "TS_REDIRECTED_SOURCE_UNVERIFIED",
+        ]);
+        expect(contribution.input_hashes["copies/two/index.ts"]).toBeNull();
+    });
+});
+
+// src/a.ts reaches src/real.ts through the linked file name src/alias.ts,
+// and real/c.ts through the linked directory src/linkdir. Discovery never
+// follows a link, so a refusal only fails verification when it is keyed by
+// the real in-root path the bytes would have come from.
+const IMPORTER =
+    'import { R } from "./alias";\nimport { C } from "./linkdir/c";\nexport class A extends R {}\nexport const c = C;\n';
+const REAL = "export class R {}\n";
+const C = "export const C = 1;\n";
+
+function linkedLayout(real = REAL, c = C) {
+    const root = fixture({
+        "src/a.ts": IMPORTER,
+        "src/real.ts": real,
+        "real/c.ts": c,
+    });
+    symlinkSync(join(root, "src/real.ts"), join(root, "src/alias.ts"));
+    symlinkSync(join(root, "real"), join(root, "src/linkdir"));
+    return root;
+}
+
+const refusedOnRealKeys = {
+    "src/a.ts": sha256(Buffer.from(IMPORTER)),
+    "src/real.ts": null,
+    "real/c.ts": null,
+    // The linked names, as written and at the link.
+    "src/alias.ts": null,
+    "src/linkdir": null,
+    "src/linkdir/c.ts": null,
+};
+
+// Run a scan on a linked layout, turning each real file into what `swap`
+// makes of it the first time the host reaches the linked name at `stage`.
+function scanSwapping(stage, swap) {
+    const root = linkedLayout();
+    const outside = fs.realpathSync(fixture({ "x.ts": REAL }));
+    const targets = {
+        "/src/alias.ts": join(root, "src/real.ts"),
+        "/src/linkdir/c.ts": join(root, "real/c.ts"),
+    };
+    return scanChanging(
+        root,
+        stage,
+        Object.fromEntries(
+            Object.entries(targets).map(([suffix, target]) => [
+                suffix,
+                () => swap(target, join(outside, "x.ts")),
+            ]),
+        ),
+    ).result;
+}
+
+const escape = linkOut;
+const remove = (target) => fs.unlinkSync(target);
+
+describe("input_hashes: a refused path reached through a symlink", () => {
+    it("keys a file refused over the byte cap by its real path", () => {
+        const padding = "// padding\n".repeat(40);
+        const root = linkedLayout(REAL + padding, C + padding);
+
+        const { result } = scanWithResult(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts"],
+            { limits: { max_file_bytes: 300 } },
+        );
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+
+    it("keys a file refused for now linking out of the root by the in-root link", () => {
+        const result = scanSwapping("load", escape);
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+
+    it("keys a file whose target left the root before the read by the in-root link", () => {
+        const result = scanSwapping("read", escape);
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+
+    it("keys a file removed before the read by where it was", () => {
+        const result = scanSwapping("read", remove);
+
+        expect(result.input_hashes).toEqual(refusedOnRealKeys);
+    });
+});
+
+describe("input_hashes: a refused path under a directory swapped for a link", () => {
+    it("keys a file under a directory swapped for a link out of the root by where it was", () => {
+        // Discovery saw src/sub/c.ts; the directory becomes a link out of the
+        // root before the read, so no component past src resolves inside it.
+        const importer = 'import { C } from "./sub/c";\nexport const c = C;\n';
+        const root = fixture({ "src/a.ts": importer, "src/sub/c.ts": C });
+        const outside = fs.realpathSync(fixture({ "c.ts": C }));
+
+        const { result } = scanChanging(root, "read", {
+            "/src/sub/c.ts": () => {
+                rmSync(join(root, "src/sub"), { recursive: true });
+                symlinkSync(outside, join(root, "src/sub"));
+            },
+        });
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "src/sub/c.ts": null,
+            "src/sub": null,
+        });
+    });
+});
+
+describe("input_hashes: a link target with `..` after a linked directory", () => {
+    // src/lnk.ts -> d/../c.ts and src/d -> ../deep/dir. The kernel applies the
+    // `..` after following src/d, so a read of src/lnk.ts opens deep/c.ts; a
+    // textual collapse would name src/c.ts, which is present to catch that.
+    const importer = 'import { C } from "./lnk";\nexport const c = C;\n';
+    const DEEP = "export const C = 1;\n";
+    const DECOY = "export const C = 2;\n";
+
+    function dotDotLayout(deep = DEEP) {
+        const root = fixture({
+            "src/a.ts": importer,
+            "src/c.ts": DECOY,
+            "deep/c.ts": deep,
+            "deep/dir/.keep": "",
+        });
+        symlinkSync("../deep/dir", join(root, "src/d"));
+        symlinkSync("d/../c.ts", join(root, "src/lnk.ts"));
+        return root;
+    }
+
+    it("keys a successful read by the file the kernel opened", () => {
+        const root = dotDotLayout();
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        // The links are keyed too; src/d's remaining components hold a `..`.
+        // The probe that found src/lnk.ts present recorded null at them, and
+        // the read's hash disagrees into null.
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "deep/c.ts": sha256(Buffer.from(DEEP)),
+            "src/lnk.ts": null,
+            "src/d": null,
+        });
+    });
+
+    it("keys a read that failed after the file was removed by the file the kernel would have opened", () => {
+        const root = dotDotLayout();
+
+        const { result } = scanChanging(root, "read", {
+            "/src/lnk.ts": () => fs.unlinkSync(join(root, "deep/c.ts")),
+        });
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "deep/c.ts": null,
+            "src/lnk.ts": null,
+            "src/d": null,
+        });
+    });
+
+    it("keys a stable over-cap target by that target, not by the file a textual collapse names", () => {
+        const root = dotDotLayout(DEEP + "// padding\n".repeat(40));
+
+        const { result } = scanWithResult(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts"],
+            { limits: { max_file_bytes: 300 } },
+        );
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "deep/c.ts": null,
+            "src/lnk.ts": null,
+            "src/d": null,
+        });
     });
 });

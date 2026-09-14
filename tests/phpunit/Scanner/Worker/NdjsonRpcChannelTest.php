@@ -812,4 +812,279 @@ final class NdjsonRpcChannelTest extends TestCase
         fclose($stdinPair[1]);
         fclose($stderrPair[1]);
     }
+
+    /**
+     * A `scan/input_hashes` frame of exactly $bytes bytes, newline included.
+     */
+    private static function inputHashesFrame(int $bytes): string
+    {
+        $empty = json_encode(['jsonrpc' => '2.0', 'method' => 'scan/input_hashes', 'params' => ['input_hashes' => ['' => null]]]) . "\n";
+        $path = str_repeat('p', $bytes - strlen($empty));
+
+        return json_encode(['jsonrpc' => '2.0', 'method' => 'scan/input_hashes', 'params' => ['input_hashes' => [$path => null]]]) . "\n";
+    }
+
+    /** @return list<array<string, mixed>> */
+    private static function readAll(NdjsonRpcChannel $channel, int $deadline, int $count): array
+    {
+        $messages = [];
+        for ($i = 0; $i < $count; ++$i) {
+            $messages[] = $channel->readMessage($deadline);
+        }
+
+        return $messages;
+    }
+
+    public function testInputHashesFramesAreNotChargedToTheOutputBudget(): void
+    {
+        // Six 10 KB frames against a 20 KB output budget: charged as output they
+        // would fail the request as WORKER_OUTPUT_LIMIT, which halves a batch
+        // that the map's size does not depend on.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 20_000, maxOutputBytes: 20_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 6) . '{"jsonrpc":"2.0","id":1,"result":{}}' . "\n");
+        rewind($process->pipes[1]);
+
+        $messages = self::readAll($channel, $deadline, 7);
+
+        assertSame('scan/input_hashes', $messages[5]['method']);
+        assertSame(1, $messages[6]['id']);
+    }
+
+    public function testAnInputHashesFrameArrivingWhenOutputIsNearTheBudgetIsNotChargedWhileItArrives(): void
+    {
+        // 15 KB of ordinary output against a 20 KB budget, then a 10 KB part.
+        // Charged by the byte as it arrives, the part's first read chunk
+        // already pushed the total past the budget before the frame was
+        // complete enough to be recognised as exempt.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 20_000, maxOutputBytes: 20_000));
+        $deadline = $channel->beginRequest();
+        $ordinary = str_replace('scan\\/input_hashes', 'scan\\/input_hashez', self::inputHashesFrame(15_000));
+        fwrite($process->pipes[1], $ordinary . self::inputHashesFrame(10_000) . '{"jsonrpc":"2.0","id":1,"result":{}}' . "\n");
+        rewind($process->pipes[1]);
+
+        $messages = self::readAll($channel, $deadline, 3);
+
+        assertSame('scan/input_hashes', $messages[1]['method']);
+        assertSame(1, $messages[2]['id']);
+    }
+
+    public function testAnOversizedPartialFrameWithinTheOutputBudgetIsTooLarge(): void
+    {
+        // A frame longer than the line limit can never be an exempt part, so
+        // it is charged as output: within that budget it is a frame too large.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat('x', 20_000));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+    }
+
+    public function testAnOversizedPartialFrameBeyondTheOutputBudgetIsAnOutputLimit(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 128));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat('x', 200));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+    }
+
+    /**
+     * A real worker process that writes $frames 8 KB notifications before it
+     * reads its request line, then answers that request.
+     */
+    private function floodingProcess(int $frames): ProcessSupervisorInterface
+    {
+        $script = sprintf(
+            '$line = json_encode(["jsonrpc" => "2.0", "method" => "scan/progress", "params" => ["p" => str_repeat("x", 8000)]]) . "\n";'
+            . ' for ($i = 0; $i < %d; ++$i) { fwrite(STDOUT, $line); }'
+            . ' fgets(STDIN); fwrite(STDOUT, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n");',
+            $frames,
+        );
+
+        return new class ($script) implements ProcessSupervisorInterface {
+            /** @var resource|null */
+            private $handle = null;
+            /** @var array<int, resource> */
+            private array $pipes = [];
+
+            public function __construct(private readonly string $script) {}
+
+            public function start(): void
+            {
+                $handle = proc_open([PHP_BINARY, '-r', $this->script], [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $this->pipes);
+                if (!is_resource($handle)) {
+                    throw new \RuntimeException('Unable to start the flooding worker.');
+                }
+                $this->handle = $handle;
+                foreach ($this->pipes as $pipe) {
+                    stream_set_blocking($pipe, false);
+                }
+            }
+
+            public function isRunning(): bool
+            {
+                return true;
+            }
+
+            /** @return resource */
+            public function stdin()
+            {
+                return $this->pipes[0];
+            }
+
+            /** @return resource */
+            public function stdout()
+            {
+                return $this->pipes[1];
+            }
+
+            /** @return resource */
+            public function stderr()
+            {
+                return $this->pipes[2];
+            }
+
+            /** @return array{command: string, pid: int, running: bool, signaled: bool, stopped: bool, exitcode: int, termsig: int, stopsig: int} */
+            public function status(): array
+            {
+                return proc_get_status($this->handle);
+            }
+
+            public function close(bool $terminate): void
+            {
+                foreach ($this->pipes as $pipe) {
+                    @fclose($pipe);
+                }
+                if (is_resource($this->handle)) {
+                    proc_terminate($this->handle, 9);
+                    proc_close($this->handle);
+                }
+            }
+        };
+    }
+
+    public function testAWorkerFloodingStdoutBeforeReadingItsRequestFailsTheSendAsAnOutputLimit(): void
+    {
+        // Nothing classifies what a send() buffers, and a worker answers only
+        // once it has read the whole request, so more than one frame's worth
+        // there is a flood. Capped only by the sum of both budgets (84 MB), it
+        // was held in full, and then drained one quadratic copy per frame.
+        $process = $this->floodingProcess(400);
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 30_000));
+        $channel->beginRequest();
+        try {
+            $error = captureThrows(
+                static fn() => $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan', 'params' => ['pad' => str_repeat('y', 2_000_000)]]),
+                WorkerException::class,
+            );
+        } finally {
+            $process->close(true);
+        }
+
+        assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+    }
+
+    public function testOneFrameWrittenBeforeTheRequestIsReadStillArrives(): void
+    {
+        $process = $this->floodingProcess(1);
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 30_000));
+        $deadline = $channel->beginRequest();
+        try {
+            $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan', 'params' => ['pad' => str_repeat('y', 2_000_000)]]);
+            $messages = self::readAll($channel, $deadline, 2);
+        } finally {
+            $process->close(true);
+        }
+
+        assertSame('scan/progress', $messages[0]['method']);
+        assertSame(1, $messages[1]['id']);
+    }
+
+    public function testManyBufferedFramesAreTakenInOrderAcrossReads(): void
+    {
+        // Frames are taken by offset; a partial frame left behind is kept
+        // intact when the next bytes arrive.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+        $deadline = $channel->beginRequest();
+        $frames = '';
+        for ($i = 0; $i < 3_000; ++$i) {
+            $frames .= json_encode(['jsonrpc' => '2.0', 'method' => 'scan/progress', 'params' => ['i' => $i]]) . "\n";
+        }
+        fwrite($process->pipes[1], $frames . '{"jsonrpc":"2.0","id":7,"result":{}}' . "\n");
+        rewind($process->pipes[1]);
+
+        $messages = self::readAll($channel, $deadline, 3_001);
+
+        assertSame(range(0, 2_999), array_map(static fn(array $message): int => $message['params']['i'], array_slice($messages, 0, 3_000)));
+        assertSame(7, $messages[3_000]['id']);
+    }
+
+    public function testOtherNotificationsAreStillChargedToTheOutputBudget(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 20_000, maxOutputBytes: 20_000));
+        $deadline = $channel->beginRequest();
+        $frame = str_replace('scan\\/input_hashes', 'scan\\/input_hashez', self::inputHashesFrame(10_000));
+        fwrite($process->pipes[1], str_repeat($frame, 6));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => self::readAll($channel, $deadline, 6), WorkerException::class);
+
+        assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+    }
+
+    public function testInputHashesFramesBeyondTheirOwnBudgetFailTheRequest(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxInputHashesBytes: 29_999));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 3));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => self::readAll($channel, $deadline, 3), WorkerException::class);
+
+        assertSame('WORKER_RESPONSE_INVALID', $error->diagnosticCode);
+        assertSame('Worker scan/input_hashes frames exceed the 29999-byte limit for one scan request.', $error->getMessage());
+    }
+
+    public function testInputHashesFramesExactlyFillingTheirBudgetPass(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxInputHashesBytes: 30_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 3));
+        rewind($process->pipes[1]);
+
+        assertSame(3, count(self::readAll($channel, $deadline, 3)));
+    }
+
+    public function testEachRequestGetsAFreshInputHashesBudget(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxInputHashesBytes: 20_000));
+        $deadline = hrtime(true) + 5_000_000_000;
+        $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 2));
+        rewind($process->pipes[1]);
+        self::readAll($channel, $deadline, 2);
+
+        $channel->beginRequest();
+        $position = (int) ftell($process->pipes[1]);
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 2));
+        fseek($process->pipes[1], $position);
+
+        assertSame(2, count(self::readAll($channel, $deadline, 2)));
+    }
 }

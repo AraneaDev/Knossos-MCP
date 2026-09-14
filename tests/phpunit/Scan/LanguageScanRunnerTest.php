@@ -16,6 +16,7 @@ use Knossos\Scan\LanguageWorkerPool;
 use Knossos\Scan\ScanCancelledException;
 use Knossos\Scan\ScanPlan;
 use Knossos\Scan\ScanPreparation;
+use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
@@ -237,6 +238,25 @@ final class LanguageScanRunnerTest extends TestCase
             'php scanner failed: Scanner worker exited unexpectedly.',
             $result->workerDiagnostics[0]['message'],
         );
+    }
+
+    /**
+     * Degrading this would be worse than the race it reports: the language's
+     * facts would be dropped and the graph committed without them while every
+     * file hash still matched disk, so the scan would read as fresh.
+     */
+    public function testASnapshotChangeFailsTheScanRatherThanDegradingTheLanguage(): void
+    {
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        $pool->method('client')->willThrowException(ScanSnapshotChangedException::parsedDifferently('src/Foo.php'));
+        $runner = new LanguageScanRunner([$this->phpDescriptor()], $pool, new ContributionCacheService());
+
+        $error = captureThrows(
+            fn(): LanguageScanResult => $runner->run($this->planWithOneFile(), new CancellationToken()),
+            ScanSnapshotChangedException::class,
+        );
+
+        assertContains('src/Foo.php', $error->getMessage());
     }
 
     public function testNonWorkerFailureDegradesUnderTheGenericCode(): void

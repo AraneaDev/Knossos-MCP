@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scanner;
 
+use Knossos\Discovery\DiscoveryConfig;
+use Knossos\Discovery\ProjectDiscoverer;
 use Knossos\Scan\ProjectScanService;
+use Knossos\Scan\ScanInputHashes;
+use Knossos\Scanner\Protocol\ScannerManifest;
 use Knossos\Scanner\Protocol\Diagnostic;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\NodeFact;
@@ -28,7 +32,7 @@ final class PythonScannerTest extends KnossosTestCase
         // A cancel capability is deliberately absent: handle() returns at once
         // and the process is blocked inside scan(), so a cancel frame is not
         // read until the scan it names has already finished.
-        assertSame(['partial_ast'], $manifest->capabilities);
+        assertSame(['partial_ast', 'content_hash', 'input_hashes'], $manifest->capabilities);
 
         $contributions = iterator_to_array($client->scan([
             'root' => $root,
@@ -408,5 +412,520 @@ PYTHON);
             @unlink($root . '/toplevel.py');
             @rmdir($root);
         }
+    }
+
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsTheHashOfTheRawBytesItParsed(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $files = [
+            'pkg/bom.py' => "\xEF\xBB\xBFclass Bom:\n    pass\n",
+            'pkg/crlf.py' => "class Crlf:\r\n    pass\r\n",
+            'pkg/broken.py' => "class :\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->pythonWorkerClient();
+        try {
+            assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $byOwner['knossos.python:file:' . $relative] ?? null, $relative);
+            }
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The module index resolves `pkg/a.py`'s imports by reading `pkg/b.py` and
+     * `pkg/broken.py`, neither of which was requested, so those reads have to be
+     * reported beside the requested file's own: a file changed and restored
+     * while the index read it would otherwise leave facts resolved against
+     * bytes no recorded hash describes. A module that fails to parse was still
+     * read, so its hash is reported too.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsEveryModuleFileTheIndexRead(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $files = [
+            'pkg/a.py' => "from pkg.b import Thing\nfrom pkg.broken import Gone\n\n\nclass Local(Thing):\n    pass\n",
+            'pkg/b.py' => "\xEF\xBB\xBFclass Thing:\n    pass\n",
+            'pkg/broken.py' => "class :\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->pythonWorkerClient();
+        try {
+            assertSame(true, in_array('input_hashes', $client->initialize()->capabilities, true));
+            $edges = [];
+            foreach ($client->scan(['root' => $root, 'files' => ['pkg/a.py']]) as $contribution) {
+                foreach ($contribution->edges as $edge) {
+                    $edges[] = $edge->kind . ' ' . $edge->targetReference;
+                }
+            }
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            // The read really fed resolution: the base class resolved to b.py's declaration.
+            assertArrayContains('extends py:class:pkg.b.Thing', $edges);
+            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
+            assertSame(true, is_array($inputHashes));
+            self::assertInputHashesInclude($expected, $inputHashes);
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * `pkg/a.py` sorts first, so the index reads `pkg/b.py` for a's imports
+     * before b's own scan reads it again. Both reads land on one key with the
+     * same hash, which the map keeps. An empty request still carries the field,
+     * as `{}`.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsAModuleReadBothForAnImporterAndItsOwnScan(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $files = [
+            'pkg/a.py' => "from pkg.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
+            'pkg/b.py' => "class Thing:\r\n    pass\r\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->pythonWorkerClient();
+        try {
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            iterator_to_array($client->scan(['root' => $root, 'files' => []]));
+            $empty = $client->lastScanResult();
+
+            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
+            self::assertInputHashesInclude($expected, $inputHashes);
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
+            assertSame($expected['pkg/b.py'], $byOwner['knossos.python:file:pkg/b.py'] ?? null);
+            assertSame(true, array_key_exists('input_hashes', $empty));
+            assertSame([], $empty['input_hashes']);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Two more ways one path is read twice in a request, both with identical
+     * bytes, so the entry keeps the hash. `pkg/b.py` sorts first and fails to
+     * parse, so it seeds nothing and `pkg/c.py`'s import reads it again
+     * (own read, then index read). `app.py` names `src/pkg/b.py` under two
+     * module ids, `pkg.b` and `src.pkg.b`, and the index reads it for each.
+     * Only reads that disagree turn an entry into null.
+     */
+    #[Group('python-scanner')]
+    public function testIdenticalRepeatReadsOfOnePathKeepTheirHash(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        // Two separate trees: `pkg/b.py` at the first tree's root would shadow `pkg.b`.
+        mkdir($root . '/one/pkg', 0o777, true);
+        mkdir($root . '/two/src/pkg', 0o777, true);
+        $files = [
+            'one/pkg/b.py' => "class :\n",
+            'one/pkg/c.py' => "from pkg.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
+            'two/src/pkg/b.py' => "class Thing:\n    pass\n",
+            'two/app.py' => "from pkg.b import Thing\nfrom src.pkg.b import Thing as T2\n\n\nclass One(Thing):\n    pass\n\n\nclass Two(T2):\n    pass\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->pythonWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root . '/one', 'files' => ['pkg/b.py', 'pkg/c.py']]));
+            $ownThenIndex = $client->lastScanResult()['input_hashes'] ?? null;
+            $edges = [];
+            foreach ($client->scan(['root' => $root . '/two', 'files' => ['app.py']]) as $contribution) {
+                foreach ($contribution->edges as $edge) {
+                    $edges[] = $edge->kind . ' ' . $edge->sourceReference . ' ' . $edge->targetReference;
+                }
+            }
+            $indexThenIndex = $client->lastScanResult()['input_hashes'] ?? null;
+
+            $hash = static fn(string $relative): string => hash('sha256', $files[$relative]);
+            self::assertInputHashesInclude(['pkg/b.py' => $hash('one/pkg/b.py'), 'pkg/c.py' => $hash('one/pkg/c.py')], $ownThenIndex);
+            self::assertInputHashesVerify($root . '/one', $ownThenIndex, $client->initialize());
+            // Both ids really resolved through src/pkg/b.py, so both reads happened.
+            assertArrayContains('extends py:class:app.One py:class:pkg.b.Thing', $edges);
+            assertArrayContains('extends py:class:app.Two py:class:src.pkg.b.Thing', $edges);
+            self::assertInputHashesInclude(['app.py' => $hash('two/app.py'), 'src/pkg/b.py' => $hash('two/src/pkg/b.py')], $indexThenIndex);
+            self::assertInputHashesVerify($root . '/two', $indexThenIndex, $client->initialize());
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * An extensionless script refused on its shebang is reported by the hash
+     * of the whole file, judged again on those bytes, so a stable tree passes
+     * verification while a script swapped around the probe would not. One
+     * over the byte cap has no whole-file hash and is null; one refused by its
+     * name read nothing and is not reported.
+     */
+    #[Group('python-scanner')]
+    public function testAShebangRefusalReportsTheHashItsVerdictRestedOn(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $node = "#!/usr/bin/env node\nconsole.log(1)\n";
+        file_put_contents($root . '/bin/tool', $node);
+        file_put_contents($root . '/bin/large', "#!/bin/sh\n" . str_repeat('#', 100) . "\n");
+        file_put_contents($root . '/notes.txt', "text\n");
+        $client = $this->pythonWorkerClient();
+        try {
+            $manifest = $client->initialize();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['bin/large', 'bin/tool', 'notes.txt'],
+                'limits' => ['max_file_bytes' => 64],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            assertSame(3, count($contributions));
+            foreach ($contributions as $contribution) {
+                assertSame([], $contribution->nodes);
+            }
+            assertSame(['bin/large' => null, 'bin/tool' => hash('sha256', $node)], $inputHashes);
+            self::assertInputHashesVerify($root, ['bin/tool' => $inputHashes['bin/tool']], $manifest, 64);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Discovery never follows a symlink, so the only path it tracks for a
+     * module reached through a linked directory is the target's. The index
+     * read has to be keyed there; spelled through the link alone, it would
+     * name a path the core ignores and the read would go unverified. The link
+     * and the path through it are keyed too, as null here (the probe that
+     * accepted the module read no bytes), and discovery ignores both.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerKeysAModuleReadThroughASymlinkByItsTarget(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/real', 0o777, true);
+        $files = [
+            'app.py' => "from linked.b import Thing\n\n\nclass Local(Thing):\n    pass\n",
+            'real/b.py' => "class Thing:\n    pass\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        symlink($root . '/real', $root . '/linked');
+        $client = $this->pythonWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['app.py']]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            self::assertInputHashesInclude(
+                array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files) + ['linked' => null, 'linked/b.py' => null],
+                $inputHashes,
+            );
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
+        } finally {
+            $client->shutdown();
+            @unlink($root . '/linked');
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A deeply nested unary expression parses fine (`ast.parse` has its own
+     * guard against runaway nesting), but the visitor's recursive descent
+     * through `PythonAstFactCollector.collect()` exhausts Python's own
+     * recursion limit, which is the real, worker-triggered route to
+     * PY_INTERNAL_ERROR — the diagnostic still has to carry the hash of the
+     * bytes that were genuinely read and parsed.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsTheHashOnAnInternalErrorDuringCollection(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o777, true);
+        $bytes = 'x = ' . str_repeat('-', 4000) . "1\n";
+        file_put_contents($root . '/deep.py', $bytes);
+        $client = $this->pythonWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['deep.py']]));
+            $contribution = $contributions[0];
+            assertSame([], $contribution->nodes);
+            assertSame([], $contribution->edges);
+            assertSame('PY_INTERNAL_ERROR', $contribution->diagnostics[0]->code);
+            assertSame(hash('sha256', $bytes), $contribution->contentHash);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A scanned file seeds the module index with its own declarations, so its
+     * local references resolve against the bytes it hashed. The loser of a
+     * `mod.py`/`mod/__init__.py` collision must not seed the shared id: the
+     * package owns it, and an importer's targets would otherwise depend on
+     * whether the module file happened to share its batch.
+     */
+    #[Group('python-scanner')]
+    public function testACollidingModuleFileDoesNotSeedTheIdThePackageOwns(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/mod', 0o777, true);
+        file_put_contents($root . '/mod.py', "class OnlyInModule:\n    pass\n");
+        file_put_contents($root . '/mod/__init__.py', '');
+        file_put_contents($root . '/user.py', "from mod import OnlyInModule\n\n\nclass Local(OnlyInModule):\n    pass\n");
+        try {
+            $client = $this->pythonWorkerClient();
+            $targets = function (array $files) use ($client, $root): array {
+                foreach ($client->scan(['root' => $root, 'files' => $files]) as $contribution) {
+                    if ($contribution->ownerKey === 'knossos.python:file:user.py') {
+                        return array_map(
+                            fn(EdgeFact $edge): string => $edge->kind . ' ' . $edge->targetReference,
+                            array_values(array_filter(
+                                $contribution->edges,
+                                fn(EdgeFact $edge): bool => $edge->sourceReference === 'py:class:user.Local',
+                            )),
+                        );
+                    }
+                }
+
+                return [];
+            };
+            try {
+                $alone = $targets(['user.py']);
+                $together = $targets(['mod.py', 'user.py']);
+            } finally {
+                $client->shutdown();
+            }
+
+            assertSame(['extends py:external_symbol:mod.OnlyInModule'], $alone);
+            assertSame($alone, $together);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A module the index refuses to read, here for exceeding the byte cap, is
+     * left out of resolution, so the importer's facts are computed without it.
+     * The worker says so by reporting that path as a failed read.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsAModuleItRefusedAsNull(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/pkg', 0o777, true);
+        $importer = "from pkg.big import Thing\n";
+        file_put_contents($root . '/pkg/a.py', $importer);
+        file_put_contents($root . '/pkg/big.py', "class Thing:\n    pass\n" . str_repeat('#', 200) . "\n");
+        $client = $this->pythonWorkerClient();
+        try {
+            $client->initialize();
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['pkg/a.py'], 'limits' => ['max_file_bytes' => 100]]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            self::assertInputHashesInclude(['pkg/a.py' => hash('sha256', $importer), 'pkg/big.py' => null], $inputHashes);
+            // Discovery does not report the over-cap file either, so the null is ignored.
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize(), 100);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A requested file the filesystem would not let the worker read as the
+     * file discovery hashed (over the byte cap, gone, a directory, or a link
+     * leaving the root) is reported as `null`: its contribution carries no
+     * facts, so without the null a discovered file would lose its facts from a
+     * graph reported fresh. A path refused by policy stays unreported.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsARequestedFileWhoseReadFailsAsNull(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $outside = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o777, true);
+        mkdir($root . '/app/dir.py', 0o777, true);
+        mkdir($outside, 0o777, true);
+        file_put_contents($root . '/app/__init__.py', '');
+        file_put_contents($root . '/app/big.py', "VALUE = 1\n" . str_repeat('#', 200) . "\n");
+        file_put_contents($root . '/app/notes.txt', "text\n");
+        file_put_contents($outside . '/out.py', "VALUE = 2\n");
+        symlink($outside . '/out.py', $root . '/app/out.py');
+        $client = $this->pythonWorkerClient();
+        try {
+            $client->initialize();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['app/big.py', 'app/dir.py', 'app/gone.py', 'app/notes.txt', 'app/out.py'],
+                'limits' => ['max_file_bytes' => 100],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            self::assertInputHashesInclude(['app/big.py' => null, 'app/dir.py' => null, 'app/gone.py' => null, 'app/out.py' => null], $inputHashes);
+            assertSame(5, count($contributions));
+            foreach ($contributions as $contribution) {
+                assertSame('PY_UNSCANNABLE_FILE', $contribution->diagnostics[0]->code);
+            }
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+            $this->removeTempTree($outside);
+        }
+    }
+
+    /**
+     * Stable link layouts through the real worker process: a link whose target
+     * climbs with `..` after another link, an absolute link inside the root, one
+     * with a doubled leading slash, a chain of 41 links (one past the kernel's
+     * limit), a dangling link, and a linked directory. Each is keyed by the file
+     * the kernel opens and by the links it passed, and the whole map passes the
+     * core's check against real discovery, so none of it can fail a scan of a
+     * tree that is not changing.
+     */
+    #[Group('python-scanner')]
+    public function testStableLinkLayoutsAreKeyedByTheKernelWalkAndPassVerification(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        foreach (['pkg', 'deep/dir', 'lib', 'real', 'chain'] as $directory) {
+            mkdir($root . '/' . $directory, 0o777, true);
+        }
+        $files = [
+            'pkg/__init__.py' => '',
+            'deep/c.py' => "class Deep:\n    pass\n",
+            // What a textual collapse of pkg/lnk.py's `..` would name instead.
+            'pkg/c.py' => "class Decoy:\n    pass\n",
+            'lib/b.py' => "class Lib:\n    pass\n",
+            'lib/s.py' => "class Slash:\n    pass\n",
+            'real/c.py' => "class Real:\n    pass\n",
+            'chain/real.py' => "class Chained:\n    pass\n",
+            'deep/dir/keep.py' => '',
+        ];
+        $files['app.py'] = implode("\n", [
+            'from pkg.lnk import Deep',
+            'from pkg.abs import Lib',
+            'from pkg.slash import Slash',
+            'from chain.l0 import Chained',
+            'from pkg.dangling import Gone',
+            'from linked.c import Real',
+            '',
+            '',
+            'class App(Deep, Lib, Slash, Real):',
+            '    pass',
+            '',
+        ]);
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        symlink('../deep/dir', $root . '/pkg/d');
+        symlink('d/../c.py', $root . '/pkg/lnk.py');
+        symlink($root . '/lib/b.py', $root . '/pkg/abs.py');
+        symlink('/' . $root . '/lib/s.py', $root . '/pkg/slash.py');
+        for ($link = 0; $link < 41; ++$link) {
+            symlink($link === 40 ? 'real.py' : sprintf('l%d.py', $link + 1), sprintf('%s/chain/l%d.py', $root, $link));
+        }
+        symlink('gone.py', $root . '/pkg/dangling.py');
+        symlink('real', $root . '/linked');
+        $client = $this->pythonWorkerClient();
+        try {
+            $manifest = $client->initialize();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => array_keys($files)]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $edges = [];
+            foreach ($contributions as $contribution) {
+                assertSame([], array_map(static fn(Diagnostic $diagnostic): string => $diagnostic->code, array_filter(
+                    $contribution->diagnostics,
+                    static fn(Diagnostic $diagnostic): bool => $diagnostic->severity === 'error',
+                )));
+                foreach ($contribution->edges as $edge) {
+                    $edges[] = $edge->kind . ' ' . $edge->targetReference;
+                }
+            }
+
+            assertSame(count($files), count($contributions));
+            assertArrayContains('extends py:class:pkg.lnk.Deep', $edges);
+            assertArrayContains('extends py:class:pkg.abs.Lib', $edges);
+            assertArrayContains('extends py:class:pkg.slash.Slash', $edges);
+            assertArrayContains('extends py:class:linked.c.Real', $edges);
+            self::assertInputHashesInclude([
+                'deep/c.py' => hash('sha256', $files['deep/c.py']),
+                'pkg/lnk.py' => null,
+                'pkg/d' => null,
+                'lib/b.py' => hash('sha256', $files['lib/b.py']),
+                'pkg/abs.py' => null,
+                'lib/s.py' => hash('sha256', $files['lib/s.py']),
+                'pkg/slash.py' => null,
+                'chain/l39.py' => null,
+                'pkg/dangling.py' => null,
+                'pkg/gone.py' => null,
+                'real/c.py' => hash('sha256', $files['real/c.py']),
+                'linked' => null,
+                'linked/c.py' => null,
+            ], $inputHashes);
+            self::assertInputHashesVerify($root, $inputHashes, $manifest);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Every expected entry is in the map with its value. Probes add null entries
+     * for candidates that are absent and for links they passed, none of which
+     * discovery reports; assertInputHashesVerify() checks exactly that.
+     *
+     * @param array<string, string|null> $expected
+     * @param mixed $inputHashes
+     */
+    private static function assertInputHashesInclude(array $expected, mixed $inputHashes): void
+    {
+        assertSame(true, is_array($inputHashes));
+        $actual = [];
+        foreach (array_keys($expected) as $path) {
+            $actual[$path] = array_key_exists($path, $inputHashes) ? $inputHashes[$path] : 'absent';
+        }
+        assertSame($expected, $actual);
+    }
+
+    /**
+     * The map passes the core's own check against what discovery reports for
+     * the tree as it stands: a stable tree never fails a scan.
+     *
+     * @param mixed $inputHashes
+     */
+    private static function assertInputHashesVerify(string $root, mixed $inputHashes, ScannerManifest $manifest, int $maxFileBytes = 2_000_000): void
+    {
+        $discovery = (new ProjectDiscoverer(new DiscoveryConfig([$root], maxFileBytes: $maxFileBytes)))->discover($root);
+        $byPath = [];
+        foreach ($discovery->files as $file) {
+            $byPath[$file->relativePath] = $file;
+        }
+        assertSame(true, $byPath !== []);
+        ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, $byPath);
     }
 }

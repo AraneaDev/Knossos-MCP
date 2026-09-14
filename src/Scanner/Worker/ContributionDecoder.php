@@ -42,6 +42,7 @@ final class ContributionDecoder
                 array_map(self::node(...), $nodes),
                 array_map(self::edge(...), $edges),
                 array_map(self::diagnostic(...), $diagnostics),
+                self::contentHash($data),
             );
         } catch (WorkerException $error) {
             throw $error;
@@ -162,6 +163,24 @@ final class ContributionDecoder
         }
 
         return $data[$field];
+    }
+
+    /**
+     * The optional hash of the bytes the worker parsed. Absent is allowed; a key
+     * that is present must hold a string, and the DTO checks its shape.
+     *
+     * @param array<string, mixed> $data
+     */
+    private static function contentHash(array $data): ?string
+    {
+        if (!array_key_exists('content_hash', $data)) {
+            return null;
+        }
+        if (!is_string($data['content_hash'])) {
+            throw new WorkerException('WORKER_CONTRIBUTION_INVALID', 'content_hash must be a string.');
+        }
+
+        return $data['content_hash'];
     }
 
     /** @param array<string, mixed> $data @return list<mixed> */

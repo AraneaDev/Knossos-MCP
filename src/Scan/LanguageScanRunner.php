@@ -62,6 +62,12 @@ final readonly class LanguageScanRunner
                 if ($cancellation->isCancelled() || ($error instanceof WorkerException && $error->diagnosticCode === 'WORKER_CANCELLED')) {
                     throw new ScanCancelledException('Scan was cancelled.', previous: $error);
                 }
+                // A changed tree is a fault of the whole scan, not of this
+                // language. Degrading it would commit a graph missing this
+                // language's facts while every recorded hash still matched disk.
+                if ($error instanceof ScanSnapshotChangedException) {
+                    throw $error;
+                }
                 // Everything else costs this language only. The other languages'
                 // facts are already collected and are still worth a graph.
                 $workerDiagnostics[] = [
@@ -159,6 +165,11 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
+        // Every path discovery hashed, not only this language's files: a worker
+        // may read a file another language claims, or a manifest such as the
+        // package.json module resolution reads or the Cargo.toml a crate is
+        // named by, and that read is checked all the same.
+        $discoveredByPath = $plan->preparation->discovery->hashedPaths();
         $full = $descriptor->scanBatchSourceBytes;
         $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0);
         while ($pending !== []) {
@@ -204,10 +215,17 @@ final readonly class LanguageScanRunner
                 ];
                 continue;
             }
+            $batchResult = $client->lastScanResult();
+            // Before this batch's contributions are kept: facts resolved against
+            // another file's bytes must match what discovery hashed for it too.
+            ScanInputHashes::verify($batchResult, $manifest, $discoveredByPath);
+            // Evidence for this check only, not a statistic: kept out of the
+            // scanner metadata a scan report carries.
+            unset($batchResult['input_hashes']);
             foreach ($received as $contribution) {
                 $scanned[] = $contribution;
             }
-            $metadata = self::mergeScanResult($metadata, $client->lastScanResult());
+            $metadata = self::mergeScanResult($metadata, $batchResult);
             // Inside the loop so a cancelled scan stops at the next batch
             // boundary instead of running the language to completion.
             $cancellation->throwIfCancelled();

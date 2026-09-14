@@ -28,10 +28,8 @@ in_lane() {
     [ "$lane" = "all" ] || [ "$lane" = "$1" ]
 }
 
-# scanner-conformance exits 127 on a relative binary path: WorkerProcessSupervisor
-# pins the child's working directory to the system temp dir, so a path relative
-# to this script's cwd would not resolve there. Derive an absolute root instead
-# of assuming this script runs from the repository root.
+# The repository root as an absolute path, for the steps that hand it to a
+# process running somewhere else.
 root=$(unset CDPATH; cd -- "$(dirname -- "$0")/.." && pwd)
 
 # Run the PHPUnit suite, and with it the SessionStart hook's shell-level
@@ -101,16 +99,20 @@ fi
 
 if in_lane rust; then
 if [ -x "$root/workers/rust/bin/knossos-rust-worker" ]; then
-    tools/scanner-conformance --require=partial_ast -- "$root/workers/rust/bin/knossos-rust-worker"
+    tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- workers/rust/bin/knossos-rust-worker
 elif [ "${KNOSSOS_QUALITY_CONTAINER:-0}" = "1" ]; then
     echo "the Rust worker binary is required in the quality container" >&2
     exit 1
 fi
 fi
 if in_lane tests; then
-# The Python worker is mandatory, so its protocol conformance is checked
-# unconditionally, not behind an existence probe like the optional Rust one.
-tools/scanner-conformance --require=partial_ast -- python3 -I -B "$root/workers/python/bin/worker.py"
+# The PHP, Python and TypeScript workers are mandatory, so their protocol
+# conformance is checked unconditionally, not behind an existence probe like
+# the optional Rust one. The paths are relative on purpose: that is the form
+# docs/reference/scanner-sdk.md shows worker authors.
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- php workers/php/bin/worker
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- python3 -I -B workers/python/bin/worker.py
+tools/scanner-conformance --require=partial_ast --require=content_hash --require=input_hashes -- node workers/typescript/bin/worker.js
 fi
 
 if in_lane static; then

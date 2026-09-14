@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import os
 import re
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 EXCLUDED = {
     ".git",
     ".knossos",
@@ -63,6 +65,46 @@ def safe_root(value: Any) -> Path:
     return root
 
 
+class UnreadableInput(ValueError):
+    """A requested file the filesystem would not let the worker read as that file.
+
+    Gone, not a regular file, over the byte cap, or resolving outside the root.
+    Kept apart from a plain ``ValueError``, which also covers a path this worker
+    refuses by policy, because the two answer ``input_hashes`` differently: a
+    policy refusal says nothing about the tree, while a failed read says the file
+    is not what discovery hashed at that moment. It is reported as ``None``, so
+    the core fails the scan for a discovered path rather than keeping a graph
+    that silently lacks the file's facts.
+    """
+
+
+class RefusedAfterRead(ValueError):
+    """A requested file this worker refuses because of what it read in it.
+
+    An extensionless script whose shebang does not name Python was routed here
+    because discovery's reading of those bytes named Python when it hashed them.
+    A script swapped for another one and restored around the probe would
+    otherwise lose its facts from a graph reported fresh, so the refusal carries
+    evidence for ``input_hashes``: the hash of the whole file from one bounded
+    read that reached the same verdict, which a stable tree matches, or ``None``
+    when that read failed, was over the cap, or found Python after all.
+    """
+
+    def __init__(self, message: str, content_hash: str | None) -> None:
+        super().__init__(message)
+        self.content_hash = content_hash
+
+
+def read_bounded(path: Path, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes + 1`` bytes, so a file over the cap is told apart without reading the rest.
+
+    A size checked before the read can belong to a file replaced before it, and
+    the replacement must not be read unbounded.
+    """
+    with path.open("rb") as handle:
+        return handle.read(max_bytes + 1)
+
+
 def names_python_in_shebang(absolute: Path) -> bool:
     """Whether an extensionless script's first line names Python as its interpreter.
 
@@ -77,10 +119,43 @@ def names_python_in_shebang(absolute: Path) -> bool:
         return False
     try:
         with absolute.open("rb") as handle:
-            first = handle.readline(SHEBANG_PROBE_BYTES).decode("utf-8", "replace")
+            first = handle.readline(SHEBANG_PROBE_BYTES)
+    except OSError as error:
+        # Only ever asked of a path just found to be a regular file, so a failed
+        # open is the filesystem's answer, not this script's interpreter.
+        raise UnreadableInput(str(error)) from error
+    return _first_line_names_python(first)
+
+
+def _first_line_names_python(first: bytes) -> bool:
+    """Whether a shebang line, as the probe reads it, names Python."""
+    text = first.decode("utf-8", "replace")
+    return text.startswith("#!") and re.search(r"\b(python)[0-9.]*\b", text, re.IGNORECASE) is not None
+
+
+def shebang_refusal_evidence(absolute: Path, max_bytes: int) -> str | None:
+    """What a shebang refusal reports in ``input_hashes`` for the refused file.
+
+    The probe read only a line, which no discovery hash can be compared with,
+    so the whole file is read once more, bounded, and judged again on those
+    same bytes. A file that still does not name Python is reported by that
+    read's hash: a tree that is not changing matches what discovery hashed, so
+    a script this rule and discovery's happen to judge apart costs only its
+    diagnostic, while a script swapped for another one does not match. A read
+    that fails, is over the cap, or now names Python saw a file that changed
+    between the two reads, and is reported as ``None``.
+    """
+    try:
+        source = read_bounded(absolute, max_bytes)
     except OSError:
-        return False
-    return first.startswith("#!") and re.search(r"\b(python)[0-9.]*\b", first, re.IGNORECASE) is not None
+        return None
+    if len(source) > max_bytes:
+        return None
+    newline = source.find(b"\n", 0, SHEBANG_PROBE_BYTES)
+    first = source[:SHEBANG_PROBE_BYTES] if newline < 0 else source[: newline + 1]
+    if _first_line_names_python(first):
+        return None
+    return hashlib.sha256(source).hexdigest()
 
 
 def starts_with_shebang(source: bytes) -> bool:
@@ -134,16 +209,30 @@ def assert_scannable_path(value: Any) -> PurePosixPath:
 
 
 def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
+    """Resolve a requested path to the in-root regular file it names.
+
+    Raises :class:`UnreadableInput` when the filesystem refuses it,
+    :class:`RefusedAfterRead` when its shebang does not name Python, and a plain
+    ``ValueError`` when this worker does not scan such a file by its name.
+    """
     relative = assert_scannable_path(value)
-    absolute = (root / Path(*relative.parts)).resolve(strict=True)
     try:
-        absolute.relative_to(root)
-    except ValueError as error:
-        raise ValueError("Python input path escapes the project root.") from error
-    if not absolute.is_file() or not (absolute.suffix.lower() in {".py", ".pyi"} or names_python_in_shebang(absolute)):
-        raise ValueError("Unsupported Python input.")
-    if absolute.stat().st_size > max_bytes:
-        raise ValueError("Python input exceeds the configured byte limit.")
+        absolute = (root / Path(*relative.parts)).resolve(strict=True)
+        try:
+            absolute.relative_to(root)
+        except ValueError as error:
+            raise UnreadableInput("Python input path escapes the project root.") from error
+        if not absolute.is_file():
+            raise UnreadableInput("Python input is not a regular file.")
+        if absolute.suffix.lower() not in {".py", ".pyi"}:
+            if absolute.suffix:
+                raise ValueError("Unsupported Python input.")
+            if not names_python_in_shebang(absolute):
+                raise RefusedAfterRead("Unsupported Python input.", shebang_refusal_evidence(absolute, max_bytes))
+        if absolute.stat().st_size > max_bytes:
+            raise UnreadableInput("Python input exceeds the configured byte limit.")
+    except OSError as error:
+        raise UnreadableInput(str(error)) from error
     return absolute, relative.as_posix()
 
 
@@ -165,21 +254,95 @@ class ProjectModuleIndex:
     and each referenced module's top-level declarations are parsed lazily and
     memoized. Only files that live under the validated root and stay within the
     byte cap are read.
+
+    ``read_hashes`` records every file a request read, keyed by its
+    project-relative path, for the result's ``input_hashes``: the SHA-256 of
+    the bytes read, or ``None`` when the read was attempted and failed. One
+    path can be read more than once in a request: by an importer's resolution
+    and by its own scan, or under two module ids. Two reads that disagree, in
+    hash or in whether they succeeded, record ``None``, because at least one
+    of them differs from what discovery hashed or failed, and either may have
+    fed facts. Keeping either value alone would leave the other read
+    unverified.
     """
 
     def __init__(self, root: Path, max_bytes: int) -> None:
         self.root = root
         self.max_bytes = max_bytes
-        self.prefixes = self._source_root_prefixes()
+        self.read_hashes: dict[str, str | None] = {}
+        self._prefixes: list[tuple[str, ...]] | None = None
         self._cache: dict[str, dict[str, str]] = {}
 
+    @property
+    def prefixes(self) -> list[tuple[str, ...]]:
+        """The source roots, detected on first use.
+
+        Detecting them probes the tree, and those probes are recorded, so a
+        request that resolves nothing, such as one whose every file was
+        refused, reports no reads it did not need.
+        """
+        if self._prefixes is None:
+            self._prefixes = self._source_root_prefixes()
+        return self._prefixes
+
+    def record_read(self, relative: str, content_hash: str | None) -> None:
+        """Record one read for ``input_hashes``; a disagreeing repeat read records ``None``."""
+        if relative in self.read_hashes and self.read_hashes[relative] != content_hash:
+            content_hash = None
+        self.read_hashes[relative] = content_hash
+
+    def _in_root_file(self, walked: PathWalk) -> Path | None:
+        """The file a walked path opens, when that file lies inside the root.
+
+        Discovery never follows a symlink, so a module reached through a linked
+        file or directory is read where its bytes actually live, and keyed
+        there by :func:`walk_key`; that is the path whose recorded hash
+        describes them. ``None`` for a walk that did not end at a file inside
+        the root: nothing outside the root is read.
+        """
+        if walked.kind != "file" or walked.location is None or not _inside(self.root, walked.location):
+            return None
+        return Path(walked.location)
+
+    def _record_walk(self, walked: PathWalk, content_hash: str | None) -> None:
+        """Record a read, hashed or failed, under every key its walk gives."""
+        final, linked = walk_keys(self.root, walked)
+        for relative in ([final] if final is not None else []) + linked:
+            self.record_read(relative, content_hash)
+
+    def _record_probe(self, walked: PathWalk, present: bool) -> None:
+        """Record an existence probe whose answer feeds facts.
+
+        A probe answering absent, or not a file, records ``None`` under every key
+        its walk gives: resolution goes on as if the file were not there, so a
+        discovered file missing for that moment must fail verification. A probe
+        answering present read no bytes, so it vouches for nothing at the
+        location it reached, which a read records; it records ``None`` only
+        under the linked keys, so a discovered path that had become a link is
+        still caught. Discovery never reports an absent path or a link, so a
+        stable tree is unaffected.
+        """
+        final, linked = walk_keys(self.root, walked)
+        if not present and final is not None:
+            self.record_read(final, None)
+        for relative in linked:
+            self.record_read(relative, None)
+
     def _source_root_prefixes(self) -> list[tuple[str, ...]]:
+        """The source roots: the bare root, and each top-level directory that is not a package.
+
+        Whether ``child/__init__.py`` is a file decides every module id below
+        ``child``, so that probe is recorded (:meth:`_record_probe`).
+        """
         prefixes: list[tuple[str, ...]] = [()]
         try:
             for child in sorted(self.root.iterdir()):
                 if is_excluded(child.name) or not child.is_dir():
                     continue
-                if not (child / "__init__.py").is_file():
+                marker = child / "__init__.py"
+                present = marker.is_file()
+                self._record_probe(walk_path(marker), present)
+                if not present:
                     prefixes.append((child.name,))
         except OSError:
             pass
@@ -207,13 +370,28 @@ class ProjectModuleIndex:
         return None
 
     def _is_project_file(self, path: Path) -> bool:
+        """Whether ``path`` is a module file this index may read.
+
+        A candidate that is absent, not a file, or refused (it links out of the
+        root, it is over the byte cap, or it cannot be examined) is left out of
+        resolution, so every importer's facts are computed as if it did not
+        exist; it is recorded as a failed read under the keys a read of it
+        would go under. A stable layout never trips over that, since discovery
+        reports no absent path, symlink or over-cap file and the core ignores a
+        path it did not discover, while a discovered file that became one
+        mid-scan fails verification. An accepted candidate is recorded as a
+        probe that found it present.
+        """
+        walked = walk_path(path)
+        location = self._in_root_file(walked)
         try:
-            if not path.is_file():
-                return False
-            resolved = path.resolve()
-            return resolved.is_relative_to(self.root) and resolved.stat().st_size <= self.max_bytes
+            if location is not None and location.stat().st_size <= self.max_bytes:
+                self._record_probe(walked, True)
+                return True
         except OSError:
-            return False
+            pass
+        self._record_walk(walked, None)
+        return False
 
     def module_declarations(self, module: str) -> dict[str, str]:
         cached = self._cache.get(module)
@@ -221,29 +399,271 @@ class ProjectModuleIndex:
             return cached
         declarations: dict[str, str] = {}
         path = self.module_file(module)
-        if path is not None:
+        # One walk decides whether the module may be read, the file its bytes
+        # are read from, and the key the read goes under, so none can disagree.
+        walked = None if path is None else walk_path(path)
+        location = None if walked is None else self._in_root_file(walked)
+        if path is not None and walked is not None and location is None:
+            # Accepted by module_file, then retargeted out of the root or gone
+            # before this read resolved it: not read, and recorded as refused.
+            self._record_walk(walked, None)
+        if path is not None and walked is not None and location is not None:
             try:
-                tree = ast.parse(path.read_bytes())
-                for child in tree.body:
-                    if isinstance(child, ast.ClassDef):
-                        declarations[child.name] = ref("class", f"{module}.{child.name}")
-                    elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        declarations[child.name] = ref("function", f"{module}.{child.name}")
-            except (SyntaxError, ValueError, OSError, RecursionError):
-                declarations = {}
+                source = read_bounded(location, self.max_bytes)
+            except OSError:
+                self._record_walk(walked, None)
+            else:
+                if len(source) > self.max_bytes:
+                    # Grew past the cap after _is_project_file checked it.
+                    self._record_walk(walked, None)
+                    self._cache[module] = declarations
+                    return declarations
+                # Hashed before parsing, so a module that fails to parse still
+                # reports the bytes this request saw.
+                self._record_walk(walked, hashlib.sha256(source).hexdigest())
+                try:
+                    declarations = top_level_declarations(ast.parse(source), module)
+                except (SyntaxError, ValueError, RecursionError):
+                    declarations = {}
         self._cache[module] = declarations
         return declarations
 
+    def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> None:
+        """Make a scanned file's own declarations come from the tree just parsed.
+
+        ``module_declarations`` reads a module's file on its own, so an earlier
+        file in the batch that imports this one may have cached declarations
+        from bytes other than the ones this scan hashed. Overwriting the entry
+        with the hashed tree ties the file's own local resolution to its
+        ``content_hash``. The entry is only replaced when the module id resolves
+        to this very file: for the loser of a ``mod.py``/``mod/__init__.py``
+        collision the id names the package, and seeding it from the module file
+        would make every later importer's targets depend on batch order.
+        """
+        module = self.module_for(relative)
+        owner = self.module_file(module)
+        if owner is None or owner.resolve() != absolute:
+            return
+        self._cache[module] = top_level_declarations(tree, module)
+
     def collides(self, absolute: Path, is_package: bool) -> bool:
-        """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id."""
+        """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id.
+
+        The answer decides the file's module identity, so the probe is recorded
+        (:meth:`_record_probe`).
+        """
+        if is_package:
+            competitor = absolute.parent.with_suffix(".py")
+        else:
+            competitor = absolute.with_suffix("") / "__init__.py"
         try:
-            if is_package:
-                competitor = absolute.parent.with_suffix(".py")
-            else:
-                competitor = absolute.with_suffix("") / "__init__.py"
-            return competitor.is_file()
+            present = competitor.is_file()
         except OSError:
-            return False
+            present = False
+        self._record_probe(walk_path(competitor), present)
+        return present
+
+
+# Linux's MAXSYMLINKS: one lookup follows at most this many links, and the next
+# one fails it with ELOOP.
+MAX_SYMLINK_HOPS = 40
+# The file-type bits of ``st_mode``, spelled out rather than imported from
+# ``stat``: three constants do not earn a module dependency, and this file's
+# import count is a budgeted maintainability metric.
+S_IFMT = 0o170000
+S_IFDIR = 0o040000
+S_IFLNK = 0o120000
+
+
+class PathWalk(NamedTuple):
+    """How the kernel's lookup of one path went; see :func:`walk_path`.
+
+    ``links`` holds each symlink followed, in order, with the components that
+    were still to walk after it at that moment.
+    """
+
+    kind: str
+    location: str | None
+    links: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+def walk_path(path: str | os.PathLike[str]) -> PathWalk:
+    """Resolve an absolute path the way the kernel's lookup does, one component at a time.
+
+    The result names the file a read of the path opens. ``current`` is always a
+    real directory, so a ``..`` steps to where the kernel's ``..`` goes once
+    the links before it have been followed. A symlink's target is put in front
+    of the components still to walk, raw, so its own ``..`` is applied the same
+    way; nothing is ever collapsed as text.
+
+    - ``file``: the walk reached a non-directory as its last component.
+    - ``directory``: the walk ended at a directory.
+    - ``missing``: a component does not exist, or is a non-directory with more
+      to walk (ENOENT, ENOTDIR); ``location`` is the path the read was to open
+      (see :func:`_absent_below`).
+    - ``unresolvable``: no such path can be named: a ``..`` left to apply below
+      a missing component, another lookup error, or more than
+      ``MAX_SYMLINK_HOPS`` links (ELOOP).
+
+    ``path`` must be absolute; every module path is built on the real root.
+    """
+    text = os.fspath(path)
+    current = _anchor(text)
+    remaining = text[len(current) :].split(os.sep)
+    links: list[tuple[str, tuple[str, ...]]] = []
+    hops = 0
+    while remaining:
+        name = remaining.pop(0)
+        if name in ("", os.curdir):
+            continue
+        if name == os.pardir:
+            current = os.path.dirname(current)
+            continue
+        candidate = os.path.join(current, name)
+        try:
+            mode = os.lstat(candidate).st_mode & S_IFMT
+        except FileNotFoundError:
+            return _absent_below(candidate, remaining, links)
+        except OSError:
+            return PathWalk("unresolvable", None, tuple(links))
+        if mode == S_IFLNK:
+            hops += 1
+            if hops > MAX_SYMLINK_HOPS:
+                return PathWalk("unresolvable", None, tuple(links))
+            links.append((candidate, tuple(remaining)))
+            try:
+                target = os.readlink(candidate)
+            except OSError:
+                return PathWalk("unresolvable", None, tuple(links))
+            if os.path.isabs(target):
+                current = _anchor(target)
+                target = target[len(current) :]
+            remaining[:0] = target.split(os.sep)
+        elif mode == S_IFDIR:
+            current = candidate
+        elif remaining:
+            return _absent_below(candidate, remaining, links)
+        else:
+            return PathWalk("file", candidate, tuple(links))
+    return PathWalk("directory", current, tuple(links))
+
+
+def _anchor(text: str) -> str:
+    """The filesystem root a path starts from.
+
+    POSIX lets an implementation give exactly two leading slashes a meaning of
+    its own, so ``Path("//tmp").anchor`` is ``//``; Linux treats any run of
+    leading slashes as ``/``, and so must the walk, or every location below it
+    fails the textual containment check.
+    """
+    anchor = Path(text).anchor
+    return os.sep if os.name == "posix" and anchor else anchor
+
+
+def _absent_below(candidate: str, remaining: list[str], links: list[tuple[str, tuple[str, ...]]]) -> PathWalk:
+    """The walk's result when the lookup fails at ``candidate``, which is absent or not a directory.
+
+    Nothing exists below it, so nothing below it can be a link, and without a
+    ``..`` still to apply the remaining components name exactly the file the
+    read was to open. A ``..`` still to apply could only be resolved against a
+    directory that is not there, so the path is unresolvable.
+    """
+    rest = [name for name in remaining if name not in ("", os.curdir)]
+    if os.pardir in rest:
+        return PathWalk("unresolvable", None, tuple(links))
+    return PathWalk("missing", os.path.join(candidate, *rest), tuple(links))
+
+
+def _inside(root: Path, candidate: str) -> bool:
+    base = os.fspath(root)
+    return candidate == base or candidate.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def walk_key(root: Path, walked: PathWalk) -> str | None:
+    """The root-relative key a walked read goes under in ``input_hashes``.
+
+    - A walk that ended at a file, a missing location or a directory inside
+      the root: that location, the path the read opened or would have opened.
+      A directory read fails (EISDIR); discovery never reports a directory, so
+      the key is ignored on a stable tree, while a discovered file replaced by
+      one mid-scan fails verification.
+    - Otherwise the last link followed inside the root. A link followed as a
+      directory component keys the path below it as it was about to be walked
+      (a discovered ``sub/c.py`` whose ``sub`` became a link out of the root
+      keys ``sub/c.py``), unless that path holds a ``..``, which only the walk
+      could have applied; then the link itself.
+
+    ``None`` when no location the walk passed lies inside the root. Every key a
+    stable layout produces names either the file the kernel reaches, or a link
+    or a path through one or through a missing component, none of which
+    discovery reports, so the core ignores it; a discovered file changed into
+    one of those mid-scan is keyed where discovery saw it and fails
+    verification. ``root`` must be a real path, as :func:`safe_root` makes it.
+    """
+    location = walked.location
+    if location is None or not _inside(root, location):
+        inside = [link for link in walked.links if _inside(root, link[0])]
+        if not inside:
+            return None
+        location, remaining = inside[-1]
+        rest = [name for name in remaining if name not in ("", os.curdir)]
+        if rest and os.pardir not in rest:
+            location = os.path.join(location, *rest)
+    if location == os.fspath(root):
+        return None
+    return PurePosixPath(os.path.relpath(location, root)).as_posix()
+
+
+def walk_keys(root: Path, walked: PathWalk) -> tuple[str | None, list[str]]:
+    """Every key a walk goes under in ``input_hashes``.
+
+    The first is :func:`walk_key`, the location the walk reached. The rest are
+    the other in-root keys the walk passed through a link: each link followed,
+    and each link with the components still to walk below it. The first of
+    those is the path as written, since every path the index walks is joined
+    from the real root without a ``..``. A ``..`` among the components below a
+    later link could only be applied by the walk, so such a path is left out,
+    as is anything outside the root or below ``node_modules``.
+
+    Discovery never reports a link and never descends into a linked directory,
+    so on a stable tree every linked key names a path the core ignores.
+    Mid-scan, a discovered file swapped for a link (to another file, or to a
+    directory) is keyed where discovery saw it, so the read or probe that went
+    through it is checked against discovery's hash.
+    """
+    final = walk_key(root, walked)
+    linked: list[str] = []
+
+    def add(location: str) -> None:
+        if not _inside(root, location) or location == os.fspath(root):
+            return
+        relative = PurePosixPath(os.path.relpath(location, root)).as_posix()
+        if relative != final and relative not in linked and "node_modules" not in relative.split("/"):
+            linked.append(relative)
+
+    for location, remaining in walked.links:
+        add(location)
+        rest = [name for name in remaining if name not in ("", os.curdir)]
+        if rest and os.pardir not in rest:
+            add(os.path.join(location, *rest))
+    return final, linked
+
+
+def input_key(root: Path, path: str | os.PathLike[str]) -> str | None:
+    """The key a read of ``path`` goes under: :func:`walk_key` of its walk."""
+    return walk_key(root, walk_path(path))
+
+
+def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
+    """Map each top-level class and function name in ``tree`` to its symbol reference."""
+
+    declarations: dict[str, str] = {}
+    for child in tree.body:
+        if isinstance(child, ast.ClassDef):
+            declarations[child.name] = ref("class", f"{module}.{child.name}")
+        elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            declarations[child.name] = ref("function", f"{module}.{child.name}")
+    return declarations
 
 
 def ref(kind: str, canonical: str) -> str:
@@ -1073,6 +1493,7 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     # so a single unscannable file produced no graph at all. A request that
     # cannot be interpreted — checked above — is still fatal, because that means
     # the caller is broken rather than the tree.
+    index = ProjectModuleIndex(root, max_bytes)
     resolved: list[tuple[Path, str]] = []
     rejected: list[tuple[str, str]] = []
     for value in files:
@@ -1082,54 +1503,89 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
         requested = assert_scannable_path(value)
         try:
             resolved.append(safe_file(root, value, max_bytes))
-        except (ValueError, OSError) as error:
+        except UnreadableInput as error:
+            # Its contribution carries no facts, so a discovered file must not
+            # pass verification as if it had been read.
+            index.record_read(requested.as_posix(), None)
+            rejected.append((requested.as_posix(), str(error)))
+        except RefusedAfterRead as error:
+            # Refused on what the file says rather than on its name, so what
+            # was read is evidence: a stable tree matches the hash, a script
+            # swapped and restored around the probe does not.
+            index.record_read(requested.as_posix(), error.content_hash)
+            rejected.append((requested.as_posix(), str(error)))
+        except ValueError as error:
             rejected.append((requested.as_posix(), str(error)))
     resolved.sort(key=lambda item: item[1])
     for skipped, message in sorted(rejected):
         emit(_unscannable_contribution(skipped, message))
 
-    index = ProjectModuleIndex(root, max_bytes)
     for absolute, relative in resolved:
-        # Parse and collect one file at a time and release its tree before the
-        # next, so peak memory stays bounded by the largest single file rather
-        # than the whole batch. Each file is isolated: a syntax error, an
-        # oversized recursion, or an unexpected fault degrades to a per-file
-        # diagnostic and never discards facts for the other inputs.
-        try:
-            source = absolute.read_bytes()
-        except OSError as error:
-            # `safe_file` stats the path, and the file can still be deleted or
-            # made unreadable before this read. Nothing about that is specific
-            # to the batch, so it costs only its own file — the same treatment
-            # discovery gives a file it could not resolve.
-            emit(_unscannable_contribution(relative, str(error)))
-            continue
-        try:
-            tree = ast.parse(source, filename=relative, type_comments=True)
-        except (SyntaxError, UnicodeDecodeError, ValueError) as error:
-            emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error)))
-            continue
-        except RecursionError as error:
-            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
-            continue
-        # The shebang lives in a comment the parser drops, so it has to be read
-        # off the source. Reduce it to a flag and release the bytes here, so the
-        # loop's memory bound stays the largest single tree.
-        shebang = starts_with_shebang(source)
-        del source
-        try:
-            collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
-            contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
-        except RecursionError as error:
-            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
-            continue
-        except Exception as error:
-            emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1))
-            continue
-        finally:
-            del tree  # drop the parsed tree before the next file to bound memory
-        emit(contribution)
-    return {"files_scanned": len(resolved) + len(rejected), "parser": "python.ast"}
+        _scan_one(absolute, relative, index, emit)
+    return {
+        "files_scanned": len(resolved) + len(rejected),
+        "parser": "python.ast",
+        "input_hashes": index.read_hashes,
+    }
+
+
+def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Callable[[dict[str, Any]], None]) -> None:
+    """Parse and collect a single file, emitting exactly one owned contribution.
+
+    Isolated per file so peak memory stays bounded by the largest single file
+    rather than the whole batch, and so a syntax error, an oversized recursion,
+    or an unexpected fault degrades to a per-file diagnostic and never discards
+    facts for the other inputs in the same request.
+    """
+    try:
+        source = read_bounded(absolute, index.max_bytes)
+    except OSError as error:
+        # `safe_file` stats the path, and the file can still be deleted or made
+        # unreadable before this read. Nothing about that is specific to the
+        # batch, so it costs only its own file — the same treatment discovery
+        # gives a file it could not resolve. Recorded as a failed read, since the
+        # contribution standing in for the file carries none of its facts.
+        index.record_read(relative, None)
+        emit(_unscannable_contribution(relative, str(error)))
+        return
+    if len(source) > index.max_bytes:
+        index.record_read(relative, None)
+        emit(_unscannable_contribution(relative, "Python input exceeds the configured byte limit."))
+        return
+    # Of the exact bytes handed to ast.parse, which does its own decoding and
+    # BOM handling, so the core can refuse facts parsed from a file that
+    # changed after discovery hashed it.
+    content_hash = hashlib.sha256(source).hexdigest()
+    # The index may read this file too, before or after this read, for an
+    # importer's sake; if the two reads disagree, the entry becomes None.
+    index.record_read(relative, content_hash)
+    try:
+        tree = ast.parse(source, filename=relative, type_comments=True)
+    except (SyntaxError, UnicodeDecodeError, ValueError) as error:
+        emit(_diagnostic_contribution(relative, "PY_SYNTAX_ERROR", "error", error, line_of(error), content_hash))
+        return
+    except RecursionError as error:
+        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
+        return
+    # The shebang lives in a comment the parser drops, so it has to be read off
+    # the source. Reduce it to a flag and release the bytes here, so the loop's
+    # memory bound stays the largest single tree.
+    shebang = starts_with_shebang(source)
+    del source
+    try:
+        index.adopt_parsed(absolute, relative, tree)
+        collision = index.collides(absolute, PurePosixPath(relative).stem == "__init__")
+        contribution = PythonAstFactCollector(relative, tree, index, collision, shebang).collect()
+    except RecursionError as error:
+        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
+        return
+    except Exception as error:
+        emit(_diagnostic_contribution(relative, "PY_INTERNAL_ERROR", "error", error, 1, content_hash))
+        return
+    finally:
+        del tree  # drop the parsed tree before the next file to bound memory
+    contribution["content_hash"] = content_hash
+    emit(contribution)
 
 
 def line_of(error: BaseException) -> int:
@@ -1137,9 +1593,9 @@ def line_of(error: BaseException) -> int:
 
 
 def _diagnostic_contribution(
-    relative: str, code: str, severity: str, error: BaseException, line: int
+    relative: str, code: str, severity: str, error: BaseException, line: int, content_hash: str | None = None
 ) -> dict[str, Any]:
-    return {
+    contribution: dict[str, Any] = {
         "owner_key": f"knossos.python:file:{relative}",
         "nodes": [],
         "edges": [],
@@ -1152,6 +1608,9 @@ def _diagnostic_contribution(
             }
         ],
     }
+    if content_hash is not None:
+        contribution["content_hash"] = content_hash
+    return contribution
 
 
 def _unscannable_contribution(relative: str, message: str) -> dict[str, Any]:
@@ -1172,6 +1631,43 @@ def _unscannable_contribution(relative: str, message: str) -> dict[str, Any]:
     }
 
 
+INPUT_HASHES_PART_BYTES = 256_000
+"""Serialized bytes one ``scan/input_hashes`` notification carries at most.
+
+Well under the core's 1,000,000-byte line cap. A single entry longer than this
+still travels alone, and the core's path rules bound an entry, so no frame this
+produces approaches the cap.
+"""
+
+
+def input_hash_parts(input_hashes: dict[str, str | None], part_bytes: int | None = None) -> list[dict[str, str | None]]:
+    """Split a request's ``input_hashes`` map into parts that each fit one frame.
+
+    The map covers every module the request's index read, which on a large tree
+    outgrows the one line a scan result travels on however few files the batch
+    names. All parts but the last go out as ``scan/input_hashes`` notifications;
+    the last is the result's own field, which marks that the worker finished
+    reporting, so there is always at least one part, ``{}`` when nothing was read.
+    """
+
+    budget = INPUT_HASHES_PART_BYTES if part_bytes is None else part_bytes
+    parts: list[dict[str, str | None]] = []
+    part: dict[str, str | None] = {}
+    # The serialized part: its braces, less the comma its last entry lacks.
+    size = 1
+    for relative, content_hash in input_hashes.items():
+        # `"path":"<64 hex>",` or `"path":null,`
+        entry = len(json.dumps(relative, ensure_ascii=False).encode()) + (4 if content_hash is None else 66) + 2
+        if part and size + entry > budget:
+            parts.append(part)
+            part = {}
+            size = 1
+        part[relative] = content_hash
+        size += entry
+    parts.append(part)
+    return parts
+
+
 def handle(request: dict[str, Any]) -> None:
     """Validate and dispatch one NDJSON JSON-RPC worker request."""
 
@@ -1181,6 +1677,7 @@ def handle(request: dict[str, Any]) -> None:
         raise ValueError("Method and object params are required.")
     if method == "cancel":
         return
+    result: dict[str, Any]
     if method == "initialize":
         result = {
             "id": "knossos.python",
@@ -1189,13 +1686,17 @@ def handle(request: dict[str, Any]) -> None:
             "output_schema_version": "1.0",
             "languages": ["python"],
             "file_extensions": ["py", "pyi"],
-            "capabilities": ["partial_ast"],
+            "capabilities": ["partial_ast", "content_hash", "input_hashes"],
         }
     elif method == "scan":
-        result = scan(
+        scanned = scan(
             params,
             lambda contribution: write({"jsonrpc": "2.0", "method": "scan/contribution", "params": contribution}),
         )
+        parts = input_hash_parts(scanned["input_hashes"])
+        for part in parts[:-1]:
+            write({"jsonrpc": "2.0", "method": "scan/input_hashes", "params": {"input_hashes": part}})
+        result = {**scanned, "input_hashes": parts[-1]}
     elif method == "shutdown":
         result = {"status": "bye"}
     else:

@@ -7,8 +7,9 @@ namespace Knossos\Scan;
 use InvalidArgumentException;
 use Knossos\Discovery\FileFingerprint;
 use Knossos\Reconciliation\ContributionCacheEntry;
-use Knossos\Scanner\Protocol\{Diagnostic, Evidence, ScanContribution, ScannerManifest};
+use Knossos\Scanner\Protocol\{Diagnostic, Evidence, Protocol, ScanContribution, ScannerManifest};
 use Knossos\Scanner\Worker\ContributionDecoder;
+use Knossos\Scanner\Worker\WorkerException;
 use Throwable;
 
 /**
@@ -33,9 +34,12 @@ final readonly class ContributionCacheService
         $scan = [];
         $added = 0;
         $changed = 0;
-        $seen = 0;
+        $sinceLastPoll = 0;
         foreach ($files as $file) {
-            if ($cancellation !== null && (++$seen % 256) === 0) {
+            // Once per 256 files. A counter that restarts, rather than a
+            // modulo, so a counter running the wrong way never reaches it.
+            if ($cancellation !== null && ++$sinceLastPoll === 256) {
+                $sinceLastPoll = 0;
                 $cancellation->throwIfCancelled();
             }
             $row = $cache[$manifest->id . "\0" . $file->relativePath] ?? null;
@@ -110,6 +114,9 @@ final readonly class ContributionCacheService
                 $omitted = true;
                 continue;
             }
+            // Before anything is kept or cached: facts parsed from bytes other
+            // than the ones discovery hashed must never reach the graph.
+            $cacheable = self::parsedContentIsCacheable($contribution, $file, $manifest);
             if (isset($duplicated[$owner])) {
                 // Only the last answer survived the index above, so the facts
                 // of every earlier one are already gone and nothing here can
@@ -128,7 +135,7 @@ final readonly class ContributionCacheService
             // reverts. Re-fingerprint now: only cache the entry when the on-disk bytes
             // still match the discovery hash; otherwise keep this scan's contribution but
             // let the next scan re-scan from source.
-            if ($this->contentStillMatchesDiscovery($file)) {
+            if ($cacheable && $this->contentStillMatchesDiscovery($file)) {
                 $entries[] = $this->entry($file, $manifest, $configurationHash, $contribution);
             }
         }
@@ -140,14 +147,18 @@ final readonly class ContributionCacheService
 
     /**
      * True when the current on-disk content of a scanned file still hashes to the
-     * fingerprint recorded at discovery time. When the path/hash are unavailable
-     * (non-DiscoveredFile inputs) verification is skipped and the entry is kept, to
-     * preserve prior behaviour; when the file is unreadable at scan time the entry is
-     * dropped rather than caching a possibly stale mapping.
+     * fingerprint recorded at discovery time. A file with no string discovery hash
+     * has nothing a cache entry could be keyed on, so it is never cached. When only
+     * the path is unavailable (non-DiscoveredFile inputs) the re-read is skipped and
+     * the entry is kept, to preserve prior behaviour; when the file is unreadable at
+     * scan time the entry is dropped rather than caching a possibly stale mapping.
      */
     private function contentStillMatchesDiscovery(object $file): bool
     {
-        if (!isset($file->absolutePath, $file->contentHash) || !is_string($file->absolutePath) || !is_string($file->contentHash)) {
+        if (!is_string($file->contentHash ?? null)) {
+            return false;
+        }
+        if (!is_string($file->absolutePath ?? null)) {
             return true;
         }
         $fingerprint = FileFingerprint::compute($file->absolutePath);
@@ -157,8 +168,63 @@ final readonly class ContributionCacheService
 
         return $fingerprint->contentHash === $file->contentHash;
     }
-    /** One cache entry for a scanned file. */
 
+    /**
+     * Check a worker's reported parsed-content hash against discovery, and say
+     * whether the contribution may be cached.
+     *
+     * A present hash is compared whatever the manifest declares, since a
+     * mismatch is evidence of a changed tree whoever reports it. Without one, a
+     * contribution carrying no facts is a worker's report on a file it could not
+     * read, so there were no bytes to hash; it is kept, but a worker that does
+     * hash is not allowed to have that empty answer cached. Facts without a hash
+     * from a worker that declared it would hash are a defect in that worker.
+     *
+     * A reported hash for a file discovery recorded no hash for cannot be
+     * verified, and treating it as verified would let facts from any bytes
+     * through as fresh. It is refused outright rather than kept uncached: kept,
+     * the facts would still reach the graph unverified. Refused as an invalid
+     * contribution, like {@see ScanInputHashes} refuses an unverifiable read, so
+     * the language degrades with a code that says why rather than as a bare
+     * WORKER_FAILED.
+     *
+     * @throws ScanSnapshotChangedException when the hash differs from discovery
+     * @throws WorkerException when a declaring worker sent facts without a hash, or a hash there is no discovery hash to compare with
+     */
+    private static function parsedContentIsCacheable(ScanContribution $contribution, object $file, ScannerManifest $manifest): bool
+    {
+        $declared = in_array(Protocol::CAPABILITY_CONTENT_HASH, $manifest->capabilities, true);
+        if ($contribution->contentHash !== null) {
+            $expected = $file->contentHash ?? null;
+            if (!is_string($expected)) {
+                throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf(
+                    '%s reported a content hash for %s, but discovery recorded no hash for it, so the hash cannot be verified.',
+                    $manifest->id,
+                    $file->relativePath,
+                ));
+            }
+            if (!hash_equals($expected, $contribution->contentHash)) {
+                throw ScanSnapshotChangedException::parsedDifferently($file->relativePath);
+            }
+
+            return true;
+        }
+        if ($contribution->nodes === [] && $contribution->edges === []) {
+            return !$declared;
+        }
+        if ($declared) {
+            throw new WorkerException('WORKER_CONTRIBUTION_INVALID', sprintf(
+                '%s declares the %s capability but reported no content hash for %s.',
+                $manifest->id,
+                Protocol::CAPABILITY_CONTENT_HASH,
+                $file->relativePath,
+            ));
+        }
+
+        return true;
+    }
+
+    /** One cache entry for a scanned file. */
     private function entry(object $file, ScannerManifest $manifest, string $configurationHash, ScanContribution $contribution): ContributionCacheEntry
     {
         return new ContributionCacheEntry($file->relativePath, $file->contentHash, $manifest->id, $manifest->version, $configurationHash, $contribution);
@@ -223,7 +289,7 @@ final readonly class ContributionCacheService
                 ),
                 new Evidence($relativePath, 1, 1),
             ),
-        ]);
+        ], $contribution->contentHash);
     }
 
     /**

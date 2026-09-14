@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scanner;
 
+use Knossos\Discovery\DiscoveryConfig;
+use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Scan\ScanInputHashes;
+use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Worker\WorkerException;
@@ -629,10 +633,8 @@ final class PhpScannerTest extends KnossosTestCase
             throw new \RuntimeException('Unable to create deep PHP fixture.');
         }
         $nesting = 700;
-        file_put_contents(
-            $root . '/Deep.php',
-            "<?php\n\$x = " . str_repeat('[', $nesting) . '1' . str_repeat(']', $nesting) . ";\n",
-        );
+        $bytes = "<?php\n\$x = " . str_repeat('[', $nesting) . '1' . str_repeat(']', $nesting) . ";\n";
+        file_put_contents($root . '/Deep.php', $bytes);
         try {
             $client = $this->phpWorkerClient();
             $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['Deep.php']]));
@@ -640,6 +642,10 @@ final class PhpScannerTest extends KnossosTestCase
             assertSame([], $contribution->nodes);
             assertSame([], $contribution->edges);
             assertSame('PHP_AST_TOO_DEEP', $contribution->diagnostics[0]->code);
+            // The too-deep return still hashes the bytes it read, so the core
+            // can tell this diagnostic-only contribution apart from one a
+            // declaring worker produced without ever reading the file.
+            assertSame(hash('sha256', $bytes), $contribution->contentHash);
             $client->shutdown();
         } finally {
             @unlink($root . '/Deep.php');
@@ -960,6 +966,337 @@ final class PhpScannerTest extends KnossosTestCase
         assertArrayContains(['calls', $source, 'php:function:strlen'], $edgeTuples);
 
         $client->shutdown();
+    }
+
+    /**
+     * The hash has to be of the bytes the parser got, so a BOM, CRLF line
+     * endings, and a file that does not parse all hash exactly as written.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReportsTheHashOfTheRawBytesItParsed(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Bom.php' => "\xEF\xBB\xBF<?php\nclass Bom {}\n",
+            'src/Crlf.php' => "<?php\r\nclass Crlf {}\r\n",
+            'src/Broken.php' => "<?php\nclass {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->phpWorkerClient();
+            assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+            $client->shutdown();
+
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $byOwner['knossos.php:file:' . $relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * This worker resolves nothing across files, so `input_hashes` is exactly
+     * the requested files whose bytes it read: a BOM file and a file that
+     * fails to parse both got read (and hashed), even though the broken one
+     * contributes no nodes or edges.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReportsInputHashesForEveryFileItRead(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Bom.php' => "\xEF\xBB\xBF<?php\nclass Bom {}\n",
+            'src/Broken.php' => "<?php\nclass {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        try {
+            $client = $this->phpWorkerClient();
+            assertSame(true, in_array('input_hashes', $client->initialize()->capabilities, true));
+            iterator_to_array($client->scan(['root' => $root, 'files' => array_keys($files)]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            assertSame(true, is_array($inputHashes));
+            assertSame(count($files), count($inputHashes));
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $inputHashes[$relative] ?? null, $relative);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A requested file the filesystem would not let the worker read as the
+     * file discovery hashed (over the byte cap, gone, a directory, or leaving
+     * the root) is reported as `null`: its contribution carries no facts, so
+     * without the null a discovered file would lose its facts from a graph
+     * reported fresh. A path refused by policy (an extension this worker does
+     * not scan) says nothing about the tree and stays unreported.
+     */
+    #[Group('php-scanner')]
+    public function testARequestedFileWhoseReadFailsIsReportedAsNull(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $outside = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src/Dir.php', 0o777, true);
+        mkdir($outside, 0o777, true);
+        file_put_contents($root . '/src/Big.php', "<?php\nclass Big {}\n");
+        file_put_contents($outside . '/Out.php', "<?php\nclass Out {}\n");
+        symlink($outside . '/Out.php', $root . '/src/Out.php');
+        file_put_contents($root . '/src/notes.txt', "text\n");
+        try {
+            $client = $this->phpWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['src/Big.php', 'src/Gone.php', 'src/Dir.php', 'src/Out.php', 'src/notes.txt'],
+                'limits' => ['max_file_bytes' => 10],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            assertSame(['src/Big.php' => null, 'src/Gone.php' => null, 'src/Dir.php' => null, 'src/Out.php' => null], $inputHashes);
+            assertSame(5, count($contributions));
+            foreach ($contributions as $contribution) {
+                assertSame([], $contribution->nodes);
+                assertSame('PHP_UNSCANNABLE_FILE', $contribution->diagnostics[0]->code);
+            }
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($outside);
+        }
+    }
+
+    /**
+     * The shebang probe runs on a path just resolved to a regular file, so an
+     * open that fails there means the file went away, not that the script names
+     * another interpreter: it is a failed read, reported as null, rather than a
+     * policy refusal the core never hears about.
+     */
+    #[Group('php-scanner')]
+    public function testAShebangProbeThatCannotOpenTheFileIsAFailedRead(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $probe = new \ReflectionMethod(\KnossosPhpScanner\WorkerServer::class, 'namesPhpInShebang');
+        $missing = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6)) . '/artisan';
+
+        $error = captureThrows(static fn() => $probe->invoke(null, $missing), \KnossosPhpScanner\UnreadableFileException::class);
+
+        assertSame('Unable to read PHP file: ' . $missing, $error->getMessage());
+    }
+
+    /**
+     * Discovery routed an extensionless script here because its shebang named
+     * PHP. Swapped for another script around the worker's probe and restored
+     * afterwards, the file is refused with no facts, and that refusal must
+     * not pass verification: the hash of what the probe's verdict rested on
+     * disagrees with what discovery hashed.
+     */
+    #[Group('php-scanner')]
+    public function testAnExtensionlessPhpScriptSwappedAroundTheProbeFailsVerification(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $php = "#!/usr/bin/env php\n<?php\nclass Tool {}\n";
+        $python = "#!/usr/bin/env python3\nprint('tool')\n";
+        file_put_contents($root . '/bin/tool', $php);
+        try {
+            $discovery = (new ProjectDiscoverer(new DiscoveryConfig([$root])))->discover($root);
+            $byPath = [];
+            foreach ($discovery->files as $file) {
+                $byPath[$file->relativePath] = $file;
+            }
+            assertSame('php', $byPath['bin/tool']->language);
+
+            file_put_contents($root . '/bin/tool', $python);
+            $client = $this->phpWorkerClient();
+            $manifest = $client->initialize();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['bin/tool']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+            file_put_contents($root . '/bin/tool', $php);
+
+            assertSame('PHP_UNSCANNABLE_FILE', $contributions[0]->diagnostics[0]->code);
+            assertSame(['bin/tool' => hash('sha256', $python)], $inputHashes);
+            $error = captureThrows(
+                static fn() => ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, $byPath),
+                ScanSnapshotChangedException::class,
+            );
+            assertSame(ScanSnapshotChangedException::inputReadDifferently('bin/tool')->getMessage(), $error->getMessage());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A shebang refusal of a file that is not changing reports the hash of its
+     * whole content, which is what discovery hashed, so a script this worker
+     * and discovery happen to judge apart costs its diagnostic and never the
+     * scan.
+     */
+    #[Group('php-scanner')]
+    public function testAShebangRefusalOfAStableFileReportsItsContentHash(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $python = "#!/usr/bin/env python3\nprint('tool')\n";
+        file_put_contents($root . '/bin/tool', $python);
+        try {
+            $client = $this->phpWorkerClient();
+            $manifest = $client->initialize();
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['bin/tool']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            assertSame(['bin/tool' => hash('sha256', $python)], $inputHashes);
+            $discovery = (new ProjectDiscoverer(new DiscoveryConfig([$root])))->discover($root);
+            $byPath = [];
+            foreach ($discovery->files as $file) {
+                $byPath[$file->relativePath] = $file;
+            }
+            assertSame(true, isset($byPath['bin/tool']));
+            ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, $byPath);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The evidence read judges the file again on its own bytes: one that names
+     * PHP now changed since the probe, and one that cannot be read whole
+     * within the cap has no hash to give. Both are null.
+     */
+    #[Group('php-scanner')]
+    public function testShebangRefusalEvidenceIsNullUnlessTheWholeFileStillRefuses(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $evidence = new ReflectionMethod(\KnossosPhpScanner\WorkerServer::class, 'refusalEvidence');
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root);
+        $python = "#!/usr/bin/env python3\nprint('tool')\n";
+        file_put_contents($root . '/python', $python);
+        file_put_contents($root . '/php', "#!/usr/bin/env php\n<?php\n");
+        // Past the probe's 255 bytes the line no longer counts, as in discovery.
+        file_put_contents($root . '/late', '#!' . str_repeat(' ', 253) . "php\n");
+        try {
+            assertSame(hash('sha256', $python), $evidence->invoke(null, $root . '/python', strlen($python)));
+            assertSame(hash('sha256', $python), $evidence->invoke(null, $root . '/python', PHP_INT_MAX));
+            assertSame(null, $evidence->invoke(null, $root . '/python', strlen($python) - 1));
+            assertSame(null, $evidence->invoke(null, $root . '/php', 1000));
+            assertSame(hash('sha256', '#!' . str_repeat(' ', 253) . "php\n"), $evidence->invoke(null, $root . '/late', 1000));
+            assertSame(null, $evidence->invoke(null, $root . '/gone', 1000));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The map is split into parts of at most the part budget, in order, with
+     * the last part kept for the result: an entry that alone exceeds the
+     * budget travels alone, and an empty map is still one empty part.
+     */
+    #[Group('php-scanner')]
+    public function testInputHashesPartsFitTheirBudget(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $parts = new ReflectionMethod(\KnossosPhpScanner\WorkerServer::class, 'inputHashesParts');
+        $hash = str_repeat('a', 64);
+        $map = ['a/1' => $hash, 'a/2' => null, 'a/3' => $hash, str_repeat('x', 300) => $hash, 7 => null];
+
+        assertSame([[]], $parts->invoke(null, []));
+        assertSame([$map], $parts->invoke(null, $map));
+        assertSame(
+            [['a/1' => $hash, 'a/2' => null], ['a/3' => $hash], [str_repeat('x', 300) => $hash], [7 => null]],
+            $parts->invoke(null, $map, 90),
+        );
+        // The count is the serialized part's exact length: a budget of that
+        // length keeps both entries together, one byte less splits them.
+        $pair = ['a/1' => $hash, 'a/2' => null];
+        $length = strlen((string) json_encode($pair, JSON_UNESCAPED_SLASHES));
+        assertSame([$pair], $parts->invoke(null, $pair, $length));
+        assertSame([['a/1' => $hash], ['a/2' => null]], $parts->invoke(null, $pair, $length - 1));
+        // Keys are measured as write() encodes them, escapes included.
+        $escaped = ["\u{e9}" => null, 'b' => null];
+        $length = strlen((string) json_encode($escaped, JSON_UNESCAPED_SLASHES));
+        assertSame([["\u{e9}" => null], ['b' => null]], $parts->invoke(null, $escaped, $length - 1));
+    }
+
+    /**
+     * Through the real worker: a batch whose map outgrows the part budget still
+     * reports every file it read, merged from its parts by the session.
+     */
+    #[Group('php-scanner')]
+    public function testAMapLargerThanOnePartReportsEveryFile(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $directory = 'src/' . str_repeat('d', 250) . '/' . str_repeat('e', 250) . '/' . str_repeat('f', 250);
+        mkdir($root . '/' . $directory, 0o777, true);
+        $expected = [];
+        for ($i = 0; $i < 400; ++$i) {
+            $relative = sprintf('%s/Value%04d.php', $directory, $i);
+            $contents = sprintf("<?php\nfinal class Value%d {}\n", $i);
+            file_put_contents($root . '/' . $relative, $contents);
+            $expected[$relative] = hash('sha256', $contents);
+        }
+        $client = $this->phpWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => array_keys($expected)]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? [];
+
+            assertSame(true, strlen((string) json_encode($inputHashes)) > 256_000);
+            assertSame($expected, $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A read that fails inside the scanner is a failed read too, not a policy refusal. */
+    #[Group('php-scanner')]
+    public function testAScannerReadThatFailsIsAFailedRead(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $missing = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6)) . '/Gone.php';
+
+        $error = captureThrows(static fn() => @(new \KnossosPhpScanner\PhpScanner())->scan(dirname($missing), $missing, 'Gone.php'), \KnossosPhpScanner\UnreadableFileException::class);
+
+        assertSame('Unable to read PHP file: Gone.php', $error->getMessage());
+    }
+
+    /**
+     * A requested file swapped for a link to another file in the tree is read
+     * through the link, and the bytes it read are reported under the requested
+     * path, where they disagree with what discovery hashed for it.
+     */
+    #[Group('php-scanner')]
+    public function testARequestedFileReadThroughALinkIsReportedUnderTheRequestedPath(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        file_put_contents($root . '/src/Target.php', "<?php\nclass Target {}\n");
+        symlink('Target.php', $root . '/src/Linked.php');
+        try {
+            $client = $this->phpWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/Linked.php']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            assertSame(['src/Linked.php' => hash('sha256', "<?php\nclass Target {}\n")], $inputHashes);
+            assertSame('knossos.php:file:src/Linked.php', $contributions[0]->ownerKey);
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 
     #[Group('php-scanner')]

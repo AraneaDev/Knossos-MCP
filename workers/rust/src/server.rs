@@ -17,6 +17,11 @@ const DEFAULT_MAX_FILE_BYTES: u64 = 2_000_000;
 /// Default cap on files in one request, overridden by `params.limits.max_files`.
 const DEFAULT_MAX_FILES: usize = 100_000;
 
+/// Serialized bytes one `scan/input_hashes` notification carries at most, well
+/// under the core's 1,000,000-byte line cap, and the same as the packaged PHP,
+/// Python and TypeScript workers use.
+const INPUT_HASHES_PART_BYTES: usize = 256_000;
+
 /// Read requests until stdin ends or `shutdown` arrives, writing replies to `output`.
 ///
 /// A malformed request becomes a JSON-RPC error reply rather than a crash: the
@@ -56,10 +61,24 @@ pub fn run(input: impl BufRead, mut output: impl Write) -> std::io::Result<()> {
             write_line(&mut output, notification)?;
         }
         match result {
-            Ok(value) => write_line(
-                &mut output,
-                &json!({"jsonrpc": "2.0", "id": id, "result": value}),
-            )?,
+            Ok(mut value) => {
+                // The map is bounded by the batch and the crates probed, but
+                // not by the line cap: long enough paths outgrow one frame.
+                for part in split_input_hashes(&mut value, INPUT_HASHES_PART_BYTES) {
+                    write_line(
+                        &mut output,
+                        &json!({
+                            "jsonrpc": "2.0",
+                            "method": "scan/input_hashes",
+                            "params": {"input_hashes": part},
+                        }),
+                    )?;
+                }
+                write_line(
+                    &mut output,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": value}),
+                )?;
+            }
             Err(message) => write_line(&mut output, &error_reply(&id, &message))?,
         }
         if method == "shutdown" {
@@ -98,9 +117,22 @@ enum Prepared {
         relative: String,
         /// The parsed syntax tree.
         parsed: syn::File,
+        /// SHA-256 hex of the raw bytes `parsed` came from.
+        content_hash: String,
     },
     /// A failed file, reduced to its final (diagnostic-only) contribution.
-    Err(Contribution),
+    Err {
+        /// Project-relative path, kept alongside the contribution so pass 3
+        /// can attribute `input_hashes` without parsing it back out of the
+        /// owner key.
+        relative: String,
+        /// The diagnostic-only contribution itself.
+        contribution: Contribution,
+        /// Whether the filesystem refused the read (gone, not a regular file,
+        /// over the byte cap, or resolving outside the root), as opposed to
+        /// bytes that were read and failed to parse.
+        read_failed: bool,
+    },
 }
 
 /// Parse a bounded file set, emitting one owned contribution per input.
@@ -138,7 +170,8 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     for config in &config_files {
         assert_scannable_str(config)?;
     }
-    let crates = cargo_crates(&root, &config_files);
+    let mut input_hashes: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let crates = cargo_crates(&root, &config_files, max_file_bytes, &mut input_hashes);
     let has_library_root = crates
         .iter()
         .any(|(root_file, _)| root_file.ends_with("src/lib.rs"));
@@ -157,7 +190,10 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     let mut declarations = Declarations::new();
     let mut test_modules = crate::visit::TestModules::new();
     for item in &prepared {
-        if let Prepared::Parsed { relative, parsed } = item {
+        if let Prepared::Parsed {
+            relative, parsed, ..
+        } = item
+        {
             let module = module_path_for_file(relative, has_library_root);
             crate::visit::collect_declarations(&module, &parsed.items, &mut declarations);
             crate::visit::collect_test_modules(&module, &parsed.items, &mut test_modules);
@@ -167,12 +203,30 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     // Pass 3: walk and emit, in the batch's sorted order.
     let mut scanned = 0_usize;
     for item in prepared {
-        let contribution = match item {
-            Prepared::Err(contribution) => contribution,
-            Prepared::Parsed { relative, parsed } => {
+        let (relative, contribution) = match item {
+            Prepared::Err {
+                relative,
+                contribution,
+                read_failed,
+            } => {
+                if read_failed {
+                    // The file is not what discovery hashed right now, and the
+                    // contribution standing in for its facts is empty: null
+                    // makes the core fail the scan for a discovered path rather
+                    // than keep a graph without them.
+                    record_read(&mut input_hashes, &relative, None);
+                }
+                (relative, contribution)
+            }
+            Prepared::Parsed {
+                relative,
+                parsed,
+                content_hash,
+            } => {
                 let module = module_path_for_file(&relative, has_library_root);
                 let display = module.rsplit("::").next().unwrap_or(&module).to_owned();
                 let mut facts = Facts::new(&relative);
+                facts.set_content_hash(content_hash);
                 let span = proc_macro2::Span::call_site();
                 facts.node("module", &module, &display, span, span);
                 crate::visit::walk(
@@ -198,14 +252,41 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                     let module_id = crate::facts::reference("module", &module);
                     facts.edge("contains", &package_id, &module_id, "certain", span);
                 }
-                facts.finish()
+                (relative, facts.finish())
             }
         };
+        // The relative path comes from the `Prepared` item itself, not by
+        // parsing it back out of the contribution's owner key, so a future
+        // owner key format change can never desync this map from what was
+        // actually read.
+        if let Some(hash) = &contribution.content_hash {
+            record_read(&mut input_hashes, &relative, Some(hash.clone()));
+        }
         emit(&serde_json::to_value(&contribution).map_err(|e| e.to_string())?);
         scanned += 1;
     }
 
-    Ok(json!({"files_scanned": scanned, "parser": "rust.syn"}))
+    Ok(json!({
+        "files_scanned": scanned,
+        "parser": "rust.syn",
+        "input_hashes": input_hashes,
+    }))
+}
+
+/// Record one read for `input_hashes`: a path already recorded with a different
+/// value (two differing hashes, or a hash and a failed read or absent probe)
+/// becomes `None`, since at least one of those reads disagrees with discovery
+/// and either may have fed facts.
+fn record_read(
+    input_hashes: &mut BTreeMap<String, Option<String>>,
+    relative: &str,
+    value: Option<String>,
+) {
+    let value = match input_hashes.get(relative) {
+        Some(existing) if *existing != value => None,
+        _ => value,
+    };
+    input_hashes.insert(relative.to_owned(), value);
 }
 
 /// Read, validate, and parse one file into a [`Prepared`].
@@ -226,7 +307,11 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
         Ok(canonical) => canonical,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+                read_failed: true,
+            };
         }
     };
     if !canonical.starts_with(root) {
@@ -236,42 +321,117 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
             "Scan path escapes the project root.",
             1,
         );
-        return Prepared::Err(facts.finish());
+        return Prepared::Err {
+            relative: relative.to_owned(),
+            contribution: facts.finish(),
+            read_failed: true,
+        };
     }
     match std::fs::metadata(&canonical) {
-        Ok(metadata) if metadata.len() > max_file_bytes => {
+        Ok(metadata) if !metadata.is_file() => {
+            facts.diagnostic(
+                "error",
+                "RS_UNSCANNABLE_FILE",
+                "Scan path is not a regular file.",
+                1,
+            );
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+                read_failed: true,
+            };
+        }
+        Ok(_) => {}
+        Err(error) => {
+            facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+                read_failed: true,
+            };
+        }
+    }
+    // Read bytes, not a string: the hash must be of exactly what is on disk,
+    // and a file that is not UTF-8 is still a file whose bytes were read.
+    // Bounded to one byte past the cap, which is how the cap is enforced: a
+    // size checked beforehand could belong to a file replaced before this
+    // read, and a replacement must not be read unbounded.
+    let bytes = match read_bounded(&canonical, max_file_bytes) {
+        Ok(bytes) if bytes.len() as u64 > max_file_bytes => {
             facts.diagnostic(
                 "error",
                 "RS_UNSCANNABLE_FILE",
                 "File exceeds the scan byte limit.",
                 1,
             );
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+                read_failed: true,
+            };
         }
-        Ok(_) => {}
+        Ok(bytes) => bytes,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+                read_failed: true,
+            };
         }
-    }
-    let source = match std::fs::read_to_string(&canonical) {
+    };
+    let content_hash = sha256_hex(&bytes);
+    facts.set_content_hash(content_hash.clone());
+    let source = match String::from_utf8(bytes) {
         Ok(source) => source,
         Err(error) => {
             facts.diagnostic("error", "RS_UNSCANNABLE_FILE", &error.to_string(), 1);
-            return Prepared::Err(facts.finish());
+            return Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+                read_failed: false,
+            };
         }
     };
     match syn::parse_file(&source) {
         Ok(parsed) => Prepared::Parsed {
             relative: relative.to_owned(),
             parsed,
+            content_hash,
         },
         Err(error) => {
             let line = error.span().start().line.max(1);
             facts.diagnostic("error", "RS_SYNTAX_ERROR", &error.to_string(), line);
-            Prepared::Err(facts.finish())
+            Prepared::Err {
+                relative: relative.to_owned(),
+                contribution: facts.finish(),
+                read_failed: false,
+            }
         }
     }
+}
+
+/// Read at most `max_file_bytes + 1` bytes of `path`, so a caller can tell a
+/// file over the cap from one at it without reading the rest.
+fn read_bounded(path: &Path, max_file_bytes: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(max_file_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Lowercase SHA-256 hex, the form discovery records in the core.
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
 }
 
 /// The crate roots and names declared by the request's manifest `config_files`.
@@ -282,10 +442,38 @@ fn prepare_one(root: &Path, relative: &str, max_file_bytes: u64) -> Prepared {
 /// `src/main.rs` when there is no library — the two files whose module path
 /// is `crate` — via ordinary filesystem existence, matching where the file
 /// vertices sit in the batch.
-fn cargo_crates(root: &Path, config_files: &[String]) -> Vec<(String, String)> {
+///
+/// That existence check decides facts: whether a package node attaches, and
+/// whether `src/main.rs` is the crate root or a binary beside a library. A
+/// candidate the check finds absent, or not a regular file, is recorded in
+/// `input_hashes` as `None`, so a discovered root that was briefly missing
+/// while this ran fails the scan instead of leaving the package unattached in
+/// a graph reported fresh. A stable tree is unaffected: discovery never reports
+/// a path that is absent. A candidate found present records nothing here,
+/// because this check reads no bytes of it: a present root the batch requests
+/// is hashed when it is read, and one the batch does not request carries no
+/// facts from this request.
+fn cargo_crates(
+    root: &Path,
+    config_files: &[String],
+    max_file_bytes: u64,
+    input_hashes: &mut BTreeMap<String, Option<String>>,
+) -> Vec<(String, String)> {
     let mut crates: Vec<(String, String)> = Vec::new();
     for config in config_files {
-        let Ok(contents) = std::fs::read_to_string(root.join(config)) else {
+        // The manifest names the crate, so its bytes feed facts: recorded by
+        // the hash of the raw bytes read, or null when the read failed or went
+        // over the cap. Discovery hashes a Cargo.toml as a project unit, so
+        // the core checks the entry.
+        let bytes = match read_bounded(&root.join(config), max_file_bytes) {
+            Ok(bytes) if bytes.len() as u64 <= max_file_bytes => bytes,
+            _ => {
+                record_read(input_hashes, config, None);
+                continue;
+            }
+        };
+        record_read(input_hashes, config, Some(sha256_hex(&bytes)));
+        let Ok(contents) = String::from_utf8(bytes) else {
             continue;
         };
         let Some(name) = manifest_crate_name(&contents) else {
@@ -301,6 +489,8 @@ fn cargo_crates(root: &Path, config_files: &[String]) -> Vec<(String, String)> {
         ] {
             if root.join(&candidate).is_file() {
                 crates.push((candidate, name.clone()));
+            } else {
+                record_read(input_hashes, &candidate, None);
             }
         }
     }
@@ -443,6 +633,39 @@ fn assert_scannable_str(raw: &str) -> Result<String, String> {
     Ok(raw.to_owned())
 }
 
+/// Split a result's `input_hashes` object into parts that each fit one frame,
+/// leaving the last part in the result and returning the others, in order, to
+/// go out ahead of it as `scan/input_hashes` notifications.
+///
+/// The result's own field marks that the worker finished reporting, so it
+/// always keeps one part, `{}` when nothing was read. A single entry longer
+/// than the budget still travels alone. A result without the field (any
+/// method but `scan`) is left untouched.
+fn split_input_hashes(result: &mut Value, part_bytes: usize) -> Vec<Value> {
+    let Some(Value::Object(map)) = result.get_mut("input_hashes") else {
+        return Vec::new();
+    };
+    let mut parts: Vec<serde_json::Map<String, Value>> = Vec::new();
+    let mut part = serde_json::Map::new();
+    // The serialized part: its braces, less the comma its last entry lacks.
+    let mut bytes = 1_usize;
+    for (relative, hash) in std::mem::take(map) {
+        // `"path":"<64 hex>",` or `"path":null,`
+        let key_bytes =
+            serde_json::to_string(&relative).map_or(relative.len() + 2, |key| key.len());
+        let entry_bytes = key_bytes + if hash.is_null() { 4 } else { 66 } + 2;
+        if !part.is_empty() && bytes + entry_bytes > part_bytes {
+            parts.push(std::mem::take(&mut part));
+            bytes = 1;
+        }
+        part.insert(relative, hash);
+        bytes += entry_bytes;
+    }
+    *map = part;
+
+    parts.into_iter().map(Value::Object).collect()
+}
+
 /// A JSON-RPC error reply carrying the caller's id.
 fn error_reply(id: &Value, message: &str) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32602, "message": message}})
@@ -453,4 +676,91 @@ fn write_line(output: &mut impl Write, message: &Value) -> std::io::Result<()> {
     serde_json::to_writer(&mut *output, message)?;
     output.write_all(b"\n")?;
     output.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_bounded, record_read, split_input_hashes};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn input_hashes_split_into_parts_that_fit_their_budget() {
+        let hash = "a".repeat(64);
+        let pair = json!({"a/1": hash, "a/2": null});
+        let length = pair.to_string().len();
+
+        let mut whole = json!({"files_scanned": 2, "input_hashes": pair});
+        assert!(split_input_hashes(&mut whole, length).is_empty());
+        assert_eq!(pair, whole["input_hashes"]);
+
+        let mut split = json!({"files_scanned": 2, "input_hashes": pair});
+        assert_eq!(
+            vec![json!({"a/1": hash})],
+            split_input_hashes(&mut split, length - 1)
+        );
+        assert_eq!(json!({"a/2": null}), split["input_hashes"]);
+        assert_eq!(2, split["files_scanned"]);
+
+        // An entry longer than the budget travels alone; keys are measured
+        // escaped, as they are written.
+        let long = "x".repeat(300);
+        let quoted = json!({"\"": null, "b": null});
+        let mut escaped = json!({"input_hashes": quoted});
+        assert_eq!(
+            vec![json!({"\"": null})],
+            split_input_hashes(&mut escaped, quoted.to_string().len() - 1)
+        );
+        let mut alone = json!({"input_hashes": {"a": null, long.clone(): hash}});
+        assert_eq!(vec![json!({"a": null})], split_input_hashes(&mut alone, 20));
+        assert_eq!(json!({long: hash}), alone["input_hashes"]);
+
+        let mut empty = json!({"input_hashes": {}});
+        assert!(split_input_hashes(&mut empty, 1).is_empty());
+        assert_eq!(json!({}), empty["input_hashes"]);
+        let mut other = json!({"status": "bye"});
+        assert!(split_input_hashes(&mut other, 1).is_empty());
+        assert_eq!(json!({"status": "bye"}), other);
+    }
+
+    #[test]
+    fn repeated_reads_that_agree_keep_their_value() {
+        let mut map = BTreeMap::new();
+        record_read(&mut map, "src/lib.rs", Some("a".to_owned()));
+        record_read(&mut map, "src/lib.rs", Some("a".to_owned()));
+        record_read(&mut map, "src/gone.rs", None);
+        record_read(&mut map, "src/gone.rs", None);
+
+        assert_eq!(Some(&Some("a".to_owned())), map.get("src/lib.rs"));
+        assert_eq!(Some(&None), map.get("src/gone.rs"));
+    }
+
+    #[test]
+    fn reads_that_disagree_become_null_in_either_order() {
+        let mut map = BTreeMap::new();
+        record_read(&mut map, "probe-then-read.rs", None);
+        record_read(&mut map, "probe-then-read.rs", Some("a".to_owned()));
+        record_read(&mut map, "read-then-probe.rs", Some("a".to_owned()));
+        record_read(&mut map, "read-then-probe.rs", None);
+        record_read(&mut map, "two-hashes.rs", Some("a".to_owned()));
+        record_read(&mut map, "two-hashes.rs", Some("b".to_owned()));
+        record_read(&mut map, "two-hashes.rs", Some("a".to_owned()));
+
+        assert_eq!(Some(&None), map.get("probe-then-read.rs"));
+        assert_eq!(Some(&None), map.get("read-then-probe.rs"));
+        assert_eq!(Some(&None), map.get("two-hashes.rs"));
+    }
+
+    #[test]
+    fn a_bounded_read_stops_one_byte_past_the_cap() {
+        let path = std::env::temp_dir().join("knossos-rust-read-bounded.rs");
+        std::fs::write(&path, b"0123456789").unwrap();
+
+        let over = read_bounded(&path, 4).unwrap();
+        let at = read_bounded(&path, 10).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(b"01234".to_vec(), over);
+        assert_eq!(b"0123456789".to_vec(), at);
+    }
 }

@@ -274,4 +274,161 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame([], $contributions[0]->nodes);
         assertSame('TS_UNSCANNABLE_FILE', $contributions[0]->diagnostics[0]->code);
     }
+
+    /**
+     * The core compares each contribution's hash with discovery's hash of the
+     * file on disk, so the TypeScript worker has to hash the bytes it read, not
+     * the text the compiler decoded from them: a byte-order mark is dropped by
+     * the decoder but is part of the file.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReportsTheHashOfTheRawBytesItParsed(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Bom.ts' => "\xEF\xBB\xBFexport class Bom {}\n",
+            'src/Crlf.ts' => "export class Crlf {}\r\n",
+            'src/Broken.ts' => "export class {\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->typescriptWorkerClient();
+        try {
+            assertSame(true, in_array('content_hash', $client->initialize()->capabilities, true));
+            $byOwner = [];
+            foreach ($client->scan(['root' => $root, 'files' => array_keys($files)]) as $contribution) {
+                $byOwner[$contribution->ownerKey] = $contribution->contentHash;
+            }
+
+            foreach ($files as $relative => $bytes) {
+                assertSame(hash('sha256', $bytes), $byOwner['knossos.typescript:file:' . $relative] ?? null, $relative);
+            }
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The checker resolves `src/User.ts` against `src/Base.ts`, so the result
+     * names both reads, each by the hash of its raw bytes: the BOM that the
+     * decoder drops is still in the hash discovery computes.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReportsEveryFileItsProgramRead(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'src/Base.ts' => "\xEF\xBB\xBFexport class Base {}\n",
+            'src/User.ts' => "import { Base } from './Base';\nexport class User extends Base {}\n",
+        ];
+        foreach ($files as $relative => $bytes) {
+            file_put_contents($root . '/' . $relative, $bytes);
+        }
+        $client = $this->typescriptWorkerClient();
+        try {
+            assertSame(true, in_array('input_hashes', $client->initialize()->capabilities, true));
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['src/User.ts']]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            $expected = array_map(static fn(string $bytes): string => hash('sha256', $bytes), $files);
+            assertSame($expected, $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * An extensionless script refused on its shebang is reported by the hash
+     * of the whole file, judged again on those bytes, which a stable tree
+     * matches. One over the byte cap has no whole-file hash and is null; one
+     * refused by its name read nothing and is not reported.
+     */
+    #[Group('typescript-scanner')]
+    public function testAShebangRefusalReportsTheHashItsVerdictRestedOn(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $python = "#!/usr/bin/env python3\nprint(1)\n";
+        file_put_contents($root . '/bin/tool', $python);
+        file_put_contents($root . '/bin/large', "#!/bin/sh\n" . str_repeat('#', 100) . "\n");
+        file_put_contents($root . '/notes.txt', "text\n");
+        $client = $this->typescriptWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['bin/large', 'bin/tool', 'notes.txt'],
+                'limits' => ['max_file_bytes' => 64],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            assertSame(3, count($contributions));
+            assertSame(['bin/large' => null, 'bin/tool' => hash('sha256', $python)], $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Module resolution reads package.json through the compiler host, and its
+     * fields decide how an import resolves, so the read is recorded: by the
+     * hash of its bytes, or as null when it could not be read within the cap.
+     */
+    #[Group('typescript-scanner')]
+    public function testPackageJsonReadsDuringModuleResolutionAreRecorded(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        mkdir($root . '/sub', 0o777, true);
+        $package = "{\"type\":\"module\"}\n";
+        file_put_contents($root . '/tsconfig.json', '{"compilerOptions":{"module":"nodenext","moduleResolution":"nodenext"},"include":["src/**/*","sub/**/*"]}');
+        file_put_contents($root . '/package.json', $package);
+        file_put_contents($root . '/sub/package.json', '{"type":"module"}' . str_repeat(' ', 200) . "\n");
+        file_put_contents($root . '/src/a.ts', "import { s } from '../sub/s.js';\nexport const a = s;\n");
+        file_put_contents($root . '/sub/s.ts', "export const s = 1;\n");
+        $client = $this->typescriptWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['src/a.ts'], 'limits' => ['max_file_bytes' => 128]]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? [];
+
+            assertSame(hash('sha256', $package), $inputHashes['package.json'] ?? 'absent');
+            assertSame(true, array_key_exists('sub/package.json', $inputHashes));
+            assertSame(null, $inputHashes['sub/package.json']);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A tsconfig and the config it extends decide the program, so both reads
+     * are recorded by the hash of their raw bytes, comments and all.
+     */
+    #[Group('typescript-scanner')]
+    public function testTsconfigReadsAreRecordedByTheHashOfTheirRawBytes(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $base = "{\n  // shared\n  \"compilerOptions\": {\"strict\": true}\n}\n";
+        $config = "\xEF\xBB\xBF{\"extends\": \"./tsconfig.base.json\", \"include\": [\"src\"]}\n";
+        file_put_contents($root . '/tsconfig.base.json', $base);
+        file_put_contents($root . '/tsconfig.json', $config);
+        file_put_contents($root . '/src/a.ts', "export const a = 1;\n");
+        $client = $this->typescriptWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['src/a.ts'], 'config_files' => ['tsconfig.json']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? [];
+
+            assertSame(hash('sha256', $config), $inputHashes['tsconfig.json'] ?? 'absent');
+            assertSame(hash('sha256', $base), $inputHashes['tsconfig.base.json'] ?? 'absent');
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
 }

@@ -364,8 +364,8 @@ final class WorkerProcessSupervisor implements ProcessSupervisorInterface
             $this->processGroupId = $pid;
         }
     }
-    /** The directory the worker runs in, fixed so relative evidence paths mean the same thing to both sides. */
 
+    /** The directory the worker runs in, fixed so relative evidence paths mean the same thing to both sides. */
     private function workingDirectory(): string
     {
         $temp = sys_get_temp_dir();

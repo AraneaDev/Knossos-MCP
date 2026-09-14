@@ -55,12 +55,68 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
             );
 
             assertContains('src/CheckoutService.php', $error->getMessage());
-            assertContains('changed while the scan was running', $error->getMessage());
+            // The PHP worker now declares input_hashes as well as content_hash,
+            // and reports every file it read (including this one) in both. The
+            // core checks input_hashes first, so the mismatch is now caught
+            // there (inputReadDifferently()) rather than from the contribution's
+            // own content_hash (parsedDifferently()) or a core re-read
+            // (contentChanged()) — a deliberate consequence of the worker
+            // declaring the capability, not a change to what is detected or
+            // when the scan aborts.
+            assertContains('was read from different content than the scan hashed', $error->getMessage());
             // The seam actually fired: without this the test could pass on a
             // scan that failed for some unrelated reason.
             assertNotSame($original, (string) file_get_contents($file));
             // Nothing was published. A failed attempt may leave a scans row for
             // the reaper, but no graph row that a query could be answered from.
+            assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM nodes')->fetchColumn());
+            assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM edges')->fetchColumn());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A rewrite that lands after a hashing worker has already read the file is
+     * invisible to that worker's hash, which matches discovery. Only the
+     * validator's own re-read before anything is persisted can see it, so this
+     * is the end-to-end case for contentChanged() on a scan that runs workers.
+     *
+     * The checkpoint it relies on: ProjectScanService::scan() consults the
+     * token itself before prepare(), after prepare(), and immediately before
+     * ScanSnapshotValidator::validate(), after every language worker has
+     * returned. The closure counts only polls made from scan() itself, so
+     * polls from inside the language runner and the worker clients do not
+     * move it, and writes from the third one on. Add a checkpoint of scan()'s
+     * own before validate() and this test stops producing a mismatch; it then
+     * fails loudly and the count has to move with it.
+     */
+    #[Group('scan')]
+    public function testScanAbortsWhenAFileIsRewrittenAfterTheWorkersReturned(): void
+    {
+        $root = $this->copyFixtureTree('mixed');
+        try {
+            $pdo = $this->freshTestDatabase();
+            $file = $root . '/src/CheckoutService.php';
+            $original = (string) file_get_contents($file);
+            $scanPolls = 0;
+            $token = new CancellationToken(function () use (&$scanPolls, $file, $original): bool {
+                $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 4)[3] ?? [];
+                if (($caller['class'] ?? null) === ProjectScanService::class && ++$scanPolls >= 3) {
+                    file_put_contents($file, $original . "\n// rewritten after the workers returned\n");
+                }
+
+                return false;
+            });
+
+            $error = captureThrows(
+                fn() => (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, cancellation: $token),
+                ScanSnapshotChangedException::class,
+            );
+
+            assertContains('src/CheckoutService.php', $error->getMessage());
+            assertContains('changed while the scan was running', $error->getMessage());
+            assertSame(3, $scanPolls);
             assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM nodes')->fetchColumn());
             assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM edges')->fetchColumn());
         } finally {
@@ -97,6 +153,13 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
             );
 
             assertContains('src/CheckoutService.php', $error->getMessage());
+            // The fast path never invokes a worker, so this is the one
+            // remaining end-to-end route to ScanSnapshotValidator's own
+            // re-read (contentChanged()) rather than a worker-reported hash
+            // mismatch (parsedDifferently()) — pin the exact wording so a
+            // regression that routed this through a worker hash instead
+            // would fail here rather than passing on the path substring alone.
+            assertContains('changed while the scan was running', $error->getMessage());
             // The fast path's write never happened: the active scan still
             // carries the completion stamp the previous scan left on it.
             assertSame($finishedAt, (string) $pdo->query(

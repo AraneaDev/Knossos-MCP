@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 /// This worker's own semantic version, independent of the core's `version.txt`.
-pub const VERSION: &str = "0.1.0";
+pub const VERSION: &str = "0.2.0";
 
 /// The core protocol version this worker speaks.
 pub const PROTOCOL_VERSION: &str = "1.0";
@@ -46,7 +46,7 @@ impl Manifest {
             output_schema_version: OUTPUT_SCHEMA_VERSION,
             languages: vec!["rust"],
             file_extensions: vec!["rs"],
-            capabilities: vec!["partial_ast"],
+            capabilities: vec!["partial_ast", "content_hash", "input_hashes"],
         }
     }
 }
@@ -133,4 +133,8 @@ pub struct Contribution {
     pub edges: Vec<Edge>,
     /// Problems.
     pub diagnostics: Vec<Diagnostic>,
+    /// SHA-256 hex of the raw bytes these facts were parsed from; absent when
+    /// the file was never read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
 }
