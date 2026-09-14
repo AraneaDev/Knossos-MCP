@@ -297,6 +297,11 @@ file with the wrong value is not: it fails every scan of that tree.
 - A file that discovery never reported, created and removed while a request
   reads it, is not verified. The core checks only paths discovery tracked, so
   a transient file that fed facts leaves no entry it can compare.
+- Manifests and configuration files a worker reads for itself, such as
+  `Cargo.toml`, `tsconfig.json` or a `package.json` module resolution reads,
+  are tracked by discovery as project units rather than as files. The core
+  ignores keys for them, so one that changes and changes back while a request
+  reads it is not verified, whatever the worker records.
 - On a case-insensitive volume, a worker's key and discovery's path can spell
   the same file differently. The core compares paths exactly, so such a read
   is ignored rather than checked.
