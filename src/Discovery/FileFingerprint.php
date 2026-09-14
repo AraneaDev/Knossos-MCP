@@ -135,11 +135,26 @@ final readonly class FileFingerprint
      * leave it at the default; the blob id is then simply never compared
      * against anything. {@see \Knossos\Discovery\DiscoveryConfig} is where the
      * value is validated.
+     *
+     * Null for a path that is not a regular file, for the reasons
+     * {@see self::contentHashOf()} gives: discovery only fingerprints regular
+     * files, but the contribution cache re-reads a discovered path later, and a
+     * file swapped for a FIFO by then would block the open instead of reading
+     * as unreadable.
      */
     public static function compute(string $absolutePath, string $gitObjectHash = 'sha1'): ?self
     {
+        clearstatcache(true, $absolutePath);
+        if (!self::isRegular(@stat($absolutePath))) {
+            return null;
+        }
         $handle = @fopen($absolutePath, 'rb');
         if ($handle === false) {
+            return null;
+        }
+        if (!self::isRegular(fstat($handle))) {
+            fclose($handle);
+
             return null;
         }
         $context = hash_init('sha256');
