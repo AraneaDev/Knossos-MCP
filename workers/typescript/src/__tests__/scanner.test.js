@@ -1012,6 +1012,25 @@ function scanWithResult(scanner, root, files, extra = {}) {
     };
 }
 
+// Scan `files` while changing the tree at one point of the host's handling of a
+// path: each entry of `changes` runs once, the first time the host reaches a
+// path ending in its suffix at `stage` ("load": before a SourceFile's admission
+// checks; "read": after them, before the read resolves the path).
+function scanChanging(root, stage, changes, extra = {}, files = ["src/a.ts"]) {
+    const pending = new Map(Object.entries(changes));
+    const scanner = new TypeScriptScanner({
+        observeHostPath: (at, absolute) => {
+            if (at !== stage) return;
+            for (const [suffix, change] of pending) {
+                if (!absolute.endsWith(suffix)) continue;
+                pending.delete(suffix);
+                change();
+            }
+        },
+    });
+    return scanWithResult(scanner, root, files, extra);
+}
+
 // Answer the reads of a path ending in `suffix` from `outcomes`, one per read in
 // order: a string is returned as the file's bytes, `null` fails the read. Reads
 // beyond the list, and of every other path, reach the disk.
@@ -1194,25 +1213,16 @@ describe("input_hashes: the key each read goes under", () => {
     });
 });
 
-// allowedCompilerPath resolves a path first; the read resolves it again.
-// `second` answers the read's own resolution of src/b.ts, standing in for a
-// link retargeted or removed in between. Picked by caller name: the checks
-// before it resolve the same path a varying number of times.
-function withSecondResolution(second, callback) {
-    const realpathSync = fs.realpathSync.native;
+// Swap a file for a link to `outside`, on disk.
+const linkOut = (file, outside) => {
+    fs.unlinkSync(file);
+    symlinkSync(outside, file);
+};
+
+// Every path fs.readFileSync is asked for while `callback` runs.
+function withReadsRecorded(callback) {
     const readFileSync = fs.readFileSync;
     const readsMade = [];
-    const resolve = vi
-        .spyOn(fs.realpathSync, "native")
-        .mockImplementation((file, ...rest) => {
-            if (
-                String(file).endsWith("/src/b.ts") &&
-                new Error().stack.includes("readHashedSourceFile")
-            ) {
-                return second(realpathSync(file, ...rest));
-            }
-            return realpathSync(file, ...rest);
-        });
     const read = vi
         .spyOn(fs, "readFileSync")
         .mockImplementation((file, ...rest) => {
@@ -1222,7 +1232,6 @@ function withSecondResolution(second, callback) {
     try {
         return { ...callback(), readsMade };
     } finally {
-        resolve.mockRestore();
         read.mockRestore();
     }
 }
@@ -1234,9 +1243,10 @@ describe("input_hashes: a path that changes under the read", () => {
         const root = fixture({ "src/a.ts": A, "src/b.ts": B });
         const outside = join(fs.realpathSync(fixture({ "b.ts": B })), "b.ts");
 
-        const { result, readsMade } = withSecondResolution(
-            () => outside,
-            () => scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
+        const { result, readsMade } = withReadsRecorded(() =>
+            scanChanging(root, "read", {
+                "/src/b.ts": () => linkOut(join(root, "src/b.ts"), outside),
+            }),
         );
 
         expect(readsMade).not.toContain(outside);
@@ -1252,31 +1262,10 @@ describe("input_hashes: a path that changes under the read", () => {
         // refuses it and a.ts's facts are computed without it.
         const root = fixture({ "src/a.ts": A, "src/b.ts": B });
         const outside = join(fs.realpathSync(fixture({ "b.ts": B })), "b.ts");
-        const realpathSync = fs.realpathSync.native;
-        const spy = vi
-            .spyOn(fs.realpathSync, "native")
-            .mockImplementation((file, ...rest) => {
-                const frames = new Error().stack.split("\n");
-                const checker = frames.findIndex((frame) =>
-                    frame.includes("allowedCompilerPath"),
-                );
-                if (
-                    String(file).endsWith("/src/b.ts") &&
-                    checker !== -1 &&
-                    frames[checker + 1].includes("getSourceFile")
-                ) {
-                    return outside;
-                }
-                return realpathSync(file, ...rest);
-            });
-        let result;
-        try {
-            ({ result } = scanWithResult(new TypeScriptScanner(), root, [
-                "src/a.ts",
-            ]));
-        } finally {
-            spy.mockRestore();
-        }
+
+        const { result } = scanChanging(root, "load", {
+            "/src/b.ts": () => linkOut(join(root, "src/b.ts"), outside),
+        });
 
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
@@ -1304,14 +1293,9 @@ describe("input_hashes: a path that changes under the read", () => {
     it("reports null for a file whose path no longer resolves", () => {
         const root = fixture({ "src/a.ts": A, "src/b.ts": B });
 
-        const { result } = withSecondResolution(
-            () => {
-                throw Object.assign(new Error("ENOENT: no such file"), {
-                    code: "ENOENT",
-                });
-            },
-            () => scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"]),
-        );
+        const { result } = scanChanging(root, "read", {
+            "/src/b.ts": () => fs.unlinkSync(join(root, "src/b.ts")),
+        });
 
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
@@ -1468,53 +1452,28 @@ const refusedOnRealKeys = {
 };
 
 // Run a scan on a linked layout, turning each real file into what `swap`
-// makes of it the first time `calledFrom` resolves the linked name.
-function scanSwapping(calledFrom, swap) {
+// makes of it the first time the host reaches the linked name at `stage`.
+function scanSwapping(stage, swap) {
     const root = linkedLayout();
     const outside = fs.realpathSync(fixture({ "x.ts": REAL }));
     const targets = {
         "/src/alias.ts": join(root, "src/real.ts"),
         "/src/linkdir/c.ts": join(root, "real/c.ts"),
     };
-    const swapped = new Set();
-    const realpathSync = fs.realpathSync.native;
-    const spy = vi
-        .spyOn(fs.realpathSync, "native")
-        .mockImplementation((file, ...rest) => {
-            const name = Object.keys(targets).find((suffix) =>
-                String(file).endsWith(suffix),
-            );
-            if (
-                name !== undefined &&
-                !swapped.has(name) &&
-                calledFrom(new Error().stack.split("\n"))
-            ) {
-                swapped.add(name);
-                swap(targets[name], join(outside, "x.ts"));
-            }
-            return realpathSync(file, ...rest);
-        });
-    try {
-        return scanWithResult(new TypeScriptScanner(), root, ["src/a.ts"])
-            .result;
-    } finally {
-        spy.mockRestore();
-    }
+    return scanChanging(
+        root,
+        stage,
+        Object.fromEntries(
+            Object.entries(targets).map(([suffix, target]) => [
+                suffix,
+                () => swap(target, join(outside, "x.ts")),
+            ]),
+        ),
+    ).result;
 }
 
-const escape = (target, outside) => {
-    fs.unlinkSync(target);
-    symlinkSync(outside, target);
-};
+const escape = linkOut;
 const remove = (target) => fs.unlinkSync(target);
-const fromGetSourceFileCheck = (frames) => {
-    const checker = frames.findIndex((frame) =>
-        frame.includes("allowedCompilerPath"),
-    );
-    return checker !== -1 && frames[checker + 1].includes("getSourceFile");
-};
-const fromRead = (frames) =>
-    frames.some((frame) => frame.includes("readHashedSourceFile"));
 
 describe("input_hashes: a refused path reached through a symlink", () => {
     it("keys a file refused over the byte cap by its real path", () => {
@@ -1532,19 +1491,19 @@ describe("input_hashes: a refused path reached through a symlink", () => {
     });
 
     it("keys a file refused for now linking out of the root by the in-root link", () => {
-        const result = scanSwapping(fromGetSourceFileCheck, escape);
+        const result = scanSwapping("load", escape);
 
         expect(result.input_hashes).toEqual(refusedOnRealKeys);
     });
 
     it("keys a file whose target left the root before the read by the in-root link", () => {
-        const result = scanSwapping(fromRead, escape);
+        const result = scanSwapping("read", escape);
 
         expect(result.input_hashes).toEqual(refusedOnRealKeys);
     });
 
     it("keys a file removed before the read by where it was", () => {
-        const result = scanSwapping(fromRead, remove);
+        const result = scanSwapping("read", remove);
 
         expect(result.input_hashes).toEqual(refusedOnRealKeys);
     });
@@ -1557,30 +1516,13 @@ describe("input_hashes: a refused path under a directory swapped for a link", ()
         const importer = 'import { C } from "./sub/c";\nexport const c = C;\n';
         const root = fixture({ "src/a.ts": importer, "src/sub/c.ts": C });
         const outside = fs.realpathSync(fixture({ "c.ts": C }));
-        const realpathSync = fs.realpathSync.native;
-        let swapped = false;
-        const spy = vi
-            .spyOn(fs.realpathSync, "native")
-            .mockImplementation((file, ...rest) => {
-                if (
-                    !swapped &&
-                    String(file).endsWith("/src/sub/c.ts") &&
-                    fromRead(new Error().stack.split("\n"))
-                ) {
-                    swapped = true;
-                    rmSync(join(root, "src/sub"), { recursive: true });
-                    symlinkSync(outside, join(root, "src/sub"));
-                }
-                return realpathSync(file, ...rest);
-            });
-        let result;
-        try {
-            ({ result } = scanWithResult(new TypeScriptScanner(), root, [
-                "src/a.ts",
-            ]));
-        } finally {
-            spy.mockRestore();
-        }
+
+        const { result } = scanChanging(root, "read", {
+            "/src/sub/c.ts": () => {
+                rmSync(join(root, "src/sub"), { recursive: true });
+                symlinkSync(outside, join(root, "src/sub"));
+            },
+        });
 
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
@@ -1624,29 +1566,10 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
 
     it("keys a read that failed after the file was removed by the file the kernel would have opened", () => {
         const root = dotDotLayout();
-        const native = fs.realpathSync.native;
-        let removed = false;
-        const spy = vi
-            .spyOn(fs.realpathSync, "native")
-            .mockImplementation((file, ...rest) => {
-                if (
-                    !removed &&
-                    String(file).endsWith("/src/lnk.ts") &&
-                    fromRead(new Error().stack.split("\n"))
-                ) {
-                    removed = true;
-                    fs.unlinkSync(join(root, "deep/c.ts"));
-                }
-                return native(file, ...rest);
-            });
-        let result;
-        try {
-            ({ result } = scanWithResult(new TypeScriptScanner(), root, [
-                "src/a.ts",
-            ]));
-        } finally {
-            spy.mockRestore();
-        }
+
+        const { result } = scanChanging(root, "read", {
+            "/src/lnk.ts": () => fs.unlinkSync(join(root, "deep/c.ts")),
+        });
 
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),

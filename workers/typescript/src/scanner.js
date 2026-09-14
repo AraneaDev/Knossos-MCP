@@ -89,9 +89,16 @@ const parsedContentHashes = new WeakMap();
  * outlives the request that made it.
  */
 class InputReadRecorder {
-    constructor() {
+    /**
+     * @param {(stage: "load"|"read", absolute: string) => void} observePath
+     *   Told each path the host is about to examine: "load" before a requested
+     *   SourceFile's admission checks, "read" before the read resolves it. A
+     *   test seam, so a test can change the tree at exactly that point.
+     */
+    constructor(observePath = () => {}) {
         this.hashes = new Map();
         this.sourceFiles = new WeakSet();
+        this.observe = observePath;
     }
 
     /** Record one read; a read disagreeing with an earlier one records null. */
@@ -136,8 +143,13 @@ class InputReadRecorder {
  * Instances retain TypeScript programs for incremental reuse.
  */
 export class TypeScriptScanner {
-    constructor() {
+    /**
+     * @param {{observeHostPath?: (stage: "load"|"read", absolute: string) => void}} [options]
+     *   `observeHostPath` is a test seam, handed to each request's recorder.
+     */
+    constructor({ observeHostPath } = {}) {
         this.programCache = new Map();
+        this.observeHostPath = observeHostPath;
     }
 
     /**
@@ -166,7 +178,7 @@ export class TypeScriptScanner {
         const configPaths = configFilesForScan(root, params.config_files);
         const maxFileBytes = maxFileBytesFrom(params.limits);
         const emitted = new Set();
-        const reads = new InputReadRecorder();
+        const reads = new InputReadRecorder(this.observeHostPath);
         let programs = 0;
         let programsReused = 0;
 
@@ -960,16 +972,20 @@ function decodeLikeTypeScript(buffer) {
  * Returns undefined when the file cannot be read, the same "skip this input"
  * signal ts.sys.readFile gives.
  *
- * The bytes are read from the path's resolved target, and the read is keyed by
- * that target. Discovery never follows a symlink, so the linked name is not a
- * path the core tracks, while the target is, and it is the file those bytes
- * came from. A tsconfig `include` walks through links (and `preserveSymlinks`
- * keeps linked import paths), so both names do reach this host. A target that
- * no longer resolves inside the root (a link retargeted since
- * allowedCompilerPath checked it) is not read at all, and a path that cannot be
- * resolved cannot be read. Either way the compiler goes on as if the file did
- * not exist, which changes the facts of every file importing it, so the path is
- * recorded as a failed read under its own name.
+ * The path is resolved once, by walkPath, and that one walk decides everything:
+ * whether the file may be read (it must end at a file inside the root, or be a
+ * default-library file), the path the bytes are read from (the file the walk
+ * ended at), and the key the read goes under (inputKeyLocation). Discovery
+ * never follows a symlink, so a linked name is not a path the core tracks,
+ * while the file its bytes came from is. A tsconfig `include` walks through
+ * links (and `preserveSymlinks` keeps linked import paths), so both names do
+ * reach this host. A path that is refused here is not read at all; the compiler
+ * goes on as if the file did not exist, which changes the facts of every file
+ * importing it, so it is recorded as a failed read under the same key.
+ *
+ * One race is left: the tree can change between the walk and the read. The
+ * read then fails, which is recorded, or reads a file other than the one keyed,
+ * which the walk cannot see.
  */
 function readHashedSourceFile(
     root,
@@ -980,22 +996,23 @@ function readHashedSourceFile(
     reads,
 ) {
     const absolute = normalize(path.resolve(readPath));
-    let real;
-    try {
-        real = realpathNative(absolute);
-    } catch {
-        recordRefused(reads, root, absolute);
-        return undefined;
-    }
-    if (!contains(root, real) && !contains(defaultLibDirectory(), absolute)) {
-        recordRefused(reads, root, absolute);
+    reads.observe("read", absolute);
+    const walked = walkPath(absolute);
+    if (
+        walked.kind !== "file" ||
+        !(
+            contains(root, walked.location) ||
+            contains(defaultLibDirectory(), absolute)
+        )
+    ) {
+        recordWalked(reads, root, walked, null);
         return undefined;
     }
     let buffer;
     try {
-        buffer = fs.readFileSync(real);
+        buffer = fs.readFileSync(walked.location);
     } catch {
-        recordRead(reads, root, real, null);
+        recordWalked(reads, root, walked, null);
         return undefined;
     }
     const contentHash = createHash("sha256").update(buffer).digest("hex");
@@ -1008,7 +1025,7 @@ function readHashedSourceFile(
     );
     parsedContentHashes.set(sourceFile, contentHash);
     reads.created(sourceFile);
-    recordRead(reads, root, real, contentHash);
+    recordWalked(reads, root, walked, contentHash);
     return sourceFile;
 }
 
@@ -1031,93 +1048,139 @@ function inputHashKey(root, absolute) {
     return relative;
 }
 
-function recordRead(reads, root, absolute, contentHash) {
-    const key = inputHashKey(root, absolute);
+/** Record a read under the key its walk gives, if it gives one. */
+function recordWalked(reads, root, walked, contentHash) {
+    const location = inputKeyLocation(root, walked);
+    if (location === null) return;
+    const key = inputHashKey(root, location);
     if (key !== null) reads.record(key, contentHash);
 }
 
 /** Record a path the host would not or could not read as a failed read. */
 function recordRefused(reads, root, absolute) {
-    const location = inRootLocation(root, absolute);
-    if (location !== null) recordRead(reads, root, location, null);
+    recordWalked(reads, root, walkPath(absolute), null);
 }
 
-// More links than this in one path is a loop, or near enough to one.
+// Linux's MAXSYMLINKS: one lookup follows at most this many links, and the
+// next one fails it with ELOOP.
 const MAX_SYMLINK_HOPS = 40;
 
 /**
- * The kernel's resolution of a path, which is what a read follows: each `..`
- * applies to the directory a link actually led to. Node's JavaScript
- * fs.realpathSync collapses `..` in a link target as text first, so for
- * `src/lnk.ts -> d/../c.ts` with `src/d -> ../deep/dir` it names src/c.ts while
- * a read opens deep/c.ts.
+ * Resolve an absolute path the way the kernel's path lookup does, one
+ * component at a time, so the result names the file a read of it opens.
+ *
+ * `current` is always a real directory. A `..` steps to its parent, which is
+ * where the kernel's `..` goes once the links before it have been followed. A
+ * symlink's target is put in front of the components still to walk, raw, so
+ * its own `..` is applied the same way; nothing is ever collapsed as text. A
+ * component that is missing with more to walk, a non-directory with more to
+ * walk, a lookup error, or more than MAX_SYMLINK_HOPS links makes the path
+ * unresolvable, as ENOENT, ENOTDIR or ELOOP would make its read fail.
+ *
+ * `links` lists every symlink followed, in order, with the components that
+ * were still to walk after it at that moment.
+ *
+ * @param {string} absolute
+ * @returns {{kind: "file"|"missing"|"directory"|"unresolvable", location?: string, links: {location: string, rest: string[]}[]}}
+ */
+function walkPath(absolute) {
+    const top = normalize(path.parse(absolute).root);
+    const remaining = normalize(absolute).slice(top.length).split("/");
+    const links = [];
+    let current = top;
+    let hops = 0;
+    while (remaining.length > 0) {
+        const name = remaining.shift();
+        if (name === "" || name === ".") continue;
+        if (name === "..") {
+            current = parentDirectory(current, top);
+            continue;
+        }
+        const candidate = current.endsWith("/")
+            ? `${current}${name}`
+            : `${current}/${name}`;
+        let stat;
+        try {
+            stat = fs.lstatSync(candidate);
+        } catch (error) {
+            if (error?.code === "ENOENT" && remaining.length === 0) {
+                return { kind: "missing", location: candidate, links };
+            }
+            return { kind: "unresolvable", links };
+        }
+        if (stat.isSymbolicLink()) {
+            if (++hops > MAX_SYMLINK_HOPS)
+                return { kind: "unresolvable", links };
+            links.push({ location: candidate, rest: [...remaining] });
+            let target;
+            try {
+                target = normalize(fs.readlinkSync(candidate));
+            } catch {
+                return { kind: "unresolvable", links };
+            }
+            if (path.isAbsolute(target)) {
+                current = normalize(path.parse(target).root);
+                target = target.slice(current.length);
+            }
+            remaining.unshift(...target.split("/"));
+        } else if (stat.isDirectory()) {
+            current = candidate;
+        } else if (remaining.length > 0) {
+            return { kind: "unresolvable", links };
+        } else {
+            return { kind: "file", location: candidate, links };
+        }
+    }
+    return { kind: "directory", location: current, links };
+}
+
+/**
+ * The kernel's resolution of an existing path, for the root and requested files,
+ * which must exist. Node's JavaScript fs.realpathSync collapses `..` in a link
+ * target as text first; the native one does not.
  */
 function realpathNative(candidate) {
     return normalize(fs.realpathSync.native(candidate));
 }
 
-/**
- * realpathNative for a path whose last components may not exist: the kernel's
- * resolution of the deepest existing ancestor, with the rest appended.
- */
-function realpathLoose(candidate) {
-    try {
-        return realpathNative(candidate);
-    } catch {
-        const parent = path.dirname(candidate);
-        if (parent === candidate) return normalize(candidate);
-        return `${realpathLoose(parent).replace(/\/$/, "")}/${path.basename(candidate)}`;
-    }
+/** The parent of a real directory; a filesystem root is its own parent. */
+function parentDirectory(directory, top) {
+    if (directory === top) return top;
+    const parent = directory.slice(0, directory.lastIndexOf("/"));
+    return parent.length < top.length ? top : parent;
 }
 
 /**
- * Where inside the root the bytes of a refused path would have come from: the
- * key its failed read goes under, so it meets discovery's key for that file.
+ * The absolute location a walked read goes under in `input_hashes`, or null
+ * when no location the walk passed lies inside the root.
  *
- * For a path that resolves inside the root this is its kernel resolution, the
- * same key a successful read uses. A path is refused exactly when it does not,
- * though, so the path is followed one link at a time: each step resolves the
- * link's directory with the kernel and reads the link itself, and a link target
- * is joined to that directory unchanged, so its `..` is applied by the kernel.
+ * - A walk that ended at a file, or at a missing last component, inside the
+ *   root: that location, the file the read opened or would have opened.
+ * - Otherwise the last link followed inside the root. A link followed as a
+ *   directory component keys the path below it as it was about to be walked
+ *   (a discovered `src/sub/c.ts` whose `src/sub` became a link out of the root
+ *   keys `src/sub/c.ts`), unless that path holds a `..`, which only the walk
+ *   could have applied; then the link itself.
  *
- * - The final name is not a link (a regular file, or missing): its location.
- * - The final name is a link whose target's directory leaves the root: the
- *   link's location. A chain of links keys to the last one inside the root.
- * - The path's own directory leaves the root: that directory's in-root
- *   location, found the same way, plus the name.
- *
- * null when no step of the path lies inside the root. Any key returned for a
- * stable layout names a link or a missing path, which discovery never reports,
- * so the core ignores it, while a discovered file swapped for one mid-scan
- * fails verification.
+ * Every key a stable layout produces this way names either the file the
+ * kernel reaches, or a link or a path through one, which discovery never
+ * reports and the core ignores. A discovered file changed into one of those
+ * mid-scan is keyed where discovery saw it, so it fails verification.
  */
-function inRootLocation(root, absolute) {
-    let current = absolute;
-    let lastLink = null;
-    for (let hops = 0; hops <= MAX_SYMLINK_HOPS; ++hops) {
-        const parent = path.dirname(current);
-        if (parent === current) return lastLink;
-        const name = path.basename(current);
-        const directory = realpathLoose(parent);
-        if (!contains(root, directory)) {
-            const outer = inRootLocation(root, parent);
-            return outer === null ? lastLink : `${outer}/${name}`;
-        }
-        const location = `${directory}/${name}`;
-        if (name === "." || name === "..") {
-            const resolved = realpathLoose(location);
-            return contains(root, resolved) ? resolved : lastLink;
-        }
-        let target;
-        try {
-            target = fs.readlinkSync(location);
-        } catch {
-            return location;
-        }
-        lastLink = location;
-        current = path.isAbsolute(target) ? target : `${directory}/${target}`;
+function inputKeyLocation(root, walked) {
+    if (
+        (walked.kind === "file" || walked.kind === "missing") &&
+        contains(root, walked.location)
+    ) {
+        return walked.location;
     }
-    return lastLink;
+    const link = walked.links.findLast((entry) =>
+        contains(root, entry.location),
+    );
+    if (link === undefined) return null;
+    const rest = link.rest.filter((name) => name !== "" && name !== ".");
+    if (rest.length === 0 || rest.includes("..")) return link.location;
+    return `${link.location}/${rest.join("/")}`;
 }
 
 /**
@@ -1168,17 +1231,15 @@ function createRestrictedProgram(
     host.getSourceFile = (fileName, languageVersion) => {
         // A refused path is left out of the program, so the facts of every file
         // that imports or includes it are computed as if it did not exist. It
-        // is recorded as a failed read under the in-root path its bytes would
-        // have come from (inRootLocation): a stable layout never trips over
+        // is recorded as a failed read under the key a read of it would have
+        // gone under (walkPath, inputKeyLocation): a stable layout never trips over
         // that, since discovery reports neither a symlink nor an over-cap file
         // and the core ignores a path it did not discover, while a discovered
         // file that became one mid-scan fails verification.
+        const absolute = normalize(path.resolve(shebangSourcePath(fileName)));
+        reads.observe("load", absolute);
         const refused = () => {
-            recordRefused(
-                reads,
-                root,
-                normalize(path.resolve(shebangSourcePath(fileName))),
-            );
+            recordRefused(reads, root, absolute);
             return undefined;
         };
         if (!allowedCompilerPath(root, fileName)) return refused();
@@ -1789,15 +1850,16 @@ function validatedInside(root, relative) {
     return real;
 }
 
+// Whether the compiler may touch a path: the default library, or a path inside
+// the root that the kernel's lookup (walkPath) keeps inside it. A path that does
+// not resolve at all is let through, so its read fails and is recorded by
+// readHashedSourceFile under the same walk's key.
 function allowedCompilerPath(root, candidate) {
     const normalized = shebangSourcePath(normalize(path.resolve(candidate)));
     if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
-    try {
-        return contains(root, realpathNative(normalized));
-    } catch {
-        return true;
-    }
+    const walked = walkPath(normalized);
+    return walked.location === undefined || contains(root, walked.location);
 }
 
 function relativeInside(root, candidate) {
