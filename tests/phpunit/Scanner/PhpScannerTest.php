@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Scanner;
 
+use Knossos\Discovery\DiscoveryConfig;
+use Knossos\Discovery\ProjectDiscoverer;
+use Knossos\Scan\ScanInputHashes;
+use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scanner\Protocol\EdgeFact;
 use Knossos\Scanner\Protocol\NodeFact;
 use Knossos\Scanner\Worker\WorkerException;
@@ -1090,6 +1094,111 @@ final class PhpScannerTest extends KnossosTestCase
         $error = captureThrows(static fn() => $probe->invoke(null, $missing), \KnossosPhpScanner\UnreadableFileException::class);
 
         assertSame('Unable to read PHP file: ' . $missing, $error->getMessage());
+    }
+
+    /**
+     * Discovery routed an extensionless script here because its shebang named
+     * PHP. Swapped for another script around the worker's probe and restored
+     * afterwards, the file is refused with no facts, and that refusal must
+     * not pass verification: the hash of what the probe's verdict rested on
+     * disagrees with what discovery hashed.
+     */
+    #[Group('php-scanner')]
+    public function testAnExtensionlessPhpScriptSwappedAroundTheProbeFailsVerification(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $php = "#!/usr/bin/env php\n<?php\nclass Tool {}\n";
+        $python = "#!/usr/bin/env python3\nprint('tool')\n";
+        file_put_contents($root . '/bin/tool', $php);
+        try {
+            $discovery = (new ProjectDiscoverer(new DiscoveryConfig([$root])))->discover($root);
+            $byPath = [];
+            foreach ($discovery->files as $file) {
+                $byPath[$file->relativePath] = $file;
+            }
+            assertSame('php', $byPath['bin/tool']->language);
+
+            file_put_contents($root . '/bin/tool', $python);
+            $client = $this->phpWorkerClient();
+            $manifest = $client->initialize();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['bin/tool']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+            file_put_contents($root . '/bin/tool', $php);
+
+            assertSame('PHP_UNSCANNABLE_FILE', $contributions[0]->diagnostics[0]->code);
+            assertSame(['bin/tool' => hash('sha256', $python)], $inputHashes);
+            $error = captureThrows(
+                static fn() => ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, $byPath),
+                ScanSnapshotChangedException::class,
+            );
+            assertSame(ScanSnapshotChangedException::inputReadDifferently('bin/tool')->getMessage(), $error->getMessage());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * A shebang refusal of a file that is not changing reports the hash of its
+     * whole content, which is what discovery hashed, so a script this worker
+     * and discovery happen to judge apart costs its diagnostic and never the
+     * scan.
+     */
+    #[Group('php-scanner')]
+    public function testAShebangRefusalOfAStableFileReportsItsContentHash(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $python = "#!/usr/bin/env python3\nprint('tool')\n";
+        file_put_contents($root . '/bin/tool', $python);
+        try {
+            $client = $this->phpWorkerClient();
+            $manifest = $client->initialize();
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['bin/tool']]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+            $client->shutdown();
+
+            assertSame(['bin/tool' => hash('sha256', $python)], $inputHashes);
+            $discovery = (new ProjectDiscoverer(new DiscoveryConfig([$root])))->discover($root);
+            $byPath = [];
+            foreach ($discovery->files as $file) {
+                $byPath[$file->relativePath] = $file;
+            }
+            assertSame(true, isset($byPath['bin/tool']));
+            ScanInputHashes::verify(['input_hashes' => $inputHashes], $manifest, $byPath);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * The evidence read judges the file again on its own bytes: one that names
+     * PHP now changed since the probe, and one that cannot be read whole
+     * within the cap has no hash to give. Both are null.
+     */
+    #[Group('php-scanner')]
+    public function testShebangRefusalEvidenceIsNullUnlessTheWholeFileStillRefuses(): void
+    {
+        require_once self::repositoryRoot() . '/workers/php/vendor/autoload.php';
+        $evidence = new ReflectionMethod(\KnossosPhpScanner\WorkerServer::class, 'refusalEvidence');
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root);
+        $python = "#!/usr/bin/env python3\nprint('tool')\n";
+        file_put_contents($root . '/python', $python);
+        file_put_contents($root . '/php', "#!/usr/bin/env php\n<?php\n");
+        // Past the probe's 255 bytes the line no longer counts, as in discovery.
+        file_put_contents($root . '/late', '#!' . str_repeat(' ', 253) . "php\n");
+        try {
+            assertSame(hash('sha256', $python), $evidence->invoke(null, $root . '/python', strlen($python)));
+            assertSame(hash('sha256', $python), $evidence->invoke(null, $root . '/python', PHP_INT_MAX));
+            assertSame(null, $evidence->invoke(null, $root . '/python', strlen($python) - 1));
+            assertSame(null, $evidence->invoke(null, $root . '/php', 1000));
+            assertSame(hash('sha256', '#!' . str_repeat(' ', 253) . "php\n"), $evidence->invoke(null, $root . '/late', 1000));
+            assertSame(null, $evidence->invoke(null, $root . '/gone', 1000));
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 
     /** A read that fails inside the scanner is a failed read too, not a policy refusal. */

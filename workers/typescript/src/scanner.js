@@ -177,6 +177,11 @@ export class TypeScriptScanner {
         // facts every other file in the batch contributes.
         for (const rejection of rejected) {
             if (rejection.failedRead) reads.record(rejection.relative, null);
+            // Refused on what the file says rather than on its name, so what
+            // was read is evidence: a stable tree matches the hash, a script
+            // swapped and restored around the probe does not.
+            else if (rejection.refusalHash !== undefined)
+                reads.record(rejection.relative, rejection.refusalHash);
             emit(
                 unscannableContribution(rejection.relative, rejection.message),
             );
@@ -1884,6 +1889,21 @@ function readableAsItself(root, relative, maxFileBytes) {
  */
 class UnreadableInput extends Error {}
 
+// A requested file refused because of what was read in it: an extensionless
+// script whose shebang does not name JavaScript. Discovery routed it here
+// because its reading of those bytes did, so a script swapped for another one
+// and restored around the probe would otherwise lose its facts from a graph
+// reported fresh. The refusal carries evidence for `input_hashes`: the hash of
+// the whole file from one bounded read that reached the same verdict, which a
+// stable tree matches, or null when that read failed, was over the cap, or
+// found JavaScript after all.
+class RefusedAfterRead extends Error {
+    constructor(message, contentHash) {
+        super(message);
+        this.contentHash = contentHash;
+    }
+}
+
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -1938,11 +1958,17 @@ function validateRequestedFiles(root, files, limits = {}) {
                 throw new UnreadableInput(
                     `TypeScript input no longer resolves to itself: ${relative}`,
                 );
-            if (
-                !SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()) &&
-                !namesJavaScriptInShebang(absolute)
-            )
-                throw new Error(`Unsupported TypeScript input: ${relative}`);
+            if (!SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase())) {
+                if (path.extname(absolute) !== "")
+                    throw new Error(
+                        `Unsupported TypeScript input: ${relative}`,
+                    );
+                if (!namesJavaScriptInShebang(absolute))
+                    throw new RefusedAfterRead(
+                        `Unsupported TypeScript input: ${relative}`,
+                        shebangRefusalEvidence(absolute, maxFileBytes),
+                    );
+            }
             let stat;
             try {
                 stat = fs.statSync(absolute);
@@ -1959,6 +1985,9 @@ function validateRequestedFiles(root, files, limits = {}) {
                 relative: requested,
                 message: errorMessage(error),
                 failedRead: error instanceof UnreadableInput,
+                ...(error instanceof RefusedAfterRead
+                    ? { refusalHash: error.contentHash }
+                    : {}),
             });
         }
     }
@@ -2014,13 +2043,13 @@ function factFreeContribution(relative, code, message) {
 // the first line is read, and only for a file that has no known extension.
 function namesJavaScriptInShebang(absolute) {
     if (path.extname(absolute) !== "") return false;
-    let first;
+    let buffer;
+    let read;
     try {
         const handle = fs.openSync(absolute, "r");
         try {
-            const buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
-            const read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
-            first = buffer.toString("utf8", 0, read).split("\n", 1)[0];
+            buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
+            read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
         } finally {
             fs.closeSync(handle);
         }
@@ -2030,10 +2059,39 @@ function namesJavaScriptInShebang(absolute) {
         throw new UnreadableInput(errorMessage(error));
     }
 
+    return probeNamesJavaScript(buffer.subarray(0, read));
+}
+
+// Whether the probe's bytes, the file's first SHEBANG_PROBE_BYTES at most, name
+// JavaScript on their first line.
+function probeNamesJavaScript(bytes) {
+    const first = bytes
+        .toString("utf8", 0, Math.min(bytes.length, SHEBANG_PROBE_BYTES))
+        .split("\n", 1)[0];
     return (
         first.startsWith("#!") &&
         /\b(node|nodejs|bun|deno)[0-9.]*\b/i.test(first)
     );
+}
+
+// What a shebang refusal reports in `input_hashes` for the refused file. The
+// probe read only a line, which no discovery hash can be compared with, so the
+// whole file is read once more, bounded, and judged again on those same bytes.
+// A file that still does not name JavaScript is reported by that read's hash:
+// a tree that is not changing matches what discovery hashed, so a script this
+// rule and discovery's happen to judge apart costs only its diagnostic, while a
+// script swapped for another one does not match. A read that fails, is over the
+// cap, or now names JavaScript saw a file that changed between the two reads,
+// and is reported as null.
+function shebangRefusalEvidence(absolute, maxFileBytes) {
+    let buffer;
+    try {
+        buffer = readBounded(absolute, maxFileBytes);
+    } catch {
+        return null;
+    }
+    if (buffer === undefined || probeNamesJavaScript(buffer)) return null;
+    return createHash("sha256").update(buffer).digest("hex");
 }
 
 // Whether a file opens with a shebang, whatever interpreter it names.

@@ -254,6 +254,16 @@ one does.
   path as `null`, and its contribution under that path's own owner key carries
   no facts. A refusal by policy, such as an extension your worker does not
   scan, says nothing about the tree and goes unreported.
+- **A requested file refused on its content**, such as an extensionless
+  script whose shebang does not name your language, was routed to your worker
+  because discovery read that content differently. Report it under the
+  requested path with the hash of the whole file, read once more within the
+  byte cap and judged again on those bytes, or as `null` when that read fails,
+  is over the cap, or now names your language. A stable tree matches that
+  hash, so a script your rule and discovery's happen to judge apart costs only
+  its diagnostic, while a script swapped for another one and restored around
+  your probe fails verification. The packaged PHP, Python and TypeScript
+  workers do this.
 - **A requested file that resolves to a path other than the one requested**
   (discovery never follows a link, so this can only happen when a component of
   the requested path became a link since discovery ran) may be reported either

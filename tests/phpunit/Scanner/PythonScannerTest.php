@@ -579,6 +579,44 @@ PYTHON);
     }
 
     /**
+     * An extensionless script refused on its shebang is reported by the hash
+     * of the whole file, judged again on those bytes, so a stable tree passes
+     * verification while a script swapped around the probe would not. One
+     * over the byte cap has no whole-file hash and is null; one refused by its
+     * name read nothing and is not reported.
+     */
+    #[Group('python-scanner')]
+    public function testAShebangRefusalReportsTheHashItsVerdictRestedOn(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $node = "#!/usr/bin/env node\nconsole.log(1)\n";
+        file_put_contents($root . '/bin/tool', $node);
+        file_put_contents($root . '/bin/large', "#!/bin/sh\n" . str_repeat('#', 100) . "\n");
+        file_put_contents($root . '/notes.txt', "text\n");
+        $client = $this->pythonWorkerClient();
+        try {
+            $manifest = $client->initialize();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['bin/large', 'bin/tool', 'notes.txt'],
+                'limits' => ['max_file_bytes' => 64],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            assertSame(3, count($contributions));
+            foreach ($contributions as $contribution) {
+                assertSame([], $contribution->nodes);
+            }
+            assertSame(['bin/large' => null, 'bin/tool' => hash('sha256', $node)], $inputHashes);
+            self::assertInputHashesVerify($root, ['bin/tool' => $inputHashes['bin/tool']], $manifest, 64);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * Discovery never follows a symlink, so the only path it tracks for a
      * module reached through a linked directory is the target's. The index
      * read has to be keyed there; spelled through the link alone, it would

@@ -341,4 +341,36 @@ final class TypescriptScannerTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * An extensionless script refused on its shebang is reported by the hash
+     * of the whole file, judged again on those bytes, which a stable tree
+     * matches. One over the byte cap has no whole-file hash and is null; one
+     * refused by its name read nothing and is not reported.
+     */
+    #[Group('typescript-scanner')]
+    public function testAShebangRefusalReportsTheHashItsVerdictRestedOn(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/bin', 0o777, true);
+        $python = "#!/usr/bin/env python3\nprint(1)\n";
+        file_put_contents($root . '/bin/tool', $python);
+        file_put_contents($root . '/bin/large', "#!/bin/sh\n" . str_repeat('#', 100) . "\n");
+        file_put_contents($root . '/notes.txt', "text\n");
+        $client = $this->typescriptWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['bin/large', 'bin/tool', 'notes.txt'],
+                'limits' => ['max_file_bytes' => 64],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            assertSame(3, count($contributions));
+            assertSame(['bin/large' => null, 'bin/tool' => hash('sha256', $python)], $inputHashes);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
 }

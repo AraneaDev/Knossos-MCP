@@ -70,7 +70,11 @@ describe("input_hashes: a requested file whose read fails", () => {
             { limits: { max_file_bytes: 60 } },
         );
 
+        // src/notes.txt was refused by its name and read nothing; bin/plain was
+        // refused on what its first line says, so it is reported by the hash of
+        // what that verdict rested on.
         expect(result.input_hashes).toEqual({
+            "bin/plain": sha256("echo not a script\n"),
             "src/big.ts": null,
             "src/dir.ts": null,
             "src/gone.ts": null,
@@ -123,6 +127,99 @@ describe("input_hashes: a requested file whose read fails", () => {
             "TypeScript input no longer resolves to itself: src/b.ts",
         );
         expect(result.input_hashes).toEqual({ "src/b.ts": null });
+    });
+});
+
+describe("input_hashes: an extensionless script refused on its shebang", () => {
+    // Probes read the first bytes of `file`, swapping its content just before
+    // the first open and, when asked, restoring it just before the second.
+    function swapAroundProbe(file, swapped, restored) {
+        const openSync = fs.openSync;
+        let opens = 0;
+        return vi
+            .spyOn(fs, "openSync")
+            .mockImplementation((target, ...rest) => {
+                if (String(target) === file) {
+                    opens += 1;
+                    if (opens === 1) fs.writeFileSync(file, swapped);
+                    if (opens === 2 && restored !== undefined)
+                        fs.writeFileSync(file, restored);
+                }
+                return openSync(target, ...rest);
+            });
+    }
+
+    it("reports the whole file's hash for a stable script, which discovery's hash matches", () => {
+        const python = "#!/usr/bin/env python3\nprint(1)\n";
+        const root = fixture({ "bin/tool": python });
+
+        const { result, byOwner } = scan(root, ["bin/tool"]);
+
+        expect(result.input_hashes).toEqual({ "bin/tool": sha256(python) });
+        expect(byOwner["bin/tool"].diagnostics[0].message).toBe(
+            "Unsupported TypeScript input: bin/tool",
+        );
+    });
+
+    it.each([
+        ["left swapped", undefined],
+        [
+            "restored before the evidence read",
+            "#!/usr/bin/env node\nexport const tool = 1;\n",
+        ],
+    ])(
+        "does not report a node script swapped for another script around the probe, %s, by its discovered hash",
+        (_label, restored) => {
+            const node = "#!/usr/bin/env node\nexport const tool = 1;\n";
+            const python = "#!/usr/bin/env python3\nprint(1)\n";
+            const root = fixture({ "bin/tool": node });
+            const file = join(root, "bin/tool");
+            const spy = swapAroundProbe(file, python, restored);
+            let scanned;
+            try {
+                scanned = scan(root, ["bin/tool"]);
+            } finally {
+                spy.mockRestore();
+            }
+
+            expect(scanned.byOwner["bin/tool"].nodes).toEqual([]);
+            expect(scanned.result.input_hashes).toEqual({
+                "bin/tool": restored === undefined ? sha256(python) : null,
+            });
+            expect(scanned.result.input_hashes["bin/tool"]).not.toBe(
+                sha256(node),
+            );
+        },
+    );
+
+    it("reports null when the whole file is over the cap or cannot be read", () => {
+        const root = fixture({
+            "bin/large": `#!/bin/sh\n${"#".repeat(100)}\n`,
+            "bin/tool": "#!/bin/sh\n",
+        });
+        const file = join(root, "bin/tool");
+        const openSync = fs.openSync;
+        let opens = 0;
+        const spy = vi
+            .spyOn(fs, "openSync")
+            .mockImplementation((target, ...rest) => {
+                if (String(target) === file && ++opens === 2)
+                    throw new Error("EIO: the evidence read failed");
+                return openSync(target, ...rest);
+            });
+        let result;
+        try {
+            ({ result } = scan(root, ["bin/large", "bin/tool"], {
+                limits: { max_file_bytes: 64 },
+            }));
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(result.input_hashes).toEqual({
+            "bin/large": null,
+            "bin/tool": null,
+        });
     });
 });
 

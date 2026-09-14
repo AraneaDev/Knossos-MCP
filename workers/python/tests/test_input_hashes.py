@@ -327,8 +327,16 @@ def test_a_requested_file_the_filesystem_refuses_is_null_and_a_policy_refusal_is
     )
 
     # Nothing was resolved, so no source-root probe ran either (dir.py is a
-    # top-level directory it would have probed).
-    assert result["input_hashes"] == {"big.py": None, "dir.py": None, "gone.py": None, "out.py": None}
+    # top-level directory it would have probed). notes.txt was refused by its
+    # name and is not reported; script was refused on what its shebang says,
+    # so it is reported by the hash of what that verdict rested on.
+    assert result["input_hashes"] == {
+        "big.py": None,
+        "dir.py": None,
+        "gone.py": None,
+        "out.py": None,
+        "script": _sha(b"#!/bin/sh\n"),
+    }
     messages = {item["owner_key"].rsplit(":", 1)[-1]: item["diagnostics"][0]["message"] for item in emitted}
     assert messages["big.py"] == "Python input exceeds the configured byte limit."
     assert messages["dir.py"] == "Python input is not a regular file."
@@ -987,3 +995,58 @@ def test_a_stable_tree_with_links_never_disagrees_with_discovery(worker: ModuleT
     # A link below node_modules is never keyed.
     assert not [key for key in result["input_hashes"] if "node_modules" in key.split("/")]
     assert all("content_hash" in contribution for contribution in contributions.values())
+
+
+def test_a_shebang_refusal_of_a_stable_file_reports_its_content_hash(worker: ModuleType, project) -> None:
+    # Discovery and this worker may judge a shebang apart; a tree that is not
+    # changing matches the refusal's hash, so the file costs its diagnostic only.
+    root = project({"bin/tool": "#!/usr/bin/env node\nconsole.log(1)\n", "notes.txt": "text\n"})
+
+    result, contributions = _scan(worker, root, ["bin/tool", "notes.txt"])
+
+    assert result["input_hashes"] == {"bin/tool": _sha(b"#!/usr/bin/env node\nconsole.log(1)\n")}
+    assert contributions["bin/tool"]["diagnostics"][0]["message"] == "Unsupported Python input."
+    assert _disagreements(result["input_hashes"], _discovered(root)) == []
+
+
+@pytest.mark.parametrize("restored_before_evidence", [False, True])
+def test_a_python_script_swapped_around_the_shebang_probe_fails_verification(
+    monkeypatch, worker: ModuleType, project, restored_before_evidence: bool
+) -> None:
+    python = "#!/usr/bin/env python3\nprint('tool')\n"
+    root = project({"bin/tool": python})
+    discovery = _discovered(root)
+    probe = worker.names_python_in_shebang
+
+    def swapped(absolute: Path) -> bool:
+        absolute.write_text("#!/usr/bin/env node\nconsole.log(1)\n", encoding="utf-8")
+        verdict = probe(absolute)
+        if restored_before_evidence:
+            absolute.write_text(python, encoding="utf-8")
+        return bool(verdict)
+
+    monkeypatch.setattr(worker, "names_python_in_shebang", swapped)
+    result, contributions = _scan(worker, root, ["bin/tool"])
+    (root / "bin/tool").write_text(python, encoding="utf-8")
+
+    assert contributions["bin/tool"]["nodes"] == []
+    assert _disagreements(result["input_hashes"], discovery) == ["bin/tool"]
+    if restored_before_evidence:
+        assert result["input_hashes"] == {"bin/tool": None}
+
+
+def test_shebang_refusal_evidence_is_null_unless_the_whole_file_still_refuses(
+    worker: ModuleType, tmp_path: Path
+) -> None:
+    node = b"#!/usr/bin/env node\nconsole.log(1)\n"
+    (tmp_path / "node").write_bytes(node)
+    (tmp_path / "python").write_bytes(b"#!/usr/bin/env python3\n")
+    # Past the probe's line the name no longer counts, as in the probe itself.
+    late = b"#!" + b" " * 254 + b"python\n"
+    (tmp_path / "late").write_bytes(late)
+
+    assert worker.shebang_refusal_evidence(tmp_path / "node", len(node)) == _sha(node)
+    assert worker.shebang_refusal_evidence(tmp_path / "node", len(node) - 1) is None
+    assert worker.shebang_refusal_evidence(tmp_path / "python", 1000) is None
+    assert worker.shebang_refusal_evidence(tmp_path / "late", 1000) == _sha(late)
+    assert worker.shebang_refusal_evidence(tmp_path / "gone", 1000) is None

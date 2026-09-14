@@ -78,6 +78,23 @@ class UnreadableInput(ValueError):
     """
 
 
+class RefusedAfterRead(ValueError):
+    """A requested file this worker refuses because of what it read in it.
+
+    An extensionless script whose shebang does not name Python was routed here
+    because discovery's reading of those bytes named Python when it hashed them.
+    A script swapped for another one and restored around the probe would
+    otherwise lose its facts from a graph reported fresh, so the refusal carries
+    evidence for ``input_hashes``: the hash of the whole file from one bounded
+    read that reached the same verdict, which a stable tree matches, or ``None``
+    when that read failed, was over the cap, or found Python after all.
+    """
+
+    def __init__(self, message: str, content_hash: str | None) -> None:
+        super().__init__(message)
+        self.content_hash = content_hash
+
+
 def read_bounded(path: Path, max_bytes: int) -> bytes:
     """Read at most ``max_bytes + 1`` bytes, so a file over the cap is told apart without reading the rest.
 
@@ -102,12 +119,43 @@ def names_python_in_shebang(absolute: Path) -> bool:
         return False
     try:
         with absolute.open("rb") as handle:
-            first = handle.readline(SHEBANG_PROBE_BYTES).decode("utf-8", "replace")
+            first = handle.readline(SHEBANG_PROBE_BYTES)
     except OSError as error:
         # Only ever asked of a path just found to be a regular file, so a failed
         # open is the filesystem's answer, not this script's interpreter.
         raise UnreadableInput(str(error)) from error
-    return first.startswith("#!") and re.search(r"\b(python)[0-9.]*\b", first, re.IGNORECASE) is not None
+    return _first_line_names_python(first)
+
+
+def _first_line_names_python(first: bytes) -> bool:
+    """Whether a shebang line, as the probe reads it, names Python."""
+    text = first.decode("utf-8", "replace")
+    return text.startswith("#!") and re.search(r"\b(python)[0-9.]*\b", text, re.IGNORECASE) is not None
+
+
+def shebang_refusal_evidence(absolute: Path, max_bytes: int) -> str | None:
+    """What a shebang refusal reports in ``input_hashes`` for the refused file.
+
+    The probe read only a line, which no discovery hash can be compared with,
+    so the whole file is read once more, bounded, and judged again on those
+    same bytes. A file that still does not name Python is reported by that
+    read's hash: a tree that is not changing matches what discovery hashed, so
+    a script this rule and discovery's happen to judge apart costs only its
+    diagnostic, while a script swapped for another one does not match. A read
+    that fails, is over the cap, or now names Python saw a file that changed
+    between the two reads, and is reported as ``None``.
+    """
+    try:
+        source = read_bounded(absolute, max_bytes)
+    except OSError:
+        return None
+    if len(source) > max_bytes:
+        return None
+    newline = source.find(b"\n", 0, SHEBANG_PROBE_BYTES)
+    first = source[:SHEBANG_PROBE_BYTES] if newline < 0 else source[: newline + 1]
+    if _first_line_names_python(first):
+        return None
+    return hashlib.sha256(source).hexdigest()
 
 
 def starts_with_shebang(source: bytes) -> bool:
@@ -163,8 +211,9 @@ def assert_scannable_path(value: Any) -> PurePosixPath:
 def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
     """Resolve a requested path to the in-root regular file it names.
 
-    Raises :class:`UnreadableInput` when the filesystem refuses it and a plain
-    ``ValueError`` when this worker does not scan such a file.
+    Raises :class:`UnreadableInput` when the filesystem refuses it,
+    :class:`RefusedAfterRead` when its shebang does not name Python, and a plain
+    ``ValueError`` when this worker does not scan such a file by its name.
     """
     relative = assert_scannable_path(value)
     try:
@@ -175,8 +224,11 @@ def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
             raise UnreadableInput("Python input path escapes the project root.") from error
         if not absolute.is_file():
             raise UnreadableInput("Python input is not a regular file.")
-        if not (absolute.suffix.lower() in {".py", ".pyi"} or names_python_in_shebang(absolute)):
-            raise ValueError("Unsupported Python input.")
+        if absolute.suffix.lower() not in {".py", ".pyi"}:
+            if absolute.suffix:
+                raise ValueError("Unsupported Python input.")
+            if not names_python_in_shebang(absolute):
+                raise RefusedAfterRead("Unsupported Python input.", shebang_refusal_evidence(absolute, max_bytes))
         if absolute.stat().st_size > max_bytes:
             raise UnreadableInput("Python input exceeds the configured byte limit.")
     except OSError as error:
@@ -1455,6 +1507,12 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
             # Its contribution carries no facts, so a discovered file must not
             # pass verification as if it had been read.
             index.record_read(requested.as_posix(), None)
+            rejected.append((requested.as_posix(), str(error)))
+        except RefusedAfterRead as error:
+            # Refused on what the file says rather than on its name, so what
+            # was read is evidence: a stable tree matches the hash, a script
+            # swapped and restored around the probe does not.
+            index.record_read(requested.as_posix(), error.content_hash)
             rejected.append((requested.as_posix(), str(error)))
         except ValueError as error:
             rejected.append((requested.as_posix(), str(error)))
