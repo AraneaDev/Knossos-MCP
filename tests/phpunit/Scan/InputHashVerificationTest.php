@@ -19,6 +19,7 @@ use Knossos\Scan\ScanSnapshotChangedException;
 use Knossos\Scan\ScanSnapshotValidator;
 use Knossos\Scanner\Worker\ProcessScannerClient;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
+use Knossos\Scanner\Worker\WorkerLimits;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -110,6 +111,31 @@ final class InputHashVerificationTest extends KnossosTestCase
         assertSame(1, $result->scannerMetadata['knossos.fake']['files_scanned']);
     }
 
+    public function testAHonestReadSentAheadOfTheResultScans(): void
+    {
+        $result = $this->runScan('inputs_parts_honest');
+
+        assertSame([], $result->workerDiagnostics);
+        assertSame(['src/Checkout.ts'], array_map(static fn($entry): string => $entry->filePath, $result->cacheEntries));
+    }
+
+    public function testAPartAndTheResultDisagreeingAboutOneFileFailsTheScan(): void
+    {
+        $error = captureThrows(fn(): LanguageScanResult => $this->runScan('inputs_parts_disagree'), ScanSnapshotChangedException::class);
+
+        assertContains('src/Other.ts', $error->getMessage());
+        assertContains('could not be read while the scan derived graph facts from it', $error->getMessage());
+    }
+
+    public function testPartsBeyondTheirBudgetDegradeTheLanguage(): void
+    {
+        $result = $this->runScan('inputs_parts_flood', new WorkerLimits(maxInputHashesBytes: 5_000));
+
+        assertSame([], $result->contributions);
+        assertSame('WORKER_RESPONSE_INVALID', $result->workerDiagnostics[0]['code']);
+        assertContains('scan/input_hashes frames exceed the 5000-byte limit', $result->workerDiagnostics[0]['message']);
+    }
+
     private function checkout(): DiscoveredFile
     {
         return $this->discovered('src/Checkout.ts', 'typescript');
@@ -129,9 +155,9 @@ final class InputHashVerificationTest extends KnossosTestCase
         return new DiscoveredFile($relativePath, $absolute, $language, strlen($contents), (int) filemtime($absolute), hash('sha256', $contents));
     }
 
-    private function runScan(string $mode): LanguageScanResult
+    private function runScan(string $mode, WorkerLimits $limits = new WorkerLimits()): LanguageScanResult
     {
-        $client = new ProcessScannerClient([PHP_BINARY, self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php', $mode]);
+        $client = new ProcessScannerClient([PHP_BINARY, self::repositoryRoot() . '/tests/Fixtures/workers/fake-worker.php', $mode], $limits);
         $pool = $this->createStub(LanguageWorkerPool::class);
         $pool->method('client')->willReturn($client);
         $descriptor = new LanguageDescriptor(key: 'typescript', stage: 'typescript-analysis', languages: ['typescript'], command: ['php', '-r', 'echo 1']);

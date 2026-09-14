@@ -40,5 +40,15 @@ final class Protocol
     public const METHOD_CANCEL = 'cancel';
     public const METHOD_SHUTDOWN = 'shutdown';
 
+    /** Notification carrying one contribution while a scan request runs. */
+    public const NOTIFICATION_CONTRIBUTION = 'scan/contribution';
+
+    /**
+     * Notification carrying part of a scan request's `input_hashes` map, for a
+     * map too large for the one frame the final result travels on. The core
+     * merges every part with the result's own field.
+     */
+    public const NOTIFICATION_INPUT_HASHES = 'scan/input_hashes';
+
     private function __construct() {}
 }

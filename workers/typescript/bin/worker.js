@@ -2,6 +2,8 @@
 
 import { createInterface } from "node:readline";
 
+import { inputHashesParts } from "../src/input-hashes-parts.js";
+
 // The scanner pulls in the TypeScript compiler, which costs about 190ms of the
 // ~220ms this worker used to take to answer `initialize` — paid on every scan,
 // including the ones where no TypeScript file changed and the compiler is never
@@ -86,6 +88,7 @@ async function handle(request) {
                     params: contribution,
                 });
             });
+            result = withInputHashesParts(result);
             break;
         case "shutdown":
             result = { status: "bye" };
@@ -99,6 +102,22 @@ async function handle(request) {
         process.exitCode = 0;
         input.close();
     }
+}
+
+/**
+ * Send all but the last part of the result's `input_hashes` ahead of it, so no
+ * frame outgrows the core's line cap; the result keeps the last part.
+ */
+function withInputHashesParts(result) {
+    const parts = inputHashesParts(result.input_hashes);
+    for (const part of parts.slice(0, -1)) {
+        write({
+            jsonrpc: "2.0",
+            method: "scan/input_hashes",
+            params: { input_hashes: part },
+        });
+    }
+    return { ...result, input_hashes: parts.at(-1) };
 }
 
 function write(message) {

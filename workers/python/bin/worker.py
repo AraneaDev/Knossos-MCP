@@ -1447,6 +1447,43 @@ def _unscannable_contribution(relative: str, message: str) -> dict[str, Any]:
     }
 
 
+INPUT_HASHES_PART_BYTES = 256_000
+"""Serialized bytes one ``scan/input_hashes`` notification carries at most.
+
+Well under the core's 1,000,000-byte line cap. A single entry longer than this
+still travels alone, and the core's path rules bound an entry, so no frame this
+produces approaches the cap.
+"""
+
+
+def input_hash_parts(input_hashes: dict[str, str | None], part_bytes: int | None = None) -> list[dict[str, str | None]]:
+    """Split a request's ``input_hashes`` map into parts that each fit one frame.
+
+    The map covers every module the request's index read, which on a large tree
+    outgrows the one line a scan result travels on however few files the batch
+    names. All parts but the last go out as ``scan/input_hashes`` notifications;
+    the last is the result's own field, which marks that the worker finished
+    reporting, so there is always at least one part, ``{}`` when nothing was read.
+    """
+
+    budget = INPUT_HASHES_PART_BYTES if part_bytes is None else part_bytes
+    parts: list[dict[str, str | None]] = []
+    part: dict[str, str | None] = {}
+    # The serialized part: its braces, less the comma its last entry lacks.
+    size = 1
+    for relative, content_hash in input_hashes.items():
+        # `"path":"<64 hex>",` or `"path":null,`
+        entry = len(json.dumps(relative, ensure_ascii=False).encode()) + (4 if content_hash is None else 66) + 2
+        if part and size + entry > budget:
+            parts.append(part)
+            part = {}
+            size = 1
+        part[relative] = content_hash
+        size += entry
+    parts.append(part)
+    return parts
+
+
 def handle(request: dict[str, Any]) -> None:
     """Validate and dispatch one NDJSON JSON-RPC worker request."""
 
@@ -1456,6 +1493,7 @@ def handle(request: dict[str, Any]) -> None:
         raise ValueError("Method and object params are required.")
     if method == "cancel":
         return
+    result: dict[str, Any]
     if method == "initialize":
         result = {
             "id": "knossos.python",
@@ -1467,10 +1505,14 @@ def handle(request: dict[str, Any]) -> None:
             "capabilities": ["partial_ast", "content_hash", "input_hashes"],
         }
     elif method == "scan":
-        result = scan(
+        scanned = scan(
             params,
             lambda contribution: write({"jsonrpc": "2.0", "method": "scan/contribution", "params": contribution}),
         )
+        parts = input_hash_parts(scanned["input_hashes"])
+        for part in parts[:-1]:
+            write({"jsonrpc": "2.0", "method": "scan/input_hashes", "params": {"input_hashes": part}})
+        result = {**scanned, "input_hashes": parts[-1]}
     elif method == "shutdown":
         result = {"status": "bye"}
     else:

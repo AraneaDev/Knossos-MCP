@@ -95,7 +95,7 @@ final class ScannerProtocolSession
      */
     public function scan(array $request, ?callable $cancelled = null): iterable
     {
-        $this->initialize();
+        $manifest = $this->initialize();
         $id = $this->nextId++;
         $deadline = $this->channel->beginRequest();
         $this->channel->send([
@@ -106,6 +106,9 @@ final class ScannerProtocolSession
         ], $cancelled);
 
         $completed = false;
+        // Parts of this request's input_hashes map sent ahead of the result,
+        // null until the first one arrives.
+        $inputHashes = null;
         try {
             while (true) {
                 if ($cancelled !== null && $cancelled()) {
@@ -115,6 +118,10 @@ final class ScannerProtocolSession
                 }
                 $message = $this->channel->readMessage($deadline, $cancelled);
                 if (!array_key_exists('id', $message)) {
+                    if (($message['method'] ?? null) === Protocol::NOTIFICATION_INPUT_HASHES) {
+                        $inputHashes = InputHashesMap::merge($inputHashes ?? [], $this->decodeInputHashesPart($message, $manifest));
+                        continue;
+                    }
                     $contribution = $this->decodeContribution($message);
                     if ($contribution !== null) {
                         yield $contribution;
@@ -127,6 +134,9 @@ final class ScannerProtocolSession
                 $result = $message['result'] ?? null;
                 if (!is_array($result) || ($result !== [] && array_is_list($result))) {
                     throw new WorkerException('WORKER_RESPONSE_INVALID', 'Worker scan result must be an object.');
+                }
+                if ($inputHashes !== null) {
+                    $result = $this->withInputHashesParts($result, $inputHashes, $manifest);
                 }
                 $this->lastScanResult = $result;
                 $completed = true;
@@ -278,13 +288,55 @@ final class ScannerProtocolSession
     }
 
     /**
+     * Validate one `scan/input_hashes` notification into the part of the map it carries.
+     *
+     * @param array<string, mixed> $message
+     * @return array<string, string|null>
+     */
+    private function decodeInputHashesPart(array $message, ScannerManifest $manifest): array
+    {
+        $workerId = $manifest->id;
+        $params = $message['params'] ?? null;
+        if (!is_array($params) || array_is_list($params) || !array_key_exists(InputHashesMap::FIELD, $params)) {
+            throw InputHashesMap::invalid($workerId, sprintf('sent a %s notification whose params are not an object carrying %s', Protocol::NOTIFICATION_INPUT_HASHES, InputHashesMap::FIELD));
+        }
+
+        return InputHashesMap::decode($params[InputHashesMap::FIELD], $workerId);
+    }
+
+    /**
+     * Fold the parts sent ahead of a result into the result's own map.
+     *
+     * The result's `input_hashes` stays the marker that the worker finished
+     * reporting: a declaring worker that sent parts but no field is left
+     * without one, which the scan refuses as it would any missing field. A
+     * worker that never declared the capability owes no marker, and the parts
+     * it sent are still evidence to check.
+     *
+     * @param array<string, mixed> $result
+     * @param array<string, string|null> $parts
+     * @return array<string, mixed>
+     */
+    private function withInputHashesParts(array $result, array $parts, ScannerManifest $manifest): array
+    {
+        if (array_key_exists(InputHashesMap::FIELD, $result)) {
+            $own = InputHashesMap::decode($result[InputHashesMap::FIELD], $manifest->id);
+            $result[InputHashesMap::FIELD] = InputHashesMap::merge($parts, $own);
+        } elseif (!in_array(Protocol::CAPABILITY_INPUT_HASHES, $manifest->capabilities, true)) {
+            $result[InputHashesMap::FIELD] = $parts;
+        }
+
+        return $result;
+    }
+
+    /**
      * Validate a reply into a contribution, rejecting anything malformed.
      *
      * @param array<string, mixed> $message
      */
     private function decodeContribution(array $message): ?ScanContribution
     {
-        if (($message['method'] ?? null) !== 'scan/contribution') {
+        if (($message['method'] ?? null) !== Protocol::NOTIFICATION_CONTRIBUTION) {
             return null;
         }
         $params = $message['params'] ?? null;

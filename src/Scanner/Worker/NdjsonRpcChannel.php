@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Scanner\Worker;
 
 use JsonException;
+use Knossos\Scanner\Protocol\Protocol;
 
 /**
  * Newline-delimited JSON-RPC over a worker's pipes.
@@ -19,6 +20,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     private string $stderrBuffer = '';
     private int $stdoutBytes = 0;
     private int $stderrBytes = 0;
+    /** Bytes of `scan/input_hashes` frames this request, counted apart from the output budget. */
+    private int $inputHashesBytes = 0;
     private int $deadline = 0;
 
     /**
@@ -45,6 +48,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->stdoutBytes = 0;
         $this->stderrBuffer = '';
         $this->stderrBytes = 0;
+        $this->inputHashesBytes = 0;
 
         return $this->deadline = hrtime(true) + ($this->limits->requestTimeoutMs * 1_000_000);
     }
@@ -324,8 +328,37 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         if (!is_array($message) || array_is_list($message) || ($message['jsonrpc'] ?? null) !== '2.0') {
             throw new WorkerException('WORKER_FRAME_INVALID', 'Worker emitted an invalid JSON-RPC object.');
         }
+        if (!array_key_exists('id', $message) && ($message['method'] ?? null) === Protocol::NOTIFICATION_INPUT_HASHES) {
+            $this->countInputHashesFrame(strlen($line) + 1);
+        }
 
         return $message;
+    }
+
+    /**
+     * Move one `scan/input_hashes` frame from the output budget to its own.
+     *
+     * The map lists what a request read, which for a TypeScript program is the
+     * whole program however few files the batch names, so charging it to the
+     * output budget would let a large program trip WORKER_OUTPUT_LIMIT and send
+     * the batch into halving that cannot shrink it. Its own budget still bounds
+     * what a worker can make the core hold; exceeding it is a worker fault, not
+     * a batch that was too big.
+     *
+     * A frame is recognised only once it is complete, so the bytes of one
+     * still arriving count as output until then: at most one frame plus one
+     * read chunk, against a budget sized for many batches of contributions.
+     */
+    private function countInputHashesFrame(int $bytes): void
+    {
+        $this->inputHashesBytes += $bytes;
+        if ($this->inputHashesBytes > $this->limits->maxInputHashesBytes) {
+            throw new WorkerException('WORKER_RESPONSE_INVALID', sprintf(
+                'Worker %s frames exceed the %d-byte limit for one scan request.',
+                Protocol::NOTIFICATION_INPUT_HASHES,
+                $this->limits->maxInputHashesBytes,
+            ));
+        }
     }
     /** Buffer stdout, enforcing the byte cap so a flooding worker cannot exhaust memory. */
 
@@ -333,7 +366,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     {
         $this->stdoutBuffer .= $chunk;
         $this->stdoutBytes += strlen($chunk);
-        if ($this->stdoutBytes > $this->limits->maxOutputBytes) {
+        if ($this->stdoutBytes - $this->inputHashesBytes > $this->limits->maxOutputBytes) {
             throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
         }
     }

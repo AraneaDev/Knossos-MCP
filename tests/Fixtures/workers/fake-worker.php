@@ -198,6 +198,19 @@ while (($line = fgets(STDIN)) !== false) {
                 $inputs['src/Other.ts'] = null;
             } elseif ($mode === 'inputs_outside') {
                 $inputs['node_modules/dep/index.d.ts'] = hash('sha256', 'x');
+            } elseif ($mode === 'inputs_parts_honest') {
+                // The honest read sent ahead of the result as a part.
+                notifyInputHashes(['src/Other.ts' => hash('sha256', (string) file_get_contents($other))]);
+            } elseif ($mode === 'inputs_parts_disagree') {
+                // Two reads of one file with different bytes, reported in
+                // different frames: one part, then the result's own field.
+                notifyInputHashes(['src/Other.ts' => hash('sha256', (string) file_get_contents($other))]);
+                $inputs['src/Other.ts'] = hash('sha256', 'swapped while the worker read it');
+            } elseif ($mode === 'inputs_parts_flood') {
+                // More part bytes than the client's budget allows.
+                for ($part = 0; $part < 4; ++$part) {
+                    notifyInputHashes([sprintf('generated/part-%d-%s.ts', $part, str_repeat('x', 2_000)) => null]);
+                }
             }
             $result = ['count' => count($requested)];
             if ($mode !== 'inputs_missing') {
@@ -392,6 +405,16 @@ function notifyContribution(array $contribution): void
         'jsonrpc' => '2.0',
         'method' => 'scan/contribution',
         'params' => $contribution,
+    ]);
+}
+
+/** @param array<string, string|null> $inputHashes */
+function notifyInputHashes(array $inputHashes): void
+{
+    writeMessage([
+        'jsonrpc' => '2.0',
+        'method' => 'scan/input_hashes',
+        'params' => ['input_hashes' => (object) $inputHashes],
     ]);
 }
 

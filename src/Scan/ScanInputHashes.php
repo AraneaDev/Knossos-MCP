@@ -4,10 +4,9 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
-use InvalidArgumentException;
 use Knossos\Scanner\Protocol\Protocol;
-use Knossos\Scanner\Protocol\RelativePath;
 use Knossos\Scanner\Protocol\ScannerManifest;
+use Knossos\Scanner\Worker\InputHashesMap;
 use Knossos\Scanner\Worker\WorkerException;
 
 /**
@@ -26,7 +25,10 @@ use Knossos\Scanner\Worker\WorkerException;
  * exists to prevent.
  *
  * So each scan result may carry `input_hashes`, the hash of every such read, and
- * they are compared here before the request's contributions are kept. The same
+ * they are compared here before the request's contributions are kept. A map too
+ * large for one frame arrives partly in `scan/input_hashes` notifications, which
+ * {@see \Knossos\Scanner\Worker\ScannerProtocolSession} merges into the result's
+ * field before this check sees it. The same
  * stance as {@see ContributionCacheService}'s per-contribution check holds: a
  * hash is evidence of a changed tree whoever sends it, and a hash that cannot be
  * verified is refused rather than trusted. A path discovery never hashed, such as
@@ -37,7 +39,8 @@ use Knossos\Scanner\Worker\WorkerException;
  * into PHP arrays, which turns a numeric-string object key into an int, and
  * an object whose keys are exactly "0", "1", ... into a list that cannot be told
  * apart from a JSON array. Int keys are read back as the path they spelled. A
- * non-empty list is refused as malformed, so a worker reporting a read of
+ * non-empty list is refused as malformed, and so is a merged map that happens
+ * to come out keyed that way, so a worker reporting a read of
  * root-level files named `0` (and `1`, ...) and nothing else degrades its
  * language. That costs a rerun on a tree nobody has; accepting lists instead
  * would let a worker that sends an array of hashes pass unverified.
@@ -65,29 +68,9 @@ final class ScanInputHashes
 
             return;
         }
-        $inputHashes = $result[self::FIELD];
-        // `{}` decodes to an empty array, as does `[]`; both say nothing else
-        // was read. Any other list is not the object the protocol defines (see
-        // the class docblock for the one object that decodes to a list too).
-        if (!is_array($inputHashes) || ($inputHashes !== [] && array_is_list($inputHashes))) {
-            throw self::invalid($manifest, sprintf('sent %s that is not an object; it must be an object keyed by path', self::FIELD));
-        }
         // Shape first, for the whole map, so a malformed entry is reported as
         // such even when an earlier one would have failed the scan.
-        $reads = [];
-        foreach ($inputHashes as $key => $hash) {
-            // A key like "123" arrives as the int 123; it is still that path.
-            $path = (string) $key;
-            try {
-                RelativePath::assertValid($path, self::FIELD . ' key ' . $path);
-            } catch (InvalidArgumentException $error) {
-                throw self::invalid($manifest, 'sent ' . lcfirst($error->getMessage()));
-            }
-            if ($hash !== null && (!is_string($hash) || preg_match('/\A[0-9a-f]{64}\z/', $hash) !== 1)) {
-                throw self::invalid($manifest, sprintf('sent %s for %s that is neither null nor a lowercase SHA-256 hex digest', self::FIELD, $path));
-            }
-            $reads[$path] = $hash;
-        }
+        $reads = InputHashesMap::decode($result[self::FIELD], $manifest->id);
         foreach ($reads as $path => $hash) {
             $path = (string) $path;
             $file = $discoveredByPath[$path] ?? null;
@@ -110,6 +93,6 @@ final class ScanInputHashes
     /** A malformed or unverifiable result, which costs the worker's language rather than the scan. */
     private static function invalid(ScannerManifest $manifest, string $detail): WorkerException
     {
-        return new WorkerException('WORKER_RESPONSE_INVALID', sprintf('%s %s.', $manifest->id, $detail));
+        return InputHashesMap::invalid($manifest->id, $detail);
     }
 }

@@ -57,7 +57,8 @@ Version mismatch is fatal and occurs before project paths are sent.
 
 Accepts a request ID, project context, project-relative added/changed/deleted
 inputs, configuration hashes, and limits. A worker streams zero or more
-`scan/contribution` notifications followed by a final result containing counts.
+`scan/contribution` notifications, and zero or more `scan/input_hashes`
+notifications (below), followed by a final result containing counts.
 
 **One language's files arrive over several `scan` requests on the same
 session.** The line, total-output, and time limits are enforced per request, so
@@ -177,6 +178,49 @@ unverified. A worker that reads root-level project files literally named `0`,
 `1`, and so on, and nothing else, in one request degrades its language for
 that reason alone. In practice this only matters for a project with files
 named that way.
+
+The map can outgrow the one line a result travels on: a type checker reads its
+whole program to check one file, so a request naming one file of a program of
+ten thousand files reports ten thousand entries, about a megabyte, however
+small the batch. A worker whose map may grow that large sends it in parts. Each
+part is a `scan/input_hashes` notification sent during the request, before its
+final result:
+
+```json
+{
+    "jsonrpc": "2.0",
+    "method": "scan/input_hashes",
+    "params": {
+        "input_hashes": {
+            "src/a.ts": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+            "src/b.ts": null
+        }
+    }
+}
+```
+
+A worker may send any number of parts, each an object of the same shape as the
+result field and each well under the line limit; the packaged TypeScript and
+Python workers cap a part at 256 KB of serialized entries. The final result
+still carries `input_hashes`, holding the last part or `{}`, and for a worker
+that declares the capability that field remains the marker that it finished
+reporting: parts followed by a result without the field are refused as a
+missing field. The core merges every part of a request with the result's field
+under the same rule a worker applies to repeated reads: a path two parts, or a
+part and the result, report with different values becomes `null`. Each part is
+validated as the result field is, and a malformed one fails the request as
+`WORKER_RESPONSE_INVALID`. Parts from a worker that does not declare the
+capability are still verified.
+
+Part frames are not counted against the request's output limit, because the
+map's size follows the files a request read rather than the files it named, and
+splitting the batch could not shrink it. They have a budget of their own,
+64 MB per request by default (`WorkerLimits::$maxInputHashesBytes`), sized for
+the largest tree a scan accepts: exceeding it fails the request as
+`WORKER_RESPONSE_INVALID`, which degrades the language and is never retried as
+a smaller batch. A worker whose map is bounded by its batch, such as the
+packaged PHP and Rust workers, which report only the files they were asked
+for, can keep sending the whole map in the result.
 
 `input_hashes` is evidence for this check alone. The core strips it from the
 result before folding the rest into `scanner_metadata`, so it never reaches a

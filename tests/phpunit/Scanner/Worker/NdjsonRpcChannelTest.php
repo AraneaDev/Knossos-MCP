@@ -812,4 +812,100 @@ final class NdjsonRpcChannelTest extends TestCase
         fclose($stdinPair[1]);
         fclose($stderrPair[1]);
     }
+
+    /**
+     * A `scan/input_hashes` frame of exactly $bytes bytes, newline included.
+     */
+    private static function inputHashesFrame(int $bytes): string
+    {
+        $empty = json_encode(['jsonrpc' => '2.0', 'method' => 'scan/input_hashes', 'params' => ['input_hashes' => ['' => null]]]) . "\n";
+        $path = str_repeat('p', $bytes - strlen($empty));
+
+        return json_encode(['jsonrpc' => '2.0', 'method' => 'scan/input_hashes', 'params' => ['input_hashes' => [$path => null]]]) . "\n";
+    }
+
+    /** @return list<array<string, mixed>> */
+    private static function readAll(NdjsonRpcChannel $channel, int $deadline, int $count): array
+    {
+        $messages = [];
+        for ($i = 0; $i < $count; ++$i) {
+            $messages[] = $channel->readMessage($deadline);
+        }
+
+        return $messages;
+    }
+
+    public function testInputHashesFramesAreNotChargedToTheOutputBudget(): void
+    {
+        // Six 10 KB frames against a 20 KB output budget: charged as output they
+        // would fail the request as WORKER_OUTPUT_LIMIT, which halves a batch
+        // that the map's size does not depend on.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 20_000, maxOutputBytes: 20_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 6) . '{"jsonrpc":"2.0","id":1,"result":{}}' . "\n");
+        rewind($process->pipes[1]);
+
+        $messages = self::readAll($channel, $deadline, 7);
+
+        assertSame('scan/input_hashes', $messages[5]['method']);
+        assertSame(1, $messages[6]['id']);
+    }
+
+    public function testOtherNotificationsAreStillChargedToTheOutputBudget(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 20_000, maxOutputBytes: 20_000));
+        $deadline = $channel->beginRequest();
+        $frame = str_replace('scan\\/input_hashes', 'scan\\/input_hashez', self::inputHashesFrame(10_000));
+        fwrite($process->pipes[1], str_repeat($frame, 6));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => self::readAll($channel, $deadline, 6), WorkerException::class);
+
+        assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+    }
+
+    public function testInputHashesFramesBeyondTheirOwnBudgetFailTheRequest(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxInputHashesBytes: 29_999));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 3));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => self::readAll($channel, $deadline, 3), WorkerException::class);
+
+        assertSame('WORKER_RESPONSE_INVALID', $error->diagnosticCode);
+        assertSame('Worker scan/input_hashes frames exceed the 29999-byte limit for one scan request.', $error->getMessage());
+    }
+
+    public function testInputHashesFramesExactlyFillingTheirBudgetPass(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxInputHashesBytes: 30_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 3));
+        rewind($process->pipes[1]);
+
+        assertSame(3, count(self::readAll($channel, $deadline, 3)));
+    }
+
+    public function testEachRequestGetsAFreshInputHashesBudget(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxInputHashesBytes: 20_000));
+        $deadline = hrtime(true) + 5_000_000_000;
+        $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 2));
+        rewind($process->pipes[1]);
+        self::readAll($channel, $deadline, 2);
+
+        $channel->beginRequest();
+        $position = (int) ftell($process->pipes[1]);
+        fwrite($process->pipes[1], str_repeat(self::inputHashesFrame(10_000), 2));
+        fseek($process->pipes[1], $position);
+
+        assertSame(2, count(self::readAll($channel, $deadline, 2)));
+    }
 }
