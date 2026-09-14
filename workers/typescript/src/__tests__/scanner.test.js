@@ -1199,11 +1199,11 @@ describe("input_hashes: the key each read goes under", () => {
 // link retargeted or removed in between. Picked by caller name: the checks
 // before it resolve the same path a varying number of times.
 function withSecondResolution(second, callback) {
-    const realpathSync = fs.realpathSync;
+    const realpathSync = fs.realpathSync.native;
     const readFileSync = fs.readFileSync;
     const readsMade = [];
     const resolve = vi
-        .spyOn(fs, "realpathSync")
+        .spyOn(fs.realpathSync, "native")
         .mockImplementation((file, ...rest) => {
             if (
                 String(file).endsWith("/src/b.ts") &&
@@ -1252,9 +1252,9 @@ describe("input_hashes: a path that changes under the read", () => {
         // refuses it and a.ts's facts are computed without it.
         const root = fixture({ "src/a.ts": A, "src/b.ts": B });
         const outside = join(fs.realpathSync(fixture({ "b.ts": B })), "b.ts");
-        const realpathSync = fs.realpathSync;
+        const realpathSync = fs.realpathSync.native;
         const spy = vi
-            .spyOn(fs, "realpathSync")
+            .spyOn(fs.realpathSync, "native")
             .mockImplementation((file, ...rest) => {
                 const frames = new Error().stack.split("\n");
                 const checker = frames.findIndex((frame) =>
@@ -1477,9 +1477,9 @@ function scanSwapping(calledFrom, swap) {
         "/src/linkdir/c.ts": join(root, "real/c.ts"),
     };
     const swapped = new Set();
-    const realpathSync = fs.realpathSync;
+    const realpathSync = fs.realpathSync.native;
     const spy = vi
-        .spyOn(fs, "realpathSync")
+        .spyOn(fs.realpathSync, "native")
         .mockImplementation((file, ...rest) => {
             const name = Object.keys(targets).find((suffix) =>
                 String(file).endsWith(suffix),
@@ -1557,10 +1557,10 @@ describe("input_hashes: a refused path under a directory swapped for a link", ()
         const importer = 'import { C } from "./sub/c";\nexport const c = C;\n';
         const root = fixture({ "src/a.ts": importer, "src/sub/c.ts": C });
         const outside = fs.realpathSync(fixture({ "c.ts": C }));
-        const realpathSync = fs.realpathSync;
+        const realpathSync = fs.realpathSync.native;
         let swapped = false;
         const spy = vi
-            .spyOn(fs, "realpathSync")
+            .spyOn(fs.realpathSync, "native")
             .mockImplementation((file, ...rest) => {
                 if (
                     !swapped &&
@@ -1585,6 +1585,88 @@ describe("input_hashes: a refused path under a directory swapped for a link", ()
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
             "src/sub/c.ts": null,
+        });
+    });
+});
+
+describe("input_hashes: a link target with `..` after a linked directory", () => {
+    // src/lnk.ts -> d/../c.ts and src/d -> ../deep/dir. The kernel applies the
+    // `..` after following src/d, so a read of src/lnk.ts opens deep/c.ts; a
+    // textual collapse would name src/c.ts, which is present to catch that.
+    const importer = 'import { C } from "./lnk";\nexport const c = C;\n';
+    const DEEP = "export const C = 1;\n";
+    const DECOY = "export const C = 2;\n";
+
+    function dotDotLayout(deep = DEEP) {
+        const root = fixture({
+            "src/a.ts": importer,
+            "src/c.ts": DECOY,
+            "deep/c.ts": deep,
+            "deep/dir/.keep": "",
+        });
+        symlinkSync("../deep/dir", join(root, "src/d"));
+        symlinkSync("d/../c.ts", join(root, "src/lnk.ts"));
+        return root;
+    }
+
+    it("keys a successful read by the file the kernel opened", () => {
+        const root = dotDotLayout();
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "deep/c.ts": sha256(Buffer.from(DEEP)),
+        });
+    });
+
+    it("keys a read that failed after the file was removed by the file the kernel would have opened", () => {
+        const root = dotDotLayout();
+        const native = fs.realpathSync.native;
+        let removed = false;
+        const spy = vi
+            .spyOn(fs.realpathSync, "native")
+            .mockImplementation((file, ...rest) => {
+                if (
+                    !removed &&
+                    String(file).endsWith("/src/lnk.ts") &&
+                    fromRead(new Error().stack.split("\n"))
+                ) {
+                    removed = true;
+                    fs.unlinkSync(join(root, "deep/c.ts"));
+                }
+                return native(file, ...rest);
+            });
+        let result;
+        try {
+            ({ result } = scanWithResult(new TypeScriptScanner(), root, [
+                "src/a.ts",
+            ]));
+        } finally {
+            spy.mockRestore();
+        }
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "deep/c.ts": null,
+        });
+    });
+
+    it("keys a stable over-cap target by that target, not by the file a textual collapse names", () => {
+        const root = dotDotLayout(DEEP + "// padding\n".repeat(40));
+
+        const { result } = scanWithResult(
+            new TypeScriptScanner(),
+            root,
+            ["src/a.ts"],
+            { limits: { max_file_bytes: 300 } },
+        );
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(importer)),
+            "deep/c.ts": null,
         });
     });
 });

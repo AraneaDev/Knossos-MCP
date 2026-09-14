@@ -982,7 +982,7 @@ function readHashedSourceFile(
     const absolute = normalize(path.resolve(readPath));
     let real;
     try {
-        real = normalize(fs.realpathSync(absolute));
+        real = realpathNative(absolute);
     } catch {
         recordRefused(reads, root, absolute);
         return undefined;
@@ -1046,64 +1046,78 @@ function recordRefused(reads, root, absolute) {
 const MAX_SYMLINK_HOPS = 40;
 
 /**
+ * The kernel's resolution of a path, which is what a read follows: each `..`
+ * applies to the directory a link actually led to. Node's JavaScript
+ * fs.realpathSync collapses `..` in a link target as text first, so for
+ * `src/lnk.ts -> d/../c.ts` with `src/d -> ../deep/dir` it names src/c.ts while
+ * a read opens deep/c.ts.
+ */
+function realpathNative(candidate) {
+    return normalize(fs.realpathSync.native(candidate));
+}
+
+/**
+ * realpathNative for a path whose last components may not exist: the kernel's
+ * resolution of the deepest existing ancestor, with the rest appended.
+ */
+function realpathLoose(candidate) {
+    try {
+        return realpathNative(candidate);
+    } catch {
+        const parent = path.dirname(candidate);
+        if (parent === candidate) return normalize(candidate);
+        return `${realpathLoose(parent).replace(/\/$/, "")}/${path.basename(candidate)}`;
+    }
+}
+
+/**
  * Where inside the root the bytes of a refused path would have come from: the
- * key a read of it must go under to be checked against discovery.
+ * key its failed read goes under, so it meets discovery's key for that file.
  *
- * A successful read is keyed by its resolved target, so a refusal has to be
- * keyed the same way, or a linked name (`src/alias.ts`, `src/linkdir/c.ts`)
- * would carry the null while discovery tracks the real file (`src/real.ts`,
- * `real/c.ts`) and the core would skip it as undiscovered. realpath cannot give
- * that key here, because the path is refused exactly when it does not resolve
- * inside the root. So the path is walked one component at a time from the root,
- * following each link while its target stays inside the root:
+ * For a path that resolves inside the root this is its kernel resolution, the
+ * same key a successful read uses. A path is refused exactly when it does not,
+ * though, so the path is followed one link at a time: each step resolves the
+ * link's directory with the kernel and reads the link itself, and a link target
+ * is joined to that directory unchanged, so its `..` is applied by the kernel.
  *
- * - every component resolves inside the root: the fully resolved path, which is
- *   what realpath gives for a file refused only by the byte cap;
- * - a component is a link leading out of the root: that link's in-root location
- *   plus the components after it. It is the place discovery saw a regular file
- *   or directory, if it saw one there, before it was swapped for the link;
- * - a component does not exist, or cannot be examined: its location plus the
- *   components after it, which is where a removed file was.
+ * - The final name is not a link (a regular file, or missing): its location.
+ * - The final name is a link whose target's directory leaves the root: the
+ *   link's location. A chain of links keys to the last one inside the root.
+ * - The path's own directory leaves the root: that directory's in-root
+ *   location, found the same way, plus the name.
  *
- * null only for a path that is not under the root to begin with, which the host
- * never reads as a project file. Any key returned for a stable layout names a
- * link or a missing path, which discovery never reports, so the core ignores it.
+ * null when no step of the path lies inside the root. Any key returned for a
+ * stable layout names a link or a missing path, which discovery never reports,
+ * so the core ignores it, while a discovered file swapped for one mid-scan
+ * fails verification.
  */
 function inRootLocation(root, absolute) {
-    if (!contains(root, absolute)) return null;
-    const pending = path.relative(root, absolute).split(/[\\/]/);
-    let current = root;
-    let hops = 0;
-    while (pending.length > 0) {
-        const name = pending.shift();
-        if (name === "" || name === ".") continue;
-        if (name === "..") {
-            // Only reached through a link target; `current` is already real,
-            // so stepping up lexically is what the filesystem would do.
-            current = normalize(path.dirname(current));
-            if (!contains(root, current)) return null;
-            continue;
+    let current = absolute;
+    let lastLink = null;
+    for (let hops = 0; hops <= MAX_SYMLINK_HOPS; ++hops) {
+        const parent = path.dirname(current);
+        if (parent === current) return lastLink;
+        const name = path.basename(current);
+        const directory = realpathLoose(parent);
+        if (!contains(root, directory)) {
+            const outer = inRootLocation(root, parent);
+            return outer === null ? lastLink : `${outer}/${name}`;
         }
-        const next = normalize(path.join(current, name));
-        const remainder = () => normalize(path.join(next, ...pending));
+        const location = `${directory}/${name}`;
+        if (name === "." || name === "..") {
+            const resolved = realpathLoose(location);
+            return contains(root, resolved) ? resolved : lastLink;
+        }
         let target;
         try {
-            if (!fs.lstatSync(next).isSymbolicLink()) {
-                current = next;
-                continue;
-            }
-            target = fs.readlinkSync(next);
+            target = fs.readlinkSync(location);
         } catch {
-            return remainder();
+            return location;
         }
-        const resolved = normalize(path.resolve(current, target));
-        if (++hops > MAX_SYMLINK_HOPS || !contains(root, resolved)) {
-            return remainder();
-        }
-        pending.unshift(...path.relative(root, resolved).split(/[\\/]/));
-        current = root;
+        lastLink = location;
+        current = path.isAbsolute(target) ? target : `${directory}/${target}`;
     }
-    return current;
+    return lastLink;
 }
 
 /**
@@ -1740,7 +1754,7 @@ function startsWithShebang(text) {
 function validateRoot(input) {
     if (typeof input !== "string" || input.length === 0)
         throw new Error("A project root is required.");
-    const root = normalize(fs.realpathSync(input));
+    const root = realpathNative(input);
     if (!fs.statSync(root).isDirectory())
         throw new Error("Project root is not a directory.");
     return root;
@@ -1769,7 +1783,7 @@ function assertScannablePath(relative) {
 
 function validatedInside(root, relative) {
     assertScannablePath(relative);
-    const real = normalize(fs.realpathSync(path.join(root, relative)));
+    const real = realpathNative(path.join(root, relative));
     if (!contains(root, real))
         throw new Error("Project-relative path escapes the root.");
     return real;
@@ -1780,7 +1794,7 @@ function allowedCompilerPath(root, candidate) {
     if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
     try {
-        return contains(root, normalize(fs.realpathSync(normalized)));
+        return contains(root, realpathNative(normalized));
     } catch {
         return true;
     }
