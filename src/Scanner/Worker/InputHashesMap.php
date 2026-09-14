@@ -63,29 +63,35 @@ final class InputHashesMap
     }
 
     /**
-     * Union two decoded maps of the same request.
+     * Fold one decoded map into a running accumulator, in place.
+     *
+     * `$into` is taken by reference and mutated directly: a request can arrive
+     * as many `scan/input_hashes` parts before its result, and folding each one
+     * into a freshly rebuilt copy of everything merged so far costs a full pass
+     * over the accumulator per part, quadratic in the part count. Writing into
+     * `$into` instead costs one pass over `$more`, so accumulating N parts of
+     * total size M is O(M), not O(M * N). Callers that need this to stay cheap
+     * must pass an owned variable, not an expression such as `$x ?? []`: PHP
+     * cannot bind a by-reference parameter to a non-variable expression, and
+     * would refuse to compile the call.
      *
      * A path both maps name with different values was read more than once with
      * differing results, so at least one of those reads disagrees with
      * discovery or failed; it becomes null, the value that fails the scan for a
      * discovered path. The same value twice is simply that value.
      *
-     * @param array<array-key, string|null> $into
+     * @param array<string, string|null> $into
      * @param array<array-key, string|null> $more
-     * @return array<string, string|null>
+     * @return array<string, string|null> `$into`, returned for chaining
      */
-    public static function merge(array $into, array $more): array
+    public static function merge(array &$into, array $more): array
     {
-        $merged = [];
-        foreach ($into as $path => $hash) {
-            $merged[(string) $path] = $hash;
-        }
         foreach ($more as $path => $hash) {
             $path = (string) $path;
-            $merged[$path] = array_key_exists($path, $merged) && $merged[$path] !== $hash ? null : $hash;
+            $into[$path] = array_key_exists($path, $into) && $into[$path] !== $hash ? null : $hash;
         }
 
-        return $merged;
+        return $into;
     }
 
     /** A malformed map, which costs the worker's language rather than the scan. */

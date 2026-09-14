@@ -119,7 +119,13 @@ final class ScannerProtocolSession
                 $message = $this->channel->readMessage($deadline, $cancelled);
                 if (!array_key_exists('id', $message)) {
                     if (($message['method'] ?? null) === Protocol::NOTIFICATION_INPUT_HASHES) {
-                        $inputHashes = InputHashesMap::merge($inputHashes ?? [], $this->decodeInputHashesPart($message, $manifest));
+                        // Merge mutates an owned variable by reference so that
+                        // accumulating many parts stays linear in their total
+                        // size; `$inputHashes ?? []` would be a new expression
+                        // each time and PHP cannot bind a by-reference
+                        // parameter to it.
+                        $inputHashes ??= [];
+                        InputHashesMap::merge($inputHashes, $this->decodeInputHashesPart($message, $manifest));
                         continue;
                     }
                     $contribution = $this->decodeContribution($message);
