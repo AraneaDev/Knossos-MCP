@@ -52,13 +52,21 @@ final class RegularFileOpener
         return $handle;
     }
 
-    /** @param array<array-key, int>|false $stat */
+    /**
+     * Determine whether a stat result identifies a regular file.
+     *
+     * @param array<array-key, int>|false $stat
+     */
     private static function isRegular(array|false $stat): bool
     {
         return is_array($stat) && (($stat['mode'] ?? 0) & 0o170000) === 0o100000;
     }
 
-    /** @return resource|null */
+    /**
+     * Open a path with non-blocking libc flags when Linux FFI is available.
+     *
+     * @return resource|null
+     */
     private static function openWithFfi(string $path): mixed
     {
         $libc = self::libc();
@@ -81,6 +89,7 @@ final class RegularFileOpener
         return $handle;
     }
 
+    /** Resolve the libc FFI binding once, if this PHP build permits it. */
     private static function libc(): ?object
     {
         if (self::$ffiAttempted) {
@@ -103,7 +112,11 @@ final class RegularFileOpener
         return self::$libc;
     }
 
-    /** @return resource|null */
+    /**
+     * Open and copy a path in a bounded helper process when FFI is unavailable.
+     *
+     * @return resource|null
+     */
     private static function openWithHelper(string $path): mixed
     {
         $helper = <<<'PHP'
