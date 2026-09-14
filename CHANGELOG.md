@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.15.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.14.1...v0.15.0) (2026-09-14)
+
+
+### Features
+
+* **query:** make refresh_if_stale work, and turn it on by default ([#76](https://github.com/AraneaDev/Knossos-MCP/issues/76)) ([6647cc5](https://github.com/AraneaDev/Knossos-MCP/commit/6647cc54a9ba093cde5e2cd0fc735525cdbe5836))
+* **typescript-worker:** report node_modules reads so the scan can verify them at commit ([66faed5](https://github.com/AraneaDev/Knossos-MCP/commit/66faed574962de4f6fe62881c935bef3e1d3ec9b))
+
+
+### Bug Fixes
+
+* **build:** retry pinned tool downloads ([fce07a8](https://github.com/AraneaDev/Knossos-MCP/commit/fce07a85fb276b1dd08f81ac411680b4fc28985f))
+* **build:** use direct pcov codeload URL ([6b0ab60](https://github.com/AraneaDev/Knossos-MCP/commit/6b0ab6026ac24b391c57d7e43c379ad59788671b))
+* **discovery:** read a path swapped for a FIFO as unreadable in the full fingerprint instead of blocking ([d0fe3c0](https://github.com/AraneaDev/Knossos-MCP/commit/d0fe3c04fadf389ef9532d83e84cfa126b0de0c7))
+* **discovery:** report a broken symlink inside the root as broken, not as an escape ([d73de3f](https://github.com/AraneaDev/Knossos-MCP/commit/d73de3fc2bec2505ca554b4f5817670fa74016fc))
+* **python-worker:** bump the worker version to 0.5.1 for its changed input_hashes keys and non-regular module handling ([c5881ab](https://github.com/AraneaDev/Knossos-MCP/commit/c5881aba3a61d68d910589582a2e7c90c6007a35))
+* **python-worker:** key links below node_modules so the scan verifies them at commit ([6ae2230](https://github.com/AraneaDev/Knossos-MCP/commit/6ae223095b52e332c3d85370757dad09d24cdf9a))
+* **python-worker:** refuse a FIFO where a module is expected instead of blocking the request ([5750e25](https://github.com/AraneaDev/Knossos-MCP/commit/5750e2557074219ebc8ca36fdc354cf0192681f1))
+* **quality:** document file opener helpers ([7243185](https://github.com/AraneaDev/Knossos-MCP/commit/724318571b5fe940a8ecccc3e749c42325315142))
+* **quality:** keep drift guard below duplicate budget ([f474ac1](https://github.com/AraneaDev/Knossos-MCP/commit/f474ac16e7d00d12b4d40c9dcad90c164c720d3a))
+* **query:** keep the session brief's identity line when a long path outgrows the budget ([f9324a9](https://github.com/AraneaDev/Knossos-MCP/commit/f9324a96bd5f68afbeab5a6e539519b12e739f51))
+* **scan:** address CodeRabbit review findings ([9dba449](https://github.com/AraneaDev/Knossos-MCP/commit/9dba4498decd23b563cde61c65ef5ebe73994470))
+* **scan:** fail rather than hang when a verified path is swapped for a FIFO ([8f765df](https://github.com/AraneaDev/Knossos-MCP/commit/8f765dfef60c94a9c4a52994fb3bb70559066454))
+* **scan:** refuse facts a worker parsed from bytes discovery did not hash ([#81](https://github.com/AraneaDev/Knossos-MCP/issues/81)) ([728ed1f](https://github.com/AraneaDev/Knossos-MCP/commit/728ed1f6c98fc8c083b04287d4c755c2784f7d43))
+* **scan:** track worker dependency inputs for freshness ([edd9fb1](https://github.com/AraneaDev/Knossos-MCP/commit/edd9fb1ab7132be7c83f3d4dd69ad13d96962d46))
+* **scan:** verify the snapshot the workers read before writing ([#79](https://github.com/AraneaDev/Knossos-MCP/issues/79)) ([b3f6724](https://github.com/AraneaDev/Knossos-MCP/commit/b3f6724e0a0c3ee37142f56d623af88377be14ec))
+* **scan:** verify undiscovered worker reads at commit ([f61b50e](https://github.com/AraneaDev/Knossos-MCP/commit/f61b50e63227618c1605c7fbc1e7b14f50d9d1f3))
+* **scan:** verify worker reads of files discovery never hashed before the scan commits ([b048987](https://github.com/AraneaDev/Knossos-MCP/commit/b048987b66cf81f16f94546b5e0a1d126ac387e9))
+* **typescript-worker:** key file links, FIFOs and top-level node_modules consistently ([2c4c3d5](https://github.com/AraneaDev/Knossos-MCP/commit/2c4c3d5962eac7dc271deb56980759372667ce25))
+* **typescript-worker:** probe a shebang without blocking on a FIFO and state the commit-time rule for undiscovered keys ([64b7d2d](https://github.com/AraneaDev/Knossos-MCP/commit/64b7d2d084ce8c8e1dcc537b4a153a8a2d5f1145))
+* **typescript-worker:** rethrow a stack overflow from host callbacks so it reaches the TS_PROGRAM_TOO_DEEP backstop ([c2bdf47](https://github.com/AraneaDev/Knossos-MCP/commit/c2bdf47fef0a06242cd87ecfa032f952165b6014))
+* **typescript:** scan deep import chains in a thread with a larger stack ([0a4fe19](https://github.com/AraneaDev/Knossos-MCP/commit/0a4fe19a9b89579157004a6d21bf4276b0c0be26))
+
 ## [0.14.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.14.0...v0.14.1) (2026-09-10)
 
 
