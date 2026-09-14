@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -161,5 +161,84 @@ describe("input_hashes: a requested file whose read fails", () => {
             "src/FOO.TS": null,
             "src/bar.ts": sha256("export const bar = 1;\n"),
         });
+    });
+});
+
+describe("input_hashes: a file that grows past the cap before the host reads it", () => {
+    it("reads at most one byte past the cap and reports null", () => {
+        const importer = 'import { B } from "./b";\nexport const a = B;\n';
+        const root = fixture({
+            "src/a.ts": importer,
+            "src/b.ts": "export const B = 1;\n",
+        });
+        const b = join(root, "src/b.ts");
+        const openSync = fs.openSync;
+        const readSync = fs.readSync;
+        const closeSync = fs.closeSync;
+        const descriptors = new Set();
+        let bytesOfB = 0;
+        const opens = vi
+            .spyOn(fs, "openSync")
+            .mockImplementation((file, ...rest) => {
+                const descriptor = openSync(file, ...rest);
+                if (String(file) === b) descriptors.add(descriptor);
+                return descriptor;
+            });
+        const reads = vi
+            .spyOn(fs, "readSync")
+            .mockImplementation((descriptor, ...rest) => {
+                const read = readSync(descriptor, ...rest);
+                if (descriptors.has(descriptor)) bytesOfB += read;
+                return read;
+            });
+        // Descriptor numbers are reused once closed.
+        const closes = vi
+            .spyOn(fs, "closeSync")
+            .mockImplementation((descriptor) => {
+                descriptors.delete(descriptor);
+                return closeSync(descriptor);
+            });
+        let result;
+        try {
+            ({ result } = scan(root, ["src/a.ts"], {
+                limits: { max_file_bytes: 100 },
+                observeHostPath: (stage, absolute) => {
+                    if (stage === "read" && absolute === b)
+                        fs.writeFileSync(b, "x".repeat(1_000_000));
+                },
+            }));
+        } finally {
+            opens.mockRestore();
+            reads.mockRestore();
+            closes.mockRestore();
+        }
+
+        expect(bytesOfB).toBe(101);
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(importer),
+            "src/b.ts": null,
+        });
+    });
+});
+
+describe("the byte cap and the default library", () => {
+    it("reads default-library declaration files whatever the cap", () => {
+        // lib.d.ts is far over a 500-byte cap; capped, `toUpperCase` would not
+        // resolve and the file would carry TS2339 instead of its call edge.
+        const root = fixture({
+            "src/a.ts":
+                'export function f(): string {\n    return "a".toUpperCase();\n}\n',
+        });
+        const contributions = [];
+
+        new TypeScriptScanner().scan(
+            { root, files: ["src/a.ts"], limits: { max_file_bytes: 500 } },
+            (contribution) => contributions.push(contribution),
+        );
+
+        expect(contributions[0].diagnostics).toEqual([]);
+        expect(contributions[0].edges.map((edge) => edge.target)).toContain(
+            "ts:external_method:toUpperCase",
+        );
     });
 });

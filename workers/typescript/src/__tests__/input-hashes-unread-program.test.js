@@ -43,36 +43,57 @@ afterEach(() => {
 });
 
 describe("input_hashes for a program this request did not read", () => {
-    it("reports null for every project file whose SourceFile an earlier request created", () => {
-        // A program whose SourceFiles came from an earlier request's reads must
-        // not vouch for today's bytes with that earlier read's hash. TypeScript
-        // 6.0 never hands such a program back (see the reuse test in
-        // scanner.test.js); this stands in for a compiler that would.
-        const root = fixture({
-            "src/a.ts":
-                'import { B } from "./b";\nexport class A extends B {}\n',
-            "src/b.ts": "export class B {}\n",
-        });
-        const scanner = new TypeScriptScanner();
+    const files = {
+        "src/a.ts": 'import { B } from "./b";\nexport class A extends B {}\n',
+        "src/b.ts": "export class B {}\n",
+    };
+
+    function scanner(root, program) {
+        const instance = new TypeScriptScanner();
+        hook.createProgram = program;
+        return () => {
+            const result = instance.scan(
+                { root, files: ["src/a.ts"] },
+                () => {},
+            );
+            instance.programCache.clear();
+            return result;
+        };
+    }
+
+    it("reports the hash each SourceFile was parsed from when an earlier request created it", () => {
+        // TypeScript 6.0 never hands such a program back (see the reuse test in
+        // scanner.test.js); this stands in for a compiler that would. The facts
+        // come from the earlier read, so that read's hash, bound to the object,
+        // is what describes them: if the file changed since, it disagrees with
+        // what discovery hashed today and the scan fails.
+        const root = fixture(files);
         let stale;
-        hook.createProgram = (createProgram, ...args) => {
+        const scan = scanner(root, (createProgram, ...args) => {
             stale ??= createProgram(...args);
             return stale;
-        };
-        const scan = () => {
-            const contributions = [];
-            const result = scanner.scan({ root, files: ["src/a.ts"] }, (c) =>
-                contributions.push(c),
-            );
-            return { result, contributions };
-        };
+        });
 
         const first = scan();
-        scanner.programCache.clear();
+        writeFileSync(
+            join(root, "src/b.ts"),
+            "export class B { changed = 1; }\n",
+        );
         const second = scan();
 
-        expect(Object.values(first.result.input_hashes)).not.toContain(null);
-        expect(second.result.input_hashes).toEqual({
+        expect(Object.values(first.input_hashes)).not.toContain(null);
+        expect(second.input_hashes).toEqual(first.input_hashes);
+    });
+
+    it("reports null for a SourceFile no read of this worker describes", () => {
+        // A program built by a host other than the worker's own: nothing binds
+        // a hash to its SourceFiles.
+        const root = fixture(files);
+        const scan = scanner(root, (createProgram, { rootNames, options }) =>
+            createProgram({ rootNames, options }),
+        );
+
+        expect(scan().input_hashes).toEqual({
             "src/a.ts": null,
             "src/b.ts": null,
         });

@@ -860,20 +860,19 @@ function scanOnce(scanner, root, files) {
     return Object.fromEntries(contributions.map((c) => [c.owner_key, c]));
 }
 
-// Run `callback` with every fs.readFileSync of a path ending in `suffix`
-// failing as unreadable, the way a permission change after discovery would.
+// Run `callback` with every source read (the host opens the file with
+// fs.openSync) of a path ending in `suffix` failing as unreadable, the way a
+// permission change after discovery would.
 function withUnreadable(suffix, callback) {
-    const readFileSync = fs.readFileSync;
-    const spy = vi
-        .spyOn(fs, "readFileSync")
-        .mockImplementation((file, ...rest) => {
-            if (String(file).endsWith(suffix)) {
-                throw Object.assign(new Error("EACCES: permission denied"), {
-                    code: "EACCES",
-                });
-            }
-            return readFileSync(file, ...rest);
-        });
+    const openSync = fs.openSync;
+    const spy = vi.spyOn(fs, "openSync").mockImplementation((file, ...rest) => {
+        if (String(file).endsWith(suffix)) {
+            throw Object.assign(new Error("EACCES: permission denied"), {
+                code: "EACCES",
+            });
+        }
+        return openSync(file, ...rest);
+    });
     try {
         return callback();
     } finally {
@@ -1035,25 +1034,27 @@ function scanChanging(root, stage, changes, extra = {}, files = ["src/a.ts"]) {
 // order: a string is returned as the file's bytes, `null` fails the read. Reads
 // beyond the list, and of every other path, reach the disk.
 function withReads(suffix, outcomes, callback) {
-    const readFileSync = fs.readFileSync;
+    const openSync = fs.openSync;
     const remaining = [...outcomes];
-    const spy = vi
-        .spyOn(fs, "readFileSync")
-        .mockImplementation((file, ...rest) => {
-            if (String(file).endsWith(suffix) && remaining.length > 0) {
-                const outcome = remaining.shift();
-                if (outcome === null) {
-                    throw Object.assign(
-                        new Error("EACCES: permission denied"),
-                        {
-                            code: "EACCES",
-                        },
-                    );
-                }
-                return Buffer.from(outcome);
+    const served = mkdtempSync(join(tmpdir(), "knossos-ts-served-"));
+    created.push(served);
+    let count = 0;
+    const spy = vi.spyOn(fs, "openSync").mockImplementation((file, ...rest) => {
+        if (String(file).endsWith(suffix) && remaining.length > 0) {
+            const outcome = remaining.shift();
+            if (outcome === null) {
+                throw Object.assign(new Error("EACCES: permission denied"), {
+                    code: "EACCES",
+                });
             }
-            return readFileSync(file, ...rest);
-        });
+            // The host reads through the descriptor, so it is handed one
+            // for a file holding exactly these bytes.
+            const stand = join(served, `read-${count++}`);
+            writeFileSync(stand, outcome);
+            return openSync(stand, ...rest);
+        }
+        return openSync(file, ...rest);
+    });
     try {
         return callback();
     } finally {
@@ -1125,13 +1126,13 @@ describe("input_hashes: programs reused across requests", () => {
         const scanner = new TypeScriptScanner();
         scanWithResult(scanner, root, ["src/a.ts"]);
 
-        const readFileSync = fs.readFileSync;
+        const openSync = fs.openSync;
         const reads = [];
         const spy = vi
-            .spyOn(fs, "readFileSync")
+            .spyOn(fs, "openSync")
             .mockImplementation((file, ...rest) => {
                 reads.push(String(file));
-                return readFileSync(file, ...rest);
+                return openSync(file, ...rest);
             });
         let second;
         try {
@@ -1151,7 +1152,10 @@ describe("input_hashes: programs reused across requests", () => {
 });
 
 describe("input_hashes: the key each read goes under", () => {
-    it("leaves out a module resolution only probed for", () => {
+    it("reports null for each candidate a module resolution probed and found absent", () => {
+        // The import resolves to nothing because no candidate exists, so a
+        // discovered candidate missing for that moment must fail verification.
+        // Discovery never reports an absent path, so a stable tree is unaffected.
         const root = fixture({
             "src/a.ts": 'import { M } from "./missing";\nexport const a = M;\n',
         });
@@ -1160,10 +1164,35 @@ describe("input_hashes: the key each read goes under", () => {
             "src/a.ts",
         ]);
 
-        expect(Object.keys(result.input_hashes)).toEqual(["src/a.ts"]);
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(
+                Buffer.from(
+                    'import { M } from "./missing";\nexport const a = M;\n',
+                ),
+            ),
+            "src/missing.ts": null,
+            "src/missing.tsx": null,
+            "src/missing.d.ts": null,
+            "src/missing.js": null,
+            "src/missing.jsx": null,
+        });
     });
 
-    it("leaves out files under node_modules", () => {
+    it("reports nothing for a candidate a module resolution probed and found present", () => {
+        // The probe read no bytes; the read that follows is what is recorded.
+        const root = fixture({ "src/a.ts": A, "src/b.ts": B });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]);
+
+        expect(result.input_hashes).toEqual({
+            "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": sha256(Buffer.from(B)),
+        });
+    });
+
+    it("leaves out files under node_modules, keying only the absent manifests above them", () => {
         const root = fixture({
             "src/a.ts": 'import { dep } from "dep";\nexport const a = dep;\n',
             "node_modules/dep/package.json":
@@ -1176,7 +1205,11 @@ describe("input_hashes: the key each read goes under", () => {
             "src/a.ts",
         ]);
 
-        expect(Object.keys(result.input_hashes)).toEqual(["src/a.ts"]);
+        expect(Object.keys(result.input_hashes).sort()).toEqual([
+            "package.json",
+            "src/a.ts",
+            "src/package.json",
+        ]);
     });
 
     it("keys an extensionless shebang script by its real path", () => {
@@ -1192,9 +1225,13 @@ describe("input_hashes: the key each read goes under", () => {
         });
     });
 
-    it("keys a file read through a symlink by where its bytes live", () => {
+    it("keys a file read through a symlink by where its bytes live, and by the link", () => {
         // Discovery skips symlinks, so the linked name is not a path the core
-        // tracks; the target is, and it is the file whose bytes were read.
+        // tracks on a stable tree; the target is, and it is the file whose
+        // bytes were read. The link is keyed too, so a discovered src/b.ts
+        // swapped for a link mid-scan is still checked against its own hash;
+        // the resolution probe that found it present records null there, and
+        // the two disagree into null.
         const root = fixture({
             "tsconfig.json": '{"include":["src"]}\n',
             "src/a.ts": A,
@@ -1208,6 +1245,7 @@ describe("input_hashes: the key each read goes under", () => {
 
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
+            "src/b.ts": null,
             "lib/b.ts": sha256(Buffer.from(B)),
         });
     });
@@ -1219,15 +1257,15 @@ const linkOut = (file, outside) => {
     symlinkSync(outside, file);
 };
 
-// Every path fs.readFileSync is asked for while `callback` runs.
+// Every path opened for reading (fs.openSync) while `callback` runs.
 function withReadsRecorded(callback) {
-    const readFileSync = fs.readFileSync;
+    const openSync = fs.openSync;
     const readsMade = [];
     const read = vi
-        .spyOn(fs, "readFileSync")
+        .spyOn(fs, "openSync")
         .mockImplementation((file, ...rest) => {
             readsMade.push(String(file));
-            return readFileSync(file, ...rest);
+            return openSync(file, ...rest);
         });
     try {
         return { ...callback(), readsMade };
@@ -1449,6 +1487,10 @@ const refusedOnRealKeys = {
     "src/a.ts": sha256(Buffer.from(IMPORTER)),
     "src/real.ts": null,
     "real/c.ts": null,
+    // The linked names, as written and at the link.
+    "src/alias.ts": null,
+    "src/linkdir": null,
+    "src/linkdir/c.ts": null,
 };
 
 // Run a scan on a linked layout, turning each real file into what `swap`
@@ -1527,6 +1569,7 @@ describe("input_hashes: a refused path under a directory swapped for a link", ()
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
             "src/sub/c.ts": null,
+            "src/sub": null,
         });
     });
 });
@@ -1558,9 +1601,14 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
             "src/a.ts",
         ]);
 
+        // The links are keyed too; src/d's remaining components hold a `..`.
+        // The probe that found src/lnk.ts present recorded null at them, and
+        // the read's hash disagrees into null.
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
             "deep/c.ts": sha256(Buffer.from(DEEP)),
+            "src/lnk.ts": null,
+            "src/d": null,
         });
     });
 
@@ -1574,6 +1622,8 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
             "deep/c.ts": null,
+            "src/lnk.ts": null,
+            "src/d": null,
         });
     });
 
@@ -1590,6 +1640,8 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
             "deep/c.ts": null,
+            "src/lnk.ts": null,
+            "src/d": null,
         });
     });
 });

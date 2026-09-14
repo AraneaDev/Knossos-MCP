@@ -992,9 +992,14 @@ function decodeLikeTypeScript(buffer) {
  * goes on as if the file did not exist, which changes the facts of every file
  * importing it, so it is recorded as a failed read under the same key.
  *
- * One race is left: the tree can change between the walk and the read. The
- * read then fails, which is recorded, or reads a file other than the one keyed,
- * which the walk cannot see.
+ * The tree can still change between the walk and the read, and the read is
+ * still verified. A read that fails is recorded as null. A read that opens a
+ * file other than the one the walk reached, because a component became a link
+ * in between, hashes the bytes it actually got and records that hash under the
+ * walk's keys, where it disagrees with what discovery hashed for the keyed path
+ * unless the bytes are the same, in which case so are the facts. The read is
+ * bounded to one byte past the cap for the same reason: whatever it opens, it
+ * never reads more than a file the host would accept.
  */
 function readHashedSourceFile(
     root,
@@ -1003,25 +1008,32 @@ function readHashedSourceFile(
     languageVersion,
     scriptKind,
     reads,
+    maxFileBytes,
 ) {
     const absolute = normalize(path.resolve(readPath));
     reads.observe("read", absolute);
     const walked = walkPath(absolute);
+    const library = contains(defaultLibDirectory(), absolute);
     if (
         walked.kind !== "file" ||
-        !(
-            contains(root, walked.location) ||
-            contains(defaultLibDirectory(), absolute)
-        )
+        !(contains(root, walked.location) || library)
     ) {
-        recordWalked(reads, root, walked, null);
+        recordWalked(reads, root, walked, null, absolute);
         return undefined;
     }
     let buffer;
     try {
-        buffer = fs.readFileSync(walked.location);
+        // Default-library declaration files are exempt from the cap, as in
+        // exceedsByteCap.
+        buffer = readBounded(
+            walked.location,
+            library ? Number.MAX_SAFE_INTEGER : maxFileBytes,
+        );
     } catch {
-        recordWalked(reads, root, walked, null);
+        buffer = undefined;
+    }
+    if (buffer === undefined) {
+        recordWalked(reads, root, walked, null, absolute);
         return undefined;
     }
     const contentHash = createHash("sha256").update(buffer).digest("hex");
@@ -1034,8 +1046,33 @@ function readHashedSourceFile(
     );
     parsedContentHashes.set(sourceFile, contentHash);
     reads.created(sourceFile);
-    recordWalked(reads, root, walked, contentHash);
+    recordWalked(reads, root, walked, contentHash, absolute);
     return sourceFile;
+}
+
+/**
+ * Read a file's bytes, or undefined when it holds more than `maxBytes`: at most
+ * one byte past the cap is ever read.
+ */
+function readBounded(file, maxBytes) {
+    const handle = fs.openSync(file, "r");
+    try {
+        const chunks = [];
+        let total = 0;
+        const limit = maxBytes + 1;
+        while (total < limit) {
+            const chunk = Buffer.alloc(Math.min(65_536, limit - total));
+            const read = fs.readSync(handle, chunk, 0, chunk.length, null);
+            if (read === 0) break;
+            chunks.push(
+                read === chunk.length ? chunk : chunk.subarray(0, read),
+            );
+            total += read;
+        }
+        return total > maxBytes ? undefined : Buffer.concat(chunks, total);
+    } finally {
+        fs.closeSync(handle);
+    }
 }
 
 /**
@@ -1057,17 +1094,77 @@ function inputHashKey(root, absolute) {
     return relative;
 }
 
-/** Record a read under the key its walk gives, if it gives one. */
-function recordWalked(reads, root, walked, contentHash) {
+/**
+ * The keys a walk of `asWritten` goes under in `input_hashes`.
+ *
+ * `final` is the key of the location the walk reached (inputKeyLocation).
+ * `linked` holds every other in-root key the walk passed through a link: each
+ * link followed, each link with the components that were still to walk below
+ * it, and the path as written when the walk followed any link. A `..` among
+ * those components could only be applied by the walk, so such a path is left
+ * out, as is anything outside the root or below node_modules.
+ *
+ * Discovery never reports a link and never descends into a linked directory,
+ * so on a stable tree every linked key names a path the core ignores. Mid-scan,
+ * a discovered file swapped for a link (to another file, to a directory, or on
+ * a package's resolved path) is keyed where discovery saw it, so the read or
+ * probe that went through it is checked against discovery's hash.
+ *
+ * @returns {{final: string|null, linked: string[]}}
+ */
+function walkKeys(root, walked, asWritten) {
     const location = inputKeyLocation(root, walked);
-    if (location === null) return;
-    const key = inputHashKey(root, location);
-    if (key !== null) reads.record(key, contentHash);
+    const final = location === null ? null : inputHashKey(root, location);
+    const linked = new Set();
+    const add = (candidate) => {
+        const key = inputHashKey(root, candidate);
+        if (key !== null && key !== final) linked.add(key);
+    };
+    if (
+        walked.links.length > 0 &&
+        asWritten !== undefined &&
+        !normalize(asWritten).split("/").includes("..")
+    ) {
+        add(asWritten);
+    }
+    for (const link of walked.links) {
+        if (!contains(root, link.location)) continue;
+        add(link.location);
+        const rest = link.rest.filter((name) => name !== "" && name !== ".");
+        if (rest.length > 0 && !rest.includes(".."))
+            add(`${link.location}/${rest.join("/")}`);
+    }
+    return { final, linked: [...linked] };
+}
+
+/** Record a read, hashed or failed, under every key its walk gives. */
+function recordWalked(reads, root, walked, contentHash, asWritten) {
+    const { final, linked } = walkKeys(root, walked, asWritten);
+    if (final !== null) reads.record(final, contentHash);
+    for (const key of linked) reads.record(key, contentHash);
 }
 
 /** Record a path the host would not or could not read as a failed read. */
 function recordRefused(reads, root, absolute) {
-    recordWalked(reads, root, walkPath(absolute), null);
+    recordWalked(reads, root, walkPath(absolute), null, absolute);
+}
+
+/**
+ * Record an existence probe whose answer feeds facts, such as a module
+ * resolution candidate or a realpath.
+ *
+ * A probe answering absent, or not a file, records null under every key its
+ * walk gives: the compiler goes on as if the file were not there, so a
+ * discovered file missing for that moment must fail verification. A probe
+ * answering present read no bytes, so it vouches for nothing at the location it
+ * reached, which a read will record; it records null only under the linked
+ * keys, so a discovered path that had become a link is still caught. Discovery
+ * never reports an absent path or a link, so a stable tree is unaffected.
+ */
+function recordProbe(reads, root, walked, present, asWritten) {
+    const { final, linked } = walkKeys(root, walked, asWritten);
+    if (!present && final !== null) reads.record(final, null);
+    for (const key of linked) reads.record(key, null);
 }
 
 // Linux's MAXSYMLINKS: one lookup follows at most this many links, and the
@@ -1224,10 +1321,17 @@ function inputKeyLocation(root, walked) {
 function recordUnreadSourceFiles(root, program, reads) {
     for (const sourceFile of program.getSourceFiles()) {
         if (reads.createdThisRequest(sourceFile)) continue;
-        recordRefused(
+        const absolute = normalize(
+            path.resolve(shebangSourcePath(sourceFile.fileName)),
+        );
+        // The hash its facts were parsed from, bound to the object, when this
+        // worker created it at all; null only when nothing describes it.
+        recordWalked(
             reads,
             root,
-            normalize(path.resolve(shebangSourcePath(sourceFile.fileName))),
+            walkPath(absolute),
+            parsedContentHashes.get(sourceFile) ?? null,
+            absolute,
         );
     }
 }
@@ -1288,13 +1392,48 @@ function createRestrictedProgram(
                 ? ts.ScriptKind.JS
                 : undefined,
             reads,
+            maxFileBytes,
         );
     };
-    host.fileExists = (file) =>
-        allowedCompilerPath(root, file) &&
-        (file.endsWith(SHEBANG_ALIAS_SUFFIX)
-            ? ts.sys.fileExists(shebangSourcePath(file))
-            : ts.sys.fileExists(file));
+    // Module resolution decides an import's target by these answers, so an
+    // in-root answer is recorded (recordProbe).
+    host.fileExists = (file) => {
+        const absolute = normalize(path.resolve(shebangSourcePath(file)));
+        if (contains(defaultLibDirectory(), absolute))
+            return ts.sys.fileExists(absolute);
+        if (!contains(root, absolute)) return false;
+        const walked = walkPath(absolute);
+        const present =
+            walked.kind === "file" && contains(root, walked.location);
+        recordProbe(reads, root, walked, present, absolute);
+        return present;
+    };
+    // Resolution realpaths a package's files before the host is asked for
+    // them, so a link on that path is walked here, where its name is still
+    // known, rather than lost behind the resolved name getSourceFile sees. The
+    // walk follows the resolution: a tree that changed in between gives the
+    // walk a location other than the name resolution returned, and that answer
+    // is recorded as absent, since no single state of the tree describes it.
+    host.realpath = (file) => {
+        let real;
+        try {
+            real = realpathNative(file);
+        } catch {
+            real = normalize(file);
+        }
+        const absolute = normalize(path.resolve(file));
+        if (
+            contains(root, absolute) &&
+            !contains(defaultLibDirectory(), absolute)
+        ) {
+            const walked = walkPath(absolute);
+            const present =
+                (walked.kind === "file" || walked.kind === "directory") &&
+                walked.location === real;
+            recordProbe(reads, root, walked, present, absolute);
+        }
+        return real;
+    };
     host.readFile = (file) =>
         allowedCompilerPath(root, file) && !exceedsByteCap(file, maxFileBytes)
             ? ts.sys.readFile(shebangSourcePath(file))

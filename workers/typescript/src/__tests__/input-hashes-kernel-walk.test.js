@@ -13,7 +13,11 @@ import { TypeScriptScanner } from "../scanner.js";
 // Every layout here is reached through `/// <reference path>`, which hands the
 // host the linked name as written: TypeScript neither probes it with
 // fileExists nor resolves it to a real path first, so the host's own walk of
-// the name is what decides the key.
+// the name is what decides the keys. The read is keyed by the location the
+// walk reached and also by every in-root link it followed (the name as
+// written among them), with the same value: discovery never reports a link, so
+// those keys are ignored on a stable tree, while a discovered file swapped for
+// a link mid-scan is checked against what discovery hashed for it.
 
 const created = [];
 
@@ -83,6 +87,7 @@ describe("input_hashes: a link chain that leaves the root and comes back", () =>
     it("keys a successful read by the in-root file the chain ends at", () => {
         expect(scan(outAndBack())).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": sha256(C),
             "deep/c.ts": sha256(C),
         });
     });
@@ -96,6 +101,7 @@ describe("input_hashes: a link chain that leaves the root and comes back", () =>
 
         expect(hashes).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": null,
             "deep/c.ts": null,
         });
     });
@@ -105,6 +111,7 @@ describe("input_hashes: a link chain that leaves the root and comes back", () =>
 
         expect(hashes).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": null,
             "deep/c.ts": null,
         });
     });
@@ -132,6 +139,7 @@ describe("input_hashes: `..` the kernel cannot apply", () => {
 
         expect(scan(root)).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": null,
             "src/ld": null,
         });
     });
@@ -143,6 +151,7 @@ describe("input_hashes: `..` the kernel cannot apply", () => {
 
         expect(scan(root)).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": null,
             "src/d": null,
         });
     });
@@ -157,8 +166,11 @@ describe("input_hashes: `..` the kernel cannot apply", () => {
         symlinkSync("../gone/dir", join(root, "src/d"));
         symlinkSync("d/../c.ts", join(root, "src/lnk.ts"));
 
+        // src/d's remaining components hold a `..`, so only the link itself.
         expect(scan(root)).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": sha256(C),
+            "src/d": sha256(C),
             "gone/c.ts": sha256(C),
         });
     });
@@ -223,6 +235,7 @@ describe("input_hashes: an absolute link target inside the root", () => {
     it("keys a successful read by the target", () => {
         expect(scan(absoluteLink())).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": sha256(C),
             "lib/b.ts": sha256(C),
         });
     });
@@ -236,6 +249,7 @@ describe("input_hashes: an absolute link target inside the root", () => {
 
         expect(hashes).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": null,
             "lib/b.ts": null,
         });
     });
@@ -245,6 +259,7 @@ describe("input_hashes: an absolute link target inside the root", () => {
 
         expect(hashes).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": null,
             "lib/b.ts": null,
         });
     });
@@ -265,17 +280,28 @@ describe("input_hashes: the kernel's symlink hop limit", () => {
         return root;
     }
 
+    // Every link of the chain, each keyed with the read's value.
+    const links = (count, value) =>
+        Object.fromEntries(
+            Array.from({ length: count }, (_, index) => [
+                `src/l${index}.ts`,
+                value,
+            ]),
+        );
+
     it("follows a chain of 40 links to its file", () => {
         expect(scan(chain(40))).toEqual({
             "src/a.ts": sha256(referrer("l0.ts")),
+            ...links(40, sha256(C)),
             "src/real.ts": sha256(C),
         });
     });
 
     it("stops a chain of 41 links and keys it by the last link followed", () => {
+        // The 41st link, l40, is never followed.
         expect(scan(chain(41))).toEqual({
             "src/a.ts": sha256(referrer("l0.ts")),
-            "src/l39.ts": null,
+            ...links(40, null),
         });
     });
 });
@@ -293,7 +319,10 @@ describe("the compiler host's containment", () => {
         });
         mkdirSync(join(root, "node_modules"));
         symlinkSync(join(outside, "dep"), join(root, "node_modules/dep"));
+        // Sources are opened with fs.openSync, manifests read by TypeScript
+        // with fs.readFileSync; both are watched.
         const readFileSync = fs.readFileSync;
+        const openSync = fs.openSync;
         const readsMade = [];
         const spy = vi
             .spyOn(fs, "readFileSync")
@@ -301,11 +330,18 @@ describe("the compiler host's containment", () => {
                 readsMade.push(String(file));
                 return readFileSync(file, ...rest);
             });
+        const opens = vi
+            .spyOn(fs, "openSync")
+            .mockImplementation((file, ...rest) => {
+                readsMade.push(String(file));
+                return openSync(file, ...rest);
+            });
         let hashes;
         try {
             hashes = scan(root);
         } finally {
             spy.mockRestore();
+            opens.mockRestore();
         }
 
         // Read through the link's name, the manifest's bytes would still come
@@ -313,10 +349,14 @@ describe("the compiler host's containment", () => {
         const throughLink = (file) =>
             file.startsWith(outside) || file.includes("/node_modules/dep/");
         expect(readsMade.filter(throughLink)).toEqual([]);
+        // The package scope lookup probes for manifests that are not there;
+        // nothing below node_modules is keyed.
         expect(hashes).toEqual({
             "src/a.ts": sha256(
                 'import { dep } from "dep";\nexport const a = dep;\n',
             ),
+            "src/package.json": null,
+            "package.json": null,
         });
     });
 });
@@ -369,6 +409,7 @@ describe("input_hashes: a file replaced by a directory", () => {
 
         expect(hashes).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": null,
             "deep/c.ts": null,
         });
     });
@@ -381,6 +422,7 @@ describe("input_hashes: an absolute link target with a doubled leading slash", (
 
         expect(scan(root)).toEqual({
             "src/a.ts": sha256(REFERRER),
+            "src/lnk.ts": sha256(C),
             "q/c.ts": sha256(C),
         });
     });
