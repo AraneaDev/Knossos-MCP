@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -107,6 +108,48 @@ describe("input_hashes: a requested file whose read fails", () => {
         expect(result.input_hashes).toEqual({ "bin/tool": null });
         expect(byOwner["bin/tool"].nodes).toEqual([]);
     });
+
+    it("reports null for an extensionless requested path swapped for a FIFO without blocking", () => {
+        // Opening a FIFO for reading blocks until a writer appears, and the
+        // shebang probe reads synchronously, so a hang would stall the worker
+        // for good. Run in a child process so a hang fails the test instead of
+        // the test runner.
+        const root = fixture({});
+        fs.mkdirSync(join(root, "bin"));
+        expect(spawnSync("mkfifo", [join(root, "bin/tool")]).status).toBe(0);
+        const scanner = new URL("../scanner.js", import.meta.url).href;
+        const script = `
+            const { TypeScriptScanner } = await import(${JSON.stringify(scanner)});
+            const contributions = [];
+            const result = new TypeScriptScanner().scan(
+                { root: ${JSON.stringify(root)}, files: ["bin/tool"] },
+                (contribution) => contributions.push(contribution),
+            );
+            process.stdout.write(JSON.stringify({
+                hashes: result.input_hashes,
+                nodes: contributions.flatMap((c) => c.nodes ?? []),
+                messages: contributions.flatMap((c) =>
+                    (c.diagnostics ?? []).map((d) => d.message),
+                ),
+            }));
+        `;
+
+        const child = spawnSync(
+            process.execPath,
+            ["--input-type=module", "-e", script],
+            { timeout: 20_000, encoding: "utf8" },
+        );
+
+        expect(child.signal).toBeNull();
+        expect(child.status).toBe(0);
+        // A failed read, not a refusal on the shebang: a FIFO opened without
+        // blocking reads as empty, which names no interpreter.
+        expect(JSON.parse(child.stdout)).toEqual({
+            hashes: { "bin/tool": null },
+            nodes: [],
+            messages: [`Not a regular file: ${join(root, "bin/tool")}`],
+        });
+    }, 30_000);
 
     it("emits a requested file swapped for a link to another file under its own key, as a failed read", () => {
         // Reproduction: src/b.ts became a link to src/c.ts. The file was read

@@ -1215,7 +1215,8 @@ function inputHashKey(root, absolute) {
  * below it. The first of those is the path as written, which the host always
  * receives normalised, without a `..`. A `..` among the components below a
  * later link could only be applied by the walk, so such a path is left out, as
- * is anything outside the root or below node_modules.
+ * is anything inputHashKey refuses: the root itself, anything outside it, and
+ * the default library.
  *
  * Discovery never reports a link and never descends into a linked directory,
  * so on a stable tree every linked key names a path discovery did not hash.
@@ -1477,9 +1478,9 @@ function parentDirectory(directory, top) {
  *
  * - A walk that ended at a file, a missing location or a directory inside the
  *   root: that location, the path the read opened or would have opened. A
- *   directory read fails (EISDIR); discovery never reports a directory, so the
- *   key is ignored on a stable tree, while a discovered file replaced by one
- *   mid-scan fails verification.
+ *   directory read fails (EISDIR) and is recorded as null, which the core
+ *   accepts at commit for a path that is not a regular file, while a
+ *   discovered file replaced by one mid-scan fails verification.
  * - Otherwise the last link followed inside the root. A link followed as a
  *   directory component keys the path below it as it was about to be walked
  *   (a discovered `src/sub/c.ts` whose `src/sub` became a link out of the root
@@ -1488,8 +1489,12 @@ function parentDirectory(directory, top) {
  *
  * Every key a stable layout produces this way names either the file the
  * kernel reaches, or a link or a path through one, which discovery never
- * reports and the core ignores. A discovered file changed into one of those
- * mid-scan is keyed where discovery saw it, so it fails verification.
+ * reports. The core verifies such an undiscovered key when the scan commits: a
+ * hash must still match the in-root regular file within the cap that the path
+ * names, and a null is valid only while the path is absent, not a regular
+ * file, a link, or over the cap. A discovered file changed into one of those
+ * mid-scan is keyed where discovery saw it, so it fails verification against
+ * discovery's hash.
  */
 function inputKeyLocation(root, walked) {
     if (walked.kind !== "unresolvable" && contains(root, walked.location)) {
@@ -1560,10 +1565,12 @@ function createRestrictedProgram(
         // A refused path is left out of the program, so the facts of every file
         // that imports or includes it are computed as if it did not exist. It
         // is recorded as a failed read under the key a read of it would have
-        // gone under (walkPath, inputKeyLocation): a stable layout never trips over
-        // that, since discovery reports neither a symlink nor an over-cap file
-        // and the core ignores a path it did not discover, while a discovered
-        // file that became one mid-scan fails verification.
+        // gone under (walkPath, inputKeyLocation). A stable layout never trips
+        // over that null: discovery reports neither a symlink nor an over-cap
+        // file, and the core verifies an undiscovered key at commit, where a
+        // null is valid only for a path that is absent, not a regular file, a
+        // link, or over the cap, which is what a refusal names. A discovered
+        // file that became one mid-scan fails verification against discovery.
         const absolute = normalize(path.resolve(realSourcePath(fileName)));
         reads.observe("load", absolute);
         const refused = () => {
@@ -2246,8 +2253,16 @@ function namesJavaScriptInShebang(absolute) {
     let buffer;
     let read;
     try {
-        const handle = fs.openSync(absolute, "r");
+        // Non-blocking, and checked on the handle, as readBounded does: the
+        // path may have been swapped for a FIFO, whose open would otherwise
+        // block until a writer appears.
+        const handle = fs.openSync(
+            absolute,
+            fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+        );
         try {
+            if (!fs.fstatSync(handle).isFile())
+                throw new Error(`Not a regular file: ${absolute}`);
             buffer = Buffer.alloc(SHEBANG_PROBE_BYTES);
             read = fs.readSync(handle, buffer, 0, SHEBANG_PROBE_BYTES, 0);
         } finally {
