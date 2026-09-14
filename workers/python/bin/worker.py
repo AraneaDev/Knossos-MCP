@@ -11,7 +11,7 @@ import re
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple
+from typing import Any, BinaryIO, NamedTuple
 
 VERSION = "0.5.0"
 EXCLUDED = {
@@ -101,8 +101,29 @@ def read_bounded(path: Path, max_bytes: int) -> bytes:
     A size checked before the read can belong to a file replaced before it, and
     the replacement must not be read unbounded.
     """
-    with path.open("rb") as handle:
+    with open_regular(path) as handle:
         return handle.read(max_bytes + 1)
+
+
+def open_regular(path: Path) -> BinaryIO:
+    """Open ``path`` for binary reading, raising ``OSError`` unless it is a regular file.
+
+    Opened without blocking and checked on the handle: a FIFO's open blocks
+    until a writer appears, which would stall the worker until its request
+    timeout, and a type checked before the open can belong to a path swapped
+    after it. A directory is refused the same way. Every caller already maps
+    ``OSError`` to a failed read.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if os.fstat(descriptor).st_mode & S_IFMT != S_IFREG:
+            raise OSError(f"Not a regular file: {path}")
+        # Blocking again for the read itself; a regular file never waits.
+        os.set_blocking(descriptor, True)
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def names_python_in_shebang(absolute: Path) -> bool:
@@ -118,7 +139,7 @@ def names_python_in_shebang(absolute: Path) -> bool:
     if absolute.suffix:
         return False
     try:
-        with absolute.open("rb") as handle:
+        with open_regular(absolute) as handle:
             first = handle.readline(SHEBANG_PROBE_BYTES)
     except OSError as error:
         # Only ever asked of a path just found to be a regular file, so a failed
@@ -372,9 +393,9 @@ class ProjectModuleIndex:
     def _is_project_file(self, path: Path) -> bool:
         """Whether ``path`` is a module file this index may read.
 
-        A candidate that is absent, not a file, or refused (it links out of the
-        root, it is over the byte cap, or it cannot be examined) is left out of
-        resolution, so every importer's facts are computed as if it did not
+        A candidate that is absent, not a regular file (a FIFO, say), or
+        refused (it links out of the root, it is over the byte cap, or it
+        cannot be examined) is left out of resolution, so every importer's facts are computed as if it did not
         exist; it is recorded as a failed read under the keys a read of it
         would go under. A stable layout never trips over that: discovery
         reports no absent path, symlink or over-cap file, and the core accepts
@@ -386,7 +407,8 @@ class ProjectModuleIndex:
         walked = walk_path(path)
         location = self._in_root_file(walked)
         try:
-            if location is not None and location.stat().st_size <= self.max_bytes:
+            status = None if location is None else location.stat()
+            if status is not None and status.st_mode & S_IFMT == S_IFREG and status.st_size <= self.max_bytes:
                 self._record_probe(walked, True)
                 return True
         except OSError:
@@ -469,11 +491,12 @@ class ProjectModuleIndex:
 # one fails it with ELOOP.
 MAX_SYMLINK_HOPS = 40
 # The file-type bits of ``st_mode``, spelled out rather than imported from
-# ``stat``: three constants do not earn a module dependency, and this file's
+# ``stat``: four constants do not earn a module dependency, and this file's
 # import count is a budgeted maintainability metric.
 S_IFMT = 0o170000
 S_IFDIR = 0o040000
 S_IFLNK = 0o120000
+S_IFREG = 0o100000
 
 
 class PathWalk(NamedTuple):

@@ -697,6 +697,60 @@ PYTHON);
     }
 
     /**
+     * A FIFO where the index expects a module is not a module: opening it for
+     * reading blocks until a writer appears, which would stall the worker until
+     * its request timeout and degrade the language on a tree that is not even
+     * changing. Discovery skips a FIFO, so the index resolves as if the
+     * package were absent: to the same-named module beside it, whose class the
+     * import then names. The FIFO is reported as a failed read. The client's
+     * request timeout bounds a regression to a failure, not a hang.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerTreatsAFifoWhereAModuleIsExpectedAsAbsentWithoutBlocking(): void
+    {
+        if (!function_exists('posix_mkfifo')) {
+            self::markTestSkipped('FIFOs are unavailable here.');
+        }
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/generated/models', 0o777, true);
+        $app = "from generated.models import Model\n\n\nclass App(Model):\n    pass\n";
+        $module = "class Model:\n    pass\n";
+        file_put_contents($root . '/app.py', $app);
+        file_put_contents($root . '/generated/models.py', $module);
+        assertSame(true, posix_mkfifo($root . '/generated/models/__init__.py', 0o600));
+        $client = $this->pythonWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app.py']]));
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            self::assertInputHashesInclude(
+                ['app.py' => hash('sha256', $app), 'generated/models.py' => hash('sha256', $module), 'generated/models/__init__.py' => null],
+                $inputHashes,
+            );
+            self::assertInputHashesVerify($root, $inputHashes, $client->initialize());
+            $undiscovered = ScanInputHashes::verify(['input_hashes' => $inputHashes], $client->initialize(), self::discoveredByPath($root));
+            (new UndiscoveredInputVerifier())->verify((string) realpath($root), $undiscovered, 2_000_000);
+            $codes = [];
+            $bases = [];
+            foreach ($contributions as $contribution) {
+                foreach ($contribution->diagnostics as $diagnostic) {
+                    $codes[] = $diagnostic->code;
+                }
+                foreach ($contribution->edges as $edge) {
+                    if ($edge->kind === 'extends') {
+                        $bases[] = $edge->targetReference;
+                    }
+                }
+            }
+            assertSame([], $codes);
+            assertSame(['py:class:generated.models.Model'], $bases);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * A deeply nested unary expression parses fine (`ast.parse` has its own
      * guard against runaway nesting), but the visitor's recursive descent
      * through `PythonAstFactCollector.collect()` exhausts Python's own
