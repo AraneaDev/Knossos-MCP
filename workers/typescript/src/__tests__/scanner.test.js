@@ -62,6 +62,24 @@ describe("discoverConfigFiles", () => {
 
         expect(discoverConfigFiles(root)).toEqual(["tsconfig.json"]);
     });
+
+    it("keeps excluded directories out of compiler inputs from a broad config", () => {
+        const root = fixture({
+            "tsconfig.json": '{"include":["**/*.ts"]}\n',
+            "src/app.ts": "export const app = true;\n",
+            "site/generated.ts": "export const generated = true;\n",
+            ".worktrees/checkout.ts": "export const checkout = true;\n",
+        });
+
+        const { result } = scanWithResult(new TypeScriptScanner(), root, [
+            "src/app.ts",
+        ]);
+
+        expect(result.input_hashes).not.toHaveProperty("site/generated.ts");
+        expect(result.input_hashes).not.toHaveProperty(
+            ".worktrees/checkout.ts",
+        );
+    });
 });
 
 describe("TypeScriptScanner.scan", () => {

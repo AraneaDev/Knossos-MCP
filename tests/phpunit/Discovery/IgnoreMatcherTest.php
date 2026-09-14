@@ -525,6 +525,25 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('.stryker-tmp/sandbox-1/tsconfig.json'));
     }
 
+    public function testMatchesPathInsideWorktreesSegment(): void
+    {
+        // Nested git worktrees are complete checkouts, not source in the
+        // containing checkout. Including them duplicates manifests and can
+        // make boundary persistence fail on a unique name/source pair.
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('.worktrees/quality-gates/backend/pyproject.toml'));
+    }
+
+    public function testMatchesPathInsideSiteSegment(): void
+    {
+        // Static documentation sites are commonly generated into site/ and can
+        // contain minified assets larger than the scanner's frame limit.
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('site/assets/chunks/app.js'));
+    }
+
     public function testMatchesPathInsideExcludedPrefixPublicBuildExactMatch(): void
     {
         $matcher = new IgnoreMatcher([]);

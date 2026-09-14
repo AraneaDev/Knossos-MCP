@@ -24,7 +24,7 @@ final class WorkerLimitsTest extends TestCase
         $l = new WorkerLimits();
 
         assertSame(30_000, $l->requestTimeoutMs);
-        assertSame(1_000_000, $l->maxLineBytes);
+        assertSame(2_000_000, $l->maxLineBytes);
         assertSame(20_000_000, $l->maxOutputBytes);
         assertSame(100_000, $l->maxStderrBytes);
         assertSame(64_000_000, $l->maxInputHashesBytes);

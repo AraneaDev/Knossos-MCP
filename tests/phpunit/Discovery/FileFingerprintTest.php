@@ -203,6 +203,35 @@ final class FileFingerprintTest extends TestCase
         assertSame(hash('sha256', $contents), $fingerprint->contentHash);
     }
 
+    public function testComputingDistinctFilesDoesNotLeakLinuxFileDescriptors(): void
+    {
+        if (PHP_OS_FAMILY !== 'Linux' || !is_dir('/proc/self/fd')) {
+            $this->markTestSkipped('The descriptor ownership check requires Linux procfs.');
+        }
+
+        $root = sys_get_temp_dir() . '/knossos-fingerprint-fds-' . bin2hex(random_bytes(6));
+        self::assertTrue(mkdir($root, 0o700, true));
+        try {
+            $before = count(glob('/proc/self/fd/*'));
+            for ($i = 0; $i < 1_100; ++$i) {
+                $path = $root . '/' . $i . '.py';
+                file_put_contents($path, "value = {$i}\n");
+                self::assertNotNull(FileFingerprint::compute($path));
+            }
+            $after = count(glob('/proc/self/fd/*'));
+
+            // Allow a small amount of runtime churn, but not one leaked fd per
+            // file. Without closing the libc descriptor behind php://fd, 1,100
+            // distinct files put subsequent worker pipes past FD_SETSIZE.
+            self::assertLessThanOrEqual($before + 16, $after);
+        } finally {
+            foreach (glob($root . '/*') ?: [] as $path) {
+                @unlink($path);
+            }
+            @rmdir($root);
+        }
+    }
+
     public function testConstructorExposesContentHashAndLineCount(): void
     {
         $fingerprint = new FileFingerprint('hash-value', 42);

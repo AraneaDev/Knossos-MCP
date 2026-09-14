@@ -23,6 +23,7 @@ EXCLUDED = {
     ".tox",
     ".mypy_cache",
     ".pytest_cache",
+    ".worktrees",
     "node_modules",
     "vendor",
     # Kept in sync with the authoritative PHP IgnoreMatcher: generated build
@@ -30,12 +31,17 @@ EXCLUDED = {
     ".stryker-tmp",
     "build",
     "dist",
+    "site",
 }
 # Name prefixes for the namespace this tool owns, kept in sync with the PHP
 # IgnoreMatcher. ".knossos" alone is in the set above; a CI job parks a checkout
 # of the analyzer or its snapshot database beside the project under the same
 # convention, and neither is a source root of the project being scanned.
 EXCLUDED_PREFIXES = (".knossos-",)
+# Dependency trees may be read for import resolution even though discovery
+# does not scan them as project-owned source. Generated and tool-owned trees
+# remain blocked at this boundary.
+RESOLUTION_ALLOWED_EXCLUDED = {"node_modules", "vendor"}
 
 
 def is_excluded(name: str) -> bool:
@@ -404,6 +410,18 @@ class ProjectModuleIndex:
         discovered file that became one mid-scan fails verification. An
         accepted candidate is recorded as a probe that found it present.
         """
+        # Discovery does not enter excluded directories, but import resolution
+        # also tries candidates derived from dotted names. Reject those lexical
+        # paths before statting them, so an import such as ``site.foo`` cannot
+        # pull generated output back into the scan through the bare root prefix.
+        try:
+            if any(
+                is_excluded(segment) and segment not in RESOLUTION_ALLOWED_EXCLUDED
+                for segment in path.relative_to(self.root).parts
+            ):
+                return False
+        except ValueError:
+            pass
         walked = walk_path(path)
         location = self._in_root_file(walked)
         try:

@@ -21,7 +21,7 @@ The published schema is
 - `ignores`: at most 100 relative patterns; absolute paths and parent traversal
   are rejected. These add to the built-in exclusions, which cover dependency and
   build directories (`vendor`, `node_modules`, `dist`, `build`, `coverage`,
-  `.stryker-tmp` and the rest) and any directory in this tool's own `.knossos`
+  `.stryker-tmp`, `.worktrees`, `site` and the rest) and any directory in this tool's own `.knossos`
   namespace, `.knossos-src` and `.knossos-ci` included. Built-in exclusions
   apply first and a `!` pattern cannot re-include them.
 - `limits.max_files` and `limits.max_file_bytes`: bounded discovery/worker

@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Scan;
 
 use Knossos\Query\StalenessProbe;
 use Knossos\Scan\ProjectScanService;
+use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
 
@@ -222,7 +223,7 @@ final class FastPathTest extends KnossosTestCase
     }
 
     #[Group('scan')]
-    public function testDegradedLanguageSkipsFastPathSoItsDiagnosticReachesTheGraph(): void
+    public function testDegradedIncrementalScanPreservesTheLastGoodGraph(): void
     {
         $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
         $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/mixed', $root);
@@ -237,15 +238,13 @@ final class FastPathTest extends KnossosTestCase
             $first = $service->scan($root);
             assertSame(['knossos.typescript'], $first->data['degraded_languages']);
 
-            // Nothing changed on disk, so every tally the fast path consults is zero
-            // and the scanner set still matches. Only the degradation guard can stop
-            // it short-circuiting -- and it must, or the error diagnostic this scan
-            // produced would never be reconciled into the graph.
-            $second = $service->scan($root);
+            $activeBefore = (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn();
+            $graphBefore = $this->graphSignature($pdo);
+            $second = captureThrows(fn() => $service->scan($root), WorkerException::class);
 
-            assertSame(false, array_key_exists('fast_path', $second->data));
-            assertSame('incremental', $second->data['mode']);
-            assertSame(['knossos.typescript'], $second->data['degraded_languages']);
+            assertSame('WORKER_DEGRADED_INCREMENTAL', $second->diagnosticCode);
+            assertSame($activeBefore, (string) $pdo->query('SELECT active_scan_id FROM projects LIMIT 1')->fetchColumn());
+            assertSame($graphBefore, $this->graphSignature($pdo));
 
             $rows = $pdo->query("SELECT severity, code, file_id FROM diagnostics WHERE owner_key = 'knossos.typescript'")->fetchAll();
             assertSame(1, count($rows));

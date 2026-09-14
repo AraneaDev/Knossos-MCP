@@ -83,6 +83,15 @@ def test_module_file_rejects_oversized_files(worker: ModuleType, project) -> Non
     assert index.module_file("big") is None
 
 
+def test_module_file_rejects_candidates_below_excluded_directories(worker: ModuleType, project) -> None:
+    root = project({"site/__init__.py": "", "site/generated.py": "class Generated: ...\n"})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    # The bare project-root prefix is still tried for dotted imports even
+    # though discovery never enters site/. Resolution must not reintroduce it.
+    assert index.module_file("site.generated") is None
+
+
 def test_module_declarations_are_parsed_and_memoized(worker: ModuleType, project) -> None:
     root = project(
         {

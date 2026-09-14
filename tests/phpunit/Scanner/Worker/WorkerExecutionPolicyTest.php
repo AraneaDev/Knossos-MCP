@@ -81,7 +81,7 @@ final class WorkerExecutionPolicyTest extends TestCase
 
         assertSame(7_500, $meta['request_timeout_ms']);
         assertSame(120_000, $meta['maximum_request_timeout_ms']);
-        assertSame(1_000_000, $meta['max_line_bytes']);
+        assertSame(2_000_000, $meta['max_line_bytes']);
         assertSame(20_000_000, $meta['max_output_bytes']);
         assertSame(100_000, $meta['max_stderr_bytes']);
         assertSame(4, $meta['max_scan_batch_halvings']);

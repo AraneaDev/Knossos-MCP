@@ -27,7 +27,11 @@ final readonly class WorkerLimits
      */
     public function __construct(
         public int $requestTimeoutMs = WorkerExecutionPolicy::DEFAULT_REQUEST_TIMEOUT_MS,
-        public int $maxLineBytes = 1_000_000,
+        // A single source file can legitimately produce a dense contribution
+        // just over one megabyte (large generated type declarations are a
+        // common example). Keep the frame finite, but leave enough headroom for
+        // those contributions without degrading an otherwise healthy language.
+        public int $maxLineBytes = 2_000_000,
         public int $maxOutputBytes = 20_000_000,
         public int $maxStderrBytes = 100_000,
         public int $maxInputHashesBytes = 64_000_000,

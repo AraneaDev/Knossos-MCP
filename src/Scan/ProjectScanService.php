@@ -8,6 +8,7 @@ use Knossos\Git\DirtyPathResolver;
 use Knossos\Git\GitHeadResolver;
 use Knossos\Query\ResultEnvelope;
 use Knossos\Reconciliation\{FullScanRequest, GraphReconciler, ReconciliationResult};
+use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Store\SqliteGraphRepository;
 use PDO;
 
@@ -107,16 +108,30 @@ final class ProjectScanService implements ProjectScanner
 
             $language = $this->languageRunner->run($plan, $cancellation);
             $stageMilliseconds += $language->stageMilliseconds;
+            // Cancellation wins over fidelity reporting: an abandoned scan
+            // must surface ScanCancelledException, not a worker degradation.
+            $cancellation->throwIfCancelled();
+            // An incremental scan must never reconcile a partial language set:
+            // doing so prunes the last good facts for a worker that failed and
+            // can replace a healthy graph with an empty one. A full scan has no
+            // prior graph to preserve and may still degrade per language, but
+            // an incremental failure is fail-closed so the caller can repair
+            // the worker and retry without data loss.
+            if ($plan->effectiveMode === 'incremental' && $language->workerDiagnostics !== []) {
+                $failed = array_map(
+                    static fn(array $diagnostic): string => ($diagnostic['owner'] ?? 'unknown') . ': ' . ($diagnostic['code'] ?? 'WORKER_FAILED'),
+                    $language->workerDiagnostics,
+                );
+                throw new WorkerException(
+                    'WORKER_DEGRADED_INCREMENTAL',
+                    'Incremental scan aborted to preserve the last good graph. Failed workers: ' . implode(', ', $failed) . '.',
+                );
+            }
             // The workers read every file themselves, so their facts descend
             // from bytes this process never hashed. Discovery's own files are
             // checked before analysis; undiscovered worker inputs are checked at
             // the final write boundary below, after reconciliation preparation.
             //
-            // Cancellation is checked first so a caller who asked to stop still
-            // gets ScanCancelledException: a scan being abandoned has nothing to
-            // report about its own fidelity, and the transports distinguish the
-            // two.
-            $cancellation->throwIfCancelled();
             $validationStarted = hrtime(true);
             $this->snapshotValidator->validateDiscovery($preparation->discovery);
             $stageMilliseconds['snapshot_validation'] = self::elapsedMilliseconds($validationStarted);
