@@ -100,7 +100,7 @@ final readonly class WalkDriftOracle implements DriftOracle
             return null;
         }
         $workerInputs = RecordedWorkerInputs::forScan($this->pdo, $activeScanId);
-        if ($workerInputs === null) {
+        if (!is_array($workerInputs)) {
             return null;
         }
         $tracked = [];
