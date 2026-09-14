@@ -320,3 +320,68 @@ describe("the compiler host's containment", () => {
         });
     });
 });
+
+describe("input_hashes: a file replaced by a directory", () => {
+    // A read of a directory fails (EISDIR). Discovery never reports a
+    // directory, so keying where it stands is safe on a stable tree, and a
+    // discovered file swapped for one mid-scan fails verification.
+    const direct = '/// <reference path="./c.ts" />\nexport const a = 1;\n';
+
+    function swapToDirectory(root, file) {
+        fs.unlinkSync(file);
+        mkdirSync(file);
+        writeFileSync(join(file, "keep.txt"), "");
+        return root;
+    }
+
+    for (const stage of ["load", "read"]) {
+        it(`keys a file replaced by a directory at ${stage} where it was`, () => {
+            const root = fixture({ "src/a.ts": direct, "src/c.ts": C });
+            let pending = true;
+            const scanner = new TypeScriptScanner({
+                observeHostPath: (at, absolute) => {
+                    if (at !== stage || !pending) return;
+                    if (!absolute.endsWith("/src/c.ts")) return;
+                    pending = false;
+                    swapToDirectory(root, join(root, "src/c.ts"));
+                },
+            });
+
+            const hashes = scanner.scan(
+                { root, files: ["src/a.ts"] },
+                () => {},
+            ).input_hashes;
+
+            expect(hashes).toEqual({
+                "src/a.ts": sha256(direct),
+                "src/c.ts": null,
+            });
+        });
+    }
+
+    it("keys a link target replaced by a directory by that target", () => {
+        const root = fixture({ "src/a.ts": REFERRER, "deep/c.ts": C });
+        symlinkSync(join(root, "deep/c.ts"), join(root, "src/lnk.ts"));
+
+        const hashes = scan(root, {
+            onRead: () => swapToDirectory(root, join(root, "deep/c.ts")),
+        });
+
+        expect(hashes).toEqual({
+            "src/a.ts": sha256(REFERRER),
+            "deep/c.ts": null,
+        });
+    });
+});
+
+describe("input_hashes: an absolute link target with a doubled leading slash", () => {
+    it("keys a read through `//ROOT/...` by the file it opens", () => {
+        const root = fixture({ "src/a.ts": REFERRER, "q/c.ts": C });
+        symlinkSync(`/${join(root, "q/c.ts")}`, join(root, "src/lnk.ts"));
+
+        expect(scan(root)).toEqual({
+            "src/a.ts": sha256(REFERRER),
+            "q/c.ts": sha256(C),
+        });
+    });
+});

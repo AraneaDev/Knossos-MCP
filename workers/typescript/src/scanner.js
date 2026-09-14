@@ -1173,8 +1173,11 @@ function parentDirectory(directory, top) {
  * The absolute location a walked read goes under in `input_hashes`, or null
  * when no location the walk passed lies inside the root.
  *
- * - A walk that ended at a file, or at a missing location, inside the
- *   root: that location, the file the read opened or would have opened.
+ * - A walk that ended at a file, a missing location or a directory inside the
+ *   root: that location, the path the read opened or would have opened. A
+ *   directory read fails (EISDIR); discovery never reports a directory, so the
+ *   key is ignored on a stable tree, while a discovered file replaced by one
+ *   mid-scan fails verification.
  * - Otherwise the last link followed inside the root. A link followed as a
  *   directory component keys the path below it as it was about to be walked
  *   (a discovered `src/sub/c.ts` whose `src/sub` became a link out of the root
@@ -1187,10 +1190,7 @@ function parentDirectory(directory, top) {
  * mid-scan is keyed where discovery saw it, so it fails verification.
  */
 function inputKeyLocation(root, walked) {
-    if (
-        (walked.kind === "file" || walked.kind === "missing") &&
-        contains(root, walked.location)
-    ) {
+    if (walked.kind !== "unresolvable" && contains(root, walked.location)) {
         return walked.location;
     }
     const link = walked.links.findLast((entry) =>
