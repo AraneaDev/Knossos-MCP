@@ -121,7 +121,7 @@ final class ProjectScanService implements ProjectScanner
             // two.
             $cancellation->throwIfCancelled();
             $validationStarted = hrtime(true);
-            $this->snapshotValidator->validate($preparation->discovery->files);
+            $this->snapshotValidator->validateDiscovery($preparation->discovery);
             $stageMilliseconds['snapshot_validation'] = self::elapsedMilliseconds($validationStarted);
             $analysisStarted = hrtime(true);
             $analysis = $this->analysisPipeline->analyze($plan, $language->contributions);

@@ -165,12 +165,11 @@ final readonly class LanguageScanRunner
         // rather than to a batch, so a full scan of a mid-sized codebase failed
         // on limits sized for a batch.
         $scanned = $metadata = [];
-        // Every discovered file, not only this language's: a worker may read a
-        // file another language claims, and that read is checked all the same.
-        $discoveredByPath = [];
-        foreach ($plan->preparation->discovery->files as $discoveredFile) {
-            $discoveredByPath[$discoveredFile->relativePath] = $discoveredFile;
-        }
+        // Every path discovery hashed, not only this language's files: a worker
+        // may read a file another language claims, or a manifest such as the
+        // package.json module resolution reads or the Cargo.toml a crate is
+        // named by, and that read is checked all the same.
+        $discoveredByPath = $plan->preparation->discovery->hashedPaths();
         $full = $descriptor->scanBatchSourceBytes;
         $pending = self::queued(self::batches($partition->filesToScan, $descriptor->scanBatchFiles, $full), $full, 0);
         while ($pending !== []) {

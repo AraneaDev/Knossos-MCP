@@ -73,7 +73,7 @@ final class InputHashesPartsScanTest extends KnossosTestCase
 
         assertSame([], $result->workerDiagnostics);
         assertSame(['src/entry.ts'], array_map(static fn($entry): string => $entry->filePath, $result->cacheEntries));
-        $this->assertMapIsLargerThanOneFrameAndMatchesDiscovery($inputHashes, $discovered);
+        $this->assertMapIsLargerThanOneFrameAndMatchesDiscovery($inputHashes, $discovered, [$unit]);
     }
 
     public function testAPythonRequestWhoseMapOutgrowsOneFrameScansWithoutDegrading(): void
@@ -127,14 +127,18 @@ final class InputHashesPartsScanTest extends KnossosTestCase
     /**
      * @param array<array-key, string|null> $inputHashes
      * @param list<DiscoveredFile> $discovered
+     * @param list<ProjectUnit> $units the project units the worker read too, such as its tsconfig
      */
-    private function assertMapIsLargerThanOneFrameAndMatchesDiscovery(array $inputHashes, array $discovered): void
+    private function assertMapIsLargerThanOneFrameAndMatchesDiscovery(array $inputHashes, array $discovered, array $units = []): void
     {
         // Larger than the lowered line cap, so it cannot have arrived on one line.
         assertSame(true, strlen((string) json_encode($inputHashes)) > self::LINE_BYTES);
         $expected = [];
         foreach ($discovered as $file) {
             $expected[$file->relativePath] = $file->contentHash;
+        }
+        foreach ($units as $unit) {
+            $expected[$unit->configPath] = $unit->contentHash;
         }
         $actual = [];
         $probes = [];

@@ -56,6 +56,8 @@ final class TypescriptInputHashesPartsCoverageTest extends KnossosTestCase
             sprintf("import { value0 } from './%s/module-0000';\nexport const entry = value0;\n", substr($directory, 4)),
         );
         $expected['src/entry.ts'] = hash('sha256', (string) file_get_contents($this->root . '/src/entry.ts'));
+        // The tsconfig decides the program, so its read is reported too.
+        $expected['tsconfig.json'] = hash('sha256', (string) file_get_contents($this->root . '/tsconfig.json'));
 
         $client = $this->typescriptWorkerClient();
         $contributions = iterator_to_array($client->scan([

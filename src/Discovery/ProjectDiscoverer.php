@@ -44,6 +44,7 @@ final readonly class ProjectDiscoverer
         $root = $this->rootGuard->resolve($requestedRoot);
         $files = [];
         $units = [];
+        $unparsedManifestHashes = [];
         $diagnostics = [];
         $stack = [$root];
         $inputCount = 0;
@@ -207,6 +208,10 @@ final readonly class ProjectDiscoverer
                     $unit = $this->readUnit($unitKind, $relative, $absolute, $contentHash, $buffer, $diagnostics);
                     if ($unit !== null) {
                         $units[] = $unit;
+                    } elseif ($buffer !== null) {
+                        // Read and hashed, but not a unit: a worker can still
+                        // read these bytes, so their hash is kept to check it by.
+                        $unparsedManifestHashes[$relative] = $contentHash;
                     }
                 }
             }
@@ -233,6 +238,7 @@ final readonly class ProjectDiscoverer
             $diagnostics,
             hash('sha256', implode("\n", $inputParts)),
             hash('sha256', implode("\n", $configParts)),
+            $unparsedManifestHashes,
         );
     }
 

@@ -288,20 +288,23 @@ one does.
 - **Reads that disagree** about one key within a request, in hash or in
   whether they succeeded, go under that key as `null`.
 
-The core ignores any key that is not a discovered file, so an extra `null` for
-a path discovery does not track is always safe. A key that names a discovered
-file with the wrong value is not: it fails every scan of that tree.
+The core checks every path discovery hashed: the discovered source files, and
+the project units beside them, the manifests and configuration files such as
+`package.json`, `tsconfig.json`, `Cargo.toml`, `pyproject.toml` and
+`composer.json` (a manifest discovery read but could not parse is checked too).
+Record a read of one of those like any other read: the hash of its raw bytes
+under the walk's keys, or `null` when the read failed or went over the cap. The
+core ignores any other key, so an extra `null` for a path discovery does not
+track is always safe. A key that names a checked path with the wrong value is
+not: it fails every scan of that tree. After every worker has returned, the
+core also re-hashes each of those paths, units included, and fails the scan
+when one no longer matches.
 
 #### Known limits
 
 - A file that discovery never reported, created and removed while a request
   reads it, is not verified. The core checks only paths discovery tracked, so
   a transient file that fed facts leaves no entry it can compare.
-- Manifests and configuration files a worker reads for itself, such as
-  `Cargo.toml`, `tsconfig.json` or a `package.json` module resolution reads,
-  are tracked by discovery as project units rather than as files. The core
-  ignores keys for them, so one that changes and changes back while a request
-  reads it is not verified, whatever the worker records.
 - On a case-insensitive volume, a worker's key and discovery's path can spell
   the same file differently. The core compares paths exactly, so such a read
   is ignored rather than checked.
