@@ -93,6 +93,23 @@ final class UndiscoveredInputVerifierTest extends KnossosTestCase
         $this->assertFails(['generated' => hash('sha256', '')], 'generated');
     }
 
+    /** Opening a FIFO blocks until a writer appears, so a swap for one must fail the scan, not hang it. */
+    public function testAFifoFailsAgainstAHashWithoutBlocking(): void
+    {
+        $this->fifo('pipe.d.ts');
+
+        $this->assertFails(['pipe.d.ts' => hash('sha256', '')], 'pipe.d.ts');
+    }
+
+    public function testAFifoIsConsistentWithAFailedReadWithoutBlocking(): void
+    {
+        $this->fifo('pipe.d.ts');
+
+        $this->verify(['pipe.d.ts' => null]);
+
+        assertSame('fifo', filetype($this->root . '/pipe.d.ts'));
+    }
+
     public function testADirectoryIsConsistentWithAFailedRead(): void
     {
         $this->verify(['node_modules/dep' => null]);
@@ -224,6 +241,13 @@ final class UndiscoveredInputVerifierTest extends KnossosTestCase
 
         assertSame(ScanSnapshotChangedException::inputChangedAfterRead($path)->getMessage(), $error->getMessage());
         assertContains($path . ' was read during the scan', $error->getMessage());
+    }
+
+    private function fifo(string $relativePath): void
+    {
+        if (!function_exists('posix_mkfifo') || !posix_mkfifo($this->root . '/' . $relativePath, 0o600)) {
+            self::markTestSkipped('FIFOs are unavailable here.');
+        }
     }
 
     private function hashOf(string $relativePath): string

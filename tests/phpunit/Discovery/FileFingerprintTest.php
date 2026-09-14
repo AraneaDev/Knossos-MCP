@@ -248,6 +248,23 @@ final class FileFingerprintTest extends TestCase
         assertSame(null, FileFingerprint::contentHashOf(sys_get_temp_dir() . '/knossos-absent-' . bin2hex(random_bytes(6))));
     }
 
+    /** A FIFO would block the open until a writer appears; a directory yields no bytes. Neither is a file's content. */
+    public function testItReturnsNullForAPathThatIsNotARegularFileWithoutBlocking(): void
+    {
+        $directory = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($directory);
+        try {
+            assertSame(null, FileFingerprint::contentHashOf($directory));
+            if (!function_exists('posix_mkfifo') || !posix_mkfifo($directory . '/pipe', 0o600)) {
+                self::markTestSkipped('FIFOs are unavailable here.');
+            }
+            assertSame(null, FileFingerprint::contentHashOf($directory . '/pipe'));
+        } finally {
+            @unlink($directory . '/pipe');
+            rmdir($directory);
+        }
+    }
+
     public function testClassIsFinalAndReadonly(): void
     {
         $reflection = new \ReflectionClass(FileFingerprint::class);

@@ -79,16 +79,45 @@ final readonly class FileFingerprint
      * about 1.4x this. That is a real cost on a pass a scan pays for every file
      * it discovered.
      *
-     * Null means the bytes could not be read, never "it matched".
+     * Null means the bytes could not be read, never "it matched". A path that
+     * is not a regular file, such as a directory or a FIFO, is null too: a
+     * directory yields no bytes and would hash like an empty file, and opening
+     * a FIFO blocks until a writer appears, which would hang the scan re-reading
+     * a file swapped for one instead of failing it.
      */
     public static function contentHashOf(string $absolutePath): ?string
     {
+        // The type is asked before the open, since the open itself is what
+        // blocks on a FIFO. The stat cache is dropped for this path first: a
+        // long-running server may have stat()ed it before it was swapped.
+        clearstatcache(true, $absolutePath);
+        if (!self::isRegular(@stat($absolutePath))) {
+            return null;
+        }
         // Suppressed, not guarded by is_readable(): a check followed by a read
         // is two moments, and only the read's own failure says what this call
-        // actually got.
-        $hash = @hash_file('sha256', $absolutePath);
+        // actually got. Checked again on the handle for a swap after the stat.
+        $handle = @fopen($absolutePath, 'rb');
+        if ($handle === false) {
+            return null;
+        }
+        try {
+            if (!self::isRegular(fstat($handle))) {
+                return null;
+            }
+            $context = hash_init('sha256');
+            hash_update_stream($context, $handle);
 
-        return $hash === false ? null : $hash;
+            return hash_final($context);
+        } finally {
+            fclose($handle);
+        }
+    }
+
+    /** @param array<array-key, int>|false $stat */
+    private static function isRegular(array|false $stat): bool
+    {
+        return is_array($stat) && (($stat['mode'] ?? 0) & 0o170000) === 0o100000;
     }
 
     /**

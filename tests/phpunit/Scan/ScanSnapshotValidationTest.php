@@ -259,6 +259,34 @@ final class ScanSnapshotValidationTest extends KnossosTestCase
      * same open() for every user, and quietly, so it also keeps the suite's
      * fail-on-warning contract intact.
      */
+    /**
+     * A discovered file swapped for a FIFO while the scan ran. Opening a FIFO
+     * blocks until a writer appears, so a read that does not check the file
+     * type first hangs the scan instead of failing it.
+     */
+    #[Group('scan')]
+    public function testAFileReplacedByAFifoAbortsTheScanWithoutBlocking(): void
+    {
+        $root = $this->tempRootWithFile('src/Pipe.php', "<?php\n");
+        try {
+            $path = $root . '/src/Pipe.php';
+            $discovered = $this->discoveredFile($root, 'src/Pipe.php');
+            unlink($path);
+            if (!function_exists('posix_mkfifo') || !posix_mkfifo($path, 0o600)) {
+                self::markTestSkipped('FIFOs are unavailable here.');
+            }
+
+            $error = captureThrows(
+                fn() => (new ScanSnapshotValidator())->validate([$discovered]),
+                ScanSnapshotChangedException::class,
+            );
+
+            assertSame(ScanSnapshotChangedException::unreadable('src/Pipe.php')->getMessage(), $error->getMessage());
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('scan')]
     public function testUnreadablePathAbortsTheScanWithItsOwnWording(): void
     {
