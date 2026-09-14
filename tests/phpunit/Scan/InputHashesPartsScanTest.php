@@ -116,12 +116,19 @@ final class InputHashesPartsScanTest extends KnossosTestCase
             $expected[$file->relativePath] = $file->contentHash;
         }
         $actual = [];
+        $probes = [];
         foreach ($inputHashes as $path => $hash) {
-            $actual[(string) $path] = $hash;
+            if (array_key_exists((string) $path, $expected)) {
+                $actual[(string) $path] = $hash;
+            } else {
+                // Candidates probed and found absent, which discovery never reports.
+                $probes[] = $hash;
+            }
         }
         ksort($expected);
         ksort($actual);
         assertSame($expected, $actual);
+        assertSame([], array_values(array_filter($probes, static fn(mixed $hash): bool => $hash !== null)));
     }
 
     private function write(string $relativePath, string $contents, string $language): DiscoveredFile
