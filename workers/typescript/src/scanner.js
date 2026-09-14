@@ -1018,7 +1018,7 @@ function readHashedSourceFile(
         walked.kind !== "file" ||
         !(contains(root, walked.location) || library)
     ) {
-        recordWalked(reads, root, walked, null, absolute);
+        recordWalked(reads, root, walked, null);
         return undefined;
     }
     let buffer;
@@ -1033,7 +1033,7 @@ function readHashedSourceFile(
         buffer = undefined;
     }
     if (buffer === undefined) {
-        recordWalked(reads, root, walked, null, absolute);
+        recordWalked(reads, root, walked, null);
         return undefined;
     }
     const contentHash = createHash("sha256").update(buffer).digest("hex");
@@ -1046,7 +1046,7 @@ function readHashedSourceFile(
     );
     parsedContentHashes.set(sourceFile, contentHash);
     reads.created(sourceFile);
-    recordWalked(reads, root, walked, contentHash, absolute);
+    recordWalked(reads, root, walked, contentHash);
     return sourceFile;
 }
 
@@ -1095,14 +1095,15 @@ function inputHashKey(root, absolute) {
 }
 
 /**
- * The keys a walk of `asWritten` goes under in `input_hashes`.
+ * The keys a walk goes under in `input_hashes`.
  *
  * `final` is the key of the location the walk reached (inputKeyLocation).
  * `linked` holds every other in-root key the walk passed through a link: each
- * link followed, each link with the components that were still to walk below
- * it, and the path as written when the walk followed any link. A `..` among
- * those components could only be applied by the walk, so such a path is left
- * out, as is anything outside the root or below node_modules.
+ * link followed, and each link with the components that were still to walk
+ * below it. The first of those is the path as written, which the host always
+ * receives normalised, without a `..`. A `..` among the components below a
+ * later link could only be applied by the walk, so such a path is left out, as
+ * is anything outside the root or below node_modules.
  *
  * Discovery never reports a link and never descends into a linked directory,
  * so on a stable tree every linked key names a path the core ignores. Mid-scan,
@@ -1112,7 +1113,7 @@ function inputHashKey(root, absolute) {
  *
  * @returns {{final: string|null, linked: string[]}}
  */
-function walkKeys(root, walked, asWritten) {
+function walkKeys(root, walked) {
     const location = inputKeyLocation(root, walked);
     const final = location === null ? null : inputHashKey(root, location);
     const linked = new Set();
@@ -1120,13 +1121,6 @@ function walkKeys(root, walked, asWritten) {
         const key = inputHashKey(root, candidate);
         if (key !== null && key !== final) linked.add(key);
     };
-    if (
-        walked.links.length > 0 &&
-        asWritten !== undefined &&
-        !normalize(asWritten).split("/").includes("..")
-    ) {
-        add(asWritten);
-    }
     for (const link of walked.links) {
         if (!contains(root, link.location)) continue;
         add(link.location);
@@ -1138,15 +1132,15 @@ function walkKeys(root, walked, asWritten) {
 }
 
 /** Record a read, hashed or failed, under every key its walk gives. */
-function recordWalked(reads, root, walked, contentHash, asWritten) {
-    const { final, linked } = walkKeys(root, walked, asWritten);
+function recordWalked(reads, root, walked, contentHash) {
+    const { final, linked } = walkKeys(root, walked);
     if (final !== null) reads.record(final, contentHash);
     for (const key of linked) reads.record(key, contentHash);
 }
 
 /** Record a path the host would not or could not read as a failed read. */
 function recordRefused(reads, root, absolute) {
-    recordWalked(reads, root, walkPath(absolute), null, absolute);
+    recordWalked(reads, root, walkPath(absolute), null);
 }
 
 /**
@@ -1161,8 +1155,8 @@ function recordRefused(reads, root, absolute) {
  * keys, so a discovered path that had become a link is still caught. Discovery
  * never reports an absent path or a link, so a stable tree is unaffected.
  */
-function recordProbe(reads, root, walked, present, asWritten) {
-    const { final, linked } = walkKeys(root, walked, asWritten);
+function recordProbe(reads, root, walked, present) {
+    const { final, linked } = walkKeys(root, walked);
     if (!present && final !== null) reads.record(final, null);
     for (const key of linked) reads.record(key, null);
 }
@@ -1331,7 +1325,6 @@ function recordUnreadSourceFiles(root, program, reads) {
             root,
             walkPath(absolute),
             parsedContentHashes.get(sourceFile) ?? null,
-            absolute,
         );
     }
 }
@@ -1405,7 +1398,7 @@ function createRestrictedProgram(
         const walked = walkPath(absolute);
         const present =
             walked.kind === "file" && contains(root, walked.location);
-        recordProbe(reads, root, walked, present, absolute);
+        recordProbe(reads, root, walked, present);
         return present;
     };
     // Resolution realpaths a package's files before the host is asked for
@@ -1430,7 +1423,7 @@ function createRestrictedProgram(
             const present =
                 (walked.kind === "file" || walked.kind === "directory") &&
                 walked.location === real;
-            recordProbe(reads, root, walked, present, absolute);
+            recordProbe(reads, root, walked, present);
         }
         return real;
     };
