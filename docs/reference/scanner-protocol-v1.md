@@ -352,8 +352,9 @@ really failed or found nothing.
 
 `input_hashes` is evidence for this check alone. The core strips it from the
 result before folding the rest into `scanner_metadata`, so it never reaches a
-scan report and is never summed or otherwise merged across a language's
-requests.
+scan report and is never summed into that metadata. It is compared across
+requests instead: the same key reported with two values by two requests, of
+one language or of different languages, fails the scan as a conflict.
 
 Required fact properties are defined by the DTOs under
 `src/Scanner/Protocol`. Paths are project-relative, source lines are one-based,
