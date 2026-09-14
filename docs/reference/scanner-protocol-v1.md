@@ -42,7 +42,12 @@ scanner manifest:
     "output_schema_version": "1.0",
     "languages": ["typescript", "javascript"],
     "file_extensions": ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
-    "capabilities": ["project_program", "partial_ast", "content_hash", "input_hashes"]
+    "capabilities": [
+        "project_program",
+        "partial_ast",
+        "content_hash",
+        "input_hashes"
+    ]
 }
 ```
 
