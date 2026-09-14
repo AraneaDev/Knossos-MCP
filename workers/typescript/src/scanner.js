@@ -166,10 +166,12 @@ export class TypeScriptScanner {
             params.files,
             params.limits,
         );
+        const reads = new InputReadRecorder(this.observeHostPath);
         // Emitted before anything else so a file this worker cannot read still
         // gets its own contribution: raising it to the request would discard the
         // facts every other file in the batch contributes.
         for (const rejection of rejected) {
+            if (rejection.failedRead) reads.record(rejection.relative, null);
             emit(
                 unscannableContribution(rejection.relative, rejection.message),
             );
@@ -178,7 +180,6 @@ export class TypeScriptScanner {
         const configPaths = configFilesForScan(root, params.config_files);
         const maxFileBytes = maxFileBytesFrom(params.limits);
         const emitted = new Set();
-        const reads = new InputReadRecorder(this.observeHostPath);
         let programs = 0;
         let programsReused = 0;
 
@@ -252,6 +253,14 @@ export class TypeScriptScanner {
         for (const relative of requested) {
             const key = normalize(relative);
             if (emitted.has(key)) continue;
+            // A file the host was asked for and could not read was recorded
+            // there. One the compiler never asked for is recorded here only if
+            // it is no longer readable as itself: a stable file TypeScript
+            // simply does not load (such as `FOO.TS`, whose upper-case
+            // extension it does not recognise) must not fail every scan.
+            if (!readableAsItself(root, key, maxFileBytes)) {
+                reads.record(key, null);
+            }
             emit(
                 unscannableContribution(
                     key,
@@ -1703,6 +1712,31 @@ function exceedsByteCap(fileName, maxFileBytes) {
     }
 }
 
+/**
+ * Whether a requested path is still an in-root regular file within the byte
+ * cap, reached without following a link.
+ */
+function readableAsItself(root, relative, maxFileBytes) {
+    const absolute = `${root}/${relative}`;
+    const walked = walkPath(absolute);
+    if (walked.kind !== "file" || walked.location !== absolute) return false;
+    try {
+        return fs.statSync(absolute).size <= maxFileBytes;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * A requested file the filesystem would not let the worker read as that file.
+ * See validateRequestedFiles.
+ */
+class UnreadableInput extends Error {}
+
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+
 function validateRequestedFiles(root, files, limits = {}) {
     if (
         !Array.isArray(files) ||
@@ -1722,6 +1756,14 @@ function validateRequestedFiles(root, files, limits = {}) {
     // A path this worker refuses, or a file that vanished between discovery and
     // scan, is reported per file rather than raised: only a request that cannot
     // be interpreted at all (checked above) is fatal.
+    //
+    // A rejection is either a refusal by policy (an extension or shebang this
+    // worker does not scan), which says nothing about the tree, or a read the
+    // filesystem refused: the path is gone, is not a regular file, is over the
+    // byte cap, or resolves somewhere other than where it was requested. The
+    // second kind is marked `failedRead`, because the facts-free contribution
+    // standing in for the file must not pass verification as if it had been
+    // read.
     const accepted = [];
     const rejected = [];
     for (const relative of files) {
@@ -1729,21 +1771,43 @@ function validateRequestedFiles(root, files, limits = {}) {
         // attribute a diagnostic to, and echoing it into a contribution would
         // emit an owner key the graph rejects anyway.
         assertScannablePath(relative);
+        const requested = normalize(relative);
         try {
-            const absolute = validatedInside(root, relative);
+            let absolute;
+            try {
+                absolute = validatedInside(root, relative);
+            } catch (error) {
+                throw new UnreadableInput(errorMessage(error));
+            }
+            // Discovery never follows a link, so a requested path always names
+            // its own file. One that now resolves elsewhere is read as another
+            // file, whose facts must not stand in for this one's, nor be
+            // emitted under the other file's key.
+            if (normalize(path.relative(root, absolute)) !== requested)
+                throw new UnreadableInput(
+                    `TypeScript input no longer resolves to itself: ${relative}`,
+                );
             if (
                 !SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()) &&
                 !namesJavaScriptInShebang(absolute)
             )
                 throw new Error(`Unsupported TypeScript input: ${relative}`);
-            const stat = fs.statSync(absolute);
+            let stat;
+            try {
+                stat = fs.statSync(absolute);
+            } catch (error) {
+                throw new UnreadableInput(errorMessage(error));
+            }
             if (!stat.isFile() || stat.size > maxFileBytes)
-                throw new Error(`TypeScript input exceeds limits: ${relative}`);
-            accepted.push(normalize(path.relative(root, absolute)));
+                throw new UnreadableInput(
+                    `TypeScript input exceeds limits: ${relative}`,
+                );
+            accepted.push(requested);
         } catch (error) {
             rejected.push({
-                relative: normalize(relative),
-                message: error instanceof Error ? error.message : String(error),
+                relative: requested,
+                message: errorMessage(error),
+                failedRead: error instanceof UnreadableInput,
             });
         }
     }
@@ -1809,8 +1873,10 @@ function namesJavaScriptInShebang(absolute) {
         } finally {
             fs.closeSync(handle);
         }
-    } catch {
-        return false;
+    } catch (error) {
+        // Only ever asked of a path that just resolved, so a failed read is the
+        // filesystem's answer, not this script's interpreter.
+        throw new UnreadableInput(errorMessage(error));
     }
 
     return (
