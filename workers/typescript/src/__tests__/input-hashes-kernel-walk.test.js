@@ -361,6 +361,72 @@ describe("the compiler host's containment", () => {
     });
 });
 
+describe("host.readFile: the byte cap on files it reads (package.json and similar)", () => {
+    it("reads at most one byte past the cap for a manifest that grows just as it is opened", () => {
+        // Module resolution asks the host to read node_modules/dep/package.json
+        // for its `types` field. A stat-then-read (an exceedsByteCap check,
+        // then an unbounded ts.sys.readFile) leaves a window between the two
+        // where the file can grow past the cap: the check passes against the
+        // small size, and the read that follows then reads the grown file in
+        // full. Growing the file the moment it is opened, rather than after a
+        // separate stat, reproduces that window without depending on which
+        // check (if any) ran first.
+        const root = fixture({
+            "src/a.ts": 'import { dep } from "dep";\nexport const a = dep;\n',
+            "node_modules/dep/package.json":
+                '{"name":"dep","types":"index.ts"}\n',
+            "node_modules/dep/index.ts": "export const dep = 1;\n",
+        });
+        const manifest = join(root, "node_modules/dep/package.json");
+        const openSync = fs.openSync;
+        const readSync = fs.readSync;
+        const closeSync = fs.closeSync;
+        const descriptors = new Set();
+        let bytesRead = 0;
+        let grown = false;
+        const opens = vi
+            .spyOn(fs, "openSync")
+            .mockImplementation((file, ...rest) => {
+                if (String(file) === manifest && !grown) {
+                    grown = true;
+                    fs.writeFileSync(manifest, "x".repeat(2_000_000));
+                }
+                const descriptor = openSync(file, ...rest);
+                if (String(file) === manifest) descriptors.add(descriptor);
+                return descriptor;
+            });
+        const reads = vi
+            .spyOn(fs, "readSync")
+            .mockImplementation((descriptor, ...rest) => {
+                const read = readSync(descriptor, ...rest);
+                if (descriptors.has(descriptor)) bytesRead += read;
+                return read;
+            });
+        const closes = vi
+            .spyOn(fs, "closeSync")
+            .mockImplementation((descriptor) => {
+                descriptors.delete(descriptor);
+                return closeSync(descriptor);
+            });
+        try {
+            new TypeScriptScanner({}).scan(
+                {
+                    root,
+                    files: ["src/a.ts"],
+                    limits: { max_file_bytes: 200 },
+                },
+                () => {},
+            );
+        } finally {
+            opens.mockRestore();
+            reads.mockRestore();
+            closes.mockRestore();
+        }
+
+        expect(bytesRead).toBeLessThanOrEqual(201);
+    });
+});
+
 describe("input_hashes: a file replaced by a directory", () => {
     // A read of a directory fails (EISDIR). Discovery never reports a
     // directory, so keying where it stands is safe on a stable tree, and a
