@@ -333,12 +333,11 @@ really failed or found nothing.
 
 - A file discovery never hashed (below `node_modules`, in an ignored path, over
   the cap, or not a recognised manifest, such as an `extends` target not named
-  `tsconfig*.json`) is verified at commit against a re-read, and so is one
-  created and removed while a request reads it, and a `node_modules`
-  declaration the TypeScript worker reads. It is not tracked for freshness:
-  discovery records no hash for it, so a later scan cannot tell that it
-  changed, and facts derived from it stay until the files that read it are
-  scanned again for another reason.
+  `tsconfig*.json`) is verified at commit against a re-read, and successful
+  worker reads are retained as dependency inputs for freshness. A later change
+  to a recorded declaration marks the graph stale and forces cached importing
+  files to be rebuilt. Failed or refused reads remain commit-only evidence,
+  since they have no dependency bytes to compare.
 - On a case-insensitive volume, a worker's key and discovery's path can spell
   the same file differently. The core compares paths exactly, so such a read
   is not checked against discovery's hash, only re-read at commit like any

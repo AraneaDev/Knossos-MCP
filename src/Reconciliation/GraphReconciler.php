@@ -174,10 +174,11 @@ final readonly class GraphReconciler
                 $scannerSetHash,
                 $gitHead,
                 $request->dirtyPaths?->encode(),
-                // The manifests this scan read but stores no files row for.
-                // Without them, editing composer.json changes what a scan
-                // would produce while the graph reports itself fresh.
-                UnitInputSet::of($request->discovery->units)->encode(),
+                // The manifests and successful worker dependency reads this
+                // scan used but stores no files row for. Without them, editing
+                // composer.json or a node_modules declaration changes what a
+                // scan would produce while the graph reports itself fresh.
+                UnitInputSet::of($request->discovery->units)->encode($request->workerInputs),
             );
             // What the graph holds now, so what this scan does not produce can be
             // deleted afterwards. Reading ids is what makes the write proportional

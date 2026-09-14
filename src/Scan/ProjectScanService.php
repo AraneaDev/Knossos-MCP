@@ -163,6 +163,7 @@ final class ProjectScanService implements ProjectScanner
                 // scan records is one its own bytes cannot predate.
                 $preparation->gitHead,
                 $preparation->dirtyPaths,
+                $language->undiscoveredInputs,
             ), $verifyUndiscovered);
             foreach ($result->phaseMilliseconds as $phase => $milliseconds) {
                 $stageMilliseconds['reconciliation.' . $phase] = $milliseconds;
@@ -252,7 +253,7 @@ final class ProjectScanService implements ProjectScanner
         // scan to discover a language whose worker is missing would take the fast
         // path and never reconcile, so the error diagnostic this scan produced would
         // never reach the graph. A degraded scan is by definition not a no-change one.
-        if ($plan->effectiveMode !== 'incremental' || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0 || $language->workerDiagnostics !== []) {
+        if ($plan->effectiveMode !== 'incremental' || $plan->workerInputsChanged || $language->added !== 0 || $language->changed !== 0 || $plan->deletedFiles !== 0 || $language->workerDiagnostics !== []) {
             return null;
         }
         // Explicit boundary overrides and rename requests arrive as call arguments,

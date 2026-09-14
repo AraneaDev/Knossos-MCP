@@ -22,8 +22,10 @@ use Knossos\Scanner\Protocol\RelativePath;
  * or removed when the workers are done. That is checked here, so the facts a
  * scan commits match every file they came from as it stands at commit.
  *
- * Consistency at commit only. These files are not added to freshness tracking,
- * so editing one after the scan does not mark the graph stale.
+ * Successful reads are also retained on the scan record for freshness
+ * tracking. A later edit marks the graph stale and forces the next incremental
+ * scan to rebuild cached contributions; failed reads remain commit-only
+ * evidence because they have no dependency bytes to compare.
  *
  * What a report must still match:
  *

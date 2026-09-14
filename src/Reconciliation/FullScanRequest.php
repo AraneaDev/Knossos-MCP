@@ -35,6 +35,9 @@ final readonly class FullScanRequest
      *        $gitHead when the scan read them, or null when git could not be
      *        asked. Persisted so the drift oracle keeps asking about a file
      *        whose stored hash is of uncommitted content.
+     * @param array<string, string|null> $workerInputs successful reads of files
+     *        discovery did not hash, retained so dependency changes invalidate
+     *        cached contributions and mark the graph stale.
      */
     public function __construct(
         public string $projectIdentity,
@@ -50,6 +53,7 @@ final readonly class FullScanRequest
         public array $workerDiagnostics = [],
         public ?string $gitHead = null,
         public ?DirtyPathSet $dirtyPaths = null,
+        public array $workerInputs = [],
     ) {
         if ($projectIdentity === '' || $projectName === '') {
             throw new InvalidArgumentException('Project identity and name must not be empty.');
