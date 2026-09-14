@@ -328,3 +328,45 @@ def test_a_module_under_a_directory_swapped_for_a_link_out_of_the_root_is_keyed_
     assert index.module_declarations("sub.c") == {}
 
     assert index.read_hashes == {"sub/c.py": None}
+
+
+# pkg/lnk.py links to d/../c.py and pkg/d links to ../deep/dir. The kernel
+# applies the ``..`` after following pkg/d, so a read of pkg/lnk.py opens
+# deep/c.py; a textual collapse would name pkg/c.py, present to catch that.
+DEEP = b"class Deep:\n    pass\n"
+
+
+def _dot_dot_layout(project, deep: bytes = DEEP) -> Path:
+    root = project({"app.py": "x = 1\n", "pkg/c.py": "class Decoy:\n    pass\n", "deep/dir/keep.txt": ""})
+    (root / "deep" / "c.py").write_bytes(deep)
+    (root / "pkg" / "d").symlink_to("../deep/dir")
+    (root / "pkg" / "lnk.py").symlink_to("d/../c.py")
+    return root
+
+
+def test_a_read_through_a_link_with_dot_dot_is_keyed_by_the_file_the_kernel_opened(worker: ModuleType, project) -> None:
+    index = worker.ProjectModuleIndex(_dot_dot_layout(project), 2_000_000)
+
+    assert "Deep" in index.module_declarations("pkg.lnk")
+    assert index.read_hashes == {"deep/c.py": _sha(DEEP)}
+
+
+def test_a_removed_target_behind_a_link_with_dot_dot_is_keyed_by_the_file_the_kernel_would_open(
+    worker: ModuleType, project
+) -> None:
+    root = _dot_dot_layout(project)
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+    index._is_project_file = lambda path: path.name == "lnk.py"
+    (root / "deep" / "c.py").unlink()
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {"deep/c.py": None}
+
+
+def test_a_stable_over_cap_target_behind_a_link_with_dot_dot_is_not_keyed_by_a_textual_collapse(
+    worker: ModuleType, project
+) -> None:
+    index = worker.ProjectModuleIndex(_dot_dot_layout(project, DEEP + b"#" * 100), 60)
+
+    assert index.module_declarations("pkg.lnk") == {}
+    assert index.read_hashes == {"deep/c.py": None}

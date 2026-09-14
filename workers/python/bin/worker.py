@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import re
-import stat
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
@@ -340,58 +339,55 @@ MAX_SYMLINK_HOPS = 40
 def in_root_location(root: Path, path: Path) -> str | None:
     """The root-relative path a refused module's bytes would have come from.
 
-    A successful read is keyed by its resolved target, so a refusal has to be
-    keyed the same way, or a linked name (``pkg/alias.py``, ``lnk/c.py``) would
-    carry the ``None`` while discovery tracks the real file (``pkg/real.py``,
-    ``real/c.py``) and the core would skip it as undiscovered. ``resolve()``
-    cannot give that key, because the path is refused exactly when it does not
-    resolve inside the root. So the path is walked one component at a time from
-    the root, following each link while its target stays inside the root:
+    The key its failed read goes under, so it meets discovery's key for that
+    file. For a path that resolves inside the root this is its kernel resolution
+    (``os.path.realpath`` applies each ``..`` after following the link before
+    it), the same key ``resolve(strict=True)`` gives a successful read. A path
+    is refused exactly when it does not, though, so the path is followed one
+    link at a time: each step resolves the link's directory with ``realpath``
+    and reads the link itself, and a link target is joined to that directory
+    unchanged, so its ``..`` is never collapsed as text.
 
-    - every component resolves inside the root: the fully resolved path, which
-      is what ``resolve()`` gives for a module refused only by the byte cap;
-    - a component is a link leading out of the root: that link's location plus
-      the components after it, where discovery saw a regular file or directory,
-      if it saw one there, before it was swapped for the link;
-    - a component does not exist, or cannot be examined: its location plus the
-      components after it, which is where a removed file was.
+    - The final name is not a link (a regular file, or missing): its location.
+    - The final name is a link whose target's directory leaves the root: the
+      link's location. A chain of links keys to the last one inside the root.
+    - The path's own directory leaves the root: that directory's in-root
+      location, found the same way, plus the name.
 
-    ``None`` only for a path that is not under the root to begin with. Any key
-    returned for a stable layout names a link or a missing path, which discovery
-    never reports, so the core ignores it.
+    ``None`` when no step of the path lies inside the root. Any key returned
+    for a stable layout names a link or a missing path, which discovery never
+    reports, so the core ignores it, while a discovered file swapped for one
+    mid-scan fails verification.
     """
-    try:
-        pending = list(path.relative_to(root).parts)
-    except ValueError:
-        return None
-    current = root
-    hops = 0
-    while pending:
-        name = pending.pop(0)
-        if name in ("", "."):
-            continue
-        if name == "..":
-            # Only reached through a link target; ``current`` is already real,
-            # so stepping up lexically is what the filesystem would do.
-            current = current.parent
-            if not current.is_relative_to(root):
-                return None
-            continue
-        following = current / name
-        try:
-            if not stat.S_ISLNK(os.lstat(following).st_mode):
-                current = following
-                continue
-            target = os.readlink(following)
-        except OSError:
-            return following.joinpath(*pending).relative_to(root).as_posix()
-        hops += 1
-        resolved = Path(os.path.normpath(current / target))
-        if hops > MAX_SYMLINK_HOPS or not resolved.is_relative_to(root):
-            return following.joinpath(*pending).relative_to(root).as_posix()
-        pending[:0] = resolved.relative_to(root).parts
-        current = root
-    return current.relative_to(root).as_posix()
+    base = os.path.realpath(root)
+
+    def inside(candidate: str) -> bool:
+        return candidate == base or candidate.startswith(base.rstrip(os.sep) + os.sep)
+
+    def locate(current: str) -> str | None:
+        last_link: str | None = None
+        for _ in range(MAX_SYMLINK_HOPS + 1):
+            parent, name = os.path.dirname(current), os.path.basename(current)
+            if parent == current or not name:
+                return last_link
+            directory = os.path.realpath(parent)
+            if not inside(directory):
+                outer = locate(parent)
+                return last_link if outer is None else os.path.join(outer, name)
+            location = os.path.join(directory, name)
+            if name in (os.curdir, os.pardir):
+                resolved = os.path.realpath(location)
+                return resolved if inside(resolved) else last_link
+            try:
+                target = os.readlink(location)
+            except OSError:
+                return location
+            last_link = location
+            current = os.path.join(directory, target)
+        return last_link
+
+    found = locate(os.fspath(path))
+    return None if found is None else PurePosixPath(os.path.relpath(found, base)).as_posix()
 
 
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
