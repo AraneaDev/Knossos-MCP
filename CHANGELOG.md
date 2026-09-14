@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.15.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.15.1...v0.15.2) (2026-09-14)
+
+
+### Bug Fixes
+
+* address review findings ([beaeb18](https://github.com/AraneaDev/Knossos-MCP/commit/beaeb186680b9e75b36033336fb94db40a3581d3))
+* harden scanner dogfood paths ([a0c7ba3](https://github.com/AraneaDev/Knossos-MCP/commit/a0c7ba36f4f8f661def2e92c41ef657009ee66f7))
+* harden scanner dogfood paths ([a0c7ba3](https://github.com/AraneaDev/Knossos-MCP/commit/a0c7ba36f4f8f661def2e92c41ef657009ee66f7))
+* harden scanner dogfood paths ([5804324](https://github.com/AraneaDev/Knossos-MCP/commit/58043248726c3e102e54c2afc6ebcf29267957ce))
+
 ## [0.15.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.15.0...v0.15.1) (2026-09-14)
 
 
