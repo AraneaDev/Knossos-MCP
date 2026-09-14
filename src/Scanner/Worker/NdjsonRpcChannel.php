@@ -22,6 +22,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     private int $stderrBytes = 0;
     /** Bytes of `scan/input_hashes` frames this request, counted apart from the output budget. */
     private int $inputHashesBytes = 0;
+    /** Bytes of every other complete frame this request, charged to the output budget. */
+    private int $outputBytes = 0;
     private int $deadline = 0;
 
     /**
@@ -49,6 +51,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->stderrBuffer = '';
         $this->stderrBytes = 0;
         $this->inputHashesBytes = 0;
+        $this->outputBytes = 0;
 
         return $this->deadline = hrtime(true) + ($this->limits->requestTimeoutMs * 1_000_000);
     }
@@ -172,6 +175,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 return $message;
             }
             if (strlen($this->stdoutBuffer) > $this->limits->maxLineBytes) {
+                // Longer than any part may be, so this frame is output.
+                $this->chargeOutput(strlen($this->stdoutBuffer));
                 throw new WorkerException('WORKER_FRAME_TOO_LARGE', 'Worker frame exceeds the line limit.');
             }
 
@@ -317,6 +322,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $line = substr($this->stdoutBuffer, 0, $newline);
         $this->stdoutBuffer = substr($this->stdoutBuffer, $newline + 1);
         if ($line === '' || strlen($line) > $this->limits->maxLineBytes) {
+            $this->chargeOutput(strlen($line) + 1);
             throw new WorkerException('WORKER_FRAME_INVALID', 'Worker emitted an empty or oversized frame.');
         }
 
@@ -330,6 +336,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         }
         if (!array_key_exists('id', $message) && ($message['method'] ?? null) === Protocol::NOTIFICATION_INPUT_HASHES) {
             $this->countInputHashesFrame(strlen($line) + 1);
+        } else {
+            $this->chargeOutput(strlen($line) + 1);
         }
 
         return $message;
@@ -345,9 +353,9 @@ final class NdjsonRpcChannel implements RpcChannelInterface
      * what a worker can make the core hold; exceeding it is a worker fault, not
      * a batch that was too big.
      *
-     * A frame is recognised only once it is complete, so the bytes of one
-     * still arriving count as output until then: at most one frame plus one
-     * read chunk, against a budget sized for many batches of contributions.
+     * A frame is classified only once it is complete, and the output budget
+     * is charged at that point too ({@see self::chargeOutput()}), so a part
+     * still arriving never counts against output that is near its budget.
      */
     private function countInputHashesFrame(int $bytes): void
     {
@@ -360,13 +368,31 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             ));
         }
     }
-    /** Buffer stdout, enforcing the byte cap so a flooding worker cannot exhaust memory. */
 
+    /** Charge one classified frame (or oversized partial frame) to the output budget. */
+    private function chargeOutput(int $bytes): void
+    {
+        $this->outputBytes += $bytes;
+        if ($this->outputBytes > $this->limits->maxOutputBytes) {
+            throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
+        }
+    }
+
+    /**
+     * Buffer stdout, bounding what is held before it is classified.
+     *
+     * Frames are charged to their budget when they are classified, which the
+     * read loop does before every read, so there the unclassified buffer is
+     * one partial frame (bounded by the line limit) plus one read chunk. A
+     * send() drains stdout without classifying it, so the hard cap here is
+     * the sum of both budgets: bytes past it exceed one of them however they
+     * turn out to split.
+     */
     private function appendStdout(string $chunk): void
     {
         $this->stdoutBuffer .= $chunk;
         $this->stdoutBytes += strlen($chunk);
-        if ($this->stdoutBytes - $this->inputHashesBytes > $this->limits->maxOutputBytes) {
+        if ($this->stdoutBytes > $this->limits->maxOutputBytes + $this->limits->maxInputHashesBytes) {
             throw new WorkerException('WORKER_OUTPUT_LIMIT', 'Worker output exceeds the request limit.');
         }
     }

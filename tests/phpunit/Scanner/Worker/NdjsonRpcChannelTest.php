@@ -852,6 +852,79 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame(1, $messages[6]['id']);
     }
 
+    public function testAnInputHashesFrameArrivingWhenOutputIsNearTheBudgetIsNotChargedWhileItArrives(): void
+    {
+        // 15 KB of ordinary output against a 20 KB budget, then a 10 KB part.
+        // Charged by the byte as it arrives, the part's first read chunk
+        // already pushed the total past the budget before the frame was
+        // complete enough to be recognised as exempt.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 20_000, maxOutputBytes: 20_000));
+        $deadline = $channel->beginRequest();
+        $ordinary = str_replace('scan\\/input_hashes', 'scan\\/input_hashez', self::inputHashesFrame(15_000));
+        fwrite($process->pipes[1], $ordinary . self::inputHashesFrame(10_000) . '{"jsonrpc":"2.0","id":1,"result":{}}' . "\n");
+        rewind($process->pipes[1]);
+
+        $messages = self::readAll($channel, $deadline, 3);
+
+        assertSame('scan/input_hashes', $messages[1]['method']);
+        assertSame(1, $messages[2]['id']);
+    }
+
+    public function testAnOversizedPartialFrameWithinTheOutputBudgetIsTooLarge(): void
+    {
+        // A frame longer than the line limit can never be an exempt part, so
+        // it is charged as output: within that budget it is a frame too large.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 100_000));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat('x', 20_000));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_FRAME_TOO_LARGE', $error->diagnosticCode);
+    }
+
+    public function testAnOversizedPartialFrameBeyondTheOutputBudgetIsAnOutputLimit(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 128));
+        $deadline = $channel->beginRequest();
+        fwrite($process->pipes[1], str_repeat('x', 200));
+        rewind($process->pipes[1]);
+
+        $error = captureThrows(static fn() => $channel->readMessage($deadline), WorkerException::class);
+
+        assertSame('WORKER_OUTPUT_LIMIT', $error->diagnosticCode);
+    }
+
+    public function testOutputDrainedDuringASendIsCappedAtBothBudgetsTogether(): void
+    {
+        // send() drains stdout without classifying it, so what it may hold is
+        // bounded by the output and input-hashes budgets together: past their
+        // sum, one of them is exceeded however the bytes split into frames.
+        foreach ([228 => null, 229 => 'WORKER_OUTPUT_LIMIT'] as $bytes => $expected) {
+            $process = $this->pipeOnlyProcess();
+            $process->stdinPipe = fopen('php://temp', 'r+');
+            $process->stdoutPipe = fopen('php://temp', 'r+');
+            $process->stderrPipe = fopen('php://temp', 'r+');
+            fwrite($process->stdoutPipe, str_repeat('x', $bytes));
+            rewind($process->stdoutPipe);
+            $channel = new NdjsonRpcChannel($process, new WorkerLimits(maxLineBytes: 128, maxOutputBytes: 128, maxInputHashesBytes: 100));
+            $channel->beginRequest();
+
+            $error = null;
+            try {
+                $channel->send(['jsonrpc' => '2.0', 'id' => 1, 'method' => 'scan']);
+            } catch (WorkerException $caught) {
+                $error = $caught->diagnosticCode;
+            }
+
+            assertSame($expected, $error, sprintf('%d bytes drained during a send', $bytes));
+        }
+    }
+
     public function testOtherNotificationsAreStillChargedToTheOutputBudget(): void
     {
         $process = $this->mockProcess();
