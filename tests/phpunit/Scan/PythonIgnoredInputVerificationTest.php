@@ -82,7 +82,7 @@ final class PythonIgnoredInputVerificationTest extends KnossosTestCase
         $scanPolls = 0;
         $token = new CancellationToken(function () use (&$scanPolls, $path): bool {
             $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 4)[3] ?? [];
-            if (($caller['class'] ?? null) === ProjectScanService::class && ++$scanPolls === 3) {
+            if (($caller['class'] ?? null) === ProjectScanService::class && ++$scanPolls === 4) {
                 file_put_contents($path, "class Changed:\n    pass\n");
             }
 
@@ -95,7 +95,7 @@ final class PythonIgnoredInputVerificationTest extends KnossosTestCase
         );
 
         assertSame(ScanSnapshotChangedException::inputChangedAfterRead(self::MODULE)->getMessage(), $error->getMessage());
-        assertSame(3, $scanPolls);
+        assertSame(4, $scanPolls);
         assertSame(0, (int) $pdo->query('SELECT COUNT(*) FROM nodes')->fetchColumn());
     }
 }
