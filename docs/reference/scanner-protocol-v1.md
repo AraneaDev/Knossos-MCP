@@ -302,9 +302,11 @@ when one no longer matches.
 
 #### Known limits
 
-- A file that discovery never reported, created and removed while a request
-  reads it, is not verified. The core checks only paths discovery tracked, so
-  a transient file that fed facts leaves no entry it can compare.
+- A file discovery never hashed (below `node_modules`, in an ignored path, over
+  the cap, or not a recognised manifest, such as an `extends` target not named
+  `tsconfig*.json`), including one created and removed while a request reads
+  it, is not verified. The core checks only paths discovery hashed, so a read
+  of any other file that fed facts leaves no entry it can compare.
 - On a case-insensitive volume, a worker's key and discovery's path can spell
   the same file differently. The core compares paths exactly, so such a read
   is ignored rather than checked.

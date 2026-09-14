@@ -55,7 +55,7 @@ final class ScanInputHashes
      * Verify one scan request's `input_hashes` against discovery.
      *
      * @param array<string, mixed> $result the request's final result
-     * @param array<string, object> $discoveredByPath every file the scan discovered, keyed by relative path
+     * @param array<string, object> $discoveredByPath every path discovery hashed (source files, project units, unparsed manifests), keyed by relative path
      * @throws WorkerException when a declaring worker omitted the field, it is malformed, or a hash cannot be verified
      * @throws ScanSnapshotChangedException when a discovered file was read from other bytes, or could not be read
      */

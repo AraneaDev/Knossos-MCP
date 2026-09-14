@@ -966,12 +966,6 @@ function parseConfig(root, configPath, reads) {
 }
 
 /**
- * Decode a file's bytes into the string ts.sys.readFile would return, so
- * reading the buffer ourselves (to hash it) changes nothing the compiler sees.
- * Mirrors TypeScript 6.0's node `readFile`: UTF-16 BE and LE byte-order marks
- * decode as UTF-16, a UTF-8 BOM is dropped, anything else is UTF-8.
- */
-/**
  * Read a file for the compiler within the byte cap, decoded as TypeScript
  * decodes it, recording the read under its walk's keys: the hash of the raw
  * bytes read, or null when the read failed or went over the cap. A default
@@ -1002,6 +996,12 @@ function readRecorded(root, file, reads, maxFileBytes) {
     return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
 }
 
+/**
+ * Decode a file's bytes into the string ts.sys.readFile would return, so
+ * reading the buffer ourselves (to hash it) changes nothing the compiler sees.
+ * Mirrors TypeScript 6.0's node `readFile`: UTF-16 BE and LE byte-order marks
+ * decode as UTF-16, a UTF-8 BOM is dropped, anything else is UTF-8.
+ */
 function decodeLikeTypeScript(buffer) {
     if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
         // Copied before swapping: the caller's buffer is what was hashed.
