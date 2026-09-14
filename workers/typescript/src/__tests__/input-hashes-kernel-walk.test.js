@@ -166,11 +166,12 @@ describe("input_hashes: `..` the kernel cannot apply", () => {
         symlinkSync("../gone/dir", join(root, "src/d"));
         symlinkSync("d/../c.ts", join(root, "src/lnk.ts"));
 
-        // src/d's remaining components hold a `..`, so only the link itself.
+        // src/d's remaining components hold a `..`, so only the link itself,
+        // which names a directory: null, whichever file below it was read.
         expect(scan(root)).toEqual({
             "src/a.ts": sha256(REFERRER),
             "src/lnk.ts": sha256(C),
-            "src/d": sha256(C),
+            "src/d": null,
             "gone/c.ts": sha256(C),
         });
     });
@@ -349,9 +350,25 @@ describe("the compiler host's containment", () => {
         const throughLink = (file) =>
             file.startsWith(outside) || file.includes("/node_modules/dep/");
         expect(readsMade.filter(throughLink)).toEqual([]);
-        // The package scope lookup probes for manifests that are not there;
-        // nothing below node_modules is keyed.
+        // The package scope lookup probes for manifests that are not there.
+        // Below node_modules every candidate is keyed null: the link leaves
+        // the root, so no path through it names an in-root file.
+        const candidates = [
+            "node_modules/dep",
+            "node_modules/dep.d.ts",
+            "node_modules/dep.js",
+            "node_modules/dep.jsx",
+            "node_modules/dep.ts",
+            "node_modules/dep.tsx",
+            "node_modules/dep/index.d.ts",
+            "node_modules/dep/index.js",
+            "node_modules/dep/index.jsx",
+            "node_modules/dep/index.ts",
+            "node_modules/dep/index.tsx",
+            "node_modules/dep/package.json",
+        ];
         expect(hashes).toEqual({
+            ...Object.fromEntries(candidates.map((key) => [key, null])),
             "src/a.ts": sha256(
                 'import { dep } from "dep";\nexport const a = dep;\n',
             ),

@@ -1192,7 +1192,7 @@ describe("input_hashes: the key each read goes under", () => {
         });
     });
 
-    it("leaves out files under node_modules, keying only the absent manifests above them", () => {
+    it("keys the files under node_modules a resolution read, and the candidates it found absent", () => {
         const root = fixture({
             "src/a.ts": 'import { dep } from "dep";\nexport const a = dep;\n',
             "node_modules/dep/package.json":
@@ -1205,11 +1205,27 @@ describe("input_hashes: the key each read goes under", () => {
             "src/a.ts",
         ]);
 
-        expect(Object.keys(result.input_hashes).sort()).toEqual([
-            "package.json",
-            "src/a.ts",
-            "src/package.json",
-        ]);
+        // Discovery never hashes them, so the core re-reads them at commit:
+        // what the import resolved through, and where an earlier candidate
+        // would have taken it had it existed.
+        expect(result.input_hashes).toEqual({
+            "node_modules/dep.d.ts": null,
+            "node_modules/dep.ts": null,
+            "node_modules/dep.tsx": null,
+            "node_modules/dep/index.d.ts": sha256(
+                Buffer.from("export declare const dep: number;\n"),
+            ),
+            "node_modules/dep/package.json": sha256(
+                Buffer.from('{"name":"dep","types":"index.d.ts"}\n'),
+            ),
+            "package.json": null,
+            "src/a.ts": sha256(
+                Buffer.from(
+                    'import { dep } from "dep";\nexport const a = dep;\n',
+                ),
+            ),
+            "src/package.json": null,
+        });
     });
 
     it("keys an extensionless shebang script by its real path", () => {
@@ -1229,9 +1245,10 @@ describe("input_hashes: the key each read goes under", () => {
         // Discovery skips symlinks, so the linked name is not a path the core
         // tracks on a stable tree; the target is, and it is the file whose
         // bytes were read. The link is keyed too, so a discovered src/b.ts
-        // swapped for a link mid-scan is still checked against its own hash;
-        // the resolution probe that found it present records null there, and
-        // the two disagree into null.
+        // swapped for a link mid-scan is still checked against its own hash.
+        // The resolution probe that found it present hashes the file it leads
+        // to, so the probe and the read agree: the core re-reads the link at
+        // commit and fails a scan whose requests report it differently.
         const root = fixture({
             "tsconfig.json": '{"include":["src"]}\n',
             "src/a.ts": A,
@@ -1245,7 +1262,7 @@ describe("input_hashes: the key each read goes under", () => {
 
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(A)),
-            "src/b.ts": null,
+            "src/b.ts": sha256(Buffer.from(B)),
             "lib/b.ts": sha256(Buffer.from(B)),
             "tsconfig.json": sha256(Buffer.from('{"include":["src"]}\n')),
         });
@@ -1602,13 +1619,14 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
             "src/a.ts",
         ]);
 
-        // The links are keyed too; src/d's remaining components hold a `..`.
-        // The probe that found src/lnk.ts present recorded null at them, and
-        // the read's hash disagrees into null.
+        // The links are keyed too; src/d's remaining components hold a `..`,
+        // so only the link itself, a directory, which is always null. The
+        // probe that found src/lnk.ts present hashed the file it leads to,
+        // as the read does.
         expect(result.input_hashes).toEqual({
             "src/a.ts": sha256(Buffer.from(importer)),
             "deep/c.ts": sha256(Buffer.from(DEEP)),
-            "src/lnk.ts": null,
+            "src/lnk.ts": sha256(Buffer.from(DEEP)),
             "src/d": null,
         });
     });

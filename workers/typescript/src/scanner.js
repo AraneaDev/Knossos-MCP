@@ -1175,17 +1175,20 @@ function readBounded(file, maxBytes) {
 
 /**
  * The key a read of `absolute` goes under in `input_hashes`, or null for a read
- * the core cannot track: outside the root (the default library) or below a
- * node_modules directory, which discovery never reports.
+ * the core cannot track: the root itself, anything outside it, or the default
+ * library, which is the worker's own and never the project's, even under a
+ * root that happens to contain the worker.
+ *
+ * A path below node_modules is keyed like any other. Discovery never hashes
+ * one, so the core re-reads it when the scan commits: declarations resolved
+ * through a dependency decide the facts of every file importing it.
  */
 function inputHashKey(root, absolute) {
     const relative = relativeInside(root, absolute);
     if (
         relative === null ||
         relative === "" ||
-        relative === "node_modules" ||
-        relative.startsWith("node_modules/") ||
-        relative.includes("/node_modules/")
+        contains(defaultLibDirectory(), absolute)
     ) {
         return null;
     }
@@ -1204,36 +1207,66 @@ function inputHashKey(root, absolute) {
  * is anything outside the root or below node_modules.
  *
  * Discovery never reports a link and never descends into a linked directory,
- * so on a stable tree every linked key names a path the core ignores. Mid-scan,
- * a discovered file swapped for a link (to another file, to a directory, or on
- * a package's resolved path) is keyed where discovery saw it, so the read or
- * probe that went through it is checked against discovery's hash.
+ * so on a stable tree every linked key names a path discovery did not hash.
+ * Mid-scan, a discovered file swapped for a link (to another file, to a
+ * directory, or on a package's resolved path) is keyed where discovery saw it,
+ * so the read or probe that went through it is checked against discovery's
+ * hash.
  *
- * @returns {{final: string|null, linked: string[]}}
+ * The core re-reads every key discovery did not hash when the scan commits,
+ * and fails the scan when two requests, or two programs, report one key with
+ * two values. So a key's value must be what that path itself names on a stable
+ * tree, whichever read or probe reported it. Linked keys come in two kinds:
+ *
+ * - `through`: the path as written, and a link with the components below it.
+ *   Each resolves exactly as the walk does, so it takes the walk's value.
+ * - `directories`: a link the walk followed with components still to apply
+ *   below it. It names a directory, or nothing, never the file the walk
+ *   reached, so its value is always null. A hash there would be the hash of
+ *   whichever file below it was read, and differ from one read to the next.
+ *
+ * A link followed as the last component is a `through` key even when the walk
+ * ends at a directory or at nothing; a read of either records null anyway.
+ *
+ * @returns {{final: string|null, through: string[], directories: string[]}}
  */
 function walkKeys(root, walked) {
     const location = inputKeyLocation(root, walked);
     const final = location === null ? null : inputHashKey(root, location);
-    const linked = new Set();
-    const add = (candidate) => {
+    const through = new Set();
+    const directories = new Set();
+    const add = (set, candidate) => {
         const key = inputHashKey(root, candidate);
-        if (key !== null && key !== final) linked.add(key);
+        if (key !== null && key !== final) set.add(key);
     };
     for (const link of walked.links) {
         if (!contains(root, link.location)) continue;
-        add(link.location);
         const rest = link.rest.filter((name) => name !== "" && name !== ".");
-        if (rest.length > 0 && !rest.includes(".."))
-            add(`${link.location}/${rest.join("/")}`);
+        if (rest.length === 0) {
+            add(through, link.location);
+            continue;
+        }
+        add(directories, link.location);
+        if (!rest.includes(".."))
+            add(through, `${link.location}/${rest.join("/")}`);
     }
-    return { final, linked: [...linked] };
+    return { final, through: [...through], directories: [...directories] };
 }
 
 /** Record a read, hashed or failed, under every key its walk gives. */
 function recordWalked(reads, root, walked, contentHash) {
-    const { final, linked } = walkKeys(root, walked);
-    if (final !== null) reads.record(final, contentHash);
-    for (const key of linked) reads.record(key, contentHash);
+    const keys = walkKeys(root, walked);
+    if (keys.final !== null) reads.record(keys.final, contentHash);
+    recordLinked(reads, keys, contentHash);
+}
+
+/**
+ * Record a walk's linked keys: its `through` keys with the value given, and its
+ * `directories` keys with null, whatever was read below them (see walkKeys).
+ */
+function recordLinked(reads, { through, directories }, throughValue) {
+    for (const key of through) reads.record(key, throughValue);
+    for (const key of directories) reads.record(key, null);
 }
 
 /** Record a path the host would not or could not read as a failed read. */
@@ -1247,16 +1280,42 @@ function recordRefused(reads, root, absolute) {
  *
  * A probe answering absent, or not a file, records null under every key its
  * walk gives: the compiler goes on as if the file were not there, so a
- * discovered file missing for that moment must fail verification. A probe
- * answering present read no bytes, so it vouches for nothing at the location it
- * reached, which a read will record; it records null only under the linked
- * keys, so a discovered path that had become a link is still caught. Discovery
- * never reports an absent path or a link, so a stable tree is unaffected.
+ * discovered file missing for that moment must fail verification.
+ *
+ * A probe answering present vouches for nothing at the location it reached,
+ * which a read will record. Its linked keys still need a value, so that a
+ * discovered path that had become a link is caught. That value must be the one
+ * a read through the same path records (see walkKeys): a module resolution
+ * probes a package's files through its link in one request, while a
+ * `/// <reference path>` reads them through it in another, and the core fails
+ * a scan whose requests disagree on a key. So when the walk ended at a file and
+ * has `through` keys, the file is read within the byte cap and those keys get
+ * its hash, or null when that read fails or goes over the cap, as a read of it
+ * would. Anything else a present probe reached, a directory, gives them null.
  */
-function recordProbe(reads, root, walked, present) {
-    const { final, linked } = walkKeys(root, walked);
-    if (!present && final !== null) reads.record(final, null);
-    for (const key of linked) reads.record(key, null);
+function recordProbe(reads, root, walked, present, maxFileBytes) {
+    const keys = walkKeys(root, walked);
+    if (!present && keys.final !== null) reads.record(keys.final, null);
+    recordLinked(
+        reads,
+        keys,
+        present && walked.kind === "file" && keys.through.length > 0
+            ? boundedHash(walked.location, maxFileBytes)
+            : null,
+    );
+}
+
+/** The hash of a file read within the byte cap, or null when that read fails. */
+function boundedHash(file, maxFileBytes) {
+    let buffer;
+    try {
+        buffer = readBounded(file, maxFileBytes);
+    } catch {
+        return null;
+    }
+    return buffer === undefined
+        ? null
+        : createHash("sha256").update(buffer).digest("hex");
 }
 
 // Linux's MAXSYMLINKS: one lookup follows at most this many links, and the
@@ -1496,7 +1555,7 @@ function createRestrictedProgram(
         const walked = walkPath(absolute);
         const present =
             walked.kind === "file" && contains(root, walked.location);
-        recordProbe(reads, root, walked, present);
+        recordProbe(reads, root, walked, present, maxFileBytes);
         return present;
     };
     // Resolution realpaths a package's files before the host is asked for
@@ -1521,7 +1580,7 @@ function createRestrictedProgram(
             const present =
                 (walked.kind === "file" || walked.kind === "directory") &&
                 walked.location === real;
-            recordProbe(reads, root, walked, present);
+            recordProbe(reads, root, walked, present, maxFileBytes);
         }
         return real;
     };

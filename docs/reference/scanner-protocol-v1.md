@@ -238,14 +238,26 @@ one does.
   reached, as a path relative to the root, with the hash of the bytes read.
 - **A read that followed links** also goes under every link it followed inside
   the root, and under each such link joined with the path components that were
-  still to be walked below it, with the same value. The first of those is the
-  path as your worker wrote it. Leave out a joined path that still holds a
-  `..`, because only the kernel's lookup could apply it, and leave out anything
-  below `node_modules` or outside the root. A discovered file swapped for a
-  link to another file, or a discovered directory swapped for a link to another
-  directory, is then checked against its own hash. Resolve links component by
-  component, the way the kernel does, applying a `..` after the link before it
-  has been followed: collapsing `a/link/../b` as text names a different file.
+  still to be walked below it. The first of those is the path as your worker
+  wrote it. A joined path, and a link followed as the last component, take the
+  read's value. A link followed with components still to walk below it names a
+  directory, so it goes in as `null`, whichever file below it was read. Leave
+  out a joined path that still holds a `..`, because only the kernel's lookup
+  could apply it, and leave out anything outside the root. A discovered file
+  swapped for a link to another file, or a discovered directory swapped for a
+  link to another directory, is then checked against its own hash. Resolve
+  links component by component, the way the kernel does, applying a `..` after
+  the link before it has been followed: collapsing `a/link/../b` as text names
+  a different file.
+- **One key, one value.** The core re-reads every key discovery did not hash
+  when the scan commits, and fails a scan in which two requests report one key
+  with two values. On a tree that is not changing, give each key the value its
+  path has, whichever read or probe reached it: the hash of the in-root regular
+  file it resolves to within the byte cap, or `null`. The packaged TypeScript
+  worker reports `node_modules` reads this way. An existence probe that finds a
+  file present through a link hashes that file for the link's keys, so a
+  package probed through a pnpm-style link in one request and read through it
+  in another reports the same values in both.
 - **A read your worker refused** (over the byte cap, or resolving outside the
   root) goes under the same keys as `null`: the facts that needed it were
   computed without it.
