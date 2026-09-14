@@ -302,7 +302,7 @@ export class TypeScriptScanner {
                 reads,
             );
             this.#cacheProgram(key, program);
-            recordUnreadSourceFiles(root, program, reads);
+            recordUnreadSourceFiles(root, program, reads, maxFileBytes);
             this.#emitProgram(root, program, requestedSet, emitted, emit);
         } catch (error) {
             if (!isStackOverflow(error)) throw error;
@@ -316,7 +316,7 @@ export class TypeScriptScanner {
                 const relative = relativeInside(root, fileName);
                 if (
                     relative === null ||
-                    relative.includes("/node_modules/") ||
+                    belowNodeModules(relative) ||
                     !requestedSet.has(relative) ||
                     emitted.has(relative)
                 ) {
@@ -373,7 +373,7 @@ export class TypeScriptScanner {
             const relative = relativeInside(root, sourceFile.fileName);
             if (
                 relative === null ||
-                relative.includes("/node_modules/") ||
+                belowNodeModules(relative) ||
                 !requestedSet.has(relative) ||
                 emitted.has(relative)
             ) {
@@ -880,8 +880,7 @@ class TypeScriptLanguageFactCollector {
         );
         if (!declaration) return null;
         const relative = relativeInside(this.root, declaration.fileName);
-        if (relative === null || relative.includes("/node_modules/"))
-            return null;
+        if (relative === null || belowNodeModules(relative)) return null;
         return reference("module", relative);
     }
 
@@ -902,7 +901,7 @@ class TypeScriptLanguageFactCollector {
             this.root,
             declaration.getSourceFile().fileName,
         );
-        if (relative === null || relative.includes("/node_modules/")) {
+        if (relative === null || belowNodeModules(relative)) {
             const name = symbol?.getName();
             return name && !name.startsWith("__")
                 ? reference(`external_${hint}`, name)
@@ -1042,6 +1041,7 @@ function readRecorded(root, file, reads, maxFileBytes) {
             buffer === undefined
                 ? null
                 : createHash("sha256").update(buffer).digest("hex"),
+            maxFileBytes,
         );
     return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
 }
@@ -1116,7 +1116,7 @@ function readHashedSourceFile(
         walked.kind !== "file" ||
         !(contains(root, walked.location) || library)
     ) {
-        recordWalked(reads, root, walked, null);
+        recordWalked(reads, root, walked, null, maxFileBytes);
         return undefined;
     }
     let buffer;
@@ -1131,7 +1131,7 @@ function readHashedSourceFile(
         buffer = undefined;
     }
     if (buffer === undefined) {
-        recordWalked(reads, root, walked, null);
+        recordWalked(reads, root, walked, null, maxFileBytes);
         return undefined;
     }
     const contentHash = createHash("sha256").update(buffer).digest("hex");
@@ -1144,17 +1144,28 @@ function readHashedSourceFile(
     );
     parsedContentHashes.set(sourceFile, contentHash);
     reads.created(sourceFile);
-    recordWalked(reads, root, walked, contentHash);
+    recordWalked(reads, root, walked, contentHash, maxFileBytes);
     return sourceFile;
 }
 
 /**
  * Read a file's bytes, or undefined when it holds more than `maxBytes`: at most
  * one byte past the cap is ever read.
+ *
+ * Throws for anything but a regular file. Opening a FIFO for reading blocks
+ * until a writer appears, and a walk reports any non-directory as a file, so
+ * the path is opened without blocking (which changes nothing for a regular
+ * file) and the handle, not the path, is checked, so a path swapped for a FIFO
+ * after a check of it cannot slip through.
  */
 function readBounded(file, maxBytes) {
-    const handle = fs.openSync(file, "r");
+    const handle = fs.openSync(
+        file,
+        fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
+    );
     try {
+        if (!fs.fstatSync(handle).isFile())
+            throw new Error(`Not a regular file: ${file}`);
         const chunks = [];
         let total = 0;
         const limit = maxBytes + 1;
@@ -1221,9 +1232,10 @@ function inputHashKey(root, absolute) {
  * - `through`: the path as written, and a link with the components below it.
  *   Each resolves exactly as the walk does, so it takes the walk's value.
  * - `directories`: a link the walk followed with components still to apply
- *   below it. It names a directory, or nothing, never the file the walk
- *   reached, so its value is always null. A hash there would be the hash of
- *   whichever file below it was read, and differ from one read to the next.
+ *   below it. It never names the file the walk reached: a hash of that file
+ *   would differ from one read below it to the next. Its value is the link's
+ *   own (see recordLinked): null for a directory or nothing, and the hash of
+ *   the file it leads to when the walk failed below it because it is a file.
  *
  * A link followed as the last component is a `through` key even when the walk
  * ends at a directory or at nothing; a read of either records null anyway.
@@ -1254,24 +1266,54 @@ function walkKeys(root, walked) {
 }
 
 /** Record a read, hashed or failed, under every key its walk gives. */
-function recordWalked(reads, root, walked, contentHash) {
+function recordWalked(reads, root, walked, contentHash, maxFileBytes) {
     const keys = walkKeys(root, walked);
     if (keys.final !== null) reads.record(keys.final, contentHash);
-    recordLinked(reads, keys, contentHash);
+    recordLinked(reads, root, walked, keys, contentHash, maxFileBytes);
 }
 
 /**
  * Record a walk's linked keys: its `through` keys with the value given, and its
- * `directories` keys with null, whatever was read below them (see walkKeys).
+ * `directories` keys with the value the link itself names, whatever was read
+ * below it (see walkKeys).
+ *
+ * A walk that reached a file or a directory went through every such link as a
+ * directory, so each is null. A walk that failed may have failed at the link's
+ * own target, a file with more still to walk below it (ENOTDIR), and a
+ * `/// <reference path="./lnk.ts/x.d.ts" />` does exactly that to a link a
+ * read in another request opens as a file. So the link is walked again as
+ * itself and keyed as a read of it would be: the hash of the in-root file it
+ * leads to within the byte cap, or null.
  */
-function recordLinked(reads, { through, directories }, throughValue) {
+function recordLinked(
+    reads,
+    root,
+    walked,
+    { through, directories },
+    throughValue,
+    maxFileBytes,
+) {
     for (const key of through) reads.record(key, throughValue);
-    for (const key of directories) reads.record(key, null);
+    const traversed = walked.kind === "file" || walked.kind === "directory";
+    for (const key of directories) {
+        reads.record(
+            key,
+            traversed ? null : linkedFileHash(root, key, maxFileBytes),
+        );
+    }
+}
+
+/** The hash of the in-root file a project-relative path leads to, or null. */
+function linkedFileHash(root, relative, maxFileBytes) {
+    const walked = walkPath(`${root}/${relative}`);
+    return walked.kind === "file" && contains(root, walked.location)
+        ? boundedHash(walked.location, maxFileBytes)
+        : null;
 }
 
 /** Record a path the host would not or could not read as a failed read. */
-function recordRefused(reads, root, absolute) {
-    recordWalked(reads, root, walkPath(absolute), null);
+function recordRefused(reads, root, absolute, maxFileBytes) {
+    recordWalked(reads, root, walkPath(absolute), null, maxFileBytes);
 }
 
 /**
@@ -1298,10 +1340,13 @@ function recordProbe(reads, root, walked, present, maxFileBytes) {
     if (!present && keys.final !== null) reads.record(keys.final, null);
     recordLinked(
         reads,
+        root,
+        walked,
         keys,
         present && walked.kind === "file" && keys.through.length > 0
             ? boundedHash(walked.location, maxFileBytes)
             : null,
+        maxFileBytes,
     );
 }
 
@@ -1469,7 +1514,7 @@ function inputKeyLocation(root, walked) {
  * here so that a compiler that kept an earlier request's SourceFile would make
  * that file's facts unverifiable rather than vouched for by the earlier read.
  */
-function recordUnreadSourceFiles(root, program, reads) {
+function recordUnreadSourceFiles(root, program, reads, maxFileBytes) {
     for (const sourceFile of program.getSourceFiles()) {
         if (reads.createdThisRequest(sourceFile)) continue;
         const absolute = normalize(
@@ -1482,6 +1527,7 @@ function recordUnreadSourceFiles(root, program, reads) {
             root,
             walkPath(absolute),
             parsedContentHashes.get(sourceFile) ?? null,
+            maxFileBytes,
         );
     }
 }
@@ -1521,7 +1567,7 @@ function createRestrictedProgram(
         const absolute = normalize(path.resolve(realSourcePath(fileName)));
         reads.observe("load", absolute);
         const refused = () => {
-            recordRefused(reads, root, absolute);
+            recordRefused(reads, root, absolute, maxFileBytes);
             return undefined;
         };
         if (!allowedCompilerPath(root, fileName)) return refused();
@@ -1615,7 +1661,7 @@ function diagnosticsForProgram(program, root) {
         if (!diagnostic.file) continue;
         if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
         const relative = relativeInside(root, diagnostic.file.fileName);
-        if (relative === null || relative.includes("/node_modules/")) continue;
+        if (relative === null || belowNodeModules(relative)) continue;
         const start = diagnostic.start ?? 0;
         const startPosition =
             diagnostic.file.getLineAndCharacterOfPosition(start);
@@ -2308,6 +2354,19 @@ function allowedCompilerPath(root, candidate) {
     if (!contains(root, normalized)) return false;
     const walked = walkPath(normalized);
     return walked.location === undefined || contains(root, walked.location);
+}
+
+/**
+ * Whether a project-relative path lies below a node_modules directory, at the
+ * top level of the project or nested. A relative path has no leading slash, so
+ * "/node_modules/" alone would miss the project's own node_modules.
+ */
+function belowNodeModules(relative) {
+    return (
+        relative === "node_modules" ||
+        relative.startsWith("node_modules/") ||
+        relative.includes("/node_modules/")
+    );
 }
 
 function relativeInside(root, candidate) {

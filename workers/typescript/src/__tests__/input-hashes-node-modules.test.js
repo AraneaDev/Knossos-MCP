@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath, URL } from "node:url";
 import ts from "typescript";
 
 import { TypeScriptScanner } from "../scanner.js";
@@ -183,33 +185,100 @@ describe("input_hashes: a package under node_modules", () => {
             }
         }
     });
+});
 
+describe("input_hashes: the default library, file links and FIFOs", () => {
     it("never reports the default library, even under a root that contains it", () => {
+        // The worker's own package is such a root, and scanning one of its
+        // import-free sources builds a program over the default library
+        // without writing anything into an installed package.
         const library = fs.realpathSync(dirname(ts.getDefaultLibFilePath({})));
-        const packageRoot = dirname(library);
-        const directory = fs.mkdtempSync(
-            join(packageRoot, "knossos-vitest-library-"),
+        const workerRoot = fs.realpathSync(
+            fileURLToPath(new URL("../..", import.meta.url)),
         );
-        created.push(directory);
-        fs.writeFileSync(
-            join(directory, "a.ts"),
-            "export const a: Array<string> = [].map(String);\n",
-        );
-        const file = relative(packageRoot, join(directory, "a.ts"));
+        const file = "src/scan-thread-limits.js";
+        expect(library.startsWith(`${workerRoot}/`)).toBe(true);
 
-        const hashes = scan(new TypeScriptScanner(), packageRoot, [
+        const hashes = scan(new TypeScriptScanner(), workerRoot, [
             file,
         ]).input_hashes;
 
-        // Resolution still probes the package scope above the file, which
-        // is the project's, but nothing below the library directory is keyed.
         expect(hashes[file]).toBe(
-            sha256("export const a: Array<string> = [].map(String);\n"),
+            sha256(fs.readFileSync(join(workerRoot, file))),
         );
         expect(
             Object.keys(hashes).filter((key) =>
-                join(packageRoot, key).startsWith(`${library}/`),
+                join(workerRoot, key).startsWith(`${library}/`),
             ),
         ).toEqual([]);
     });
+
+    it("keys a file link the same whether it is read as itself or walked below as a directory", () => {
+        // `/// <reference path="./lnk.ts/x.d.ts" />` walks the link to a file
+        // and fails below it (ENOTDIR). The link still names that file, so it
+        // must carry the file's hash there too, as the request reading it
+        // directly reports.
+        const C = "export const c = 1;\n";
+        const root = fixture({
+            "src/a.ts":
+                '/// <reference path="./lnk.ts" />\nexport const a = 1;\n',
+            "src/b.ts":
+                '/// <reference path="./lnk.ts/x.d.ts" />\nexport const b = 1;\n',
+            "src/c.ts": C,
+        });
+        fs.symlinkSync("c.ts", join(root, "src/lnk.ts"));
+        const shared = new TypeScriptScanner();
+
+        const requests = [
+            scan(shared, root, ["src/a.ts"]),
+            scan(shared, root, ["src/b.ts"]),
+            scan(new TypeScriptScanner(), root, ["src/b.ts", "src/a.ts"]),
+        ].map((result) => result.input_hashes);
+
+        for (const hashes of requests) {
+            expect(hashes["src/lnk.ts"]).toBe(sha256(C));
+            for (const [key, value] of Object.entries(hashes)) {
+                expect([key, value]).toEqual([key, pathState(root, key)]);
+            }
+        }
+        expect(Object.keys(requests[1])).toContain("src/lnk.ts/x.d.ts");
+    });
+
+    it("reports a FIFO reached by a probe through a link, or by a read, as null without blocking", () => {
+        // Opening a FIFO for reading blocks until a writer appears, which on
+        // a synchronous read would hang the worker for good. Run in a child
+        // process so a hang fails the test instead of the test runner.
+        const root = fixture({
+            "src/a.ts": 'import { p } from "./lnk";\nexport const a = p;\n',
+            "src/b.ts":
+                '/// <reference path="./pipe.d.ts" />\nexport const b = 1;\n',
+        });
+        const made = spawnSync("mkfifo", [
+            join(root, "src/pipe.ts"),
+            join(root, "src/pipe.d.ts"),
+        ]);
+        expect(made.status).toBe(0);
+        fs.symlinkSync("pipe.ts", join(root, "src/lnk.ts"));
+        const scanner = new URL("../scanner.js", import.meta.url).href;
+        const script = `
+            const { TypeScriptScanner } = await import(${JSON.stringify(scanner)});
+            const hashes = new TypeScriptScanner().scan(
+                { root: ${JSON.stringify(root)}, files: ["src/a.ts", "src/b.ts"] },
+                () => {},
+            ).input_hashes;
+            process.stdout.write(JSON.stringify(hashes));
+        `;
+
+        const child = spawnSync(
+            process.execPath,
+            ["--input-type=module", "-e", script],
+            { timeout: 20_000, encoding: "utf8" },
+        );
+
+        expect(child.signal).toBeNull();
+        expect(child.status).toBe(0);
+        const hashes = JSON.parse(child.stdout);
+        expect(hashes["src/lnk.ts"]).toBeNull();
+        expect(hashes["src/pipe.d.ts"]).toBeNull();
+    }, 30_000);
 });

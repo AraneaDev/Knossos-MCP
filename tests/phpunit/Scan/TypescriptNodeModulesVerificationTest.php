@@ -60,6 +60,16 @@ final class TypescriptNodeModulesVerificationTest extends KnossosTestCase
         $this->write('src/f.ts', "/// <reference path=\"../node_modules/entry.d.ts\" />\nexport const f = 1;\n");
         symlink('.pnpm/dep@1.0.0/node_modules', $this->root . '/node_modules/scope');
         symlink('scope/../node_modules/dep/extra.d.ts', $this->root . '/node_modules/entry.d.ts');
+        // A link to a file, read as itself in one request and walked below as
+        // if it were a directory in another: both must key it by that file.
+        $this->write('src/g.ts', "/// <reference path=\"../node_modules/types.d.ts\" />\nexport const g = 1;\n");
+        $this->write('src/h.ts', "/// <reference path=\"../node_modules/types.d.ts/x.d.ts\" />\nexport const h = 1;\n");
+        symlink('plain/index.d.ts', $this->root . '/node_modules/types.d.ts');
+        // A FIFO a reference reaches, directly and through a link: opening it
+        // for reading would block the worker, so both are reported as null.
+        $this->write('src/i.ts', "/// <reference path=\"../node_modules/pipe.d.ts\" />\n/// <reference path=\"../node_modules/piped.d.ts\" />\nexport const i = 1;\n");
+        posix_mkfifo($this->root . '/node_modules/pipe.d.ts', 0o644);
+        symlink('pipe.d.ts', $this->root . '/node_modules/piped.d.ts');
     }
 
     protected function tearDown(): void
@@ -76,14 +86,14 @@ final class TypescriptNodeModulesVerificationTest extends KnossosTestCase
 
         assertSame('full', $result->data['mode']);
         assertSame([], $result->data['degraded_languages']);
-        assertSame(6, $result->data['parsed_files']);
+        assertSame(9, $result->data['parsed_files']);
         assertSame(1, $result->data['worker_execution']['scan_batches']['knossos.typescript']['files']);
         // Only the keys changed: a node_modules file still owns no contribution.
         $owners = $pdo->query('SELECT DISTINCT owner_key FROM nodes ORDER BY owner_key')->fetchAll(\PDO::FETCH_COLUMN);
         assertSame([], array_values(array_filter($owners, static fn(string $owner): bool => str_contains($owner, 'node_modules'))));
         assertSame(true, in_array('knossos.typescript:file:src/a.ts', $owners, true));
         assertSame(
-            ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts'],
+            ['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/d.ts', 'src/e.ts', 'src/f.ts', 'src/g.ts', 'src/h.ts', 'src/i.ts'],
             $pdo->query('SELECT file_path FROM contribution_cache ORDER BY file_path')->fetchAll(\PDO::FETCH_COLUMN),
         );
     }

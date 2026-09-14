@@ -20,6 +20,10 @@ final readonly class WorkerLimits
      *     bytes per entry is 11 MB, and 64 MB leaves room for long paths and
      *     for the null entries of import candidates probed and found absent,
      *     while still bounding what a runaway worker can make the core hold.
+     *     Since the TypeScript worker reports `node_modules` reads, those
+     *     resolution candidates, not discovered files, dominate the map on a
+     *     real project: about 23,000 keys and 1.7 MB per request against an
+     *     869 MB `node_modules`, still far under 64 MB.
      */
     public function __construct(
         public int $requestTimeoutMs = WorkerExecutionPolicy::DEFAULT_REQUEST_TIMEOUT_MS,

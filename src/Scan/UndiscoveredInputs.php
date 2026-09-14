@@ -50,7 +50,11 @@ final class UndiscoveredInputs
         }
     }
 
-    /** @return array<string, string|null> every path collected so far, with its one value */
+    /**
+     * Every path collected so far, each with the one value every request reported for it.
+     *
+     * @return array<string, string|null>
+     */
     public function all(): array
     {
         return $this->inputs;

@@ -251,6 +251,41 @@ describe("TypeScriptScanner.scan JSX references", () => {
     });
 });
 
+describe("TypeScriptScanner.scan packages below node_modules", () => {
+    // internalModuleTarget and symbolReference treat anything below
+    // node_modules as external. Relative paths carry no leading slash, so a
+    // test for "/node_modules/" alone missed the project's own top-level
+    // node_modules directory, the usual place for a dependency.
+    it("targets a package in the top-level node_modules as external, not as a project module", () => {
+        const root = fixture({
+            "node_modules/dep/package.json":
+                '{"name":"dep","types":"index.d.ts"}\n',
+            "node_modules/dep/index.d.ts":
+                "export declare class Dep {}\nexport declare function make(): Dep;\n",
+            "src/a.ts":
+                'import { Dep, make } from "dep";\nexport class A extends Dep {}\nexport const made = make();\n',
+        });
+
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/a.ts"] }, (c) =>
+            contributions.push(c),
+        );
+        const edges = contributions.flatMap((c) => c.edges);
+        const nodes = contributions.flatMap((c) => c.nodes);
+
+        // No node, edge or attribute names a path below node_modules.
+        expect(JSON.stringify({ edges, nodes })).not.toContain("node_modules");
+        expect(
+            edges.some(
+                (e) => e.kind === "imports" && e.target === "ts:package:dep",
+            ),
+        ).toBe(true);
+        expect(edges.some((e) => e.target === "ts:external_class:Dep")).toBe(
+            true,
+        );
+    });
+});
+
 // A code-split route hands the module object to React and never names the
 // component: `lazy(() => import('./pages/Admin'))`. The module gets its edge,
 // the component inside it gets nothing.

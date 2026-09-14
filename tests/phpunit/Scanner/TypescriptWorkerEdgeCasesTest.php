@@ -156,17 +156,24 @@ final class TypescriptWorkerEdgeCasesTest extends KnossosTestCase
      * identical bytes in both copies the redirect is verified, so facts and
      * a content hash still flow for the copy the compiler treated as a
      * duplicate.
+     *
+     * The copies live outside `node_modules` and each is linked from one: the
+     * worker emits no contribution for a file below `node_modules`, and
+     * resolution realpaths each link to its copy, which is the path requested.
      */
     public function testADuplicatePackageCopyWithAgreeingBytesStillGetsVerifiedFacts(): void
     {
-        mkdir($this->root . '/vendor/node_modules/duppkg', 0o755, true);
-        mkdir($this->root . '/node_modules/duppkg', 0o755, true);
         $packageJson = json_encode(['name' => 'duppkg', 'version' => '1.0.0', 'main' => 'index.ts']);
         $indexSource = "export const dupValue = 1;\n";
-        file_put_contents($this->root . '/vendor/node_modules/duppkg/package.json', $packageJson);
-        file_put_contents($this->root . '/vendor/node_modules/duppkg/index.ts', $indexSource);
-        file_put_contents($this->root . '/node_modules/duppkg/package.json', $packageJson);
-        file_put_contents($this->root . '/node_modules/duppkg/index.ts', $indexSource);
+        foreach (['first', 'second'] as $copy) {
+            mkdir($this->root . '/copies/' . $copy, 0o755, true);
+            file_put_contents($this->root . '/copies/' . $copy . '/package.json', $packageJson);
+            file_put_contents($this->root . '/copies/' . $copy . '/index.ts', $indexSource);
+        }
+        mkdir($this->root . '/vendor/node_modules', 0o755, true);
+        mkdir($this->root . '/node_modules', 0o755, true);
+        symlink('../../copies/first', $this->root . '/vendor/node_modules/duppkg');
+        symlink('../copies/second', $this->root . '/node_modules/duppkg');
         file_put_contents(
             $this->root . '/vendor/importFirst.ts',
             "import { dupValue } from \"duppkg\";\nexport const first = dupValue;\n",
@@ -187,11 +194,11 @@ final class TypescriptWorkerEdgeCasesTest extends KnossosTestCase
         $client = $this->typescriptWorkerClient();
         $contributions = iterator_to_array($client->scan([
             'root' => $this->root,
-            'files' => ['vendor/importFirst.ts', 'importSecond.ts', 'node_modules/duppkg/index.ts'],
+            'files' => ['vendor/importFirst.ts', 'importSecond.ts', 'copies/second/index.ts'],
         ]));
         $client->shutdown();
 
-        $duplicate = $this->contributionFor($contributions, 'node_modules/duppkg/index.ts');
+        $duplicate = $this->contributionFor($contributions, 'copies/second/index.ts');
         assertSame([], $duplicate->diagnostics, 'Identical bytes must not raise TS_REDIRECTED_SOURCE_UNVERIFIED.');
         assertSame(true, $duplicate->contentHash !== null, 'A verified redirect must still carry a content hash.');
         assertSame(true, count($duplicate->nodes) > 0);

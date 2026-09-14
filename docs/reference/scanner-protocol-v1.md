@@ -240,8 +240,10 @@ one does.
   the root, and under each such link joined with the path components that were
   still to be walked below it. The first of those is the path as your worker
   wrote it. A joined path, and a link followed as the last component, take the
-  read's value. A link followed with components still to walk below it names a
-  directory, so it goes in as `null`, whichever file below it was read. Leave
+  read's value. A link followed with components still to walk below it takes
+  the value the link names as itself, whichever file below it was read: `null`
+  when it leads to a directory or to nothing, and the hash of the file within
+  the byte cap when it leads to a file, so the walk failed below it. Leave
   out a joined path that still holds a `..`, because only the kernel's lookup
   could apply it, and leave out anything outside the root. A discovered file
   swapped for a link to another file, or a discovered directory swapped for a
@@ -293,10 +295,12 @@ one does.
 - **An existence check whose answer decides facts**, such as a module
   resolution candidate, a realpath, or a check for a package marker, goes under
   the keys of its walk as `null` when it finds nothing or finds something that
-  is not a file. When it finds the file, it read no bytes, so record `null`
-  only under the link keys of its walk; the read that follows records the
-  location. Discovery never reports an absent path or a link, so these entries
-  cost a stable tree nothing.
+  is not a file. When it finds the file, leave the location itself to the read
+  that follows, and give the walk's link keys the values a read through the
+  same path would: the hash of the file within the byte cap under the joined
+  paths and a link followed as the last component, and a link followed with
+  components below it as above. A check that recorded `null` there while a read
+  in another request recorded the hash would fail every scan of that tree.
 - **Reads that disagree** about one key within a request, in hash or in
   whether they succeeded, go under that key as `null`.
 
@@ -305,12 +309,18 @@ the project units beside them, the manifests and configuration files such as
 `package.json`, `tsconfig.json`, `Cargo.toml`, `pyproject.toml` and
 `composer.json` (a manifest discovery read but could not parse is checked too).
 Record a read of one of those like any other read: the hash of its raw bytes
-under the walk's keys, or `null` when the read failed or went over the cap. The
-core ignores any other key, so an extra `null` for a path discovery does not
-track is always safe. A key that names a checked path with the wrong value is
-not: it fails every scan of that tree. After every worker has returned, the
-core also re-hashes each of those paths, units included, and fails the scan
-when one no longer matches.
+under the walk's keys, or `null` when the read failed or went over the cap. A
+key that names a checked path with the wrong value fails every scan of that
+tree. After every worker has returned, the core also re-hashes each of those
+paths, units included, and fails the scan when one no longer matches.
+
+Every other key, a path discovery did not hash, is verified when the scan
+commits, after the discovered paths. A hash must still equal the SHA-256 of
+the in-root file the path leads to, read within the byte cap. A `null` is valid
+only while the path is absent, not a regular file, reached through a link, or
+over the cap: a `null` for an in-root, readable regular file fails the scan.
+So an extra `null` is not free. Report one only for a read or check that
+really failed or found nothing.
 
 #### Known limits
 
