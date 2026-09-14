@@ -65,6 +65,29 @@ def safe_root(value: Any) -> Path:
     return root
 
 
+class UnreadableInput(ValueError):
+    """A requested file the filesystem would not let the worker read as that file.
+
+    Gone, not a regular file, over the byte cap, or resolving outside the root.
+    Kept apart from a plain ``ValueError``, which also covers a path this worker
+    refuses by policy, because the two answer ``input_hashes`` differently: a
+    policy refusal says nothing about the tree, while a failed read says the file
+    is not what discovery hashed at that moment. It is reported as ``None``, so
+    the core fails the scan for a discovered path rather than keeping a graph
+    that silently lacks the file's facts.
+    """
+
+
+def read_bounded(path: Path, max_bytes: int) -> bytes:
+    """Read at most ``max_bytes + 1`` bytes, so a file over the cap is told apart without reading the rest.
+
+    A size checked before the read can belong to a file replaced before it, and
+    the replacement must not be read unbounded.
+    """
+    with path.open("rb") as handle:
+        return handle.read(max_bytes + 1)
+
+
 def names_python_in_shebang(absolute: Path) -> bool:
     """Whether an extensionless script's first line names Python as its interpreter.
 
@@ -80,8 +103,10 @@ def names_python_in_shebang(absolute: Path) -> bool:
     try:
         with absolute.open("rb") as handle:
             first = handle.readline(SHEBANG_PROBE_BYTES).decode("utf-8", "replace")
-    except OSError:
-        return False
+    except OSError as error:
+        # Only ever asked of a path just found to be a regular file, so a failed
+        # open is the filesystem's answer, not this script's interpreter.
+        raise UnreadableInput(str(error)) from error
     return first.startswith("#!") and re.search(r"\b(python)[0-9.]*\b", first, re.IGNORECASE) is not None
 
 
@@ -136,16 +161,26 @@ def assert_scannable_path(value: Any) -> PurePosixPath:
 
 
 def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
+    """Resolve a requested path to the in-root regular file it names.
+
+    Raises :class:`UnreadableInput` when the filesystem refuses it and a plain
+    ``ValueError`` when this worker does not scan such a file.
+    """
     relative = assert_scannable_path(value)
-    absolute = (root / Path(*relative.parts)).resolve(strict=True)
     try:
-        absolute.relative_to(root)
-    except ValueError as error:
-        raise ValueError("Python input path escapes the project root.") from error
-    if not absolute.is_file() or not (absolute.suffix.lower() in {".py", ".pyi"} or names_python_in_shebang(absolute)):
-        raise ValueError("Unsupported Python input.")
-    if absolute.stat().st_size > max_bytes:
-        raise ValueError("Python input exceeds the configured byte limit.")
+        absolute = (root / Path(*relative.parts)).resolve(strict=True)
+        try:
+            absolute.relative_to(root)
+        except ValueError as error:
+            raise UnreadableInput("Python input path escapes the project root.") from error
+        if not absolute.is_file():
+            raise UnreadableInput("Python input is not a regular file.")
+        if not (absolute.suffix.lower() in {".py", ".pyi"} or names_python_in_shebang(absolute)):
+            raise ValueError("Unsupported Python input.")
+        if absolute.stat().st_size > max_bytes:
+            raise UnreadableInput("Python input exceeds the configured byte limit.")
+    except OSError as error:
+        raise UnreadableInput(str(error)) from error
     return absolute, relative.as_posix()
 
 
@@ -288,10 +323,15 @@ class ProjectModuleIndex:
             self._record_walk(walked, None)
         if walked is not None and location is not None:
             try:
-                source = location.read_bytes()
+                source = read_bounded(location, self.max_bytes)
             except OSError:
                 self._record_walk(walked, None)
             else:
+                if len(source) > self.max_bytes:
+                    # Grew past the cap after _is_project_file checked it.
+                    self._record_walk(walked, None)
+                    self._cache[module] = declarations
+                    return declarations
                 # Hashed before parsing, so a module that fails to parse still
                 # reports the bytes this request saw.
                 self._record_walk(walked, hashlib.sha256(source).hexdigest())
@@ -1326,6 +1366,7 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
     # so a single unscannable file produced no graph at all. A request that
     # cannot be interpreted — checked above — is still fatal, because that means
     # the caller is broken rather than the tree.
+    index = ProjectModuleIndex(root, max_bytes)
     resolved: list[tuple[Path, str]] = []
     rejected: list[tuple[str, str]] = []
     for value in files:
@@ -1335,13 +1376,17 @@ def scan(params: dict[str, Any], emit: Callable[[dict[str, Any]], None]) -> dict
         requested = assert_scannable_path(value)
         try:
             resolved.append(safe_file(root, value, max_bytes))
-        except (ValueError, OSError) as error:
+        except UnreadableInput as error:
+            # Its contribution carries no facts, so a discovered file must not
+            # pass verification as if it had been read.
+            index.record_read(requested.as_posix(), None)
+            rejected.append((requested.as_posix(), str(error)))
+        except ValueError as error:
             rejected.append((requested.as_posix(), str(error)))
     resolved.sort(key=lambda item: item[1])
     for skipped, message in sorted(rejected):
         emit(_unscannable_contribution(skipped, message))
 
-    index = ProjectModuleIndex(root, max_bytes)
     for absolute, relative in resolved:
         _scan_one(absolute, relative, index, emit)
     return {
@@ -1360,13 +1405,19 @@ def _scan_one(absolute: Path, relative: str, index: ProjectModuleIndex, emit: Ca
     facts for the other inputs in the same request.
     """
     try:
-        source = absolute.read_bytes()
+        source = read_bounded(absolute, index.max_bytes)
     except OSError as error:
         # `safe_file` stats the path, and the file can still be deleted or made
         # unreadable before this read. Nothing about that is specific to the
         # batch, so it costs only its own file — the same treatment discovery
-        # gives a file it could not resolve.
+        # gives a file it could not resolve. Recorded as a failed read, since the
+        # contribution standing in for the file carries none of its facts.
+        index.record_read(relative, None)
         emit(_unscannable_contribution(relative, str(error)))
+        return
+    if len(source) > index.max_bytes:
+        index.record_read(relative, None)
+        emit(_unscannable_contribution(relative, "Python input exceeds the configured byte limit."))
         return
     # Of the exact bytes handed to ast.parse, which does its own decoding and
     # BOM handling, so the core can refuse facts parsed from a file that

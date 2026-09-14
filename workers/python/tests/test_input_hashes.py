@@ -35,14 +35,14 @@ def test_a_failed_index_read_is_reported_as_null(monkeypatch, worker: ModuleType
             "pkg/b.py": "class Thing:\n    pass\n",
         }
     )
-    real_read_bytes = Path.read_bytes
+    real_read = worker.read_bounded
 
-    def failing(self: Path) -> bytes:
-        if self.name == "b.py":
+    def failing(path: Path, max_bytes: int) -> bytes:
+        if path.name == "b.py":
             raise OSError("vanished mid-read")
-        return real_read_bytes(self)
+        return real_read(path, max_bytes)
 
-    monkeypatch.setattr(Path, "read_bytes", failing)
+    monkeypatch.setattr(worker, "read_bounded", failing)
     result, _ = _scan(worker, root, ["pkg/a.py"])
 
     assert result["input_hashes"] == {
@@ -51,25 +51,25 @@ def test_a_failed_index_read_is_reported_as_null(monkeypatch, worker: ModuleType
     }
 
 
-def _serve(monkeypatch, name: str, outcomes: list[bytes | None]) -> list[str]:
+def _serve(monkeypatch, worker: ModuleType, name: str, outcomes: list[bytes | None]) -> list[str]:
     """Make successive reads of files called ``name`` return ``outcomes`` in order.
 
     ``None`` makes that read raise ``OSError``. Returns the list the reads are
     appended to, so a test can prove the reads it describes really happened.
     """
-    real_read_bytes = Path.read_bytes
+    real_read = worker.read_bounded
     reads: list[str] = []
 
-    def served(self: Path) -> bytes:
-        if self.name != name:
-            return real_read_bytes(self)
+    def served(path: Path, max_bytes: int) -> bytes:
+        if path.name != name:
+            return real_read(path, max_bytes)
         outcome = outcomes[len(reads)]
-        reads.append(self.as_posix())
+        reads.append(path.as_posix())
         if outcome is None:
             raise OSError("unreadable on this read")
         return outcome
 
-    monkeypatch.setattr(Path, "read_bytes", served)
+    monkeypatch.setattr(worker, "read_bounded", served)
     return reads
 
 
@@ -80,7 +80,7 @@ CHANGED = b"class Thing:\n    changed = True\n"
 
 def test_an_index_read_then_a_differing_own_read_records_null(monkeypatch, worker: ModuleType, project) -> None:
     root = project({"pkg/a.py": IMPORTER, "pkg/b.py": DECLARES.decode()})
-    reads = _serve(monkeypatch, "b.py", [DECLARES, CHANGED])
+    reads = _serve(monkeypatch, worker, "b.py", [DECLARES, CHANGED])
     result, contributions = _scan(worker, root, ["pkg/a.py", "pkg/b.py"])
 
     assert len(reads) == 2  # a's import resolution, then b's own scan
@@ -92,7 +92,7 @@ def test_a_failed_index_read_then_a_successful_own_read_stays_null(monkeypatch, 
     # a's import resolved against nothing because the index read of b failed;
     # b's own read succeeding afterwards does not make that resolution verified.
     root = project({"pkg/a.py": IMPORTER, "pkg/b.py": DECLARES.decode()})
-    reads = _serve(monkeypatch, "b.py", [None, DECLARES])
+    reads = _serve(monkeypatch, worker, "b.py", [None, DECLARES])
     result, contributions = _scan(worker, root, ["pkg/a.py", "pkg/b.py"])
 
     assert len(reads) == 2
@@ -106,7 +106,7 @@ def test_an_own_read_then_a_differing_index_read_records_null(monkeypatch, worke
     # that second read, which no content_hash describes.
     root = project({"pkg/b.py": "class :\n", "pkg/c.py": IMPORTER})
     broken = b"class :\n"
-    reads = _serve(monkeypatch, "b.py", [broken, DECLARES])
+    reads = _serve(monkeypatch, worker, "b.py", [broken, DECLARES])
     result, contributions = _scan(worker, root, ["pkg/b.py", "pkg/c.py"])
 
     assert len(reads) == 2
@@ -131,7 +131,7 @@ def _two_module_ids(project) -> Path:
 
 def test_two_differing_index_reads_of_one_path_record_null(monkeypatch, worker: ModuleType, project) -> None:
     root = _two_module_ids(project)
-    reads = _serve(monkeypatch, "b.py", [DECLARES, CHANGED])
+    reads = _serve(monkeypatch, worker, "b.py", [DECLARES, CHANGED])
     result, _ = _scan(worker, root, ["app.py"])
 
     assert len(reads) == 2
@@ -140,23 +140,23 @@ def test_two_differing_index_reads_of_one_path_record_null(monkeypatch, worker: 
 
 def test_a_hashed_read_then_a_failed_read_of_one_path_records_null(monkeypatch, worker: ModuleType, project) -> None:
     root = _two_module_ids(project)
-    reads = _serve(monkeypatch, "b.py", [DECLARES, None])
+    reads = _serve(monkeypatch, worker, "b.py", [DECLARES, None])
     result, _ = _scan(worker, root, ["app.py"])
 
     assert len(reads) == 2
     assert result["input_hashes"]["src/pkg/b.py"] is None
 
 
-def _no_reads(monkeypatch) -> list[str]:
-    """Record every ``Path.read_bytes`` call, so a test can assert none happened."""
+def _no_reads(monkeypatch, worker: ModuleType) -> list[str]:
+    """Record every read of a file's bytes, so a test can assert none happened."""
     reads: list[str] = []
-    real_read_bytes = Path.read_bytes
+    real_read = worker.read_bounded
 
-    def spying(self: Path) -> bytes:
-        reads.append(self.name)
-        return real_read_bytes(self)
+    def spying(path: Path, max_bytes: int) -> bytes:
+        reads.append(path.name)
+        return real_read(path, max_bytes)
 
-    monkeypatch.setattr(Path, "read_bytes", spying)
+    monkeypatch.setattr(worker, "read_bounded", spying)
     return reads
 
 
@@ -173,7 +173,7 @@ def test_a_module_that_no_longer_resolves_inside_the_root_is_null_and_not_read(
     (root / "pkg" / "b.py").symlink_to(outside / "b.py")
     index = worker.ProjectModuleIndex(root, 2_000_000)
     index._is_project_file = lambda path: path.exists()
-    reads = _no_reads(monkeypatch)
+    reads = _no_reads(monkeypatch, worker)
 
     assert index.module_declarations("pkg.b") == {}
     assert reads == []
@@ -193,7 +193,7 @@ def test_a_module_that_no_longer_resolves_at_all_is_null(worker: ModuleType, pro
 def test_a_module_refused_as_over_the_byte_cap_is_null_and_not_read(monkeypatch, worker: ModuleType, project) -> None:
     root = project({"app.py": IMPORTER, "pkg/b.py": "class Thing:\n    pass\n" + "#" * 100})
     index = worker.ProjectModuleIndex(root, 60)
-    reads = _no_reads(monkeypatch)
+    reads = _no_reads(monkeypatch, worker)
 
     assert index.module_declarations("pkg.b") == {}
     assert reads == []
@@ -224,24 +224,116 @@ def test_a_candidate_that_does_not_exist_is_a_probe_not_a_read(worker: ModuleTyp
     assert index.read_hashes == {"pkg/b.py": _sha(b"class Thing:\n    pass\n")}
 
 
-def test_an_unreadable_requested_file_is_absent_and_an_empty_request_reports_an_empty_map(
+def test_an_unreadable_requested_file_is_null_and_an_empty_request_reports_an_empty_map(
     monkeypatch, worker: ModuleType, project
 ) -> None:
+    # The contribution standing in for gone.py carries none of its facts, so a
+    # discovered gone.py must not pass verification as if it had been read.
     root = project({"gone.py": "x = 1\n"})
     empty, _ = _scan(worker, root, [])
     assert empty["input_hashes"] == {}
 
-    real_read_bytes = Path.read_bytes
+    real_read = worker.read_bounded
 
-    def failing(self: Path) -> bytes:
-        if self.name == "gone.py":
+    def failing(path: Path, max_bytes: int) -> bytes:
+        if path.name == "gone.py":
             raise OSError("deleted after discovery")
-        return real_read_bytes(self)
+        return real_read(path, max_bytes)
 
-    monkeypatch.setattr(Path, "read_bytes", failing)
+    monkeypatch.setattr(worker, "read_bounded", failing)
     result, contributions = _scan(worker, root, ["gone.py"])
     assert contributions["gone.py"]["diagnostics"][0]["code"] == "PY_UNSCANNABLE_FILE"
-    assert result["input_hashes"] == {}
+    assert result["input_hashes"] == {"gone.py": None}
+
+
+def test_a_requested_file_the_filesystem_refuses_is_null_and_a_policy_refusal_is_not_reported(
+    worker: ModuleType, project, tmp_path_factory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "out.py").write_text("x = 1\n", encoding="utf-8")
+    root = project({"big.py": "x = 1\n" + "#" * 100, "notes.txt": "text\n", "script": "#!/bin/sh\n"})
+    (root / "dir.py").mkdir()
+    (root / "out.py").symlink_to(outside / "out.py")
+    emitted: list[dict[str, Any]] = []
+
+    result = worker.scan(
+        {
+            "root": str(root),
+            "files": ["big.py", "dir.py", "gone.py", "notes.txt", "out.py", "script"],
+            "limits": {"max_file_bytes": 50},
+        },
+        emitted.append,
+    )
+
+    assert result["input_hashes"] == {"big.py": None, "dir.py": None, "gone.py": None, "out.py": None}
+    messages = {item["owner_key"].rsplit(":", 1)[-1]: item["diagnostics"][0]["message"] for item in emitted}
+    assert messages["big.py"] == "Python input exceeds the configured byte limit."
+    assert messages["dir.py"] == "Python input is not a regular file."
+    assert messages["out.py"] == "Python input path escapes the project root."
+    assert messages["notes.txt"] == "Unsupported Python input."
+    assert messages["script"] == "Unsupported Python input."
+    assert all(item["nodes"] == [] and item["edges"] == [] for item in emitted)
+
+
+def test_a_requested_file_that_grows_past_the_cap_before_its_read_is_null_and_not_read_unbounded(
+    monkeypatch, worker: ModuleType, project
+) -> None:
+    root = project({"grows.py": "x = 1\n"})
+    sizes: list[int] = []
+    real_read = worker.read_bounded
+
+    def grown(path: Path, max_bytes: int) -> bytes:
+        path.write_bytes(b"x = 1\n" + b"#" * 10_000)
+        data = real_read(path, max_bytes)
+        sizes.append(len(data))
+        return data
+
+    monkeypatch.setattr(worker, "read_bounded", grown)
+    result, contributions = _scan_limited(worker, root, ["grows.py"], 50)
+
+    assert sizes == [51]
+    assert result["input_hashes"] == {"grows.py": None}
+    assert contributions["grows.py"]["diagnostics"][0]["message"] == "Python input exceeds the configured byte limit."
+    assert "content_hash" not in contributions["grows.py"]
+
+
+def test_a_module_that_grows_past_the_cap_before_the_index_reads_it_is_null(
+    monkeypatch, worker: ModuleType, project
+) -> None:
+    root = project({"app.py": IMPORTER, "pkg/b.py": DECLARES.decode()})
+    real_read = worker.read_bounded
+
+    def grown(path: Path, max_bytes: int) -> bytes:
+        if path.name == "b.py":
+            path.write_bytes(DECLARES + b"#" * 10_000)
+        return real_read(path, max_bytes)
+
+    monkeypatch.setattr(worker, "read_bounded", grown)
+    index = worker.ProjectModuleIndex(root, 100)
+
+    assert index.module_declarations("pkg.b") == {}
+    assert index.read_hashes["pkg/b.py"] is None
+
+
+def test_a_shebang_probe_that_cannot_open_the_file_is_a_failed_read(worker: ModuleType, tmp_path: Path) -> None:
+    with pytest.raises(worker.UnreadableInput):
+        worker.names_python_in_shebang(tmp_path / "gone")
+
+
+def test_a_bounded_read_stops_one_byte_past_the_cap(worker: ModuleType, tmp_path: Path) -> None:
+    path = tmp_path / "ten.py"
+    path.write_bytes(b"0123456789")
+
+    assert worker.read_bounded(path, 4) == b"01234"
+    assert worker.read_bounded(path, 10) == b"0123456789"
+
+
+def _scan_limited(
+    worker: ModuleType, root: Path, files: list[str], max_bytes: int
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    emitted: list[dict[str, Any]] = []
+    result = worker.scan({"root": str(root), "files": files, "limits": {"max_file_bytes": max_bytes}}, emitted.append)
+    return result, {item["owner_key"].rsplit(":", 1)[-1]: item for item in emitted}
 
 
 # A refused module reached through a linked file name (pkg/alias.py links to

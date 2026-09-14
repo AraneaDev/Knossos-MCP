@@ -704,4 +704,46 @@ PYTHON);
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * A requested file the filesystem would not let the worker read as the
+     * file discovery hashed (over the byte cap, gone, a directory, or a link
+     * leaving the root) is reported as `null`: its contribution carries no
+     * facts, so without the null a discovered file would lose its facts from a
+     * graph reported fresh. A path refused by policy stays unreported.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReportsARequestedFileWhoseReadFailsAsNull(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        $outside = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o777, true);
+        mkdir($root . '/app/dir.py', 0o777, true);
+        mkdir($outside, 0o777, true);
+        file_put_contents($root . '/app/__init__.py', '');
+        file_put_contents($root . '/app/big.py', "VALUE = 1\n" . str_repeat('#', 200) . "\n");
+        file_put_contents($root . '/app/notes.txt', "text\n");
+        file_put_contents($outside . '/out.py', "VALUE = 2\n");
+        symlink($outside . '/out.py', $root . '/app/out.py');
+        $client = $this->pythonWorkerClient();
+        try {
+            $client->initialize();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['app/big.py', 'app/dir.py', 'app/gone.py', 'app/notes.txt', 'app/out.py'],
+                'limits' => ['max_file_bytes' => 100],
+            ]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? null;
+
+            assertSame(['app/big.py' => null, 'app/dir.py' => null, 'app/gone.py' => null, 'app/out.py' => null], $inputHashes);
+            assertSame(5, count($contributions));
+            foreach ($contributions as $contribution) {
+                assertSame('PY_UNSCANNABLE_FILE', $contribution->diagnostics[0]->code);
+            }
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+            $this->removeTempTree($outside);
+        }
+    }
 }

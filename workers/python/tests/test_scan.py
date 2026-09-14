@@ -315,14 +315,14 @@ def test_unreadable_file_costs_only_itself(monkeypatch, worker: ModuleType, proj
     sibling, which is exactly what the loop's isolation is meant to prevent.
     """
     root = project({"good.py": "x = 1\n", "gone.py": "y = 2\n"})
-    real_read = worker.Path.read_bytes
+    real_read = worker.read_bounded
 
-    def flaky(self):  # type: ignore[no-untyped-def]
-        if self.name == "gone.py":
+    def flaky(path, max_bytes):  # type: ignore[no-untyped-def]
+        if path.name == "gone.py":
             raise OSError("No such file or directory")
-        return real_read(self)
+        return real_read(path, max_bytes)
 
-    monkeypatch.setattr(worker.Path, "read_bytes", flaky)
+    monkeypatch.setattr(worker, "read_bounded", flaky)
     contributions = {c["owner_key"].rsplit(":", 1)[-1]: c for c in scan_collect(root, ["good.py", "gone.py"])}
 
     assert _diag_codes(contributions["gone.py"]) == ["PY_UNSCANNABLE_FILE"]
