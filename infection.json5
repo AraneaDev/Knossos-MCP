@@ -140,6 +140,20 @@
         ".*stream_set_(?:read|write|chunk)_buffer\\(.*",
       ],
     },
+    // InputHashesMap::decode() lower-cases RelativePath::assertValid()'s
+    // message before appending it to its own "sent ..." sentence. The
+    // message always starts with self::FIELD . ' key ' . $path, and FIELD is
+    // the literal 'input_hashes', which already starts lower-case, so
+    // lcfirst() never changes the string: unwrapping it (UnwrapLcFirst)
+    // produces byte-identical output on every input. No test can kill an
+    // equivalent mutant without asserting on behaviour that cannot differ.
+    // Scoped to this exact call so a future lcfirst() elsewhere in src still
+    // gets mutated.
+    UnwrapLcFirst: {
+      ignoreSourceCodeByRegex: [
+        ".*lcfirst\\(rtrim\\(\\$error->getMessage\\(\\), '\\.'\\)\\).*",
+      ],
+    },
   },
   logs: {
     text: "coverage/infection/infection.log",
