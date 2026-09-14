@@ -373,4 +373,35 @@ final class TypescriptScannerTest extends KnossosTestCase
             $this->removeTempTree($root);
         }
     }
+
+    /**
+     * Module resolution reads package.json through the compiler host, and its
+     * fields decide how an import resolves, so the read is recorded: by the
+     * hash of its bytes, or as null when it could not be read within the cap.
+     */
+    #[Group('typescript-scanner')]
+    public function testPackageJsonReadsDuringModuleResolutionAreRecorded(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        mkdir($root . '/sub', 0o777, true);
+        $package = "{\"type\":\"module\"}\n";
+        file_put_contents($root . '/tsconfig.json', '{"compilerOptions":{"module":"nodenext","moduleResolution":"nodenext"},"include":["src/**/*","sub/**/*"]}');
+        file_put_contents($root . '/package.json', $package);
+        file_put_contents($root . '/sub/package.json', '{"type":"module"}' . str_repeat(' ', 200) . "\n");
+        file_put_contents($root . '/src/a.ts', "import { s } from '../sub/s.js';\nexport const a = s;\n");
+        file_put_contents($root . '/sub/s.ts', "export const s = 1;\n");
+        $client = $this->typescriptWorkerClient();
+        try {
+            iterator_to_array($client->scan(['root' => $root, 'files' => ['src/a.ts'], 'limits' => ['max_file_bytes' => 128]]), false);
+            $inputHashes = $client->lastScanResult()['input_hashes'] ?? [];
+
+            assertSame(hash('sha256', $package), $inputHashes['package.json'] ?? 'absent');
+            assertSame(true, array_key_exists('sub/package.json', $inputHashes));
+            assertSame(null, $inputHashes['sub/package.json']);
+        } finally {
+            $client->shutdown();
+            $this->removeTempTree($root);
+        }
+    }
 }

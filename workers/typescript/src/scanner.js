@@ -1440,6 +1440,14 @@ function createRestrictedProgram(
     // the read that follows unbounded. readBounded closes it: it reads at
     // most one byte past the cap itself, so the size actually read is what
     // is checked, not a size observed earlier.
+    //
+    // Module resolution reads package.json files through here, and their
+    // fields decide an import's target, so every in-root read is recorded
+    // under its walk's keys like any other: the hash of the bytes read, or null
+    // for a read that failed. A path refused here was first answered by
+    // host.fileExists, which recorded its walk. Discovery tracks package.json
+    // as a unit rather than a file, so today the core ignores these keys,
+    // which also means they cost a stable tree nothing.
     host.readFile = (file) => {
         if (!allowedCompilerPath(root, file)) return undefined;
         const normalized = realSourcePath(normalize(path.resolve(file)));
@@ -1453,6 +1461,15 @@ function createRestrictedProgram(
         } catch {
             buffer = undefined;
         }
+        if (!library)
+            recordWalked(
+                reads,
+                root,
+                walkPath(normalized),
+                buffer === undefined
+                    ? null
+                    : createHash("sha256").update(buffer).digest("hex"),
+            );
         return buffer === undefined ? undefined : decodeLikeTypeScript(buffer);
     };
     return ts.createProgram({
