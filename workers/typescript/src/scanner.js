@@ -193,23 +193,23 @@ export class TypeScriptScanner {
         let programs = 0;
         let programsReused = 0;
 
+        const request = {
+            root,
+            maxFileBytes,
+            reads,
+            requestedSet,
+            emitted,
+            emit,
+        };
+        const tally = (outcome) => {
+            if (outcome === undefined) return;
+            ++programs;
+            if (outcome.reused) ++programsReused;
+        };
+
         for (const configPath of configPaths) {
             const parsed = parseConfig(root, configPath, reads);
-            const key = `${root}\0${configPath}`;
-            this.#reserveProgramSlot(key);
-            const oldProgram = this.programCache.get(key);
-            const program = createRestrictedProgram(
-                root,
-                parsed,
-                oldProgram,
-                maxFileBytes,
-                reads,
-            );
-            this.#cacheProgram(key, program);
-            if (oldProgram) ++programsReused;
-            recordUnreadSourceFiles(root, program, reads);
-            this.#emitProgram(root, program, requestedSet, emitted, emit);
-            ++programs;
+            tally(this.#scanProgram(`${root}\0${configPath}`, parsed, request));
             if (emitted.size === requestedSet.size) break;
         }
 
@@ -236,21 +236,7 @@ export class TypeScriptScanner {
                 ),
                 projectReferences: undefined,
             };
-            const key = `${root}\0<fallback>`;
-            this.#reserveProgramSlot(key);
-            const oldProgram = this.programCache.get(key);
-            const program = createRestrictedProgram(
-                root,
-                parsed,
-                oldProgram,
-                maxFileBytes,
-                reads,
-            );
-            this.#cacheProgram(key, program);
-            if (oldProgram) ++programsReused;
-            recordUnreadSourceFiles(root, program, reads);
-            this.#emitProgram(root, program, requestedSet, emitted, emit);
-            ++programs;
+            tally(this.#scanProgram(`${root}\0<fallback>`, parsed, request));
         }
 
         // Backstop: the PHP side requires exactly one contribution per requested
@@ -284,6 +270,70 @@ export class TypeScriptScanner {
             programs_reused: programsReused,
             input_hashes: reads.toResult(),
         };
+    }
+
+    /**
+     * Build one program and emit the requested files it covers.
+     *
+     * The compiler recurses once per import while it builds a program, so an
+     * import chain deeper than the thread's stack throws a RangeError out of
+     * `createProgram` (or out of the checker walking the same chain). That
+     * costs the files of this one program, not the whole request: each gets a
+     * facts-free contribution saying why, and the remaining configs and the
+     * fallback still run. Whatever reads were recorded before the overflow stay
+     * recorded.
+     *
+     * @returns {{reused: boolean}|undefined} undefined when the stack overflowed
+     */
+    #scanProgram(
+        key,
+        parsed,
+        { root, maxFileBytes, reads, requestedSet, emitted, emit },
+    ) {
+        this.#reserveProgramSlot(key);
+        const oldProgram = this.programCache.get(key);
+        let program;
+        try {
+            program = createRestrictedProgram(
+                root,
+                parsed,
+                oldProgram,
+                maxFileBytes,
+                reads,
+            );
+            this.#cacheProgram(key, program);
+            recordUnreadSourceFiles(root, program, reads);
+            this.#emitProgram(root, program, requestedSet, emitted, emit);
+        } catch (error) {
+            if (!isStackOverflow(error)) throw error;
+            const covered = [
+                ...parsed.fileNames,
+                ...(program?.getSourceFiles() ?? []).map(
+                    (file) => file.fileName,
+                ),
+            ];
+            for (const fileName of covered) {
+                const relative = relativeInside(root, fileName);
+                if (
+                    relative === null ||
+                    relative.includes("/node_modules/") ||
+                    !requestedSet.has(relative) ||
+                    emitted.has(relative)
+                ) {
+                    continue;
+                }
+                emit(
+                    factFreeContribution(
+                        relative,
+                        "TS_PROGRAM_TOO_DEEP",
+                        "The TypeScript compiler exceeded its stack building the program for this file's configuration (an import chain too deep to follow), so its facts are omitted.",
+                    ),
+                );
+                emitted.add(relative);
+            }
+            return undefined;
+        }
+        return { reused: oldProgram !== undefined };
     }
 
     // Free a slot before the next program is built. A program is constructed
@@ -2047,6 +2097,15 @@ function redirectReadsAgree(redirect) {
             : parsedContentHashes.get(redirect.unredirected);
     const target = parsedContentHashes.get(redirect.redirectTarget);
     return own !== undefined && own === target;
+}
+
+// V8's own message for a JavaScript stack overflow. Any other RangeError is a
+// real fault and keeps propagating.
+function isStackOverflow(error) {
+    return (
+        error instanceof RangeError &&
+        error.message.includes("Maximum call stack size exceeded")
+    );
 }
 
 // A contribution that carries nothing but the reason one file was skipped.
