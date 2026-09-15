@@ -65,7 +65,7 @@ does not require guessing.
 Docker is the reproducible distribution and removes host PHP/Node coupling.
 
 ```sh
-docker build -t knossos-mcp:dev .
+docker build --target runtime -t knossos-mcp:dev .
 docker run --rm knossos-mcp:dev doctor --json
 ```
 
