@@ -39,14 +39,14 @@ final class BoundaryInference
             }
         }
         $rules = [];
-        $manifestKinds = ['cargo' => true, 'composer' => true, 'node' => true, 'python' => true, 'typescript' => true];
+        $manifestKinds = ['cargo', 'composer', 'node', 'python', 'typescript'];
         $legacyIdentityCounts = [];
         foreach ($units as $unit) {
-            if (!isset($manifestKinds[$unit->kind])) {
+            if (!in_array($unit->kind, $manifestKinds, true)) {
                 continue;
             }
-            $directory = dirname($unit->configPath);
-            $prefix = $directory === '.' ? '' : rtrim(str_replace('\\', '/', $directory), '/') . '/';
+            $directory = dirname(str_replace('\\', '/', $unit->configPath));
+            $prefix = $directory === '.' ? '' : rtrim($directory, '/') . '/';
             // Keyed by the manifest's own path, never by its declared name: two
             // packages can legitimately declare the same name (a vendored or forked
             // copy), and keying on the name silently dropped one whole boundary along
@@ -73,19 +73,18 @@ final class BoundaryInference
             $rules[$unit->kind . ':' . $unit->configPath] = $rule;
         }
         foreach ($rules as $key => $rule) {
-            if (!isset($rule['display']) || !isset($legacyIdentityCounts[$rule['display']])) {
-                continue;
+            if (isset($rule['display']) && isset($legacyIdentityCounts[$rule['display']])) {
+                // Two manifests colliding on the same declared name is exactly the case
+                // this fix exists for: reusing their shared display as the stable-id basis
+                // would just move the silent overwrite from the rule key to the id, so
+                // fall back to each rule's own unique key instead. That fallback is
+                // "path:"-prefixed so it can never collide with a genuine "kind:name"
+                // display belonging to some other manifest — for example a manifest
+                // literally named after another manifest's config path ("packages/a/composer.json")
+                // would otherwise land the fallback in the very same string space as a
+                // legacy identity and silently re-collide two distinct boundaries onto one id.
+                $rules[$key]['identity'] = $legacyIdentityCounts[$rule['display']] === 1 ? $rule['display'] : ('path:' . $key);
             }
-            // Two manifests colliding on the same declared name is exactly the case
-            // this fix exists for: reusing their shared display as the stable-id basis
-            // would just move the silent overwrite from the rule key to the id, so
-            // fall back to each rule's own unique key instead. That fallback is
-            // "path:"-prefixed so it can never collide with a genuine "kind:name"
-            // display belonging to some other manifest — for example a manifest
-            // literally named after another manifest's config path ("packages/a/composer.json")
-            // would otherwise land the fallback in the very same string space as a
-            // legacy identity and silently re-collide two distinct boundaries onto one id.
-            $rules[$key]['identity'] = $legacyIdentityCounts[$rule['display']] === 1 ? $rule['display'] : ('path:' . $key);
         }
         foreach ($nodes as $node) {
             // Synthetic nodes (routes, endpoints) have canonical names like
@@ -101,7 +100,7 @@ final class BoundaryInference
                 }
             }
             if (str_starts_with($node->localId, 'ts:')) {
-                $path = explode('#', $node->canonicalName, 2)[0];
+                $path = explode('#', $node->canonicalName)[0];
                 $top = explode('/', ltrim($path, '/'))[0] ?? '';
                 if ($top !== '' && str_contains($path, '/') && preg_match(self::PATH_SEGMENT, $top) === 1) {
                     $rules['module:' . $top] = ['source' => 'inferred', 'matcher' => ['type' => 'path_prefix', 'value' => $top . '/']];
@@ -122,10 +121,10 @@ final class BoundaryInference
             if (!is_array($rule) || !is_string($rule['name'] ?? null)) {
                 throw new InvalidArgumentException('Explicit boundary requires a name.');
             }
-            if (isset($seenExplicit[$rule['name']])) {
+            if (in_array($rule['name'], $seenExplicit, true)) {
                 throw new InvalidArgumentException(sprintf('Duplicate explicit boundary name: %s.', $rule['name']));
             }
-            $seenExplicit[$rule['name']] = true;
+            $seenExplicit[] = $rule['name'];
             $hasPath = is_string($rule['path_prefix'] ?? null);
             $hasNamespace = is_string($rule['namespace_prefix'] ?? null);
             if ($hasPath && $hasNamespace) {
@@ -146,16 +145,15 @@ final class BoundaryInference
         // user declaration and keeps its own identity even on a shared matcher.
         $byMatcher = [];
         foreach ($rules as $name => $rule) {
-            if ($rule['source'] !== 'inferred') {
-                continue;
+            if ($rule['source'] === 'inferred') {
+                $key = $rule['matcher']['type'] . "\0" . $rule['matcher']['value'];
+                if (!isset($byMatcher[$key])) {
+                    $byMatcher[$key] = $name;
+                } else {
+                    $rules[$byMatcher[$key]]['merged_names'][] = $rule['display'] ?? $name;
+                    unset($rules[$name]);
+                }
             }
-            $key = $rule['matcher']['type'] . "\0" . $rule['matcher']['value'];
-            if (!isset($byMatcher[$key])) {
-                $byMatcher[$key] = $name;
-                continue;
-            }
-            $rules[$byMatcher[$key]]['merged_names'][] = $rule['display'] ?? $name;
-            unset($rules[$name]);
         }
         $facts = [];
         foreach ($rules as $name => $rule) {
@@ -183,9 +181,11 @@ final class BoundaryInference
                 // pre-suffix identity (its pinned identity when it has one, otherwise
                 // its base display name).
                 $displayName .= ' (+' . implode(', ', $rule['merged_names']) . ')';
-                $identityName = $rule['identity'] ?? $baseName;
+                if ($identityName === null) {
+                    $identityName = $baseName;
+                }
             }
-            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], array_values(array_unique($members)), $identityName);
+            $facts[] = new BoundaryFact($displayName, $rule['matcher'], $rule['source'], $members, $identityName);
         }
         return $facts;
     }
@@ -209,7 +209,7 @@ final class BoundaryInference
                 && str_starts_with($node->evidence->relativePath, $matcher['value']);
         }
 
-        return str_starts_with(ltrim($node->canonicalName, '\\'), ltrim($matcher['value'], '\\'));
+        return str_starts_with(ltrim($node->canonicalName, '\\'), $matcher['value']);
     }
 
     /**

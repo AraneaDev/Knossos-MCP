@@ -202,6 +202,7 @@ final class BoundaryInferenceTest extends TestCase
         assertSame(1, count($pkgs));
         $pkg = $pkgs[0];
         assertSame('python-package:shop', $pkg->name);
+        assertSame(['type' => 'path_prefix', 'value' => 'shop/'], $pkg->matcher);
         assertSame(['py:class:shop/api.py#create_order'], $pkg->nodeReferences);
     }
 
@@ -355,6 +356,76 @@ final class BoundaryInferenceTest extends TestCase
         assertSame(['type' => 'path_prefix', 'value' => 'packages/payments/'], $fact->matcher);
     }
 
+    public function testInferWithWindowsStyleUnitPathNormalizesItsDirectoryBeforeApplyingPrefix(): void
+    {
+        $units = [$this->makeUnit('composer', 'packages\\payments\\composer.json', ['name' => 'acme/payments'])];
+
+        $facts = (new BoundaryInference())->infer($units, [], []);
+
+        assertSame(1, count($facts));
+        assertSame(['type' => 'path_prefix', 'value' => 'packages/payments/'], $facts[0]->matcher);
+    }
+
+    public function testInferWithRepeatedPathSeparatorsKeepsTheMatcherCanonical(): void
+    {
+        $units = [$this->makeUnit('composer', 'packages/payments//composer.json', ['name' => 'acme/payments'])];
+
+        $facts = (new BoundaryInference())->infer($units, [], []);
+
+        assertSame(1, count($facts));
+        assertSame(['type' => 'path_prefix', 'value' => 'packages/payments/'], $facts[0]->matcher);
+    }
+
+    public function testInferWithUnnamedSubdirectoryUnitUsesPrefixWithoutTrailingSeparatorInLabel(): void
+    {
+        $units = [$this->makeUnit('composer', 'packages/payments/composer.json')];
+
+        $facts = (new BoundaryInference())->infer($units, [], []);
+
+        assertSame(1, count($facts));
+        assertSame('composer:packages/payments', $facts[0]->name);
+    }
+
+    public function testSkippedNamespaceRuleDoesNotStopALaterManifestRule(): void
+    {
+        $node = $this->makeNode('php:class:App\\Thing', 'App\\Thing', 'src/Thing.php');
+        $units = [$this->makeUnit('python', 'packages/py/pyproject.toml', ['name' => 'acme/py'])];
+
+        $facts = (new BoundaryInference())->infer($units, [$this->makeContribution([$node])], []);
+
+        $python = array_values(array_filter($facts, static fn (BoundaryFact $fact): bool => $fact->name === 'python:acme/py'));
+        assertSame(1, count($python));
+        assertSame('python:acme/py', $python[0]->identityName);
+    }
+
+    public function testExplicitRuleDoesNotStopInferredMatcherDeduplication(): void
+    {
+        $units = [
+            $this->makeUnit('composer', 'composer.json', ['name' => 'vendor/app']),
+            $this->makeUnit('node', 'package.json', ['name' => 'web-app']),
+        ];
+        $explicit = [['name' => 'project-root', 'path_prefix' => '']];
+
+        $facts = (new BoundaryInference())->infer($units, [], $explicit);
+
+        assertSame(2, count($facts));
+        $inferred = array_values(array_filter($facts, static fn (BoundaryFact $fact): bool => $fact->source === 'inferred'));
+        assertSame(1, count($inferred));
+        assertSame('composer:vendor/app (+node:web-app)', $inferred[0]->name);
+    }
+
+    public function testMergedLanguageRuleUsesItsBaseNameWhenNoManifestIdentityExists(): void
+    {
+        $unit = $this->makeUnit('python', 'shop/pyproject.toml', ['name' => 'acme/shop']);
+        $node = $this->makeNode('py:class:shop/api.py#Order', 'shop/api.py#Order', 'shop/api.py');
+
+        $facts = (new BoundaryInference())->infer([$unit], [$this->makeContribution([$node])], []);
+
+        assertSame(1, count($facts));
+        assertSame('python-package:shop (+python:acme/shop)', $facts[0]->name);
+        assertSame('python-package:shop', $facts[0]->identityName);
+    }
+
     public function testInferOrdersBoundariesByRuleKeyNotDisplayName(): void
     {
         // Behavioural note (found during review): the original version of this test —
@@ -437,6 +508,18 @@ final class BoundaryInferenceTest extends TestCase
         $exact = array_values(array_filter($facts, static fn (BoundaryFact $f): bool => $f->name === 'trim-check'));
         assertSame(1, count($exact));
         assertSame(['php:class:App\\Checkout\\Service'], $exact[0]->nodeReferences);
+    }
+
+    public function testInferNamespaceMatchingTrimsLeadingSeparatorFromNodeName(): void
+    {
+        $explicit = [['name' => 'app', 'namespace_prefix' => 'App']];
+        $node = $this->makeNode('php:class:App\\Service', '\\App\\Service', 'src/Service.php');
+
+        $facts = (new BoundaryInference())->infer([], [$this->makeContribution([$node])], $explicit);
+
+        $app = array_values(array_filter($facts, static fn (BoundaryFact $fact): bool => $fact->name === 'app'));
+        assertSame(1, count($app));
+        assertSame(['php:class:App\\Service'], $app[0]->nodeReferences);
     }
 
     public function testInferExplicitNamespacePrefixIsSeparatorAnchoredAndDoesNotMatchSiblingPrefix(): void
@@ -525,6 +608,7 @@ final class BoundaryInferenceTest extends TestCase
         assertSame(3, count($facts));
         $identities = array_map(static fn (BoundaryFact $f): ?string => $f->identityName, $facts);
         assertSame(3, count(array_unique($identities)));
+        assertSame(true, in_array('path:composer:packages/a/composer.json', $identities, true));
         foreach ($identities as $identity) {
             assertSame(true, $identity !== null);
         }
