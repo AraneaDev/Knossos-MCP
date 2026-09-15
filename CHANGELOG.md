@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.1...v0.16.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* Fix CLI annotation option validation ([11438e0](https://github.com/AraneaDev/Knossos-MCP/commit/11438e07f81fae264e936e21dfb8a054ae8ede52))
+
 ## [0.16.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.0...v0.16.1) (2026-09-15)
 
 
