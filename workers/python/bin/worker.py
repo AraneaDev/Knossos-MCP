@@ -394,7 +394,27 @@ class ProjectModuleIndex:
             for candidate in (base / "__init__.py", base.with_suffix(".py")):
                 if self._is_project_file(candidate):
                     return candidate
+            # Last, the suffixless file itself. Discovery admits an extensionless
+            # script on its shebang, so such a file is scanned and its symbols
+            # are emitted, but a name derived from it round-trips only to
+            # ``<name>.py`` — which does not exist. Its own declarations were
+            # therefore never found, every name inside it went unresolved, and
+            # so a script's ``main()`` calling its ``check()`` produced no edge
+            # and both read as unreferenced. Gated on the same shebang rule
+            # discovery used, so ``import config`` cannot bind to a shell script
+            # named ``config``.
+            if self._is_python_script(base):
+                return base
         return None
+
+    def _is_python_script(self, path: Path) -> bool:
+        """Whether a suffixless path is a project file whose shebang names Python."""
+        if path.suffix or not self._is_project_file(path):
+            return False
+        try:
+            return names_python_in_shebang(path)
+        except UnreadableInput:
+            return False
 
     def _is_project_file(self, path: Path) -> bool:
         """Whether ``path`` is a module file this index may read.
