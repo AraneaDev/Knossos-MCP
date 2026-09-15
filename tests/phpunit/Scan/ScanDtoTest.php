@@ -329,7 +329,12 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         assertSame('scanner_typescript', $ts->stage);
         assertSame(true, count($ts->command) >= 3);
         assertSame('node', $ts->command[0]);
-        assertSame('--max-old-space-size=1024', $ts->command[1]);
+        // The flag and the field must name the same cap: the worker's own
+        // thread mirrors --max-old-space-size, while the pool compares
+        // workerMemoryMb to decide whether a cached worker still matches the
+        // policy. A default that moved in one and not the other would start a
+        // worker at one size and believe it was another.
+        assertSame('--max-old-space-size=' . $ts->workerMemoryMb, $ts->command[1]);
         $lastArg = $ts->command[count($ts->command) - 1];
         assertSame(true, str_contains($lastArg, '/opt/knossos/workers/typescript/'));
     }
@@ -485,7 +490,7 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
     {
         $ts = LanguageDescriptor::defaults('/opt/knossos')[1];
 
-        $adjusted = $ts->withMemoryMb(1024);
+        $adjusted = $ts->withMemoryMb($ts->workerMemoryMb);
 
         self::assertSame($ts, $adjusted);
     }
@@ -508,7 +513,7 @@ final class ScanDtoTest extends \Knossos\Tests\Phpunit\KnossosTestCase
         self::assertNotSame($ts, $adjusted);
         self::assertSame(768, $adjusted->workerMemoryMb);
         // The old descriptor is unchanged.
-        self::assertSame(1024, $ts->workerMemoryMb);
+        self::assertSame(2048, $ts->workerMemoryMb);
         // The command array carries the new value.
         $flags = array_values(array_filter(
             $adjusted->command,
