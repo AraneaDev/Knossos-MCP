@@ -161,6 +161,8 @@ export class TypeScriptScanner {
     constructor({ observeHostPath } = {}) {
         this.programCache = new Map();
         this.observeHostPath = observeHostPath;
+        // Reset per request; see #cacheProgram.
+        this.programsBuiltThisRequest = 0;
     }
 
     /**
@@ -198,6 +200,7 @@ export class TypeScriptScanner {
         const emitted = new Set();
         let programs = 0;
         let programsReused = 0;
+        this.programsBuiltThisRequest = 0;
 
         const request = {
             root,
@@ -360,9 +363,28 @@ export class TypeScriptScanner {
         }
     }
 
-    // Insert a program as most-recently-used and evict the least-recently-used
-    // entries beyond the cap so peak resident program memory stays bounded.
+    /**
+     * Insert a program as most-recently-used, or release the cache entirely
+     * once this request has outgrown it.
+     *
+     * The cache can only ever hit when a request builds no more programs than
+     * it holds. Above that it is evicted down to the last programs built,
+     * while the next request starts again at the first config, so it never
+     * hits: measured on a project with six programs per request, reuse was
+     * zero across six consecutive scans of an unchanged tree. Each retained
+     * program carries its own default library and type checker, so that was
+     * ~100-120MB apiece held back from a heap whose peak was already 1.35GB,
+     * bought nothing, and made the scan likelier to die of heap exhaustion.
+     *
+     * So a request that stays within the cap keeps its programs, and one that
+     * outgrows it drops them rather than paying to hold what it cannot use.
+     */
     #cacheProgram(key, program) {
+        this.programsBuiltThisRequest += 1;
+        if (this.programsBuiltThisRequest > MAX_CACHED_PROGRAMS) {
+            this.programCache.clear();
+            return;
+        }
         this.programCache.delete(key);
         this.programCache.set(key, program);
         while (this.programCache.size > MAX_CACHED_PROGRAMS) {
