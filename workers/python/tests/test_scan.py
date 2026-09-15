@@ -558,3 +558,51 @@ def test_an_app_parameter_does_not_outlive_the_function_that_declared_it(scan_co
     assert not any(n["kind"] == "route" and "/not-a-route" in n["canonical_name"] for n in nodes)
     nope = next(n for n in nodes if n["canonical_name"].endswith("nope"))
     assert nope["attributes"]["python_framework_roles"] == []
+
+
+def test_a_function_held_in_a_dispatch_table_is_referenced(scan_collect, project) -> None:
+    # Nothing calls these, so with only `calls` edges every function reached
+    # through a registry read as unreferenced dead code.
+    root = project(
+        {
+            "registry.py": (
+                "def derive_a() -> int:\n    return 1\n"
+                "\n"
+                "def derive_b() -> int:\n    return 2\n"
+                "\n"
+                "DERIVATIONS = {\n"
+                "    'a': (derive_a, 'the a count'),\n"
+                "    'b': (derive_b, 'the b count'),\n"
+                "}\n"
+            )
+        }
+    )
+
+    edges = [e for c in scan_collect(root, ["registry.py"]) for e in c["edges"]]
+    referenced = {e["target"] for e in edges if e["kind"] == "references"}
+
+    assert "py:function:registry.derive_a" in referenced
+    assert "py:function:registry.derive_b" in referenced
+
+
+def test_value_references_do_not_descend_into_calls_or_comprehensions(scan_collect, project) -> None:
+    # The narrow scope is the point: descending further would turn every
+    # mention of a symbol into an edge and inflate the in-degree the hub
+    # ranking is built on.
+    root = project(
+        {
+            "narrow.py": (
+                "def helper() -> int:\n    return 1\n"
+                "\n"
+                "def wrap(value: object) -> object:\n    return value\n"
+                "\n"
+                "WRAPPED = wrap(helper)\n"
+                "MAPPED = [helper for _ in range(3)]\n"
+            )
+        }
+    )
+
+    edges = [e for c in scan_collect(root, ["narrow.py"]) for e in c["edges"]]
+    referenced = {e["target"] for e in edges if e["kind"] == "references"}
+
+    assert "py:function:narrow.helper" not in referenced

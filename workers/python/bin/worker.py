@@ -1467,7 +1467,43 @@ class PythonAstFactCollector(ast.NodeVisitor):
             pending.extend(reversed(list(ast.iter_child_nodes(child))))
         return declarations
 
+    def emit_value_references(self, value: ast.AST | None) -> None:
+        """Record a declaration named as a value rather than called.
+
+        A dispatch table is the common shape::
+
+            DERIVATIONS = {"adr_files": (derive_adr_files, "ADR files")}
+
+        Nothing calls `derive_adr_files` anywhere, so with only `calls` edges
+        it, and every function reached the same way, read as unreferenced dead
+        code. This worker emitted no reference edges at all, which made the
+        whole registry-reached class invisible.
+
+        Deliberately narrow: an assignment's right-hand side, descending only
+        through literal containers. Walking into calls, comprehensions or
+        lambdas would turn every mention of a symbol into an edge and inflate
+        the in-degree the hub ranking is built on, which is a different claim
+        from "something holds a handle to this".
+        """
+        pending: list[ast.AST] = [] if value is None else [value]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, (ast.List, ast.Tuple, ast.Set)):
+                pending.extend(item.elts)
+                continue
+            if isinstance(item, ast.Dict):
+                pending.extend(key for key in item.keys if key is not None)
+                pending.extend(item.values)
+                continue
+            if not isinstance(item, (ast.Name, ast.Attribute)):
+                continue
+            name = dotted(item)
+            target = self.resolve_name(name, "function") if name else None
+            if target is not None and target != self.current():
+                self.facts.add_edge("references", self.current(), target, item)
+
     def visit_Assign(self, node: ast.Assign) -> None:
+        self.emit_value_references(node.value)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             variable = node.targets[0].id
             self.fastapi.register_assignment(variable, node.value)
@@ -1481,6 +1517,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.emit_value_references(node.value)
         attribute = self.self_attribute(node.target)
         if attribute is not None:
             # An annotation states the type outright, which beats inferring it.
