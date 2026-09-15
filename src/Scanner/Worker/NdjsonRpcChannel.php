@@ -129,7 +129,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 intdiv($wait % 1_000_000_000, 1_000),
             );
             if ($selected === false) {
-                throw new WorkerException('WORKER_IO_FAILED', 'Unable to write to scanner worker.');
+                throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to write to scanner worker.'));
             }
             if ($selected === 0) {
                 continue;
@@ -149,7 +149,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             foreach ($write as $writable) {
                 $bytes = @fwrite($writable, substr($line, $written));
                 if ($bytes === false) {
-                    throw new WorkerException('WORKER_PIPE_BROKEN', 'Unable to write to scanner worker.');
+                    throw new WorkerException('WORKER_PIPE_BROKEN', $this->withStderr('Unable to write to scanner worker.'));
                 }
                 $written += $bytes;
             }
@@ -205,7 +205,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 intdiv($wait % 1_000_000_000, 1_000),
             );
             if ($selected === false) {
-                throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker pipes.');
+                throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to read scanner worker pipes.'));
             }
             if ($selected === 0 && $cancelled !== null) {
                 continue;
@@ -217,7 +217,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             foreach ($read as $stream) {
                 $chunk = @fread($stream, self::READ_CHUNK_BYTES);
                 if ($chunk === false) {
-                    throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
+                    throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to read scanner worker output.'));
                 }
                 if ($stream === $stderr) {
                     if (self::isExhausted($stderr, $chunk)) {
@@ -279,7 +279,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             // select set, and a descriptor that still reports ready spun here
             // until the deadline and mislabelled the I/O error as a TIMEOUT.
             // The receive loop already answers a false read this way.
-            throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
+            throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to read scanner worker output.'));
         }
         if ($chunk === '') {
             return self::isExhausted($stream, $chunk);

@@ -317,6 +317,41 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame('WORKER_PIPE_BROKEN', $error->diagnosticCode);
     }
 
+    /**
+     * A write fails because the worker is gone, and what it printed on the way
+     * out is the only account of why. The worker dying of heap exhaustion and
+     * the host being unable to write to it are the same event seen from the
+     * two ends, so reporting only the host's end ("Unable to write to scanner
+     * worker") names the symptom and drops the cause.
+     */
+    public function testPipeBrokenReportsWhatTheWorkerPrintedBeforeItDied(): void
+    {
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if (!is_array($pair)) {
+            $this->markTestSkipped('stream_socket_pair is not available on this platform.');
+        }
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $pair[0];
+        $process->stdoutPipe = fopen('php://temp', 'r+');
+
+        $stderr = fopen('php://temp', 'r+');
+        fwrite($stderr, "FATAL ERROR: JavaScript heap out of memory\n");
+        rewind($stderr);
+        $process->stderrPipe = $stderr;
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+        $channel->beginRequest();
+        fclose($pair[1]);
+
+        $error = captureThrows(
+            static fn() => $channel->send(['jsonrpc' => '2.0', 'method' => 'ping']),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_PIPE_BROKEN', $error->diagnosticCode);
+        assertContains('JavaScript heap out of memory', $error->getMessage());
+    }
+
     // ----- readMessage() tests -----
 
     public function testReadMessageReturnsParsedJsonRpcMessage(): void
