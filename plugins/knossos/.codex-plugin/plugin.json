@@ -23,9 +23,7 @@
     "longDescription": "Use Knossos's evidence-backed architecture graph for dependency, impact, flow, placement, and change-review questions instead of repeatedly reading the whole source tree.",
     "developerName": "AraneaDev",
     "category": "Engineering",
-    "capabilities": [
-      "Read"
-    ],
+    "capabilities": ["Read"],
     "websiteURL": "https://github.com/AraneaDev/Knossos-MCP",
     "defaultPrompt": [
       "Orient me using the Knossos architecture graph.",
