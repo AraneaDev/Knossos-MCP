@@ -68,12 +68,34 @@ final class RootsCommand implements CliCommand
         $path = AllowedRoots::normaliseRoot($path);
 
         $configPath = AllowedRoots::defaultConfigPath($context->databasePath());
-        $roots = self::readRoots($configPath);
+        $fresh = !is_file($configPath);
         $json = $context->options->flag($options, 'json');
         $named = self::locationWasNamed($context);
-        $effect = $named
-            ? 'A server configured with that roots file re-reads it per request, so %s with no restart.'
-            : 'That location came from the working directory, not from KNOSSOS_ROOTS_FILE or KNOSSOS_DATA_DIR, so it may not be the file your server reads. Check server_info.';
+        // The natural way to grant a project is to run this from inside it,
+        // and that is exactly the working directory that resolves the roots
+        // file to a brand-new store under the project being granted. The
+        // grant then lands in a file no server reads, and the project gains
+        // an untracked `.knossos/` directory of its own. Nobody means that,
+        // so it is refused rather than warned about.
+        if (!$named && $fresh && self::inside($path, $configPath)) {
+            throw new InvalidArgumentException(sprintf(
+                "Refusing to create a new roots file at %s, inside the directory being granted.\n"
+                . "That path came from the working directory, so it is a new store no running server reads.\n"
+                . "Name the location instead: KNOSSOS_DATA_DIR=<dir>, KNOSSOS_ROOTS_FILE=<file>, or --db=<file>.\n"
+                . 'server_info reports the roots file your server actually reads.',
+                $configPath,
+            ));
+        }
+        $roots = self::readRoots($configPath);
+        $effect = match (true) {
+            $named => 'A server configured with that roots file re-reads it per request, so %s with no restart.',
+            // No %s: like the plain working-directory case below, this must
+            // not promise an effect. It is a new file nothing is reading yet.
+            $fresh => 'That is a NEW roots file at a location that came from the working directory, '
+                . 'not from KNOSSOS_ROOTS_FILE or KNOSSOS_DATA_DIR. A server started anywhere else reads a '
+                . 'different one and will not see this grant. Check server_info.',
+            default => 'That location came from the working directory, not from KNOSSOS_ROOTS_FILE or KNOSSOS_DATA_DIR, so it may not be the file your server reads. Check server_info.',
+        };
 
         // Existing entries are compared normalised but rewritten verbatim: a
         // root someone typed with a trailing slash before this fix is already
@@ -127,6 +149,12 @@ final class RootsCommand implements CliCommand
             ),
         );
         return 0;
+    }
+
+    /** Whether a path lies within a directory, by the reader's own spelling of a root. */
+    private static function inside(string $directory, string $path): bool
+    {
+        return str_starts_with($path, rtrim($directory, '/') . '/');
     }
 
     /**

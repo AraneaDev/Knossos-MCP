@@ -83,6 +83,11 @@ final class RootsCommandTest extends KnossosTestCase
         putenv('KNOSSOS_DATA_DIR');
         putenv('KNOSSOS_ROOTS_FILE');
         chdir($this->tempDir);
+        // Granted from the working directory but not under it, so the roots
+        // file is merely in the wrong place rather than inside the project
+        // being granted, which is refused outright instead.
+        $granted = sys_get_temp_dir() . '/knossos-granted-' . bin2hex(random_bytes(4));
+        mkdir($granted, 0o755, true);
         try {
             // No database path at all, so the runtime falls back to <cwd>/.knossos,
             // which the chdir above has placed inside this test's own directory.
@@ -93,9 +98,10 @@ final class RootsCommandTest extends KnossosTestCase
                 null,
             );
             ob_start();
-            (new RootsCommand())->run('allow-root', [$this->tempDir], [], $context);
+            (new RootsCommand())->run('allow-root', [$granted], [], $context);
             $output = (string) ob_get_clean();
         } finally {
+            exec('rm -rf ' . escapeshellarg($granted));
             chdir($previousCwd);
             putenv(is_string($previousData) ? 'KNOSSOS_DATA_DIR=' . $previousData : 'KNOSSOS_DATA_DIR');
             putenv(is_string($previousFile) ? 'KNOSSOS_ROOTS_FILE=' . $previousFile : 'KNOSSOS_ROOTS_FILE');
@@ -105,6 +111,47 @@ final class RootsCommandTest extends KnossosTestCase
         assertSame(false, str_contains($output, 'no restart'));
         assertSame(true, str_contains($output, 'came from the working directory'));
         assertSame(true, str_contains($output, 'server_info'));
+    }
+
+    #[Group('cli')]
+    public function testRefusesToCreateANewRootsFileInsideTheDirectoryBeingGranted(): void
+    {
+        // The natural way to grant a project is to run this from inside it,
+        // and that working directory is exactly what resolves the roots file
+        // to a new store under the project itself. The grant then lands in a
+        // file no server reads, and the project gains an untracked .knossos/
+        // directory. Warning about it was not enough: the line above the
+        // warning says "Added", which reads as success.
+        $previousData = getenv('KNOSSOS_DATA_DIR');
+        $previousFile = getenv('KNOSSOS_ROOTS_FILE');
+        $previousCwd = (string) getcwd();
+        putenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_ROOTS_FILE');
+        chdir($this->tempDir);
+        try {
+            $context = new CliCommandContext(
+                new CliOptionParser(),
+                new CliInputLoader(),
+                new RuntimeFactory(self::repositoryRoot()),
+                null,
+            );
+            $error = null;
+            try {
+                (new RootsCommand())->run('allow-root', [$this->tempDir], ['execute' => true], $context);
+            } catch (InvalidArgumentException $thrown) {
+                $error = $thrown;
+            }
+        } finally {
+            chdir($previousCwd);
+            putenv(is_string($previousData) ? 'KNOSSOS_DATA_DIR=' . $previousData : 'KNOSSOS_DATA_DIR');
+            putenv(is_string($previousFile) ? 'KNOSSOS_ROOTS_FILE=' . $previousFile : 'KNOSSOS_ROOTS_FILE');
+        }
+
+        assertSame(true, $error instanceof InvalidArgumentException);
+        assertContains('inside the directory being granted', (string) $error?->getMessage());
+        assertContains('KNOSSOS_DATA_DIR', (string) $error?->getMessage());
+        // Nothing was written, so the project is left exactly as it was found.
+        assertSame(false, is_dir($this->tempDir . '/.knossos'));
     }
 
     #[Group('cli')]
