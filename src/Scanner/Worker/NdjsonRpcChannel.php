@@ -25,6 +25,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     /** Stdout bytes buffered during the current send(), which nothing classifies. */
     private int $sendBufferedBytes = 0;
     private string $stderrBuffer = '';
+    /** The previous request's stderr, kept so a worker's dying words outlive the request it died in. */
+    private string $lastWords = '';
     private int $stderrBytes = 0;
     /** Bytes of `scan/input_hashes` frames this request, counted apart from the output budget. */
     private int $inputHashesBytes = 0;
@@ -54,6 +56,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->process->start();
         $this->stdoutBuffer = '';
         $this->stdoutOffset = 0;
+        // A worker prints its last words as it dies, but the host only finds
+        // out on the next request's write, by which point clearing the buffer
+        // here would have thrown them away. That is the common shape of a
+        // fatal: V8 reports heap exhaustion, the process aborts, and the
+        // following send fails with a broken pipe and nothing to say. So the
+        // previous request's output is kept as a fallback for exactly that.
+        $this->lastWords = $this->stderrBuffer === '' ? $this->lastWords : $this->stderrBuffer;
         $this->stderrBuffer = '';
         $this->stderrBytes = 0;
         $this->inputHashesBytes = 0;
@@ -435,6 +444,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     private function withStderr(string $message): string
     {
         $stderr = trim($this->stderrBuffer);
-        return $stderr === '' ? $message : $message . ' Worker stderr: ' . $stderr;
+        if ($stderr !== '') {
+            return $message . ' Worker stderr: ' . $stderr;
+        }
+        $earlier = trim($this->lastWords);
+
+        return $earlier === ''
+            ? $message
+            : $message . ' Worker stderr (from its previous request, before it died): ' . $earlier;
     }
 }

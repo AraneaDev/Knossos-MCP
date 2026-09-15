@@ -352,6 +352,50 @@ final class NdjsonRpcChannelTest extends TestCase
         assertContains('JavaScript heap out of memory', $error->getMessage());
     }
 
+    /**
+     * The fatal is printed in one request and discovered in the next.
+     *
+     * V8 reports heap exhaustion, the process aborts, and the host only learns
+     * of it when the following send hits a broken pipe. Clearing the buffer at
+     * the start of that request threw away the one line explaining the death,
+     * so a real scan failed repeatedly with "Unable to write to scanner
+     * worker" and nothing else.
+     */
+    public function testAWorkersDyingWordsSurviveIntoTheRequestThatFindsItGone(): void
+    {
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if (!is_array($pair)) {
+            $this->markTestSkipped('stream_socket_pair is not available on this platform.');
+        }
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $pair[0];
+        $process->stdoutPipe = fopen('php://temp', 'r+');
+
+        $stderr = fopen('php://temp', 'r+');
+        fwrite($stderr, "FATAL ERROR: JavaScript heap out of memory\n");
+        rewind($stderr);
+        $process->stderrPipe = $stderr;
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+
+        // The request in which the worker printed and died. The send succeeds;
+        // the pipe is still open.
+        $channel->beginRequest();
+        $channel->send(['jsonrpc' => '2.0', 'method' => 'ping']);
+
+        // The next request, which is where the death is discovered.
+        $channel->beginRequest();
+        fclose($pair[1]);
+        $error = captureThrows(
+            static fn() => $channel->send(['jsonrpc' => '2.0', 'method' => 'ping']),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_PIPE_BROKEN', $error->diagnosticCode);
+        assertContains('JavaScript heap out of memory', $error->getMessage());
+        assertContains('before it died', $error->getMessage());
+    }
+
     // ----- readMessage() tests -----
 
     public function testReadMessageReturnsParsedJsonRpcMessage(): void
