@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.3](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.2...v0.16.3) (2026-09-15)
+
+
+### Documentation
+
+* **readme:** credit the author and link the write-up ([#96](https://github.com/AraneaDev/Knossos-MCP/issues/96)) ([ddd5e17](https://github.com/AraneaDev/Knossos-MCP/commit/ddd5e172e152dbbc588ac050fa674e2c4fbd4e23))
+
+
+### Continuous integration
+
+* **release:** list the changelog sections the other tools use ([#97](https://github.com/AraneaDev/Knossos-MCP/issues/97)) ([6b95980](https://github.com/AraneaDev/Knossos-MCP/commit/6b959805a32782edb9fd702adf1981128351c2ba))
+
 ## [0.16.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.1...v0.16.2) (2026-09-15)
 
 
