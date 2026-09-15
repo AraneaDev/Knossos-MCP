@@ -184,11 +184,11 @@ final class LanguageScanRunnerTest extends TestCase
         );
     }
 
-    private function planWithOneFile(): ScanPlan
+    private function planWithOneFile(string $language = 'php'): ScanPlan
     {
         $file = new \stdClass();
-        $file->language = 'php';
-        $file->relativePath = 'src/Foo.php';
+        $file->language = $language;
+        $file->relativePath = $language === 'php' ? 'src/Foo.php' : 'src/foo.ts';
         $file->contentHash = 'hashfoo';
 
         return new ScanPlan(
@@ -234,6 +234,52 @@ final class LanguageScanRunnerTest extends TestCase
         assertSame(1, count($result->workerDiagnostics));
         assertSame('knossos.php', $result->workerDiagnostics[0]['owner']);
         assertSame('WORKER_EXITED', $result->workerDiagnostics[0]['code']);
+        assertSame(
+            'php scanner failed: Scanner worker exited unexpectedly.',
+            $result->workerDiagnostics[0]['message'],
+        );
+    }
+
+    public function testAHeapExhaustionFailureNamesTheSettingThatFixesIt(): void
+    {
+        // V8's own words do not mention that the cap is a setting, or what it
+        // is called, and the scan still commits with the language missing. A
+        // reader who is not told has to work it out from the source.
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        $pool->method('client')->willThrowException(new WorkerException(
+            'WORKER_EXITED',
+            'Scanner worker exited before responding (exit 134). Worker stderr: FATAL ERROR: '
+                . 'Reached heap limit Allocation failed - JavaScript heap out of memory',
+        ));
+        $descriptor = new LanguageDescriptor(
+            key: 'typescript',
+            stage: 'typescript-analysis',
+            languages: ['typescript'],
+            command: ['node', '--max-old-space-size=2048', 'worker.js'],
+            workerMemoryMb: 2048,
+        );
+        $runner = new LanguageScanRunner([$descriptor], $pool, new ContributionCacheService());
+
+        $result = $runner->run($this->planWithOneFile('typescript'), new CancellationToken());
+
+        $message = $result->workerDiagnostics[0]['message'] ?? '';
+        assertContains('JavaScript heap out of memory', $message);
+        assertContains('limits.worker_memory_mb', $message);
+        assertContains('2048 MB', $message);
+    }
+
+    public function testAnUnrelatedWorkerFailureCarriesNoMemoryAdvice(): void
+    {
+        // The advice is only right when the heap is what killed it. Attaching
+        // it to every failure would train the reader to ignore it.
+        $pool = $this->createStub(LanguageWorkerPool::class);
+        $pool->method('client')->willThrowException(
+            new WorkerException('WORKER_EXITED', 'Scanner worker exited unexpectedly.'),
+        );
+        $runner = new LanguageScanRunner([$this->phpDescriptor()], $pool, new ContributionCacheService());
+
+        $result = $runner->run($this->planWithOneFile(), new CancellationToken());
+
         assertSame(
             'php scanner failed: Scanner worker exited unexpectedly.',
             $result->workerDiagnostics[0]['message'],
