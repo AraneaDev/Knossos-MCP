@@ -258,10 +258,38 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             if (!$status['running'] && feof($stdout)) {
                 throw new WorkerException(
                     'WORKER_EXITED',
-                    $this->withStderr(sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode'])),
+                    $this->withStderr(self::exitDescription($status)),
                 );
             }
         }
+    }
+
+    /**
+     * How a worker ended, in terms that point at a cause.
+     *
+     * A killed worker prints nothing, so the exit status is the only evidence
+     * there is. Reporting it as "exit -1" names the placeholder this code uses
+     * for a process whose handle is already gone, which reads as a Knossos
+     * fault and sent a real investigation the wrong way: the worker had in
+     * fact been SIGTERMed by the host's out-of-memory killer, which leaves no
+     * message anywhere the scan can see.
+     *
+     * @param array{running: bool, signaled: bool, exitcode: int, termsig: int, ...} $status
+     */
+    private static function exitDescription(array $status): string
+    {
+        if ($status['signaled'] && $status['termsig'] > 0) {
+            return sprintf(
+                'Scanner worker was killed by signal %d before responding. Nothing in the worker chose this, so look '
+                . 'outside it: an out-of-memory killer or a supervisor stopping the process.',
+                $status['termsig'],
+            );
+        }
+        if ($status['exitcode'] < 0) {
+            return 'Scanner worker exited before responding; its exit status was no longer available to read.';
+        }
+
+        return sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode']);
     }
 
     /** {@inheritDoc} */

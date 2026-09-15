@@ -22,6 +22,11 @@ final class NdjsonRpcChannelTest extends TestCase
 
             public bool $started = false;
             public bool $running = true;
+            // How the process ended, so a test can distinguish a worker that
+            // chose its exit code from one something else killed.
+            public bool $signaled = false;
+            public int $termsig = 0;
+            public int $exitcode = -1;
 
             public function start(): void
             {
@@ -63,10 +68,10 @@ final class NdjsonRpcChannelTest extends TestCase
                     'command' => '',
                     'pid' => 0,
                     'running' => $this->running,
-                    'signaled' => false,
+                    'signaled' => $this->signaled,
                     'stopped' => false,
-                    'exitcode' => -1,
-                    'termsig' => 0,
+                    'exitcode' => $this->exitcode,
+                    'termsig' => $this->termsig,
                     'stopsig' => 0,
                 ];
             }
@@ -606,6 +611,54 @@ final class NdjsonRpcChannelTest extends TestCase
         );
 
         assertSame('WORKER_EXITED', $error->diagnosticCode);
+    }
+
+    public function testAWorkerKilledBySignalSaysSoRatherThanReportingExitMinusOne(): void
+    {
+        // The real case: the host's out-of-memory killer SIGTERMs the worker.
+        // It prints nothing, so the exit status is the only evidence there is,
+        // and "exit -1" names this code's own placeholder for a process whose
+        // handle is gone. That reads as a Knossos fault and sent a real
+        // investigation looking inside the scanner for hours.
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+        $deadline = $channel->beginRequest();
+
+        $process->running = false;
+        $process->signaled = true;
+        $process->termsig = 15;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
+
+        $error = captureThrows(
+            static fn() => $channel->readMessage($deadline),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_EXITED', $error->diagnosticCode);
+        assertContains('killed by signal 15', $error->getMessage());
+        assertContains('out-of-memory killer', $error->getMessage());
+    }
+
+    public function testAWorkerThatChoseItsExitCodeStillReportsThatCode(): void
+    {
+        $process = $this->mockProcess();
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits(requestTimeoutMs: 100));
+        $deadline = $channel->beginRequest();
+
+        $process->running = false;
+        $process->exitcode = 134;
+        ftruncate($process->pipes[1], 0);
+        fclose($process->pipes[1]);
+        $process->pipes[1] = fopen('php://temp', 'r');
+
+        $error = captureThrows(
+            static fn() => $channel->readMessage($deadline),
+            WorkerException::class,
+        );
+
+        assertContains('exit 134', $error->getMessage());
     }
 
     public function testReadMessageThrowsExitedOnPartialLineWithoutBusySpin(): void
