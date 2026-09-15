@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.0...v0.16.1) (2026-09-15)
+
+
+### Bug Fixes
+
+* Improve boundary inference resilience ([af1864a](https://github.com/AraneaDev/Knossos-MCP/commit/af1864adc2cbf6854fcdc53020b15589c9007759))
+
 ## [0.16.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.15.2...v0.16.0) (2026-09-15)
 
 
