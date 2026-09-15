@@ -2390,19 +2390,41 @@ function allowedCompilerPath(root, candidate) {
     if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
     const relative = normalize(path.relative(root, normalized));
-    if (
-        relative !== "" &&
-        relative
-            .split("/")
-            .some(
-                (segment) =>
-                    isExcludedDirectoryName(segment) &&
-                    !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
-            )
-    )
-        return false;
+    if (relative !== "" && excludedByProjectLayout(relative)) return false;
     const walked = walkPath(normalized);
     return walked.location === undefined || contains(root, walked.location);
+}
+
+/**
+ * Whether the project's own directory exclusions refuse a project-relative path.
+ *
+ * The exclusions name directories a project builds into or vendors under, so
+ * they describe the project's layout. Inside a dependency tree they describe
+ * nothing: a package ships its declarations wherever its own package.json
+ * points, and `dist` is the most common answer of all. Applying the project's
+ * rules there refused `node_modules/@eslint/core/dist/cjs/types.d.cts`, the one
+ * file that package's types live in, which cost twice over: the refusal is
+ * recorded as a failed read, and a failed read of a file that reads perfectly
+ * well is what UndiscoveredInputVerifier fails the whole scan on at commit;
+ * and until it does, a symbol the refused declaration names resolves to
+ * `unknown`, so `class A extends Dep` is recorded as extending nothing anyone
+ * can name.
+ *
+ * So the check stops at the first resolution-allowed segment: above it the
+ * project's layout governs, below it the dependency's does.
+ */
+function excludedByProjectLayout(relative) {
+    const segments = relative.split("/");
+    const dependencyRoot = segments.findIndex((segment) =>
+        RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+    );
+    const governed =
+        dependencyRoot === -1 ? segments : segments.slice(0, dependencyRoot);
+    return governed.some(
+        (segment) =>
+            isExcludedDirectoryName(segment) &&
+            !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+    );
 }
 
 /**
