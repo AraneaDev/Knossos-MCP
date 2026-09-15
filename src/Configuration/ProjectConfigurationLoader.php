@@ -19,8 +19,22 @@ use Knossos\Scanner\Worker\WorkerExecutionPolicy;
  */
 final class ProjectConfigurationLoader
 {
-    private const ROOT_KEYS = ['$schema', 'version', 'ignores', 'limits', 'boundaries', 'frameworks', 'snapshot_retention', 'policies', 'quality_budgets', 'dead_code_suppressions'];
-    private const BUDGET_KEYS = ['new_cycles', 'boundary_violations', 'error_diagnostics', 'warning_diagnostics', 'hub_degree_growth', 'unreferenced_candidates', 'public_surface_changes'];
+    public const ROOT_KEYS = ['$schema', 'version', 'ignores', 'limits', 'boundaries', 'frameworks', 'snapshot_retention', 'policies', 'quality_budgets', 'dead_code_suppressions'];
+    public const BUDGET_KEYS = ['new_cycles', 'boundary_violations', 'error_diagnostics', 'warning_diagnostics', 'hub_degree_growth', 'unreferenced_candidates', 'public_surface_changes'];
+
+    /**
+     * Keys each nested object accepts, named so the published schema can be
+     * checked against them.
+     *
+     * `worker_memory_mb` was accepted here and absent from
+     * `schemas/project-config-v1.schema.json`, so an editor validating a
+     * `knossos.json` against the published schema reported the one key that
+     * raises a worker's heap as invalid. Nothing compared the two.
+     * {@see \Knossos\Tests\Phpunit\Configuration\ProjectConfigurationSchemaAgreementTest} now does.
+     */
+    public const LIMIT_KEYS = ['max_files', 'max_file_bytes', 'worker_timeout_ms', 'worker_memory_mb'];
+    public const BOUNDARY_KEYS = ['name', 'path_prefix', 'namespace_prefix'];
+    public const POLICY_KEYS = ['id', 'from_boundary', 'allow_targets', 'deny_targets', 'edge_kinds'];
 
     private function __construct() {}
 
@@ -68,7 +82,7 @@ final class ProjectConfigurationLoader
         // file rather than surfacing mid-discovery on an arbitrary path.
         new IgnoreMatcher($ignores);
         $limits = self::object($data['limits'] ?? [], 'limits');
-        self::knownKeys($limits, ['max_files', 'max_file_bytes', 'worker_timeout_ms', 'worker_memory_mb'], 'limits');
+        self::knownKeys($limits, self::LIMIT_KEYS, 'limits');
         $maxFiles = self::optionalInteger($limits, 'max_files', 1, 100_000);
         $maxBytes = self::optionalInteger($limits, 'max_file_bytes', 1, 100_000_000);
         $workerTimeoutMs = self::optionalInteger(
@@ -93,7 +107,7 @@ final class ProjectConfigurationLoader
         $boundaries = self::objectList($data['boundaries'] ?? [], 'boundaries', 50);
         $seenBoundaryNames = [];
         foreach ($boundaries as $boundary) {
-            self::knownKeys($boundary, ['name', 'path_prefix', 'namespace_prefix'], 'boundary');
+            self::knownKeys($boundary, self::BOUNDARY_KEYS, 'boundary');
             if (!is_string($boundary['name'] ?? null) || $boundary['name'] === '') {
                 throw new DiscoveryException('PROJECT_CONFIG_INVALID: boundary name must be non-empty.');
             }
@@ -117,7 +131,7 @@ final class ProjectConfigurationLoader
         }
         $policies = self::objectList($data['policies'] ?? [], 'policies', 50);
         foreach ($policies as $policy) {
-            self::knownKeys($policy, ['id', 'from_boundary', 'allow_targets', 'deny_targets', 'edge_kinds'], 'policy');
+            self::knownKeys($policy, self::POLICY_KEYS, 'policy');
             if (!is_string($policy['id'] ?? null) || $policy['id'] === '' || !is_string($policy['from_boundary'] ?? null) || $policy['from_boundary'] === '') {
                 throw new DiscoveryException('PROJECT_CONFIG_INVALID: policies require non-empty id and from_boundary.');
             }
