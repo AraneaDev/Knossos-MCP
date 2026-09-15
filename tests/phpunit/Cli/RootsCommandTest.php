@@ -11,6 +11,7 @@ use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\Command\RootsCommand;
 use Knossos\Runtime\RuntimeFactory;
 use Knossos\Tests\Phpunit\KnossosTestCase;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 
 final class RootsCommandTest extends KnossosTestCase
@@ -137,7 +138,7 @@ final class RootsCommandTest extends KnossosTestCase
             );
             $error = null;
             try {
-                (new RootsCommand())->run('allow-root', [$this->tempDir], ['execute' => true], $context);
+                (new RootsCommand())->run('allow-root', [$this->tempDir], ['execute' => ['true']], $context);
             } catch (InvalidArgumentException $thrown) {
                 $error = $thrown;
             }
@@ -151,6 +152,65 @@ final class RootsCommandTest extends KnossosTestCase
         assertContains('inside the directory being granted', (string) $error?->getMessage());
         assertContains('KNOSSOS_DATA_DIR', (string) $error?->getMessage());
         // Nothing was written, so the project is left exactly as it was found.
+        assertSame(false, is_dir($this->tempDir . '/.knossos'));
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function aliasedSpellings(): array
+    {
+        return [
+            'a dot segment' => ['..'],
+            'a symlink' => ['link'],
+        ];
+    }
+
+    #[Group('cli')]
+    #[DataProvider('aliasedSpellings')]
+    public function testTheRefusalHoldsForAPathThatOnlyLooksLikeItIsElsewhere(string $alias): void
+    {
+        // The containment check was lexical, so a path that resolves into the
+        // granted tree but is not spelled that way slipped past it and wrote
+        // the unused store into the project after all.
+        $previousData = getenv('KNOSSOS_DATA_DIR');
+        $previousFile = getenv('KNOSSOS_ROOTS_FILE');
+        $previousCwd = (string) getcwd();
+        putenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_ROOTS_FILE');
+        chdir($this->tempDir);
+
+        if ($alias === '..') {
+            $granted = $this->tempDir . '/../' . basename($this->tempDir);
+        } else {
+            $granted = sys_get_temp_dir() . '/knossos-link-' . bin2hex(random_bytes(4));
+            symlink($this->tempDir, $granted);
+        }
+
+        try {
+            $context = new CliCommandContext(
+                new CliOptionParser(),
+                new CliInputLoader(),
+                new RuntimeFactory(self::repositoryRoot()),
+                null,
+            );
+            $error = null;
+            try {
+                (new RootsCommand())->run('allow-root', [$granted], ['execute' => ['true']], $context);
+            } catch (InvalidArgumentException $thrown) {
+                $error = $thrown;
+            }
+        } finally {
+            if ($alias !== '..') {
+                @unlink($granted);
+            }
+            chdir($previousCwd);
+            putenv(is_string($previousData) ? 'KNOSSOS_DATA_DIR=' . $previousData : 'KNOSSOS_DATA_DIR');
+            putenv(is_string($previousFile) ? 'KNOSSOS_ROOTS_FILE=' . $previousFile : 'KNOSSOS_ROOTS_FILE');
+        }
+
+        assertSame(true, $error instanceof InvalidArgumentException);
+        assertContains('inside the directory being granted', (string) $error?->getMessage());
         assertSame(false, is_dir($this->tempDir . '/.knossos'));
     }
 

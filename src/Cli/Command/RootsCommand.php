@@ -151,10 +151,46 @@ final class RootsCommand implements CliCommand
         return 0;
     }
 
-    /** Whether a path lies within a directory, by the reader's own spelling of a root. */
+    /**
+     * Whether a path lies within a directory, whatever either is spelled like.
+     *
+     * A lexical prefix test answers for the spelling rather than the location,
+     * so `<project>/../<project>` and a symlink to the project both read as
+     * somewhere else and walked straight past the refusal, writing the unused
+     * store into the project after all. Both sides are resolved first.
+     */
     private static function inside(string $directory, string $path): bool
     {
-        return str_starts_with($path, rtrim($directory, '/') . '/');
+        $directory = realpath($directory);
+        if ($directory === false) {
+            return false;
+        }
+
+        return str_starts_with(self::canonical($path), rtrim($directory, '/') . '/');
+    }
+
+    /**
+     * A path with its deepest existing ancestor resolved.
+     *
+     * The roots file is the path being tested and it usually does not exist
+     * yet, which is the whole case this guard is for, so realpath() alone
+     * answers false. Its nearest existing ancestor does resolve, and the
+     * segments below it are names nothing can alias.
+     */
+    private static function canonical(string $path): string
+    {
+        $unresolved = [];
+        $current = $path;
+        while (($resolved = realpath($current)) === false) {
+            $parent = dirname($current);
+            if ($parent === $current) {
+                return $path;
+            }
+            array_unshift($unresolved, basename($current));
+            $current = $parent;
+        }
+
+        return $unresolved === [] ? $resolved : rtrim($resolved, '/') . '/' . implode('/', $unresolved);
     }
 
     /**

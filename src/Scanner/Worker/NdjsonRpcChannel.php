@@ -62,7 +62,12 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         // fatal: V8 reports heap exhaustion, the process aborts, and the
         // following send fails with a broken pipe and nothing to say. So the
         // previous request's output is kept as a fallback for exactly that.
-        $this->lastWords = $this->stderrBuffer === '' ? $this->lastWords : $this->stderrBuffer;
+        //
+        // The PREVIOUS request's, not the last one that happened to say
+        // something: a silent request is evidence there was nothing to say,
+        // and reaching further back would blame one request's failure on
+        // output from before a request that succeeded in between.
+        $this->lastWords = $this->stderrBuffer;
         $this->stderrBuffer = '';
         $this->stderrBytes = 0;
         $this->inputHashesBytes = 0;

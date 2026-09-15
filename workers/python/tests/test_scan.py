@@ -606,3 +606,45 @@ def test_value_references_do_not_descend_into_calls_or_comprehensions(scan_colle
     referenced = {e["target"] for e in edges if e["kind"] == "references"}
 
     assert "py:function:narrow.helper" not in referenced
+
+
+def test_routes_register_through_a_qualified_fastapi_annotation(scan_collect, project) -> None:
+    # `import fastapi` binds the module, not the class, so an exact lookup of
+    # "fastapi.FastAPI" finds nothing and every route in the function is lost.
+    root = project(
+        {
+            "endpoints.py": (
+                "import fastapi\n"
+                "\n"
+                "def register(app: fastapi.FastAPI) -> None:\n"
+                "    @app.get('/api/health')\n"
+                "    def health_check() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    handler = next(n for n in nodes if n["canonical_name"].endswith("health_check"))
+    assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]
+
+
+def test_routes_register_through_an_aliased_fastapi_import(scan_collect, project) -> None:
+    root = project(
+        {
+            "endpoints.py": (
+                "import fastapi as fa\n"
+                "\n"
+                "def register(router: fa.APIRouter) -> None:\n"
+                "    @router.get('/api/items')\n"
+                "    def list_items() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    handler = next(n for n in nodes if n["canonical_name"].endswith("list_items"))
+    assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]

@@ -401,6 +401,48 @@ final class NdjsonRpcChannelTest extends TestCase
         assertContains('before it died', $error->getMessage());
     }
 
+    public function testStderrFromTwoRequestsAgoIsNotBlamedOnThisFailure(): void
+    {
+        // Keeping the last NON-EMPTY output meant a request that printed, a
+        // silent one after it, and then a failure would report the first
+        // request's words as the dying words of the third. A silent request
+        // is evidence there was nothing to say, not a reason to reach further
+        // back.
+        $pair = @stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        if (!is_array($pair)) {
+            $this->markTestSkipped('stream_socket_pair is not available on this platform.');
+        }
+        $process = $this->pipeOnlyProcess();
+        $process->stdinPipe = $pair[0];
+        $process->stdoutPipe = fopen('php://temp', 'r+');
+
+        $stderr = fopen('php://temp', 'r+');
+        fwrite($stderr, "a warning from long ago\n");
+        rewind($stderr);
+        $process->stderrPipe = $stderr;
+
+        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
+
+        // Request A prints.
+        $channel->beginRequest();
+        $channel->send(['jsonrpc' => '2.0', 'method' => 'ping']);
+
+        // Request B says nothing.
+        $channel->beginRequest();
+        $channel->send(['jsonrpc' => '2.0', 'method' => 'ping']);
+
+        // Request C fails, with nothing of its own and nothing before it.
+        $channel->beginRequest();
+        fclose($pair[1]);
+        $error = captureThrows(
+            static fn() => $channel->send(['jsonrpc' => '2.0', 'method' => 'ping']),
+            WorkerException::class,
+        );
+
+        assertSame('WORKER_PIPE_BROKEN', $error->diagnosticCode);
+        assertSame(false, str_contains($error->getMessage(), 'a warning from long ago'));
+    }
+
     // ----- readMessage() tests -----
 
     public function testReadMessageReturnsParsedJsonRpcMessage(): void

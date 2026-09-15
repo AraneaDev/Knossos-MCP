@@ -941,7 +941,11 @@ class FastApiFactEnricher:
         restore: list[tuple[str, tuple[str, str] | None]] = []
         for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
             named = None if argument.annotation is None else dotted(argument.annotation)
-            resolved = self.aliases.get(named or "", "")
+            # Through resolve_name rather than a bare alias lookup: `import
+            # fastapi` binds the module, so an exact lookup of
+            # "fastapi.FastAPI" finds nothing and every route in the function
+            # is lost. resolve_name walks the module alias to the symbol.
+            resolved = (named and self.resolve_name(named, "class")) or ""
             if not resolved.endswith(("fastapi.FastAPI", "fastapi.APIRouter")):
                 continue
             restore.append((argument.arg, self.framework_objects.get(argument.arg)))

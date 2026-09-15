@@ -351,8 +351,16 @@ final readonly class LanguageScanRunner
      */
     private static function withRemedy(string $message, LanguageDescriptor $descriptor, ?int $memoryMb): string
     {
+        // A descriptor with no cap of its own encodes no memory flag, so
+        // LanguageDescriptor::withMemoryMb() returns it unchanged and a
+        // configured value never reaches that worker. Quoting the value at it
+        // would state a cap it never ran under, and name a setting that would
+        // not have helped.
+        if ($descriptor->workerMemoryMb === null) {
+            return $message;
+        }
         $memoryMb ??= $descriptor->workerMemoryMb;
-        if ($memoryMb === null || !preg_match('/heap (?:limit|out of memory)|out of memory/i', $message)) {
+        if (!preg_match('/heap (?:limit|out of memory)|out of memory/i', $message)) {
             return $message;
         }
 
