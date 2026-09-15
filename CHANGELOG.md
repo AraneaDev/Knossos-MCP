@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.16.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.15.2...v0.16.0) (2026-09-15)
+
+
+### Features
+
+* **python:** discover FastAPI routes declared inside a register function ([1e8c308](https://github.com/AraneaDev/Knossos-MCP/commit/1e8c30894d13f21ab359afadc31bcdb918a39a60))
+* **python:** record a declaration held as a value, not just called ([c49847f](https://github.com/AraneaDev/Knossos-MCP/commit/c49847fb8d521b9904999e33cc64f618ed794243))
+* **scan:** report how much heap the worker needed, and name the setting that raises it ([d9b55ff](https://github.com/AraneaDev/Knossos-MCP/commit/d9b55ff989be4f5674b965912f2e3bfa521965ea))
+
+
+### Bug Fixes
+
+* **cli:** refuse to create a roots store inside the granted directory ([2b78a9a](https://github.com/AraneaDev/Knossos-MCP/commit/2b78a9a008f322c3490e696c4ee8aed3751b06d2))
+* **config:** declare worker_memory_mb in the published schema ([6ab7ea7](https://github.com/AraneaDev/Knossos-MCP/commit/6ab7ea754fe3e94392bc96bc7f693aae5e55471a))
+* **python:** resolve a suffixless script's own declarations ([5942e0b](https://github.com/AraneaDev/Knossos-MCP/commit/5942e0b60062f2368bef4078f3e6883caf95739e))
+* **scan:** address review findings on the worker diagnostics and root guard ([4528e1c](https://github.com/AraneaDev/Knossos-MCP/commit/4528e1cb4b267977e6b20a1796d97621e810d05f))
+* **scan:** let a dependency's own layout govern below node_modules ([5b9de11](https://github.com/AraneaDev/Knossos-MCP/commit/5b9de1194ea823673276e65052039b1c73b9ae11))
+* **scan:** raise the TypeScript worker's default heap to 2048 MB ([8072100](https://github.com/AraneaDev/Knossos-MCP/commit/80721005692f2ff466edbbe6609cef160bc8ab67))
+* **scan:** say on the summary line when a language degraded ([c42845d](https://github.com/AraneaDev/Knossos-MCP/commit/c42845d0174427e59f3ef80db02380631af806af))
+* **scan:** unblock scanning a project whose dependencies ship types under dist/ ([952f5da](https://github.com/AraneaDev/Knossos-MCP/commit/952f5daf797809fbbd4141207dbaf35b3ac05334))
+* **worker:** keep a worker's dying words past the request it died in ([1f486d9](https://github.com/AraneaDev/Knossos-MCP/commit/1f486d90f1af95c4e50cb20c78f4a60859c42e0d))
+* **worker:** report what a worker printed before it died ([8d5e125](https://github.com/AraneaDev/Knossos-MCP/commit/8d5e1254e5881aa75a7a10cf66b09061bfc0ab18))
+* **worker:** say when a worker was killed rather than reporting exit -1 ([68e62ab](https://github.com/AraneaDev/Knossos-MCP/commit/68e62ab19e6be7df3570f724a6cd7c22861aff54))
+
+
+### Performance Improvements
+
+* **scan:** release the program cache once a request outgrows it ([367c973](https://github.com/AraneaDev/Knossos-MCP/commit/367c9734a0d297712432d652ee00550368b42fae))
+
 ## [0.15.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.15.1...v0.15.2) (2026-09-14)
 
 
