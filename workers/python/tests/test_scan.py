@@ -505,3 +505,56 @@ def test_own_declarations_come_from_the_hashed_bytes(worker: ModuleType, project
     [contribution] = emitted
     assert contribution["content_hash"] == hashlib.sha256(source).hexdigest()
     assert ("extends", "py:class:pkg.b.Child", "py:class:pkg.b.Base") in _edges(contribution)
+
+
+def test_routes_declared_inside_a_register_function_are_discovered(scan_collect, project) -> None:
+    # The register-function pattern hands the app in rather than creating it, so
+    # gating route discovery on assignment alone left every route declared this
+    # way invisible: no route node, no handler role, and no inbound edge, so
+    # each handler read as unreferenced dead code.
+    root = project(
+        {
+            "endpoints.py": (
+                "from fastapi import FastAPI\n"
+                "\n"
+                "def register(app: FastAPI) -> None:\n"
+                "    @app.get('/api/health')\n"
+                "    def health_check() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    handler = next(n for n in nodes if n["canonical_name"].endswith("health_check"))
+    assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]
+    assert any(n["kind"] == "route" and "/api/health" in n["canonical_name"] for n in nodes)
+
+
+def test_an_app_parameter_does_not_outlive_the_function_that_declared_it(scan_collect, project) -> None:
+    # The registration is scoped: a later same-named parameter that is not an
+    # app must not inherit route discovery from the earlier one.
+    root = project(
+        {
+            "endpoints.py": (
+                "from fastapi import FastAPI\n"
+                "\n"
+                "def register(app: FastAPI) -> None:\n"
+                "    @app.get('/api/health')\n"
+                "    def health_check() -> dict:\n"
+                "        return {}\n"
+                "\n"
+                "def unrelated(app: str) -> None:\n"
+                "    @app.get('/not-a-route')\n"
+                "    def nope() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    assert not any(n["kind"] == "route" and "/not-a-route" in n["canonical_name"] for n in nodes)
+    nope = next(n for n in nodes if n["canonical_name"].endswith("nope"))
+    assert nope["attributes"]["python_framework_roles"] == []

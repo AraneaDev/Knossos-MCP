@@ -919,6 +919,44 @@ class FastApiFactEnricher:
             prefix = keyword_string(value, "prefix") or ""
             self.framework_objects[variable] = ("fastapi", prefix)
 
+    def register_parameters(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> list[tuple[str, tuple[str, str] | None]]:
+        """Register parameters annotated as a FastAPI app or router, for this function's body.
+
+        The register-function pattern hands the app in rather than creating it::
+
+            def register_docs_and_health(app: FastAPI) -> None:
+                @app.get("/api/health")
+                def health_check(): ...
+
+        `app` is never assigned a call, so gating on assignment alone left every
+        route declared this way undiscovered: no route node, no handler role,
+        and no inbound edge, so each handler read as unreferenced dead code.
+
+        Returns what to restore, so a parameter cannot shadow a module-level
+        object of the same name beyond the function that declared it.
+        """
+        arguments = node.args
+        restore: list[tuple[str, tuple[str, str] | None]] = []
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
+            named = None if argument.annotation is None else dotted(argument.annotation)
+            resolved = self.aliases.get(named or "", "")
+            if not resolved.endswith(("fastapi.FastAPI", "fastapi.APIRouter")):
+                continue
+            restore.append((argument.arg, self.framework_objects.get(argument.arg)))
+            # No prefix: a router built elsewhere carries its own, and this
+            # function cannot see it.
+            self.framework_objects[argument.arg] = ("fastapi", "")
+        return restore
+
+    def restore_parameters(self, restore: list[tuple[str, tuple[str, str] | None]]) -> None:
+        for variable, previous in reversed(restore):
+            if previous is None:
+                self.framework_objects.pop(variable, None)
+            else:
+                self.framework_objects[variable] = previous
+
     def route_decorators(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str, ast.AST]]:
         result: list[tuple[str, str, ast.AST]] = []
         methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
@@ -1391,7 +1429,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.local_function_scopes.append(self.local_function_declarations(node, canonical))
         self.local_variable_types.append({})
         self.parameter_types.append(self.annotated_parameters(node))
+        restore_fastapi = self.fastapi.register_parameters(node)
         self.generic_visit(node)
+        self.fastapi.restore_parameters(restore_fastapi)
         self.parameter_types.pop()
         self.local_variable_types.pop()
         self.local_function_scopes.pop()
