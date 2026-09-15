@@ -35,6 +35,7 @@ final readonly class ScanResultFactory
         foreach ($language->workerDiagnostics as $diagnostic) {
             $warnings[] = sprintf('%s: %s', $diagnostic['code'], $diagnostic['message']);
         }
+        $degraded = array_values(array_unique(array_column($language->workerDiagnostics, 'owner')));
         $data = [
             'files' => $result->files,
             'nodes' => $result->nodes,
@@ -48,7 +49,7 @@ final readonly class ScanResultFactory
             'changed_files' => $language->changed,
             'deleted_files' => $plan->deletedFiles,
             'scanner_metadata' => $language->scannerMetadata,
-            'degraded_languages' => array_values(array_unique(array_column($language->workerDiagnostics, 'owner'))),
+            'degraded_languages' => $degraded,
             // Batch bounds are reported per language rather than as one pair of
             // numbers: they differ per language, and the source-byte budget can
             // differ per scan once a worker's output cap forces it down.
@@ -75,10 +76,41 @@ final readonly class ScanResultFactory
         return new ResultEnvelope(
             $result->projectId,
             $result->scanId,
-            sprintf('Scanned %d files into %d nodes and %d relationships.', $result->files, $result->nodes, $result->edges),
+            self::summaryLine($result, $degraded),
             $data,
             [],
             $warnings,
+        );
+    }
+
+    /**
+     * The one line every caller sees, and the only place a partial graph can say so.
+     *
+     * A worker that dies mid-scan degrades its language: the scan still
+     * commits, still reports `fresh`, and still counts its nodes, so a graph
+     * missing an entire language is indistinguishable at a glance from a
+     * complete one — a Vue/TypeScript frontend simply was not there, and only
+     * the `degraded_languages` field said so. A caller reading the summary and
+     * moving on would answer architecture questions from half a codebase. The
+     * detail stays in the field; the fact that it happened belongs here.
+     *
+     * @param list<string> $degraded
+     */
+    private static function summaryLine(ReconciliationResult $result, array $degraded): string
+    {
+        $line = sprintf(
+            'Scanned %d files into %d nodes and %d relationships.',
+            $result->files,
+            $result->nodes,
+            $result->edges,
+        );
+        if ($degraded === []) {
+            return $line;
+        }
+
+        return $line . sprintf(
+            ' PARTIAL GRAPH: %s failed, so nothing it scans is represented. Re-run before trusting this graph.',
+            implode(', ', $degraded),
         );
     }
 }
