@@ -282,3 +282,91 @@ describe("input_hashes: the default library, file links and FIFOs", () => {
         expect(hashes["src/pipe.d.ts"]).toBeNull();
     }, 30_000);
 });
+
+// The project's excluded-directory list names where a project builds to and
+// vendors under, so it describes the project's own layout. A dependency's
+// layout is its own business, and `dist` is where npm packages most commonly
+// ship their declarations. Applying the project's rules inside node_modules
+// refused those declarations: the compiler then resolved every importer as if
+// the package had no types, and the refusal — recorded as a failed read of a
+// file that reads perfectly well — failed the whole scan when the core re-read
+// the key at commit.
+describe("input_hashes: a dependency's own layout governs below node_modules", () => {
+    const DIST = "node_modules/dep/dist/cjs";
+    const DIST_MANIFEST = `{"name":"dep","version":"1.0.0","types":"${"dist/cjs/types.d.cts"}"}\n`;
+
+    function distTree(extra = {}) {
+        return fixture({
+            "src/a.ts":
+                'import { Dep } from "dep";\nexport class A extends Dep {}\n',
+            "node_modules/dep/package.json": DIST_MANIFEST,
+            [`${DIST}/types.d.cts`]: DECLARATION,
+            ...extra,
+        });
+    }
+
+    it("reads a declaration under a dependency's dist/ by its raw bytes rather than refusing it", () => {
+        const root = distTree();
+
+        const hashes = scan(new TypeScriptScanner(), root, [
+            "src/a.ts",
+        ]).input_hashes;
+
+        // The regression: this key was reported null, which the core's
+        // commit-time re-read rejects for a readable in-root regular file.
+        expect(hashes[`${DIST}/types.d.cts`]).toBe(
+            sha256(Buffer.from(DECLARATION)),
+        );
+        expect(hashes[`${DIST}/types.d.cts`]).toBe(
+            pathState(root, `${DIST}/types.d.cts`),
+        );
+    });
+
+    it("resolves facts through that declaration instead of treating the package as untyped", () => {
+        const root = distTree();
+
+        const contributions = [];
+        new TypeScriptScanner().scan({ root, files: ["src/a.ts"] }, (c) =>
+            contributions.push(c),
+        );
+
+        // The quiet half of the same defect. The edge exists either way — it
+        // is syntax — but its target is only as good as the resolution behind
+        // it: with the declaration refused the base class resolves to
+        // `ts:external_class:unknown`, so the graph records that A extends
+        // something nobody can name.
+        const edges = contributions.flatMap((c) => c.edges);
+        const base = edges.find((e) => e.kind === "extends");
+        expect(base?.target).toBe("ts:external_class:Dep");
+    });
+
+    it("still refuses the project's own dist/, which the exclusions do describe", () => {
+        const root = distTree({
+            "dist/generated.ts": "export const generated = 1;\n",
+            "src/g.ts":
+                '/// <reference path="../dist/generated.ts" />\nexport const g = 1;\n',
+        });
+
+        const hashes = scan(new TypeScriptScanner(), root, [
+            "src/g.ts",
+        ]).input_hashes;
+
+        expect(hashes["dist/generated.ts"]).toBeNull();
+    });
+
+    it("applies the exclusions above the dependency root, so a build dir holding a node_modules stays out", () => {
+        const root = distTree({
+            "build/vendored/node_modules/dep/dist/index.d.ts": DECLARATION,
+            "src/h.ts":
+                '/// <reference path="../build/vendored/node_modules/dep/dist/index.d.ts" />\nexport const h = 1;\n',
+        });
+
+        const hashes = scan(new TypeScriptScanner(), root, [
+            "src/h.ts",
+        ]).input_hashes;
+
+        expect(
+            hashes["build/vendored/node_modules/dep/dist/index.d.ts"],
+        ).toBeNull();
+    });
+});

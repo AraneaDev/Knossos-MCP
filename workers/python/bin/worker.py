@@ -394,7 +394,27 @@ class ProjectModuleIndex:
             for candidate in (base / "__init__.py", base.with_suffix(".py")):
                 if self._is_project_file(candidate):
                     return candidate
+            # Last, the suffixless file itself. Discovery admits an extensionless
+            # script on its shebang, so such a file is scanned and its symbols
+            # are emitted, but a name derived from it round-trips only to
+            # ``<name>.py`` — which does not exist. Its own declarations were
+            # therefore never found, every name inside it went unresolved, and
+            # so a script's ``main()`` calling its ``check()`` produced no edge
+            # and both read as unreferenced. Gated on the same shebang rule
+            # discovery used, so ``import config`` cannot bind to a shell script
+            # named ``config``.
+            if self._is_python_script(base):
+                return base
         return None
+
+    def _is_python_script(self, path: Path) -> bool:
+        """Whether a suffixless path is a project file whose shebang names Python."""
+        if path.suffix or not self._is_project_file(path):
+            return False
+        try:
+            return names_python_in_shebang(path)
+        except UnreadableInput:
+            return False
 
     def _is_project_file(self, path: Path) -> bool:
         """Whether ``path`` is a module file this index may read.
@@ -899,6 +919,48 @@ class FastApiFactEnricher:
             prefix = keyword_string(value, "prefix") or ""
             self.framework_objects[variable] = ("fastapi", prefix)
 
+    def register_parameters(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> list[tuple[str, tuple[str, str] | None]]:
+        """Register parameters annotated as a FastAPI app or router, for this function's body.
+
+        The register-function pattern hands the app in rather than creating it::
+
+            def register_docs_and_health(app: FastAPI) -> None:
+                @app.get("/api/health")
+                def health_check(): ...
+
+        `app` is never assigned a call, so gating on assignment alone left every
+        route declared this way undiscovered: no route node, no handler role,
+        and no inbound edge, so each handler read as unreferenced dead code.
+
+        Returns what to restore, so a parameter cannot shadow a module-level
+        object of the same name beyond the function that declared it.
+        """
+        arguments = node.args
+        restore: list[tuple[str, tuple[str, str] | None]] = []
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]:
+            named = None if argument.annotation is None else dotted(argument.annotation)
+            # Through resolve_name rather than a bare alias lookup: `import
+            # fastapi` binds the module, so an exact lookup of
+            # "fastapi.FastAPI" finds nothing and every route in the function
+            # is lost. resolve_name walks the module alias to the symbol.
+            resolved = (named and self.resolve_name(named, "class")) or ""
+            if not resolved.endswith(("fastapi.FastAPI", "fastapi.APIRouter")):
+                continue
+            restore.append((argument.arg, self.framework_objects.get(argument.arg)))
+            # No prefix: a router built elsewhere carries its own, and this
+            # function cannot see it.
+            self.framework_objects[argument.arg] = ("fastapi", "")
+        return restore
+
+    def restore_parameters(self, restore: list[tuple[str, tuple[str, str] | None]]) -> None:
+        for variable, previous in reversed(restore):
+            if previous is None:
+                self.framework_objects.pop(variable, None)
+            else:
+                self.framework_objects[variable] = previous
+
     def route_decorators(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[tuple[str, str, ast.AST]]:
         result: list[tuple[str, str, ast.AST]] = []
         methods = {"get", "post", "put", "patch", "delete", "options", "head", "trace"}
@@ -1371,7 +1433,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.local_function_scopes.append(self.local_function_declarations(node, canonical))
         self.local_variable_types.append({})
         self.parameter_types.append(self.annotated_parameters(node))
+        restore_fastapi = self.fastapi.register_parameters(node)
         self.generic_visit(node)
+        self.fastapi.restore_parameters(restore_fastapi)
         self.parameter_types.pop()
         self.local_variable_types.pop()
         self.local_function_scopes.pop()
@@ -1407,7 +1471,43 @@ class PythonAstFactCollector(ast.NodeVisitor):
             pending.extend(reversed(list(ast.iter_child_nodes(child))))
         return declarations
 
+    def emit_value_references(self, value: ast.AST | None) -> None:
+        """Record a declaration named as a value rather than called.
+
+        A dispatch table is the common shape::
+
+            DERIVATIONS = {"adr_files": (derive_adr_files, "ADR files")}
+
+        Nothing calls `derive_adr_files` anywhere, so with only `calls` edges
+        it, and every function reached the same way, read as unreferenced dead
+        code. This worker emitted no reference edges at all, which made the
+        whole registry-reached class invisible.
+
+        Deliberately narrow: an assignment's right-hand side, descending only
+        through literal containers. Walking into calls, comprehensions or
+        lambdas would turn every mention of a symbol into an edge and inflate
+        the in-degree the hub ranking is built on, which is a different claim
+        from "something holds a handle to this".
+        """
+        pending: list[ast.AST] = [] if value is None else [value]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, (ast.List, ast.Tuple, ast.Set)):
+                pending.extend(item.elts)
+                continue
+            if isinstance(item, ast.Dict):
+                pending.extend(key for key in item.keys if key is not None)
+                pending.extend(item.values)
+                continue
+            if not isinstance(item, (ast.Name, ast.Attribute)):
+                continue
+            name = dotted(item)
+            target = self.resolve_name(name, "function") if name else None
+            if target is not None and target != self.current():
+                self.facts.add_edge("references", self.current(), target, item)
+
     def visit_Assign(self, node: ast.Assign) -> None:
+        self.emit_value_references(node.value)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             variable = node.targets[0].id
             self.fastapi.register_assignment(variable, node.value)
@@ -1421,6 +1521,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.emit_value_references(node.value)
         attribute = self.self_attribute(node.target)
         if attribute is not None:
             # An annotation states the type outright, which beats inferring it.

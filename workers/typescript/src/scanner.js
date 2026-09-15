@@ -161,6 +161,8 @@ export class TypeScriptScanner {
     constructor({ observeHostPath } = {}) {
         this.programCache = new Map();
         this.observeHostPath = observeHostPath;
+        // Reset per request; see #cacheProgram.
+        this.programsBuiltThisRequest = 0;
     }
 
     /**
@@ -198,6 +200,7 @@ export class TypeScriptScanner {
         const emitted = new Set();
         let programs = 0;
         let programsReused = 0;
+        this.programsBuiltThisRequest = 0;
 
         const request = {
             root,
@@ -360,9 +363,28 @@ export class TypeScriptScanner {
         }
     }
 
-    // Insert a program as most-recently-used and evict the least-recently-used
-    // entries beyond the cap so peak resident program memory stays bounded.
+    /**
+     * Insert a program as most-recently-used, or release the cache entirely
+     * once this request has outgrown it.
+     *
+     * The cache can only ever hit when a request builds no more programs than
+     * it holds. Above that it is evicted down to the last programs built,
+     * while the next request starts again at the first config, so it never
+     * hits: measured on a project with six programs per request, reuse was
+     * zero across six consecutive scans of an unchanged tree. Each retained
+     * program carries its own default library and type checker, so that was
+     * ~100-120MB apiece held back from a heap whose peak was already 1.35GB,
+     * bought nothing, and made the scan likelier to die of heap exhaustion.
+     *
+     * So a request that stays within the cap keeps its programs, and one that
+     * outgrows it drops them rather than paying to hold what it cannot use.
+     */
     #cacheProgram(key, program) {
+        this.programsBuiltThisRequest += 1;
+        if (this.programsBuiltThisRequest > MAX_CACHED_PROGRAMS) {
+            this.programCache.clear();
+            return;
+        }
         this.programCache.delete(key);
         this.programCache.set(key, program);
         while (this.programCache.size > MAX_CACHED_PROGRAMS) {
@@ -2390,19 +2412,41 @@ function allowedCompilerPath(root, candidate) {
     if (contains(defaultLibDirectory(), normalized)) return true;
     if (!contains(root, normalized)) return false;
     const relative = normalize(path.relative(root, normalized));
-    if (
-        relative !== "" &&
-        relative
-            .split("/")
-            .some(
-                (segment) =>
-                    isExcludedDirectoryName(segment) &&
-                    !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
-            )
-    )
-        return false;
+    if (relative !== "" && excludedByProjectLayout(relative)) return false;
     const walked = walkPath(normalized);
     return walked.location === undefined || contains(root, walked.location);
+}
+
+/**
+ * Whether the project's own directory exclusions refuse a project-relative path.
+ *
+ * The exclusions name directories a project builds into or vendors under, so
+ * they describe the project's layout. Inside a dependency tree they describe
+ * nothing: a package ships its declarations wherever its own package.json
+ * points, and `dist` is the most common answer of all. Applying the project's
+ * rules there refused `node_modules/@eslint/core/dist/cjs/types.d.cts`, the one
+ * file that package's types live in, which cost twice over: the refusal is
+ * recorded as a failed read, and a failed read of a file that reads perfectly
+ * well is what UndiscoveredInputVerifier fails the whole scan on at commit;
+ * and until it does, a symbol the refused declaration names resolves to
+ * `unknown`, so `class A extends Dep` is recorded as extending nothing anyone
+ * can name.
+ *
+ * So the check stops at the first resolution-allowed segment: above it the
+ * project's layout governs, below it the dependency's does.
+ */
+function excludedByProjectLayout(relative) {
+    const segments = relative.split("/");
+    const dependencyRoot = segments.findIndex((segment) =>
+        RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+    );
+    const governed =
+        dependencyRoot === -1 ? segments : segments.slice(0, dependencyRoot);
+    return governed.some(
+        (segment) =>
+            isExcludedDirectoryName(segment) &&
+            !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+    );
 }
 
 /**

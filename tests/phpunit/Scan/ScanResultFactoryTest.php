@@ -128,6 +128,11 @@ final class ScanResultFactoryTest extends TestCase
         $envelope = $factory->create($plan, $language, $result, 1_000_000_000, []);
 
         assertSame(['knossos.typescript', 'knossos.python'], $envelope->data['degraded_languages']);
+        // A committed graph missing a whole language reads `fresh` and counts
+        // its nodes like any other, so the summary is the only place the gap
+        // is visible to a caller who does not open `degraded_languages`.
+        assertContains('PARTIAL GRAPH', $envelope->summary);
+        assertContains('knossos.typescript, knossos.python', $envelope->summary);
         assertSame([
             'PARSE_ERR: Syntax error on line 5',
             'WORKER_TIMEOUT: typescript scanner failed: timed out.',

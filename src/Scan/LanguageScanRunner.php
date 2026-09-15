@@ -76,7 +76,11 @@ final readonly class LanguageScanRunner
                 $workerDiagnostics[] = [
                     'owner' => 'knossos.' . $descriptor->key,
                     'code' => $error instanceof WorkerException ? $error->diagnosticCode : 'WORKER_FAILED',
-                    'message' => sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
+                    'message' => self::withRemedy(
+                        sprintf('%s scanner failed: %s', $descriptor->key, $error->getMessage()),
+                        $descriptor,
+                        $plan->preparation->executionPolicy->workerMemoryMb,
+                    ),
                 ];
                 continue;
             } finally {
@@ -333,6 +337,37 @@ final readonly class LanguageScanRunner
         return array_map(
             static fn(array $files): array => ['files' => $files, 'budget' => $budget, 'halvings' => $halvings],
             $batches,
+        );
+    }
+
+    /**
+     * Name the setting that fixes a worker killed by its heap cap.
+     *
+     * A worker that exhausts its heap says so, but only in the words V8 uses,
+     * and the reader is then left to discover on their own that the cap is a
+     * setting and what it is called. The failure is not a loud one either: the
+     * scan still commits, with that language's facts missing. So when the
+     * cause is recognisably heap exhaustion, the diagnostic carries the fix.
+     */
+    private static function withRemedy(string $message, LanguageDescriptor $descriptor, ?int $memoryMb): string
+    {
+        // A descriptor with no cap of its own encodes no memory flag, so
+        // LanguageDescriptor::withMemoryMb() returns it unchanged and a
+        // configured value never reaches that worker. Quoting the value at it
+        // would state a cap it never ran under, and name a setting that would
+        // not have helped.
+        if ($descriptor->workerMemoryMb === null) {
+            return $message;
+        }
+        $memoryMb ??= $descriptor->workerMemoryMb;
+        if (!preg_match('/heap (?:limit|out of memory)|out of memory/i', $message)) {
+            return $message;
+        }
+
+        return $message . sprintf(
+            ' The %s worker ran with a %d MB heap cap; raise limits.worker_memory_mb in knossos.json (or pass --worker-memory-mb) if this project needs more.',
+            $descriptor->key,
+            $memoryMb,
         );
     }
 

@@ -126,3 +126,37 @@ def test_collides_detects_module_and_package_pairs(worker: ModuleType, project) 
     assert index.collides(root / "orders.py", is_package=False) is True
     assert index.collides(root / "orders" / "__init__.py", is_package=True) is True
     assert index.collides(root / "lone.py", is_package=False) is False
+
+
+def test_a_suffixless_python_script_resolves_to_its_own_file(worker: ModuleType, project) -> None:
+    # Discovery admits an extensionless script on its shebang, so its symbols are
+    # emitted — but the module name derived from it round-trips only to
+    # `<name>.py`, which does not exist. Its own declarations were therefore
+    # never found, so every name inside it went unresolved and each of its
+    # functions read as unreferenced.
+    root = project({"scripts/check-thing": "#!/usr/bin/env python3\ndef check() -> int:\n    return 0\n"})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.module_file("check-thing") == root / "scripts" / "check-thing"
+    assert "check" in index.module_declarations("check-thing")
+
+
+def test_a_suffixless_script_naming_another_interpreter_is_not_a_module(worker: ModuleType, project) -> None:
+    # The gate is discovery's own shebang rule, so `import config` cannot bind
+    # to a shell script that merely shares the name.
+    root = project({"scripts/config": "#!/bin/sh\necho hi\n"})
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.module_file("config") is None
+
+
+def test_a_real_module_still_wins_over_a_suffixless_neighbour(worker: ModuleType, project) -> None:
+    root = project(
+        {
+            "tool.py": "def run() -> int:\n    return 1\n",
+            "tool": "#!/usr/bin/env python3\ndef run() -> int:\n    return 2\n",
+        }
+    )
+    index = worker.ProjectModuleIndex(root, 2_000_000)
+
+    assert index.module_file("tool") == root / "tool.py"

@@ -28,6 +28,11 @@
           "type": "integer",
           "minimum": 1000,
           "maximum": 120000
+        },
+        "worker_memory_mb": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 65536
         }
       }
     },

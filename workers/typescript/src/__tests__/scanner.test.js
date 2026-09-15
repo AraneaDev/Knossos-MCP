@@ -1717,3 +1717,85 @@ describe("input_hashes: a link target with `..` after a linked directory", () =>
         });
     });
 });
+
+describe("the program cache only holds what it can serve", () => {
+    // Each retained ts.Program carries its own default library and type
+    // checker, ~100-120MB. The cache is worth that only when it can actually
+    // hit on the next request, and it can only hit when a request builds no
+    // more programs than the cache holds. Above that it is evicted down to
+    // the last programs built, while the next request starts again at the
+    // first config, so it never hits and the memory is paid for nothing:
+    // measured on a real project, 0 reuse across six consecutive scans of an
+    // unchanged tree, against a peak heap of 1.35GB.
+    const A_FILE = "export class A {}\n";
+
+    it("keeps a program a later request can reuse when the request stays within the cap", () => {
+        const root = fixture({ "src/a.ts": A_FILE });
+        const scanner = new TypeScriptScanner();
+
+        const first = scanWithResult(scanner, root, ["src/a.ts"]).result;
+        const second = scanWithResult(scanner, root, ["src/a.ts"]).result;
+
+        expect(first.programs).toBe(1);
+        expect(second.programs_reused).toBe(1);
+        expect(scanner.programCache.size).toBeGreaterThan(0);
+    });
+
+    it("releases every program when one request builds more than the cache holds", () => {
+        const root = fixture({
+            "tsconfig.one.json": '{"files":["src/a.ts"]}\n',
+            "tsconfig.two.json": '{"files":["src/b.ts"]}\n',
+            "tsconfig.three.json": '{"files":["src/c.ts"]}\n',
+            "src/a.ts": A_FILE,
+            "src/b.ts": "export class B {}\n",
+            "src/c.ts": "export class C {}\n",
+        });
+        const scanner = new TypeScriptScanner();
+
+        const result = scanWithResult(
+            scanner,
+            root,
+            ["src/a.ts", "src/b.ts", "src/c.ts"],
+            {
+                config_files: [
+                    "tsconfig.one.json",
+                    "tsconfig.two.json",
+                    "tsconfig.three.json",
+                ],
+            },
+        ).result;
+
+        expect(result.programs).toBe(3);
+        // Nothing retained: these programs cannot serve the next request, so
+        // holding them only shrinks the heap available to build it.
+        expect(scanner.programCache.size).toBe(0);
+    });
+
+    it("still reuses nothing it could not have reused anyway", () => {
+        // The release must not cost reuse that was working: a second request
+        // over the same over-cap configs reused nothing before this change
+        // either, so the only difference is the memory.
+        const root = fixture({
+            "tsconfig.one.json": '{"files":["src/a.ts"]}\n',
+            "tsconfig.two.json": '{"files":["src/b.ts"]}\n',
+            "tsconfig.three.json": '{"files":["src/c.ts"]}\n',
+            "src/a.ts": A_FILE,
+            "src/b.ts": "export class B {}\n",
+            "src/c.ts": "export class C {}\n",
+        });
+        const scanner = new TypeScriptScanner();
+        const configs = {
+            config_files: [
+                "tsconfig.one.json",
+                "tsconfig.two.json",
+                "tsconfig.three.json",
+            ],
+        };
+        const files = ["src/a.ts", "src/b.ts", "src/c.ts"];
+
+        scanWithResult(scanner, root, files, configs);
+        const second = scanWithResult(scanner, root, files, configs).result;
+
+        expect(second.programs_reused).toBe(0);
+    });
+});

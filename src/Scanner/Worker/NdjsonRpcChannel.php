@@ -25,6 +25,8 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     /** Stdout bytes buffered during the current send(), which nothing classifies. */
     private int $sendBufferedBytes = 0;
     private string $stderrBuffer = '';
+    /** The previous request's stderr, kept so a worker's dying words outlive the request it died in. */
+    private string $lastWords = '';
     private int $stderrBytes = 0;
     /** Bytes of `scan/input_hashes` frames this request, counted apart from the output budget. */
     private int $inputHashesBytes = 0;
@@ -54,6 +56,18 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->process->start();
         $this->stdoutBuffer = '';
         $this->stdoutOffset = 0;
+        // A worker prints its last words as it dies, but the host only finds
+        // out on the next request's write, by which point clearing the buffer
+        // here would have thrown them away. That is the common shape of a
+        // fatal: V8 reports heap exhaustion, the process aborts, and the
+        // following send fails with a broken pipe and nothing to say. So the
+        // previous request's output is kept as a fallback for exactly that.
+        //
+        // The PREVIOUS request's, not the last one that happened to say
+        // something: a silent request is evidence there was nothing to say,
+        // and reaching further back would blame one request's failure on
+        // output from before a request that succeeded in between.
+        $this->lastWords = $this->stderrBuffer;
         $this->stderrBuffer = '';
         $this->stderrBytes = 0;
         $this->inputHashesBytes = 0;
@@ -129,7 +143,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 intdiv($wait % 1_000_000_000, 1_000),
             );
             if ($selected === false) {
-                throw new WorkerException('WORKER_IO_FAILED', 'Unable to write to scanner worker.');
+                throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to write to scanner worker.'));
             }
             if ($selected === 0) {
                 continue;
@@ -149,7 +163,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             foreach ($write as $writable) {
                 $bytes = @fwrite($writable, substr($line, $written));
                 if ($bytes === false) {
-                    throw new WorkerException('WORKER_PIPE_BROKEN', 'Unable to write to scanner worker.');
+                    throw new WorkerException('WORKER_PIPE_BROKEN', $this->withStderr('Unable to write to scanner worker.'));
                 }
                 $written += $bytes;
             }
@@ -205,7 +219,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 intdiv($wait % 1_000_000_000, 1_000),
             );
             if ($selected === false) {
-                throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker pipes.');
+                throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to read scanner worker pipes.'));
             }
             if ($selected === 0 && $cancelled !== null) {
                 continue;
@@ -217,7 +231,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             foreach ($read as $stream) {
                 $chunk = @fread($stream, self::READ_CHUNK_BYTES);
                 if ($chunk === false) {
-                    throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
+                    throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to read scanner worker output.'));
                 }
                 if ($stream === $stderr) {
                     if (self::isExhausted($stderr, $chunk)) {
@@ -249,10 +263,38 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             if (!$status['running'] && feof($stdout)) {
                 throw new WorkerException(
                     'WORKER_EXITED',
-                    $this->withStderr(sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode'])),
+                    $this->withStderr(self::exitDescription($status)),
                 );
             }
         }
+    }
+
+    /**
+     * How a worker ended, in terms that point at a cause.
+     *
+     * A killed worker prints nothing, so the exit status is the only evidence
+     * there is. Reporting it as "exit -1" names the placeholder this code uses
+     * for a process whose handle is already gone, which reads as a Knossos
+     * fault and sent a real investigation the wrong way: the worker had in
+     * fact been SIGTERMed by the host's out-of-memory killer, which leaves no
+     * message anywhere the scan can see.
+     *
+     * @param array{running: bool, signaled: bool, exitcode: int, termsig: int, ...} $status
+     */
+    private static function exitDescription(array $status): string
+    {
+        if ($status['signaled'] && $status['termsig'] > 0) {
+            return sprintf(
+                'Scanner worker was killed by signal %d before responding. Nothing in the worker chose this, so look '
+                . 'outside it: an out-of-memory killer or a supervisor stopping the process.',
+                $status['termsig'],
+            );
+        }
+        if ($status['exitcode'] < 0) {
+            return 'Scanner worker exited before responding; its exit status was no longer available to read.';
+        }
+
+        return sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode']);
     }
 
     /** {@inheritDoc} */
@@ -279,7 +321,7 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             // select set, and a descriptor that still reports ready spun here
             // until the deadline and mislabelled the I/O error as a TIMEOUT.
             // The receive loop already answers a false read this way.
-            throw new WorkerException('WORKER_IO_FAILED', 'Unable to read scanner worker output.');
+            throw new WorkerException('WORKER_IO_FAILED', $this->withStderr('Unable to read scanner worker output.'));
         }
         if ($chunk === '') {
             return self::isExhausted($stream, $chunk);
@@ -435,6 +477,13 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     private function withStderr(string $message): string
     {
         $stderr = trim($this->stderrBuffer);
-        return $stderr === '' ? $message : $message . ' Worker stderr: ' . $stderr;
+        if ($stderr !== '') {
+            return $message . ' Worker stderr: ' . $stderr;
+        }
+        $earlier = trim($this->lastWords);
+
+        return $earlier === ''
+            ? $message
+            : $message . ' Worker stderr (from its previous request, before it died): ' . $earlier;
     }
 }

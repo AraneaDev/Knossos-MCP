@@ -505,3 +505,146 @@ def test_own_declarations_come_from_the_hashed_bytes(worker: ModuleType, project
     [contribution] = emitted
     assert contribution["content_hash"] == hashlib.sha256(source).hexdigest()
     assert ("extends", "py:class:pkg.b.Child", "py:class:pkg.b.Base") in _edges(contribution)
+
+
+def test_routes_declared_inside_a_register_function_are_discovered(scan_collect, project) -> None:
+    # The register-function pattern hands the app in rather than creating it, so
+    # gating route discovery on assignment alone left every route declared this
+    # way invisible: no route node, no handler role, and no inbound edge, so
+    # each handler read as unreferenced dead code.
+    root = project(
+        {
+            "endpoints.py": (
+                "from fastapi import FastAPI\n"
+                "\n"
+                "def register(app: FastAPI) -> None:\n"
+                "    @app.get('/api/health')\n"
+                "    def health_check() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    handler = next(n for n in nodes if n["canonical_name"].endswith("health_check"))
+    assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]
+    assert any(n["kind"] == "route" and "/api/health" in n["canonical_name"] for n in nodes)
+
+
+def test_an_app_parameter_does_not_outlive_the_function_that_declared_it(scan_collect, project) -> None:
+    # The registration is scoped: a later same-named parameter that is not an
+    # app must not inherit route discovery from the earlier one.
+    root = project(
+        {
+            "endpoints.py": (
+                "from fastapi import FastAPI\n"
+                "\n"
+                "def register(app: FastAPI) -> None:\n"
+                "    @app.get('/api/health')\n"
+                "    def health_check() -> dict:\n"
+                "        return {}\n"
+                "\n"
+                "def unrelated(app: str) -> None:\n"
+                "    @app.get('/not-a-route')\n"
+                "    def nope() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    assert not any(n["kind"] == "route" and "/not-a-route" in n["canonical_name"] for n in nodes)
+    nope = next(n for n in nodes if n["canonical_name"].endswith("nope"))
+    assert nope["attributes"]["python_framework_roles"] == []
+
+
+def test_a_function_held_in_a_dispatch_table_is_referenced(scan_collect, project) -> None:
+    # Nothing calls these, so with only `calls` edges every function reached
+    # through a registry read as unreferenced dead code.
+    root = project(
+        {
+            "registry.py": (
+                "def derive_a() -> int:\n    return 1\n"
+                "\n"
+                "def derive_b() -> int:\n    return 2\n"
+                "\n"
+                "DERIVATIONS = {\n"
+                "    'a': (derive_a, 'the a count'),\n"
+                "    'b': (derive_b, 'the b count'),\n"
+                "}\n"
+            )
+        }
+    )
+
+    edges = [e for c in scan_collect(root, ["registry.py"]) for e in c["edges"]]
+    referenced = {e["target"] for e in edges if e["kind"] == "references"}
+
+    assert "py:function:registry.derive_a" in referenced
+    assert "py:function:registry.derive_b" in referenced
+
+
+def test_value_references_do_not_descend_into_calls_or_comprehensions(scan_collect, project) -> None:
+    # The narrow scope is the point: descending further would turn every
+    # mention of a symbol into an edge and inflate the in-degree the hub
+    # ranking is built on.
+    root = project(
+        {
+            "narrow.py": (
+                "def helper() -> int:\n    return 1\n"
+                "\n"
+                "def wrap(value: object) -> object:\n    return value\n"
+                "\n"
+                "WRAPPED = wrap(helper)\n"
+                "MAPPED = [helper for _ in range(3)]\n"
+            )
+        }
+    )
+
+    edges = [e for c in scan_collect(root, ["narrow.py"]) for e in c["edges"]]
+    referenced = {e["target"] for e in edges if e["kind"] == "references"}
+
+    assert "py:function:narrow.helper" not in referenced
+
+
+def test_routes_register_through_a_qualified_fastapi_annotation(scan_collect, project) -> None:
+    # `import fastapi` binds the module, not the class, so an exact lookup of
+    # "fastapi.FastAPI" finds nothing and every route in the function is lost.
+    root = project(
+        {
+            "endpoints.py": (
+                "import fastapi\n"
+                "\n"
+                "def register(app: fastapi.FastAPI) -> None:\n"
+                "    @app.get('/api/health')\n"
+                "    def health_check() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    handler = next(n for n in nodes if n["canonical_name"].endswith("health_check"))
+    assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]
+
+
+def test_routes_register_through_an_aliased_fastapi_import(scan_collect, project) -> None:
+    root = project(
+        {
+            "endpoints.py": (
+                "import fastapi as fa\n"
+                "\n"
+                "def register(router: fa.APIRouter) -> None:\n"
+                "    @router.get('/api/items')\n"
+                "    def list_items() -> dict:\n"
+                "        return {}\n"
+            )
+        }
+    )
+
+    nodes = [n for c in scan_collect(root, ["endpoints.py"]) for n in c["nodes"]]
+
+    handler = next(n for n in nodes if n["canonical_name"].endswith("list_items"))
+    assert handler["attributes"]["python_framework_roles"] == ["fastapi.route_handler"]

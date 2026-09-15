@@ -84,11 +84,18 @@ final readonly class LanguageDescriptor
             new self(
                 'typescript',
                 ['typescript', 'javascript'],
-                ['node', '--max-old-space-size=1024', $installationRoot . '/workers/typescript/bin/worker.js'],
+                // 2048, not 1024: one scan request of a mid-sized Vue project
+                // peaked at 1.35 GB of used heap, so the old default sat below
+                // what a real project needs and whether a scan survived came
+                // down to GC timing. The failure is not a graceful one — the
+                // worker dies and the scan commits a graph with that whole
+                // language missing. A cap is not an allocation, so a small
+                // project pays nothing for the headroom.
+                ['node', '--max-old-space-size=2048', $installationRoot . '/workers/typescript/bin/worker.js'],
                 'scanner_typescript',
                 scanBatchFiles: 2_000,
                 scanBatchSourceBytes: 3_000_000,
-                workerMemoryMb: 1024,
+                workerMemoryMb: 2048,
             ),
             new self('python', ['python'], ['python3', '-I', '-B', $installationRoot . '/workers/python/bin/worker.py'], 'scanner_python'),
             new self(
