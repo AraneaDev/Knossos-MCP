@@ -63,6 +63,7 @@ final class QueryCommand implements CliCommand
             'export-diagram' => ['db', 'json', 'format', 'boundary', 'edge-kind', 'min-confidence', 'direction', 'max-nodes', 'max-edges'],
             'export-agent-brief' => ['db', 'json', 'max-chars', 'out'],
             'list-boundaries' => ['db', 'json', 'source', 'limit', 'offset'],
+            'annotate-component' => ['db', 'json', 'remove', 'execute'],
             default => ['db', 'json', 'kind', 'role', 'boundary', 'confidence', 'limit', 'offset'],
         };
     }

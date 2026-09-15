@@ -121,6 +121,16 @@ final class QueryCommandContractTest extends KnossosTestCase
         assertSame(true, $checked >= 25, sprintf('Expected to check at least 25 bounded CLI options, checked %d.', $checked));
     }
 
+    /** The documented annotation mutation flags must reach QueryCommand's executor. */
+    #[Group('cli')]
+    public function testAnnotateComponentAllowsMutationFlags(): void
+    {
+        assertSame(
+            ['db', 'json', 'remove', 'execute'],
+            (new QueryCommand())->allowedOptions('annotate-component'),
+        );
+    }
+
     /** Write a JSON value to a temporary file and return its path. */
     private static function temporaryJson(mixed $value): string
     {
