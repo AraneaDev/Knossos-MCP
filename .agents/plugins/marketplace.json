@@ -1,0 +1,20 @@
+{
+  "name": "knossos-dev",
+  "interface": {
+    "displayName": "Knossos Dev"
+  },
+  "plugins": [
+    {
+      "name": "knossos",
+      "source": {
+        "source": "local",
+        "path": "./plugins/knossos"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Engineering"
+    }
+  ]
+}

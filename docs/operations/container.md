@@ -11,7 +11,7 @@ keeps `/data` as the only required writable persistent location.
 Build the development image:
 
 ```sh
-docker build -t knossos-mcp:dev .
+docker build --target runtime -t knossos-mcp:dev .
 docker run --rm knossos-mcp:dev version --json
 ```
 

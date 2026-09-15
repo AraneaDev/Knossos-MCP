@@ -214,7 +214,7 @@ The recommended distribution is Docker: built from digest-pinned base images, it
 prebuilt Rust worker, so the scanned project needs none of them.
 
 ```sh
-docker build -t knossos-mcp:dev .
+docker build --target runtime -t knossos-mcp:dev .
 docker run --rm knossos-mcp:dev doctor --json
 ```
 
@@ -270,6 +270,88 @@ anything warning you.
 
 Docker, native, and client-specific variants are in
 [installation](docs/guides/installation.md).
+
+#### Codex
+
+For a native checkout, register the stdio server with the Codex CLI. Pin the
+data and roots paths so the CLI and server use one graph:
+
+```sh
+codex mcp add knossos \
+    --env KNOSSOS_DATA_DIR="$HOME/.knossos" \
+    --env KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
+    -- /absolute/path/to/Knossos-MCP/tools/mcp-serve
+```
+
+For the recommended Docker install, build the image first and keep the host
+project at the same absolute path inside the container:
+
+```sh
+docker build --target runtime -t knossos-mcp:dev /absolute/path/to/Knossos-MCP
+codex mcp add knossos -- docker run --rm -i --network none \
+    --mount type=bind,source=/absolute/project,target=/absolute/project,readonly \
+    --mount type=volume,source=knossos-data,target=/data \
+    knossos-mcp:dev serve --allow-root=/absolute/project
+```
+
+#### Claude Code
+
+The equivalent native registration is:
+
+```sh
+claude mcp add knossos --scope user \
+    -e KNOSSOS_DATA_DIR="$HOME/.knossos" \
+    -e KNOSSOS_ROOTS_FILE="$HOME/.knossos/roots.json" \
+    -- /absolute/path/to/Knossos-MCP/tools/mcp-serve
+```
+
+The optional Claude session-orientation plugin is a separate install; after
+the server is working, preview it with `knossos install-agent-plugin` and add
+`--execute` to apply it. Codex uses the MCP server registration above and does
+not need that Claude-only hook plugin.
+
+### Codex architecture skill
+
+This checkout also includes a Codex plugin containing the same Knossos routing
+skill used by the Claude integration. It complements the MCP server
+registration above; install both when you want graph-backed tools and automatic
+question routing in Codex:
+
+```sh
+codex plugin marketplace add /absolute/path/to/Knossos-MCP
+codex plugin add knossos@knossos-dev
+codex plugin list
+```
+
+The marketplace is repo-local at `.agents/plugins/marketplace.json`, and the
+plugin source is `plugins/knossos`. Start a new Codex session after installing
+or updating it so the skill is loaded. The Claude `SessionStart` hook is not
+portable to Codex, so Codex gets the shared routing skill while Claude keeps
+its optional session-brief hook.
+
+### Installation pitfalls
+
+- Native installation needs PHP 8.3+ with JSON/PDO/PDO SQLite, Node 22+,
+  Python 3.11+, Composer 2, and Git. Cargo 1.82+ is optional. If PHP or
+  Composer is absent, use the Docker image instead of registering
+  `tools/mcp-serve` and expecting it to start.
+- The image is not published yet. `docker build --target runtime` from this
+  checkout is required; an unqualified `docker build` selects the repository's
+  CI `quality` stage, not the server runtime, and `docker pull knossos-mcp:dev`
+  cannot replace it.
+- Docker stdio needs `-i` and must not use `-t`; terminal framing can corrupt
+  the NDJSON MCP stream. If Docker reports a socket permission error, enable
+  a rootless runtime or grant the invoking user access to Docker before
+  starting the Codex/Claude client.
+- Keep `KNOSSOS_DATA_DIR` and `KNOSSOS_ROOTS_FILE` explicit and use absolute
+  paths. The fallback `<cwd>/.knossos` can silently create a second graph.
+- In Docker, mount each allowed project read-only at the same absolute path
+  inside the container and pass that same path to `--allow-root`; otherwise
+  host paths in MCP requests will not match the container filesystem.
+- Docker runs the service as `www-data`. A host Git checkout owned by another
+  UID can therefore produce Git's `dubious ownership` warning; scanning still
+  works, but Git-aware metadata and change-impact queries may be degraded until
+  the container's Git safe-directory policy is configured for that path.
 
 ### Session orientation for Claude Code
 
