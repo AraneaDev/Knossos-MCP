@@ -48,10 +48,12 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * @param array<string, array<string, mixed>> $nodes
      * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
      * @param array<string, int> $inheritanceInDegree
+     * @param list<string> $edgeKinds
+     * @param bool $includeTests Treat test-only member reachability as live.
      *
      * @return array{candidates: list<array<string, mixed>>, excluded: array<string, int>}
      */
-    public function classify(string $projectId, array $provisional, array $nodes, array $metrics, array $inheritanceInDegree): array
+    public function classify(string $projectId, array $provisional, array $nodes, array $metrics, array $inheritanceInDegree, array $edgeKinds, int $minConfidenceRank, bool $includeTests = false): array
     {
         $candidates = [];
         $methodNames = [];
@@ -71,6 +73,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $suppressedCount = 0;
         $annotationsByName = $this->componentAnnotations($projectId);
         $annotatedFalsePositives = 0;
+        $memberReachability = $this->containerMemberReachability($projectId, $provisional, $edgeKinds, $minConfidenceRank);
         foreach ($provisional as $id => $candidate) {
             if (self::isSuppressed((string) $candidate['row']['canonical_name'], $suppressions)) {
                 ++$suppressedCount;
@@ -125,9 +128,21 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 ++$excludedTypeDeclarations;
                 continue;
             }
+            // A class/module is often reached through a member call rather than
+            // by a direct edge to the container. Direct in-degree alone then
+            // reports the live container as dead beside its live method. Ignore
+            // member references originating inside the same container: internal
+            // self-use does not make an otherwise orphaned type live.
+            $memberUse = $memberReachability[$id] ?? null;
+            if ($memberUse !== null && ($memberUse['production'] || $includeTests)) {
+                continue;
+            }
             $dynamicRisk = $candidate['row']['origin'] !== 'ast' || $this->hasFrameworkRole($candidate['roles']);
             $confidence = $dynamicRisk ? 'possible' : 'probable';
             $reachability = $candidate['reachability'] ?? 'unreferenced';
+            if ($memberUse !== null && $reachability === 'unreferenced') {
+                $reachability = 'test_only';
+            }
             $reason = $reachability === 'test_only'
                 ? 'The only inbound static references come from test code, so nothing the product runs reaches this.'
                 : 'No inbound static reference was found among the selected edge kinds.';
@@ -574,6 +589,63 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
 
         return $ids;
+    }
+
+    /**
+     * Whether a provisional container is reached through one of its members.
+     *
+     * The health walk measures inbound degree on the target node itself. A
+     * call to `Service::run` increments the method's degree, not the class's,
+     * even though the class is the unit that owns the executable member. This
+     * query lifts that evidence to the container while excluding calls from
+     * the container's own member subtree, which only prove internal self-use.
+     *
+     * @param array<string, array{row: array<string, mixed>}> $provisional
+     * @param list<string> $edgeKinds
+     * @return array<string, array{any: bool, production: bool}>
+     */
+    private function containerMemberReachability(string $projectId, array $provisional, array $edgeKinds, int $minConfidenceRank): array
+    {
+        $containerIds = [];
+        foreach ($provisional as $id => $candidate) {
+            if (in_array($candidate['row']['kind'], ['class', 'interface', 'trait', 'enum', 'module'], true)) {
+                $containerIds[] = (string) $id;
+            }
+        }
+        if ($containerIds === []) {
+            return [];
+        }
+
+        $reachability = [];
+        $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
+        $testRole = $this->pdo->quote(ReportableComponent::TEST_ROLE);
+        foreach (array_chunk($containerIds, 500) as $chunk) {
+            $containers = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                'WITH RECURSIVE members(container_id, member_id) AS (' .
+                'SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = \'contains\' AND source_id IN (' . $containers . ') ' .
+                'UNION ' .
+                'SELECT members.container_id, child.target_id FROM members JOIN edges child ON child.project_id = ? AND child.kind = \'contains\' AND child.source_id = members.member_id' .
+                ') ' .
+                'SELECT members.container_id, COUNT(*) AS any_reference, ' .
+                'MAX(CASE WHEN NOT EXISTS (SELECT 1 FROM classifications c WHERE c.node_id = usage.source_id AND c.role = ' . $testRole . ') THEN 1 ELSE 0 END) AS production_reference ' .
+                'FROM members JOIN edges usage ON usage.project_id = ? AND usage.target_id = members.member_id ' .
+                sprintf('AND usage.kind IN (%s) ', $kinds) .
+                "AND CASE usage.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
+                'WHERE usage.source_id <> members.container_id ' .
+                'AND NOT EXISTS (SELECT 1 FROM members internal WHERE internal.container_id = members.container_id AND internal.member_id = usage.source_id) ' .
+                'GROUP BY members.container_id',
+            );
+            $statement->execute([$projectId, ...$chunk, $projectId, $projectId, ...$edgeKinds, $minConfidenceRank]);
+            foreach ($statement->fetchAll() as $row) {
+                $reachability[(string) $row['container_id']] = [
+                    'any' => (int) $row['any_reference'] > 0,
+                    'production' => (int) $row['production_reference'] > 0,
+                ];
+            }
+        }
+
+        return $reachability;
     }
 
     /**

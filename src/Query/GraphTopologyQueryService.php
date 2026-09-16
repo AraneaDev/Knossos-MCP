@@ -361,7 +361,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             ];
         }
         $excludedConventionDiscovered = count($conventionExcluded);
-        $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree);
+        $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree, $edgeKinds, $confidenceRank[$minConfidence], $includeTests);
         $deadCandidates = $classified['candidates'];
         $excluded = $classified['excluded'];
         $rank = static function (array &$items): void {
