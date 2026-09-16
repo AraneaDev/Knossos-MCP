@@ -22,9 +22,9 @@
 > Minotaur, which no one could navigate without a thread to follow back out. Ariadne handed
 > Theseus that thread.
 
-Knossos-MCP is a local-first MCP server that scans a repository once and answers architecture
-questions from an evidence-backed graph, so an agent stops re-reading the whole source tree to
-work out what depends on what. It is the thread through your own labyrinth.
+**TL;DR:** Knossos-MCP scans a repository once and turns its source relationships into a local,
+evidence-backed graph. Its MCP tools and CLI answer dependency, call-site, architecture, and
+blast-radius questions with file and line evidence, so an agent does not need to rescan the tree.
 
 Every fact points back to a file and a source location. Facts that static analysis cannot prove
 are labelled with their confidence and origin instead of being guessed. Nothing in the scan
