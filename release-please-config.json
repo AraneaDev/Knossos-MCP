@@ -22,6 +22,7 @@
         "test",
         "tests",
         ".github",
+        "release-please-config.json",
         "assets"
       ],
       "include-component-in-tag": false,
