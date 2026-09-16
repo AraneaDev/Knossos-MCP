@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.7](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.6...v0.16.7) (2026-09-16)
+
+
+### Fixes
+
+* **health:** lift member reachability to containers ([#105](https://github.com/AraneaDev/Knossos-MCP/issues/105)) ([877cd02](https://github.com/AraneaDev/Knossos-MCP/commit/877cd023c03377ac7b429c8a9be1d30a9549779c))
+
 ## [0.16.6](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.5...v0.16.6) (2026-09-16)
 
 
