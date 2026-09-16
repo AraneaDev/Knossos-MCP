@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.4](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.3...v0.16.4) (2026-09-16)
+
+
+### Continuous integration
+
+* **pr-title:** share one commit-style rule between CI and the hook ([#99](https://github.com/AraneaDev/Knossos-MCP/issues/99)) ([f01d356](https://github.com/AraneaDev/Knossos-MCP/commit/f01d356531260039427c90fd11af4217ba94dab3))
+
 ## [0.16.3](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.2...v0.16.3) (2026-09-15)
 
 
