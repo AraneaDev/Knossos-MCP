@@ -489,6 +489,73 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * A class can be reached through a member call without receiving a direct
+     * edge itself. The container is live in that shape and must not be
+     * reported as dead code alongside its already-referenced member.
+     */
+    #[Group('query')]
+    public function testDeadCodeDoesNotReportAContainerWhoseMemberIsReached(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $service = StableId::symbol($ids['project'], 'php', 'class', 'App\\LiveService');
+        $method = StableId::symbol($ids['project'], 'php', 'method', 'App\\LiveService::run');
+        $caller = StableId::symbol($ids['project'], 'php', 'class', 'App\\Caller');
+        foreach ([
+            [$service, 'class', 'App\\LiveService', 'LiveService'],
+            [$method, 'method', 'App\\LiveService::run', 'run'],
+            [$caller, 'class', 'App\\Caller', 'Caller'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 40, 45, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $service, $method, 'live:contains'), $ids['project'], 'contains', $service, $method, $file, 40, 40, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'calls', $caller, $method, 'live:calls'), $ids['project'], 'calls', $caller, $method, $file, 42, 42, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $candidate): string => $candidate['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('App\\LiveService', $names, true));
+        assertSame(false, in_array('App\\LiveService::run', $names, true));
+    }
+
+    #[Group('query')]
+    public function testDeadCodeLabelsAContainerReachedThroughATestOnlyMemberCall(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'php:file:src/Checkout.php';
+        $service = StableId::symbol($ids['project'], 'php', 'class', 'App\\TestedService');
+        $method = StableId::symbol($ids['project'], 'php', 'method', 'App\\TestedService::run');
+        $caller = StableId::symbol($ids['project'], 'php', 'class', 'App\\TestedServiceTest');
+        foreach ([
+            [$service, 'class', 'App\\TestedService', 'TestedService'],
+            [$method, 'method', 'App\\TestedService::run', 'run'],
+            [$caller, 'class', 'App\\TestedServiceTest', 'TestedServiceTest'],
+        ] as [$id, $kind, $canonical, $display]) {
+            $repository->saveNode($id, $ids['project'], 'php', $kind, $canonical, $display, null, $file, 50, 55, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->saveClassification(StableId::classification($ids['project'], $caller, 'quality.test_module', 'core.test.modules.v1'), $ids['project'], $caller, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $file, 50, 55, [], $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $service, $method, 'test:contains'), $ids['project'], 'contains', $service, $method, $file, 50, 50, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'calls', $caller, $method, 'test:calls'), $ids['project'], 'calls', $caller, $method, $file, 52, 52, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $candidates = [];
+        foreach ($data['dead_code_candidates'] as $candidate) {
+            $candidates[$candidate['component']['canonical_name']] = $candidate['reachability'];
+        }
+
+        assertSame('test_only', $candidates['App\\TestedService'] ?? null);
+        assertSame('test_only', $candidates['App\\TestedService::run'] ?? null);
+
+        $included = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], includeTests: true)->data;
+        $includedNames = array_map(static fn(array $candidate): string => $candidate['component']['canonical_name'], $included['dead_code_candidates']);
+        assertSame(false, in_array('App\\TestedService', $includedNames, true));
+    }
+
+    /**
      * The exclusion is earned by an implementation, not by being an interface:
      * a contract nothing implements has nothing dispatching to it.
      */
