@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.6](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.5...v0.16.6) (2026-09-16)
+
+
+### Continuous integration
+
+* **release:** allow Release Please to be run by hand ([#103](https://github.com/AraneaDev/Knossos-MCP/issues/103)) ([f9ce513](https://github.com/AraneaDev/Knossos-MCP/commit/f9ce513ff1ca7568fd3dcd3f59a36a4145361d4e))
+
 ## [0.16.5](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.4...v0.16.5) (2026-09-16)
 
 
