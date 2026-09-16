@@ -17,7 +17,7 @@ FROM php:8.5-cli-trixie@sha256:9ebdf4c28ab12c02085e171c31e22ac5f7bbb6a9f6927e3bc
 # x-release-please-start-version
 LABEL org.opencontainers.image.title="Knossos MCP" \
       org.opencontainers.image.description="Local evidence-backed architecture intelligence over MCP" \
-      org.opencontainers.image.version="0.16.3"
+      org.opencontainers.image.version="0.16.4"
 # x-release-please-end
 
 # The compiler toolchain the base image carries for `docker-php-ext-install` is
