@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.5](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.4...v0.16.5) (2026-09-16)
+
+
+### Continuous integration
+
+* **pr-title:** check out the base branch, not the pull request's pinned base commit ([#101](https://github.com/AraneaDev/Knossos-MCP/issues/101)) ([0c447dc](https://github.com/AraneaDev/Knossos-MCP/commit/0c447dcefdf8199e6531d293b89b80994f05f3f0))
+
 ## [0.16.4](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.3...v0.16.4) (2026-09-16)
 
 
