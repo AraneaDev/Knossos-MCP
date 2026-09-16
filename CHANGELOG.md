@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.16.6](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.5...v0.16.6) (2026-09-16)
+
+
+### Continuous integration
+
+* **release:** allow Release Please to be run by hand ([#103](https://github.com/AraneaDev/Knossos-MCP/issues/103)) ([f9ce513](https://github.com/AraneaDev/Knossos-MCP/commit/f9ce513ff1ca7568fd3dcd3f59a36a4145361d4e))
+
+## [0.16.5](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.4...v0.16.5) (2026-09-16)
+
+
+### Continuous integration
+
+* **pr-title:** check out the base branch, not the pull request's pinned base commit ([#101](https://github.com/AraneaDev/Knossos-MCP/issues/101)) ([0c447dc](https://github.com/AraneaDev/Knossos-MCP/commit/0c447dcefdf8199e6531d293b89b80994f05f3f0))
+
+## [0.16.4](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.3...v0.16.4) (2026-09-16)
+
+
+### Continuous integration
+
+* **pr-title:** share one commit-style rule between CI and the hook ([#99](https://github.com/AraneaDev/Knossos-MCP/issues/99)) ([f01d356](https://github.com/AraneaDev/Knossos-MCP/commit/f01d356531260039427c90fd11af4217ba94dab3))
+
+## [0.16.3](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.2...v0.16.3) (2026-09-15)
+
+
+### Documentation
+
+* **readme:** credit the author and link the write-up ([#96](https://github.com/AraneaDev/Knossos-MCP/issues/96)) ([ddd5e17](https://github.com/AraneaDev/Knossos-MCP/commit/ddd5e172e152dbbc588ac050fa674e2c4fbd4e23))
+
+
+### Continuous integration
+
+* **release:** list the changelog sections the other tools use ([#97](https://github.com/AraneaDev/Knossos-MCP/issues/97)) ([6b95980](https://github.com/AraneaDev/Knossos-MCP/commit/6b959805a32782edb9fd702adf1981128351c2ba))
+
 ## [0.16.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.1...v0.16.2) (2026-09-15)
 
 

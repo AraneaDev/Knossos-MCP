@@ -444,10 +444,15 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow, the
 Conventional Commit prefixes that drive releases, and how to add a language
 scanner.
 
+## Further reading
+
+- [What a dependency graph finds that your coding agent misses](https://tim-schipper.nl/en/blog/dependency-graph-coding-agents)
+
 ## License
 
 [MIT](LICENSE).
 
 ---
 
-Built by [Aranea Development](https://aranea-development.nl).
+Built by [Tim Schipper](https://tim-schipper.nl/en) and released as open source under
+[Aranea Development](https://aranea-development.nl).
