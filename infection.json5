@@ -16,6 +16,15 @@
   // mutated line and stay far below this ceiling; the headroom exists for the
   // initial full run. Re-check if the suite's wall-clock grows again.
   timeout: 120,
+  // The initial run is the whole suite in one PHPUnit process, collecting
+  // coverage in memory for Infection, and the quality image loads no php.ini,
+  // so without this it inherits PHP's built-in 128M. Measured 2026-09-21 at
+  // 158.5M peak (3177 tests): the scheduled runs of 2026-09-14 and 09-21 died
+  // in the initial run with "Allowed memory size of 134217728 bytes exhausted",
+  // reported as "Project tests must be in a passing state". 512M leaves room
+  // for the suite to grow and stays finite so a runaway still fails. Per-mutant
+  // runs execute only the covering tests without coverage and keep the default.
+  initialTestsPhpOptions: "-d memory_limit=512M",
   threads: 4,
   source: {
     directories: ["src"],

@@ -48,13 +48,20 @@ final class SnapshotArchiveMemoryTest extends KnossosTestCase
         $repository->archiveActiveSnapshot($ids['project'], hash('sha256', '{}'), 5);
         $peak = memory_get_peak_usage() - $before;
 
-        $stored = (string) $pdo->query('SELECT payload_json FROM scan_snapshots')->fetchColumn();
-        $payload = SnapshotPayload::decode($stored);
+        // Checked without decoding the filler into arrays, which cost ~15 MB on
+        // top of a suite that runs close to its memory limit under Infection.
+        // Counting the filler proves every node kept its attributes; the
+        // stripped remainder is small enough to decode and count.
+        $payload = SnapshotPayload::decode((string) $pdo->query('SELECT payload_json FROM scan_snapshots')->fetchColumn());
+        $bytes = strlen($payload);
+        $filler = str_repeat('abcdefghij', 200);
+        assertSame(4000, substr_count($payload, $filler));
+        $payload = str_replace($filler, '', $payload);
         $facts = json_decode($payload, true, 512, JSON_THROW_ON_ERROR)['facts'];
         assertSame(4002, count($facts['nodes']));
-        assertSame(strlen($payload), (int) $pdo->query('SELECT byte_size FROM scan_snapshots')->fetchColumn());
+        assertSame($bytes, (int) $pdo->query('SELECT byte_size FROM scan_snapshots')->fetchColumn());
         // The uncompressed payload is roughly 9 MB here. Holding it whole, plus
         // the row arrays it was built from, is what this guards against.
-        $this->assertLessThan(strlen($payload) / 2, $peak, sprintf('Archiving held %d bytes to write %d.', $peak, strlen($payload)));
+        $this->assertLessThan($bytes / 2, $peak, sprintf('Archiving held %d bytes to write %d.', $peak, $bytes));
     }
 }

@@ -88,7 +88,9 @@ jobs:
           # bump. stderr, so it is never mistaken for Infection's own output.
           # Only the master is affected; the PHPUnit children are separate
           # invocations that keep the image defaults, which is what keeps the
-          # initial test run quiet on stderr.
+          # initial test run quiet on stderr. The one exception is the initial
+          # run's memory_limit, set through initialTestsPhpOptions in
+          # infection.json5 so a local run gets the same ceiling.
           status=0
           docker run --name "infection-$SHARD" -e KNOSSOS_QUALITY_CONTAINER=1 --entrypoint sh knossos-mcp:quality \
             -c "php -d pcov.enabled=1 -d memory_limit=4G -d display_errors=stderr vendor/bin/infection \
