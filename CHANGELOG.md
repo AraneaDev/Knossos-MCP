@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.8](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.7...v0.16.8) (2026-09-21)
+
+
+### Fixes
+
+* ignore release configuration changes ([#109](https://github.com/AraneaDev/Knossos-MCP/issues/109)) ([7425156](https://github.com/AraneaDev/Knossos-MCP/commit/7425156ef89dc54b9542fc286ca03d82fb2f3e02))
+
 ## [0.16.7](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.6...v0.16.7) (2026-09-16)
 
 
