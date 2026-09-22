@@ -263,6 +263,11 @@ def safe_file(root: Path, value: Any, max_bytes: int) -> tuple[Path, str]:
     return absolute, relative.as_posix()
 
 
+# ``sys.stdlib_module_names`` exists from Python 3.10; an older interpreter
+# resolves no script-directory imports rather than risk shadowing the stdlib.
+STDLIB_MODULE_NAMES: frozenset[str] = frozenset(getattr(sys, "stdlib_module_names", ()))
+
+
 def module_name(relative: str, strip: int = 0) -> str:
     path = PurePosixPath(relative)
     parts = list(path.with_suffix("").parts)[strip:]
@@ -405,6 +410,28 @@ class ProjectModuleIndex:
             # named ``config``.
             if self._is_python_script(base):
                 return base
+        return None
+
+    def script_sibling_module(self, importer: str, module: str) -> str | None:
+        """The module an absolute import names in the importer's own directory.
+
+        Running ``python3 app/main.py`` puts ``app/`` first on ``sys.path``, so
+        the script's bare ``import monitor`` loads ``app/monitor.py`` whether or
+        not ``app/`` is a package. Only a script gets this: a module something
+        else imports has no directory of its own on the path. A name the
+        standard library owns is left alone, so a sibling ``json.py`` never
+        captures ``import json``.
+        """
+        parts = module.split(".")
+        if not parts or "" in parts or parts[0] in STDLIB_MODULE_NAMES:
+            return None
+        directory = PurePosixPath(importer).parent
+        if not directory.parts:
+            return None  # the bare root is already a source root
+        base = self.root.joinpath(*directory.parts, *parts)
+        for candidate in (base / "__init__.py", base.with_suffix(".py")):
+            if self._is_project_file(candidate):
+                return self.module_for(candidate.relative_to(self.root).as_posix())
         return None
 
     def _is_python_script(self, path: Path) -> bool:
@@ -1272,6 +1299,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
     ) -> None:
         self.relative = relative
         self.has_shebang = has_shebang
+        self.executable = has_shebang or names_main_guard(tree)
         self.index = index
         self.module = index.module_for(relative)
         self.is_package = PurePosixPath(relative).stem == "__init__"
@@ -1280,6 +1308,12 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.aliases: dict[str, str] = {}
         self.containers: list[tuple[str, str, str]] = []
         self.local_function_scopes: list[dict[str, str]] = []
+        # Methods each class declares in its own body, keyed by the class's
+        # canonical name, so `self.<name>` read as a value can be told apart
+        # from a data attribute before the method's own definition is visited.
+        self.class_methods: dict[str, frozenset[str]] = {}
+        # `self.<name>` nodes that are the callee of a call: those are `calls`.
+        self.called_attributes: set[int] = set()
         # What a receiver holds, so a call on it names the method that runs.
         # Attributes are keyed by the class that owns them; locals by the
         # function being walked. Both are inferences from local flow, so a
@@ -1304,7 +1338,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
             self.tree,
             {
                 "stub": self.relative.endswith(".pyi"),
-                "executable": self.has_shebang or names_main_guard(self.tree),
+                "executable": self.executable,
             },
         )
         if self.is_package:
@@ -1342,14 +1376,22 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 return self.index.module_declarations(module).get(rest, ref(hint, f"{module}.{rest}"))
         return None
 
+    def script_import(self, module: str) -> str:
+        """An absolute import, resolved against a script's own directory when no source root has it."""
+        if not self.executable or self.index.module_file(module) is not None:
+            return module
+        return self.index.script_sibling_module(self.relative, module) or module
+
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
-            target = ref("module", alias.name)
+            target = ref("module", self.script_import(alias.name))
             self.aliases[alias.asname or alias.name.split(".")[0]] = target
             self.facts.add_edge("imports", self.module_id, target, node, {"alias": alias.asname})
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = absolute_import(self.module, node.level, node.module, self.is_package)
+        if node.level == 0 and module:
+            module = self.script_import(module)
         if not module:
             # A relative import that climbs past the top of the project: legal to
             # parse, unrunnable at import time, and nameable by nothing in the
@@ -1390,6 +1432,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
             target = self.resolve_name(name, "class") if name else None
             if target:
                 self.facts.add_edge("extends", local_id, target, base)
+        self.class_methods[canonical] = frozenset(
+            item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        )
         self.containers.append((local_id, canonical, "class"))
         self.generic_visit(node)
         self.containers.pop()
@@ -1603,7 +1648,28 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 held = self.parameter_types[-1].get(receiver)
         return ref("method", f"{held}::{member}") if held else None
 
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        """A method of this class read as a value: a callback, a slot, a property.
+
+        Only ``self.<name>`` where the enclosing class declares ``<name>``: a
+        data attribute is no declaration, and an inherited name belongs to a
+        class this file may not know.
+        """
+        if (
+            isinstance(node.ctx, ast.Load)
+            and id(node) not in self.called_attributes
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            class_container = next((item for item in reversed(self.containers) if item[2] == "class"), None)
+            if class_container is not None and node.attr in self.class_methods.get(class_container[1], ()):
+                target = ref("method", f"{class_container[1]}::{node.attr}")
+                if target != self.current():
+                    self.facts.add_edge("references", self.current(), target, node)
+        self.generic_visit(node)
+
     def visit_Call(self, node: ast.Call) -> None:
+        self.called_attributes.add(id(node.func))
         name = dotted(node.func)
         target = None
         if name:

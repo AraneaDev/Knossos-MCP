@@ -105,6 +105,131 @@ final class PythonScannerTest extends KnossosTestCase
         assertSame(false, $executable['shop.service']);
     }
 
+    /**
+     * `python3 app/main.py` puts `app/` first on `sys.path`, so the script's
+     * `from monitor import Probe` names its sibling `app/monitor.py` even when
+     * `app/` is a package. Resolution only tried the source roots, so the
+     * import stayed external and every module the script loads was reported as
+     * unreferenced. A library module gets no such fallback, and a sibling
+     * named after a standard-library module never captures its import.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerResolvesAScriptsSiblingImportsFromItsOwnDirectory(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-script-dir-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/main.py' => implode("\n", [
+                'import json',
+                'import helpers',
+                'from monitor import Probe',
+                '',
+                'def main():',
+                '    return Probe().run(), helpers.VALUE, json.dumps({})',
+                '',
+                'if __name__ == "__main__":',
+                '    main()',
+                '',
+            ]),
+            'app/monitor.py' => "class Probe:\n    def run(self):\n        return 1\n",
+            'app/helpers.py' => "VALUE = 1\n",
+            'app/json.py' => "def dumps(value):\n    return ''\n",
+            'app/library.py' => "from monitor import Probe\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['app/main.py', 'app/library.py'],
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $edges = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                $edges[] = [$edge->kind, $edge->sourceReference, $edge->targetReference];
+            }
+        }
+
+        assertArrayContains(['imports', 'py:module:app.main', 'py:module:app.monitor'], $edges);
+        assertArrayContains(['imports', 'py:module:app.main', 'py:module:app.helpers'], $edges);
+        assertArrayContains(['calls', 'py:function:app.main.main', 'py:class:app.monitor.Probe'], $edges);
+        // The standard library wins over a sibling that shadows it.
+        assertArrayContains(['imports', 'py:module:app.main', 'py:module:json'], $edges);
+        // A module imported by others has no directory of its own on sys.path.
+        assertArrayContains(['imports', 'py:module:app.library', 'py:module:monitor'], $edges);
+    }
+
+    /**
+     * A bound method handed over as a value, `timer.timeout.connect(self.tick)`,
+     * is how every Qt slot and most callbacks are wired, and a `@property` is
+     * only ever read. Neither is a call, so both carried no inbound edge and
+     * were reported as unreferenced while running on every event.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReferencesBoundMethodsReadAsValues(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-bound-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o755, true);
+        file_put_contents($root . '/widget.py', implode("\n", [
+            'class Widget:',
+            '    def __init__(self, timer):',
+            '        self.data = 1',
+            '        timer.connect(self.tick)',
+            '        handlers = {"size": self.size}',
+            '        print(self.data, handlers)',
+            '        self.helper()',
+            '',
+            '    def tick(self):',
+            '        return self.data',
+            '',
+            '    @property',
+            '    def size(self):',
+            '        return 1',
+            '',
+            '    def helper(self):',
+            '        return self.size',
+            '',
+        ]));
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['widget.py']]));
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/widget.py');
+            @rmdir($root);
+        }
+
+        $edges = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                $edges[] = [$edge->kind, $edge->sourceReference, $edge->targetReference];
+            }
+        }
+
+        assertArrayContains(['references', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::tick'], $edges);
+        assertArrayContains(['references', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::size'], $edges);
+        assertArrayContains(['references', 'py:method:widget.Widget::helper', 'py:method:widget.Widget::size'], $edges);
+        assertArrayContains(['calls', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::helper'], $edges);
+        // A data attribute is not a declaration, and a call is not also a reference.
+        $targets = array_map(fn(array $edge): string => $edge[2], $edges);
+        assertSame(false, in_array('py:method:widget.Widget::data', $targets, true));
+        assertSame(false, in_array(['references', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::helper'], $edges, true));
+    }
+
     #[Group('python-scanner')]
     public function testPythonWorkerIsDeterministicBoundedAndPathSafe(): void
     {
