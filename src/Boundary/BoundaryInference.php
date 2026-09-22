@@ -84,6 +84,15 @@ final class BoundaryInference
                 // would otherwise land the fallback in the very same string space as a
                 // legacy identity and silently re-collide two distinct boundaries onto one id.
                 $rules[$key]['identity'] = $legacyIdentityCounts[$rule['display']] === 1 ? $rule['display'] : ('path:' . $key);
+                // The name has to differ too: boundaries are unique on
+                // (project, name, source), and two `node:loc` rows failed the
+                // whole scan. The manifest's directory tells them apart; a name
+                // only one manifest declares is left as it always was.
+                if ($legacyIdentityCounts[$rule['display']] > 1) {
+                    $configPath = substr($key, strpos($key, ':') + 1);
+                    $directory = dirname(str_replace('\\', '/', $configPath));
+                    $rules[$key]['display'] = $rule['display'] . ' (' . ($directory === '.' ? 'root' : $directory) . ')';
+                }
             }
         }
         foreach ($nodes as $node) {

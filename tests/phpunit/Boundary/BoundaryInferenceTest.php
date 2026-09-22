@@ -588,6 +588,27 @@ final class BoundaryInferenceTest extends TestCase
         assertSame(true, $facts[0]->identityName !== $facts[1]->identityName);
     }
 
+    /**
+     * Distinct identities were not enough: the boundaries table is unique on
+     * (project, name, source), so two `node:loc` boundaries failed the whole
+     * scan with an integrity violation. A shared name now carries each
+     * manifest's directory; a unique name is left exactly as it was.
+     */
+    public function testTwoManifestsSharingAPackageNameGetDistinctNames(): void
+    {
+        $units = [
+            new ProjectUnit('node', 'apps/loc/package.json', 'hash-a', ['name' => 'loc']),
+            new ProjectUnit('node', 'examples/loc/package.json', 'hash-b', ['name' => 'loc']),
+            new ProjectUnit('node', 'package.json', 'hash-c', ['name' => 'root']),
+        ];
+
+        $facts = (new BoundaryInference())->infer($units, []);
+        $names = array_map(static fn(BoundaryFact $fact): string => $fact->name, $facts);
+        sort($names);
+
+        assertSame(['node:loc (apps/loc)', 'node:loc (examples/loc)', 'node:root'], $names);
+    }
+
     public function testFallbackIdentityDoesNotCollideWithAnotherManifestsPinnedIdentity(): void
     {
         // Reviewer-constructed case: the disambiguating fallback identity used when two
