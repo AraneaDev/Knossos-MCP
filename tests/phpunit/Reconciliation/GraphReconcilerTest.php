@@ -1836,6 +1836,47 @@ final class GraphReconcilerTest extends TestCase
      * does not, rather than fabricated into an external method on a type the
      * project declares.
      */
+    /**
+     * A JavaScript module with a hand-written declaration beside it
+     * (`tokens.mjs` and `tokens.d.mts`) is imported through the declaration,
+     * so every call edged to `tokens.d.mts#lees` and the implementation that
+     * runs looked unused. An edge to a declaration goes to the implementation
+     * when the graph holds one under the same name.
+     */
+    #[Group('reconciliation')]
+    public function testAnEdgeToADeclarationFileGoesToItsImplementation(): void
+    {
+        $node = static fn(string $canonical): NodeFact => new NodeFact(
+            localId: 'ts:function:' . $canonical,
+            kind: 'function',
+            canonicalName: $canonical,
+            displayName: $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $nodes = [$node('src/a.ts#run'), $node('scripts/tokens.d.mts#lees'), $node('scripts/tokens.mjs#lees'), $node('types/only.d.ts#declared')];
+        $edges = [];
+        foreach (['ts:function:scripts/tokens.d.mts#lees', 'ts:function:types/only.d.ts#declared'] as $index => $target) {
+            $edges[] = new EdgeFact('calls', 'ts:function:src/a.ts#run', $target, Origin::Ast, Confidence::Probable, new Evidence('src/Foo.php', $index + 1, $index + 1));
+        }
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        (new GraphReconciler($this->repo))->reconcile($request);
+
+        $canonical = [];
+        foreach ($this->repo->nodes as $row) {
+            $canonical[$row[0]] = $row[4];
+        }
+        $targets = array_map(static fn(array $row): string => $canonical[$row[4]], $this->repo->edges);
+        sort($targets);
+        // The implementation is reached; a declaration with no implementation keeps its edge.
+        assertSame(['scripts/tokens.mjs#lees', 'types/only.d.ts#declared'], $targets);
+    }
+
     #[Group('reconciliation')]
     public function testASpeculativeEdgeIsKeptOnlyWhenItsTargetExists(): void
     {

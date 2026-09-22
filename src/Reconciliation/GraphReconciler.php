@@ -426,7 +426,8 @@ final readonly class GraphReconciler
                     str_contains($edge->targetReference, ':namespaced_function:') => self::namespacedFunctionReference($edge->targetReference, $nodeMap),
                     default => $edge->targetReference,
                 };
-                $targetId = $reference === null ? null : ($nodeMap[$reference]
+                $targetId = $reference === null ? null : (self::implementationTarget($reference, $nodeMap)
+                    ?? $nodeMap[$reference]
                     ?? $this->aliasedTypeTarget($reference, $nodeMap)
                     ?? $this->inheritedMemberTarget($reference, $nodeMap, $inheritanceSources));
                 if ($targetId === null && $deferred) {
@@ -517,6 +518,27 @@ final readonly class GraphReconciler
         }
 
         return $types;
+    }
+
+    /**
+     * The implementation behind a reference into a hand-written declaration file.
+     *
+     * `tokens.mjs` with `tokens.d.mts` beside it is imported through the
+     * declaration, so every call named `tokens.d.mts#lees` while the code that
+     * runs is `tokens.mjs#lees`. When the graph holds the implementation under
+     * the same name and kind, the edge goes there; otherwise null, and the
+     * declaration keeps it.
+     *
+     * @param array<string, string> $nodeMap
+     */
+    private static function implementationTarget(string $reference, array $nodeMap): ?string
+    {
+        $implementation = preg_replace('~\.d\.(m|c)?ts(?=#|$)~', '.$1js', $reference, 1, $count);
+        if ($count !== 1 || !is_string($implementation) || $implementation === $reference) {
+            return null;
+        }
+
+        return $nodeMap[$implementation] ?? null;
     }
 
     /**
