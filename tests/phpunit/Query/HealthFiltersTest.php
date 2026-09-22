@@ -186,6 +186,24 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(1, $health['bounds']['excluded_type_declarations']);
     }
 
+    /**
+     * `declare global { interface Window { ... } }` in an ordinary file is a
+     * type declaration all the same: it augments what the runtime defines.
+     */
+    #[Group('query')]
+    public function testAmbientDeclarationsAreExcludedLikeTypeDeclarations(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $window = StableId::symbol($ids['project'], 'typescript', 'interface', 'src/engines.ts#global.Window');
+        $repository->saveNode($window, $ids['project'], 'typescript', 'interface', 'src/engines.ts#global.Window', 'Window', null, $ids['file'], 1, 1, 'ast', 'certain', ['ambient' => true], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $candidate): string => $candidate['component']['canonical_name'], $health['dead_code_candidates']);
+        assertSame(false, in_array('src/engines.ts#global.Window', $names, true));
+        assertSame(1, $health['bounds']['excluded_type_declarations']);
+    }
+
     #[Group('query')]
     public function testHealthFlagsPassThroughToolDispatch(): void
     {

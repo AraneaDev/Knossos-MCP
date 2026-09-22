@@ -629,7 +629,9 @@ class TypeScriptLanguageFactCollector {
             // whether anyone imports the declaration of it.
             this.sourceFile.isDeclarationFile
                 ? { ...descriptor.attributes, declaration_file: true }
-                : descriptor.attributes,
+                : insideAmbientDeclaration(node)
+                  ? { ...descriptor.attributes, ambient: true }
+                  : descriptor.attributes,
         );
         this.addEdge("contains", parent.id, id, node);
         const nest = this.nest.declaration(node, id, canonical);
@@ -2029,6 +2031,21 @@ function declarationName(node, sourceFile) {
         return `{anonymous}@${position.line + 1}:${position.character + 1}`;
     }
     return null;
+}
+
+// Inside `declare global { ... }` or `declare module 'x' { ... }`: a
+// description of something the runtime or another package defines, which is
+// no more code than a `.d.ts` is. The block itself counts as inside.
+function insideAmbientDeclaration(node) {
+    for (let current = node; current; current = current.parent) {
+        if (
+            ts.isModuleDeclaration(current) &&
+            ((current.flags & ts.NodeFlags.GlobalAugmentation) !== 0 ||
+                ts.isStringLiteral(current.name))
+        )
+            return true;
+    }
+    return false;
 }
 
 function isDeclaration(node) {

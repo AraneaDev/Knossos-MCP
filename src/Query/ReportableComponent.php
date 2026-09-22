@@ -117,7 +117,10 @@ final readonly class ReportableComponent
             return false;
         }
         $decoded = json_decode($attributesJson, true);
-        return is_array($decoded) && ($decoded['declaration_file'] ?? false) === true;
+        // `ambient` is the same thing written in an ordinary file:
+        // `declare global { ... }` or `declare module 'x' { ... }`.
+        return is_array($decoded)
+            && (($decoded['declaration_file'] ?? false) === true || ($decoded['ambient'] ?? false) === true);
     }
 
     /**

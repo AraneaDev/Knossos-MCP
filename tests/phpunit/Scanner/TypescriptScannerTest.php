@@ -546,6 +546,59 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame([], array_values($dangling));
     }
 
+    /**
+     * `declare global { interface Window { api: Api } }` augments a type the
+     * runtime defines, and `declare module 'x' { ... }` describes a module
+     * someone else ships. Neither is code, exactly as a `.d.ts` is not, but
+     * they sat in ordinary files and were reported as unreferenced.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerMarksAmbientDeclarationsInOrdinaryFiles(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-ambient-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"ambient-fixture"}',
+            'src/engines.ts' => implode("\n", [
+                'declare global {',
+                '    interface Window { player?: string }',
+                '}',
+                "declare module 'legacy-lib' {",
+                '    export function start(): void;',
+                '}',
+                'export function play(): string { return window.player ?? ""; }',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/engines.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $ambient = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                $ambient[$node->canonicalName] = ($node->attributes['ambient'] ?? false) === true;
+            }
+        }
+
+        assertSame(true, $ambient['src/engines.ts#global.Window']);
+        assertSame(true, $ambient['src/engines.ts#global.Window::player']);
+        assertSame(true, $ambient['src/engines.ts#legacy-lib.start']);
+        assertSame(false, $ambient['src/engines.ts#play']);
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerExtractsCrossProjectArchitecture(): void
     {
