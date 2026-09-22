@@ -127,7 +127,7 @@ fn is_test_module_path(module: &str, test_modules: &TestModules) -> bool {
 /// Record every out-of-line `#[cfg(test)] mod name;` in one file's items.
 ///
 /// Bodiless modules only: one with a body is walked in place, where
-/// [`Walk::walk_mod`] opens the scope directly.
+/// `Walk::walk_mod` opens the scope directly.
 pub fn collect_test_modules(module: &str, items: &[Item], out: &mut TestModules) {
     for item in items {
         if let Item::Mod(node) = item {
@@ -193,6 +193,17 @@ impl Walk<'_> {
     /// SDK's persistence identity is kind/source/target within one owner, and
     /// every one of those rows is identical.
     fn collect_uses(&mut self, container: &str, items: &[Item]) {
+        // `use policy::Policy;` beside `mod policy;` names that child module:
+        // since the 2018 edition a path's first segment may be any name in
+        // scope, and a module declared here is one. Left as written, the path
+        // read as an external crate's.
+        let children: BTreeSet<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Mod(node) => Some(node.ident.to_string()),
+                _ => None,
+            })
+            .collect();
         for item in items {
             match item {
                 Item::Use(node) => {
@@ -200,7 +211,13 @@ impl Walk<'_> {
                     flatten_use(&node.tree, "", &mut leaves);
                     let source = reference("module", &self.module);
                     for leaf in leaves {
-                        let Some(full) = rebase(container, &leaf.full) else {
+                        let head = leaf.full.split("::").next().unwrap_or_default();
+                        let written = if node.leading_colon.is_none() && children.contains(head) {
+                            format!("{container}::{}", leaf.full)
+                        } else {
+                            leaf.full.clone()
+                        };
+                        let Some(full) = rebase(container, &self.anchor_crate(&written)) else {
                             continue;
                         };
                         let module = if leaf.names_module {
@@ -244,22 +261,45 @@ impl Walk<'_> {
     fn walk_item(&mut self, container: &str, container_kind: &str, item: &Item) {
         match item {
             Item::Struct(node) => {
-                self.declare(
+                let canonical = self.declare(
                     container,
                     container_kind,
                     &node.ident.to_string(),
                     "class",
                     item.span(),
+                );
+                self.walk_type_declaration(
+                    &reference("class", &canonical),
+                    container,
+                    &node.attrs,
+                    &[&node.fields],
+                    &[],
                 );
             }
             Item::Enum(node) => {
-                self.declare(
+                let canonical = self.declare(
                     container,
                     container_kind,
                     &node.ident.to_string(),
                     "class",
                     item.span(),
                 );
+                let fields: Vec<&syn::Fields> = node.variants.iter().map(|v| &v.fields).collect();
+                let variant_attrs: Vec<&[syn::Attribute]> =
+                    node.variants.iter().map(|v| v.attrs.as_slice()).collect();
+                self.walk_type_declaration(
+                    &reference("class", &canonical),
+                    container,
+                    &node.attrs,
+                    &fields,
+                    &variant_attrs,
+                );
+            }
+            Item::Const(node) if container_kind == "module" => {
+                self.walk_module_value(container, &node.ty, &node.expr);
+            }
+            Item::Static(node) if container_kind == "module" => {
+                self.walk_module_value(container, &node.ty, &node.expr);
             }
             Item::Union(node) => {
                 self.declare(
@@ -287,7 +327,12 @@ impl Walk<'_> {
                     self.facts.mark_executable();
                 }
                 self.attribute_routes(&canonical, &node.attrs);
-                self.walk_body(&reference("function", &canonical), container, &node.block);
+                self.walk_body(
+                    &reference("function", &canonical),
+                    container,
+                    &node.sig,
+                    &node.block,
+                );
                 if is_test {
                     self.facts.exit_test_scope();
                 }
@@ -331,6 +376,7 @@ impl Walk<'_> {
                             self.walk_body(
                                 &reference("method", &method_canonical),
                                 container,
+                                &method.sig,
                                 block,
                             );
                         }
@@ -347,6 +393,32 @@ impl Walk<'_> {
                 // nodes themselves still stand.
                 let Some(target) = self.type_path(container, &node.self_ty) else {
                     return;
+                };
+                // A type from outside this crate can only take a trait impl
+                // (the orphan rule), and its path is a name the project does
+                // not own: attaching methods there declared `std::sync::Arc::x`
+                // with nothing tying them to the trait they implement. The
+                // block itself is the project's, so it becomes the container.
+                let root = self.crate_root().to_owned();
+                let target = match &node.trait_ {
+                    Some((_, trait_path, _))
+                        if target != root && !target.starts_with(&format!("{root}::")) =>
+                    {
+                        let trait_name = trait_path
+                            .segments
+                            .last()
+                            .map(|segment| segment.ident.to_string())
+                            .unwrap_or_default();
+                        let type_name = target.rsplit("::").next().unwrap_or(&target).to_owned();
+                        self.declare(
+                            container,
+                            container_kind,
+                            &format!("<impl {trait_name} for {type_name}>"),
+                            "class",
+                            item.span(),
+                        )
+                    }
+                    _ => target,
                 };
                 // The impl target may live in another file. Its `implements`
                 // and `contains` edges use it as their SOURCE, and a source
@@ -396,6 +468,19 @@ impl Walk<'_> {
                         let name = method.sig.ident.to_string();
                         let method_canonical =
                             self.declare(&target, "class", &name, "method", member.span());
+                        // The declared return type, which is what a call on the
+                        // result resolves through in the core (`method_of_return`).
+                        // Speculative: `String` or `Vec<T>` names nothing here.
+                        if let syn::ReturnType::Type(_, returned) = &method.sig.output {
+                            if let Some(returned) = self.receiver_type(container, returned) {
+                                self.facts.speculative_edge(
+                                    "returns",
+                                    &reference("method", &method_canonical),
+                                    &reference("class", &returned),
+                                    method.sig.output.span(),
+                                );
+                            }
+                        }
                         if drop_impl && name == "drop" {
                             self.facts.node_attribute(
                                 &method_canonical,
@@ -406,6 +491,7 @@ impl Walk<'_> {
                         self.walk_body(
                             &reference("method", &method_canonical),
                             container,
+                            &method.sig,
                             &method.block,
                         );
                     }
@@ -550,8 +636,11 @@ impl Walk<'_> {
             return None;
         }
         let single_segment = path.segments.len() == 1;
-        if path.leading_colon.is_some() || rendered == "crate" || rendered.starts_with("crate::") {
-            return Some((rendered.trim_start_matches("::").to_owned(), single_segment));
+        if path.leading_colon.is_some() {
+            return Some((rendered, single_segment));
+        }
+        if rendered == "crate" || rendered.starts_with("crate::") {
+            return Some((self.anchor_crate(&rendered), single_segment));
         }
         if rendered == "Self" || rendered.starts_with("Self::") {
             if let Some(target) = &self.current_impl_target {
@@ -596,15 +685,34 @@ impl Walk<'_> {
         Some((format!("{container}::{rendered}"), true))
     }
 
+    /// The name this file's crate root has in the graph: `crate` for the
+    /// package at the project root, the crate's own name for a workspace
+    /// member (see `module_path_in_crate`).
+    fn crate_root(&self) -> &str {
+        self.module.split("::").next().unwrap_or("crate")
+    }
+
+    /// A `crate`-rooted path as this file's crate names it in the graph.
+    fn anchor_crate(&self, path: &str) -> String {
+        let root = self.crate_root();
+        if path == "crate" {
+            return root.to_owned();
+        }
+        match path.strip_prefix("crate::") {
+            Some(rest) => format!("{root}::{rest}"),
+            None => path.to_owned(),
+        }
+    }
+
     /// The paths an unqualified `rendered` path could name, in scoping order.
     fn index_candidates(&self, container: &str, rendered: &str) -> Vec<String> {
         let mut candidates = Vec::with_capacity(3);
         for candidate in [
             format!("{container}::{rendered}"),
-            if container == "crate" {
+            if container == self.crate_root() {
                 String::new()
             } else {
-                format!("crate::{rendered}")
+                format!("{}::{rendered}", self.crate_root())
             },
             rendered.to_owned(),
         ] {
@@ -658,20 +766,110 @@ impl Walk<'_> {
     /// [`Calls::visit_call`] and `Facts::conditional_edge`. Both branches match
     /// the Python worker's principle: an unresolved target produces no edge
     /// instead of a wrong one.
-    fn walk_body(&mut self, enclosing: &str, container: &str, block: &syn::Block) {
-        for statement in &block.stmts {
-            self.walk_statement(enclosing, container, statement);
-        }
-    }
-
-    /// Walk one statement for calls, descending into nested expressions.
-    fn walk_statement(&mut self, enclosing: &str, container: &str, statement: &syn::Stmt) {
+    ///
+    /// `signature` seeds the receiver types a method call can resolve through:
+    /// `self` names the `impl` block's type, and each parameter its declared
+    /// type. See [`Calls::visit_expr_method_call`].
+    fn walk_body(
+        &mut self,
+        enclosing: &str,
+        container: &str,
+        signature: &syn::Signature,
+        block: &syn::Block,
+    ) {
+        let receivers = self.signature_receivers(container, signature);
         let mut visitor = Calls {
             walk: self,
             enclosing: enclosing.to_owned(),
             container: container.to_owned(),
+            receivers,
         };
-        visitor.visit_stmt(statement);
+        visitor.visit_signature(signature);
+        for statement in &block.stmts {
+            visitor.visit_stmt(statement);
+        }
+    }
+
+    /// Walk what a type declaration names outside any body: its fields'
+    /// types, and the functions serde attributes name by string. `enclosing`
+    /// is the struct, enum or union itself.
+    fn walk_type_declaration(
+        &mut self,
+        enclosing: &str,
+        container: &str,
+        attrs: &[syn::Attribute],
+        fields: &[&syn::Fields],
+        field_attrs: &[&[syn::Attribute]],
+    ) {
+        let mut visitor = Calls {
+            walk: self,
+            enclosing: enclosing.to_owned(),
+            container: container.to_owned(),
+            receivers: BTreeMap::new(),
+        };
+        visitor.serde_references(attrs);
+        for fields in fields {
+            visitor.visit_fields(fields);
+            for field in fields.iter() {
+                visitor.serde_references(&field.attrs);
+            }
+        }
+        for attrs in field_attrs {
+            visitor.serde_references(attrs);
+        }
+    }
+
+    /// Walk a module-level `const` or `static`: its type and its initializer,
+    /// whose calls run on behalf of the module that declares it.
+    fn walk_module_value(&mut self, container: &str, ty: &Type, expr: &syn::Expr) {
+        let mut visitor = Calls {
+            walk: self,
+            enclosing: reference("module", container),
+            container: container.to_owned(),
+            receivers: BTreeMap::new(),
+        };
+        visitor.visit_type(ty);
+        visitor.visit_expr(expr);
+    }
+
+    /// The receiver types a signature states: `self` as the `impl` block's
+    /// type, and every plainly named parameter as its type behind any `&`.
+    fn signature_receivers(
+        &self,
+        container: &str,
+        signature: &syn::Signature,
+    ) -> BTreeMap<String, String> {
+        let mut receivers = BTreeMap::new();
+        for input in &signature.inputs {
+            match input {
+                syn::FnArg::Receiver(_) => {
+                    if let Some(target) = &self.current_impl_target {
+                        receivers.insert("self".to_owned(), target.clone());
+                    }
+                }
+                syn::FnArg::Typed(typed) => {
+                    if let syn::Pat::Ident(ident) = typed.pat.as_ref() {
+                        if let Some(target) = self.receiver_type(container, &typed.ty) {
+                            receivers.insert(ident.ident.to_string(), target);
+                        }
+                    }
+                }
+            }
+        }
+        receivers
+    }
+
+    /// The canonical path of a type a receiver holds, seen through `&`,
+    /// `&mut` and parentheses, or None for anything that is not a plain path.
+    fn receiver_type(&self, container: &str, ty: &Type) -> Option<String> {
+        match ty {
+            Type::Reference(reference) => self.receiver_type(container, &reference.elem),
+            Type::Paren(inner) => self.receiver_type(container, &inner.elem),
+            Type::Path(path) if path.qself.is_none() => self
+                .resolve_path(container, &path.path)
+                .map(|(target, _)| target),
+            _ => None,
+        }
     }
 
     /// Record routes declared by actix-style handler attributes.
@@ -964,6 +1162,11 @@ struct Calls<'a, 'b> {
     /// [`Walk::path_target`] as the container an unqualified or relative
     /// path resolves against.
     container: String,
+    /// Local names whose type the source states, mapped to that type's
+    /// canonical path: `self`, typed parameters, and `let` bindings that are
+    /// annotated or constructed through a path. What a method call on one of
+    /// them resolves through.
+    receivers: BTreeMap<String, String>,
 }
 
 impl Calls<'_, '_> {
@@ -1190,12 +1393,260 @@ fn actix_resource<'a>(
     Some((path, method, to.args.first()?))
 }
 
+impl Calls<'_, '_> {
+    /// Speculative `references` edges to the type a path names, as a struct
+    /// or enum and as a trait: which one it is, and whether it is declared
+    /// here at all rather than being `Vec` or `String`, only the graph knows.
+    fn type_reference(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        let Some((target, _)) = self.walk.resolve_path(&self.container, path) else {
+            return;
+        };
+        for kind in ["class", "interface"] {
+            let endpoint = reference(kind, &target);
+            if endpoint != self.enclosing {
+                self.walk
+                    .facts
+                    .speculative_edge("references", &self.enclosing, &endpoint, span);
+            }
+        }
+    }
+
+    /// The type a multi-segment value or pattern path sits under:
+    /// `HookState::Absent` names `HookState`, `Self::helper` the impl's type.
+    fn owner_reference(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        if path.segments.len() < 2 {
+            return;
+        }
+        let mut owner = path.clone();
+        owner.segments.pop();
+        owner.segments.pop_punct();
+        self.type_reference(&owner, span);
+    }
+
+    /// A function named as a value (`map(Self::helper)`, `.or_else(fallback)`),
+    /// which no call expression marks. A bare name is usually a local binding,
+    /// so an unconfirmed one counts only when this file declares a function
+    /// by that name, the same deferral an unqualified call gets.
+    fn value_reference(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        let Some((target, unconfirmed)) = self.walk.resolve_path(&self.container, path) else {
+            return;
+        };
+        if path.segments.len() < 2 {
+            let endpoint = reference("function", &target);
+            if unconfirmed {
+                self.walk.facts.conditional_any_edge(
+                    &self.enclosing,
+                    &endpoint,
+                    span,
+                    "references",
+                    "probable",
+                );
+            } else if endpoint != self.enclosing {
+                self.walk
+                    .facts
+                    .speculative_edge("references", &self.enclosing, &endpoint, span);
+            }
+            return;
+        }
+        for kind in ["function", "method"] {
+            let endpoint = reference(kind, &target);
+            if endpoint != self.enclosing {
+                self.walk
+                    .facts
+                    .speculative_edge("references", &self.enclosing, &endpoint, span);
+            }
+        }
+    }
+
+    /// The functions a `#[serde(...)]` attribute names by string:
+    /// `default = "f"`, `serialize_with`, `deserialize_with`,
+    /// `skip_serializing_if`, `getter`, and a `with = "module"`'s
+    /// `serialize`/`deserialize`. Serde calls each; nothing else names them.
+    fn serde_references(&mut self, attrs: &[syn::Attribute]) {
+        for attr in attrs {
+            if !attr.path().is_ident("serde") {
+                continue;
+            }
+            let mut named: Vec<(syn::Path, bool)> = Vec::new();
+            let _ = attr.parse_nested_meta(|meta| {
+                let key = meta.path.get_ident().map(|ident| ident.to_string());
+                if meta.input.peek(syn::Token![=]) {
+                    let value: syn::Expr = meta.value()?.parse()?;
+                    if let (
+                        Some(key),
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(literal),
+                            ..
+                        }),
+                    ) = (key, value)
+                    {
+                        let with = key == "with";
+                        if with
+                            || matches!(
+                                key.as_str(),
+                                "default"
+                                    | "serialize_with"
+                                    | "deserialize_with"
+                                    | "skip_serializing_if"
+                                    | "getter"
+                            )
+                        {
+                            if let Ok(path) = literal.parse::<syn::Path>() {
+                                named.push((path, with));
+                            }
+                        }
+                    }
+                } else if meta.input.peek(syn::token::Paren) {
+                    meta.parse_nested_meta(|nested| {
+                        if nested.input.peek(syn::Token![=]) {
+                            let _: syn::Expr = nested.value()?.parse()?;
+                        }
+                        Ok(())
+                    })?;
+                }
+                Ok(())
+            });
+            for (path, with) in named {
+                let span = attr.span();
+                if with {
+                    for function in ["serialize", "deserialize"] {
+                        let mut member = path.clone();
+                        member.segments.push(syn::PathSegment::from(syn::Ident::new(
+                            function,
+                            proc_macro2::Span::call_site(),
+                        )));
+                        self.function_reference(&member, span);
+                    }
+                } else {
+                    self.function_reference(&path, span);
+                }
+            }
+        }
+    }
+
+    /// The type a method call's receiver holds, when the source states it: a
+    /// local of known type, or an enum variant or associated constant
+    /// (`Theme::Regular`), whose type is the path it sits under.
+    fn receiver_owner(&self, expression: &syn::Expr) -> Option<String> {
+        if let Some(name) = receiver_name(expression) {
+            return self.receivers.get(&name).cloned();
+        }
+        let mut current = expression;
+        while let syn::Expr::Paren(inner) = current {
+            current = &inner.expr;
+        }
+        let syn::Expr::Path(path) = current else {
+            return None;
+        };
+        if path.qself.is_some() || path.path.segments.len() < 2 {
+            return None;
+        }
+        let mut owner = path.path.clone();
+        owner.segments.pop();
+        owner.segments.pop_punct();
+        self.walk
+            .resolve_path(&self.container, &owner)
+            .map(|(target, _)| target)
+    }
+
+    /// The method whose result an expression is, when its owner is known: a
+    /// method call on a receiver of stated type, or an associated call
+    /// `Type::f(..)`. `Type::method` as a canonical path, or None.
+    fn returning_call(&self, expression: &syn::Expr) -> Option<String> {
+        match expression {
+            syn::Expr::Paren(inner) => self.returning_call(&inner.expr),
+            syn::Expr::Reference(reference) => self.returning_call(&reference.expr),
+            syn::Expr::MethodCall(call) => {
+                let owner = self.receivers.get(&receiver_name(&call.receiver)?)?;
+                Some(format!("{owner}::{}", call.method))
+            }
+            syn::Expr::Call(call) => match call.func.as_ref() {
+                syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() >= 2 => {
+                    self.walk
+                        .resolve_path(&self.container, &path.path)
+                        .map(|(target, _)| target)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A speculative `references` edge to the function a path names.
+    fn function_reference(&mut self, path: &syn::Path, span: proc_macro2::Span) {
+        if let Some((target, _)) = self.walk.resolve_path(&self.container, path) {
+            let endpoint = reference("function", &target);
+            self.walk
+                .facts
+                .speculative_edge("references", &self.enclosing, &endpoint, span);
+        }
+    }
+}
+
 impl syn::visit::Visit<'_> for Calls<'_, '_> {
     fn visit_expr_call(&mut self, node: &syn::ExprCall) {
         if let syn::Expr::Path(path) = node.func.as_ref() {
             self.visit_call(&path.path, node.span());
+            // `Action::Deny(x)` builds a variant: the enum is used. The callee
+            // itself is not walked as a value path, since it is the call.
+            self.owner_reference(&path.path, node.span());
+            for argument in &node.args {
+                self.visit_expr(argument);
+            }
+            return;
         }
         syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_path(&mut self, node: &syn::ExprPath) {
+        if node.qself.is_none() {
+            self.owner_reference(&node.path, node.span());
+            self.value_reference(&node.path, node.span());
+        }
+        syn::visit::visit_expr_path(self, node);
+    }
+
+    fn visit_type_path(&mut self, node: &syn::TypePath) {
+        if node.qself.is_none() {
+            self.type_reference(&node.path, node.span());
+        }
+        syn::visit::visit_type_path(self, node);
+    }
+
+    fn visit_trait_bound(&mut self, node: &syn::TraitBound) {
+        self.type_reference(&node.path, node.span());
+        syn::visit::visit_trait_bound(self, node);
+    }
+
+    fn visit_pat_tuple_struct(&mut self, node: &syn::PatTupleStruct) {
+        if node.qself.is_none() {
+            self.owner_reference(&node.path, node.span());
+            self.type_reference(&node.path, node.span());
+        }
+        syn::visit::visit_pat_tuple_struct(self, node);
+    }
+
+    fn visit_pat_struct(&mut self, node: &syn::PatStruct) {
+        if node.qself.is_none() {
+            self.owner_reference(&node.path, node.span());
+            self.type_reference(&node.path, node.span());
+        }
+        syn::visit::visit_pat_struct(self, node);
+    }
+
+    fn visit_macro(&mut self, node: &syn::Macro) {
+        // A macro body is tokens to syn. Most invocations in ordinary code
+        // (`format!`, `println!`, `assert_eq!`, `write!`) take comma-separated
+        // expressions, so a body that parses as such is walked like any other
+        // arguments; one that does not (`vec![x; n]`, `json!({..})`, a DSL)
+        // contributes nothing rather than a guess.
+        use syn::parse::Parser;
+        let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        if let Ok(arguments) = parser.parse2(node.tokens.clone()) {
+            for argument in &arguments {
+                self.visit_expr(argument);
+            }
+        }
     }
 
     fn visit_expr_struct(&mut self, node: &syn::ExprStruct) {
@@ -1221,12 +1672,112 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
     }
 
     fn visit_expr_method_call(&mut self, node: &syn::ExprMethodCall) {
-        // Method calls are not call edges (the receiver's type is unknown),
-        // but a `route(...)` method call is how axum and actix declare routes.
+        // A `route(...)` method call is how axum and actix declare routes.
         if node.method == "route" {
             self.call_routes(node);
         }
+        // A call on what another call returns: `s.mode().label()` or
+        // `State::new().mode()`. The inner call's owner is known here; its
+        // return type may be declared in another file, so the member is named
+        // through the call and the core resolves it, or drops the edge.
+        if let Some(callee) = self.returning_call(&node.receiver) {
+            let endpoint = reference("method_of_return", &format!("{callee}::{}", node.method));
+            self.walk.facts.edge(
+                "calls",
+                &self.enclosing,
+                &endpoint,
+                "probable",
+                node.method.span(),
+            );
+        }
+        if let Some(target) = self.receiver_owner(&node.receiver) {
+            let endpoint = reference("method", &format!("{target}::{}", node.method));
+            self.walk.facts.speculative_edge(
+                "calls",
+                &self.enclosing,
+                &endpoint,
+                node.method.span(),
+            );
+        }
         syn::visit::visit_expr_method_call(self, node);
+    }
+
+    fn visit_local(&mut self, node: &syn::Local) {
+        // The initializer is walked first: it runs before the binding exists,
+        // so `let p = p.clone()` resolves its receiver through the old `p`.
+        syn::visit::visit_local(self, node);
+        let (ident, annotation) = match &node.pat {
+            syn::Pat::Ident(ident) => (ident.ident.to_string(), None),
+            syn::Pat::Type(typed) => match typed.pat.as_ref() {
+                syn::Pat::Ident(ident) => (ident.ident.to_string(), Some(typed.ty.as_ref())),
+                _ => return,
+            },
+            _ => return,
+        };
+        let stated = match annotation {
+            Some(ty) => self.walk.receiver_type(&self.container, ty),
+            None => node
+                .init
+                .as_ref()
+                .and_then(|init| constructed_type(&init.expr))
+                .and_then(|path| self.walk.resolve_path(&self.container, &path))
+                .map(|(target, _)| target),
+        };
+        // A rebinding of unknown type shadows the old one, so its type is forgotten.
+        match stated {
+            Some(target) => {
+                self.receivers.insert(ident, target);
+            }
+            None => {
+                self.receivers.remove(&ident);
+            }
+        }
+    }
+
+    fn visit_expr_closure(&mut self, node: &syn::ExprClosure) {
+        // A closure parameter shadows any outer binding of the same name, and
+        // says nothing about its own type, so it is forgotten while inside.
+        let saved = self.receivers.clone();
+        for input in &node.inputs {
+            if let syn::Pat::Ident(ident) = input {
+                self.receivers.remove(&ident.ident.to_string());
+            }
+        }
+        syn::visit::visit_expr_closure(self, node);
+        self.receivers = saved;
+    }
+}
+
+/// The local a method call's receiver names, seen through `&` and parentheses.
+fn receiver_name(expression: &syn::Expr) -> Option<String> {
+    match expression {
+        syn::Expr::Paren(inner) => receiver_name(&inner.expr),
+        syn::Expr::Reference(reference) => receiver_name(&reference.expr),
+        syn::Expr::Path(path) if path.qself.is_none() => {
+            path.path.get_ident().map(|ident| ident.to_string())
+        }
+        _ => None,
+    }
+}
+
+/// The type a `let` initializer constructs, when the source names it: a
+/// struct literal `T { .. }`, or an associated call `T::new(..)` (taken to
+/// return `Self`, as constructors do), either one behind `?`.
+fn constructed_type(expression: &syn::Expr) -> Option<syn::Path> {
+    match expression {
+        syn::Expr::Try(inner) => constructed_type(&inner.expr),
+        syn::Expr::Paren(inner) => constructed_type(&inner.expr),
+        syn::Expr::Struct(literal) if literal.qself.is_none() => Some(literal.path.clone()),
+        syn::Expr::Call(call) => match call.func.as_ref() {
+            syn::Expr::Path(path) if path.qself.is_none() && path.path.segments.len() >= 2 => {
+                let mut owner = path.path.clone();
+                owner.segments.pop();
+                owner.segments.pop_punct();
+                Some(owner)
+            }
+            _ => None,
+        },
+        _ => None,
     }
 }
 

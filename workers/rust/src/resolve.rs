@@ -23,6 +23,20 @@ pub fn module_path(relative: &str) -> String {
 /// distinct when both are present in one scan.
 #[must_use]
 pub fn module_path_with_binary_root(relative: &str, binary_root: bool) -> String {
+    module_path_in_crate(relative, "crate", binary_root)
+}
+
+/// The canonical module path for a file relative to its crate's directory,
+/// with the crate root named `root`.
+///
+/// The package at the project root keeps `crate`. A workspace member's
+/// `src/` is a crate root of its own, which sibling crates name by the
+/// package name (`use core_lib::app`), so its modules are rooted there:
+/// `crates/core-lib/src/app.rs` is `core_lib::app`, not a directory chain
+/// that nothing, not even the crate itself, can name.
+#[must_use]
+pub fn module_path_in_crate(relative: &str, root: &str, binary_root: bool) -> String {
+    let binary = format!("{root}::main");
     let trimmed = relative.strip_suffix(".rs").unwrap_or(relative);
     let mut segments: Vec<&str> = trimmed.split('/').filter(|part| !part.is_empty()).collect();
     let in_crate = segments.first() == Some(&"src");
@@ -36,10 +50,10 @@ pub fn module_path_with_binary_root(relative: &str, binary_root: bool) -> String
         segments.pop();
     }
     if in_crate {
-        segments.insert(0, if binary_root { "crate::main" } else { "crate" });
+        segments.insert(0, if binary_root { binary.as_str() } else { root });
     }
     if segments.is_empty() {
-        return "crate".to_owned();
+        return root.to_owned();
     }
 
     segments.join("::")
@@ -55,7 +69,8 @@ pub fn module_path_with_binary_root(relative: &str, binary_root: bool) -> String
 /// and `super::super::foo` is `crate::foo`. A path with neither prefix is
 /// returned unchanged.
 ///
-/// `module` always starts with a `crate` segment (see [`module_path`]), and
+/// `module` always starts with its crate root segment (`crate`, or a workspace
+/// member's name; see [`module_path_in_crate`]), and
 /// that segment has no parent of its own, so a `super` that would strip it —
 /// directly, or through a chain longer than the module has segments to give
 /// up — escapes the crate root and names nothing resolvable. `None` marks

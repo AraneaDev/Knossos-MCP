@@ -111,7 +111,7 @@ impl Facts {
 
     /// Record one declared symbol.
     ///
-    /// The `local_id` is derived from `kind` and `canonical` via [`reference`],
+    /// The `local_id` is derived from `kind` and `canonical` via [`reference()`],
     /// so every call site gets the language prefix for free instead of having
     /// to remember to build it.
     pub fn node(&mut self, kind: &str, canonical: &str, display: &str, start: Span, end: Span) {
@@ -223,7 +223,7 @@ impl Facts {
     /// Record one relationship.
     ///
     /// `source` and `target` must already be full references built via
-    /// [`reference`] (or another worker's equivalent) — this method does not
+    /// [`reference()`] (or another worker's equivalent) — this method does not
     /// prefix them itself, since the endpoint's kind is not always the same as
     /// `kind`, the edge's own kind (e.g. `contains`).
     pub fn edge(
@@ -243,6 +243,29 @@ impl Facts {
             confidence,
             evidence,
             attributes: BTreeMap::new(),
+        });
+    }
+
+    /// Record one edge whose target the source names but cannot vouch for:
+    /// a method called through a receiver whose type is stated (`self`, a
+    /// typed parameter, an annotated or constructed binding), or a type named
+    /// in a signature, field or pattern. Whether the method is the type's own
+    /// or a trait's, and whether a type path names a declaration or `Vec`, is
+    /// not known here, so the edge is marked `speculative` and the core keeps
+    /// it only when its target exists anywhere in the graph, instead of
+    /// inventing an external symbol.
+    pub fn speculative_edge(&mut self, kind: &str, source: &str, target: &str, span: Span) {
+        let evidence = self.evidence(span, span);
+        let mut attributes = BTreeMap::new();
+        attributes.insert("speculative".to_owned(), Value::Bool(true));
+        self.edges.push(Edge {
+            kind: kind.to_owned(),
+            source: source.to_owned(),
+            target: target.to_owned(),
+            origin: "ast",
+            confidence: "probable",
+            evidence,
+            attributes,
         });
     }
 

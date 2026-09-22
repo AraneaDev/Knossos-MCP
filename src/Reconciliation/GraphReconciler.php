@@ -416,9 +416,13 @@ final readonly class GraphReconciler
                     ));
                 }
 
-                $deferred = str_contains($edge->targetReference, ':method_of_return:');
+                $returned = str_contains($edge->targetReference, ':method_of_return:');
+                // A scanner marks an edge speculative when it knows the
+                // receiver's type but not whether that type declares the member
+                // (it may be a trait's or a base's): kept only when it resolves.
+                $deferred = $returned || ($edge->attributes['speculative'] ?? false) === true;
                 $reference = match (true) {
-                    $deferred => $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources),
+                    $returned => $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources),
                     str_contains($edge->targetReference, ':namespaced_function:') => self::namespacedFunctionReference($edge->targetReference, $nodeMap),
                     default => $edge->targetReference,
                 };

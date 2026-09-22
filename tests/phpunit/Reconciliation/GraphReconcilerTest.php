@@ -1830,6 +1830,42 @@ final class GraphReconcilerTest extends TestCase
      * @param array<string, mixed> $overrides
      */
     /**
+     * A scanner that knows a receiver's type but not whether the type itself
+     * declares the method (Rust's `p.clone()` may be a trait's) marks the edge
+     * `speculative`. It is kept when the method exists and dropped when it
+     * does not, rather than fabricated into an external method on a type the
+     * project declares.
+     */
+    #[Group('reconciliation')]
+    public function testASpeculativeEdgeIsKeptOnlyWhenItsTargetExists(): void
+    {
+        $caller = $this->minimalNode('rust:function:crate::go', 'crate::go');
+        $declared = $this->minimalNode('rust:method:crate::Policy::evaluate', 'crate::Policy::evaluate');
+        $edges = [];
+        foreach (['rust:method:crate::Policy::evaluate', 'rust:method:crate::Policy::clone'] as $index => $target) {
+            $edges[] = new EdgeFact(
+                kind: 'calls',
+                sourceReference: $caller->localId,
+                targetReference: $target,
+                origin: Origin::Ast,
+                confidence: Confidence::Probable,
+                evidence: new Evidence('src/Foo.php', $index + 1, $index + 1),
+                attributes: ['speculative' => true],
+            );
+        }
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller, $declared], $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(2, $result->nodes);
+        assertSame(1, $result->edges);
+        assertSame(0, $result->unresolvedNodes);
+    }
+
+    /**
      * A deferred receiver reference is a shape a third-party scanner can emit,
      * so a malformed one must be ignored rather than resolved into something
      * arbitrary or fabricated as an external symbol.
