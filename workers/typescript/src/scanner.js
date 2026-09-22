@@ -349,7 +349,16 @@ export class TypeScriptScanner {
     #scanProgram(
         key,
         parsed,
-        { root, maxFileBytes, reads, requestedSet, emitted, emit, owner, owners },
+        {
+            root,
+            maxFileBytes,
+            reads,
+            requestedSet,
+            emitted,
+            emit,
+            owner,
+            owners,
+        },
     ) {
         this.#reserveProgramSlot(key);
         const oldProgram = this.programCache.get(key);
@@ -629,6 +638,7 @@ class TypeScriptLanguageFactCollector {
         if (ts.isImportDeclaration(node)) this.importDeclaration(node);
         if (ts.isExportDeclaration(node)) this.exportDeclaration(node);
         if (ts.isImportEqualsDeclaration(node)) this.importEquals(node);
+        if (ts.isPropertyAssignment(node)) this.entryPointsProperty(node);
         if (ts.isVariableDeclaration(node)) {
             this.application.variable(node);
             this.dynamicImportBindings(node);
@@ -834,7 +844,12 @@ class TypeScriptLanguageFactCollector {
                 this.currentSource() ?? this.moduleId,
                 reference("module", url),
                 node,
-                { dynamic: true, url: true, type_only: false },
+                {
+                    dynamic: true,
+                    url: true,
+                    type_only: false,
+                    speculative: true,
+                },
             );
         const source = this.currentSource();
         const target = this.symbolReference(
@@ -896,6 +911,7 @@ class TypeScriptLanguageFactCollector {
             return;
         }
 
+        this.pathLiteralImports(node);
         const signature = this.checker.getResolvedSignature(node);
         const target = this.symbolReference(
             signature?.declaration?.symbol,
@@ -963,7 +979,8 @@ class TypeScriptLanguageFactCollector {
     dynamicImportBindings(node) {
         if (!ts.isObjectBindingPattern(node.name) || !node.initializer) return;
         let call = unwrapParentheses(node.initializer);
-        if (ts.isAwaitExpression(call)) call = unwrapParentheses(call.expression);
+        if (ts.isAwaitExpression(call))
+            call = unwrapParentheses(call.expression);
         if (
             !ts.isCallExpression(call) ||
             call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
@@ -989,6 +1006,104 @@ class TypeScriptLanguageFactCollector {
                 : null;
             if (source !== null && target !== null && source !== target)
                 this.addEdge("references", source, target, element);
+        }
+    }
+
+    /**
+     * A speculative import of a project module a source path names as a
+     * literal: the only evidence, so the core keeps the edge only when the
+     * graph holds that module.
+     */
+    speculativeImport(relative, node) {
+        this.addEdge(
+            "imports",
+            this.currentSource() ?? this.moduleId,
+            reference("module", relative),
+            node,
+            { dynamic: true, type_only: false, speculative: true },
+        );
+    }
+
+    /**
+     * Source paths a call names by literal: `resolve(__dirname, 'x/y.tsx')`
+     * (or `join`, or `import.meta.dirname`), relative to this file; and
+     * `navigator.serviceWorker.register('/sw.js')`, a URL under the web root.
+     */
+    pathLiteralImports(node) {
+        const callee = node.expression;
+        const name = ts.isIdentifier(callee)
+            ? callee.text
+            : ts.isPropertyAccessExpression(callee)
+              ? callee.name.text
+              : null;
+        const args = node.arguments;
+        if (
+            (name === "resolve" || name === "join") &&
+            args.length >= 2 &&
+            isDirnameExpression(args[0]) &&
+            args.slice(1).every((arg) => ts.isStringLiteralLike(arg))
+        ) {
+            const relative = sourcePathTarget(
+                this.root,
+                path.dirname(this.sourceFile.fileName),
+                args
+                    .slice(1)
+                    .map((arg) => arg.text)
+                    .join("/"),
+            );
+            if (relative !== null) this.speculativeImport(relative, node);
+            return;
+        }
+        if (
+            name === "register" &&
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "serviceWorker" &&
+            args.length >= 1 &&
+            ts.isStringLiteralLike(args[0]) &&
+            args[0].text.startsWith("/")
+        ) {
+            // Served from the web root, which is `public/` or `static/` in
+            // most toolchains, or the project root itself.
+            const url = args[0].text.slice(1).split(/[?#]/)[0];
+            for (const base of ["public", "static", ""]) {
+                const relative = sourcePathTarget(
+                    this.root,
+                    this.root,
+                    base === "" ? url : `${base}/${url}`,
+                );
+                if (relative !== null) this.speculativeImport(relative, node);
+            }
+        }
+    }
+
+    /**
+     * `build({ entryPoints: ['src/boot.ts'] })`: a bundler's entries, named
+     * by path relative to where the build runs, which is this file's
+     * directory for a build script beside its package.
+     */
+    entryPointsProperty(node) {
+        const name =
+            ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)
+                ? node.name.text
+                : null;
+        if (!["entryPoints", "entrypoints", "entry", "input"].includes(name))
+            return;
+        const values = ts.isArrayLiteralExpression(node.initializer)
+            ? node.initializer.elements
+            : ts.isObjectLiteralExpression(node.initializer)
+              ? node.initializer.properties
+                    .filter((member) => ts.isPropertyAssignment(member))
+                    .map((member) => member.initializer)
+              : [node.initializer];
+        for (const value of values) {
+            if (!ts.isStringLiteralLike(value)) continue;
+            const relative = sourcePathTarget(
+                this.root,
+                path.dirname(this.sourceFile.fileName),
+                value.text,
+            );
+            if (relative !== null) this.speculativeImport(relative, value);
         }
     }
 
@@ -2817,6 +2932,35 @@ function importMetaUrlModule(node, sourceFile, root) {
     const relative = relativeInside(root, absolute);
     if (
         relative === null ||
+        belowNodeModules(relative) ||
+        excludedByProjectLayout(relative)
+    )
+        return null;
+    return relative;
+}
+
+// `__dirname`, or `import.meta.dirname`.
+function isDirnameExpression(expression) {
+    if (ts.isIdentifier(expression)) return expression.text === "__dirname";
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "dirname" &&
+        ts.isMetaProperty(expression.expression)
+    );
+}
+
+// The project-relative source module a path names, resolved against
+// `directory`, or null for one outside the project, below node_modules, in
+// excluded build output, or not a source file at all.
+function sourcePathTarget(root, directory, specifier) {
+    if (!MODULE_URL_EXTENSION.test(specifier)) return null;
+    const relative = relativeInside(
+        root,
+        normalize(path.resolve(directory, specifier)),
+    );
+    if (
+        relative === null ||
+        relative === "" ||
         belowNodeModules(relative) ||
         excludedByProjectLayout(relative)
     )
