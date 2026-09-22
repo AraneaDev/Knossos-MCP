@@ -512,11 +512,58 @@ class ProjectModuleIndex:
                 # reports the bytes this request saw.
                 self._record_walk(walked, hashlib.sha256(source).hexdigest())
                 try:
-                    declarations = top_level_declarations(ast.parse(source), module)
+                    tree = ast.parse(source)
                 except (SyntaxError, ValueError, RecursionError):
-                    declarations = {}
+                    tree = None
+                if tree is not None:
+                    declarations = top_level_declarations(tree, module)
+                    self._cache[module] = declarations
+                    self._add_instances(tree, module, path.name == "__init__.py", declarations)
         self._cache[module] = declarations
         return declarations
+
+    def _add_instances(
+        self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str]
+    ) -> None:
+        """Add the module-level instances ``tree`` creates to its declarations.
+
+        ``user_repo = UserRepository()`` at module level is how a service hands
+        out one shared object, and the rest of the codebase imports that name.
+        Recorded as ``py:instance:<class>`` so an importer can type a call on
+        it. The class is found among the module's own classes or its
+        ``from ... import`` names; anything else is left out. The declarations
+        are cached before this runs, so two modules importing each other
+        resolve without recursing.
+        """
+        imported: dict[str, str] = {}
+        for child in tree.body:
+            if not isinstance(child, ast.ImportFrom):
+                continue
+            source = absolute_import(module, child.level, child.module, is_package)
+            if not source:
+                continue
+            for alias in child.names:
+                if alias.name == "*":
+                    continue
+                target = self.module_declarations(source).get(alias.name)
+                if target is not None and target.startswith("py:class:"):
+                    imported[alias.asname or alias.name] = target
+        for child in tree.body:
+            name, constructor = None, None
+            if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
+                name, constructor = child.targets[0].id, child.value
+            elif isinstance(child, ast.AnnAssign) and isinstance(child.target, ast.Name):
+                name, constructor = child.target.id, child.value
+            if name is None or name in declarations:
+                continue
+            class_name = (
+                constructor.func.id
+                if isinstance(constructor, ast.Call) and isinstance(constructor.func, ast.Name)
+                else None
+            )
+            target = None if class_name is None else declarations.get(class_name) or imported.get(class_name)
+            if target is not None and target.startswith("py:class:"):
+                declarations[name] = "py:instance:" + target.removeprefix("py:class:")
 
     def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> None:
         """Make a scanned file's own declarations come from the tree just parsed.
@@ -534,7 +581,9 @@ class ProjectModuleIndex:
         owner = self.module_file(module)
         if owner is None or owner.resolve() != absolute:
             return
-        self._cache[module] = top_level_declarations(tree, module)
+        declarations = top_level_declarations(tree, module)
+        self._cache[module] = declarations
+        self._add_instances(tree, module, PurePosixPath(relative).stem == "__init__", declarations)
 
     def collides(self, absolute: Path, is_package: bool) -> bool:
         """A ``mod.py``/``mod/__init__.py`` pair maps to the same module id.
@@ -762,6 +811,22 @@ def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
             declarations[child.name] = ref("function", f"{module}.{child.name}")
     return declarations
+
+
+def bound_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    """The names a function binds: its parameters, and every name it assigns."""
+    arguments = node.args
+    names = {
+        argument.arg
+        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
+    }
+    for extra in (arguments.vararg, arguments.kwarg):
+        if extra is not None:
+            names.add(extra.arg)
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store):
+            names.add(child.id)
+    return frozenset(names)
 
 
 def ref(kind: str, canonical: str) -> str:
@@ -1324,6 +1389,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.attribute_types: dict[str, dict[str, str]] = {}
         self.local_variable_types: list[dict[str, str]] = []
         self.parameter_types: list[dict[str, str]] = []
+        # The names each function being walked binds itself (parameters and
+        # assignments), which shadow a module-level instance of the same name.
+        self.bound_names: list[frozenset[str]] = []
         self.module_id = ref("module", self.module)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
@@ -1486,10 +1554,12 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.local_function_scopes.append(self.local_function_declarations(node, canonical))
         self.local_variable_types.append({})
         self.parameter_types.append(self.annotated_parameters(node))
+        self.bound_names.append(bound_names(node))
         restore_fastapi = self.fastapi.register_parameters(node)
         self.generic_visit(node)
         self.fastapi.restore_parameters(restore_fastapi)
         self.parameter_types.pop()
+        self.bound_names.pop()
         self.local_variable_types.pop()
         self.local_function_scopes.pop()
         self.containers.pop()
@@ -1642,6 +1712,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 return self.parameter_types[-1].get(value.id)
         return None
 
+    def is_local_name(self, name: str) -> bool:
+        """Whether the function being walked binds ``name`` itself."""
+        return bool(self.bound_names) and name in self.bound_names[-1]
+
     def receiver_member(self, receiver: str, member: str) -> str | None:
         """The method a call names when its receiver's class is known."""
 
@@ -1654,6 +1728,11 @@ class PythonAstFactCollector(ast.NodeVisitor):
             held = self.local_variable_types[-1].get(receiver) if self.local_variable_types else None
             if held is None and self.parameter_types:
                 held = self.parameter_types[-1].get(receiver)
+            if held is None and not self.is_local_name(receiver):
+                # A module-level instance, this module's own or imported.
+                instance = self.aliases.get(receiver) or self.index.module_declarations(self.module).get(receiver)
+                if instance is not None and instance.startswith("py:instance:"):
+                    held = instance.removeprefix("py:instance:")
         return ref("method", f"{held}::{member}") if held else None
 
     def visit_Name(self, node: ast.Name) -> None:
@@ -1717,7 +1796,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 if class_container:
                     target = ref("method", f"{class_container[1]}::{name.split('.', 1)[1]}")
             target = target or self.resolve_name(name, "function")
-        if target:
+        # Calling an instance (`repo()`) names no declaration of its own.
+        if target and not target.startswith("py:instance:"):
             self.facts.add_edge("calls", self.current(), target, node)
         self.fastapi.enrich_call(node, name)
         self.flask.enrich_call(node, name)

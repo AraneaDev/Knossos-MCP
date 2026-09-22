@@ -333,6 +333,71 @@ final class PythonScannerTest extends KnossosTestCase
         assertSame([], array_values(array_filter($targets, fn(string $t): bool => str_contains($t, 'LIMIT'))));
     }
 
+    /**
+     * A service module creates one instance at import time
+     * (`user_repo = UserRepository()`) and the rest of the codebase imports
+     * that instance. Its type was known only inside the declaring module, so
+     * every method called through the imported instance read as unreferenced.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerTypesAnImportedModuleLevelInstance(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-singleton-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app/clients', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/repo.py' => "class Repo:\n    def count(self):\n        return 1\n\nrepo: Repo = Repo()\n",
+            'app/clients/__init__.py' => "from .client import DockerClient\n\ndocker_client = DockerClient()\n",
+            'app/clients/client.py' => "class DockerClient:\n    def ls(self):\n        return []\n",
+            'app/service.py' => implode("\n", [
+                'from .repo import repo',
+                'from app.clients import docker_client',
+                '',
+                'def run():',
+                '    return repo.count(), docker_client.ls()',
+                '',
+                'def shadowed(repo):',
+                '    return repo.count()',
+                '',
+                'def called():',
+                '    return repo()',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/service.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app/clients');
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $calls = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertArrayContains(['py:function:app.service.run', 'py:method:app.repo.Repo::count'], $calls);
+        assertArrayContains(['py:function:app.service.run', 'py:method:app.clients.client.DockerClient::ls'], $calls);
+        // A parameter named like the instance is a different value.
+        assertSame(false, in_array(['py:function:app.service.shadowed', 'py:method:app.repo.Repo::count'], $calls, true));
+        // Calling the instance itself names no declaration.
+        assertSame([], array_values(array_filter($calls, fn(array $c): bool => str_starts_with($c[1], 'py:instance:'))));
+    }
+
     #[Group('python-scanner')]
     public function testPythonWorkerIsDeterministicBoundedAndPathSafe(): void
     {
