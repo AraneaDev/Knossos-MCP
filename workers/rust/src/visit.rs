@@ -326,6 +326,15 @@ impl Walk<'_> {
                 if container == self.module && name == "main" {
                     self.facts.mark_executable();
                 }
+                // Exported to a foreign caller: the host embedding the library
+                // calls it by its symbol, and nothing in Rust ever does.
+                if is_foreign_export(node) {
+                    self.facts.node_attribute(
+                        &canonical,
+                        "runtime_invoked",
+                        serde_json::Value::Bool(true),
+                    );
+                }
                 self.attribute_routes(&canonical, &node.attrs);
                 self.walk_body(
                     &reference("function", &canonical),
@@ -1640,13 +1649,7 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // expressions, so a body that parses as such is walked like any other
         // arguments; one that does not (`vec![x; n]`, `json!({..})`, a DSL)
         // contributes nothing rather than a guess.
-        use syn::parse::Parser;
-        let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
-        if let Ok(arguments) = parser.parse2(node.tokens.clone()) {
-            for argument in &arguments {
-                self.visit_expr(argument);
-            }
-        }
+        self.visit_macro_tokens(node.tokens.clone());
     }
 
     fn visit_expr_struct(&mut self, node: &syn::ExprStruct) {
@@ -1746,6 +1749,88 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         syn::visit::visit_expr_closure(self, node);
         self.receivers = saved;
     }
+}
+
+impl Calls<'_, '_> {
+    /// Walk a macro body as expressions, as far as it is made of them.
+    ///
+    /// Comma-separated expressions first (`format!`, `assert_eq!`). A body
+    /// that is not (`json!({ "k": f(x) })`) is split at its top-level commas,
+    /// each piece loses a leading `"key":` or `key:`, and what remains is
+    /// parsed on its own; a piece that still does not parse is searched
+    /// through its bracketed groups the same way. Nothing is guessed: only
+    /// token runs that parse as Rust expressions are walked.
+    fn visit_macro_tokens(&mut self, tokens: proc_macro2::TokenStream) {
+        use syn::parse::Parser;
+        let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+        if let Ok(arguments) = parser.parse2(tokens.clone()) {
+            for argument in &arguments {
+                self.visit_expr(argument);
+            }
+            return;
+        }
+        let mut piece: Vec<proc_macro2::TokenTree> = Vec::new();
+        for token in tokens {
+            if matches!(&token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ',') {
+                self.visit_macro_piece(std::mem::take(&mut piece));
+            } else {
+                piece.push(token);
+            }
+        }
+        self.visit_macro_piece(piece);
+    }
+
+    /// One comma-separated piece of a macro body; see [`Calls::visit_macro_tokens`].
+    fn visit_macro_piece(&mut self, mut piece: Vec<proc_macro2::TokenTree>) {
+        let keyed = matches!(
+            piece.as_slice(),
+            [
+                proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Ident(_),
+                proc_macro2::TokenTree::Punct(colon),
+                next,
+                ..
+            ] if colon.as_char() == ':'
+                && colon.spacing() == proc_macro2::Spacing::Alone
+                && !matches!(next, proc_macro2::TokenTree::Punct(p) if p.as_char() == ':')
+        );
+        if keyed {
+            piece.drain(..2);
+        }
+        if piece.is_empty() {
+            return;
+        }
+        let stream: proc_macro2::TokenStream = piece.iter().cloned().collect();
+        if let Ok(expression) = syn::parse2::<syn::Expr>(stream) {
+            self.visit_expr(&expression);
+            return;
+        }
+        for token in piece {
+            if let proc_macro2::TokenTree::Group(group) = token {
+                self.visit_macro_tokens(group.stream());
+            }
+        }
+    }
+}
+
+/// Whether a function is exported to a caller outside Rust: `#[no_mangle]`
+/// (also as `#[unsafe(no_mangle)]`), `#[export_name]`, `#[wasm_bindgen]`, or
+/// an `extern` ABI.
+fn is_foreign_export(node: &syn::ItemFn) -> bool {
+    node.sig.abi.is_some()
+        || node.attrs.iter().any(|attr| {
+            let path = attr.path();
+            path.is_ident("no_mangle")
+                || path.is_ident("export_name")
+                || path
+                    .segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "wasm_bindgen")
+                || (path.is_ident("unsafe")
+                    && attr
+                        .meta
+                        .require_list()
+                        .is_ok_and(|list| list.tokens.to_string().contains("no_mangle")))
+        })
 }
 
 /// The local a method call's receiver names, seen through `&` and parentheses.

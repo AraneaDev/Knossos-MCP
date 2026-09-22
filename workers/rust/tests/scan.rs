@@ -2359,3 +2359,73 @@ pub fn go() { let _ = Theme::Regular.cycles_to(); }
         vec![("rust:method:crate::Theme::cycles_to".to_owned(), true)]
     );
 }
+
+#[test]
+fn a_function_exported_to_a_foreign_caller_is_runtime_invoked() {
+    // `#[no_mangle] pub extern "C" fn` and `#[wasm_bindgen]` functions are
+    // called by the host embedding the library, never from Rust.
+    let source = r#"
+#[no_mangle]
+pub extern "C" fn alloc(len: usize) -> usize { len }
+#[wasm_bindgen]
+pub fn greet() {}
+#[export_name = "run"]
+pub fn run_exported() {}
+pub fn ordinary() {}
+"#;
+    let contributions = scan_fixture("ffi-exports", &[("src/lib.rs", source)]);
+    let invoked: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .filter(|node| node["attributes"]["runtime_invoked"] == Value::Bool(true))
+        .map(|node| node["canonical_name"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert_eq!(
+        invoked,
+        vec!["crate::alloc", "crate::greet", "crate::run_exported"]
+    );
+}
+
+#[test]
+fn calls_inside_a_json_like_macro_are_edges() {
+    // `json!({ "attrs": a.iter().map(attr).collect() })` is no list of
+    // expressions, so the whole body was dropped along with every call in it.
+    let source = r#"
+fn attr(x: &u8) -> u8 { *x }
+fn span() -> u8 { 1 }
+fn nested() -> u8 { 2 }
+pub fn go(values: Vec<u8>) {
+    let _ = serde_json::json!({
+        "attrs": values.iter().map(attr).collect::<Vec<_>>(),
+        "span": span(),
+        "inner": { "deep": [nested()] },
+    });
+}
+"#;
+    let contributions = scan_fixture("json-macro", &[("src/lib.rs", source)]);
+    let calls = edges_of(&contributions, "calls");
+    let references = edges_of(&contributions, "references");
+
+    assert!(
+        calls.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::span".to_owned()
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::nested".to_owned()
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        references.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::attr".to_owned()
+        )),
+        "{references:?}"
+    );
+}
