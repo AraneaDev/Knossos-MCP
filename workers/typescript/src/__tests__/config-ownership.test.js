@@ -79,7 +79,8 @@ describe("a file is checked under the config that includes it", () => {
         const root = fixture({
             "lib/tsconfig.json":
                 '{"compilerOptions":{"composite":true,"rootDir":"src","outDir":"dist","declaration":true},"include":["src"]}',
-            "lib/src/index.ts": "export function shared(): number { return 1; }\n",
+            "lib/src/index.ts":
+                "export function shared(): number { return 1; }\n",
             "app/tsconfig.json":
                 '{"compilerOptions":{"noEmit":true,"module":"nodenext","moduleResolution":"nodenext"},"include":["src"],"references":[{"path":"../lib"}]}',
             "app/src/main.ts":

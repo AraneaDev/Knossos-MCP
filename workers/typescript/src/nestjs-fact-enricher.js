@@ -133,7 +133,11 @@ export class NestJsFactEnricher {
      * or the `validate` Passport calls on a strategy.
      */
     isFrameworkHandler(node) {
-        if (FRAMEWORK_METHOD_DECORATORS.some((name) => this.decorator(node, name)))
+        if (
+            FRAMEWORK_METHOD_DECORATORS.some((name) =>
+                this.decorator(node, name),
+            )
+        )
             return true;
         return (
             ts.isIdentifier(node.name) &&
@@ -144,7 +148,10 @@ export class NestJsFactEnricher {
 
     /** Whether a class extends `PassportStrategy(Strategy)` from @nestjs/passport. */
     extendsPassportStrategy(node) {
-        if (!node || !(ts.isClassDeclaration(node) || ts.isClassExpression(node)))
+        if (
+            !node ||
+            !(ts.isClassDeclaration(node) || ts.isClassExpression(node))
+        )
             return false;
         return (node.heritageClauses ?? []).some(
             (clause) =>

@@ -40,7 +40,8 @@ const SOURCE =
 
 function tree(extra) {
     return fixture({
-        "tsconfig.json": '{"compilerOptions":{"noEmit":true},"include":["src"]}',
+        "tsconfig.json":
+            '{"compilerOptions":{"noEmit":true},"include":["src"]}',
         "src/a.ts": SOURCE,
         "node_modules/@types/foo/package.json":
             '{"name":"@types/foo","types":"index.d.ts"}',
@@ -106,8 +107,7 @@ describe("compiler defaults follow the project's own TypeScript", () => {
                 .codes,
         ).toEqual([]);
         expect(
-            scan(root, { "": 5, packages: 6 }, ["packages/app/src/b.ts"])
-                .codes,
+            scan(root, { "": 5, packages: 6 }, ["packages/app/src/b.ts"]).codes,
         ).toEqual(["TS2304", "TS7006"]);
     });
 });
