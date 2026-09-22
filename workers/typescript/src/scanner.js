@@ -2264,6 +2264,9 @@ function valueReferencePosition(node) {
         (parent.whenTrue === node || parent.whenFalse === node)
     )
         return true;
+    // `<Button onClick={addItem}>` and `{renderRow}`: a function handed to
+    // React inside JSX, as a prop or a child.
+    if (ts.isJsxExpression(parent) && parent.expression === node) return true;
     // `return handler;` and `() => handler`
     if (ts.isReturnStatement(parent) && parent.expression === node) return true;
     if (ts.isArrowFunction(parent) && parent.body === node) return true;

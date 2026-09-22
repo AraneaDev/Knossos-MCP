@@ -599,6 +599,57 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame(false, $ambient['src/engines.ts#play']);
     }
 
+    /**
+     * `<Button onClick={addItem}>` and `{renderRow}` hand a function to React
+     * inside a JSX expression, which was not a value position. Every handler a
+     * component declares for its own markup read as unreferenced.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReferencesFunctionsPassedInJsx(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-jsx-handler-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"jsx-handler-fixture"}',
+            'tsconfig.json' => '{"compilerOptions":{"jsx":"react-jsx","noEmit":true,"strict":true},"include":["src"]}',
+            'src/editor.tsx' => implode("\n", [
+                'function renderRow(): string { return "row"; }',
+                'export function Editor(): unknown {',
+                '    function addItem(): void {}',
+                '    return <div><button onClick={addItem}>add</button>{renderRow}</div>;',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/editor.tsx'], 'config_files' => ['tsconfig.json']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = $edge->targetReference;
+                }
+            }
+        }
+
+        assertArrayContains('ts:function:src/editor.tsx#Editor.addItem', $references);
+        assertArrayContains('ts:function:src/editor.tsx#renderRow', $references);
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerExtractsCrossProjectArchitecture(): void
     {
