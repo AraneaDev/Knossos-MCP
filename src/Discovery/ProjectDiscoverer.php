@@ -49,9 +49,25 @@ final readonly class ProjectDiscoverer
         $stack = [$root];
         $inputCount = 0;
         $seen = 0;
+        $gitIgnore = new GitIgnoreRules();
+        /** @var array<string, FileContent> $gitIgnoreReads each `.gitignore` read, kept to hash as its unit */
+        $gitIgnoreReads = [];
 
         while ($stack !== []) {
             $directory = array_pop($stack);
+            // A directory's `.gitignore` governs its siblings, which the
+            // iterator may reach first, so it is read before any of them. The
+            // same read later answers its unit's hash, so the rules applied and
+            // the hash recorded cannot describe two different files.
+            $ignoreFile = $directory . '/.gitignore';
+            if (is_file($ignoreFile) && !is_link($ignoreFile)) {
+                $ignoreRelative = $this->relative($root, $ignoreFile);
+                $gitIgnoreReads[$ignoreRelative] = $this->contents->read($ignoreFile, $this->config->maxFileBytes);
+                $ignoreBytes = $gitIgnoreReads[$ignoreRelative]->bytes;
+                if ($ignoreBytes !== null) {
+                    $gitIgnore->add($this->relative($root, $directory), $ignoreBytes);
+                }
+            }
             try {
                 // UnexpectedValueException, which is a RuntimeException, is what
                 // DirectoryIterator throws for a directory it cannot open. Caught
@@ -97,10 +113,15 @@ final readonly class ProjectDiscoverer
                     }
 
                     if ($entry->isDir()) {
-                        $stack[] = $absolute;
+                        if (!$gitIgnore->ignores($relative, true)) {
+                            $stack[] = $absolute;
+                        }
                         continue;
                     }
                     if (!$entry->isFile()) {
+                        continue;
+                    }
+                    if (!self::isConfigurationFile($relative) && $gitIgnore->ignores($relative, false)) {
                         continue;
                     }
 
@@ -154,7 +175,9 @@ final readonly class ProjectDiscoverer
                 // over the limit by the time the bytes are asked for. Reading
                 // it whole on the strength of a stale size is an unbounded
                 // allocation driven by the tree being scanned.
-                $read = $unitKind === null ? null : $this->contents->read($absolute, $this->config->maxFileBytes);
+                $read = $unitKind === null
+                    ? null
+                    : ($gitIgnoreReads[$relative] ?? $this->contents->read($absolute, $this->config->maxFileBytes));
                 if ($read !== null && $read->oversized) {
                     // The same diagnostic a file already too large when its
                     // size was checked gets: it is the same fact, learned one
@@ -212,6 +235,7 @@ final readonly class ProjectDiscoverer
             $left->relativePath <=> $right->relativePath);
         usort($units, static fn(ProjectUnit $left, ProjectUnit $right): int =>
             [$left->kind, $left->configPath] <=> [$right->kind, $right->configPath]);
+        $units = self::withBuildOutputSources($units);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -280,6 +304,11 @@ final readonly class ProjectDiscoverer
                 'entry_points' => self::cargoEntryPoints($contents, $relative, dirname($absolute)),
             ]);
         }
+        // Its patterns decide which files the walk takes, so an edit to one
+        // changes what a rescan produces; it carries nothing else.
+        if ($kind === 'gitignore') {
+            return new ProjectUnit($kind, $relative, $contentHash);
+        }
         if ($kind === 'requirements') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'requires' => self::pipRequirements($contents),
@@ -293,6 +322,19 @@ final readonly class ProjectDiscoverer
         if ($kind === 'yaml') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+            ]);
+        }
+        if ($kind === 'agent_config') {
+            // Read as text for paths, as a YAML file is: the commands are shell
+            // lines, and `$CLAUDE_PLUGIN_ROOT/src/x.ts` leaves a token the path
+            // reader anchors at the project root.
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::yamlPathEntryPoints(
+                    // `$CLAUDE_PLUGIN_ROOT/src/x.ts` names `src/x.ts` in the
+                    // plugin; left in, the variable's name reads as a directory.
+                    preg_replace('#\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/#', '/', self::jsonStrings($contents)) ?? '',
+                    $relative,
+                ),
             ]);
         }
         if ($kind === 'tool_config') {
@@ -324,12 +366,14 @@ final readonly class ProjectDiscoverer
                 'name' => is_string($decoded['name'] ?? null) ? $decoded['name'] : null,
                 'type' => is_string($decoded['type'] ?? null) ? $decoded['type'] : null,
                 'workspaces' => self::workspaces($decoded['workspaces'] ?? []),
+                'typescript_range' => self::typescriptRange($decoded),
                 'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
             ],
             'azure_function' => [
                 'entry_points' => self::azureFunctionEntryPoints($decoded, $relative),
             ],
             'typescript' => self::typescriptMetadata($decoded),
+            'knip' => ['entry_points' => self::knipEntryPoints($decoded, $relative)],
             'knossos' => ['version' => $decoded['version'] ?? null],
             default => [],
         };
@@ -885,6 +929,8 @@ final readonly class ProjectDiscoverer
      */
     private const CONFIG_REFERENCE_KEYS = [
         'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
+        // Bundlers and desktop shells (esbuild, Bun, Electrobun).
+        'entrypoint', 'entrypoints', 'entryPoints',
     ];
 
     /**
@@ -1310,6 +1356,176 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * Every string value in a JSON document, one per line, or the raw text when it does not parse.
+     *
+     * JSON may escape a slash as `\/`, which hides a path from a reader of
+     * the raw text; the decoded strings carry it plainly.
+     */
+    private static function jsonStrings(string $contents): string
+    {
+        try {
+            $decoded = JsonConfig::decode($contents, true);
+        } catch (DiscoveryException) {
+            return $contents;
+        }
+        $strings = [];
+        array_walk_recursive($decoded, static function (mixed $value) use (&$strings): void {
+            if (is_string($value)) {
+                $strings[] = $value;
+            }
+        });
+
+        return implode("\n", $strings);
+    }
+
+    /**
+     * The files knip is told are entry points: `entry` at the top and in each workspace.
+     *
+     * Read key by key rather than as text, because the same file's `ignore`
+     * and `project` lists name files that are not entry points at all.
+     *
+     * @param array<string, mixed> $config
+     * @return list<string>
+     */
+    private static function knipEntryPoints(array $config, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $scopes = [[$directory, $config['entry'] ?? null]];
+        foreach (is_array($config['workspaces'] ?? null) ? $config['workspaces'] : [] as $workspace => $settings) {
+            if (is_string($workspace) && is_array($settings) && !str_contains($workspace, '*')) {
+                $scopes[] = [self::joinPath($directory, trim($workspace, './')), $settings['entry'] ?? null];
+            }
+        }
+        $paths = [];
+        foreach ($scopes as [$anchor, $entries]) {
+            foreach (is_array($entries) ? $entries : [$entries] as $entry) {
+                $path = is_string($entry) ? self::entryPointPath($entry, $anchor) : null;
+                if ($path !== null) {
+                    $paths[$path] = true;
+                }
+            }
+        }
+        $paths = array_keys($paths);
+        sort($paths, SORT_STRING);
+
+        return $paths;
+    }
+
+    /**
+     * The `typescript` version a package.json declares, from the first dependency table naming it.
+     *
+     * @param array<string, mixed> $manifest
+     */
+    private static function typescriptRange(array $manifest): ?string
+    {
+        foreach (['devDependencies', 'dependencies', 'peerDependencies'] as $table) {
+            $range = is_array($manifest[$table] ?? null) ? ($manifest[$table]['typescript'] ?? null) : null;
+            if (is_string($range)) {
+                return $range;
+            }
+        }
+
+        return null;
+    }
+
+    /** Output extension => the source extensions the compiler emits it from. */
+    private const BUILD_OUTPUT_SOURCES = [
+        'js' => ['ts', 'tsx', 'js', 'jsx'],
+        'mjs' => ['mts', 'mjs'],
+        'cjs' => ['cts', 'cjs'],
+    ];
+
+    /**
+     * Add, beside each package entry point inside a tsconfig's `outDir`, the
+     * sources the compiler emits it from.
+     *
+     * A compiled package's `main`, `bin` and scripts name its build output,
+     * which discovery never walks, so the name matched nothing and the source
+     * behind it looked unreferenced. Without a `rootDir` the compiler infers
+     * one, so the tsconfig's own directory and its `src/` are both offered.
+     * Matching downstream is by exact path, so a candidate naming no file
+     * costs nothing.
+     *
+     * @param list<ProjectUnit> $units
+     * @return list<ProjectUnit>
+     */
+    private static function withBuildOutputSources(array $units): array
+    {
+        $layouts = [];
+        foreach ($units as $unit) {
+            $outDir = $unit->kind === 'typescript' ? self::layoutPath($unit->metadata['out_dir'] ?? null) : null;
+            if ($outDir === null || $outDir === '') {
+                continue;
+            }
+            $directory = self::manifestDirectory($unit->configPath);
+            $rootDir = self::layoutPath($unit->metadata['root_dir'] ?? null);
+            $layouts[] = [
+                self::joinPath($directory, $outDir),
+                $rootDir !== null ? [self::joinPath($directory, $rootDir)] : [$directory, self::joinPath($directory, 'src')],
+            ];
+        }
+        if ($layouts === []) {
+            return $units;
+        }
+
+        return array_map(static function (ProjectUnit $unit) use ($layouts): ProjectUnit {
+            $entryPoints = $unit->metadata['entry_points'] ?? null;
+            if ($unit->kind !== 'node' || !is_array($entryPoints) || $entryPoints === []) {
+                return $unit;
+            }
+            $paths = array_fill_keys($entryPoints, true);
+            foreach ($entryPoints as $entryPoint) {
+                foreach ($layouts as [$outDir, $sourceDirs]) {
+                    if (!is_string($entryPoint) || !str_starts_with($entryPoint, $outDir . '/')) {
+                        continue;
+                    }
+                    $rest = substr($entryPoint, strlen($outDir) + 1);
+                    $extension = strtolower(pathinfo($rest, PATHINFO_EXTENSION));
+                    $stem = substr($rest, 0, -strlen($extension) - 1);
+                    foreach (self::BUILD_OUTPUT_SOURCES[$extension] ?? [] as $sourceExtension) {
+                        foreach ($sourceDirs as $sourceDir) {
+                            $paths[self::joinPath($sourceDir, $stem . '.' . $sourceExtension)] = true;
+                        }
+                    }
+                }
+            }
+            $paths = array_keys($paths);
+            sort($paths, SORT_STRING);
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, [
+                ...$unit->metadata,
+                'entry_points' => $paths,
+            ]);
+        }, $units);
+    }
+
+    /** A tsconfig directory option as a clean relative path, or null when it is absent or leaves its directory. */
+    private static function layoutPath(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+        $path = trim(str_replace('\\', '/', trim($value)), '/');
+        while (str_starts_with($path, './')) {
+            $path = substr($path, 2);
+        }
+        if ($path === '.') {
+            return '';
+        }
+        if (str_starts_with($value, '/') || in_array('..', explode('/', $path), true)) {
+            return null;
+        }
+
+        return $path;
+    }
+
+    /** Two project-relative path parts joined, either of which may be the root `''`. */
+    private static function joinPath(string $directory, string $path): string
+    {
+        return trim($directory === '' ? $path : ($path === '' ? $directory : $directory . '/' . $path), '/');
+    }
+
+    /**
      * PSR-4 roots from composer.json, which is how a namespace maps to a directory.
      *
      * @param array<string, mixed> $composer @return array<string, string|list<string>>
@@ -1394,6 +1610,8 @@ final readonly class ProjectDiscoverer
             'extends' => is_string($config['extends'] ?? null) ? $config['extends'] : null,
             'allow_js' => ($compiler['allowJs'] ?? false) === true,
             'base_url' => is_string($compiler['baseUrl'] ?? null) ? $compiler['baseUrl'] : null,
+            'out_dir' => is_string($compiler['outDir'] ?? null) ? $compiler['outDir'] : null,
+            'root_dir' => is_string($compiler['rootDir'] ?? null) ? $compiler['rootDir'] : null,
             'paths' => is_array($compiler['paths'] ?? null) ? $compiler['paths'] : [],
             'references' => $references,
         ];
@@ -1496,6 +1714,9 @@ final readonly class ProjectDiscoverer
     public static function unitKindFor(string $relativePath): ?string
     {
         $basename = strtolower(basename($relativePath));
+        if ($basename === '.gitignore') {
+            return 'gitignore';
+        }
         if ($basename === 'composer.json') {
             return 'composer';
         }
@@ -1525,6 +1746,16 @@ final readonly class ProjectDiscoverer
         // tokenises shell commands crudely.
         if (str_ends_with($basename, '.yml') || str_ends_with($basename, '.yaml')) {
             return 'yaml';
+        }
+        // A Claude Code plugin runs its hooks and MCP servers from commands in
+        // these files, which name the scripts by path; nothing imports them.
+        $normalized = str_replace('\\', '/', $relativePath);
+        if (in_array($basename, ['hooks.json', '.mcp.json', 'plugin.json'], true)
+            || preg_match('#(?:^|/)\.claude/settings(?:\.[a-z]+)?\.json$#', strtolower($normalized)) === 1) {
+            return 'agent_config';
+        }
+        if (in_array($basename, ['knip.json', 'knip.jsonc', '.knip.json', '.knip.jsonc'], true)) {
+            return 'knip';
         }
         if ($basename === 'pyproject.toml') {
             return 'python';

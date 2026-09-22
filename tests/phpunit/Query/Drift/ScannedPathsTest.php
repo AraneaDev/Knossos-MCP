@@ -92,6 +92,40 @@ final class ScannedPathsTest extends KnossosTestCase
     }
 
     /**
+     * The walk skips what the tree's `.gitignore` files ignore, so the probe
+     * has to as well: a framework writing its cache into an ignored directory
+     * is not drift, and a rescan would skip every file of it again.
+     */
+    #[Group('query')]
+    public function testAPathTheTreesGitignoreIgnoresIsNotDrift(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-gitignore-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        file_put_contents($root . '/src/a.php', "<?php\n\nnamespace Fixture;\n\nfinal class A {}\n");
+        file_put_contents($root . '/.gitignore', "/src/cache/\n");
+        file_put_contents($root . '/src/.gitignore', "*.gen.php\n");
+        $pdo = $this->freshTestDatabase();
+        $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
+        $this->backdateDirectories($root, 10);
+        try {
+            mkdir($root . '/src/cache', 0o777, true);
+            file_put_contents($root . '/src/cache/Container.php', "<?php\n");
+            file_put_contents($root . '/src/b.gen.php', "<?php\n");
+            touch($root . '/src', time() + 60);
+
+            self::assertSame(0, $this->drift($pdo, $projectId, $root)->added);
+            $paths = ScannedPaths::forProject($pdo, $projectId);
+            self::assertFalse($paths->tracks('src/cache/Container.php', $root . '/src/cache/Container.php'));
+            self::assertFalse($paths->tracks('src/b.gen.php', $root . '/src/b.gen.php'));
+            self::assertTrue($paths->tracks('src/c.php', $root . '/src/c.php'));
+            // An edit to a `.gitignore` changes what a rescan walks, so it is an input.
+            self::assertTrue($paths->tracks('src/.gitignore', $root . '/src/.gitignore'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
      * A project root holding one source file and a knossos.json that ignores
      * one directory, scanned for real.
      *

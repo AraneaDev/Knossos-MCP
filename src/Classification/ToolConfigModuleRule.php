@@ -102,6 +102,13 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
         if (in_array($stem, self::EXACT_STEMS, true)) {
             return true;
         }
+        // VitePress loads `.vitepress/config.*` and `.vitepress/theme/index.*`
+        // by position rather than by name, so neither carries a tool prefix.
+        $lower = strtolower($path);
+        if (($stem === 'config' && preg_match('#(?:^|/)\.vitepress/config\.[^/]+$#', $lower) === 1)
+            || ($stem === 'index' && preg_match('#(?:^|/)\.vitepress/theme/index\.[^/]+$#', $lower) === 1)) {
+            return true;
+        }
         // `.eslintrc.js`, `.prettierrc.cjs`, `.babelrc.mjs`: the rc dotfile
         // convention, which predates the `.config.` one and is still common.
         if (str_starts_with($stem, '.') && str_ends_with($stem, 'rc')) {

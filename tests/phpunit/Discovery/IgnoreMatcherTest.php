@@ -170,6 +170,21 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('deep/logs/a.log'));
     }
 
+    /**
+     * VitePress writes its prebundled dependencies and its build under its own
+     * directory, wherever the site lives. Both are generated, and a committed
+     * dependency cache graphed thousands of Vue internals as project code.
+     */
+    public function testVitePressCacheAndBuildOutputAreExcludedWhereverTheSiteLives(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('docs/.vitepress/cache/deps/chunk-A.js'));
+        assertSame(true, $matcher->matches('.vitepress/dist/assets/app.js'));
+        assertSame(false, $matcher->matches('docs/.vitepress/theme/index.ts'));
+        assertSame(false, $matcher->matches('src/cache/store.ts'));
+    }
+
     public function testALeadingSlashAnchorsToTheProjectRoot(): void
     {
         $matcher = new IgnoreMatcher(['/logs']);
