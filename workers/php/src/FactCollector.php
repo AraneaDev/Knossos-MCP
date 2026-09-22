@@ -101,6 +101,8 @@ final class FactCollector extends NodeVisitorAbstract
             $this->property($node);
         } elseif ($node instanceof Expr\Assign) {
             $this->assignment($node);
+        } elseif ($node instanceof Stmt\Foreach_) {
+            $this->foreachLoop($node);
         } elseif ($node instanceof Expr\New_) {
             $this->newExpression($node);
         } elseif ($node instanceof Expr\StaticCall) {
@@ -361,6 +363,29 @@ final class FactCollector extends NodeVisitorAbstract
     }
 
     /**
+     * Type the value variable of `foreach (Enum::cases() as $case)`.
+     *
+     * `cases()` returns the enum's own cases, so each value is an instance of
+     * the enum; nothing else in the loop header says so.
+     */
+    private function foreachLoop(Stmt\Foreach_ $node): void
+    {
+        if (!$node->valueVar instanceof Expr\Variable || !is_string($node->valueVar->name)) {
+            return;
+        }
+        if ($node->expr instanceof Expr\StaticCall
+            && $node->expr->class instanceof Name
+            && $node->expr->name instanceof Identifier
+            && strtolower($node->expr->name->toString()) === 'cases') {
+            $this->setVariableType($node->valueVar->name, $this->resolvedClassName($node->expr->class), 'probable');
+
+            return;
+        }
+        // Any other loop rebinds the variable to something untracked.
+        $this->clearVariableType($node->valueVar->name);
+    }
+
+    /**
      * The declaring reference of a call whose receiver is statically known, if any.
      *
      * `Foo::make()` names its declaration outright; `$this->make()` names it once
@@ -380,6 +405,13 @@ final class FactCollector extends NodeVisitorAbstract
             && $expression->class instanceof Name
             && $expression->name instanceof Identifier) {
             return $this->resolvedClassName($expression->class) . '::' . $expression->name->toString();
+        }
+        if ($expression instanceof Expr\MethodCall
+            && $expression->var instanceof Expr\New_
+            && $expression->var->class instanceof Name
+            && $expression->name instanceof Identifier) {
+            // `(new Kernel())->server()`: the receiver is named inline.
+            return $this->resolvedClassName($expression->var->class) . '::' . $expression->name->toString();
         }
         if ($expression instanceof Expr\MethodCall && $expression->name instanceof Identifier) {
             // A call on a collaborator whose type is declared — an injected
