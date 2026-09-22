@@ -471,6 +471,71 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame(['ts:interface:src/clip.ts#Clipboard', 'ts:interface:src/clip.ts#Fallback'], $returns);
     }
 
+    /**
+     * `fs?: { readFile(p: string): string }` inside an interface, or as a
+     * parameter's type, is a structural type, not code. Its members were
+     * emitted as methods named after the enclosing interface or function
+     * (`Input::readFile`), claiming a member the interface does not have, and
+     * reported as dead code that there is nothing to delete for.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerDoesNotDeclareMembersOfTypeLiterals(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-type-literal-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"type-literal-fixture"}',
+            'src/input.ts' => implode("\n", [
+                'export interface Input {',
+                '    relFile: string;',
+                '    fs?: { readFile(p: string): string; size: number };',
+                '}',
+                'export function run(input: Input, io: { write(c: string): void }): string {',
+                '    io.write(input.relFile);',
+                '    return input.fs?.readFile(input.relFile) ?? "";',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/input.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $names = [];
+        $declared = [];
+        $targets = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                $names[] = $node->canonicalName;
+                $declared[$node->localId] = true;
+            }
+            foreach ($contribution->edges as $edge) {
+                $targets[] = $edge->targetReference;
+            }
+        }
+
+        // The interface's own member stays; the anonymous shapes' members go.
+        assertArrayContains('src/input.ts#Input::relFile', $names);
+        foreach (['src/input.ts#Input::readFile', 'src/input.ts#Input::size', 'src/input.ts#run::write'] as $name) {
+            assertSame(false, in_array($name, $names, true));
+        }
+        // And nothing points at them either.
+        $dangling = array_filter($targets, fn(string $t): bool => !isset($declared[$t]) && str_starts_with($t, 'ts:') && !str_starts_with($t, 'ts:external_') && !str_starts_with($t, 'ts:package:'));
+        assertSame([], array_values($dangling));
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerExtractsCrossProjectArchitecture(): void
     {

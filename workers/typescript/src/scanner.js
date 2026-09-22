@@ -2032,6 +2032,13 @@ function declarationName(node, sourceFile) {
 }
 
 function isDeclaration(node) {
+    // A member of an inline `{ ... }` type describes a shape, not code, and
+    // has no name of its own to be declared under.
+    if (
+        (ts.isMethodSignature(node) || ts.isPropertySignature(node)) &&
+        ts.isTypeLiteralNode(node.parent)
+    )
+        return false;
     return (
         ts.isClassDeclaration(node) ||
         ts.isClassExpression(node) ||
