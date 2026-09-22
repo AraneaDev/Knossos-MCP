@@ -118,8 +118,38 @@ final class FactCollector extends NodeVisitorAbstract
         } elseif ($node instanceof Expr\FuncCall) {
             $this->functionCall($node);
         }
+        if ($node instanceof Stmt\ClassLike || $node instanceof Stmt\Property || $node instanceof Stmt\ClassMethod) {
+            $this->annotationReferences($node);
+        }
 
         return null;
+    }
+
+    /**
+     * Classes a Doctrine-style annotation names in a string.
+     *
+     * `@Gedmo\SlugHandler(class="App\Slug\Handler")` and
+     * `@ORM\Entity(repositoryClass="App\Repository\X")` hand a class to a
+     * library by name, and nothing else refers to it. Only fully qualified
+     * names are taken: a short one would need the file's imports to resolve.
+     */
+    private function annotationReferences(Node $node): void
+    {
+        $comment = $node->getDocComment();
+        if ($comment === null) {
+            return;
+        }
+        $matched = preg_match_all(
+            '/\b(?:class|repositoryClass|targetEntity|entityClass|handler)\s*=\s*"\\\\{0,2}([A-Za-z_][A-Za-z0-9_]*(?:\\\\{1,2}[A-Za-z_][A-Za-z0-9_]*)+)"/',
+            $comment->getText(),
+            $matches,
+        );
+        if ($matched === false) {
+            return;
+        }
+        foreach (array_unique($matches[1]) as $className) {
+            $this->addEdge('references', $this->currentSource(), self::reference('class', str_replace('\\\\', '\\', $className)), $node);
+        }
     }
     /** Unwind scope on the way out, keeping enclosing-class attribution correct. */
 
