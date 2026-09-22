@@ -111,7 +111,11 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
         }
         // `.eslintrc.js`, `.prettierrc.cjs`, `.babelrc.mjs`: the rc dotfile
         // convention, which predates the `.config.` one and is still common.
-        if (str_starts_with($stem, '.') && str_ends_with($stem, 'rc')) {
+        // Other tools name theirs the same way without the `rc`
+        // (`.markdownlint-cli2.mjs`, `.pnpmfile.cjs`), and a module whose name
+        // starts with a dot is not how application code is named.
+        // A stem that is exactly a suffix (`.config`) names no tool at all.
+        if (str_starts_with($stem, '.') && strlen($stem) > 1 && !in_array($stem, self::STEM_SUFFIXES, true)) {
             return true;
         }
         foreach (self::STEM_SUFFIXES as $suffix) {

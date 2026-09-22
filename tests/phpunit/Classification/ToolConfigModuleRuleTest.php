@@ -50,6 +50,9 @@ final class ToolConfigModuleRuleTest extends TestCase
             'karma conf' => ['karma.conf.js'],
             'eslintrc dotfile' => ['.eslintrc.cjs'],
             'prettierrc dotfile' => ['.prettierrc.js'],
+            // A module whose name starts with a dot is a tool's, rc or not.
+            'markdownlint-cli2 dotfile' => ['.markdownlint-cli2.mjs'],
+            'pnpmfile' => ['.pnpmfile.cjs'],
             'gulpfile' => ['gulpfile.js'],
             'capitalised gruntfile' => ['Gruntfile.js'],
             'pytest conftest' => ['tests/conftest.py'],
