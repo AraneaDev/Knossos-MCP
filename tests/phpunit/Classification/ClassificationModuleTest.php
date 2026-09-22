@@ -135,6 +135,15 @@ final class ClassificationModuleTest extends KnossosTestCase
         assertSame(['source' => '@nestjs/common decorator'], $facts[0]->attributes);
     }
 
+    public function testNestJsRoleRuleKeepsAFrameworkHandlerAsAConvention(): void
+    {
+        // A @Cron/@OnEvent method or a Passport validate(): NestJS calls it.
+        $node = self::makeNode('ts:method:src/jobs.ts#Cleanup::cleanup', kind: 'method', attributes: ['nestjs_roles' => ['nestjs.framework_handler']]);
+        $facts = (new NestJsRoleRule())->classify($node);
+        assertSame('nestjs.framework_handler', $facts[0]->role ?? null);
+        assertSame(true, ReportableComponent::isDiscoveredByConvention(['nestjs.framework_handler']));
+    }
+
     public function testNestJsRoleRuleSkipsUnknownRoles(): void
     {
         // Negative: a role outside the whitelist is silently skipped.

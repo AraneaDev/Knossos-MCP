@@ -26,7 +26,7 @@ final readonly class NestJsRoleRule implements ClassificationRule
         }
         $facts = [];
         foreach (array_values(array_unique($roles)) as $role) {
-            if (!is_string($role) || !in_array($role, ['nestjs.module', 'nestjs.controller', 'nestjs.provider'], true)) {
+            if (!is_string($role) || !in_array($role, ['nestjs.module', 'nestjs.controller', 'nestjs.provider', 'nestjs.framework_handler'], true)) {
                 continue;
             }
             $facts[] = new ClassificationFact(

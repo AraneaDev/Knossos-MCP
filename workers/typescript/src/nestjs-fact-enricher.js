@@ -15,7 +15,7 @@ export class NestJsFactEnricher {
     importDeclaration(node) {
         if (
             !ts.isStringLiteral(node.moduleSpecifier) ||
-            node.moduleSpecifier.text !== "@nestjs/common" ||
+            !node.moduleSpecifier.text.startsWith("@nestjs/") ||
             !node.importClause?.namedBindings ||
             !ts.isNamedImports(node.importClause.namedBindings)
         )
@@ -45,8 +45,11 @@ export class NestJsFactEnricher {
                 this.moduleRelations(moduleDecorator, id);
             }
         }
-        if (ts.isMethodDeclaration(node))
+        if (ts.isMethodDeclaration(node)) {
             this.controllerRoutes(node, id, canonical);
+            if (this.isFrameworkHandler(node))
+                result.roles.push("nestjs.framework_handler");
+        }
         return result;
     }
 
@@ -124,6 +127,38 @@ export class NestJsFactEnricher {
         }
     }
 
+    /**
+     * A method NestJS calls on its own schedule or event: one decorated by
+     * the scheduler, the event emitter, microservices, queues or websockets,
+     * or the `validate` Passport calls on a strategy.
+     */
+    isFrameworkHandler(node) {
+        if (FRAMEWORK_METHOD_DECORATORS.some((name) => this.decorator(node, name)))
+            return true;
+        return (
+            ts.isIdentifier(node.name) &&
+            node.name.text === "validate" &&
+            this.extendsPassportStrategy(node.parent)
+        );
+    }
+
+    /** Whether a class extends `PassportStrategy(Strategy)` from @nestjs/passport. */
+    extendsPassportStrategy(node) {
+        if (!node || !(ts.isClassDeclaration(node) || ts.isClassExpression(node)))
+            return false;
+        return (node.heritageClauses ?? []).some(
+            (clause) =>
+                clause.token === ts.SyntaxKind.ExtendsKeyword &&
+                clause.types.some(
+                    (type) =>
+                        ts.isCallExpression(type.expression) &&
+                        ts.isIdentifier(type.expression.expression) &&
+                        this.imports.get(type.expression.expression.text) ===
+                            "PassportStrategy",
+                ),
+        );
+    }
+
     decorator(node, exportedName) {
         for (const decorator of decoratorsOf(node)) {
             const expression = decorator.expression;
@@ -141,6 +176,22 @@ export class NestJsFactEnricher {
         return null;
     }
 }
+
+// Method decorators whose method the framework itself invokes.
+const FRAMEWORK_METHOD_DECORATORS = [
+    "Cron",
+    "Interval",
+    "Timeout",
+    "OnEvent",
+    "EventPattern",
+    "MessagePattern",
+    "Process",
+    "OnQueueActive",
+    "OnQueueCompleted",
+    "OnQueueFailed",
+    "OnWorkerEvent",
+    "SubscribeMessage",
+];
 
 function decoratorsOf(node) {
     return ts.canHaveDecorators(node) ? (ts.getDecorators(node) ?? []) : [];
