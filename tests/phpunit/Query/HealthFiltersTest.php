@@ -447,6 +447,30 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * A scanner marks `runtime_invoked` on what a runtime or a foreign host
+     * calls and no source ever names: `Drop::drop`, and a `#[no_mangle]`
+     * export a wasm host calls. The quality gate's metric already honoured the
+     * mark while health still listed every such node as dead.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesRuntimeInvokedComponents(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $export = StableId::symbol($ids['project'], 'rust', 'function', 'crate::alloc');
+        $repository->saveNode($export, $ids['project'], 'rust', 'function', 'crate::alloc', 'alloc', null, $ids['file'], 1, 1, 'ast', 'certain', ['runtime_invoked' => true], 'php:file:src/Checkout.php', $ids['scan']);
+        $plain = StableId::symbol($ids['project'], 'rust', 'function', 'crate::unused');
+        $repository->saveNode($plain, $ids['project'], 'rust', 'function', 'crate::unused', 'unused', null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('crate::alloc', $names, true));
+        assertSame(true, in_array('crate::unused', $names, true));
+        assertSame(1, $data['bounds']['excluded_constructors']);
+    }
+
+    /**
      * The mirror of the inherited-method exclusion. That one drops the
      * override because the ancestor carries the contract; nothing dropped the
      * declaration when the implementation is what call sites reach. A call

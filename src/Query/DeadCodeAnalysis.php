@@ -107,7 +107,11 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                     continue;
                 }
             }
-            if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)) {
+            // Marked by its scanner as called by a runtime or a foreign host
+            // (`Drop::drop`, a `#[no_mangle]` export): no source names it,
+            // however live it is. Counted with the engine-invoked members.
+            if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)
+                || ReportableComponent::isRuntimeInvoked($candidate['row']['attributes_json'] ?? null)) {
                 ++$excludedConstructors;
                 continue;
             }
