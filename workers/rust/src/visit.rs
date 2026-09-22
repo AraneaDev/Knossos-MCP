@@ -72,6 +72,9 @@ struct Walk<'a> {
     /// Framework roles discovered for handlers in this file, applied by
     /// canonical name once the walk is complete.
     role_marks: Vec<String>,
+    /// The field types of each struct this file declares, by struct then
+    /// field name, so `self.walk.facts.edge()` resolves through the fields.
+    struct_fields: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 /// Walk every item in a parsed file, attributing each to `module`.
@@ -99,8 +102,10 @@ pub fn walk(
         declarations,
         routes: Vec::new(),
         role_marks: Vec::new(),
+        struct_fields: BTreeMap::new(),
     };
     walker.collect_uses(module, &file.items);
+    walker.collect_struct_fields(module, &file.items);
     walker.walk_items(module, "module", &file.items);
     walker.finish_walk();
     if file_is_test {
@@ -841,6 +846,36 @@ impl Walk<'_> {
         visitor.visit_expr(expr);
     }
 
+    /// Record the named field types of every struct in `items`, inline
+    /// modules included, resolved through this file's imports. Collected
+    /// before the walk, so an `impl` above its struct still sees them.
+    fn collect_struct_fields(&mut self, container: &str, items: &[Item]) {
+        for item in items {
+            match item {
+                Item::Struct(node) => {
+                    let mut fields = BTreeMap::new();
+                    for field in &node.fields {
+                        if let Some(ident) = &field.ident {
+                            if let Some(target) = self.receiver_type(container, &field.ty) {
+                                fields.insert(ident.to_string(), target);
+                            }
+                        }
+                    }
+                    if !fields.is_empty() {
+                        self.struct_fields
+                            .insert(format!("{container}::{}", node.ident), fields);
+                    }
+                }
+                Item::Mod(node) => {
+                    if let Some((_, inner)) = &node.content {
+                        self.collect_struct_fields(&format!("{container}::{}", node.ident), inner);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// The receiver types a signature states: `self` as the `impl` block's
     /// type, and every plainly named parameter as its type behind any `&`.
     fn signature_receivers(
@@ -1544,6 +1579,19 @@ impl Calls<'_, '_> {
         while let syn::Expr::Paren(inner) = current {
             current = &inner.expr;
         }
+        // `self.walk.facts`: the base's type, then the field's declared type.
+        if let syn::Expr::Field(field) = current {
+            let syn::Member::Named(name) = &field.member else {
+                return None;
+            };
+            let owner = self.receiver_owner(&field.base)?;
+            return self
+                .walk
+                .struct_fields
+                .get(&owner)
+                .and_then(|fields| fields.get(&name.to_string()))
+                .cloned();
+        }
         let syn::Expr::Path(path) = current else {
             return None;
         };
@@ -1566,7 +1614,7 @@ impl Calls<'_, '_> {
             syn::Expr::Paren(inner) => self.returning_call(&inner.expr),
             syn::Expr::Reference(reference) => self.returning_call(&reference.expr),
             syn::Expr::MethodCall(call) => {
-                let owner = self.receivers.get(&receiver_name(&call.receiver)?)?;
+                let owner = self.receiver_owner(&call.receiver)?;
                 Some(format!("{owner}::{}", call.method))
             }
             syn::Expr::Call(call) => match call.func.as_ref() {

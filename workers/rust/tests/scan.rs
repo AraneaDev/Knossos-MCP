@@ -2429,3 +2429,23 @@ pub fn go(values: Vec<u8>) {
         "{references:?}"
     );
 }
+
+#[test]
+fn a_method_called_through_struct_fields_resolves_to_the_field_type() {
+    // `self.walk.facts.edge()` calls `Facts::edge` through two fields. Field
+    // types were not tracked, so every method only ever reached that way (a
+    // collaborator held in a struct) read as unreferenced.
+    let source = r#"
+pub struct Facts;
+impl Facts { pub fn edge(&self) {} }
+pub struct Walk { facts: Facts, count: usize }
+pub struct Calls<'a> { walk: &'a mut Walk }
+impl Calls<'_> {
+    fn go(&mut self) { self.walk.facts.edge(); self.walk.count.count_ones(); }
+}
+"#;
+    let contributions = scan_fixture("field-receiver", &[("src/lib.rs", source)]);
+
+    assert!(method_calls(&contributions, "rust:method:crate::Calls::go")
+        .contains(&("rust:method:crate::Facts::edge".to_owned(), true)));
+}
