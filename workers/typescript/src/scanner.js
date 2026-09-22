@@ -224,8 +224,27 @@ export class TypeScriptScanner {
             if (outcome.reused) ++programsReused;
         };
 
-        for (const configPath of configPaths) {
-            const parsed = parseConfig(root, configPath, reads);
+        // Which config describes each file: the first whose own file list
+        // includes it. A program reaches far more than that (a solution
+        // config's references, an import across a package boundary), and a
+        // file emitted by whichever program reached it first was checked
+        // under options its project never uses.
+        const parsedConfigs = configPaths.map((configPath) => [
+            configPath,
+            parseConfig(root, configPath, reads),
+        ]);
+        const owners = new Map();
+        for (const [configPath, parsed] of parsedConfigs) {
+            for (const fileName of parsed.ownFileNames ?? parsed.fileNames) {
+                const relative = relativeInside(root, fileName);
+                if (relative !== null && !owners.has(relative))
+                    owners.set(relative, configPath);
+            }
+        }
+        request.owners = owners;
+
+        for (const [configPath, parsed] of parsedConfigs) {
+            request.owner = configPath;
             tally(
                 this.#scanProgram(
                     `${root}\0${configPath}`,
@@ -245,6 +264,9 @@ export class TypeScriptScanner {
             (relative) => !emitted.has(normalize(relative)),
         );
         if (remaining.length > 0) {
+            // Whatever no config's program emitted, owned or not.
+            request.owner = undefined;
+            request.owners = new Map();
             const options = {
                 allowJs: true,
                 checkJs: false,
@@ -327,7 +349,7 @@ export class TypeScriptScanner {
     #scanProgram(
         key,
         parsed,
-        { root, maxFileBytes, reads, requestedSet, emitted, emit },
+        { root, maxFileBytes, reads, requestedSet, emitted, emit, owner, owners },
     ) {
         this.#reserveProgramSlot(key);
         const oldProgram = this.programCache.get(key);
@@ -349,6 +371,8 @@ export class TypeScriptScanner {
                 emitted,
                 emit,
                 maxFileBytes,
+                owner,
+                owners ?? new Map(),
             );
         } catch (error) {
             if (!isStackOverflow(error)) throw error;
@@ -430,7 +454,16 @@ export class TypeScriptScanner {
         }
     }
 
-    #emitProgram(root, program, requestedSet, emitted, emit, maxFileBytes) {
+    #emitProgram(
+        root,
+        program,
+        requestedSet,
+        emitted,
+        emit,
+        maxFileBytes,
+        owner,
+        owners,
+    ) {
         const checker = program.getTypeChecker();
         const diagnosticsByFile = diagnosticsForProgram(
             program,
@@ -444,7 +477,10 @@ export class TypeScriptScanner {
                 relative === null ||
                 belowNodeModules(relative) ||
                 !requestedSet.has(relative) ||
-                emitted.has(relative)
+                emitted.has(relative) ||
+                // Another config includes this file itself; its program
+                // describes it under the options the project really uses.
+                (owners.has(relative) && owners.get(relative) !== owner)
             ) {
                 continue;
             }
@@ -1138,6 +1174,9 @@ function parseConfig(root, configPath, reads) {
     const fileNames = new Set(
         parsed.fileNames.filter((file) => allowedCompilerPath(root, file)),
     );
+    // The files the config lists itself, before its references are merged
+    // in: what decides which config describes a file (see scan()).
+    const ownFileNames = [...fileNames];
     const pending = [...(parsed.projectReferences ?? [])];
     const visited = new Set([absolute]);
     while (pending.length > 0) {
@@ -1163,9 +1202,11 @@ function parseConfig(root, configPath, reads) {
         pending.push(...(referenced.projectReferences ?? []));
     }
     parsed.fileNames = [...fileNames];
-    // Analysis consumes referenced sources directly; build-mode output redirection
-    // would otherwise require users to compile projects before scanning.
-    parsed.projectReferences = undefined;
+    parsed.ownFileNames = ownFileNames;
+    // References are kept, and the host resolves a reference's build output
+    // back to its source (see createRestrictedProgram), so an import of
+    // `../lib/dist/index.js` or a package.json `imports` alias onto it lands
+    // on lib/src without the project ever having been built.
     return parsed;
 }
 
@@ -1766,6 +1807,9 @@ function createRestrictedProgram(
         skipDefaultLibCheck: true,
     };
     const host = ts.createCompilerHost(options, true);
+    // What an editor does: a referenced project's outputs stand for its
+    // sources, so nothing has to be built before it can be analysed.
+    host.useSourceOfProjectReferenceRedirect = () => true;
     host.getSourceFile = (fileName, languageVersion) => {
         // A refused path is left out of the program, so the facts of every file
         // that imports or includes it are computed as if it did not exist. It
