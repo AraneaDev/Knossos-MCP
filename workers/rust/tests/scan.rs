@@ -2486,3 +2486,27 @@ fn a_library_crate_root_is_entered_from_outside() {
         "{executable:?}"
     );
 }
+
+#[test]
+fn a_method_called_on_an_untyped_receiver_is_listed_on_the_module() {
+    let contributions = scan_fixture(
+        "untyped-calls",
+        &[(
+            "src/lib.rs",
+            "pub struct Mode;\nimpl Mode {\n    pub fn label(&self) {}\n    pub fn typed(&self) {}\n}\npub fn run(mode: &Mode, all: &[Mode]) {\n    mode.typed();\n    all.iter().for_each(|m| m.label());\n}\n",
+        )],
+    );
+    let module = contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["kind"] == "module")
+        .unwrap();
+    let names = module["attributes"]["unresolved_member_calls"]
+        .as_array()
+        .unwrap();
+
+    // The closure parameter has no stated type; `mode` does.
+    assert!(names.contains(&serde_json::json!("label")));
+    assert!(!names.contains(&serde_json::json!("typed")));
+}

@@ -1392,6 +1392,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
         # The names each function being walked binds itself (parameters and
         # assignments), which shadow a module-level instance of the same name.
         self.bound_names: list[frozenset[str]] = []
+        # Member names called on a receiver no type was inferred for.
+        self.untyped_calls: set[str] = set()
         self.module_id = ref("module", self.module)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
@@ -1425,6 +1427,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 self.tree,
             )
         self.visit(self.tree)
+        if self.untyped_calls:
+            # A method by one of these names may be what such a call reaches,
+            # so the core reports it as only possibly dead.
+            self.facts.nodes[self.module_id]["attributes"]["unresolved_member_calls"] = sorted(self.untyped_calls)
         return self.facts.result()
 
     def current(self) -> str:
@@ -1798,6 +1804,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 if class_container:
                     target = ref("method", f"{class_container[1]}::{name.split('.', 1)[1]}")
             target = target or self.resolve_name(name, "function")
+            if target is None and len(member) == 2:
+                self.untyped_calls.add(member[1])
         # Calling an instance (`repo()`) names no declaration of its own.
         if target and not target.startswith("py:instance:"):
             self.facts.add_edge("calls", self.current(), target, node)

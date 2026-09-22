@@ -187,6 +187,36 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * A method called on a receiver no scanner could type (plain JavaScript, a
+     * Python loop variable, a Rust closure parameter) has a caller the graph
+     * cannot draw. Scanners record the member names they saw called that way,
+     * and a candidate by such a name is only possibly dead, with the reason
+     * saying so. It stays reported: the name may belong to something else.
+     */
+    #[Group('query')]
+    public function testAMethodCalledByNameOnAnUntypedReceiverIsOnlyPossiblyDead(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $module = StableId::symbol($ids['project'], 'typescript', 'module', 'src/loop.js');
+        $repository->saveNode($module, $ids['project'], 'typescript', 'module', 'src/loop.js', 'loop.js', null, $ids['file'], 1, 1, 'ast', 'certain', ['unresolved_member_calls' => ['label']], 'php:file:src/Checkout.php', $ids['scan']);
+        foreach (['label', 'unrelated'] as $method) {
+            $id = StableId::symbol($ids['project'], 'typescript', 'function', "src/mode.ts#{$method}");
+            $repository->saveNode($id, $ids['project'], 'typescript', 'function', "src/mode.ts#{$method}", $method, null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], limit: 100)->data;
+        $byName = [];
+        foreach ($data['dead_code_candidates'] as $candidate) {
+            $byName[$candidate['component']['canonical_name']] = $candidate;
+        }
+
+        assertSame('possible', $byName['src/mode.ts#label']['confidence']);
+        assertSame(true, str_contains($byName['src/mode.ts#label']['reason'], 'could not type'));
+        assertSame('probable', $byName['src/mode.ts#unrelated']['confidence']);
+    }
+
+    /**
      * Python runs a package's `__init__.py` whenever any module inside the
      * package is imported, so `from shop.cart import Cart` reaches `shop`
      * although nothing names it. A package's own module was reported dead in

@@ -1731,7 +1731,8 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
         // `State::new().mode()`. The inner call's owner is known here; its
         // return type may be declared in another file, so the member is named
         // through the call and the core resolves it, or drops the edge.
-        if let Some(callee) = self.returning_call(&node.receiver) {
+        let returning = self.returning_call(&node.receiver);
+        if let Some(callee) = &returning {
             let endpoint = reference("method_of_return", &format!("{callee}::{}", node.method));
             self.walk.facts.edge(
                 "calls",
@@ -1749,6 +1750,8 @@ impl syn::visit::Visit<'_> for Calls<'_, '_> {
                 &endpoint,
                 node.method.span(),
             );
+        } else if returning.is_none() {
+            self.walk.facts.untyped_call(node.method.to_string());
         }
         syn::visit::visit_expr_method_call(self, node);
     }

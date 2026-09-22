@@ -50,6 +50,13 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private array $returnTypes = [];
 
+    /**
+     * Member names called on a receiver nothing types, keyed by the calling node's id.
+     *
+     * @var array<string, array<string, true>>
+     */
+    private array $untypedCalls = [];
+
     /** Whether this file's module node has been declared; see {@see self::fileModuleId()}. */
     private bool $moduleDeclared = false;
 
@@ -171,7 +178,20 @@ final class FactCollector extends NodeVisitorAbstract
      */
     public function nodes(): array
     {
-        return $this->nodes;
+        $nodes = $this->nodes;
+        foreach ($nodes as $index => $node) {
+            $names = $this->untypedCalls[$node['local_id']] ?? null;
+            if ($names === null) {
+                continue;
+            }
+            $names = array_keys($names);
+            sort($names);
+            $attributes = (array) $node['attributes'];
+            $attributes['unresolved_member_calls'] = $names;
+            $nodes[$index]['attributes'] = (object) $attributes;
+        }
+
+        return $nodes;
     }
 
     /**
@@ -635,7 +655,12 @@ final class FactCollector extends NodeVisitorAbstract
                 $node,
                 'probable',
             );
+
+            return;
         }
+        // Nothing types the receiver. A method by this name may be what the
+        // call reaches, so the caller records it for dead-code confidence.
+        $this->untypedCalls[$source][$node->name->toString()] = true;
     }
 
     /** The call a receiver's value came from, whether held in a variable or used inline. */

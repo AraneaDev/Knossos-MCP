@@ -402,6 +402,17 @@ final class PythonScannerTest extends KnossosTestCase
         assertSame(false, in_array(['py:function:app.service.shadowed', 'py:method:app.repo.Repo::count'], $calls, true));
         // Calling the instance itself names no declaration.
         assertSame([], array_values(array_filter($calls, fn(array $c): bool => str_starts_with($c[1], 'py:instance:'))));
+        // The shadowing parameter's call has no type to resolve through, so
+        // the module records the member name for dead-code confidence.
+        $untyped = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $untyped = $node->attributes['unresolved_member_calls'] ?? null;
+                }
+            }
+        }
+        assertSame(['count'], $untyped);
     }
 
     #[Group('python-scanner')]

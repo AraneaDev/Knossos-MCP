@@ -1,6 +1,6 @@
 //! Collecting one file's facts in a deterministic order.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use proc_macro2::Span;
 use serde_json::Value;
@@ -67,6 +67,10 @@ pub struct Facts {
     /// declares a top-level `fn main`, or (for an extensionless script) a
     /// shebang. Applied to the module node in `finish()`.
     executable: bool,
+    /// Method names called on a receiver the walk could not type. Listed on
+    /// the module node in `finish()`, where the core reads them to report a
+    /// method by one of these names as only possibly dead.
+    untyped_calls: BTreeSet<String>,
     /// SHA-256 hex of the raw bytes this file was parsed from; absent until
     /// [`Facts::set_content_hash`] is called, which happens only for a file
     /// that was actually read.
@@ -87,6 +91,7 @@ impl Facts {
             external: HashSet::new(),
             pending_attributes: Vec::new(),
             executable: false,
+            untyped_calls: BTreeSet::new(),
             test_scope: 0,
             content_hash: None,
         }
@@ -213,6 +218,11 @@ impl Facts {
     /// off the dead-code report.
     pub fn mark_executable(&mut self) {
         self.executable = true;
+    }
+
+    /// Record a method called on a receiver whose type is unknown.
+    pub fn untyped_call(&mut self, method: String) {
+        self.untyped_calls.insert(method);
     }
 
     /// Record the hash of the bytes this file's facts come from.
@@ -370,6 +380,20 @@ impl Facts {
             let module = self.nodes[0].canonical_name.clone(); // the module node is always first
             self.pending_attributes
                 .push((module, "executable".to_owned(), Value::Bool(true)));
+        }
+        if !self.untyped_calls.is_empty() {
+            let module = self.nodes[0].canonical_name.clone();
+            let names = self
+                .untyped_calls
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect();
+            self.pending_attributes.push((
+                module,
+                "unresolved_member_calls".to_owned(),
+                Value::Array(names),
+            ));
         }
         for (canonical, key, value) in &self.pending_attributes {
             if let Some(node) = self

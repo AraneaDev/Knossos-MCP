@@ -224,24 +224,11 @@ export class TypeScriptScanner {
             if (outcome.reused) ++programsReused;
         };
 
-        // Which config describes each file: the first whose own file list
-        // includes it. A program reaches far more than that (a solution
-        // config's references, an import across a package boundary), and a
-        // file emitted by whichever program reached it first was checked
-        // under options its project never uses.
         const parsedConfigs = configPaths.map((configPath) => [
             configPath,
             parseConfig(root, configPath, reads),
         ]);
-        const owners = new Map();
-        for (const [configPath, parsed] of parsedConfigs) {
-            for (const fileName of parsed.ownFileNames ?? parsed.fileNames) {
-                const relative = relativeInside(root, fileName);
-                if (relative !== null && !owners.has(relative))
-                    owners.set(relative, configPath);
-            }
-        }
-        request.owners = owners;
+        request.owners = configOwners(root, parsedConfigs);
 
         for (const [configPath, parsed] of parsedConfigs) {
             request.owner = configPath;
@@ -267,25 +254,7 @@ export class TypeScriptScanner {
             // Whatever no config's program emitted, owned or not.
             request.owner = undefined;
             request.owners = new Map();
-            const options = {
-                allowJs: true,
-                checkJs: false,
-                noEmit: true,
-                target: ts.ScriptTarget.Latest,
-                module: ts.ModuleKind.ESNext,
-                moduleResolution: ts.ModuleResolutionKind.Bundler,
-                jsx: ts.JsxEmit.Preserve,
-            };
-            const parsed = {
-                options,
-                // An extensionless script, or one whose extension is not in
-                // lower case, only ever reaches the fallback program: no
-                // tsconfig `include` matches either name.
-                fileNames: remaining.map((relative) =>
-                    offeredPath(path.join(root, relative)),
-                ),
-                projectReferences: undefined,
-            };
+            const parsed = fallbackConfig(root, remaining);
             tally(
                 this.#scanProgram(
                     `${root}\0<fallback>`,
@@ -580,6 +549,7 @@ class FactCollector {
     collect() {
         this.language.initialize();
         this.visit(this.language.sourceFile);
+        this.language.finish();
     }
 
     visit(node) {
@@ -605,6 +575,7 @@ class TypeScriptLanguageFactCollector {
         );
         this.application = new TypeScriptApplicationEnricher(this);
         this.nest = new NestJsFactEnricher(this);
+        this.untypedCalls = new Set();
     }
 
     get nodes() {
@@ -630,6 +601,19 @@ class TypeScriptLanguageFactCollector {
         );
     }
 
+    /**
+     * Records on the module node the member names called on a receiver the
+     * checker could not type (`any`, an untyped parameter in JavaScript).
+     * Such a call has no edge, and a method by one of these names may be what
+     * it reaches, so the core reports that method as only possibly dead.
+     */
+    finish() {
+        if (this.untypedCalls.size === 0) return;
+        this.accumulator.nodesById.get(
+            this.moduleId,
+        ).attributes.unresolved_member_calls = [...this.untypedCalls].sort();
+    }
+
     enter(node) {
         return isDeclaration(node) ? this.declaration(node) : false;
     }
@@ -651,6 +635,96 @@ class TypeScriptLanguageFactCollector {
 
     leave(pushed) {
         if (pushed) this.container.pop();
+    }
+
+    /** `extends` / `implements` edges and constructor `injects` edges of a class or interface. */
+    heritageEdges(node, id) {
+        if (
+            !ts.isClassDeclaration(node) &&
+            !ts.isClassExpression(node) &&
+            !ts.isInterfaceDeclaration(node)
+        )
+            return;
+        for (const clause of node.heritageClauses ?? []) {
+            for (const type of clause.types) {
+                const target = this.symbolReference(
+                    this.checker.getSymbolAtLocation(type.expression),
+                    "class",
+                );
+                if (target !== null) {
+                    this.addEdge(
+                        clause.token === ts.SyntaxKind.ImplementsKeyword
+                            ? "implements"
+                            : "extends",
+                        id,
+                        target,
+                        type,
+                    );
+                }
+            }
+        }
+        const constructor = node.members?.find((member) =>
+            ts.isConstructorDeclaration(member),
+        );
+        for (const parameter of constructor?.parameters ?? []) {
+            if (parameter.type) {
+                const target = this.typeNodeReference(parameter.type);
+                if (target !== null)
+                    this.addEdge("injects", id, target, parameter);
+            }
+        }
+    }
+
+    /** The contract an object literal implements, from its context or its binding's annotation. */
+    objectLiteralContracts(node, id) {
+        if (isContextualObjectLiteral(node)) {
+            const contextual = this.checker.getContextualType(node);
+            const parts = contextual?.isUnion()
+                ? contextual.types
+                : contextual
+                  ? [contextual]
+                  : [];
+            for (const part of parts) {
+                const symbol = part.aliasSymbol ?? part.symbol;
+                if (!symbol || symbol.getName().startsWith("__")) continue;
+                const target = this.symbolReference(symbol, "class");
+                if (target !== null && target !== id)
+                    this.addEdge("implements", id, target, node);
+            }
+        }
+
+        if (isObjectLiteralBinding(node)) {
+            const contract = objectLiteralContract(node);
+            const target =
+                contract !== undefined && ts.isTypeReferenceNode(contract)
+                    ? this.typeNodeReference(contract)
+                    : null;
+            if (target !== null && target !== id)
+                this.addEdge("implements", id, target, contract);
+        }
+    }
+
+    /** A `returns` edge per named type a function or method declares it returns. */
+    returnEdges(node, id) {
+        if (
+            (ts.isFunctionDeclaration(node) ||
+                ts.isMethodDeclaration(node) ||
+                ts.isMethodSignature(node)) &&
+            node.type
+        ) {
+            // `Clipboard | null` has no symbol of its own: each named member
+            // of a union is a type the function may return.
+            const returned = ts.isUnionTypeNode(node.type)
+                ? node.type.types.filter((member) =>
+                      ts.isTypeReferenceNode(member),
+                  )
+                : [node.type];
+            for (const typeNode of returned) {
+                const target = this.typeNodeReference(typeNode);
+                if (target !== null)
+                    this.addEdge("returns", id, target, typeNode);
+            }
+        }
     }
 
     declaration(node) {
@@ -677,9 +751,7 @@ class TypeScriptLanguageFactCollector {
             // whether anyone imports the declaration of it.
             this.sourceFile.isDeclarationFile
                 ? { ...descriptor.attributes, declaration_file: true }
-                : insideAmbientDeclaration(node)
-                  ? { ...descriptor.attributes, ambient: true }
-                  : descriptor.attributes,
+                : ambientAttributes(node, descriptor.attributes),
         );
         this.addEdge("contains", parent.id, id, node);
         const nest = this.nest.declaration(node, id, canonical);
@@ -701,86 +773,9 @@ class TypeScriptLanguageFactCollector {
             fact.attributes = { ...fact.attributes, nestjs_roles: nest.roles };
         }
 
-        if (
-            ts.isClassDeclaration(node) ||
-            ts.isClassExpression(node) ||
-            ts.isInterfaceDeclaration(node)
-        ) {
-            for (const clause of node.heritageClauses ?? []) {
-                for (const type of clause.types) {
-                    const target = this.symbolReference(
-                        this.checker.getSymbolAtLocation(type.expression),
-                        "class",
-                    );
-                    if (target !== null) {
-                        this.addEdge(
-                            clause.token === ts.SyntaxKind.ImplementsKeyword
-                                ? "implements"
-                                : "extends",
-                            id,
-                            target,
-                            type,
-                        );
-                    }
-                }
-            }
-            const constructor = node.members?.find((member) =>
-                ts.isConstructorDeclaration(member),
-            );
-            for (const parameter of constructor?.parameters ?? []) {
-                if (parameter.type) {
-                    const target = this.typeNodeReference(parameter.type);
-                    if (target !== null)
-                        this.addEdge("injects", id, target, parameter);
-                }
-            }
-        }
-
-        if (isContextualObjectLiteral(node)) {
-            const contextual = this.checker.getContextualType(node);
-            const parts = contextual?.isUnion()
-                ? contextual.types
-                : contextual
-                  ? [contextual]
-                  : [];
-            for (const part of parts) {
-                const symbol = part.aliasSymbol ?? part.symbol;
-                if (!symbol || symbol.getName().startsWith("__")) continue;
-                const target = this.symbolReference(symbol, "class");
-                if (target !== null && target !== id)
-                    this.addEdge("implements", id, target, node);
-            }
-        }
-
-        if (isObjectLiteralBinding(node)) {
-            const contract = objectLiteralContract(node);
-            const target =
-                contract !== undefined && ts.isTypeReferenceNode(contract)
-                    ? this.typeNodeReference(contract)
-                    : null;
-            if (target !== null && target !== id)
-                this.addEdge("implements", id, target, contract);
-        }
-
-        if (
-            (ts.isFunctionDeclaration(node) ||
-                ts.isMethodDeclaration(node) ||
-                ts.isMethodSignature(node)) &&
-            node.type
-        ) {
-            // `Clipboard | null` has no symbol of its own: each named member
-            // of a union is a type the function may return.
-            const returned = ts.isUnionTypeNode(node.type)
-                ? node.type.types.filter((member) =>
-                      ts.isTypeReferenceNode(member),
-                  )
-                : [node.type];
-            for (const typeNode of returned) {
-                const target = this.typeNodeReference(typeNode);
-                if (target !== null)
-                    this.addEdge("returns", id, target, typeNode);
-            }
-        }
+        this.heritageEdges(node, id);
+        this.objectLiteralContracts(node, id);
+        this.returnEdges(node, id);
 
         if (containerDeclaration(node)) {
             this.container.push({
@@ -923,6 +918,11 @@ class TypeScriptLanguageFactCollector {
 
         this.pathLiteralImports(node);
         const signature = this.checker.getResolvedSignature(node);
+        if (
+            signature?.declaration === undefined &&
+            ts.isPropertyAccessExpression(node.expression)
+        )
+            this.untypedCalls.add(node.expression.name.text);
         const target = this.symbolReference(
             signature?.declaration?.symbol,
             callableKind(signature?.declaration),
@@ -2421,6 +2421,30 @@ function referenceableDeclaration(node) {
     );
 }
 
+/** A declaration's attributes, marked `ambient` inside `declare global` / `declare module`. */
+function ambientAttributes(node, attributes) {
+    return insideAmbientDeclaration(node)
+        ? { ...attributes, ambient: true }
+        : attributes;
+}
+
+/**
+ * `input.run ?? defaultRun`, `a || b` and `flag ? a : b`: a fallback or a
+ * choice between functions, either of which may be the one that runs.
+ */
+function isChoiceOperand(parent, node) {
+    if (ts.isConditionalExpression(parent))
+        return parent.whenTrue === node || parent.whenFalse === node;
+    return (
+        ts.isBinaryExpression(parent) &&
+        [
+            ts.SyntaxKind.QuestionQuestionToken,
+            ts.SyntaxKind.BarBarToken,
+            ts.SyntaxKind.AmpersandAmpersandToken,
+        ].includes(parent.operatorToken.kind)
+    );
+}
+
 /**
  * True when an identifier stands in one of the value positions where a callable
  * or type is handed around rather than invoked.
@@ -2469,22 +2493,7 @@ function valueReferencePosition(node) {
         parent.initializer === node
     )
         return true;
-    // `input.run ?? defaultRun`, `a || b` and `flag ? a : b`: a fallback or
-    // a choice between functions, either of which may be the one that runs.
-    if (
-        ts.isBinaryExpression(parent) &&
-        [
-            ts.SyntaxKind.QuestionQuestionToken,
-            ts.SyntaxKind.BarBarToken,
-            ts.SyntaxKind.AmpersandAmpersandToken,
-        ].includes(parent.operatorToken.kind)
-    )
-        return true;
-    if (
-        ts.isConditionalExpression(parent) &&
-        (parent.whenTrue === node || parent.whenFalse === node)
-    )
-        return true;
+    if (isChoiceOperand(parent, node)) return true;
     // `<Button onClick={addItem}>` and `{renderRow}`: a function handed to
     // React inside JSX, as a prop or a child.
     if (ts.isJsxExpression(parent) && parent.expression === node) return true;
@@ -3058,6 +3067,47 @@ function unwrapParentheses(expression) {
     let current = expression;
     while (ts.isParenthesizedExpression(current)) current = current.expression;
     return current;
+}
+
+/**
+ * Which config describes each file: the first whose own file list includes it.
+ *
+ * A program reaches far more than that (a solution config's references, an
+ * import across a package boundary), and a file emitted by whichever program
+ * reached it first was checked under options its project never uses.
+ */
+function configOwners(root, parsedConfigs) {
+    const owners = new Map();
+    for (const [configPath, parsed] of parsedConfigs) {
+        for (const fileName of parsed.ownFileNames ?? parsed.fileNames) {
+            const relative = relativeInside(root, fileName);
+            if (relative !== null && !owners.has(relative))
+                owners.set(relative, configPath);
+        }
+    }
+    return owners;
+}
+
+/** The program for requested files no config's program emitted. */
+function fallbackConfig(root, remaining) {
+    return {
+        options: {
+            allowJs: true,
+            checkJs: false,
+            noEmit: true,
+            target: ts.ScriptTarget.Latest,
+            module: ts.ModuleKind.ESNext,
+            moduleResolution: ts.ModuleResolutionKind.Bundler,
+            jsx: ts.JsxEmit.Preserve,
+        },
+        // An extensionless script, or one whose extension is not in lower
+        // case, only ever reaches the fallback program: no tsconfig `include`
+        // matches either name.
+        fileNames: remaining.map((relative) =>
+            offeredPath(path.join(root, relative)),
+        ),
+        projectReferences: undefined,
+    };
 }
 
 function validateRoot(input) {

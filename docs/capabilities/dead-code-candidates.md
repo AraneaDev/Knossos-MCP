@@ -44,10 +44,18 @@ their own. They are counted in `bounds.excluded_convention_discovered`; see
 
 ## Confidence
 
-| Confidence | Meaning                                                                                                                                                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                          |
-| `possible` | No inbound reference, but the component is reached in ways a scan cannot see: a non-`ast` origin, a framework role, or a member of a type extending an external ancestor. |
+| Confidence | Meaning                                                                                                                                                                                                                                                          |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                                                                                                                 |
+| `possible` | No inbound reference, but the component is reached in ways a scan cannot see: a non-`ast` origin, a framework role, a member of a type extending an external ancestor, or a method or function sharing its name with a call on a receiver no scanner could type. |
+
+The untyped-call ground is a name match. A JavaScript function taking an
+untyped parameter, a closure argument in Rust, or a PHP parameter without a
+declared type calls methods no scan can bind to a declaration. Each scanner
+lists the names called that way on the file's module node (on the calling
+declaration in PHP) as `unresolved_member_calls`, and any method by one of those
+names drops to `possible`. That holds even when the call reaches a different
+class, which is why such a method is not excluded outright.
 
 The `reason` field names the specific ground, so a caller never has to infer why
 a candidate was demoted.
