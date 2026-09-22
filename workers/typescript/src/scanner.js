@@ -53,6 +53,12 @@ const EXCLUDED_DIRECTORIES = new Set([
 // database beside the project under the same convention, and those must not be
 // discovered as the project's own source.
 const EXCLUDED_DIRECTORY_PREFIXES = [".knossos-"];
+// Consecutive segments excluded wherever they appear, as the PHP IgnoreMatcher
+// excludes them: VitePress's dependency cache and build below the site.
+const EXCLUDED_SEGMENT_SEQUENCES = [
+    [".vitepress", "cache"],
+    [".vitepress", "dist"],
+];
 // Dependency trees may be read for module resolution even though discovery
 // does not scan them as project-owned source. Generated and tool-owned trees
 // remain blocked at this boundary.
@@ -168,7 +174,7 @@ export class TypeScriptScanner {
     /**
      * Stream deterministic owned contributions for the requested source files.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown}} params
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown}} params
      * @param {(contribution: object) => void} emit
      * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
      */
@@ -218,7 +224,18 @@ export class TypeScriptScanner {
 
         for (const configPath of configPaths) {
             const parsed = parseConfig(root, configPath, reads);
-            tally(this.#scanProgram(`${root}\0${configPath}`, parsed, request));
+            tally(
+                this.#scanProgram(
+                    `${root}\0${configPath}`,
+                    withProjectCompilerDefaults(
+                        root,
+                        path.dirname(path.join(root, configPath)),
+                        parsed,
+                        params.typescript_versions,
+                    ),
+                    request,
+                ),
+            );
             if (emitted.size === requestedSet.size) break;
         }
 
@@ -245,7 +262,18 @@ export class TypeScriptScanner {
                 ),
                 projectReferences: undefined,
             };
-            tally(this.#scanProgram(`${root}\0<fallback>`, parsed, request));
+            tally(
+                this.#scanProgram(
+                    `${root}\0<fallback>`,
+                    withProjectCompilerDefaults(
+                        root,
+                        root,
+                        parsed,
+                        params.typescript_versions,
+                    ),
+                    request,
+                ),
+            );
         }
 
         // Backstop: the PHP side requires exactly one contribution per requested
@@ -312,7 +340,14 @@ export class TypeScriptScanner {
             );
             this.#cacheProgram(key, program);
             recordUnreadSourceFiles(root, program, reads, maxFileBytes);
-            this.#emitProgram(root, program, requestedSet, emitted, emit);
+            this.#emitProgram(
+                root,
+                program,
+                requestedSet,
+                emitted,
+                emit,
+                maxFileBytes,
+            );
         } catch (error) {
             if (!isStackOverflow(error)) throw error;
             const covered = [
@@ -393,9 +428,13 @@ export class TypeScriptScanner {
         }
     }
 
-    #emitProgram(root, program, requestedSet, emitted, emit) {
+    #emitProgram(root, program, requestedSet, emitted, emit, maxFileBytes) {
         const checker = program.getTypeChecker();
-        const diagnosticsByFile = diagnosticsForProgram(program, root);
+        const diagnosticsByFile = diagnosticsForProgram(
+            program,
+            root,
+            maxFileBytes,
+        );
 
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(root, sourceFile.fileName);
@@ -537,7 +576,9 @@ class TypeScriptLanguageFactCollector {
             this.sourceFile,
             {
                 declaration_file: this.sourceFile.isDeclarationFile,
-                executable: startsWithShebang(this.sourceFile.text),
+                executable:
+                    startsWithShebang(this.sourceFile.text) ||
+                    hasMainGuard(this.sourceFile),
             },
         );
     }
@@ -550,7 +591,10 @@ class TypeScriptLanguageFactCollector {
         if (ts.isImportDeclaration(node)) this.importDeclaration(node);
         if (ts.isExportDeclaration(node)) this.exportDeclaration(node);
         if (ts.isImportEqualsDeclaration(node)) this.importEquals(node);
-        if (ts.isVariableDeclaration(node)) this.application.variable(node);
+        if (ts.isVariableDeclaration(node)) {
+            this.application.variable(node);
+            this.dynamicImportBindings(node);
+        }
         if (ts.isNewExpression(node)) this.newExpression(node);
         if (ts.isCallExpression(node)) this.callExpression(node);
         if (ts.isTypeReferenceNode(node)) this.typeReference(node);
@@ -642,6 +686,16 @@ class TypeScriptLanguageFactCollector {
             }
         }
 
+        if (isObjectLiteralBinding(node)) {
+            const contract = objectLiteralContract(node);
+            const target =
+                contract !== undefined && ts.isTypeReferenceNode(contract)
+                    ? this.typeNodeReference(contract)
+                    : null;
+            if (target !== null && target !== id)
+                this.addEdge("implements", id, target, contract);
+        }
+
         if (
             (ts.isFunctionDeclaration(node) ||
                 ts.isMethodDeclaration(node) ||
@@ -707,6 +761,15 @@ class TypeScriptLanguageFactCollector {
     }
 
     newExpression(node) {
+        const url = importMetaUrlModule(node, this.sourceFile, this.root);
+        if (url !== null)
+            this.addEdge(
+                "imports",
+                this.currentSource() ?? this.moduleId,
+                reference("module", url),
+                node,
+                { dynamic: true, url: true, type_only: false },
+            );
         const source = this.currentSource();
         const target = this.symbolReference(
             this.checker.getSymbolAtLocation(node.expression),
@@ -823,6 +886,46 @@ class TypeScriptLanguageFactCollector {
             this.addEdge("references", source, target, specifier);
     }
 
+    /**
+     * The exports `const { App, Panel: P } = await import('./tui')` takes.
+     *
+     * Destructuring names each export exactly, so, unlike a module object
+     * handed around whole, it resolves without guessing. Without this, a
+     * module loaded lazily this way had its `imports` edge while every export
+     * it takes looked unreferenced. A rest element names no export.
+     */
+    dynamicImportBindings(node) {
+        if (!ts.isObjectBindingPattern(node.name) || !node.initializer) return;
+        let call = unwrapParentheses(node.initializer);
+        if (ts.isAwaitExpression(call)) call = unwrapParentheses(call.expression);
+        if (
+            !ts.isCallExpression(call) ||
+            call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+            call.arguments.length !== 1 ||
+            !ts.isStringLiteral(call.arguments[0])
+        )
+            return;
+        const specifier = call.arguments[0];
+        if (this.internalModuleTarget(specifier) === null) return;
+        const moduleSymbol = this.checker.getSymbolAtLocation(specifier);
+        if (!moduleSymbol) return;
+        const source = this.currentSource();
+        for (const element of node.name.elements) {
+            if (element.dotDotDotToken) continue;
+            const name = element.propertyName ?? element.name;
+            if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) continue;
+            const exported = this.checker.tryGetMemberInModuleExports(
+                name.text,
+                moduleSymbol,
+            );
+            const target = exported
+                ? this.symbolReference(exported, "function")
+                : null;
+            if (source !== null && target !== null && source !== target)
+                this.addEdge("references", source, target, element);
+        }
+    }
+
     typeReference(node) {
         const source = this.currentSource();
         const target = this.typeNodeReference(node);
@@ -935,6 +1038,12 @@ class TypeScriptLanguageFactCollector {
                 ? reference(`external_${hint}`, name)
                 : null;
         }
+        // Declared in this project, but not as anything `declaration()` emits:
+        // a type parameter, an inline `{ ... }` type, a `const f = () => ...`
+        // arrow. The name built for it would match no node, and the core turns
+        // a dangling edge into an external component that is neither external
+        // nor a component.
+        if (!isDeclaration(declaration)) return null;
         const kind = declarationKind(declaration, hint);
         const canonical = canonicalForDeclaration(declaration, relative);
         return reference(kind, canonical);
@@ -1570,6 +1679,51 @@ function recordUnreadSourceFiles(root, program, reads, maxFileBytes) {
     }
 }
 
+// The defaults TypeScript 5.x applied to options a config leaves unset, where
+// 6.0 changed them: every `@types` package rather than none, non-strict, and no
+// check on side-effect imports.
+const TYPESCRIPT_5_DEFAULTS = Object.freeze({
+    types: ["*"],
+    strict: false,
+    noUncheckedSideEffectImports: false,
+});
+
+/**
+ * The parsed config with the defaults of the project's own TypeScript under it.
+ *
+ * The worker bundles 6.x. A project built with 5.x never opted into 6.0's new
+ * defaults, and checking it under them reported every `process`, `Buffer` and
+ * implicit `any` its own `tsc` accepts. An option the config sets explicitly
+ * still wins, and a project that names no TypeScript keeps the bundled defaults.
+ *
+ * `versions` maps a manifest's directory (`""` for the root) to the major
+ * version its `typescript` dependency declares. The core reads those from the
+ * manifests discovery already hashed, so deciding this reads nothing here.
+ * The nearest manifest at or above the config's directory answers.
+ */
+function withProjectCompilerDefaults(root, directory, parsed, versions) {
+    const major = projectTypeScriptMajor(root, directory, versions);
+    if (major === null || major >= 6) return parsed;
+    return {
+        ...parsed,
+        options: { ...TYPESCRIPT_5_DEFAULTS, ...parsed.options },
+    };
+}
+
+function projectTypeScriptMajor(root, directory, versions) {
+    if (versions === null || typeof versions !== "object") return null;
+    let relative = relativeInside(root, directory);
+    while (relative !== null) {
+        const key = relative === "." ? "" : relative;
+        const major = versions[key];
+        if (Number.isInteger(major)) return major;
+        if (key === "") return null;
+        const parent = path.posix.dirname(key);
+        relative = parent === "." ? "" : parent;
+    }
+    return null;
+}
+
 function defaultLibDirectory() {
     return normalize(path.dirname(ts.getDefaultLibFilePath({})));
 }
@@ -1610,6 +1764,12 @@ function createRestrictedProgram(
             recordRefused(reads, root, absolute, maxFileBytes);
             return undefined;
         };
+        // Refused for where it sits, which no state of the file can change,
+        // so there is no read to report. Recording it as a failed read named a
+        // readable regular file as unreadable, and the core's commit-time
+        // re-read aborted every scan whose source reaches into its own build
+        // output, such as a `bin/` script importing `../dist/index.js`.
+        if (excludedByProjectLayoutPath(root, absolute)) return undefined;
         if (!allowedCompilerPath(root, fileName)) return refused();
         // The per-file byte cap is enforced on requested files, but the program
         // also pulls in import-reachable and included sources. Guard those too so
@@ -1696,13 +1856,37 @@ function createRestrictedProgram(
     });
 }
 
-function diagnosticsForProgram(program, root) {
+function diagnosticsForProgram(program, root, maxFileBytes) {
     const result = new Map();
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
         if (!diagnostic.file) continue;
         if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
         const relative = relativeInside(root, diagnostic.file.fileName);
         if (relative === null || belowNodeModules(relative)) continue;
+        const overCap = declarationOverCap(
+            program,
+            diagnostic,
+            root,
+            maxFileBytes,
+        );
+        if (overCap !== null) {
+            const start = diagnostic.file.getLineAndCharacterOfPosition(
+                diagnostic.start ?? 0,
+            );
+            const list = result.get(relative) ?? [];
+            list.push({
+                severity: "warning",
+                code: "TS_DECLARATION_OVER_CAP",
+                message: overCap,
+                evidence: {
+                    path: relative,
+                    start_line: start.line + 1,
+                    end_line: start.line + 1,
+                },
+            });
+            result.set(relative, list);
+            continue;
+        }
         const start = diagnostic.start ?? 0;
         const startPosition =
             diagnostic.file.getLineAndCharacterOfPosition(start);
@@ -1733,6 +1917,30 @@ function diagnosticsForProgram(program, root) {
         result.set(relative, list);
     }
     return result;
+}
+
+/**
+ * Why a `Cannot find module` is not what it says, or null when it is.
+ *
+ * A file over the byte cap is refused to bound memory, and a package whose
+ * declaration file is that large resolves perfectly well: the compiler just
+ * never receives it, and reports the import as missing. Read as a missing
+ * dependency, that sends someone to install a package they already have.
+ */
+function declarationOverCap(program, diagnostic, root, maxFileBytes) {
+    if (diagnostic.code !== 2307) return null;
+    const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    const name = /Cannot find module '([^']+)'/.exec(text)?.[1];
+    if (name === undefined) return null;
+    let resolved;
+    program.forEachResolvedModule((resolution, moduleName) => {
+        if (moduleName === name)
+            resolved ??= resolution.resolvedModule?.resolvedFileName;
+    }, diagnostic.file);
+    if (resolved === undefined || !exceedsByteCap(resolved, maxFileBytes))
+        return null;
+    const shown = relativeInside(root, resolved) ?? resolved;
+    return `Module '${name}' resolves to ${shown}, which is over the ${maxFileBytes}-byte per-file cap, so the scan did not read it and names imported from it are unresolved.`;
 }
 
 function declarationDescriptor(node, sourceFile) {
@@ -1779,6 +1987,7 @@ function declarationKind(node, fallback) {
         return "method";
     if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node))
         return "property";
+    if (isObjectLiteralBinding(node)) return "variable";
     return fallback;
 }
 
@@ -1821,12 +2030,65 @@ function isDeclaration(node) {
         ts.isMethodSignature(node) ||
         ts.isConstructorDeclaration(node) ||
         ts.isPropertyDeclaration(node) ||
-        ts.isPropertySignature(node)
+        ts.isPropertySignature(node) ||
+        isObjectLiteralBinding(node)
     );
+}
+
+/**
+ * `const charon: View = { query() {} }`: a binding whose object literal
+ * declares methods, which is how TypeScript writes an implementation without a
+ * class. The binding is the container its methods belong to, so they are named
+ * after it rather than after the module, and two literals in one file cannot
+ * share a member name; and its declared or `satisfies` type is the contract it
+ * implements, which is what reaches those methods from a caller typed as it.
+ */
+function isObjectLiteralBinding(node) {
+    if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name))
+        return false;
+    const literal = objectLiteralOf(node.initializer);
+    return (
+        literal !== null &&
+        literal.properties.some((member) => ts.isMethodDeclaration(member))
+    );
+}
+
+// The object literal an initializer evaluates to, through parentheses, `as`
+// and `satisfies`, or null.
+function objectLiteralOf(expression) {
+    let current = expression;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    )
+        current = current.expression;
+    return current !== undefined && ts.isObjectLiteralExpression(current)
+        ? current
+        : null;
+}
+
+// The type an object-literal binding declares it implements: its annotation,
+// or the nearest `satisfies`.
+function objectLiteralContract(node) {
+    if (node.type !== undefined) return node.type;
+    let current = node.initializer;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    ) {
+        if (ts.isSatisfiesExpression(current)) return current.type;
+        current = current.expression;
+    }
+    return undefined;
 }
 
 function containerDeclaration(node) {
     return (
+        isObjectLiteralBinding(node) ||
         ts.isClassDeclaration(node) ||
         ts.isClassExpression(node) ||
         ts.isInterfaceDeclaration(node) ||
@@ -1882,7 +2144,9 @@ function canonicalForDeclaration(declaration, relative) {
  * Declarations a value reference is allowed to point at: the callables and
  * types dead-code analysis reasons about. Variables, parameters, properties and
  * imports are excluded — an edge per local read would dominate the graph without
- * telling us anything about reachability.
+ * telling us anything about reachability. The one variable admitted is an
+ * object-literal binding with methods, which the graph holds as a component
+ * (see {@link isObjectLiteralBinding}) and which is used by being handed around.
  */
 function referenceableDeclaration(node) {
     return (
@@ -1891,7 +2155,8 @@ function referenceableDeclaration(node) {
         ts.isClassDeclaration(node) ||
         ts.isInterfaceDeclaration(node) ||
         ts.isEnumDeclaration(node) ||
-        ts.isTypeAliasDeclaration(node)
+        ts.isTypeAliasDeclaration(node) ||
+        isObjectLiteralBinding(node)
     );
 }
 
@@ -2365,6 +2630,109 @@ function startsWithShebang(text) {
     return text.replace(/^\uFEFF/, "").startsWith("#!");
 }
 
+// Source extensions a module URL can name; an asset URL names none of them.
+const MODULE_URL_EXTENSION = /\.(?:[cm]?[jt]sx?)$/;
+
+// The project module `new URL('./gen.worker.ts', import.meta.url)` names: how
+// Vite, webpack and the browser load a module worker, which no import names.
+// Decided from the literal alone, so the answer cannot depend on which files
+// share a request; a path that leaves the project, lands below node_modules or
+// in build output, or names an asset, is no module of this project.
+function importMetaUrlModule(node, sourceFile, root) {
+    const args = node.arguments ?? [];
+    if (
+        !ts.isIdentifier(node.expression) ||
+        node.expression.text !== "URL" ||
+        args.length < 2 ||
+        !ts.isStringLiteralLike(args[0]) ||
+        !isImportMetaUrl(args[1])
+    )
+        return null;
+    const specifier = args[0].text;
+    if (
+        !(specifier.startsWith("./") || specifier.startsWith("../")) ||
+        !MODULE_URL_EXTENSION.test(specifier)
+    )
+        return null;
+    const absolute = normalize(
+        path.resolve(path.dirname(sourceFile.fileName), specifier),
+    );
+    const relative = relativeInside(root, absolute);
+    if (
+        relative === null ||
+        belowNodeModules(relative) ||
+        excludedByProjectLayout(relative)
+    )
+        return null;
+    return relative;
+}
+
+function isImportMetaUrl(expression) {
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "url" &&
+        ts.isMetaProperty(expression.expression) &&
+        expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
+    );
+}
+
+// Whether a file-scope `if` runs its body only when the file is the program
+// entered: `import.meta.main` (Bun, Deno) or CommonJS `require.main === module`.
+// This is JavaScript's `__main__` guard, and it says the same thing a shebang
+// does: something outside the graph runs the file, so no inbound edge is owed.
+// A guard nested in a function, or a negated one, says nothing about that.
+function hasMainGuard(sourceFile) {
+    return sourceFile.statements.some(
+        (statement) =>
+            ts.isIfStatement(statement) &&
+            isMainGuardCondition(unwrapParentheses(statement.expression)),
+    );
+}
+
+function isMainGuardCondition(expression) {
+    if (isImportMetaMain(expression)) return true;
+    if (!ts.isBinaryExpression(expression)) return false;
+    const operator = expression.operatorToken.kind;
+    if (
+        operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        operator !== ts.SyntaxKind.EqualsEqualsToken
+    )
+        return false;
+    const left = unwrapParentheses(expression.left);
+    const right = unwrapParentheses(expression.right);
+    return (
+        (isRequireMain(left) && isIdentifierNamed(right, "module")) ||
+        (isIdentifierNamed(left, "module") && isRequireMain(right))
+    );
+}
+
+function isImportMetaMain(expression) {
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "main" &&
+        ts.isMetaProperty(expression.expression) &&
+        expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
+    );
+}
+
+function isRequireMain(expression) {
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "main" &&
+        isIdentifierNamed(expression.expression, "require")
+    );
+}
+
+function isIdentifierNamed(expression, name) {
+    return ts.isIdentifier(expression) && expression.text === name;
+}
+
+function unwrapParentheses(expression) {
+    let current = expression;
+    while (ts.isParenthesizedExpression(current)) current = current.expression;
+    return current;
+}
+
 function validateRoot(input) {
     if (typeof input !== "string" || input.length === 0)
         throw new Error("A project root is required.");
@@ -2417,6 +2785,13 @@ function allowedCompilerPath(root, candidate) {
     return walked.location === undefined || contains(root, walked.location);
 }
 
+/** Whether an in-root absolute path lies where the project's exclusions refuse it. */
+function excludedByProjectLayoutPath(root, absolute) {
+    if (!contains(root, absolute)) return false;
+    const relative = normalize(path.relative(root, absolute));
+    return relative !== "" && excludedByProjectLayout(relative);
+}
+
 /**
  * Whether the project's own directory exclusions refuse a project-relative path.
  *
@@ -2442,10 +2817,20 @@ function excludedByProjectLayout(relative) {
     );
     const governed =
         dependencyRoot === -1 ? segments : segments.slice(0, dependencyRoot);
-    return governed.some(
-        (segment) =>
-            isExcludedDirectoryName(segment) &&
-            !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+    return (
+        governed.some(
+            (segment) =>
+                isExcludedDirectoryName(segment) &&
+                !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+        ) ||
+        governed.some(
+            (segment, index) =>
+                index + 1 < governed.length &&
+                EXCLUDED_SEGMENT_SEQUENCES.some(
+                    ([first, second]) =>
+                        segment === first && governed[index + 1] === second,
+                ),
+        )
     );
 }
 

@@ -129,6 +129,244 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame(false, $executable['src/helper.js']);
     }
 
+    /**
+     * The JavaScript `__main__` guard. A module whose body runs under
+     * `if (import.meta.main)` is compiled or launched as an entry point and is
+     * imported, if at all, only by its tests, so without the flag it was
+     * reported as reached only by tests. `require.main === module` is the
+     * CommonJS form.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerMarksMainGuardedModulesExecutable(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-main-guard-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"main-guard-fixture"}',
+            'src/hook.ts' => "export function handle() {}\nif (import.meta.main) {\n    handle();\n}\n",
+            'src/cli.cjs' => "function run() {}\nif (require.main === module) run();\n",
+            'src/reversed.js' => "function run() {}\nif (module === require.main) {\n    run();\n}\n",
+            'src/nested.ts' => "export function check() {\n    if (import.meta.main) return 1;\n    return 0;\n}\n",
+            'src/negated.ts' => "export function lib() {}\nif (!import.meta.main) lib();\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => array_values(array_filter(
+                    array_keys($files),
+                    fn(string $relative): bool => $relative !== 'package.json',
+                )),
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $executable = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $executable[$node->canonicalName] = $node->attributes['executable'] ?? false;
+                }
+            }
+        }
+
+        assertSame(true, $executable['src/hook.ts']);
+        assertSame(true, $executable['src/cli.cjs']);
+        assertSame(true, $executable['src/reversed.js']);
+        // Only a guard at file scope says how the file is entered.
+        assertSame(false, $executable['src/nested.ts']);
+        // A negated guard runs its body when the module is imported, not run.
+        assertSame(false, $executable['src/negated.ts']);
+    }
+
+    /**
+     * A generic type parameter, an inline object return type and a
+     * `const read = () => ...` helper are declared inside the project but are
+     * not nodes the scanner emits. References to them were given canonical
+     * names like `src/ledger.ts#readAll.T`, `src/ledger.ts#totals.` and
+     * `src/ledger.ts#`, which matched nothing, and the core turned every such
+     * dangling edge into an external component.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerDoesNotReferenceDeclarationsItNeverEmits(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-unemitted-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"unemitted-fixture"}',
+            'src/ledger.ts' => implode("\n", [
+                'export function readAll<T>(items: T[]): T[] {',
+                '    return items;',
+                '}',
+                'export function totals(): { added: number } {',
+                '    return { added: 1 };',
+                '}',
+                'const read = (p: string): string => p;',
+                'export function run(): string {',
+                '    readAll<string>([]);',
+                '    return read("x");',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['src/ledger.ts'],
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $declared = [];
+        $targets = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                $declared[$node->localId] = true;
+            }
+            foreach ($contribution->edges as $edge) {
+                $targets[] = $edge->targetReference;
+            }
+        }
+
+        $dangling = array_values(array_filter(
+            $targets,
+            fn(string $target): bool => !isset($declared[$target])
+                && !str_starts_with($target, 'ts:external_')
+                && !str_starts_with($target, 'ts:package:'),
+        ));
+        assertSame([], $dangling);
+        // The call to the declared generic function is still an edge.
+        assertArrayContains('ts:function:src/ledger.ts#readAll', $targets);
+    }
+
+    /**
+     * `new Worker(new URL('./gen.worker.ts', import.meta.url))` is how Vite,
+     * webpack and the browser load a module worker. No import names the file,
+     * so it carried no inbound edge and was reported as unreferenced while it
+     * ran on every page. Asset URLs and paths leaving the project stay out.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerLinksAModuleLoadedThroughAnImportMetaUrl(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-url-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src/workers', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"url-fixture"}',
+            'src/pool.ts' => implode("\n", [
+                'export function start(): Worker {',
+                "    new URL('../../outside.ts', import.meta.url);",
+                "    new URL('./logo.svg', import.meta.url);",
+                "    new URL('./workers/sim.worker.ts', 'https://example.com/');",
+                "    return new Worker(new URL('./workers/gen.worker.ts', import.meta.url), { type: 'module' });",
+                '}',
+                '',
+            ]),
+            'src/workers/gen.worker.ts' => "self.onmessage = () => {};\nexport {};\n",
+            'src/workers/sim.worker.ts' => "export {};\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/pool.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src/workers');
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $imports = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'imports') {
+                    $imports[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertSame([['ts:function:src/pool.ts#start', 'ts:module:src/workers/gen.worker.ts']], $imports);
+    }
+
+    /**
+     * `const { App } = await import('./tui/App')` loads a module lazily and
+     * names the exports it takes. Only a dynamic import's `default` was
+     * resolved, so a component loaded this way was reported as reached by
+     * nothing but its tests. Destructuring names each export exactly, so no
+     * guess is involved; a rest element names none.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReferencesExportsDestructuredFromADynamicImport(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-dynamic-named-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src/tui', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"dynamic-named-fixture"}',
+            'src/cli.ts' => implode("\n", [
+                'export async function run(): Promise<unknown[]> {',
+                "    const { App, Panel: Renamed, ...rest } = await import('./tui/App');",
+                '    return [App, Renamed, rest];',
+                '}',
+                '',
+            ]),
+            'src/tui/App.ts' => "export function App() {}\nexport class Panel {}\nexport function Unused() {}\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/cli.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src/tui');
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references' && str_contains($edge->targetReference, 'src/tui/')) {
+                    $references[] = $edge->targetReference;
+                }
+            }
+        }
+        sort($references);
+
+        assertSame(['ts:class:src/tui/App.ts#Panel', 'ts:function:src/tui/App.ts#App'], $references);
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerExtractsCrossProjectArchitecture(): void
     {
