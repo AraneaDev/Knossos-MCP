@@ -245,6 +245,35 @@ final class ClassificationModuleTest extends KnossosTestCase
         }
     }
 
+    /**
+     * Laravel's pipeline, queue and console call `handle` (and `terminate`,
+     * `failed`, `__invoke`) on middleware, jobs, listeners and commands. The
+     * class was a convention, but its entry method, never named by the
+     * project, read as probably dead. A module's own `Middleware` directory
+     * counts as much as `Http/Middleware`.
+     */
+    public function testLaravelPathRoleRuleMarksTheMethodsTheFrameworkCalls(): void
+    {
+        $rule = new LaravelPathRoleRule();
+        $method = static fn(string $path, string $name): NodeFact => self::makeNode('php:method:' . $path . '::' . $name, kind: 'method', displayName: $name, relativePath: $path);
+
+        foreach ([
+            ['app/Http/Middleware/EnsureRole.php', 'handle'],
+            ['app/Modules/ExternalApi/Middleware/ClientAuth.php', 'handle'],
+            ['app/Http/Middleware/TrackRequests.php', 'terminate'],
+            ['app/Jobs/SendInvoice.php', 'failed'],
+            ['app/Listeners/NotifyAdmins.php', 'handle'],
+            ['app/Console/Commands/SyncPortals.php', 'handle'],
+        ] as [$path, $name]) {
+            $facts = $rule->classify($method($path, $name));
+            assertSame('laravel.entry_method', $facts[0]->role ?? null, $path . '::' . $name);
+        }
+        assertSame(true, ReportableComponent::isDiscoveredByConvention(['laravel.entry_method']));
+        // Any other method of such a class stays reportable.
+        assertSame([], $rule->classify($method('app/Jobs/SendInvoice.php', 'buildPayload')));
+        assertSame('laravel.middleware', $rule->classify(self::makeNode('php:class:app/Modules/ExternalApi/Middleware/ClientAuth.php', relativePath: 'app/Modules/ExternalApi/Middleware/ClientAuth.php'))[0]->role ?? null);
+    }
+
     public function testLaravelPathRoleRuleSkipsUnmatchedPath(): void
     {
         $node = self::makeNode('php:class:app/Helper/Random.php', relativePath: 'app/Helper/Random.php');

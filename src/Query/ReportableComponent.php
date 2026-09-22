@@ -38,7 +38,7 @@ final readonly class ReportableComponent
     public const CONVENTION_DISCOVERED_ROLES = [
         'application.controller', 'application.command', 'application.entry_point',
         'laravel.controller', 'laravel.command', 'laravel.job', 'laravel.listener',
-        'laravel.migration', 'laravel.seeder', 'laravel.factory',
+        'laravel.migration', 'laravel.seeder', 'laravel.factory', 'laravel.entry_method',
         'symfony.controller', 'symfony.command', 'symfony.event_subscriber', 'symfony.event_listener',
         'symfony.message_handler', 'symfony.route_handler', 'symfony.fixture', 'symfony.voter',
         'symfony.form_type', 'symfony.twig_extension',
