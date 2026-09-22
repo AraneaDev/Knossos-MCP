@@ -173,7 +173,7 @@ describe("input_hashes: a package under node_modules", () => {
     it("reports an over-cap declaration behind a link by null from its probe and from its refusal alike", () => {
         const root = pnpmTree();
         write(root, {
-            [`${PNPM}/index.d.ts`]: `${DECLARATION}${"// pad\n".repeat(40)}`,
+            [`${PNPM}/index.d.ts`]: `${DECLARATION}${"// pad\n".repeat(600)}`,
         });
         const limits = { max_file_bytes: 200 };
         const shared = new TypeScriptScanner();

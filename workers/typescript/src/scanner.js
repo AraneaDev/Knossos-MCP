@@ -1497,7 +1497,8 @@ function readHashedSourceFile(
  * file) and the handle, not the path, is checked, so a path swapped for a FIFO
  * after a check of it cannot slip through.
  */
-function readBounded(file, maxBytes) {
+function readBounded(file, requestedMaxBytes) {
+    const maxBytes = byteCapFor(file, requestedMaxBytes);
     const handle = fs.openSync(
         file,
         fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
@@ -2635,13 +2636,28 @@ function maxFileBytesFrom(limits) {
         : 2_000_000;
 }
 
+// A dependency's declaration file may hold a whole framework's type surface
+// (Phaser ships 6 MB in one file), and refusing it cost every class extending
+// one of its types all of its inherited members. Declarations below
+// node_modules get this multiple of the cap a project's own sources get. The
+// core's commit-time check applies the same rule (UndiscoveredInputVerifier).
+const DEPENDENCY_DECLARATION_CAP_FACTOR = 16;
+
+function byteCapFor(file, maxBytes) {
+    return /(?:^|\/)node_modules\/.+\.d\.[cm]?ts$/.test(normalize(file))
+        ? maxBytes * DEPENDENCY_DECLARATION_CAP_FACTOR
+        : maxBytes;
+}
+
 // Default-library declaration files are exempt: skipping one would break type
 // resolution for every file. Only project sources under the root are capped.
 function exceedsByteCap(fileName, maxFileBytes) {
     const normalized = realSourcePath(normalize(path.resolve(fileName)));
     if (contains(defaultLibDirectory(), normalized)) return false;
     try {
-        return fs.statSync(normalized).size > maxFileBytes;
+        return (
+            fs.statSync(normalized).size > byteCapFor(normalized, maxFileBytes)
+        );
     } catch (error) {
         rethrowStackOverflow(error);
         return false;

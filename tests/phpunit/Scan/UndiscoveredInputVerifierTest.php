@@ -117,6 +117,25 @@ final class UndiscoveredInputVerifierTest extends KnossosTestCase
         $this->addToAssertionCount(1);
     }
 
+    /**
+     * The TypeScript worker reads a dependency's declaration file up to
+     * sixteen times the source cap, since a framework's types can fill one
+     * file; this check has to agree, or the hash it read fails the scan.
+     */
+    public function testADependencyDeclarationGetsSixteenTimesTheCap(): void
+    {
+        $declaration = str_repeat('x', 150);
+        file_put_contents($this->root . '/' . self::DEP, $declaration);
+        file_put_contents($this->root . '/big.ts', $declaration);
+
+        $this->verify([self::DEP => hash('sha256', $declaration)], 10);
+        // A project's own source keeps the plain cap.
+        $this->assertFails(['big.ts' => hash('sha256', $declaration)], 'big.ts', 10);
+        // And a declaration past sixteen times it is refused like any file.
+        file_put_contents($this->root . '/' . self::DEP, str_repeat('x', 161));
+        $this->verify([self::DEP => null], 10);
+    }
+
     public function testAFileOverTheCapFailsEvenAgainstItsOwnHash(): void
     {
         file_put_contents($this->root . '/big.ts', str_repeat('x', 11));

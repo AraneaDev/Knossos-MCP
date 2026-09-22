@@ -50,6 +50,9 @@ use Knossos\Scanner\Protocol\RelativePath;
  */
 final class UndiscoveredInputVerifier
 {
+    /** How many times the source cap a dependency's declaration file may hold. */
+    public const DEPENDENCY_DECLARATION_CAP_FACTOR = 16;
+
     /**
      * Re-read every undiscovered input a worker reported and fail the scan on
      * the first one whose current state no longer matches the reported value.
@@ -73,13 +76,29 @@ final class UndiscoveredInputVerifier
             // to stay inside the root.
             RelativePath::assertValid($path, 'undiscovered input ' . $path);
             $absolute = $root . '/' . $path;
+            $cap = self::byteCapFor($path, $maxFileBytes);
             $matches = $hash === null
-                ? !self::readableAsItself($root, $absolute, $maxFileBytes)
-                : self::hashOf($root, $absolute, $maxFileBytes) === $hash;
+                ? !self::readableAsItself($root, $absolute, $cap)
+                : self::hashOf($root, $absolute, $cap) === $hash;
             if (!$matches) {
                 throw ScanSnapshotChangedException::inputChangedAfterRead($path);
             }
         }
+    }
+
+    /**
+     * The byte cap a worker read this path under.
+     *
+     * A dependency's declaration file can hold a whole framework's types in
+     * one file, so the TypeScript worker reads one below `node_modules` up to
+     * sixteen times the source cap (its byteCapFor); this check has to agree,
+     * or the hash it read fails the scan.
+     */
+    public static function byteCapFor(string $path, int $maxFileBytes): int
+    {
+        return preg_match('#(?:^|/)node_modules/.+\.d\.[cm]?ts$#', $path) === 1
+            ? $maxFileBytes * self::DEPENDENCY_DECLARATION_CAP_FACTOR
+            : $maxFileBytes;
     }
 
     /**
