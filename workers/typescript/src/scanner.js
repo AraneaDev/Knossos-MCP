@@ -702,8 +702,18 @@ class TypeScriptLanguageFactCollector {
                 ts.isMethodSignature(node)) &&
             node.type
         ) {
-            const target = this.typeNodeReference(node.type);
-            if (target !== null) this.addEdge("returns", id, target, node.type);
+            // `Clipboard | null` has no symbol of its own: each named member
+            // of a union is a type the function may return.
+            const returned = ts.isUnionTypeNode(node.type)
+                ? node.type.types.filter((member) =>
+                      ts.isTypeReferenceNode(member),
+                  )
+                : [node.type];
+            for (const typeNode of returned) {
+                const target = this.typeNodeReference(typeNode);
+                if (target !== null)
+                    this.addEdge("returns", id, target, typeNode);
+            }
         }
 
         if (containerDeclaration(node)) {
@@ -954,9 +964,13 @@ class TypeScriptLanguageFactCollector {
     valueReference(node) {
         if (!valueReferencePosition(node)) return;
 
+        // A shorthand `{ discover }` names the object's property; the value it
+        // copies is the function, which only this lookup returns.
         const symbol = unalias(
             this.checker,
-            this.checker.getSymbolAtLocation(node),
+            ts.isShorthandPropertyAssignment(node.parent)
+                ? this.checker.getShorthandAssignmentValueSymbol(node.parent)
+                : this.checker.getSymbolAtLocation(node),
         );
         const declaration = symbol?.declarations?.find((item) =>
             referenceableDeclaration(item),
@@ -2198,10 +2212,13 @@ function valueReferencePosition(node) {
         parent.arguments?.includes(node)
     )
         return true;
-    // `const run = handler;` / `private fn = handler;`
+    // `const run = handler;` / `private fn = handler;`, and a default:
+    // `(row = DefaultRow) => ...` or `{ render = DefaultRow }`.
     if (
         (ts.isVariableDeclaration(parent) ||
-            ts.isPropertyDeclaration(parent)) &&
+            ts.isPropertyDeclaration(parent) ||
+            ts.isParameter(parent) ||
+            ts.isBindingElement(parent)) &&
         parent.initializer === node
     )
         return true;

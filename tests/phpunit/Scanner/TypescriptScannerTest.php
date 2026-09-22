@@ -367,6 +367,110 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame(['ts:class:src/tui/App.ts#Panel', 'ts:function:src/tui/App.ts#App'], $references);
     }
 
+    /**
+     * `{ discover, hydrate }` names two functions in shorthand, and
+     * `row = DefaultRow` names one as a parameter default. The shorthand was a
+     * listed position, but the name resolves to the object's property rather
+     * than the function it copies, and a default was not a position at all, so
+     * both functions read as unreferenced.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReferencesShorthandPropertiesAndDefaults(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-shorthand-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"shorthand-fixture"}',
+            'src/reader.ts' => implode("\n", [
+                'function discover(): number { return 1; }',
+                'function DefaultRow(): string { return "row"; }',
+                'export const reader = { discover };',
+                'export function list(row: () => string = DefaultRow): string { return row(); }',
+                'export function pick({ render = DefaultRow }: { render?: () => string } = {}): string { return render(); }',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/reader.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertArrayContains(['ts:module:src/reader.ts', 'ts:function:src/reader.ts#discover'], $references);
+        assertArrayContains(['ts:function:src/reader.ts#list', 'ts:function:src/reader.ts#DefaultRow'], $references);
+        assertArrayContains(['ts:function:src/reader.ts#pick', 'ts:function:src/reader.ts#DefaultRow'], $references);
+    }
+
+    /**
+     * `function make(): Clipboard | null` returns an object literal that
+     * implements `Clipboard`. The union has no symbol of its own, so no
+     * `returns` edge was drawn and the literal's methods were not tied to the
+     * interface its callers use.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReturnsEachNamedMemberOfAUnion(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-union-return-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"union-return-fixture"}',
+            'src/clip.ts' => implode("\n", [
+                'export interface Clipboard { writeText(text: string): void; }',
+                'export interface Fallback { note(): void; }',
+                'export function make(): Clipboard | Fallback | null {',
+                '    return { writeText() {} };',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/clip.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $returns = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'returns') {
+                    $returns[] = $edge->targetReference;
+                }
+            }
+        }
+        sort($returns);
+
+        assertSame(['ts:interface:src/clip.ts#Clipboard', 'ts:interface:src/clip.ts#Fallback'], $returns);
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerExtractsCrossProjectArchitecture(): void
     {
