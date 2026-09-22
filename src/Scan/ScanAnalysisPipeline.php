@@ -7,6 +7,7 @@ namespace Knossos\Scan;
 use Knossos\Boundary\BoundaryInference;
 use Knossos\Classification\{
     ClassificationEngine,
+    FrameworkFileConventionRule,
     LaravelPathRoleRule,
     LaravelRoleRule,
     ManifestEntryPointRule,
@@ -53,6 +54,8 @@ final readonly class ScanAnalysisPipeline
             new ToolConfigModuleRule(),
             new ManifestEntryPointRule(self::manifestEntryPoints($plan)),
             new SvelteKitConventionRule(self::svelteKitRoots($plan)),
+            FrameworkFileConventionRule::astro(self::appRoots($plan, '#(?:^|/)astro\\.config\\.[cm]?[jt]s$#', 0)),
+            FrameworkFileConventionRule::vitePress(self::appRoots($plan, '#(?:^|/)\\.vitepress/config\\.[cm]?[jt]s$#', 1)),
         ];
         if ($plan->preparation->laravel) {
             $rules[] = new LaravelRoleRule();
@@ -126,5 +129,27 @@ final readonly class ScanAnalysisPipeline
         sort($roots, SORT_STRING);
 
         return array_map(strval(...), $roots);
+    }
+
+    /**
+     * The app directories a framework's config file marks: the directory
+     * holding a matching file, `$up` levels above it (`.vitepress/config.ts`
+     * sits one below the site).
+     *
+     * @return list<string>
+     */
+    private static function appRoots(ScanPlan $plan, string $configPattern, int $up): array
+    {
+        $roots = [];
+        foreach ($plan->preparation->discovery->files as $file) {
+            if (preg_match($configPattern, $file->relativePath) === 1) {
+                $directory = dirname($file->relativePath, $up + 1);
+                $roots[$directory === '.' ? '' : $directory] = true;
+            }
+        }
+        $roots = array_map(strval(...), array_keys($roots));
+        sort($roots, SORT_STRING);
+
+        return $roots;
     }
 }
