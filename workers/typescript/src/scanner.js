@@ -817,6 +817,16 @@ class TypeScriptLanguageFactCollector {
         if (target !== null)
             this.addEdge("re_exports", this.moduleId, target, node, {
                 type_only: node.isTypeOnly,
+                // What the re-export passes on under the source's own names;
+                // absent for `export *`, which passes on everything.
+                ...(node.exportClause && ts.isNamedExports(node.exportClause)
+                    ? {
+                          names: node.exportClause.elements.map(
+                              (element) =>
+                                  (element.propertyName ?? element.name).text,
+                          ),
+                      }
+                    : {}),
             });
     }
 

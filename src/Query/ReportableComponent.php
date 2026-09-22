@@ -43,6 +43,7 @@ final readonly class ReportableComponent
         'symfony.message_handler', 'symfony.route_handler', 'symfony.fixture', 'symfony.voter',
         'symfony.form_type', 'symfony.twig_extension',
         'nestjs.framework_handler',
+        'library.public_api',
         self::TEST_ROLE,
         'tooling.config',
     ];

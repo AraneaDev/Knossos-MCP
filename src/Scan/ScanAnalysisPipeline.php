@@ -7,6 +7,7 @@ namespace Knossos\Scan;
 use Knossos\Boundary\BoundaryInference;
 use Knossos\Classification\{
     ClassificationEngine,
+    LibraryPublicApiRule,
     FrameworkFileConventionRule,
     LaravelPathRoleRule,
     LaravelRoleRule,
@@ -54,6 +55,7 @@ final readonly class ScanAnalysisPipeline
             new ToolConfigModuleRule(),
             new ManifestEntryPointRule(self::manifestEntryPoints($plan)),
             new SvelteKitConventionRule(self::svelteKitRoots($plan)),
+            new LibraryPublicApiRule(...self::publishedApi($plan, $contributions)),
             FrameworkFileConventionRule::astro(self::appRoots($plan, '#(?:^|/)astro\\.config\\.[cm]?[jt]s$#', 0)),
             FrameworkFileConventionRule::vitePress(self::appRoots($plan, '#(?:^|/)\\.vitepress/config\\.[cm]?[jt]s$#', 1)),
         ];
@@ -151,5 +153,74 @@ final readonly class ScanAnalysisPipeline
         sort($roots, SORT_STRING);
 
         return $roots;
+    }
+
+    /**
+     * What each file publishes as a library's API, and which declarations are exported.
+     *
+     * Starts from every non-private package's public entries, each of which
+     * publishes all it exports, and follows re-export edges: a named
+     * re-export passes on its names, `export *` passes on what its source
+     * publishes. Returns the arguments of {@see LibraryPublicApiRule}.
+     *
+     * @param list<object> $contributions
+     * @return array{0: array<string, true|array<string, true>>, 1: array<string, true>}
+     */
+    private static function publishedApi(ScanPlan $plan, array $contributions): array
+    {
+        $published = [];
+        foreach ($plan->preparation->discovery->units as $unit) {
+            foreach ($unit->metadata['public_entry_points'] ?? [] as $path) {
+                if (is_string($path)) {
+                    $published[$path] = true;
+                }
+            }
+        }
+        if ($published === []) {
+            return [[], []];
+        }
+        $reExports = [];
+        $exported = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes ?? [] as $node) {
+                if (($node->attributes['exported'] ?? false) === true || ($node->attributes['default'] ?? false) === true) {
+                    $exported[$node->canonicalName] = true;
+                }
+            }
+            foreach ($contribution->edges ?? [] as $edge) {
+                if ($edge->kind !== 're_exports'
+                    || !str_starts_with($edge->sourceReference, 'ts:module:')
+                    || !str_starts_with($edge->targetReference, 'ts:module:')) {
+                    continue;
+                }
+                $names = is_array($edge->attributes['names'] ?? null) ? $edge->attributes['names'] : null;
+                $reExports[substr($edge->sourceReference, 10)][] = [substr($edge->targetReference, 10), $names];
+            }
+        }
+        $pending = array_keys($published);
+        while ($pending !== []) {
+            $source = array_pop($pending);
+            $spec = $published[$source];
+            foreach ($reExports[$source] ?? [] as [$target, $names]) {
+                if ($names === null) {
+                    $passed = $spec;
+                } else {
+                    $passed = [];
+                    foreach ($names as $name) {
+                        if (is_string($name) && ($spec === true || isset($spec[$name]))) {
+                            $passed[$name] = true;
+                        }
+                    }
+                }
+                $before = $published[$target] ?? null;
+                $after = $before === true || $passed === true ? true : [...($before ?? []), ...$passed];
+                if ($after !== $before && $after !== []) {
+                    $published[$target] = $after;
+                    $pending[] = $target;
+                }
+            }
+        }
+
+        return [$published, $exported];
     }
 }

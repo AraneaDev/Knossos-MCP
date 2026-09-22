@@ -377,6 +377,7 @@ final readonly class ProjectDiscoverer
                 'workspaces' => self::workspaces($decoded['workspaces'] ?? []),
                 'typescript_range' => self::typescriptRange($decoded),
                 'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
+                'public_entry_points' => self::publicEntryPoints($decoded, $relative),
             ],
             'azure_function' => [
                 'entry_points' => self::azureFunctionEntryPoints($decoded, $relative),
@@ -1427,6 +1428,47 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * The modules a library publishes: its `main`, `module`, `types` and every
+     * path under `exports`, for a package that is not private. What they
+     * re-export is API for consumers outside the repository.
+     *
+     * @param array<string, mixed> $manifest
+     * @return list<string>
+     */
+    private static function publicEntryPoints(array $manifest, string $configPath): array
+    {
+        if (($manifest['private'] ?? false) === true) {
+            return [];
+        }
+        $candidates = [];
+        foreach (['main', 'module', 'types', 'typings'] as $field) {
+            if (is_string($manifest[$field] ?? null)) {
+                $candidates[] = $manifest[$field];
+            }
+        }
+        if (is_string($manifest['exports'] ?? null) || is_array($manifest['exports'] ?? null)) {
+            $exports = is_array($manifest['exports']) ? $manifest['exports'] : [$manifest['exports']];
+            array_walk_recursive($exports, static function (mixed $value) use (&$candidates): void {
+                if (is_string($value)) {
+                    $candidates[] = $value;
+                }
+            });
+        }
+        $directory = self::manifestDirectory($configPath);
+        $paths = [];
+        foreach ($candidates as $candidate) {
+            $path = self::entryPointPath($candidate, $directory);
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
+        }
+        $paths = array_keys($paths);
+        sort($paths, SORT_STRING);
+
+        return $paths;
+    }
+
+    /**
      * The `typescript` version a package.json declares, from the first dependency table naming it.
      *
      * @param array<string, mixed> $manifest
@@ -1564,34 +1606,56 @@ final readonly class ProjectDiscoverer
         }
 
         return array_map(static function (ProjectUnit $unit) use ($layouts): ProjectUnit {
-            $entryPoints = $unit->metadata['entry_points'] ?? null;
-            if ($unit->kind !== 'node' || !is_array($entryPoints) || $entryPoints === []) {
+            if ($unit->kind !== 'node') {
                 return $unit;
             }
-            $paths = array_fill_keys($entryPoints, true);
-            foreach ($entryPoints as $entryPoint) {
-                foreach ($layouts as [$outDir, $sourceDirs]) {
-                    if (!is_string($entryPoint) || !str_starts_with($entryPoint, $outDir . '/')) {
-                        continue;
-                    }
-                    $rest = substr($entryPoint, strlen($outDir) + 1);
+            $metadata = $unit->metadata;
+            foreach (['entry_points', 'public_entry_points'] as $key) {
+                if (is_array($metadata[$key] ?? null) && $metadata[$key] !== []) {
+                    $metadata[$key] = self::withSourcesOf($metadata[$key], $layouts);
+                }
+            }
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, $metadata);
+        }, $units);
+    }
+
+    /**
+     * Entry points with, beside each one in an `outDir`, the sources it is built from.
+     *
+     * @param list<mixed> $entryPoints
+     * @param list<array{0: string, 1: list<string>}> $layouts
+     * @return list<string>
+     */
+    private static function withSourcesOf(array $entryPoints, array $layouts): array
+    {
+        $paths = array_fill_keys(array_values(array_filter($entryPoints, is_string(...))), true);
+        foreach ($entryPoints as $entryPoint) {
+            foreach ($layouts as [$outDir, $sourceDirs]) {
+                if (!is_string($entryPoint) || !str_starts_with($entryPoint, $outDir . '/')) {
+                    continue;
+                }
+                $rest = substr($entryPoint, strlen($outDir) + 1);
+                // A declaration the compiler emitted (`index.d.ts`) stands for
+                // the source it describes, as the `.js` beside it does.
+                if (preg_match('/^(.*)\.d\.(m|c)?ts$/', $rest, $declaration) === 1) {
+                    $stem = $declaration[1];
+                    $extension = ($declaration[2] ?? '') . 'js';
+                } else {
                     $extension = strtolower(pathinfo($rest, PATHINFO_EXTENSION));
                     $stem = substr($rest, 0, -strlen($extension) - 1);
-                    foreach (self::BUILD_OUTPUT_SOURCES[$extension] ?? [] as $sourceExtension) {
-                        foreach ($sourceDirs as $sourceDir) {
-                            $paths[self::joinPath($sourceDir, $stem . '.' . $sourceExtension)] = true;
-                        }
+                }
+                foreach (self::BUILD_OUTPUT_SOURCES[$extension] ?? [] as $sourceExtension) {
+                    foreach ($sourceDirs as $sourceDir) {
+                        $paths[self::joinPath($sourceDir, $stem . '.' . $sourceExtension)] = true;
                     }
                 }
             }
-            $paths = array_keys($paths);
-            sort($paths, SORT_STRING);
+        }
+        $paths = array_map(strval(...), array_keys($paths));
+        sort($paths, SORT_STRING);
 
-            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, [
-                ...$unit->metadata,
-                'entry_points' => $paths,
-            ]);
-        }, $units);
+        return $paths;
     }
 
     /** A tsconfig directory option as a clean relative path, or null when it is absent or leaves its directory. */
