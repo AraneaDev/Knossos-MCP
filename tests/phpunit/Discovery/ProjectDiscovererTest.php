@@ -1634,6 +1634,38 @@ TOML);
     }
 
     /**
+     * Symfony and Doctrine wire classes up by name in YAML: a Doctrine filter,
+     * a service, an event listener. The class is instantiated by the container
+     * and referenced by nothing in PHP, so it read as dead. Composer's PSR-4
+     * map turns the class name into the file that declares it.
+     */
+    public function testDiscoverReadsClassNamesFromYamlThroughThePsr4Map(): void
+    {
+        mkdir($this->root . '/config/packages', 0700, true);
+        file_put_contents($this->root . '/composer.json', json_encode([
+            'autoload' => ['psr-4' => ['App\\' => 'src/', 'Acme\\Lib\\' => ['lib/']]],
+        ], JSON_THROW_ON_ERROR));
+        file_put_contents($this->root . '/config/packages/doctrine.yaml', implode("\n", [
+            'doctrine:',
+            '    orm:',
+            '        filters:',
+            '            end_of_sale:',
+            '                class: App\\AppBundle\\Doctrine\\EndOfSaleFilter',
+            'services:',
+            "    'Acme\\Lib\\Mailer': ~",
+            '    Vendor\\Unmapped\\Thing: ~',
+            '',
+        ]));
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $yaml = array_values(array_filter($result->units, fn(ProjectUnit $u): bool => $u->configPath === 'config/packages/doctrine.yaml'))[0];
+        assertArrayContains('src/AppBundle/Doctrine/EndOfSaleFilter.php', $yaml->metadata['entry_points']);
+        assertArrayContains('lib/Mailer.php', $yaml->metadata['entry_points']);
+        assertSame([], array_values(array_filter($yaml->metadata['entry_points'], fn(string $p): bool => str_contains($p, 'Unmapped'))));
+    }
+
+    /**
      * A server started by the container (`CMD ["node", "server/index.mjs"]`)
      * or by the test runner (`webServer: { command: 'node server/index.mjs' }`)
      * is imported by nothing, and both files name it only in a command line.

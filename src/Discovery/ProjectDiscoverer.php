@@ -236,6 +236,7 @@ final readonly class ProjectDiscoverer
         usort($units, static fn(ProjectUnit $left, ProjectUnit $right): int =>
             [$left->kind, $left->configPath] <=> [$right->kind, $right->configPath]);
         $units = self::withBuildOutputSources($units);
+        $units = self::withClassNameEntryPoints($units);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -322,6 +323,7 @@ final readonly class ProjectDiscoverer
         if ($kind === 'yaml') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+                'class_names' => self::yamlClassNames($contents),
             ]);
         }
         if ($kind === 'dockerfile') {
@@ -1439,6 +1441,86 @@ final readonly class ProjectDiscoverer
         }
 
         return null;
+    }
+
+    /**
+     * PHP class names a YAML file mentions: `class: App\\Doctrine\\Filter`, a
+     * service id, a listener. Loose on purpose, for the reason the path
+     * reader is: a name that maps to no scanned file matches nothing.
+     *
+     * @return list<string>
+     */
+    private static function yamlClassNames(string $contents): array
+    {
+        $stripped = preg_replace('/#.*$/m', '', $contents) ?? $contents;
+        if (preg_match_all('/(?<![\\\\\w])[A-Z][A-Za-z0-9_]*(?:\\\\{1,2}[A-Z][A-Za-z0-9_]*)+/', $stripped, $matches) === false) {
+            return [];
+        }
+        $names = [];
+        foreach ($matches[0] as $match) {
+            $names[str_replace('\\\\', '\\', $match)] = true;
+        }
+        $names = array_keys($names);
+        sort($names, SORT_STRING);
+
+        return $names;
+    }
+
+    /**
+     * Add, to each YAML unit, the files its class names are declared in.
+     *
+     * Symfony and Doctrine wire classes up by name in YAML, and the container
+     * instantiates them; nothing in PHP references them. Composer's PSR-4 map
+     * turns a class name into its file, which is what entry points match on.
+     *
+     * @param list<ProjectUnit> $units
+     * @return list<ProjectUnit>
+     */
+    private static function withClassNameEntryPoints(array $units): array
+    {
+        $prefixes = [];
+        foreach ($units as $unit) {
+            if ($unit->kind !== 'composer' || !is_array($unit->metadata['psr4'] ?? null)) {
+                continue;
+            }
+            $directory = self::manifestDirectory($unit->configPath);
+            foreach ($unit->metadata['psr4'] as $namespace => $paths) {
+                foreach (is_array($paths) ? $paths : [$paths] as $path) {
+                    if (is_string($namespace) && is_string($path) && $namespace !== '') {
+                        $prefixes[] = [$namespace, self::joinPath($directory, trim($path, '/'))];
+                    }
+                }
+            }
+        }
+        if ($prefixes === []) {
+            return $units;
+        }
+        // Longest namespace first, as Composer resolves them.
+        usort($prefixes, static fn(array $a, array $b): int => strlen($b[0]) <=> strlen($a[0]));
+
+        return array_map(static function (ProjectUnit $unit) use ($prefixes): ProjectUnit {
+            $classNames = $unit->metadata['class_names'] ?? [];
+            if ($unit->kind !== 'yaml' || !is_array($classNames) || $classNames === []) {
+                return $unit;
+            }
+            $paths = array_fill_keys($unit->metadata['entry_points'] ?? [], true);
+            foreach ($classNames as $className) {
+                foreach ($prefixes as [$namespace, $directory]) {
+                    if (is_string($className) && str_starts_with($className, $namespace)) {
+                        $rest = str_replace('\\', '/', substr($className, strlen($namespace)));
+                        $paths[self::joinPath($directory, $rest . '.php')] = true;
+                        break;
+                    }
+                }
+            }
+            $paths = array_keys($paths);
+            sort($paths, SORT_STRING);
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, [
+                ...$unit->metadata,
+                'entry_points' => $paths,
+            ]);
+        }, $units);
     }
 
     /** Output extension => the source extensions the compiler emits it from. */
