@@ -39,6 +39,9 @@ final readonly class ReportableComponent
         'application.controller', 'application.command', 'application.entry_point',
         'laravel.controller', 'laravel.command', 'laravel.job', 'laravel.listener',
         'laravel.migration', 'laravel.seeder', 'laravel.factory',
+        'symfony.controller', 'symfony.command', 'symfony.event_subscriber', 'symfony.event_listener',
+        'symfony.message_handler', 'symfony.route_handler', 'symfony.fixture', 'symfony.voter',
+        'symfony.form_type', 'symfony.twig_extension',
         self::TEST_ROLE,
         'tooling.config',
     ];
