@@ -1408,10 +1408,14 @@ class PythonAstFactCollector(ast.NodeVisitor):
         for alias in node.names:
             if alias.name == "*":
                 continue
-            target = self.index.module_declarations(module).get(
-                alias.name, ref("external_symbol", f"{module}.{alias.name}")
-            )
-            self.aliases[alias.asname or alias.name] = target
+            target = self.index.module_declarations(module).get(alias.name)
+            if target is None and self.index.module_file(f"{module}.{alias.name}") is not None:
+                # `from .tools import cors` names the submodule `tools/cors.py`
+                # when the package declares no `cors` of its own.
+                submodule = f"{module}.{alias.name}"
+                target = ref("module", submodule)
+                self.facts.add_edge("imports", self.module_id, target, node, {"relative_level": node.level})
+            self.aliases[alias.asname or alias.name] = target or ref("external_symbol", f"{module}.{alias.name}")
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         canonical = f"{self.module}.{node.name}"
@@ -1428,6 +1432,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
         )
         self.facts.add_edge("contains", self.current(), local_id, node)
         for base in node.bases:
+            # The `extends` edge below is what a base is; not also a reference.
+            self.called_attributes.add(id(base))
             name = dotted(base)
             target = self.resolve_name(name, "class") if name else None
             if target:
@@ -1647,6 +1653,31 @@ class PythonAstFactCollector(ast.NodeVisitor):
             if held is None and self.parameter_types:
                 held = self.parameter_types[-1].get(receiver)
         return ref("method", f"{held}::{member}") if held else None
+
+    def visit_Name(self, node: ast.Name) -> None:
+        """A function or class named as a value: returned, registered, passed.
+
+        `def make_tool(): def handler(): ...; return handler` and
+        `REGISTRY = [ping]` never call what they name, so without this every
+        handler built or listed that way read as dead. Only a name that
+        resolves to a function or class counts: a local closure first, then an
+        import, then the module's own top-level declarations. A call's callee
+        is the `calls` edge's, and a class base the `extends` edge's.
+        """
+        if isinstance(node.ctx, ast.Load) and id(node) not in self.called_attributes:
+            target = next(
+                (scope[node.id] for scope in reversed(self.local_function_scopes) if node.id in scope),
+                None,
+            )
+            if target is None:
+                target = self.aliases.get(node.id) or self.index.module_declarations(self.module).get(node.id)
+            if (
+                target is not None
+                and target.startswith(("py:function:", "py:class:"))
+                and target != self.current()
+            ):
+                self.facts.add_edge("references", self.current(), target, node)
+        self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         """A method of this class read as a value: a callback, a slot, a property.

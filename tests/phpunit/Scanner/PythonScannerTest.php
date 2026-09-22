@@ -230,6 +230,109 @@ final class PythonScannerTest extends KnossosTestCase
         assertSame(false, in_array(['references', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::helper'], $edges, true));
     }
 
+    /**
+     * `from .tools import cors` imports the submodule `tools/cors.py` through
+     * its package. The name was looked up among the package's own declarations,
+     * found nothing, and every `cors.make_tool()` went unresolved, so whole
+     * tool modules read as unreferenced.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerResolvesASubmoduleImportedFromItsPackage(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-submodule-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app/tools', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/tools/__init__.py' => "VERSION = 1\n",
+            'app/tools/cors.py' => "def make_tool():\n    return 1\n",
+            'app/registry.py' => "from .tools import cors, VERSION\n\ndef build():\n    return cors.make_tool(), VERSION\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/registry.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app/tools');
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $edges = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                $edges[] = [$edge->kind, $edge->sourceReference, $edge->targetReference];
+            }
+        }
+
+        assertArrayContains(['imports', 'py:module:app.registry', 'py:module:app.tools.cors'], $edges);
+        assertArrayContains(['calls', 'py:function:app.registry.build', 'py:function:app.tools.cors.make_tool'], $edges);
+    }
+
+    /**
+     * A function handed over by name, returned from a factory
+     * (`def make_tool(): def handler(): ...; return handler`) or listed in a
+     * registry, is never called where it is named. Only calls were edges, so
+     * every tool handler built this way read as dead.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReferencesFunctionsUsedAsValues(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-values-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o755, true);
+        file_put_contents($root . '/tools.py', implode("\n", [
+            'def make_tool():',
+            '    def handler():',
+            '        return 1',
+            '    return handler',
+            '',
+            'def ping():',
+            '    return 2',
+            '',
+            'class Probe:',
+            '    pass',
+            '',
+            'LIMIT = 3',
+            'REGISTRY = [ping, Probe, LIMIT]',
+            '',
+            'def run():',
+            '    return make_tool()()',
+            '',
+        ]));
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['tools.py']]));
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/tools.py');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertArrayContains(['py:function:tools.make_tool', 'py:function:tools.make_tool.<locals>.handler'], $references);
+        assertArrayContains(['py:module:tools', 'py:function:tools.ping'], $references);
+        assertArrayContains(['py:module:tools', 'py:class:tools.Probe'], $references);
+        // A call is a call, not also a reference, and a constant is no declaration.
+        $targets = array_map(fn(array $edge): string => $edge[1], $references);
+        assertSame(false, in_array('py:function:tools.make_tool', $targets, true));
+        assertSame([], array_values(array_filter($targets, fn(string $t): bool => str_contains($t, 'LIMIT'))));
+    }
+
     #[Group('python-scanner')]
     public function testPythonWorkerIsDeterministicBoundedAndPathSafe(): void
     {
