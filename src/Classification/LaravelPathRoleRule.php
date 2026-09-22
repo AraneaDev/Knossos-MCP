@@ -22,6 +22,12 @@ final readonly class LaravelPathRoleRule implements ClassificationRule
         '/Policies/' => 'laravel.policy',
         '/Models/' => 'laravel.model',
         '/Repositories/' => 'laravel.repository',
+        // Run by `artisan migrate`, `db:seed` and model factories, which find
+        // them by directory; nothing references them by name.
+        '/database/migrations/' => 'laravel.migration',
+        '/database/seeders/' => 'laravel.seeder',
+        '/database/seeds/' => 'laravel.seeder',
+        '/database/factories/' => 'laravel.factory',
     ];
 
     /** {@inheritDoc} */

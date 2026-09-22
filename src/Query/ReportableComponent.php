@@ -38,6 +38,7 @@ final readonly class ReportableComponent
     public const CONVENTION_DISCOVERED_ROLES = [
         'application.controller', 'application.command', 'application.entry_point',
         'laravel.controller', 'laravel.command', 'laravel.job', 'laravel.listener',
+        'laravel.migration', 'laravel.seeder', 'laravel.factory',
         self::TEST_ROLE,
         'tooling.config',
     ];

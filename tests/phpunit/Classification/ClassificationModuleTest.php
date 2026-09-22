@@ -16,6 +16,7 @@ use Knossos\Classification\PythonFrameworkRoleRule;
 use Knossos\Classification\SymfonyRoleRule;
 use Knossos\Classification\TestModuleRule;
 use Knossos\Classification\TypeScriptFrameworkRoleRule;
+use Knossos\Query\ReportableComponent;
 use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\NodeFact;
@@ -223,6 +224,25 @@ final class ClassificationModuleTest extends KnossosTestCase
         assertSame(1, count($facts));
         assertSame('laravel.controller', $facts[0]->role);
         assertSame(Confidence::Probable, $facts[0]->confidence);
+    }
+
+    /**
+     * Laravel runs migrations, seeders and factories it finds by directory;
+     * nothing references a migration class, so every one read as probably
+     * dead, and in an older app the migrations alone filled the report.
+     */
+    public function testLaravelPathRoleRuleRecognisesDatabaseDirectories(): void
+    {
+        foreach ([
+            'database/migrations/2014_10_12_000000_create_users_table.php' => 'laravel.migration',
+            'database/seeders/DatabaseSeeder.php' => 'laravel.seeder',
+            'database/seeds/UsersTableSeeder.php' => 'laravel.seeder',
+            'database/factories/UserFactory.php' => 'laravel.factory',
+        ] as $path => $role) {
+            $facts = (new LaravelPathRoleRule())->classify(self::makeNode('php:class:' . $path, relativePath: $path));
+            assertSame($role, $facts[0]->role ?? null, $path);
+            assertSame(true, ReportableComponent::isDiscoveredByConvention([$role]), $role);
+        }
     }
 
     public function testLaravelPathRoleRuleSkipsUnmatchedPath(): void
