@@ -86,16 +86,22 @@ final class PythonScannerTest extends KnossosTestCase
         $root = self::repositoryRoot() . '/tests/Fixtures/python';
         $contributions = iterator_to_array($this->pythonWorkerClient()->scan([
             'root' => $root,
-            'files' => ['shop/cli.py', 'shop/guarded.py', 'shop/service.py'],
+            'files' => ['shop/cli.py', 'shop/guarded.py', 'shop/service.py', 'shop/__init__.py'],
         ]));
         $executable = [];
+        $packageInit = [];
         foreach ($contributions as $contribution) {
             foreach ($contribution->nodes as $node) {
                 if ($node->kind === 'module') {
                     $executable[$node->canonicalName] = $node->attributes['executable'] ?? false;
+                    $packageInit[$node->canonicalName] = $node->attributes['package_init'] ?? false;
                 }
             }
         }
+
+        // A package's own module runs whenever anything inside it is imported.
+        assertSame(true, $packageInit['shop']);
+        assertSame(false, $packageInit['shop.service']);
 
         // A shebang and a `__main__` guard each say the file is run directly.
         assertSame(true, $executable['shop.cli']);

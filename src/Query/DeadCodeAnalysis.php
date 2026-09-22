@@ -120,7 +120,8 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             // information about whether it is wanted. An ordinary module that
             // nothing imports stays reportable — an orphaned one is precisely
             // what this analysis exists to surface.
-            if (ReportableComponent::isExecutableScript((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)) {
+            if (ReportableComponent::isExecutableScript((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)
+                || self::isPackageInitWithModules($candidate['row'], $idsByCanonicalName)) {
                 ++$excludedEntryScripts;
                 continue;
             }
@@ -228,6 +229,34 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $ownerId = $idsByCanonicalName[$owner] ?? null;
 
         return $ownerId !== null && ($metrics[$ownerId]['in_degree'] ?? 0) > 0;
+    }
+
+    /**
+     * A Python package's `__init__` module whose package holds other modules.
+     *
+     * The import system runs it whenever any module in the package is
+     * imported, and nothing names it; if none of those modules is used either,
+     * they carry the report.
+     *
+     * @param array<string, mixed> $node @param array<string, string> $idsByCanonicalName
+     */
+    private static function isPackageInitWithModules(array $node, array $idsByCanonicalName): bool
+    {
+        if ($node['kind'] !== 'module' || !is_string($node['attributes_json'] ?? null)) {
+            return false;
+        }
+        $attributes = json_decode($node['attributes_json'], true);
+        if (!is_array($attributes) || ($attributes['package_init'] ?? false) !== true) {
+            return false;
+        }
+        $prefix = $node['canonical_name'] . '.';
+        foreach (array_keys($idsByCanonicalName) as $canonical) {
+            if (str_starts_with((string) $canonical, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

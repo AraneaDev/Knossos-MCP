@@ -187,6 +187,32 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * Python runs a package's `__init__.py` whenever any module inside the
+     * package is imported, so `from shop.cart import Cart` reaches `shop`
+     * although nothing names it. A package's own module was reported dead in
+     * every Python project. Only a package with modules of its own is
+     * excluded; the submodules carry the report if none of them is used.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesAPackageInitWhosePackageHasModules(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        foreach ([['shop', ['package_init' => true]], ['shop.cart', []], ['lonely', ['package_init' => true]]] as [$canonical, $attributes]) {
+            $id = StableId::symbol($ids['project'], 'python', 'module', $canonical);
+            $repository->saveNode($id, $ids['project'], 'python', 'module', $canonical, $canonical, null, $ids['file'], 1, 1, 'ast', 'certain', $attributes, 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], limit: 100)->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('shop', $names, true));
+        assertSame(true, in_array('shop.cart', $names, true));
+        assertSame(true, in_array('lonely', $names, true));
+        assertSame(1, $data['bounds']['excluded_entry_scripts']);
+    }
+
+    /**
      * A large project has hundreds of candidates, sorted unreferenced-first by
      * name, and `limit` stops at 100. Framework methods marked only possible
      * filled that page on every Laravel and Symfony application, so nothing

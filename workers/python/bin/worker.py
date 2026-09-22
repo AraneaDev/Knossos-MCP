@@ -1409,6 +1409,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             {
                 "stub": self.relative.endswith(".pyi"),
                 "executable": self.executable,
+                # Run by the import system whenever a module inside the package is imported.
+                "package_init": self.is_package,
             },
         )
         if self.is_package:
