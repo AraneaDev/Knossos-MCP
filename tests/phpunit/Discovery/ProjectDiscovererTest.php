@@ -1634,6 +1634,31 @@ TOML);
     }
 
     /**
+     * A server started by the container (`CMD ["node", "server/index.mjs"]`)
+     * or by the test runner (`webServer: { command: 'node server/index.mjs' }`)
+     * is imported by nothing, and both files name it only in a command line.
+     */
+    public function testDiscoverReadsEntryPointsFromDockerfilesAndCommandLines(): void
+    {
+        mkdir($this->root . '/docker', 0700, true);
+        file_put_contents($this->root . '/Dockerfile', "FROM node:22\nCOPY . .\nCMD [\"node\", \"server/index.mjs\"]\n");
+        file_put_contents($this->root . '/docker/worker.Dockerfile', "FROM python:3.12\nENTRYPOINT python3 jobs/run.py --once\n");
+        file_put_contents($this->root . '/playwright.config.ts', "export default { webServer: { command: 'node server/preview.mjs --port 4173' } };\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            foreach ($unit->metadata['entry_points'] ?? [] as $path) {
+                $entryPoints[$path] = $unit->configPath;
+            }
+        }
+        assertSame('Dockerfile', $entryPoints['server/index.mjs'] ?? null);
+        assertSame('docker/worker.Dockerfile', $entryPoints['jobs/run.py'] ?? null);
+        assertSame('playwright.config.ts', $entryPoints['server/preview.mjs'] ?? null);
+    }
+
+    /**
      * The reason this reader is key-scoped rather than tokenising the whole
      * file the way the YAML one does. A config names files to EXCLUDE as well
      * as files to load, and an excluded path is exactly the kind of file that

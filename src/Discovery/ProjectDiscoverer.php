@@ -324,6 +324,13 @@ final readonly class ProjectDiscoverer
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
             ]);
         }
+        if ($kind === 'dockerfile') {
+            // Read as text for paths, as a YAML file is: a build context is the
+            // project root, so a path resolves there as well as beside the file.
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+            ]);
+        }
         if ($kind === 'agent_config') {
             // Read as text for paths, as a YAML file is: the commands are shell
             // lines, and `$CLAUDE_PLUGIN_ROOT/src/x.ts` leaves a token the path
@@ -931,6 +938,8 @@ final readonly class ProjectDiscoverer
         'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
         // Bundlers and desktop shells (esbuild, Bun, Electrobun).
         'entrypoint', 'entrypoints', 'entryPoints',
+        // A process a tool starts, such as Playwright's `webServer.command`.
+        'command',
     ];
 
     /**
@@ -1297,9 +1306,13 @@ final readonly class ProjectDiscoverer
                 continue;
             }
             foreach ($tokens[1] as $token) {
-                $path = self::entryPointPath($token, $directory);
-                if ($path !== null) {
-                    $paths[$path] = true;
+                // A `command` is a shell line; any other value is one path,
+                // which a split on whitespace leaves whole.
+                foreach (preg_split('/\s+/', trim($token)) ?: [] as $word) {
+                    $path = self::entryPointPath($word, $directory);
+                    if ($path !== null) {
+                        $paths[$path] = true;
+                    }
                 }
             }
         }
@@ -1716,6 +1729,10 @@ final readonly class ProjectDiscoverer
         $basename = strtolower(basename($relativePath));
         if ($basename === '.gitignore') {
             return 'gitignore';
+        }
+        // A container's CMD and ENTRYPOINT start a script nothing imports.
+        if ($basename === 'dockerfile' || str_starts_with($basename, 'dockerfile.') || str_ends_with($basename, '.dockerfile')) {
+            return 'dockerfile';
         }
         if ($basename === 'composer.json') {
             return 'composer';
