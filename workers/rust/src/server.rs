@@ -234,9 +234,15 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                     &declarations,
                     &test_modules,
                 );
-                if let Some((_, crate_name)) =
+                if let Some((root_file, crate_name)) =
                     crates.iter().find(|(root_file, _)| root_file == &relative)
                 {
+                    // A library is entered by its dependents, or by a host
+                    // outside the repository for a cdylib; nothing in the
+                    // graph imports its root.
+                    if root_file.ends_with("src/lib.rs") {
+                        facts.mark_executable();
+                    }
                     facts.node_with_attributes(
                         "package",
                         crate_name,

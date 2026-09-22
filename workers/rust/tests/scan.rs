@@ -2449,3 +2449,40 @@ impl Calls<'_> {
     assert!(method_calls(&contributions, "rust:method:crate::Calls::go")
         .contains(&("rust:method:crate::Facts::edge".to_owned(), true)));
 }
+
+#[test]
+fn a_library_crate_root_is_entered_from_outside() {
+    // A library's `lib.rs` is entered by its dependents, and a `cdylib` or
+    // wasm crate by a host outside the repository. Nothing in the graph
+    // imports it, so its module read as dead.
+    let files = [
+        ("Cargo.toml", "[package]\nname = \"engine\"\n"),
+        ("src/lib.rs", "pub mod grid;\n"),
+        ("src/grid.rs", "pub fn get() {}\n"),
+    ];
+    let contributions = scan_fixture_with(
+        "library-root",
+        &files,
+        &serde_json::json!({ "config_files": ["Cargo.toml"] }),
+    );
+    let executable: Vec<(String, bool)> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .filter(|node| node["kind"] == "module")
+        .map(|node| {
+            (
+                node["canonical_name"].as_str().unwrap().to_owned(),
+                node["attributes"]["executable"] == Value::Bool(true),
+            )
+        })
+        .collect();
+
+    assert!(
+        executable.contains(&("crate".to_owned(), true)),
+        "{executable:?}"
+    );
+    assert!(
+        executable.contains(&("crate::grid".to_owned(), false)),
+        "{executable:?}"
+    );
+}
