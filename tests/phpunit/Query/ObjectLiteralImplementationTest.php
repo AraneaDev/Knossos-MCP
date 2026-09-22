@@ -20,6 +20,56 @@ use PHPUnit\Framework\Attributes\Group;
 #[Group('query')]
 final class ObjectLiteralImplementationTest extends KnossosTestCase
 {
+    /**
+     * An object literal passed straight to a parameter typed as an interface,
+     * `register({ handle() {} })`, or to a library, `new Proxy(target, { get() {} })`
+     * or tiptap's `Node.create({ addAttributes() {} })`, implements the type
+     * of the place it is passed to. Its methods were members of the enclosing
+     * function, tied to nothing, and every one read as probably dead.
+     */
+    public function testMembersOfAnObjectLiteralPassedWhereATypeIsExpectedAreReachedThroughIt(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-contextual-literal-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'package.json' => '{"name":"contextual-literal-fixture"}',
+            'tsconfig.json' => '{"compilerOptions":{"strict":true,"noEmit":true,"lib":["es2022"]},"include":["src"]}',
+            'src/handler.ts' => implode("\n", [
+                'export interface Handler {',
+                '    handle(): void;',
+                '}',
+                'export function register(handler: Handler): void {',
+                '    handler.handle();',
+                '}',
+                'export function setup(): unknown {',
+                '    register({ handle() {} });',
+                '    return new Proxy({}, { get() { return 1; } });',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $pdo = $this->freshTestDatabase();
+            $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
+            $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 100)->data;
+        } finally {
+            $this->removeTempTree($root);
+        }
+
+        $byName = [];
+        foreach ($data['dead_code_candidates'] as $candidate) {
+            $byName[$candidate['component']['display_name']] = $candidate['confidence'];
+        }
+        // Reached through the internal interface it implements.
+        self::assertArrayNotHasKey('handle', $byName);
+        // A library's contract: possibly unused at most, never probably.
+        self::assertNotSame('probable', $byName['get'] ?? null);
+    }
+
     public function testMembersOfAnObjectLiteralTypedAsAnInterfaceAreNotDeadCode(): void
     {
         $root = sys_get_temp_dir() . '/knossos-stale-object-literal-' . bin2hex(random_bytes(6));

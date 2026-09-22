@@ -726,6 +726,22 @@ class TypeScriptLanguageFactCollector {
             }
         }
 
+        if (isContextualObjectLiteral(node)) {
+            const contextual = this.checker.getContextualType(node);
+            const parts = contextual?.isUnion()
+                ? contextual.types
+                : contextual
+                  ? [contextual]
+                  : [];
+            for (const part of parts) {
+                const symbol = part.aliasSymbol ?? part.symbol;
+                if (!symbol || symbol.getName().startsWith("__")) continue;
+                const target = this.symbolReference(symbol, "class");
+                if (target !== null && target !== id)
+                    this.addEdge("implements", id, target, node);
+            }
+        }
+
         if (isObjectLiteralBinding(node)) {
             const contract = objectLiteralContract(node);
             const target =
@@ -2050,6 +2066,7 @@ function declarationKind(node, fallback) {
     if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node))
         return "property";
     if (isObjectLiteralBinding(node)) return "variable";
+    if (isContextualObjectLiteral(node)) return "object";
     return fallback;
 }
 
@@ -2066,7 +2083,8 @@ function declarationName(node, sourceFile) {
     if (
         (ts.isClassDeclaration(node) ||
             ts.isClassExpression(node) ||
-            ts.isFunctionDeclaration(node)) &&
+            ts.isFunctionDeclaration(node) ||
+            isContextualObjectLiteral(node)) &&
         !node.name
     ) {
         // Include the column so minified single-line bundles don't collapse
@@ -2074,7 +2092,10 @@ function declarationName(node, sourceFile) {
         const position = sourceFile.getLineAndCharacterOfPosition(
             node.getStart(sourceFile),
         );
-        return `{anonymous}@${position.line + 1}:${position.character + 1}`;
+        const label = ts.isObjectLiteralExpression(node)
+            ? "{object}"
+            : "{anonymous}";
+        return `${label}@${position.line + 1}:${position.character + 1}`;
     }
     return null;
 }
@@ -2115,7 +2136,8 @@ function isDeclaration(node) {
         ts.isConstructorDeclaration(node) ||
         ts.isPropertyDeclaration(node) ||
         ts.isPropertySignature(node) ||
-        isObjectLiteralBinding(node)
+        isObjectLiteralBinding(node) ||
+        isContextualObjectLiteral(node)
     );
 }
 
@@ -2134,6 +2156,34 @@ function isObjectLiteralBinding(node) {
     return (
         literal !== null &&
         literal.properties.some((member) => ts.isMethodDeclaration(member))
+    );
+}
+
+/**
+ * An object literal with methods that no binding names: passed as an argument
+ * (`register({ handle() {} })`, `new Proxy(t, { get() {} })`), returned, or
+ * nested in another literal. It implements the type of the place it is passed
+ * to, so it is a container of its own, named by position, with that type as
+ * its contract. A literal that initialises a binding is the binding's.
+ */
+function isContextualObjectLiteral(node) {
+    if (
+        !ts.isObjectLiteralExpression(node) ||
+        !node.properties.some((member) => ts.isMethodDeclaration(member))
+    )
+        return false;
+    let current = node.parent;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    )
+        current = current.parent;
+    return !(
+        current !== undefined &&
+        ts.isVariableDeclaration(current) &&
+        isObjectLiteralBinding(current)
     );
 }
 
@@ -2173,6 +2223,7 @@ function objectLiteralContract(node) {
 function containerDeclaration(node) {
     return (
         isObjectLiteralBinding(node) ||
+        isContextualObjectLiteral(node) ||
         ts.isClassDeclaration(node) ||
         ts.isClassExpression(node) ||
         ts.isInterfaceDeclaration(node) ||
