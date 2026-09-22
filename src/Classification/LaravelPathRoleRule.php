@@ -37,7 +37,6 @@ final readonly class LaravelPathRoleRule implements ClassificationRule
         return 'laravel.paths.v1';
     }
 
-    /** {@inheritDoc} */
     /** Class role => the methods Laravel itself calls on such a class. */
     private const ENTRY_METHODS = [
         'laravel.middleware' => ['handle', 'terminate'],
@@ -46,6 +45,7 @@ final readonly class LaravelPathRoleRule implements ClassificationRule
         'laravel.command' => ['handle', '__invoke'],
     ];
 
+    /** {@inheritDoc} */
     public function classify(NodeFact $node): array
     {
         if ($node->kind === 'method') {

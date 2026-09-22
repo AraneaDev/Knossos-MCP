@@ -11,7 +11,6 @@ use Knossos\Scanner\Protocol\Origin;
 /** Infers roles from Symfony attributes and base classes, where that framework declares them. */
 final readonly class SymfonyRoleRule implements ClassificationRule
 {
-    /** {@inheritDoc} */
     /** Base-class suffix => the role Symfony's autoconfiguration gives what extends it. */
     private const AUTOCONFIGURED_PARENTS = [
         '\\AbstractController' => 'symfony.controller',
@@ -22,6 +21,7 @@ final readonly class SymfonyRoleRule implements ClassificationRule
         '\\Twig\\Extension\\AbstractExtension' => 'symfony.twig_extension',
     ];
 
+    /** {@inheritDoc} */
     public function id(): string
     {
         return 'symfony.explicit.v1';
