@@ -187,6 +187,42 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * A large project has hundreds of candidates, sorted unreferenced-first by
+     * name, and `limit` stops at 100. Framework methods marked only possible
+     * filled that page on every Laravel and Symfony application, so nothing
+     * behind them could be seen. Candidates can now be filtered to the
+     * probable ones and paged with an offset.
+     */
+    #[Group('query')]
+    public function testDeadCodeCandidatesCanBeFilteredByConfidenceAndPaged(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        foreach (['a_possible' => 'derived', 'b_probable' => 'ast', 'c_probable' => 'ast', 'd_probable' => 'ast'] as $name => $origin) {
+            $id = StableId::symbol($ids['project'], 'typescript', 'function', "src/x.ts#{$name}");
+            $repository->saveNode($id, $ids['project'], 'typescript', 'function', "src/x.ts#{$name}", $name, null, $ids['file'], 1, 1, $origin, 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $service = new ArchitectureQueryService($pdo);
+
+        $all = $service->architectureHealth($ids['project'], limit: 100)->data;
+        $names = static fn(array $data): array => array_values(array_filter(
+            array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']),
+            static fn(string $n): bool => str_starts_with($n, 'src/x.ts#'),
+        ));
+        assertSame(true, in_array('src/x.ts#a_possible', $names($all), true));
+
+        $page = $service->architectureHealth($ids['project'], limit: 1, candidateConfidence: 'probable', candidateOffset: 1)->data;
+        $probable = $service->architectureHealth($ids['project'], limit: 100, candidateConfidence: 'probable')->data;
+
+        assertSame(false, in_array('src/x.ts#a_possible', $names($probable), true));
+        $ordered = array_map(static fn(array $c): string => $c['component']['canonical_name'], $probable['dead_code_candidates']);
+        assertSame([$ordered[1]], array_map(static fn(array $c): string => $c['component']['canonical_name'], $page['dead_code_candidates']));
+        assertSame(count($ordered), $page['bounds']['candidates_total']);
+        assertSame(1, $page['bounds']['candidate_offset']);
+        assertSame('probable', $page['bounds']['candidate_confidence']);
+    }
+
+    /**
      * `declare global { interface Window { ... } }` in an ordinary file is a
      * type declaration all the same: it augments what the runtime defines.
      */

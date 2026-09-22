@@ -304,6 +304,8 @@ Rank the structural hotspots, hubs, and likely-dead code. Use to decide where cl
 | `timeout_ms` | integer | no | minimum=1; maximum=5000; default=1000 |
 | `include_external` | boolean | no | default=false |
 | `include_tests` | boolean | no | default=false |
+| `candidate_confidence` | string | no | default="possible"; enum=probable, possible |
+| `candidate_offset` | integer | no | minimum=0; maximum=100000; default=0 |
 
 Annotations: read-only `no`; destructive `no`; idempotent `yes`; open-world `no`.
 

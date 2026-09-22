@@ -253,10 +253,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *
      * @param list<string> $edgeKinds
      */
-    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false): ResultEnvelope
+    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false, string $candidateConfidence = 'possible', int $candidateOffset = 0): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
+        if (!in_array($candidateConfidence, ['probable', 'possible'], true)) {
+            throw new InvalidArgumentException('candidate_confidence must be probable or possible.');
+        }
+        if ($candidateOffset < 0) {
+            throw new InvalidArgumentException('candidate_offset must not be negative.');
+        }
         if ($maxNodes < 1 || $maxNodes > 50_000) {
             throw new InvalidArgumentException('max_nodes must be between 1 and 50000.');
         }
@@ -384,19 +390,33 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // test_only last means truncation hides them first, and a summary built
         // from the slice would then report 0 test-only findings whenever there
         // were enough unreferenced ones to fill the limit on their own.
+        // A large project's page of 100 filled with framework methods marked
+        // only possible, hiding every probable candidate behind them; the
+        // filter and the offset let a caller see past that.
+        if ($candidateConfidence === 'probable') {
+            $deadCandidates = array_values(array_filter(
+                $deadCandidates,
+                static fn(array $candidate): bool => ($candidate['confidence'] ?? null) === 'probable',
+            ));
+        }
         $testOnlyCandidates = count(array_filter(
             $deadCandidates,
             static fn(array $candidate): bool => ($candidate['reachability'] ?? null) === 'test_only',
         ));
-        foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
+        $candidatesTotal = count($deadCandidates);
+        foreach ([$hubs, $hotspots] as $items) {
             if (count($items) > $limit) {
                 $truncated = true;
                 $truncationReasons[] = 'result_limit';
             }
         }
+        if ($candidatesTotal > $candidateOffset + $limit) {
+            $truncated = true;
+            $truncationReasons[] = 'result_limit';
+        }
         $hubs = array_slice($hubs, 0, $limit);
         $hotspots = array_slice($hotspots, 0, $limit);
-        $deadCandidates = array_slice($deadCandidates, 0, $limit);
+        $deadCandidates = array_slice($deadCandidates, $candidateOffset, $limit);
         $evidence = [];
         $reported = [];
         foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
@@ -422,6 +442,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
+                    'candidate_confidence' => $candidateConfidence, 'candidate_offset' => $candidateOffset,
+                    'candidates_total' => $candidatesTotal,
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excluded['inherited'],

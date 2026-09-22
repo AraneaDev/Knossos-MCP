@@ -218,8 +218,10 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
         bool $includeExternal = false,
         bool $includeTests = false,
+        string $candidateConfidence = 'possible',
+        int $candidateOffset = 0,
     ): ResultEnvelope {
-        return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests);
+        return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset);
     }
 
     /** @param list<array<string, mixed>> $policies */

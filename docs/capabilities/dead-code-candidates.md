@@ -183,6 +183,14 @@ only (`<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
 reads configuration, such as `src/utils/config-loader.ts`, is ordinary source
 and stays reportable.
 
+## Filtering and paging
+
+A large project can have hundreds of candidates, and a framework's lifecycle methods,
+marked `possible`, can fill the first page. `candidate_confidence: "probable"`
+(CLI: `--candidate-confidence=probable`) reports only the stronger claims, and
+`candidate_offset` (`--candidate-offset=N`) pages past the first `limit`.
+`bounds.candidates_total` says how many there are after the filter.
+
 ## Acting on a candidate
 
 - Confirm it is genuinely unused, then delete it.
