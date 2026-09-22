@@ -38,6 +38,9 @@ final readonly class IgnoreMatcher
         // (each with its own tsconfig), which would otherwise multiply the
         // TypeScript program count and make scans slow or time out.
         '.stryker-tmp',
+        // Package-manager stores: dependency code, like node_modules.
+        '.pnpm-store',
+        '.yarn',
         'build',
         'dist',
         'site',

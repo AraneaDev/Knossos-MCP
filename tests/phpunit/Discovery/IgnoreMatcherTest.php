@@ -540,6 +540,21 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('.stryker-tmp/sandbox-1/tsconfig.json'));
     }
 
+    /**
+     * pnpm's content-addressed store and Yarn Berry's `.yarn` hold dependency
+     * code, like `node_modules`. A project-local `.pnpm-store` that nobody
+     * ignored added half a gigabyte of hash-named files to a scan, and every
+     * one was reported as unreferenced project code.
+     */
+    public function testMatchesPackageManagerStores(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('.pnpm-store/v10/files/22/fdb5a4-index.js'));
+        assertSame(true, $matcher->matches('.yarn/releases/yarn-4.5.0.cjs'));
+        assertSame(true, $matcher->matches('packages/web/.yarn/cache/x.js'));
+    }
+
     public function testMatchesPathInsideWorktreesSegment(): void
     {
         // Nested git worktrees are complete checkouts, not source in the

@@ -42,6 +42,8 @@ const EXCLUDED_DIRECTORIES = new Set([
     // output and mutation-testing sandboxes (.stryker-tmp holds a full project
     // copy per sandbox) are not source and would multiply program discovery.
     ".stryker-tmp",
+    ".pnpm-store",
+    ".yarn",
     ".worktrees",
     "build",
     "dist",
