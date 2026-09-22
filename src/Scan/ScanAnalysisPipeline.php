@@ -14,6 +14,7 @@ use Knossos\Classification\{
     NestJsRoleRule,
     PythonFrameworkRoleRule,
     RustFrameworkRoleRule,
+    SvelteKitConventionRule,
     SymfonyRoleRule,
     TestModuleRule,
     ToolConfigModuleRule,
@@ -51,6 +52,7 @@ final readonly class ScanAnalysisPipeline
             new TestModuleRule(),
             new ToolConfigModuleRule(),
             new ManifestEntryPointRule(self::manifestEntryPoints($plan)),
+            new SvelteKitConventionRule(self::svelteKitRoots($plan)),
         ];
         if ($plan->preparation->laravel) {
             $rules[] = new LaravelRoleRule();
@@ -103,5 +105,26 @@ final readonly class ScanAnalysisPipeline
         ksort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * The directories holding a `svelte.config.*`, which is what makes their
+     * `src/routes` and `src/hooks.*` SvelteKit's rather than ordinary modules.
+     *
+     * @return list<string>
+     */
+    private static function svelteKitRoots(ScanPlan $plan): array
+    {
+        $roots = [];
+        foreach ($plan->preparation->discovery->files as $file) {
+            if (preg_match('#(?:^|/)svelte\.config\.[cm]?[jt]s$#', $file->relativePath) === 1) {
+                $directory = dirname($file->relativePath);
+                $roots[$directory === '.' ? '' : $directory] = true;
+            }
+        }
+        $roots = array_keys($roots);
+        sort($roots, SORT_STRING);
+
+        return array_map(strval(...), $roots);
     }
 }
