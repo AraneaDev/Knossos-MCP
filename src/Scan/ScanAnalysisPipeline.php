@@ -7,10 +7,10 @@ namespace Knossos\Scan;
 use Knossos\Boundary\BoundaryInference;
 use Knossos\Classification\{
     ClassificationEngine,
-    LibraryPublicApiRule,
     FrameworkFileConventionRule,
     LaravelPathRoleRule,
     LaravelRoleRule,
+    LibraryPublicApiRule,
     ManifestEntryPointRule,
     NameSuffixRule,
     NestJsRoleRule,
