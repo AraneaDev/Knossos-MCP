@@ -384,6 +384,13 @@ final class TypescriptScannerTest extends KnossosTestCase
             'src/reader.ts' => implode("\n", [
                 'function discover(): number { return 1; }',
                 'function DefaultRow(): string { return "row"; }',
+                'function fallbackRun(): number { return 2; }',
+                'function eitherRun(): number { return 3; }',
+                'export function choose(run?: () => number, flag = false): number {',
+                '    const picked = run ?? fallbackRun;',
+                '    const other = flag ? eitherRun : picked;',
+                '    return picked() + other();',
+                '}',
                 'export const reader = { discover };',
                 'export function list(row: () => string = DefaultRow): string { return row(); }',
                 'export function pick({ render = DefaultRow }: { render?: () => string } = {}): string { return render(); }',
@@ -418,6 +425,9 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertArrayContains(['ts:module:src/reader.ts', 'ts:function:src/reader.ts#discover'], $references);
         assertArrayContains(['ts:function:src/reader.ts#list', 'ts:function:src/reader.ts#DefaultRow'], $references);
         assertArrayContains(['ts:function:src/reader.ts#pick', 'ts:function:src/reader.ts#DefaultRow'], $references);
+        // `run ?? fallbackRun` and `flag ? eitherRun : picked` hand a function over too.
+        assertArrayContains(['ts:function:src/reader.ts#choose', 'ts:function:src/reader.ts#fallbackRun'], $references);
+        assertArrayContains(['ts:function:src/reader.ts#choose', 'ts:function:src/reader.ts#eitherRun'], $references);
     }
 
     /**

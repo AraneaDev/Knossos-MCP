@@ -2229,6 +2229,22 @@ function valueReferencePosition(node) {
         parent.initializer === node
     )
         return true;
+    // `input.run ?? defaultRun`, `a || b` and `flag ? a : b`: a fallback or
+    // a choice between functions, either of which may be the one that runs.
+    if (
+        ts.isBinaryExpression(parent) &&
+        [
+            ts.SyntaxKind.QuestionQuestionToken,
+            ts.SyntaxKind.BarBarToken,
+            ts.SyntaxKind.AmpersandAmpersandToken,
+        ].includes(parent.operatorToken.kind)
+    )
+        return true;
+    if (
+        ts.isConditionalExpression(parent) &&
+        (parent.whenTrue === node || parent.whenFalse === node)
+    )
+        return true;
     // `return handler;` and `() => handler`
     if (ts.isReturnStatement(parent) && parent.expression === node) return true;
     if (ts.isArrowFunction(parent) && parent.body === node) return true;
