@@ -28,5 +28,8 @@ final class FunctionBindingCandidatesTest extends KnossosTestCase
         self::assertContains('src/bindings.ts#unusedArrow', $names);
         self::assertNotContains('src/bindings.ts#helper', $names);
         self::assertNotContains('src/bindings.ts#exportedArrow', $names);
+        // Called through a type annotation or a cast: still called.
+        self::assertNotContains('src/bindings.ts#typedAs', $names);
+        self::assertNotContains('src/bindings.ts#annotated', $names);
     }
 }

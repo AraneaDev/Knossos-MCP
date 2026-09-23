@@ -1124,10 +1124,12 @@ class TypeScriptLanguageFactCollector {
             ts.isPropertyAccessExpression(node.expression)
         )
             this.untypedCalls.add(node.expression.name.text);
-        const target = this.symbolReference(
-            signature?.declaration?.symbol,
-            callableKind(signature?.declaration),
-        );
+        const target =
+            this.bindingCallee(node) ??
+            this.symbolReference(
+                signature?.declaration?.symbol,
+                callableKind(signature?.declaration),
+            );
         const source = this.currentSource();
         if (source !== null && target !== null)
             this.addEdge("calls", source, target, node);
@@ -1143,6 +1145,27 @@ class TypeScriptLanguageFactCollector {
                 "framework_convention",
             );
         this.application.call(node, source, calledName);
+    }
+
+    /**
+     * The function binding a call names, or null. A binding typed by an
+     * annotation or a cast is called through that type's signature, whose
+     * declaration is the type rather than the arrow, so the callee's own
+     * symbol is what names the node.
+     */
+    bindingCallee(node) {
+        const callee = ts.isPropertyAccessExpression(node.expression)
+            ? node.expression.name
+            : node.expression;
+        const symbol = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(callee),
+        );
+        return symbol?.declarations?.some((declaration) =>
+            isFunctionBinding(declaration),
+        )
+            ? this.symbolReference(symbol, "function")
+            : null;
     }
 
     /**

@@ -29,7 +29,7 @@ distinction.
 Besides classes, interfaces, enums, type aliases, namespaces, functions and methods, a
 module-level binding whose value is an arrow or function expression is a `function` node:
 `const f = () => {}`, `let f = function () {}`, through parentheses, `as` and `satisfies`. It
-carries `binding` (`const`, `let` or `var`), is the source of the calls in its body, and is the
+carries `binding` (`const`, `let`, `var`, `using` or `await using`), is the source of the calls in its body, and is the
 target of calls and references to it. A binding inside a function or block, or one whose
 initializer wraps the function in a call (`memo(() => ...)`), is not a node.
 

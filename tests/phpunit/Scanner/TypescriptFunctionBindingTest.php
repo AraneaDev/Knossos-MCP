@@ -33,6 +33,8 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
             'make' => ['const', true],
             'unusedArrow' => ['const', false],
             'pairFn' => ['const', true],
+            'annotated' => ['const', true],
+            'disposer' => ['using', false],
         ] as $name => [$binding, $exported]) {
             $node = $scan->node('src/bindings.ts#' . $name);
             self::assertNotNull($node, $name);
@@ -69,6 +71,14 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         self::assertFalse($scan->hasEdge('calls', 'ts:module:src/bindings.ts', $helper));
         // A call from another file, through an import, resolves to the binding.
         self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', $arrow));
+        // Typed by an annotation or a cast, the call's signature is the type's,
+        // not the arrow's; the callee is still the binding.
+        self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:function:src/bindings.ts#typedAs'));
+        self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:function:src/bindings.ts#annotated'));
+        // A dynamic import in the body is the function's own value import.
+        $load = $scan->edge('imports', 'ts:function:src/bindings.ts#load', 'ts:module:src/handler.ts');
+        self::assertNotNull($load);
+        self::assertFalse($load->attributes['type_only'] ?? null);
         // Passed as a value, it is referenced.
         self::assertTrue($scan->hasEdge('references', 'ts:module:src/bindings.ts', $helper));
     }
@@ -83,6 +93,8 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         self::assertSame('function', $card->kind);
         self::assertSame(['react.component'], $card->attributes['typescript_framework_roles'] ?? null);
         self::assertSame(1, $scan->nodesNamed('src/Card.tsx#Card'));
+        // Through `satisfies` too.
+        self::assertSame(['react.component'], $scan->node('src/Card.tsx#Wrapped')?->attributes['typescript_framework_roles'] ?? null);
         // `export const GET = async () => ...` in a route file handles the route.
         self::assertNotNull($scan->node('GET /api/items => app/api/items/route.ts#GET'));
         self::assertTrue($scan->hasEdge('routes_to', 'ts:route:GET /api/items => app/api/items/route.ts#GET', 'ts:function:app/api/items/route.ts#GET'));
@@ -133,13 +145,18 @@ final readonly class FunctionBindingScan
 
     public function hasEdge(string $kind, string $source, string $target): bool
     {
+        return $this->edge($kind, $source, $target) !== null;
+    }
+
+    public function edge(string $kind, string $source, string $target): ?EdgeFact
+    {
         foreach ($this->edges() as $edge) {
             if ($edge->kind === $kind && $edge->sourceReference === $source && $edge->targetReference === $target) {
-                return true;
+                return $edge;
             }
         }
 
-        return false;
+        return null;
     }
 
     /** @return list<NodeFact> */

@@ -37,5 +37,8 @@ export const pairFn = () => 10,
 const { length } = "abc";
 declare const ambientFn: () => void;
 export const mapped = [1].map(helper);
+export const annotated: (n: number) => number = (n) => n;
+export const load = () => import("./handler");
+using disposer = (() => {}) as any;
 export default () => 12;
 export { reassignable, legacy, length, ambientFn };

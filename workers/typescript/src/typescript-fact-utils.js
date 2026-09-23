@@ -120,6 +120,11 @@ export function functionBindingOf(node) {
 /** The keyword a variable declaration is bound with. */
 export function bindingKeyword(declaration) {
     const flags = declaration.parent.flags;
+    // `await using` carries the Const bit, so the two `using` forms are told
+    // apart first.
+    if ((flags & ts.NodeFlags.AwaitUsing) === ts.NodeFlags.AwaitUsing)
+        return "await using";
+    if ((flags & ts.NodeFlags.Using) !== 0) return "using";
     if ((flags & ts.NodeFlags.Const) !== 0) return "const";
     if ((flags & ts.NodeFlags.Let) !== 0) return "let";
     return "var";

@@ -1,5 +1,5 @@
-import { exportedArrow } from "./bindings";
+import { annotated, exportedArrow, typedAs } from "./bindings";
 
 export function callIt() {
-  return exportedArrow();
+  return exportedArrow() + typedAs() + annotated(1);
 }

@@ -7,6 +7,7 @@ import {
     isFunctionBinding,
     propertyNameText,
     reference,
+    unwrapExpression,
 } from "./typescript-fact-utils.js";
 
 /** Adds framework-convention facts without owning or traversing the AST. */
@@ -56,8 +57,8 @@ export class TypeScriptApplicationEnricher {
             ? node
             : ts.isVariableDeclaration(node) &&
                 node.initializer &&
-                isFunctionLike(node.initializer)
-              ? node.initializer
+                isFunctionLike(unwrapExpression(node.initializer))
+              ? unwrapExpression(node.initializer)
               : null;
         if (functionNode && hasUseDirective(functionNode, "use server"))
             roles.push("nextjs.server_action");
