@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "rootDir": "../shared",
+    "outDir": "./dist/shared"
+  },
+  "include": ["../shared/*.ts"]
+}

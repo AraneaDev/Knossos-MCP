@@ -23,8 +23,8 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
         try {
             $contributions = iterator_to_array($client->scan([
                 'root' => self::repositoryRoot() . '/tests/Fixtures/fallback-options',
-                'files' => ['web/src/util.ts', 'web/tests/util.test.ts'],
-                'config_files' => ['web/tsconfig.json'],
+                'files' => ['shared/greet.ts', 'web/src/util.ts', 'web/tests/util.test.ts'],
+                'config_files' => ['web/tsconfig.json', 'web/tsconfig.shared.json'],
             ]), false);
         } finally {
             $client->shutdown();
@@ -45,6 +45,9 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
         }
 
         self::assertContains('ts:module:web/tests/util.test.ts -> ts:module:web/src/util.ts', $imports);
+        // `#shared/*` names a referenced project's build output, which stands
+        // for its sources as it does in the config's own program.
+        self::assertContains('ts:module:web/tests/util.test.ts -> ts:module:shared/greet.ts', $imports);
         // Its `rootDir` describes the package's build, not a test beside it.
         self::assertSame([], $codes);
     }

@@ -7,7 +7,18 @@
     "moduleResolution": "bundler",
     "rootDir": "src",
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": {
+      "@/*": [
+        "src/*"
+      ]
+    }
   },
-  "include": ["src/**/*.ts"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.shared.json"
+    }
+  ]
 }

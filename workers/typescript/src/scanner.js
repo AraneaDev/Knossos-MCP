@@ -348,11 +348,7 @@ export class TypeScriptScanner {
                     programConfig(
                         request,
                         directory,
-                        fallbackConfig(
-                            root,
-                            group.files,
-                            group.parsed?.options,
-                        ),
+                        fallbackConfig(root, group.files, group.parsed),
                     ),
                     request,
                 ),
@@ -4147,7 +4143,8 @@ const FALLBACK_OPTIONS = {
     jsx: ts.JsxEmit.Preserve,
 };
 
-function fallbackConfig(root, remaining, configOptions) {
+function fallbackConfig(root, remaining, config) {
+    const configOptions = config?.options;
     const inherited = {};
     for (const option of RESOLUTION_OPTIONS)
         if (configOptions?.[option] !== undefined)
@@ -4160,7 +4157,9 @@ function fallbackConfig(root, remaining, configOptions) {
         fileNames: remaining.map((relative) =>
             offeredPath(path.join(root, relative)),
         ),
-        projectReferences: undefined,
+        // A referenced project's outputs stand for its sources here as in
+        // the config's own program (`#shared/*` naming its `dist`).
+        projectReferences: config?.projectReferences,
     };
 }
 
