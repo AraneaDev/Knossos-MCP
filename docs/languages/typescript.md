@@ -19,6 +19,9 @@ references remain the primary facts; framework roles use
   `calls_endpoint` edges, including a static `fetch` method option.
 - A leading shebang marks the module `executable`, which keeps a script a shell
   runs (and that nothing therefore imports) off the dead-code report.
+- A module importing `k6` or `k6/*` is a k6 load-test script: it is `executable`, and its
+  default export, `setup`, `teardown`, `handleSummary` and every function a scenario names as
+  its `exec` are marked `runtime_invoked`, since k6 calls them and nothing imports them.
 
 Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that

@@ -126,6 +126,25 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         self::assertNotContains('bind', $untyped);
     }
 
+    public function testAK6ScriptIsRunByK6(): void
+    {
+        $scan = $this->scan();
+
+        // `k6 run load.ts` runs the module; k6 calls its default export,
+        // setup, and every function a scenario names as its exec.
+        self::assertTrue($scan->node('src/load.ts')?->attributes['executable'] ?? null);
+        $invoked = [];
+        foreach ($scan->nodes() as $node) {
+            if ($node->evidence->relativePath === 'src/load.ts' && ($node->attributes['runtime_invoked'] ?? false) === true) {
+                $invoked[] = str_starts_with($node->displayName, '{anonymous}') ? 'default' : $node->displayName;
+            }
+        }
+        sort($invoked);
+        self::assertSame(['browse', 'default', 'setup'], $invoked);
+        // `export default run` names the function k6 calls.
+        self::assertTrue($scan->node('src/load-named.ts#run')?->attributes['runtime_invoked'] ?? null);
+    }
+
     private function scan(): FunctionBindingScan
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/function-bindings';
@@ -133,7 +152,7 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         try {
             $contributions = iterator_to_array($client->scan([
                 'root' => $root,
-                'files' => ['app/api/items/route.ts', 'src/Card.tsx', 'src/bindings.ts', 'src/handler.ts', 'src/level.ts', 'src/user.ts'],
+                'files' => ['app/api/items/route.ts', 'src/Card.tsx', 'src/bindings.ts', 'src/handler.ts', 'src/level.ts', 'src/load-named.ts', 'src/load.ts', 'src/user.ts'],
                 'config_files' => ['tsconfig.json'],
             ]), false);
         } finally {

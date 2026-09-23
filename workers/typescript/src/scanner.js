@@ -657,6 +657,7 @@ class TypeScriptLanguageFactCollector {
         if (component?.dialect === "astro") this.astroProps();
         if (component?.dialect === "vue")
             this.vueOptions(component.templateRanges);
+        if (isK6Script(this.sourceFile)) this.k6Script();
         if (this.untypedCalls.size === 0) return;
         this.accumulator.nodesById.get(
             this.moduleId,
@@ -803,6 +804,70 @@ class TypeScriptLanguageFactCollector {
     }
 
     /** Mark a declared member as called by its framework rather than by code. */
+    /**
+     * A k6 load-test script: `k6 run script.js` runs the module, and k6 calls
+     * its default export, `setup`, `teardown` and `handleSummary`, and every
+     * function a scenario names as its `exec`. Nothing imports any of them.
+     */
+    k6Script() {
+        this.accumulator.nodesById.get(this.moduleId).attributes.executable =
+            true;
+        const invoked = new Set(["setup", "teardown", "handleSummary"]);
+        for (const statement of this.sourceFile.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const declaration of statement.declarationList.declarations) {
+                if (
+                    !ts.isIdentifier(declaration.name) ||
+                    declaration.name.text !== "options"
+                )
+                    continue;
+                const scenarios = objectField(
+                    unwrapExpression(declaration.initializer),
+                    "scenarios",
+                );
+                for (const scenario of scenarios?.properties ?? []) {
+                    const exec = ts.isPropertyAssignment(scenario)
+                        ? objectField(scenario.initializer, "exec")
+                        : undefined;
+                    if (exec !== undefined && ts.isStringLiteral(exec))
+                        invoked.add(exec.text);
+                }
+            }
+        }
+        for (const statement of this.sourceFile.statements) {
+            const modifiers = declarationModifiers(statement);
+            const isDefault = modifiers.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword,
+            );
+            if (ts.isFunctionDeclaration(statement)) {
+                if (
+                    isDefault ||
+                    (statement.name !== undefined &&
+                        invoked.has(statement.name.text))
+                )
+                    this.markRuntimeInvoked(statement);
+            } else if (ts.isVariableStatement(statement)) {
+                for (const declaration of statement.declarationList
+                    .declarations)
+                    if (
+                        isFunctionBinding(declaration) &&
+                        invoked.has(declaration.name.text)
+                    )
+                        this.markRuntimeInvoked(declaration);
+            } else if (
+                ts.isExportAssignment(statement) &&
+                ts.isIdentifier(statement.expression)
+            ) {
+                // `export default run`: the declaration it names.
+                const symbol = this.checker.getSymbolAtLocation(
+                    statement.expression,
+                );
+                for (const declaration of symbol?.declarations ?? [])
+                    this.markRuntimeInvoked(declaration);
+            }
+        }
+    }
+
     markRuntimeInvoked(member) {
         const id = this.declaredIds.get(member);
         const fact =
@@ -2458,6 +2523,17 @@ function declaredAliases(text, rootRelative) {
 }
 
 /** The initializer of `key` in an object literal, or undefined. */
+/** A module that imports `k6` or one of its `k6/...` modules. */
+function isK6Script(sourceFile) {
+    return sourceFile.statements.some(
+        (statement) =>
+            ts.isImportDeclaration(statement) &&
+            ts.isStringLiteral(statement.moduleSpecifier) &&
+            (statement.moduleSpecifier.text === "k6" ||
+                statement.moduleSpecifier.text.startsWith("k6/")),
+    );
+}
+
 function objectField(node, key) {
     if (!ts.isObjectLiteralExpression(node)) return undefined;
     return node.properties.find(
