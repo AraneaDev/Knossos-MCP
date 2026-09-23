@@ -714,6 +714,18 @@ class TypeScriptLanguageFactCollector {
             )
                 groups.set(name, property.initializer.properties);
         }
+        // `props: { items: { default() {}, validator(v) {} } }`.
+        for (const prop of groups.get("props") ?? []) {
+            if (
+                !ts.isPropertyAssignment(prop) ||
+                !ts.isObjectLiteralExpression(prop.initializer)
+            )
+                continue;
+            for (const factory of prop.initializer.properties) {
+                if (["default", "validator"].includes(memberName(factory)))
+                    this.markRuntimeInvoked(factory);
+            }
+        }
         for (const watcher of groups.get("watch") ?? []) {
             this.markRuntimeInvoked(watcher);
             // `watch: { total: 'recount' }` names its handler method.
@@ -2125,7 +2137,7 @@ function withProjectCompilerDefaults(root, directory, parsed, versions) {
  */
 function programConfig(request, directory, parsed) {
     const { root, versions, reads, maxFileBytes } = request;
-    return withSvelteKitAliases(
+    return withBundlerAliases(
         root,
         directory,
         withProjectCompilerDefaults(root, directory, parsed, versions),
@@ -2134,49 +2146,69 @@ function programConfig(request, directory, parsed) {
     );
 }
 
-const SVELTE_CONFIGS = [
+// Bundler and framework configs that declare module aliases, by directory.
+const ALIAS_CONFIGS = [
     "svelte.config.js",
     "svelte.config.mjs",
     "svelte.config.ts",
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.ts",
+    "vite.config.mts",
+    "webpack.config.js",
+    "webpack.config.cjs",
+    "webpack.config.mjs",
+    "webpack.mix.js",
+    "vue.config.js",
 ];
 
 /**
- * The parsed config with SvelteKit's module aliases, when the app at
- * `directory` does not already map them.
+ * The parsed config with the module aliases the project's bundler declares,
+ * for any name the config does not map already.
  *
- * SvelteKit writes `$lib` and every `kit.alias` into a generated
- * `.svelte-kit/tsconfig.json`, which is ignored and so missing from any
- * checkout. Without it an import of `$lib/format` or `$components/Button.svelte`
- * resolved to nothing, and everything imported that way read as unused. The
- * aliases are read from the app's `svelte.config.*`, whose read is recorded.
+ * An import of `~/components/App` or `$lib/format` means what the bundler's
+ * `resolve.alias` (or SvelteKit's `kit.alias`) says, and a project that
+ * relies on the bundler has no tsconfig `paths` for it; SvelteKit writes its
+ * aliases, `$lib` included, into a generated tsconfig no checkout has. Such
+ * imports resolved to nothing, and everything imported that way read as
+ * unused. The configs are read, and recorded, only when they exist.
  */
-function withSvelteKitAliases(root, directory, parsed, reads, maxFileBytes) {
-    const config = SVELTE_CONFIGS.map((name) =>
-        path.join(directory, name),
-    ).find((file) => allowedCompilerPath(root, file) && isRegularFile(file));
-    if (config === undefined || parsed.options.paths?.$lib !== undefined)
-        return parsed;
-    const text = readRecorded(root, config, reads, maxFileBytes);
-    const aliases = {
-        $lib: "src/lib",
-        ...(text === undefined ? {} : svelteKitAliases(text)),
-    };
+function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
+    const aliases = {};
+    for (const name of ALIAS_CONFIGS) {
+        const config = path.join(directory, name);
+        if (!allowedCompilerPath(root, config) || !isRegularFile(config))
+            continue;
+        if (name.startsWith("svelte.")) aliases.$lib ??= "src/lib";
+        const text = readRecorded(root, config, reads, maxFileBytes);
+        if (text !== undefined) Object.assign(aliases, declaredAliases(text));
+    }
+    if (Object.keys(aliases).length === 0) return parsed;
     const paths = { ...parsed.options.paths };
     for (const [name, target] of Object.entries(aliases)) {
         const absolute = normalize(path.resolve(directory, target));
+        if (name.endsWith("/*")) {
+            paths[name] ??= [absolute];
+            continue;
+        }
         paths[name] ??= [absolute];
-        if (!name.endsWith("/*")) paths[`${name}/*`] ??= [`${absolute}/*`];
+        paths[`${name}/*`] ??= [`${absolute}/*`];
     }
     return { ...parsed, options: { ...parsed.options, paths } };
 }
 
-/** The string-valued entries of the `alias` object in a Svelte config. */
-function svelteKitAliases(text) {
+/**
+ * The entries of every `alias` object in a config whose target can be read
+ * without running it: a string, `path.join|resolve(__dirname, …)`, or
+ * `fileURLToPath(new URL('./x', import.meta.url))`. An exact-match key
+ * (`vue$`) names a package, not a directory, and is skipped.
+ */
+function declaredAliases(text) {
     const file = ts.createSourceFile(
-        "svelte.config.ts",
+        "config.ts",
         text,
         ts.ScriptTarget.Latest,
-        false,
+        true,
         ts.ScriptKind.TS,
     );
     const aliases = {};
@@ -2190,14 +2222,49 @@ function svelteKitAliases(text) {
                 const name = ts.isPropertyAssignment(entry)
                     ? staticPropertyName(entry.name)
                     : null;
-                if (name !== null && ts.isStringLiteralLike(entry.initializer))
-                    aliases[name] = entry.initializer.text;
+                const target =
+                    name === null ? null : aliasTarget(entry.initializer);
+                if (target !== null && !name.endsWith("$"))
+                    aliases[name] = target;
             }
         }
         ts.forEachChild(node, visit);
     };
     visit(file);
     return aliases;
+}
+
+/** A directory an alias maps to, relative to its config, or null. */
+function aliasTarget(expression) {
+    if (ts.isStringLiteralLike(expression)) {
+        // A path, not a package (`lodash-es`, `@scope/pkg`).
+        const target = expression.text;
+        return /^\.{0,2}\//.test(target) ||
+            (target.includes("/") && !target.startsWith("@"))
+            ? target
+            : null;
+    }
+    if (!ts.isCallExpression(expression)) return null;
+    const callee = expression.expression.getText();
+    const [first, ...rest] = expression.arguments;
+    if (
+        /(?:^|\.)(?:join|resolve)$/.test(callee) &&
+        first !== undefined &&
+        ts.isIdentifier(first) &&
+        first.text === "__dirname" &&
+        rest.every((part) => ts.isStringLiteralLike(part))
+    )
+        return path.posix.join(".", ...rest.map((part) => part.text));
+    const url = expression.arguments[0];
+    if (
+        callee === "fileURLToPath" &&
+        url !== undefined &&
+        ts.isNewExpression(url) &&
+        url.arguments?.[0] !== undefined &&
+        ts.isStringLiteralLike(url.arguments[0])
+    )
+        return url.arguments[0].text;
+    return null;
 }
 
 /**

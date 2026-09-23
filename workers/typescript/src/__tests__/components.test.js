@@ -425,3 +425,49 @@ export default {
         expect(referenced).toEqual(["helper", "label", "save"]);
     });
 });
+
+describe("a bundler's module aliases", () => {
+    it("resolve imports when no tsconfig maps them", () => {
+        const { contributions } = scan({
+            "webpack.mix.js":
+                "const path = require('path');\nmix.webpackConfig({ resolve: { alias: { '~': path.join(__dirname, './resources/js'), vue$: 'vue/dist/vue.esm.js' } } });\n",
+            "resources/js/app.js":
+                "import App from '~/components/App';\nexport default App;\n",
+            "resources/js/components/App.vue":
+                "<template><div/></template>\n<script>\nexport default { name: 'App' };\n</script>\n",
+        });
+
+        expect(edges(contributions, "imports").map((e) => e.target)).toContain(
+            "ts:module:resources/js/components/App.vue",
+        );
+    });
+
+    it("read Vite's URL form", () => {
+        const { contributions } = scan({
+            "vite.config.ts":
+                "import { fileURLToPath, URL } from 'node:url';\nexport default { resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } } };\n",
+            "src/main.ts": "import { util } from '@/util';\nutil();\n",
+            "src/util.ts": "export function util(): void {}\n",
+        });
+
+        expect(edges(contributions, "imports").map((e) => e.target)).toContain(
+            "ts:module:src/util.ts",
+        );
+    });
+});
+
+describe("a Vue prop's factories", () => {
+    it("are called by Vue", () => {
+        const { contributions } = scan({
+            "src/List.vue":
+                "<template><ul/></template>\n<script>\nexport default { props: { items: { type: Array, default() { return []; }, validator(v) { return true; } } } };\n</script>\n",
+        });
+        const invoked = contributions
+            .flatMap((c) => c.nodes)
+            .filter((n) => n.attributes.runtime_invoked === true)
+            .map((n) => n.display_name)
+            .sort();
+
+        expect(invoked).toEqual(["default", "validator"]);
+    });
+});
