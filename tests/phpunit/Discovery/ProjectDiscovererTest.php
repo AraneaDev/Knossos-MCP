@@ -451,6 +451,31 @@ final class ProjectDiscovererTest extends KnossosTestCase
     }
 
     /**
+     * Whether a package depends on Vue decides whether its bundler resolves
+     * `./Card` to `Card.vue`; the worker is told per manifest, never by what
+     * a request happens to hold.
+     */
+    public function testDiscoverRecordsWhetherEachManifestDependsOnVue(): void
+    {
+        mkdir($this->root . '/web', 0700, true);
+        mkdir($this->root . '/lib', 0700, true);
+        file_put_contents($this->root . '/package.json', '{"devDependencies":{"typescript":"^5.9.3"}}');
+        file_put_contents($this->root . '/web/package.json', '{"dependencies":{"vue":"^3.5.0"}}');
+        file_put_contents($this->root . '/lib/package.json', '{"peerDependencies":{"vue":"^2.7.0"}}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $vue = [];
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                $vue[$unit->configPath] = $unit->metadata['vue'];
+            }
+        }
+        ksort($vue);
+        assertSame(['lib/package.json' => true, 'package.json' => false, 'web/package.json' => true], $vue);
+    }
+
+    /**
      * A package's `main`, `bin` and scripts name what runs, which for a
      * compiled package is the build output: `dist/index.js`. Discovery skips
      * `dist/`, so the name matched nothing and the source it is compiled from,

@@ -376,6 +376,7 @@ final readonly class ProjectDiscoverer
                 'type' => is_string($decoded['type'] ?? null) ? $decoded['type'] : null,
                 'workspaces' => self::workspaces($decoded['workspaces'] ?? []),
                 'typescript_range' => self::typescriptRange($decoded),
+                'vue' => self::dependsOn($decoded, 'vue'),
                 'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
                 'public_entry_points' => self::publicEntryPoints($decoded, $relative),
             ],
@@ -1466,6 +1467,22 @@ final readonly class ProjectDiscoverer
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * Whether a package.json lists a package in any of its dependency tables.
+     *
+     * @param array<string, mixed> $manifest
+     */
+    private static function dependsOn(array $manifest, string $package): bool
+    {
+        foreach (['dependencies', 'devDependencies', 'peerDependencies'] as $table) {
+            if (is_array($manifest[$table] ?? null) && array_key_exists($package, $manifest[$table])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

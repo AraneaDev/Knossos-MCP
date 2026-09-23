@@ -1090,7 +1090,7 @@ final class LanguageScanRunnerTest extends TestCase
                     new ProjectUnit('typescript', 'web/tsconfig.json', 'h2'),
                     new ProjectUnit('cargo', 'rs/Cargo.toml', 'h3'),
                     new ProjectUnit('node', 'package.json', 'h4', ['typescript_range' => '^5.4.0']),
-                    new ProjectUnit('node', 'web/package.json', 'h5', ['typescript_range' => '~6.0']),
+                    new ProjectUnit('node', 'web/package.json', 'h5', ['typescript_range' => '~6.0', 'vue' => true]),
                     new ProjectUnit('node', 'docs/package.json', 'h6', ['typescript_range' => 'latest']),
                     new ProjectUnit('node', 'tools/package.json', 'h7', []),
                 ],
@@ -1125,7 +1125,8 @@ final class LanguageScanRunnerTest extends TestCase
                 [...$limits, 'frameworks' => ['laravel']],
                 // Each manifest's declared TypeScript major, keyed by its
                 // directory; a range naming no version tells the worker nothing.
-                [...$limits, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6]],
+                // And the directories whose manifest depends on Vue.
+                [...$limits, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web']],
                 [...$limits, 'frameworks' => ['django']],
                 [...$limits, 'frameworks' => ['axum'], 'config_files' => ['rs/Cargo.toml']],
             ],

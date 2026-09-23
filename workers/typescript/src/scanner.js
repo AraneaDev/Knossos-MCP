@@ -246,6 +246,9 @@ export class TypeScriptScanner {
             emitted,
             emit,
             versions: params.typescript_versions,
+            vueProjects: Array.isArray(params.vue_projects)
+                ? params.vue_projects
+                : [],
         };
         const tally = (outcome) => {
             if (outcome === undefined) return;
@@ -507,7 +510,6 @@ export class TypeScriptScanner {
             try {
                 const collector = new FactCollector(root, sourceFile, checker, {
                     options: program.getCompilerOptions(),
-                    requested: requestedSet,
                 });
                 collector.collect();
                 contribution = {
@@ -590,7 +592,7 @@ class FactCollector {
 class TypeScriptLanguageFactCollector {
     constructor(root, sourceFile, checker, project = {}) {
         this.root = root;
-        // The program's compiler options and the request's discovered files.
+        // The program's compiler options.
         this.project = project;
         this.sourceFile = sourceFile;
         this.checker = checker;
@@ -1207,33 +1209,39 @@ class TypeScriptLanguageFactCollector {
 
     /**
      * `require.context('./modules', false, /\.js$/)`: webpack bundles every
-     * file of the directory the pattern matches, so each is imported. Matched
-     * against the request's discovered files, never a directory listing, so
-     * the edges depend on nothing discovery did not hash; speculative, like
-     * any import a path literal names.
+     * file of the directory the pattern matches. Which files those are is the
+     * whole graph's business, not this request's (a request holds only the
+     * files that changed), so one unexpanded edge names the directory, the
+     * recursion and the pattern, and the reconciler expands it against every
+     * module the graph holds.
      */
     requireContextImports(node) {
         const [directoryArg, recursiveArg, patternArg] = node.arguments;
-        const directory = this.contextDirectory(directoryArg.text);
+        const absolute = this.contextDirectory(directoryArg.text);
+        const directory =
+            absolute === null ? null : relativeInside(this.root, absolute);
         const pattern =
             patternArg === undefined
-                ? /^\.\/.*$/
+                ? { source: "^\\.\\/.*$", flags: "" }
                 : regularExpressionOf(patternArg);
         if (directory === null || pattern === null) return;
-        const recursive =
-            recursiveArg === undefined ||
-            recursiveArg.kind === ts.SyntaxKind.TrueKeyword;
-        for (const relative of this.project.requested ?? []) {
-            const absolute = normalize(path.join(this.root, relative));
-            if (!contains(directory, absolute) || absolute === directory)
-                continue;
-            const inner = path.posix.relative(directory, absolute);
-            if (
-                (recursive || !inner.includes("/")) &&
-                pattern.test(`./${inner}`)
-            )
-                this.speculativeImport(relative, node);
-        }
+        this.addEdge(
+            "imports",
+            this.currentSource() ?? this.moduleId,
+            reference(
+                "module_context",
+                JSON.stringify({
+                    directory: directory === "." ? "" : directory,
+                    recursive:
+                        recursiveArg === undefined ||
+                        recursiveArg.kind === ts.SyntaxKind.TrueKeyword,
+                    pattern: pattern.source,
+                    flags: pattern.flags,
+                }),
+            ),
+            node,
+            { dynamic: true, type_only: false, context: true },
+        );
     }
 
     /**
@@ -2206,12 +2214,36 @@ function withProjectCompilerDefaults(root, directory, parsed, versions) {
  */
 function programConfig(request, directory, parsed) {
     const { root, versions, reads, maxFileBytes } = request;
-    return withBundlerAliases(
-        root,
-        directory,
-        withProjectCompilerDefaults(root, directory, parsed, versions),
-        reads,
-        maxFileBytes,
+    return {
+        ...withBundlerAliases(
+            root,
+            directory,
+            withProjectCompilerDefaults(root, directory, parsed, versions),
+            reads,
+            maxFileBytes,
+        ),
+        vueProject: inVueProject(root, directory, request.vueProjects),
+    };
+}
+
+/**
+ * Whether a program's directory lies on the path of a package that depends
+ * on Vue: at or below it (the package holds the config), or above it (the
+ * config, or the project root for the fallback program, holds the package).
+ * Decided from manifests the core read, never from the files in a request.
+ */
+function inVueProject(root, directory, vueProjects) {
+    const relative = relativeInside(root, directory);
+    if (relative === null) return false;
+    const here = relative === "." ? "" : relative;
+    return vueProjects.some(
+        (project) =>
+            typeof project === "string" &&
+            (project === "" ||
+                here === "" ||
+                here === project ||
+                here.startsWith(`${project}/`) ||
+                project.startsWith(`${here}/`)),
     );
 }
 
@@ -2349,15 +2381,21 @@ function isRequireContext(node) {
     );
 }
 
-/** The RegExp a regular expression literal spells, or null. */
+/**
+ * The source and flags of a regular expression literal, or null. The
+ * stateful `g` and `y` flags are dropped: webpack tests each key on its own.
+ */
 function regularExpressionOf(node) {
     if (!ts.isRegularExpressionLiteral(node)) return null;
     const match = /^\/(.*)\/([a-z]*)$/s.exec(node.text);
+    if (match === null) return null;
+    const flags = match[2].replace(/[gy]/g, "");
     try {
-        return match === null ? null : new RegExp(match[1], match[2]);
+        new RegExp(match[1], flags);
     } catch {
         return null;
     }
+    return { source: match[1], flags };
 }
 
 /**
@@ -2568,11 +2606,7 @@ function createRestrictedProgram(
             : undefined;
     // Only in a Vue project: the rule is its bundlers', and a retry probes
     // paths that are then recorded.
-    if (
-        parsed.fileNames.some(
-            (file) => componentDialect(realSourcePath(file)) === "vue",
-        )
-    )
+    if (parsed.vueProject === true)
         host.resolveModuleNameLiterals = componentExtensionResolver(
             host,
             options,

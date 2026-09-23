@@ -167,6 +167,10 @@ final readonly class LanguageScanRunner
             if ($versions !== []) {
                 $request['typescript_versions'] = (object) $versions;
             }
+            $vue = self::vueProjects($plan->preparation->discovery->units);
+            if ($vue !== []) {
+                $request['vue_projects'] = $vue;
+            }
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
         } elseif ($descriptor->key === 'rust') {
@@ -403,6 +407,30 @@ final readonly class LanguageScanRunner
     private static function elapsedMilliseconds(int $startedAt): float
     {
         return round((hrtime(true) - $startedAt) / 1_000_000, 3);
+    }
+
+    /**
+     * The directories (`''` for the root) whose package.json depends on Vue.
+     *
+     * Its bundlers resolve `./Card` to `Card.vue`, and the worker needs to know
+     * where that applies from manifests discovery hashed, not from which files
+     * a request holds.
+     *
+     * @param list<ProjectUnit> $units
+     * @return list<string>
+     */
+    private static function vueProjects(array $units): array
+    {
+        $directories = [];
+        foreach ($units as $unit) {
+            if ($unit->kind === 'node' && ($unit->metadata['vue'] ?? false) === true) {
+                $directory = dirname($unit->configPath);
+                $directories[] = $directory === '.' ? '' : $directory;
+            }
+        }
+        sort($directories, SORT_STRING);
+
+        return $directories;
     }
 
     /**

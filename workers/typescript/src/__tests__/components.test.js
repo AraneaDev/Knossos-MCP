@@ -17,7 +17,7 @@ afterEach(() => {
         fs.rmSync(created.pop(), { recursive: true, force: true });
 });
 
-function scan(files, requested = Object.keys(files), configFiles) {
+function scan(files, requested = Object.keys(files), configFiles, extra = {}) {
     const root = fs.realpathSync(
         fs.mkdtempSync(join(tmpdir(), "knossos-ts-components-")),
     );
@@ -32,6 +32,7 @@ function scan(files, requested = Object.keys(files), configFiles) {
             root,
             files: requested,
             ...(configFiles ? { config_files: configFiles } : {}),
+            ...extra,
         },
         (c) => contributions.push(c),
     );
@@ -358,14 +359,35 @@ describe("a SvelteKit app without its generated tsconfig", () => {
 });
 
 describe("an extensionless import of a Vue component", () => {
+    const files = {
+        "src/components/Card.vue":
+            "<template><div/></template>\n<script>\nexport default { name: 'Card' };\n</script>\n",
+        "src/main.js":
+            "import Card from './components/Card';\nexport default [Card];\n",
+        "src/other.js":
+            "import Missing from './components/Nothing';\nexport default Missing;\n",
+    };
+
+    it("follows the manifest, not which files a request holds", () => {
+        // An incremental scan sends only what changed: the component is not in
+        // the request, but the package still depends on Vue.
+        const alone = scan(files, ["src/main.js"], undefined, {
+            vue_projects: [""],
+        });
+        expect(
+            edges(alone.contributions, "imports").map((e) => e.target),
+        ).toContain("ts:module:src/components/Card.vue");
+
+        // No manifest declares Vue: a `.vue` file in the request changes nothing.
+        const unrelated = scan(files);
+        expect(
+            edges(unrelated.contributions, "imports").map((e) => e.target),
+        ).not.toContain("ts:module:src/components/Card.vue");
+    });
+
     it("resolves as webpack's resolve.extensions does", () => {
-        const { contributions } = scan({
-            "src/components/Card.vue":
-                "<template><div/></template>\n<script>\nexport default { name: 'Card' };\n</script>\n",
-            "src/main.js":
-                "import Card from './components/Card';\nexport default [Card];\n",
-            "src/other.js":
-                "import Missing from './components/Nothing';\nexport default Missing;\n",
+        const { contributions } = scan(files, Object.keys(files), undefined, {
+            vue_projects: [""],
         });
         const imports = edges(contributions, "imports").map(
             (e) => `${e.source} -> ${e.target}`,
@@ -428,14 +450,19 @@ export default {
 
 describe("a bundler's module aliases", () => {
     it("resolve imports when no tsconfig maps them", () => {
-        const { contributions } = scan({
-            "webpack.mix.js":
-                "const path = require('path');\nmix.webpackConfig({ resolve: { alias: { '~': path.join(__dirname, './resources/js'), vue$: 'vue/dist/vue.esm.js' } } });\n",
-            "resources/js/app.js":
-                "import App from '~/components/App';\nexport default App;\n",
-            "resources/js/components/App.vue":
-                "<template><div/></template>\n<script>\nexport default { name: 'App' };\n</script>\n",
-        });
+        const { contributions } = scan(
+            {
+                "webpack.mix.js":
+                    "const path = require('path');\nmix.webpackConfig({ resolve: { alias: { '~': path.join(__dirname, './resources/js'), vue$: 'vue/dist/vue.esm.js' } } });\n",
+                "resources/js/app.js":
+                    "import App from '~/components/App';\nexport default App;\n",
+                "resources/js/components/App.vue":
+                    "<template><div/></template>\n<script>\nexport default { name: 'App' };\n</script>\n",
+            },
+            undefined,
+            undefined,
+            { vue_projects: [""] },
+        );
 
         expect(edges(contributions, "imports").map((e) => e.target)).toContain(
             "ts:module:resources/js/components/App.vue",
@@ -473,38 +500,45 @@ describe("a Vue prop's factories", () => {
 });
 
 describe("webpack's require.context", () => {
-    it("imports every matching file of the directory it names", () => {
+    it("names the directory, recursion and pattern for the core to expand", () => {
+        // Which files it loads is the whole graph's business: a request holds
+        // only the files that changed.
         const { contributions } = scan({
             "webpack.mix.js":
                 "const path = require('path');\nmix.webpackConfig({ resolve: { alias: { '~': path.join(__dirname, './js') } } });\n",
             "js/store/index.js":
-                "const modules = require.context('./modules', false, /.*\\.js$/);\nexport default modules;\n",
-            "js/store/modules/auth.js": "export default {};\n",
-            "js/store/modules/nested/deep.js": "export default {};\n",
-            "js/store/modules/notes.txt.js": "export default {};\n",
+                "const modules = require.context('./modules', false, /.*\\.js$/g);\nexport default modules;\n",
             "js/App.vue":
-                "<template><div/></template>\n<script>\nconst layouts = require.context('~/layouts', false, /.*\\.vue$/);\nexport default { layouts };\n</script>\n",
-            "js/layouts/basic.vue": "<template><div/></template>\n",
-            "js/layouts/helper.js": "export default {};\n",
+                "<template><div/></template>\n<script>\nconst layouts = require.context('~/layouts');\nexport default { layouts };\n</script>\n",
         });
-        const imports = edges(contributions, "imports").map(
-            (e) => `${e.source} -> ${e.target}`,
-        );
+        const contexts = edges(contributions, "imports")
+            .filter((e) => e.target.startsWith("ts:module_context:"))
+            .map((e) => [
+                e.source,
+                JSON.parse(e.target.slice("ts:module_context:".length)),
+            ])
+            .sort((a, b) => a[0].localeCompare(b[0]));
 
-        expect(imports).toContain(
-            "ts:module:js/store/index.js -> ts:module:js/store/modules/auth.js",
-        );
-        expect(imports).toContain(
-            "ts:module:js/store/index.js -> ts:module:js/store/modules/notes.txt.js",
-        );
-        // Not recursive.
-        expect(imports.some((i) => i.includes("nested/deep.js"))).toBe(false);
-        expect(imports).toContain(
-            "ts:module:js/App.vue -> ts:module:js/layouts/basic.vue",
-        );
-        // The pattern does not match.
-        expect(imports.some((i) => i.includes("layouts/helper.js"))).toBe(
-            false,
-        );
+        expect(contexts).toEqual([
+            [
+                "ts:module:js/App.vue",
+                {
+                    directory: "js/layouts",
+                    recursive: true,
+                    pattern: "^\\.\\/.*$",
+                    flags: "",
+                },
+            ],
+            [
+                "ts:module:js/store/index.js",
+                // The stateful `g` flag is dropped.
+                {
+                    directory: "js/store/modules",
+                    recursive: false,
+                    pattern: ".*\\.js$",
+                    flags: "",
+                },
+            ],
+        ]);
     });
 });
