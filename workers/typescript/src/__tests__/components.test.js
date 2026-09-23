@@ -356,3 +356,23 @@ describe("a SvelteKit app without its generated tsconfig", () => {
         expect(imports).toContain("ts:module:apps/web/src/lib/format.ts");
     });
 });
+
+describe("an extensionless import of a Vue component", () => {
+    it("resolves as webpack's resolve.extensions does", () => {
+        const { contributions } = scan({
+            "src/components/Card.vue":
+                "<template><div/></template>\n<script>\nexport default { name: 'Card' };\n</script>\n",
+            "src/main.js":
+                "import Card from './components/Card';\nexport default [Card];\n",
+            "src/other.js": "import Missing from './components/Nothing';\nexport default Missing;\n",
+        });
+        const imports = edges(contributions, "imports").map(
+            (e) => `${e.source} -> ${e.target}`,
+        );
+
+        expect(imports).toContain(
+            "ts:module:src/main.js -> ts:module:src/components/Card.vue",
+        );
+        expect(imports.some((i) => i.includes("Nothing.vue"))).toBe(false);
+    });
+});

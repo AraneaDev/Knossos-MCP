@@ -2272,6 +2272,17 @@ function createRestrictedProgram(
         allowedCompilerPath(root, file)
             ? readRecorded(root, file, reads, maxFileBytes)
             : undefined;
+    // Only in a Vue project: the rule is its bundlers', and a retry probes
+    // paths that are then recorded.
+    if (
+        parsed.fileNames.some(
+            (file) => componentDialect(realSourcePath(file)) === "vue",
+        )
+    )
+        host.resolveModuleNameLiterals = componentExtensionResolver(
+            host,
+            options,
+        );
     return ts.createProgram({
         rootNames: parsed.fileNames,
         options,
@@ -2279,6 +2290,58 @@ function createRestrictedProgram(
         host,
         oldProgram,
     });
+}
+
+/**
+ * Module resolution as the compiler does it, plus the `.vue` extension for a
+ * path that resolves to nothing without it.
+ *
+ * webpack and Vue CLI list `.vue` in `resolve.extensions`, so Vue projects
+ * import `./components/Card` and mean `Card.vue`, which the compiler never
+ * tries. Every component imported that way read as unused. Only a relative
+ * or path-mapped specifier with no extension is retried, and only when it
+ * resolved to nothing.
+ */
+function componentExtensionResolver(host, options) {
+    const cache = ts.createModuleResolutionCache(
+        host.getCurrentDirectory(),
+        host.getCanonicalFileName,
+        options,
+    );
+    return (
+        literals,
+        containingFile,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+    ) =>
+        literals.map((literal) => {
+            const resolve = (name) =>
+                ts.resolveModuleName(
+                    name,
+                    containingFile,
+                    compilerOptions,
+                    host,
+                    cache,
+                    redirectedReference,
+                    ts.getModeForUsageLocation(
+                        containingSourceFile,
+                        literal,
+                        compilerOptions,
+                    ),
+                );
+            const resolved = resolve(literal.text);
+            if (
+                resolved.resolvedModule !== undefined ||
+                !literal.text.includes("/") ||
+                path.posix.extname(literal.text) !== ""
+            )
+                return resolved;
+            const component = resolve(`${literal.text}.vue`);
+            return component.resolvedModule !== undefined
+                ? component
+                : resolved;
+        });
 }
 
 function diagnosticsForProgram(program, root, maxFileBytes) {
