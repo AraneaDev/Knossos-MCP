@@ -43,9 +43,10 @@ export function blankSource(text) {
  *
  * `scriptRanges` are the offsets kept byte for byte, `templateRanges` the
  * markup expressions were read from, and `typed` whether the script is
- * TypeScript (always for Astro).
+ * TypeScript (always for Astro). `fileName` names SvelteKit's route files,
+ * whose props the framework types.
  */
-export function toVirtualSource(text, dialect) {
+export function toVirtualSource(text, dialect, fileName = "") {
     const out = blankSource(text).split("");
     const blocks = scanBlocks(text, dialect);
     for (const [from, to] of blocks.scripts) {
@@ -68,11 +69,123 @@ export function toVirtualSource(text, dialect) {
         else braceMarkup(writer, from, to, dialect);
     }
     return {
-        text: out.join(""),
+        text:
+            out.join("") +
+            (dialect === "astro" ? astroGlobal(text, blocks.scripts) : "") +
+            (dialect === "svelte" ? routeProps(fileName) : "") +
+            typeParameters(blocks.generics),
         scriptRanges: blocks.scripts,
         templateRanges: blocks.markup,
         typed: blocks.typed,
     };
+}
+
+/**
+ * A SvelteKit route component's `$props()`, as svelte-check types it: its
+ * `data` is what the route's load returns, from the `./$types` that
+ * `svelte-kit sync` generates beside it. Without it `data` was untyped, and
+ * every callback on what it holds reported an implicitly `any` parameter.
+ * A module-scoped `$props` shadows the global rune; where `./$types` was
+ * never generated it resolves to nothing and `data` stays untyped.
+ */
+function routeProps(fileName) {
+    const route = /(?:^|[\\/])\+(page|layout)(?:@[^\\/]*)?\.svelte$/.exec(
+        fileName,
+    );
+    if (route === null) return "";
+    const props =
+        route[1] === "page"
+            ? '{ data: import("./$types").PageData; form: import("./$types").ActionData; [prop: string]: any }'
+            : '{ data: import("./$types").LayoutData; [prop: string]: any }';
+    // `$props.id()` is the rune's too, and the global's namespace is shadowed
+    // along with its function.
+    return `\nexport {};\ndeclare function $props(): ${props};\ndeclare namespace $props {\n    function id(): string;\n}\n`;
+}
+
+/**
+ * The type parameters a script tag declares: `generics="T"` in Svelte,
+ * `generic="T"` in Vue.
+ */
+function scriptGenerics(attributes, dialect) {
+    const parameters = attributes.get(
+        dialect === "vue" ? "generic" : "generics",
+    );
+    return typeof parameters === "string" ? [parameters] : [];
+}
+
+/**
+ * A generic component's type parameters, which its script tag declares in an
+ * attribute (`generics="T extends { id: number }"`) where the compiler never
+ * sees them, so every use of `T` was a name that does not exist. Each becomes
+ * an alias of its constraint, else its default, else `unknown`: what the
+ * component may assume of it. Appended after the component's own text, as
+ * the Astro global is, and module-scoped.
+ */
+function typeParameters(attributes) {
+    const declarations = attributes
+        .flatMap((attribute) => splitTopLevel(attribute, ","))
+        .map((parameter) => {
+            const [head = "", fallback] = splitTopLevel(parameter, "=").map(
+                (part) => part.trim(),
+            );
+            const match =
+                /^\s*([A-Za-z_$][\w$]*)(?:\s+extends\s+([\s\S]+))?$/.exec(head);
+            if (match === null) return "";
+            const type = match[2] ?? fallback ?? "unknown";
+            return `type ${match[1]} = ${type.trim()};\n`;
+        })
+        .join("");
+    return declarations === "" ? "" : `\nexport {};\n${declarations}`;
+}
+
+/**
+ * `text` split at each `separator` outside brackets, braces, parentheses and
+ * angle brackets; an `=` that is part of `=>` does not split.
+ */
+function splitTopLevel(text, separator) {
+    const parts = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if ("<([{".includes(char)) depth++;
+        else if (char === ">" && text[i - 1] !== "=") depth--;
+        else if (")]}".includes(char)) depth--;
+        else if (
+            char === separator &&
+            depth === 0 &&
+            !(separator === "=" && text[i + 1] === ">")
+        ) {
+            parts.push(text.slice(start, i));
+            start = i + 1;
+        }
+    }
+    parts.push(text.slice(start));
+    return parts.filter((part) => part.trim() !== "");
+}
+
+/**
+ * The `Astro` global as Astro's own tooling gives it to a component: its
+ * `AstroGlobal`, with `props` typed by the component's `Props` when its
+ * frontmatter declares one. The shared `astro/client` declaration leaves
+ * `props` a loose record, so a field read from it took the type of its
+ * destructuring default (`params = {}` became `{}`) and code Astro accepts
+ * reported type errors. Appended after the component's own text, which it
+ * therefore moves nowhere, and module-scoped, so it shadows that global.
+ * Where Astro is not installed the import resolves to nothing and `Astro` is
+ * untyped, as it was; what the appended text reports lies outside every
+ * script range, so it is never kept.
+ */
+function astroGlobal(text, scripts) {
+    const declaresProps = scripts.some(([from, to]) =>
+        /\b(?:interface\s+Props\s*(?:extends\b|\{)|type\s+Props\s*=)/.test(
+            text.slice(from, to),
+        ),
+    );
+    const global = declaresProps
+        ? 'import("astro").AstroGlobal<Props>'
+        : 'import("astro").AstroGlobal';
+    return `\nexport {};\ndeclare const Astro: ${global};\n`;
 }
 
 /**
@@ -103,6 +216,7 @@ function write(out, offset, value) {
 function scanBlocks(text, dialect) {
     const scripts = [];
     const markup = [];
+    const generics = [];
     let typed = dialect === "astro";
     let position = 0;
     let markupStart = 0;
@@ -177,13 +291,14 @@ function scanBlocks(text, dialect) {
                 typed = true;
             if (executableScript(attributes))
                 scripts.push([contentStart, closeTag]);
+            generics.push(...scriptGenerics(attributes, dialect));
         } else if (block === "template") {
             markup.push([contentStart, closeTag]);
         }
         position = markupStart = afterTag(text, closeTag);
     }
     flush(text.length);
-    return { scripts, markup, typed };
+    return { scripts, markup, typed, generics };
 }
 
 /**

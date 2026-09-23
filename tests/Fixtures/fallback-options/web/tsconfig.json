@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "composite": true,
+    "noUncheckedIndexedAccess": true,
+    "module": "esnext",
+    "moduleResolution": "node",
+    "rootDir": "src",
+    "paths": {
+      "@/*": [
+        "./src/*"
+      ]
+    },
+    "outDir": "./dist",
+    "lib": [
+      "es2015"
+    ]
+  },
+  "include": [
+    "src/**/*.ts"
+  ],
+  "references": [
+    {
+      "path": "./tsconfig.shared.json"
+    }
+  ]
+}

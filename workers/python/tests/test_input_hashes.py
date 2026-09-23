@@ -664,7 +664,7 @@ def test_a_read_through_a_link_with_dot_dot_the_kernel_cannot_apply_is_keyed_by_
     assert index.module_declarations("pkg.lnk") == {}
     _includes(index.read_hashes, {link: None})
     assert "pkg/c.py" not in index.read_hashes
-    assert worker.input_key(root, root / "pkg" / "lnk.py") == link
+    assert worker.walk_key(root, worker.walk_path(root / "pkg" / "lnk.py")) == link
 
 
 def test_a_read_through_a_directory_link_with_dot_dot_that_resolves_is_keyed_by_the_file_opened(

@@ -109,6 +109,42 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         self::assertTrue($scan->hasEdge('returns', 'ts:function:src/bindings.ts#make', 'ts:interface:src/handler.ts#Handler'));
     }
 
+    public function testABoundCalledOrAppliedMemberIsUsed(): void
+    {
+        $scan = $this->scan();
+        $complete = 'ts:method:src/level.ts#Level::complete';
+
+        // `this.formatTime.bind(this)` and `this.helper.call(this)` hand the
+        // method on; neither is a call the checker resolves to it.
+        self::assertTrue($scan->hasEdge('references', $complete, 'ts:method:src/level.ts#Level::formatTime'));
+        self::assertTrue($scan->hasEdge('references', $complete, 'ts:method:src/level.ts#Level::helper'));
+        self::assertTrue($scan->hasEdge('references', 'ts:module:src/level.ts', 'ts:function:src/level.ts#standalone'));
+        // On a receiver no type describes, the member's name is what may be
+        // reached, not `bind`.
+        $untyped = $scan->node('src/level.ts')?->attributes['unresolved_member_calls'] ?? [];
+        self::assertContains('formatTime', $untyped);
+        self::assertNotContains('bind', $untyped);
+    }
+
+    public function testAK6ScriptIsRunByK6(): void
+    {
+        $scan = $this->scan();
+
+        // `k6 run load.ts` runs the module; k6 calls its default export,
+        // setup, and every function a scenario names as its exec.
+        self::assertTrue($scan->node('src/load.ts')?->attributes['executable'] ?? null);
+        $invoked = [];
+        foreach ($scan->nodes() as $node) {
+            if ($node->evidence->relativePath === 'src/load.ts' && ($node->attributes['runtime_invoked'] ?? false) === true) {
+                $invoked[] = str_starts_with($node->displayName, '{anonymous}') ? 'default' : $node->displayName;
+            }
+        }
+        sort($invoked);
+        self::assertSame(['browse', 'default', 'setup'], $invoked);
+        // `export default run` names the function k6 calls.
+        self::assertTrue($scan->node('src/load-named.ts#run')?->attributes['runtime_invoked'] ?? null);
+    }
+
     private function scan(): FunctionBindingScan
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/function-bindings';
@@ -116,7 +152,7 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         try {
             $contributions = iterator_to_array($client->scan([
                 'root' => $root,
-                'files' => ['app/api/items/route.ts', 'src/Card.tsx', 'src/bindings.ts', 'src/handler.ts', 'src/user.ts'],
+                'files' => ['app/api/items/route.ts', 'src/Card.tsx', 'src/bindings.ts', 'src/handler.ts', 'src/level.ts', 'src/load-named.ts', 'src/load.ts', 'src/user.ts'],
                 'config_files' => ['tsconfig.json'],
             ]), false);
         } finally {

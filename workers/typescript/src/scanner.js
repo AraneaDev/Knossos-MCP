@@ -271,6 +271,7 @@ export class TypeScriptScanner {
             parseConfig(root, configPath, reads),
         ]);
         request.owners = configOwners(root, parsedConfigs);
+        request.outputSources = outputSources(root, parsedConfigs);
 
         for (const [configPath, parsed] of parsedConfigs) {
             request.owner = configPath;
@@ -292,17 +293,7 @@ export class TypeScriptScanner {
             (relative) => !emitted.has(normalize(relative)),
         );
         if (remaining.length > 0) {
-            // Whatever no config's program emitted, owned or not.
-            request.owner = undefined;
-            request.owners = new Map();
-            const parsed = fallbackConfig(root, remaining);
-            tally(
-                this.#scanProgram(
-                    `${root}\0<fallback>`,
-                    programConfig(request, root, parsed),
-                    request,
-                ),
-            );
+            this.#scanFallback(root, remaining, parsedConfigs, request, tally);
         }
 
         // Backstop: the PHP side requires exactly one contribution per requested
@@ -336,6 +327,34 @@ export class TypeScriptScanner {
             programs_reused: programsReused,
             input_hashes: reads.toResult(),
         };
+    }
+
+    /**
+     * Whatever no config's program emitted, owned or not, read under the
+     * options of the config beside it: a package's tests are often outside
+     * its tsconfig's `include`, and its test runner still resolves them
+     * through that package's aliases and paths.
+     */
+    #scanFallback(root, remaining, parsedConfigs, request, tally) {
+        request.owner = undefined;
+        request.owners = new Map();
+        for (const [directory, group] of fallbackGroups(
+            root,
+            remaining,
+            parsedConfigs,
+        )) {
+            tally(
+                this.#scanProgram(
+                    `${directory}\0<fallback>`,
+                    programConfig(
+                        request,
+                        directory,
+                        fallbackConfig(root, group.files, group.parsed),
+                    ),
+                    request,
+                ),
+            );
+        }
     }
 
     /**
@@ -657,6 +676,7 @@ class TypeScriptLanguageFactCollector {
         if (component?.dialect === "astro") this.astroProps();
         if (component?.dialect === "vue")
             this.vueOptions(component.templateRanges);
+        if (isK6Script(this.sourceFile)) this.k6Script();
         if (this.untypedCalls.size === 0) return;
         this.accumulator.nodesById.get(
             this.moduleId,
@@ -803,6 +823,70 @@ class TypeScriptLanguageFactCollector {
     }
 
     /** Mark a declared member as called by its framework rather than by code. */
+    /**
+     * A k6 load-test script: `k6 run script.js` runs the module, and k6 calls
+     * its default export, `setup`, `teardown` and `handleSummary`, and every
+     * function a scenario names as its `exec`. Nothing imports any of them.
+     */
+    k6Script() {
+        this.accumulator.nodesById.get(this.moduleId).attributes.executable =
+            true;
+        const invoked = new Set(["setup", "teardown", "handleSummary"]);
+        for (const statement of this.sourceFile.statements) {
+            if (!ts.isVariableStatement(statement)) continue;
+            for (const declaration of statement.declarationList.declarations) {
+                if (
+                    !ts.isIdentifier(declaration.name) ||
+                    declaration.name.text !== "options"
+                )
+                    continue;
+                const scenarios = objectField(
+                    unwrapExpression(declaration.initializer),
+                    "scenarios",
+                );
+                for (const scenario of scenarios?.properties ?? []) {
+                    const exec = ts.isPropertyAssignment(scenario)
+                        ? objectField(scenario.initializer, "exec")
+                        : undefined;
+                    if (exec !== undefined && ts.isStringLiteral(exec))
+                        invoked.add(exec.text);
+                }
+            }
+        }
+        for (const statement of this.sourceFile.statements) {
+            const modifiers = declarationModifiers(statement);
+            const isDefault = modifiers.some(
+                (modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword,
+            );
+            if (ts.isFunctionDeclaration(statement)) {
+                if (
+                    isDefault ||
+                    (statement.name !== undefined &&
+                        invoked.has(statement.name.text))
+                )
+                    this.markRuntimeInvoked(statement);
+            } else if (ts.isVariableStatement(statement)) {
+                for (const declaration of statement.declarationList
+                    .declarations)
+                    if (
+                        isFunctionBinding(declaration) &&
+                        invoked.has(declaration.name.text)
+                    )
+                        this.markRuntimeInvoked(declaration);
+            } else if (
+                ts.isExportAssignment(statement) &&
+                ts.isIdentifier(statement.expression)
+            ) {
+                // `export default run`: the declaration it names.
+                const symbol = this.checker.getSymbolAtLocation(
+                    statement.expression,
+                );
+                for (const declaration of symbol?.declarations ?? [])
+                    this.markRuntimeInvoked(declaration);
+            }
+        }
+    }
+
     markRuntimeInvoked(member) {
         const id = this.declaredIds.get(member);
         const fact =
@@ -1123,8 +1207,16 @@ class TypeScriptLanguageFactCollector {
         if (
             signature?.declaration === undefined &&
             ts.isPropertyAccessExpression(node.expression)
-        )
-            this.untypedCalls.add(node.expression.name.text);
+        ) {
+            // `x.m.bind(...)` on an untyped `x` may reach any `m`; the name
+            // `bind` says nothing about which.
+            const bound = boundFunction(node.expression);
+            this.untypedCalls.add(
+                bound !== undefined && ts.isPropertyAccessExpression(bound)
+                    ? bound.name.text
+                    : node.expression.name.text,
+            );
+        }
         const target =
             this.bindingCallee(node) ??
             this.symbolReference(
@@ -1656,6 +1748,8 @@ function parseConfig(root, configPath, reads) {
     const ownFileNames = [...fileNames];
     const pending = [...(parsed.projectReferences ?? [])];
     const visited = new Set([absolute]);
+    // Where each referenced config emits, which outputSources() maps back.
+    const referencedOutputs = [];
     while (pending.length > 0) {
         const reference = pending.pop();
         const referenceConfig = normalize(
@@ -1679,10 +1773,12 @@ function parseConfig(root, configPath, reads) {
         for (const file of referenced.fileNames) {
             if (allowedCompilerPath(root, file)) fileNames.add(file);
         }
+        referencedOutputs.push([referenceConfig, referenced.options]);
         pending.push(...(referenced.projectReferences ?? []));
     }
     parsed.fileNames = [...fileNames].map(offeredComponentPath);
     parsed.ownFileNames = ownFileNames.map(offeredComponentPath);
+    parsed.referencedOutputs = referencedOutputs;
     // References are kept, and the host resolves a reference's build output
     // back to its source (see createRestrictedProgram), so an import of
     // `../lib/dist/index.js` or a package.json `imports` alias onto it lands
@@ -1840,7 +1936,7 @@ function componentSource(readPath, decoded) {
     const dialect = componentDialect(readPath);
     if (dialect === null) return undefined;
     try {
-        return { dialect, ...toVirtualSource(decoded, dialect) };
+        return { dialect, ...toVirtualSource(decoded, dialect, readPath) };
     } catch (error) {
         rethrowStackOverflow(error);
         return {
@@ -2314,6 +2410,7 @@ function programConfig(request, directory, parsed) {
             maxFileBytes,
         ),
         vueProject: inVueProject(root, directory, request.vueProjects),
+        outputSources: request.outputSources ?? [],
     };
 }
 
@@ -2450,6 +2547,17 @@ function declaredAliases(text, rootRelative) {
 }
 
 /** The initializer of `key` in an object literal, or undefined. */
+/** A module that imports `k6` or one of its `k6/...` modules. */
+function isK6Script(sourceFile) {
+    return sourceFile.statements.some(
+        (statement) =>
+            ts.isImportDeclaration(statement) &&
+            ts.isStringLiteral(statement.moduleSpecifier) &&
+            (statement.moduleSpecifier.text === "k6" ||
+                statement.moduleSpecifier.text.startsWith("k6/")),
+    );
+}
+
 function objectField(node, key) {
     if (!ts.isObjectLiteralExpression(node)) return undefined;
     return node.properties.find(
@@ -2601,6 +2709,34 @@ function defaultLibDirectory() {
     return normalize(path.dirname(ts.getDefaultLibFilePath({})));
 }
 
+/**
+ * The program's files, with the installed `svelte` package's declarations
+ * when any of them is a Svelte component. The runes (`$state`, `$derived`,
+ * `$props`) are globals that package declares, and svelte-check gives every
+ * component those declarations; without them each rune returned `any`, and
+ * every callback on what it returned reported an implicitly `any` parameter.
+ * Resolved as the components would import `svelte`, so `paths` and the
+ * package's own `types` entry decide the file, and nothing is added when it
+ * is not installed.
+ */
+function withSvelteRunes(fileNames, options, host) {
+    // Offered under their `X.svelte.ts` alias (see COMPONENT_ALIAS).
+    const component = fileNames.find(
+        (name) => COMPONENT_ALIAS.exec(name)?.[1].toLowerCase() === "svelte",
+    );
+    if (component === undefined) return fileNames;
+    const resolved = ts.resolveModuleName(
+        "svelte",
+        component,
+        options,
+        host,
+    ).resolvedModule;
+    return resolved?.extension === ts.Extension.Dts &&
+        !fileNames.includes(resolved.resolvedFileName)
+        ? [...fileNames, resolved.resolvedFileName]
+        : fileNames;
+}
+
 function createRestrictedProgram(
     root,
     parsed,
@@ -2740,9 +2876,11 @@ function createRestrictedProgram(
         host,
         cache,
         parsed.vueProject === true,
+        parsed.outputSources ?? [],
+        (file) => allowedCompilerPath(root, file),
     );
     return ts.createProgram({
-        rootNames: parsed.fileNames,
+        rootNames: withSvelteRunes(parsed.fileNames, options, host),
         options,
         projectReferences: parsed.projectReferences,
         host,
@@ -2763,7 +2901,78 @@ function createRestrictedProgram(
  * stays off elsewhere. The resolution mode follows a project reference's own
  * options, as the compiler's default loader does.
  */
-function componentResolver(host, cache, vueProject) {
+/**
+ * Where each config in the scan, and each config one references, emits
+ * (`outDir`) and what it emits from (`rootDir`, else its own directory).
+ */
+function outputSources(root, parsedConfigs) {
+    const configs = parsedConfigs.flatMap(([configPath, parsed]) => [
+        [path.join(root, configPath), parsed.options],
+        ...(parsed.referencedOutputs ?? []),
+    ]);
+    return configs
+        .flatMap(([configFile, options]) =>
+            options.outDir === undefined
+                ? []
+                : [
+                      {
+                          outDir: normalize(options.outDir),
+                          rootDir: normalize(
+                              options.rootDir ?? path.dirname(configFile),
+                          ),
+                      },
+                  ],
+        )
+        .sort((a, b) => b.outDir.length - a.outDir.length);
+}
+
+const BUILD_SOURCE_EXTENSIONS = new Map([
+    [".ts", ts.Extension.Ts],
+    [".tsx", ts.Extension.Tsx],
+    [".mts", ts.Extension.Mts],
+    [".cts", ts.Extension.Cts],
+]);
+
+/**
+ * A module that resolved to, or only failed to find, another config's build
+ * output, which is never read (see allowedCompilerPath), as the source that
+ * output is built from: `#shared/x` naming `dist/shared/x.js` is that config's `x.ts`, the
+ * file its build keeps the output in step with. Undefined when no failed
+ * lookup lies in a known `outDir` or the source is not there.
+ */
+function sourceOfBuildOutput(result, outputs, host) {
+    const locations = [
+        ...(result.resolvedModule === undefined
+            ? []
+            : [result.resolvedModule.resolvedFileName]),
+        ...(result.failedLookupLocations ?? []),
+    ];
+    for (const location of locations) {
+        // Every output directory holding it, the nearest first: a config
+        // emitting to `dist/shared` beside one emitting to `dist`.
+        for (const output of outputs) {
+            if (!location.startsWith(output.outDir + "/")) continue;
+            const stem = location
+                .slice(output.outDir.length + 1)
+                .replace(/\.(?:d\.)?[cm]?[jt]sx?$/, "");
+            for (const [suffix, extension] of BUILD_SOURCE_EXTENSIONS) {
+                const candidate = `${output.rootDir}/${stem}${suffix}`;
+                if (host.fileExists(candidate))
+                    return {
+                        resolvedModule: {
+                            resolvedFileName: candidate,
+                            extension,
+                            isExternalLibraryImport: false,
+                        },
+                        failedLookupLocations: result.failedLookupLocations,
+                    };
+            }
+        }
+    }
+    return undefined;
+}
+
+function componentResolver(host, cache, vueProject, outputs, readable) {
     return (
         literals,
         containingFile,
@@ -2787,9 +2996,15 @@ function componentResolver(host, cache, vueProject) {
                             compilerOptions,
                     ),
                 );
+            const direct = resolve(literal.text);
+            // Resolved to build output is resolved to nothing: it is never
+            // read (see allowedCompilerPath).
             const resolved = componentTarget(
                 literal.text,
-                resolve(literal.text),
+                direct.resolvedModule === undefined ||
+                    !readable(direct.resolvedModule.resolvedFileName)
+                    ? (sourceOfBuildOutput(direct, outputs, host) ?? direct)
+                    : direct,
             );
             if (
                 !vueProject ||
@@ -2904,12 +3119,18 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
 }
 
 /**
- * `Module "X.vue" has no default export`: a component's default export is
- * the component its bundler compiles, which its virtual source never spells.
+ * `Module "X.vue" has no default export`, and `Module "X.svelte" has no
+ * exported member 'default'` where `export { default as X }` names it: a
+ * component's default export is the component its bundler compiles, which
+ * its virtual source never spells.
  */
 function namesComponentDefaultExport(diagnostic) {
-    if (diagnostic.code !== 1192) return false;
     const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    if (
+        diagnostic.code !== 1192 &&
+        !(diagnostic.code === 2305 && /member 'default'/.test(text))
+    )
+        return false;
     const module = /Module '"([^"]+)"'/.exec(text)?.[1];
     return module !== undefined && componentDialect(module) !== null;
 }
@@ -3351,8 +3572,25 @@ function valueReferencePosition(node) {
     // ends there, because each step moves to the parent.
     if (ts.isPropertyAccessExpression(parent) && parent.name === node)
         return valueReferencePosition(parent);
+    // `handler.bind(ctx)`, `this.handler.call(ctx)`, `fn.apply(ctx, args)`:
+    // the function is handed on or invoked through Function.prototype, so
+    // the checker resolves the call to `bind` and never to the function.
+    if (boundFunction(parent) === node) return true;
 
     return false;
+}
+
+/**
+ * The function a `.bind(...)`, `.call(...)` or `.apply(...)` call is made
+ * on, given the `x.bind` access, or undefined.
+ */
+function boundFunction(access) {
+    return ts.isPropertyAccessExpression(access) &&
+        ["bind", "call", "apply"].includes(access.name.text) &&
+        ts.isCallExpression(access.parent) &&
+        access.parent.expression === access
+        ? access.expression
+        : undefined;
 }
 
 /**
@@ -3918,24 +4156,96 @@ function configOwners(root, parsedConfigs) {
 }
 
 /** The program for requested files no config's program emitted. */
-function fallbackConfig(root, remaining) {
+/**
+ * Files no config's program emitted, grouped by the nearest config whose
+ * directory holds them (the project root, with no config, for the rest).
+ *
+ * @returns {Map<string, {files: string[], parsed: object | undefined}>} directory => group
+ */
+function fallbackGroups(root, remaining, parsedConfigs) {
+    const configs = parsedConfigs
+        .map(([configPath, parsed]) => ({
+            directory: path.dirname(path.join(root, configPath)),
+            parsed,
+        }))
+        .sort((a, b) => b.directory.length - a.directory.length);
+    const groups = new Map();
+    for (const relative of remaining) {
+        const absolute = path.join(root, relative);
+        const config = configs.find(({ directory }) =>
+            absolute.startsWith(directory + path.sep),
+        );
+        const directory = config?.directory ?? root;
+        const group = groups.get(directory) ?? {
+            files: [],
+            parsed: config?.parsed,
+        };
+        group.files.push(relative);
+        groups.set(directory, group);
+    }
+    return groups;
+}
+
+// What a file outside a config's `include` takes from it: how to resolve
+// and parse, as its test runner or bundler reads it. Not how strictly to
+// check, which the config applies to its own files only, and not its build
+// layout (`rootDir`, `composite`), which such a file would break. Nor its
+// `module`/`moduleResolution`: a test runner resolves as a bundler does,
+// and a legacy `node` resolution loses the package `imports` field and, under
+// the bundled compiler, the `@types` a test reads (`Buffer`, `process`). Nor
+// the environment (`lib`, `target`, `types`): a test runs in its runner's,
+// not in the one the config describes for its own files.
+const RESOLUTION_OPTIONS = [
+    "baseUrl",
+    "paths",
+    // Where `paths` resolve from when no `baseUrl` is set: the config's own
+    // directory, which TypeScript records here and nowhere else.
+    "pathsBasePath",
+    "moduleSuffixes",
+    "customConditions",
+    "resolvePackageJsonExports",
+    "resolvePackageJsonImports",
+    "resolveJsonModule",
+    "allowImportingTsExtensions",
+    "allowArbitraryExtensions",
+    "esModuleInterop",
+    "allowSyntheticDefaultImports",
+    "jsx",
+    "jsxFactory",
+    "jsxFragmentFactory",
+    "jsxImportSource",
+    "experimentalDecorators",
+    "emitDecoratorMetadata",
+    "useDefineForClassFields",
+];
+
+const FALLBACK_OPTIONS = {
+    allowJs: true,
+    checkJs: false,
+    noEmit: true,
+    target: ts.ScriptTarget.Latest,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    jsx: ts.JsxEmit.Preserve,
+};
+
+function fallbackConfig(root, remaining, config) {
+    const configOptions = config?.options;
+    const inherited = {};
+    for (const option of RESOLUTION_OPTIONS)
+        if (configOptions?.[option] !== undefined)
+            inherited[option] = configOptions[option];
     return {
-        options: {
-            allowJs: true,
-            checkJs: false,
-            noEmit: true,
-            target: ts.ScriptTarget.Latest,
-            module: ts.ModuleKind.ESNext,
-            moduleResolution: ts.ModuleResolutionKind.Bundler,
-            jsx: ts.JsxEmit.Preserve,
-        },
+        options: { ...FALLBACK_OPTIONS, ...inherited },
         // An extensionless script, or one whose extension is not in lower
         // case, only ever reaches the fallback program: no tsconfig `include`
         // matches either name.
         fileNames: remaining.map((relative) =>
             offeredPath(path.join(root, relative)),
         ),
-        projectReferences: undefined,
+        // A referenced project's outputs stand for its sources here as in
+        // the config's own program (`#shared/*` naming its `dist`).
+        projectReferences: config?.projectReferences,
     };
 }
 

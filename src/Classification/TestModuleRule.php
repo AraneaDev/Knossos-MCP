@@ -26,7 +26,7 @@ final readonly class TestModuleRule implements ClassificationRule
      * a package. Nested under a recognized source root (e.g. `src/openapi/spec`)
      * they are ordinary source directories, not test modules.
      */
-    private const AMBIGUOUS_SEGMENTS = ['tests', 'test', 'spec'];
+    private const AMBIGUOUS_SEGMENTS = ['tests', 'test', 'spec', 'e2e'];
 
     private const SOURCE_ROOTS = ['src', 'lib', 'app', 'source'];
 

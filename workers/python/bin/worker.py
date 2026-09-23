@@ -794,11 +794,6 @@ def walk_keys(root: Path, walked: PathWalk) -> tuple[str | None, list[str]]:
     return final, linked
 
 
-def input_key(root: Path, path: str | os.PathLike[str]) -> str | None:
-    """The key a read of ``path`` goes under: :func:`walk_key` of its walk."""
-    return walk_key(root, walk_path(path))
-
-
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
     """Map each top-level class and function name in ``tree`` to its symbol reference."""
 

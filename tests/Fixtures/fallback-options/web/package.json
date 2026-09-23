@@ -1,0 +1,6 @@
+{
+  "name": "fallback-options-fixture",
+  "private": true,
+  "type": "module",
+  "imports": { "#shared/*": "./dist/shared/*.js" }
+}

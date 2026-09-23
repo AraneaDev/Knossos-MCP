@@ -322,6 +322,7 @@ final readonly class ProjectDiscoverer
                 'name' => self::tableString($contents, '[project]') ?? self::tableString($contents, '[tool.poetry]'),
                 'requires' => self::pythonRequirements($contents),
                 'entry_points' => self::pythonEntryPoints($contents, $relative),
+                'library_roots' => self::pythonLibraryRoots($contents, $relative),
             ]);
         }
         if ($kind === 'cargo') {
@@ -394,6 +395,7 @@ final readonly class ProjectDiscoverer
             'composer' => [
                 'name' => is_string($decoded['name'] ?? null) ? $decoded['name'] : null,
                 'psr4' => self::composerPsr4($decoded),
+                'library_roots' => self::composerLibraryRoots($decoded, $relative),
                 'requires' => self::composerRequirements($decoded),
                 'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin']),
             ],
@@ -1723,6 +1725,58 @@ final readonly class ProjectDiscoverer
     private static function joinPath(string $directory, string $path): string
     {
         return trim($directory === '' ? $path : ($path === '' ? $directory : $directory . '/' . $path), '/');
+    }
+
+    /**
+     * The directories a Composer library publishes: its `autoload` PSR-4
+     * roots, when the manifest says `"type": "library"`. Its public classes
+     * and methods are called by the code that installs it, not by anything
+     * in the repository. Composer's own default type is library, but an
+     * application that never named its type is the common case, so only an
+     * explicit one counts; `autoload-dev` publishes nothing.
+     *
+     * @param array<string, mixed> $composer
+     * @return list<string>
+     */
+    private static function composerLibraryRoots(array $composer, string $relative): array
+    {
+        if (($composer['type'] ?? null) !== 'library') {
+            return [];
+        }
+        $psr4 = $composer['autoload']['psr-4'] ?? null;
+        $roots = [];
+        foreach (is_array($psr4) ? $psr4 : [] as $paths) {
+            foreach (is_array($paths) ? $paths : [$paths] as $path) {
+                $clean = self::layoutPath($path);
+                if ($clean !== null) {
+                    $roots[self::joinPath(self::manifestDirectory($relative), $clean)] = true;
+                }
+            }
+        }
+        $roots = array_map(strval(...), array_keys($roots));
+        sort($roots, SORT_STRING);
+
+        return $roots;
+    }
+
+    /**
+     * The directory a Python library publishes: its pyproject's own, when the
+     * project has something to build (`[build-system]` beside `[project]` or
+     * Poetry's table, and not `package-mode = false`) and installs no command. A package that installs a
+     * command is an application, whose functions nothing outside calls.
+     *
+     * @return list<string>
+     */
+    private static function pythonLibraryRoots(string $contents, string $relative): array
+    {
+        $buildable = preg_match('/^\[build-system\]/m', $contents) === 1
+            && preg_match('/^\[(?:project|tool\.poetry)\]/m', $contents) === 1;
+        $installsCommand = preg_match('/^\[(?:project\.(?:gui-)?scripts|tool\.poetry\.scripts)\]/m', $contents) === 1;
+        // Poetry writes a build system for every project; one that is no
+        // package says so with `package-mode = false`.
+        $notAPackage = preg_match('/^\s*package-mode\s*=\s*false\b/m', $contents) === 1;
+
+        return $buildable && !$installsCommand && !$notAPackage ? [self::manifestDirectory($relative)] : [];
     }
 
     /**

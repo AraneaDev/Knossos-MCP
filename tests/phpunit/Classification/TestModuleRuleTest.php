@@ -76,6 +76,17 @@ final class TestModuleRuleTest extends TestCase
         assertSame(1, count($facts));
     }
 
+    public function testClassifyDetectsEndToEndDirectory(): void
+    {
+        // Playwright's default test directory: its helpers are test code too,
+        // not product code that only tests reach.
+        $facts = (new TestModuleRule())->classify($this->makeNode('e2e/projects.ts'));
+
+        assertSame(1, count($facts));
+        // Under a source root it is an ordinary directory.
+        assertSame([], (new TestModuleRule())->classify($this->makeNode('src/e2e/runner.ts')));
+    }
+
     public function testClassifyDoesNotTagAmbiguousSpecDirectoryNestedUnderSourceRoot(): void
     {
         // src/openapi/spec/PetStore.php is an OpenAPI spec directory, not a test

@@ -11,10 +11,17 @@ import {
 } from "../component-source.js";
 
 // The virtual text is what the compiler parses in place of a component, so
-// every offset in it must be the component's own.
+// every offset in it must be the component's own. Declarations the
+// component's text never spells (Astro's global, a generic component's type
+// parameters) are appended after it, which moves nothing.
 function expectInvariants(source, dialect) {
     const virtual = toVirtualSource(source, dialect);
-    expect(virtual.text.length).toBe(source.length);
+    if (virtual.text.length !== source.length)
+        expect(virtual.text.slice(source.length)).toMatch(/^\nexport \{\};\n/);
+    if (dialect === "astro")
+        expect(virtual.text.slice(source.length)).toMatch(
+            /declare const Astro: import\("astro"\)\.AstroGlobal/,
+        );
     for (let i = 0; i < source.length; i++) {
         if (source[i] === "\n" || source[i] === "\r")
             expect(virtual.text[i]).toBe(source[i]);

@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": false,
+    "moduleResolution": "bundler",
+    "lib": [
+      "es2022"
+    ]
+  },
+  "include": [
+    "tests/**/*.ts"
+  ]
+}

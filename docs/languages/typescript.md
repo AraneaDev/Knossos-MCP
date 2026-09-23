@@ -19,6 +19,9 @@ references remain the primary facts; framework roles use
   `calls_endpoint` edges, including a static `fetch` method option.
 - A leading shebang marks the module `executable`, which keeps a script a shell
   runs (and that nothing therefore imports) off the dead-code report.
+- A module importing `k6` or `k6/*` is a k6 load-test script: it is `executable`, and its
+  default export, `setup`, `teardown`, `handleSummary` and every function a scenario names as
+  its `exec` are marked `runtime_invoked`, since k6 calls them and nothing imports them.
 
 Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that
@@ -46,6 +49,13 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
 `baseUrl` like any other module.
 
 - A helper, store or child component used only from a template has its edge.
+- In an `.astro` file, `Astro.props` has the component's `Props` type, as Astro's own tooling
+  gives it, so fields read from it are not typed from their destructuring defaults.
+- As svelte-check reads them: the runes (`$state`, `$derived`, `$props`) are typed by the
+  installed `svelte` package, and in a SvelteKit `+page.svelte` or `+layout.svelte`, `$props()`
+  gives `data` the type the route's generated `./$types` declares.
+- A generic component's type parameters (`<script lang="ts" generics="T extends …">` in
+  Svelte, `generic="T"` in Vue) are declared, each standing for its constraint.
 - A template name that resolves to nothing (an Options API method reached through the
   component instance) is listed in the module's `unresolved_member_calls`, so a method by that
   name is only possibly dead.

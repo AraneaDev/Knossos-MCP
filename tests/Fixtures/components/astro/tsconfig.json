@@ -1,1 +1,1 @@
-{"compilerOptions":{"strict":true,"noEmit":true,"jsx":"preserve","baseUrl":".","paths":{"~/*":["src/*"]}},"include":["src/**/*.ts","src/**/*.astro"]}
+{"compilerOptions":{"strict":true,"noEmit":true,"jsx":"preserve","baseUrl":".","paths":{"~/*":["src/*"],"astro":["src/astro-types.d.ts"]}},"include":["src/**/*.ts","src/**/*.astro"]}

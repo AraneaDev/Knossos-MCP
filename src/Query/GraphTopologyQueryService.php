@@ -406,7 +406,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons, $candidateTruncationReasons),
+            self::healthSummary(count($hubs), count($hotspots), $candidatesTotal, count($deadCandidates), $testOnlyCandidates, $truncationReasons, $candidateTruncationReasons),
             [
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
@@ -565,18 +565,26 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * apart: the node bound limits the ranking only, and a candidate search
      * that ran out of time must not read as a complete list.
      *
+     * The candidate count is the whole list's, the one the test-only tally is
+     * taken from; the page's own size is named apart when it differs. A page
+     * of 1 once read "1 unreferenced-code candidates, 87 of them reached only
+     * by tests".
+     *
      * @param list<string> $truncationReasons
      * @param list<string> $candidateTruncationReasons
      */
-    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons, array $candidateTruncationReasons): string
+    private static function healthSummary(int $hubs, int $hotspots, int $candidatesTotal, int $candidatesOnPage, int $testOnlyCandidates, array $truncationReasons, array $candidateTruncationReasons): string
     {
         $summary = sprintf(
             'Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates, %d of them reached only by tests.',
             $hubs,
             $hotspots,
-            $deadCandidates,
+            $candidatesTotal,
             $testOnlyCandidates,
         );
+        if ($candidatesOnPage !== $candidatesTotal) {
+            $summary .= sprintf(' This page lists %d of them.', $candidatesOnPage);
+        }
         if ($truncationReasons !== []) {
             $summary .= sprintf(' The ranking was truncated (%s), so hubs and hotspots beyond that bound are not reported.', implode(', ', $truncationReasons));
         }
