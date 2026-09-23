@@ -43,6 +43,12 @@ final class CandidateGraphFacts
     /** @var array<string, true>|null */
     private ?array $untyped = null;
 
+    /** @var list<string>|null */
+    private ?array $suppressions = null;
+
+    /** @var array<string, array{kind: string, value: string}>|null */
+    private ?array $annotations = null;
+
     /** @param list<string> $edgeKinds */
     public function __construct(
         private readonly PDO $pdo,
@@ -176,6 +182,47 @@ final class CandidateGraphFacts
         }
 
         return $this->untyped;
+    }
+
+    /**
+     * Canonical names the project's own configuration suppresses, exactly or by prefix.
+     *
+     * @return list<string>
+     */
+    public function deadCodeSuppressions(): array
+    {
+        if ($this->suppressions === null) {
+            $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
+            $statement->execute(['id' => $this->projectId]);
+            $raw = $statement->fetchColumn();
+            $config = is_string($raw) ? json_decode($raw, true) : null;
+            $list = is_array($config) ? ($config['dead_code_suppressions'] ?? []) : [];
+            $this->suppressions = is_array($list) && array_is_list($list) ? array_values(array_filter($list, 'is_string')) : [];
+        }
+
+        return $this->suppressions;
+    }
+
+    /**
+     * Durable agent judgements recorded against a component.
+     *
+     * @return array<string, array{kind: string, value: string}> keyed by canonical name; false_positive wins over confirmed_dead
+     */
+    public function componentAnnotations(): array
+    {
+        if ($this->annotations === null) {
+            $statement = $this->pdo->prepare(
+                "SELECT canonical_name, kind, value FROM annotations WHERE project_id = :project AND kind IN ('false_positive', 'confirmed_dead') " .
+                'ORDER BY canonical_name, kind DESC', // 'false_positive' > 'confirmed_dead' alphabetically DESC
+            );
+            $statement->execute(['project' => $this->projectId]);
+            $this->annotations = [];
+            foreach ($statement->fetchAll() as $row) {
+                $this->annotations[$row['canonical_name']] ??= ['kind' => $row['kind'], 'value' => $row['value']];
+            }
+        }
+
+        return $this->annotations;
     }
 
     /**

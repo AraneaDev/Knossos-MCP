@@ -66,9 +66,9 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $excludedContracts = 0;
         $excludedEntryScripts = 0;
         $excludedTypeDeclarations = 0;
-        $suppressions = $this->deadCodeSuppressions($projectId);
+        $suppressions = $facts->deadCodeSuppressions();
         $suppressedCount = 0;
-        $annotationsByName = $this->componentAnnotations($projectId);
+        $annotationsByName = $facts->componentAnnotations();
         $annotatedFalsePositives = 0;
         $memberReachability = $this->containerMemberReachability($projectId, $provisional, $edgeKinds, $minConfidenceRank);
         foreach ($provisional as $id => $candidate) {
@@ -602,46 +602,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
 
         return $reachability;
-    }
-
-    /**
-     * Canonical names the project's own configuration suppresses, exactly or by prefix.
-     *
-     * @return list<string>
-     */
-    private function deadCodeSuppressions(string $projectId): array
-    {
-        $statement = $this->pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
-        $statement->execute(['id' => $projectId]);
-        $raw = $statement->fetchColumn();
-        if (!is_string($raw)) {
-            return [];
-        }
-        $config = json_decode($raw, true);
-        $list = is_array($config) ? ($config['dead_code_suppressions'] ?? []) : [];
-        if (!is_array($list) || !array_is_list($list)) {
-            return [];
-        }
-        return array_values(array_filter($list, 'is_string'));
-    }
-
-    /**
-     * Durable agent judgements recorded against a component.
-     *
-     * @return array<string, array{kind: string, value: string}> keyed by canonical name; false_positive wins over confirmed_dead
-     */
-    private function componentAnnotations(string $projectId): array
-    {
-        $statement = $this->pdo->prepare(
-            "SELECT canonical_name, kind, value FROM annotations WHERE project_id = :project AND kind IN ('false_positive', 'confirmed_dead') " .
-            'ORDER BY canonical_name, kind DESC', // 'false_positive' > 'confirmed_dead' alphabetically DESC
-        );
-        $statement->execute(['project' => $projectId]);
-        $byName = [];
-        foreach ($statement->fetchAll() as $row) {
-            $byName[$row['canonical_name']] ??= ['kind' => $row['kind'], 'value' => $row['value']];
-        }
-        return $byName;
     }
 
     /**
