@@ -57,7 +57,11 @@ export function toVirtualSource(text, dialect) {
         text,
         out,
         kind: dialect === "astro" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-        blocked: commentedTails(text, blocks.scripts),
+        blocked: commentedTails(
+            text,
+            blocks.scripts,
+            dialect === "astro" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        ),
     };
     for (const [from, to] of blocks.markup) {
         if (dialect === "vue") vueMarkup(writer, from, to);
@@ -286,19 +290,31 @@ function parseAttributes(source) {
  * swallowed, and an expression continuing onto the next line would leave
  * half of itself behind.
  */
-function commentedTails(text, scripts) {
+function commentedTails(text, scripts, kind) {
     const tails = [];
     for (const [from, to] of scripts) {
-        const scanner = ts.createScanner(
+        // Parsed, not just scanned: only the parser knows that the `//` in
+        // `/[//]/` belongs to a regular expression.
+        const script = text.slice(from, to);
+        const file = ts.createSourceFile(
+            kind === ts.ScriptKind.TSX ? "script.tsx" : "script.ts",
+            script,
             ts.ScriptTarget.Latest,
             false,
-            ts.LanguageVariant.Standard,
-            text.slice(from, to),
+            kind,
         );
-        let last = ts.SyntaxKind.Unknown;
-        while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken)
-            last = scanner.getToken();
-        if (last !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
+        // A comment on the last statement's line is a trailing one; one on
+        // a line of its own, a leading one of the end-of-file token.
+        const end = file.endOfFileToken.pos;
+        const trailing = [
+            ...(ts.getTrailingCommentRanges(script, end) ?? []),
+            ...(ts.getLeadingCommentRanges(script, end) ?? []),
+        ].at(-1);
+        if (
+            trailing?.kind !== ts.SyntaxKind.SingleLineCommentTrivia ||
+            trailing.end !== script.length
+        )
+            continue;
         const newline = text.slice(to).search(/[\r\n]/);
         tails.push([to, newline < 0 ? text.length : to + newline]);
     }

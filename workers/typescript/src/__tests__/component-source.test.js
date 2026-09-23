@@ -464,6 +464,14 @@ describe("follow-up: component reader minors", () => {
         expect(virtual).toContain("{c}");
     });
 
+    it("does not read // inside a regular expression as a comment", () => {
+        const source =
+            "<script>\nconst slash = /[//]/;</script><p>{value}</p>\n";
+        const virtual = expectInvariants(source, "svelte").text;
+
+        expect(virtual).toContain("{value}");
+    });
+
     it("reads every spelling of a TypeScript script as typed", () => {
         for (const attributes of [
             'lang="ts"',

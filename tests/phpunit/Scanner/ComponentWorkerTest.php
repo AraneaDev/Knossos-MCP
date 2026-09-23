@@ -78,6 +78,8 @@ final class ComponentWorkerTest extends KnossosTestCase
         // A script ending inside a line comment leaves the rest of that line
         // blank, and the markup after it is still read.
         self::assertTrue($scan->reaches('src/routes/comment/+page.svelte', 'src/lib/format.ts#format'));
+        // The `//` of a regular expression is no comment.
+        self::assertTrue($scan->reaches('src/routes/regex/+page.svelte', 'src/lib/format.ts#load'));
         // lang="typescript" is TypeScript, so its type errors are reported.
         self::assertSame(['src/routes/comment/+page.svelte'], $scan->diagnosticPaths('TS2322'));
     }
