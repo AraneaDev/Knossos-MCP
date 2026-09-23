@@ -1322,8 +1322,10 @@ class TypeScriptLanguageFactCollector {
             args.length >= 2 &&
             args.slice(1).every((arg) => ts.isStringLiteralLike(arg))
         ) {
+            // A literal first segment is part of the path (`join('src',
+            // 'util.ts')`); any other first argument is the unknown base.
             const joined = args
-                .slice(1)
+                .slice(ts.isStringLiteralLike(args[0]) ? 0 : 1)
                 .map((arg) => arg.text)
                 .join("/");
             // `__dirname` names this file's directory. Any other base

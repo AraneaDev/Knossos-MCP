@@ -123,3 +123,45 @@ describe("a path joined from a root variable", () => {
         expect(imports).toContain("ts:module:tools/helpers/local.ts");
     });
 });
+
+describe("a path joined from string literals only", () => {
+    it("keeps its first segment", () => {
+        const root = fixture({
+            "tools/build.ts": [
+                "declare function join(...parts: string[]): string;",
+                "declare function spawn(file: string): void;",
+                "spawn(join('src', 'util.ts'));",
+                "",
+            ].join("\n"),
+            "src/util.ts": "export {};\n",
+            // Same file name, wrong directory: must not be the target.
+            "util.ts": "export {};\n",
+            "tools/util.ts": "export {};\n",
+        });
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            {
+                root,
+                files: [
+                    "tools/build.ts",
+                    "src/util.ts",
+                    "util.ts",
+                    "tools/util.ts",
+                ],
+            },
+            (c) => contributions.push(c),
+        );
+        const imports = contributions
+            .flatMap((c) => c.edges)
+            .filter(
+                (e) =>
+                    e.kind === "imports" && e.attributes.speculative === true,
+            )
+            .map((e) => e.target)
+            .sort();
+
+        expect(imports).toContain("ts:module:src/util.ts");
+        expect(imports).not.toContain("ts:module:util.ts");
+        expect(imports).not.toContain("ts:module:tools/util.ts");
+    });
+});
