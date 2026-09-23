@@ -160,3 +160,97 @@ describe("component diagnostics", () => {
         expect(codes).toEqual(["TS2322"]);
     });
 });
+
+// An edge from `file` to a target containing `name`, other than the
+// declaring module's own `contains` edge.
+const reaches = (contributions, file, name) =>
+    contributions
+        .flatMap((c) => c.edges)
+        .some(
+            (e) =>
+                e.kind !== "contains" &&
+                e.source.includes(file) &&
+                e.target.includes(name),
+        );
+
+describe("template usages", () => {
+    it("reach a setup handler and an imported helper from the template", () => {
+        const { contributions } = scan({
+            "src/util.ts":
+                "export function formatDate(): string { return ''; }\n",
+            "src/App.vue":
+                '<template>\n  <button @click="onSave">{{ formatDate() }}</button>\n</template>\n<script setup lang="ts">\nimport { formatDate } from "./util";\nfunction onSave(): void {}\n</script>\n',
+        });
+        expect(
+            reaches(contributions, "src/App.vue", "src/App.vue#onSave"),
+        ).toBe(true);
+        expect(
+            reaches(contributions, "src/App.vue", "src/util.ts#formatDate"),
+        ).toBe(true);
+    });
+
+    it("reach a component named by a kebab-case tag", () => {
+        const { contributions } = scan({
+            "src/cards.ts": "export class UserCard {}\n",
+            "src/List.vue":
+                '<template><user-card /></template>\n<script setup lang="ts">\nimport { UserCard } from "./cards";\n</script>\n',
+        });
+
+        expect(
+            reaches(contributions, "src/List.vue", "src/cards.ts#UserCard"),
+        ).toBe(true);
+    });
+
+    it("reach Svelte handlers and Astro frontmatter imports", () => {
+        const { contributions } = scan({
+            "src/lib/counter.ts": "export function increment(): void {}\n",
+            "src/lib/site.ts":
+                "export function title(): string { return ''; }\n",
+            "src/lib/Counter.svelte":
+                '<script lang="ts">\nimport { increment } from "./counter";\n</script>\n<button on:click={increment}>+</button>\n',
+            "src/pages/index.astro":
+                "---\nimport { title } from '../lib/site';\n---\n<h1>{title()}</h1>\n",
+        });
+        expect(
+            reaches(
+                contributions,
+                "src/lib/Counter.svelte",
+                "src/lib/counter.ts#increment",
+            ),
+        ).toBe(true);
+        expect(
+            reaches(
+                contributions,
+                "src/pages/index.astro",
+                "src/lib/site.ts#title",
+            ),
+        ).toBe(true);
+    });
+
+    it("list names the template uses but nothing declares", () => {
+        const { contributions } = scan({
+            "src/Legacy.vue":
+                '<template><button @click="save">{{ label }}</button></template>\n<script>\nexport default { methods: { save() {} }, computed: { label() { return ""; } } };\n</script>\n',
+        });
+        const module = contributions
+            .flatMap((c) => c.nodes)
+            .find((n) => n.kind === "module");
+
+        expect(module.attributes.unresolved_member_calls).toEqual([
+            "label",
+            "save",
+        ]);
+    });
+
+    it("count a bare identifier statement as a value use in plain TypeScript", () => {
+        const { contributions } = scan({
+            "src/a.ts": "export function handler(): void {}\n",
+            "src/b.ts":
+                'import { handler } from "./a";\nhandler;\n(handler);\n',
+        });
+
+        expect(reaches(contributions, "src/b.ts", "src/a.ts#handler")).toBe(
+            true,
+        );
+    });
+});

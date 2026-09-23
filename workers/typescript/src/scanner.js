@@ -636,10 +636,37 @@ class TypeScriptLanguageFactCollector {
      * it reaches, so the core reports that method as only possibly dead.
      */
     finish() {
+        const component = componentSources.get(this.sourceFile);
+        if (component !== undefined)
+            this.unresolvedTemplateNames(component.templateRanges);
         if (this.untypedCalls.size === 0) return;
         this.accumulator.nodesById.get(
             this.moduleId,
         ).attributes.unresolved_member_calls = [...this.untypedCalls].sort();
+    }
+
+    /**
+     * Names a component's template uses that resolve to nothing, such as an
+     * Options API method reached through the component instance. They join
+     * the member names called on untyped receivers, so a method by one of
+     * them is reported as only possibly dead.
+     */
+    unresolvedTemplateNames(ranges) {
+        const inTemplate = (node) => {
+            const start = node.getStart(this.sourceFile);
+            return ranges.some(([from, to]) => start >= from && node.end <= to);
+        };
+        const visit = (node) => {
+            if (
+                ts.isIdentifier(node) &&
+                inTemplate(node) &&
+                !isNamePosition(node) &&
+                this.checker.getSymbolAtLocation(node) === undefined
+            )
+                this.untypedCalls.add(node.text);
+            ts.forEachChild(node, visit);
+        };
+        visit(this.sourceFile);
     }
 
     enter(node) {
@@ -2512,6 +2539,29 @@ function ambientAttributes(node, attributes) {
         : attributes;
 }
 
+/** An identifier that is the whole of a statement or of a parenthesised expression. */
+function isBareValue(parent, node) {
+    return (
+        (ts.isExpressionStatement(parent) ||
+            ts.isParenthesizedExpression(parent)) &&
+        parent.expression === node
+    );
+}
+
+/** A member, property or attribute name, or an intrinsic JSX tag: never a binding. */
+function isNamePosition(node) {
+    const parent = node.parent;
+    return (
+        (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+        (ts.isPropertyAssignment(parent) && parent.name === node) ||
+        ts.isJsxAttribute(parent) ||
+        ((ts.isJsxOpeningElement(parent) ||
+            ts.isJsxSelfClosingElement(parent) ||
+            ts.isJsxClosingElement(parent)) &&
+            /^[a-z]/.test(node.text))
+    );
+}
+
 /**
  * `input.run ?? defaultRun`, `a || b` and `flag ? a : b`: a fallback or a
  * choice between functions, either of which may be the one that runs.
@@ -2578,6 +2628,9 @@ function valueReferencePosition(node) {
     )
         return true;
     if (isChoiceOperand(parent, node)) return true;
+    // `handler;` and `(handler)`: how a component's tags and event handlers
+    // reach the checker (see component-source.js), and a value use anywhere.
+    if (isBareValue(parent, node)) return true;
     // `<Button onClick={addItem}>` and `{renderRow}`: a function handed to
     // React inside JSX, as a prop or a child.
     if (ts.isJsxExpression(parent) && parent.expression === node) return true;
