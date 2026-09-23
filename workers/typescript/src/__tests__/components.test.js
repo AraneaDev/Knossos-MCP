@@ -279,3 +279,80 @@ describe("a component as a module", () => {
         ).toEqual([]);
     });
 });
+
+describe("a component a dependency publishes", () => {
+    it("is recorded with its real hash when resolution realpaths it", () => {
+        // A package whose `main` is a `.vue` file: resolution asks for the
+        // realpath of the alias, which exists nowhere on disk.
+        const vue =
+            "<template><p/></template>\n<script>\nexport default { name: 'x' };\n</script>\n";
+        const { result } = scan(
+            {
+                "node_modules/typeahead/package.json":
+                    '{"name":"typeahead","main":"src/Typeahead.vue"}',
+                "node_modules/typeahead/src/Typeahead.vue": vue,
+                "src/Page.vue":
+                    "<template><p/></template>\n<script>\nimport Typeahead from 'typeahead';\nexport default { components: { Typeahead } };\n</script>\n",
+            },
+            ["src/Page.vue"],
+        );
+
+        expect(
+            result.input_hashes["node_modules/typeahead/src/Typeahead.vue"],
+        ).toBe(createHash("sha256").update(vue).digest("hex"));
+    });
+});
+
+describe("an Astro component's Props", () => {
+    it("is read by Astro, so the component references it", () => {
+        const { contributions } = scan({
+            "src/Card.astro":
+                "---\ninterface Props {\n    title: string;\n}\nconst { title } = Astro.props;\n---\n<h2>{title}</h2>\n",
+            "src/Tag.astro":
+                "---\ntype Props = { name: string };\n---\n<span />\n",
+        });
+
+        expect(
+            reaches(contributions, "src/Card.astro", "src/Card.astro#Props"),
+        ).toBe(true);
+        expect(
+            reaches(contributions, "src/Tag.astro", "src/Tag.astro#Props"),
+        ).toBe(true);
+    });
+});
+
+describe("a SvelteKit app without its generated tsconfig", () => {
+    it("resolves $lib and the aliases its config declares", () => {
+        // `.svelte-kit/tsconfig.json`, which holds these paths, is generated
+        // and ignored, so a checkout never has it.
+        const { contributions } = scan(
+            {
+                "apps/web/svelte.config.js":
+                    "const config = { kit: { alias: { $components: 'src/components', '$icons/*': './src/icons/*' } } };\nexport default config;\n",
+                "apps/web/tsconfig.json":
+                    '{"extends":"./.svelte-kit/tsconfig.json","compilerOptions":{"strict":true}}',
+                "apps/web/src/routes/+page.svelte":
+                    "<script lang=\"ts\">\nimport Button from '$components/Button.svelte';\nimport Star from '$icons/Star.svelte';\nimport { format } from '$lib/format';\n</script>\n<Button>{format()}</Button><Star />\n",
+                "apps/web/src/components/Button.svelte":
+                    "<button><slot /></button>\n",
+                "apps/web/src/icons/Star.svelte": "<svg />\n",
+                "apps/web/src/lib/format.ts":
+                    "export function format(): string { return ''; }\n",
+            },
+            [
+                "apps/web/src/routes/+page.svelte",
+                "apps/web/src/components/Button.svelte",
+                "apps/web/src/icons/Star.svelte",
+                "apps/web/src/lib/format.ts",
+            ],
+            ["apps/web/tsconfig.json"],
+        );
+        const imports = edges(contributions, "imports").map((e) => e.target);
+
+        expect(imports).toContain(
+            "ts:module:apps/web/src/components/Button.svelte",
+        );
+        expect(imports).toContain("ts:module:apps/web/src/icons/Star.svelte");
+        expect(imports).toContain("ts:module:apps/web/src/lib/format.ts");
+    });
+});

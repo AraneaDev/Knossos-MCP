@@ -368,3 +368,43 @@ describe("component diagnostics", () => {
         expect(at("missing", 1005, false)).toBe(true);
     });
 });
+
+describe("Astro self-closing scripts", () => {
+    it("are empty elements, not unclosed blocks", () => {
+        const source =
+            '---\nconst json = "[]";\n---\n<script id="data" type="application/json" is:inline set:html={json} />\n<p>{json}</p>\n';
+        const virtual = expectInvariants(source, "astro");
+
+        expect(virtual.text).toContain("{json}");
+    });
+});
+
+describe("Astro diagnostics", () => {
+    const text =
+        "---\nconst a = Astro.props;\nreturn Astro.redirect('/');\n---\n<script>\nconst a = 1;\n</script>\n";
+    const scripts = [
+        [4, text.indexOf("---", 4)],
+        [text.indexOf("\nconst a = 1"), text.indexOf("</script>")],
+    ];
+    const kept = (code, at = text.indexOf("Astro")) =>
+        componentDiagnosticKept(
+            { dialect: "astro", scriptRanges: scripts, typed: true },
+            { file: { text }, start: at, length: 5, code },
+        );
+
+    it("drops what comes from Astro's compiler rather than the code", () => {
+        // `Astro` used as a value where only its types are installed.
+        expect(kept(2708)).toBe(false);
+        // A page's frontmatter may return a redirect.
+        expect(kept(1108, text.indexOf("return"))).toBe(false);
+        // Frontmatter and a client script are separate modules to Astro.
+        expect(kept(2300, text.indexOf("a = 1"))).toBe(false);
+        expect(kept(2451, text.indexOf("a = 1"))).toBe(false);
+        // Parameters left untyped because `Astro.props` is.
+        expect(kept(7006)).toBe(false);
+    });
+
+    it("keeps the rest", () => {
+        expect(kept(2322)).toBe(true);
+    });
+});

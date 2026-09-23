@@ -126,7 +126,8 @@ function scanBlocks(text, dialect) {
         const tagClose = tagEnd(text, lt + open[0].length, dialect !== "vue");
         if (tagClose < 0)
             throw new ComponentParseError(`unclosed <${open[1]}> tag`);
-        if (block === null) {
+        // `<script … />` has no content and no closing tag.
+        if (block === null || text[tagClose - 1] === "/") {
             position = tagClose + 1;
             continue;
         }
@@ -518,6 +519,15 @@ const FRAMEWORK_GLOBALS = {
 };
 
 /**
+ * Diagnostics Astro's own compiler makes moot: `Astro` used as a value where
+ * only its types are installed (2708), a frontmatter `return` (1108), names
+ * declared in both the frontmatter and a client script, which Astro compiles
+ * as separate modules (2300, 2451), and parameters left implicitly `any`
+ * because `Astro.props` is untyped here (7006, 7031).
+ */
+const ASTRO_ARTEFACTS = new Set([2708, 1108, 2300, 2451, 7006, 7031]);
+
+/**
  * Whether a compiler diagnostic on a component describes its own code.
  *
  * Template regions are generated, a missing framework global is provided by
@@ -533,6 +543,8 @@ export function componentDiagnosticKept(component, diagnostic) {
     )
         return false;
     if (!component.typed && diagnostic.code >= 2000) return false;
+    if (component.dialect === "astro" && ASTRO_ARTEFACTS.has(diagnostic.code))
+        return false;
     if (diagnostic.code !== 2304) return true;
     const name = diagnostic.file.text.slice(
         start,

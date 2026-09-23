@@ -245,6 +245,7 @@ export class TypeScriptScanner {
             requestedSet,
             emitted,
             emit,
+            versions: params.typescript_versions,
         };
         const tally = (outcome) => {
             if (outcome === undefined) return;
@@ -263,11 +264,10 @@ export class TypeScriptScanner {
             tally(
                 this.#scanProgram(
                     `${root}\0${configPath}`,
-                    withProjectCompilerDefaults(
-                        root,
+                    programConfig(
+                        request,
                         path.dirname(path.join(root, configPath)),
                         parsed,
-                        params.typescript_versions,
                     ),
                     request,
                 ),
@@ -286,12 +286,7 @@ export class TypeScriptScanner {
             tally(
                 this.#scanProgram(
                     `${root}\0<fallback>`,
-                    withProjectCompilerDefaults(
-                        root,
-                        root,
-                        parsed,
-                        params.typescript_versions,
-                    ),
+                    programConfig(request, root, parsed),
                     request,
                 ),
             );
@@ -639,6 +634,7 @@ class TypeScriptLanguageFactCollector {
         const component = componentSources.get(this.sourceFile);
         if (component !== undefined)
             this.unresolvedTemplateNames(component.templateRanges);
+        if (component?.dialect === "astro") this.astroProps();
         if (this.untypedCalls.size === 0) return;
         this.accumulator.nodesById.get(
             this.moduleId,
@@ -667,6 +663,30 @@ class TypeScriptLanguageFactCollector {
             ts.forEachChild(node, visit);
         };
         visit(this.sourceFile);
+    }
+
+    /**
+     * Astro types a component's `Astro.props` from the `Props` its frontmatter
+     * declares, by that name, so the component references it even when no
+     * line of its source does.
+     */
+    astroProps() {
+        const props = this.sourceFile.statements.find(
+            (statement) =>
+                (ts.isInterfaceDeclaration(statement) ||
+                    ts.isTypeAliasDeclaration(statement)) &&
+                statement.name.text === "Props",
+        );
+        if (props === undefined) return;
+        const kind = ts.isInterfaceDeclaration(props)
+            ? "interface"
+            : "type_alias";
+        this.addEdge(
+            "references",
+            this.moduleId,
+            reference(kind, `${this.relative}#Props`),
+            props,
+        );
     }
 
     enter(node) {
@@ -2021,6 +2041,92 @@ function withProjectCompilerDefaults(root, directory, parsed, versions) {
     };
 }
 
+/**
+ * The parsed config a program is built from, for the project at `directory`:
+ * see the two functions it applies.
+ */
+function programConfig(request, directory, parsed) {
+    const { root, versions, reads, maxFileBytes } = request;
+    return withSvelteKitAliases(
+        root,
+        directory,
+        withProjectCompilerDefaults(root, directory, parsed, versions),
+        reads,
+        maxFileBytes,
+    );
+}
+
+const SVELTE_CONFIGS = [
+    "svelte.config.js",
+    "svelte.config.mjs",
+    "svelte.config.ts",
+];
+
+/**
+ * The parsed config with SvelteKit's module aliases, when the app at
+ * `directory` does not already map them.
+ *
+ * SvelteKit writes `$lib` and every `kit.alias` into a generated
+ * `.svelte-kit/tsconfig.json`, which is ignored and so missing from any
+ * checkout. Without it an import of `$lib/format` or `$components/Button.svelte`
+ * resolved to nothing, and everything imported that way read as unused. The
+ * aliases are read from the app's `svelte.config.*`, whose read is recorded.
+ */
+function withSvelteKitAliases(root, directory, parsed, reads, maxFileBytes) {
+    const config = SVELTE_CONFIGS.map((name) =>
+        path.join(directory, name),
+    ).find((file) => allowedCompilerPath(root, file) && isRegularFile(file));
+    if (config === undefined || parsed.options.paths?.$lib !== undefined)
+        return parsed;
+    const text = readRecorded(root, config, reads, maxFileBytes);
+    const aliases = {
+        $lib: "src/lib",
+        ...(text === undefined ? {} : svelteKitAliases(text)),
+    };
+    const paths = { ...parsed.options.paths };
+    for (const [name, target] of Object.entries(aliases)) {
+        const absolute = normalize(path.resolve(directory, target));
+        paths[name] ??= [absolute];
+        if (!name.endsWith("/*")) paths[`${name}/*`] ??= [`${absolute}/*`];
+    }
+    return { ...parsed, options: { ...parsed.options, paths } };
+}
+
+/** The string-valued entries of the `alias` object in a Svelte config. */
+function svelteKitAliases(text) {
+    const file = ts.createSourceFile(
+        "svelte.config.ts",
+        text,
+        ts.ScriptTarget.Latest,
+        false,
+        ts.ScriptKind.TS,
+    );
+    const aliases = {};
+    const visit = (node) => {
+        if (
+            ts.isPropertyAssignment(node) &&
+            staticPropertyName(node.name) === "alias" &&
+            ts.isObjectLiteralExpression(node.initializer)
+        ) {
+            for (const entry of node.initializer.properties) {
+                const name = ts.isPropertyAssignment(entry)
+                    ? staticPropertyName(entry.name)
+                    : null;
+                if (name !== null && ts.isStringLiteralLike(entry.initializer))
+                    aliases[name] = entry.initializer.text;
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    return aliases;
+}
+
+/** A property name written as an identifier or a string, or null. */
+function staticPropertyName(name) {
+    return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
+}
+
 function projectTypeScriptMajor(root, directory, versions) {
     if (versions === null || typeof versions !== "object") return null;
     let relative = relativeInside(root, directory);
@@ -2125,6 +2231,11 @@ function createRestrictedProgram(
     // walk a location other than the name resolution returned, and that answer
     // is recorded as absent, since no single state of the tree describes it.
     host.realpath = (file) => {
+        // An alias exists nowhere on disk: its realpath is the real file's,
+        // under the same alias, and the walk is of the real file.
+        const original = realSourcePath(normalize(file));
+        if (original !== normalize(file))
+            return `${host.realpath(original)}${normalize(file).slice(original.length)}`;
         let real;
         try {
             real = realpathNative(file);
