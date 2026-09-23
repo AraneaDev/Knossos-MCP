@@ -18,7 +18,7 @@ use Throwable;
  */
 final class Application
 {
-    public const VERSION = '0.16.11'; // x-release-please-version
+    public const VERSION = '0.16.12'; // x-release-please-version
 
     /** @var resource|null */
     private $errorStream;
