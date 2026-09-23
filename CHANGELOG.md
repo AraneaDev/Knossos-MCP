@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.9](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.8...v0.16.9) (2026-09-23)
+
+
+### Fixes
+
+* read Vue, Svelte and Astro components, and the false positives dogfooding found ([#113](https://github.com/AraneaDev/Knossos-MCP/issues/113)) ([867294b](https://github.com/AraneaDev/Knossos-MCP/commit/867294be42c4c209cb861f3f3a40ec1ba1f29179))
+
 ## [0.16.8](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.7...v0.16.8) (2026-09-21)
 
 
