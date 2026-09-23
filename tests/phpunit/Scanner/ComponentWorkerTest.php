@@ -60,6 +60,8 @@ final class ComponentWorkerTest extends KnossosTestCase
         self::assertContains('src/components/Tsx.vue', $scan->moduleNames());
         self::assertSame(['src/App.vue'], $scan->diagnosticPaths('TS2322'));
         self::assertSame([], $scan->diagnosticPaths('TS2304'));
+        // A generic component's type parameters are declared in its script tag.
+        self::assertSame([], $scan->diagnosticCodes('src/components/GenericList.vue'));
     }
 
     public function testASvelteKitAppsAliasesBlocksAndMarkupBecomeFacts(): void
@@ -82,6 +84,12 @@ final class ComponentWorkerTest extends KnossosTestCase
         self::assertTrue($scan->reaches('src/routes/regex/+page.svelte', 'src/lib/format.ts#load'));
         // lang="typescript" is TypeScript, so its type errors are reported.
         self::assertSame(['src/routes/comment/+page.svelte'], $scan->diagnosticPaths('TS2322'));
+        // As svelte-check reads them: runes typed by the installed package,
+        // a generic component's type parameters, and a component's default
+        // export re-exported by name.
+        foreach (['src/routes/runes/+page.svelte', 'src/routes/+layout.svelte', 'src/components/Picker.svelte', 'src/components/index.ts'] as $file) {
+            self::assertSame([], $scan->diagnosticCodes($file), $file);
+        }
     }
 
     public function testAnAstroSitesFrontmatterMarkupAndScriptsBecomeFacts(): void
@@ -118,7 +126,8 @@ final class ComponentWorkerTest extends KnossosTestCase
         $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
         foreach ($iterator as $file) {
             $relative = substr((string) $file, strlen($root) + 1);
-            if (preg_match('/\.(?:[cm]?[jt]s|vue|svelte|astro)$/', $relative) === 1) {
+            // `stubs/` stands for installed packages, not the project's source.
+            if (preg_match('/\.(?:[cm]?[jt]s|vue|svelte|astro)$/', $relative) === 1 && !str_starts_with($relative, 'stubs/')) {
                 $files[] = $relative;
             }
         }

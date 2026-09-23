@@ -1913,7 +1913,7 @@ function componentSource(readPath, decoded) {
     const dialect = componentDialect(readPath);
     if (dialect === null) return undefined;
     try {
-        return { dialect, ...toVirtualSource(decoded, dialect) };
+        return { dialect, ...toVirtualSource(decoded, dialect, readPath) };
     } catch (error) {
         rethrowStackOverflow(error);
         return {
@@ -2685,6 +2685,34 @@ function defaultLibDirectory() {
     return normalize(path.dirname(ts.getDefaultLibFilePath({})));
 }
 
+/**
+ * The program's files, with the installed `svelte` package's declarations
+ * when any of them is a Svelte component. The runes (`$state`, `$derived`,
+ * `$props`) are globals that package declares, and svelte-check gives every
+ * component those declarations; without them each rune returned `any`, and
+ * every callback on what it returned reported an implicitly `any` parameter.
+ * Resolved as the components would import `svelte`, so `paths` and the
+ * package's own `types` entry decide the file, and nothing is added when it
+ * is not installed.
+ */
+function withSvelteRunes(fileNames, options, host) {
+    // Offered under their `X.svelte.ts` alias (see COMPONENT_ALIAS).
+    const component = fileNames.find(
+        (name) => COMPONENT_ALIAS.exec(name)?.[1].toLowerCase() === "svelte",
+    );
+    if (component === undefined) return fileNames;
+    const resolved = ts.resolveModuleName(
+        "svelte",
+        component,
+        options,
+        host,
+    ).resolvedModule;
+    return resolved?.extension === ts.Extension.Dts &&
+        !fileNames.includes(resolved.resolvedFileName)
+        ? [...fileNames, resolved.resolvedFileName]
+        : fileNames;
+}
+
 function createRestrictedProgram(
     root,
     parsed,
@@ -2826,7 +2854,7 @@ function createRestrictedProgram(
         parsed.vueProject === true,
     );
     return ts.createProgram({
-        rootNames: parsed.fileNames,
+        rootNames: withSvelteRunes(parsed.fileNames, options, host),
         options,
         projectReferences: parsed.projectReferences,
         host,
@@ -2988,12 +3016,18 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
 }
 
 /**
- * `Module "X.vue" has no default export`: a component's default export is
- * the component its bundler compiles, which its virtual source never spells.
+ * `Module "X.vue" has no default export`, and `Module "X.svelte" has no
+ * exported member 'default'` where `export { default as X }` names it: a
+ * component's default export is the component its bundler compiles, which
+ * its virtual source never spells.
  */
 function namesComponentDefaultExport(diagnostic) {
-    if (diagnostic.code !== 1192) return false;
     const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    if (
+        diagnostic.code !== 1192 &&
+        !(diagnostic.code === 2305 && /member 'default'/.test(text))
+    )
+        return false;
     const module = /Module '"([^"]+)"'/.exec(text)?.[1];
     return module !== undefined && componentDialect(module) !== null;
 }

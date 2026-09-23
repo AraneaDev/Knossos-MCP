@@ -51,6 +51,11 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
 - A helper, store or child component used only from a template has its edge.
 - In an `.astro` file, `Astro.props` has the component's `Props` type, as Astro's own tooling
   gives it, so fields read from it are not typed from their destructuring defaults.
+- As svelte-check reads them: the runes (`$state`, `$derived`, `$props`) are typed by the
+  installed `svelte` package, and in a SvelteKit `+page.svelte` or `+layout.svelte`, `$props()`
+  gives `data` the type the route's generated `./$types` declares.
+- A generic component's type parameters (`<script lang="ts" generics="T extends …">` in
+  Svelte, `generic="T"` in Vue) are declared, each standing for its constraint.
 - A template name that resolves to nothing (an Options API method reached through the
   component instance) is listed in the module's `unresolved_member_calls`, so a method by that
   name is only possibly dead.
