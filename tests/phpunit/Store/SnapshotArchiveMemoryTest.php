@@ -8,6 +8,7 @@ use Knossos\Store\SnapshotPayload;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 /**
  * Archiving a snapshot used to fetch every row of the graph into PHP arrays and
@@ -19,6 +20,12 @@ use PHPUnit\Framework\Attributes\Group;
 #[Group('storage')]
 final class SnapshotArchiveMemoryTest extends KnossosTestCase
 {
+    /**
+     * In a process of its own: what it measures must not depend on what the
+     * tests before it left allocated. Late in a coverage run the suite already
+     * held 117 of PHP's 128 MB, and the payload's one 11 MB block no longer fit.
+     */
+    #[RunInSeparateProcess]
     public function testArchivingHoldsFarLessThanTheSnapshotItWrites(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();

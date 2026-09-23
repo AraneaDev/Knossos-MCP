@@ -253,7 +253,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *
      * @param list<string> $edgeKinds
      */
-    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false, string $candidateConfidence = 'possible', int $candidateOffset = 0): ResultEnvelope
+    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false, string $candidateConfidence = 'possible', int $candidateOffset = 0, int $candidateTimeoutMs = 5000): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
@@ -262,6 +262,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         if ($candidateOffset < 0) {
             throw new InvalidArgumentException('candidate_offset must not be negative.');
+        }
+        if ($candidateTimeoutMs < 1 || $candidateTimeoutMs > 60_000) {
+            throw new InvalidArgumentException('candidate_timeout_ms must be between 1 and 60000.');
         }
         if ($maxNodes < 1 || $maxNodes > 50_000) {
             throw new InvalidArgumentException('max_nodes must be between 1 and 50000.');
@@ -306,10 +309,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         // Executed beside its consumer, not its prepare(): a streamed statement holds its read cursor from
         // execute() until drained, and the three lookups above would otherwise run inside it — undrained if any threw.
         $edgeStatement->execute([$projectId, ...$edgeKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
-        $walk = $this->walkDegrees($edgeStatement, $nodes, $roles, $boundaries, $repositoryWide, $maxEdges, $deadline);
+        $walk = $this->walkDegrees($edgeStatement, $nodes, $boundaries, $repositoryWide, $maxEdges, $deadline);
         $metrics = $walk['metrics'];
-        $productionInDegree = $walk['production_in_degree'];
-        $inheritanceInDegree = $walk['inheritance_in_degree'];
         $edgesExamined = $walk['edges_examined'];
         if ($walk['truncation_reasons'] !== []) {
             $truncated = true;
@@ -335,70 +336,50 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $cycleScanTruncated = true;
         }
 
-        $deadCode = new DeadCodeAnalysis($this->pdo, $this->clock);
-        $ranked = $this->rankNodes($nodes, $metrics, $productionInDegree, $roles, $boundaries, $cycleMembers, $deadCode, $includeExternal, $includeTests);
+        $ranked = $this->rankNodes($nodes, $metrics, $roles, $boundaries, $cycleMembers, $includeExternal, $includeTests);
         $hubs = $ranked['hubs'];
         $hotspots = $ranked['hotspots'];
-        $provisional = $ranked['provisional'];
         $excludedExternal = $ranked['excluded_external'];
         $excludedTests = $ranked['excluded_tests'];
-        // The in-degree above only counts edges from the slice actually read, so
-        // a zero is provisional: node/edge/time limits drop edges, and a dropped
-        // inbound edge makes a referenced symbol look unreferenced. Re-check the
-        // survivors against the whole edge table before calling anything dead —
-        // and before COUNTING anything excluded, because both lists were drawn
-        // from the same provisional zero.
-        $boundedScan = array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== [];
-        if ($provisional !== [] && $boundedScan) {
-            $provisional = $deadCode->reconcileBoundedWalk($projectId, $provisional, $nodes, $edgeKinds, $confidenceRank[$minConfidence], $metrics, $inheritanceInDegree);
-        }
-        $conventionExcluded = $ranked['convention_excluded'];
-        if ($conventionExcluded !== [] && $boundedScan) {
-            // Reconciled per reachability class, not as one list: an
-            // `unreferenced` id is cleared by ANY inbound edge the bounded walk
-            // missed, but a `test_only` id has inbound (test) edges by
-            // construction and would be wrongly cleared by that same check —
-            // it needs the production-only reading instead.
-            $unreferencedIds = array_keys(array_filter($conventionExcluded, static fn(string $reachability): bool => $reachability !== 'test_only'));
-            $testOnlyIds = array_keys(array_filter($conventionExcluded, static fn(string $reachability): bool => $reachability === 'test_only'));
-            $conventionExcluded = [
-                ...$deadCode->unreferenced($projectId, $unreferencedIds, $edgeKinds, $confidenceRank[$minConfidence]),
-                ...$deadCode->unreferenced($projectId, $testOnlyIds, $edgeKinds, $confidenceRank[$minConfidence], true),
-            ];
-        }
-        $excludedConventionDiscovered = count($conventionExcluded);
-        $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree, $edgeKinds, $confidenceRank[$minConfidence], $includeTests);
-        $deadCandidates = $classified['candidates'];
-        $excluded = $classified['excluded'];
+        $candidateDeadline = $this->now() + ($candidateTimeoutMs * 1_000_000);
+        $candidateSearch = new DeadCodeCandidates($this->pdo, $this->clock);
+        $found = $candidateSearch->find($projectId, $edgeKinds, $confidenceRank[$minConfidence], $includeTests, $candidateDeadline, $candidateConfidence, $candidateOffset, $limit);
+        $deadCandidates = $found['candidates'];
+        $excluded = $found['excluded'] + [
+            'inherited' => 0, 'contracts' => 0, 'constructors' => 0, 'entry_scripts' => 0,
+            'type_declarations' => 0, 'suppressed' => 0, 'annotated_false_positives' => 0,
+        ];
+        $excludedConventionDiscovered = $found['convention_excluded'];
         $rank = static function (array &$items): void {
             usort($items, static fn(array $a, array $b): int => ($b['score'] <=> $a['score'])
                 ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
         };
         $rank($hubs);
         $rank($hotspots);
-        $deadCandidates = self::orderedCandidates($deadCandidates, $candidateConfidence);
-        // Tallied on the FULL list, before result_limit slices it away: ordering
-        // test_only last means truncation hides them first, and a summary built
-        // from the slice would then report 0 test-only findings whenever there
-        // were enough unreferenced ones to fill the limit on their own.
-        $testOnlyCandidates = count(array_filter(
-            $deadCandidates,
-            static fn(array $candidate): bool => ($candidate['reachability'] ?? null) === 'test_only',
-        ));
-        $candidatesTotal = count($deadCandidates);
+        // Tallied on the FULL list, not the page: ordering test_only last means
+        // the page hides them first, and a summary built from it would then
+        // report 0 test-only findings whenever there were enough unreferenced
+        // ones to fill the limit on their own.
+        $testOnlyCandidates = $found['test_only'];
+        $candidatesTotal = $found['total'];
         foreach ([$hubs, $hotspots] as $items) {
             if (count($items) > $limit) {
                 $truncated = true;
                 $truncationReasons[] = 'result_limit';
             }
         }
+        // The candidate list reports its own truncation: `truncation_reasons`
+        // describe the hub ranking, and a full page of candidates said the
+        // hubs had been cut when they had not.
+        $candidateTruncationReasons = [];
+        if ($found['truncated']) {
+            $candidateTruncationReasons[] = 'time_limit';
+        }
         if ($candidatesTotal > $candidateOffset + $limit) {
-            $truncated = true;
-            $truncationReasons[] = 'result_limit';
+            $candidateTruncationReasons[] = 'result_limit';
         }
         $hubs = array_slice($hubs, 0, $limit);
         $hotspots = array_slice($hotspots, 0, $limit);
-        $deadCandidates = array_slice($deadCandidates, $candidateOffset, $limit);
         $evidence = [];
         $reported = [];
         foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
@@ -406,8 +387,14 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $reported[$item['component']['id']] = true;
             }
         }
+        // A candidate past the hub window has no row here; only the reported
+        // page's are loaded.
+        $candidateRows = $candidateSearch->rows(array_values(array_diff(array_map('strval', array_keys($reported)), array_map('strval', array_keys($nodes)))));
         foreach (array_keys($reported) as $id) {
-            $row = $nodes[$id];
+            $row = $nodes[$id] ?? $candidateRows[$id] ?? null;
+            if ($row === null) {
+                continue;
+            }
             if ($row['relative_path'] !== null) {
                 $evidence[] = [
                     'component_id' => $id, 'path' => $row['relative_path'],
@@ -419,13 +406,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons),
+            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons, $candidateTruncationReasons),
             [
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
                     'candidate_confidence' => $candidateConfidence, 'candidate_offset' => $candidateOffset,
+                    'candidate_timeout_ms' => $candidateTimeoutMs,
                     'candidates_total' => $candidatesTotal,
+                    'candidates_truncated' => $candidateTruncationReasons !== [],
+                    'candidate_truncation_reasons' => $candidateTruncationReasons,
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excluded['inherited'],
@@ -451,95 +441,39 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
 
 
     /**
-     * Dead-code candidates in report order, filtered to the confidence asked for.
-     *
-     * @param list<array<string, mixed>> $candidates
-     * @return list<array<string, mixed>>
-     */
-    private static function orderedCandidates(array $candidates, string $candidateConfidence): array
-    {
-        // Ordered by reachability class before name, so `limit` slices along a
-        // meaningful line rather than an alphabetical accident: a project whose
-        // test-only candidates happen to sort first would otherwise fill the
-        // default limit of 20 with them and hide every component nothing
-        // references at all. `unreferenced` leads because it is the stronger
-        // claim — nothing reaches it, from anywhere — and the summary names the
-        // test-only count so a caller knows there is more to see.
-        $classRank = static fn(array $candidate): int => ($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 1 : 0;
-        usort($candidates, static fn(array $a, array $b): int => ($classRank($a) <=> $classRank($b))
-            ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
-        // A large project's page of 100 filled with framework methods marked
-        // only possible, hiding every probable candidate behind them; the
-        // filter and the offset let a caller see past that.
-        if ($candidateConfidence === 'probable') {
-            $candidates = array_values(array_filter(
-                $candidates,
-                static fn(array $candidate): bool => ($candidate['confidence'] ?? null) === 'probable',
-            ));
-        }
-
-        return $candidates;
-    }
-
-    /**
-     * One streamed pass over the edge slice, producing every degree tally
-     * architecture_health ranks on.
+     * One streamed pass over the edge slice, producing the degrees the hub and
+     * hotspot rankings read: in/out degree, and the cross-boundary degree
+     * hotspots rank on.
      *
      * Extracted from architectureHealth because that method is up against the
      * repository's own function-length budget, and this is the seam that pays:
      * everything here is the edge walk and the counters it fills, and nothing
-     * here decides what any of it means.
-     *
-     * Three tallies come out of one pass because the walk is the expensive part
-     * — up to `max_edges` joined rows against a deadline — and each additional
-     * pass would re-read them:
-     *
-     * - `metrics` is in/out degree plus the cross-boundary degree hotspots rank on.
-     * - `production_in_degree` counts only edges whose source is NOT test code,
-     *   which is what separates a `test_only` candidate from an unreferenced
-     *   one. It is kept beside in_degree rather than folded into it so in_degree
-     *   goes on meaning what it always meant, reconcileBoundedWalk() included.
-     * - `inheritance_in_degree` counts inbound `implements`/`extends` on their
-     *   own: a type being implemented is not evidence that anything uses it, so
-     *   the contract gate has to be able to discount them.
+     * here decides what any of it means. Dead-code candidates are decided over
+     * the whole graph by DeadCodeCandidates, not from this slice.
      *
      * @param array<string, array<string, mixed>> $nodes id => node row
-     * @param array<string, list<array<string, mixed>>> $roles
      * @param array<string, list<array<string, mixed>>> $boundaries
      * @param list<string> $repositoryWide
      * @return array{
      *     metrics: array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}>,
-     *     production_in_degree: array<string, int>,
-     *     inheritance_in_degree: array<string, int>,
      *     edges_examined: int,
      *     truncation_reasons: list<string>,
      * }
      */
-    private function walkDegrees(PDOStatement $edges, array $nodes, array $roles, array $boundaries, array $repositoryWide, int $maxEdges, int $deadline): array
+    private function walkDegrees(PDOStatement $edges, array $nodes, array $boundaries, array $repositoryWide, int $maxEdges, int $deadline): array
     {
-        $metrics = $productionInDegree = $testNodes = [];
+        $metrics = [];
         foreach (array_keys($nodes) as $id) {
             $metrics[$id] = ['in_degree' => 0, 'out_degree' => 0, 'cross_boundary_degree' => 0];
-            $productionInDegree[$id] = 0;
-            if (ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'))) {
-                $testNodes[$id] = true;
-            }
         }
-        $inheritanceInDegree = [];
         $edgesExamined = 0;
-        $reasons = $this->streamBounded($edges, $maxEdges, $deadline, function (array $edge) use (&$edgesExamined, &$metrics, &$inheritanceInDegree, &$productionInDegree, $nodes, $boundaries, $repositoryWide, $testNodes): bool {
+        $reasons = $this->streamBounded($edges, $maxEdges, $deadline, function (array $edge) use (&$edgesExamined, &$metrics, $nodes, $boundaries, $repositoryWide): bool {
             ++$edgesExamined;
             if (!isset($nodes[$edge['source_id']], $nodes[$edge['target_id']])) {
                 return true;
             }
             ++$metrics[$edge['source_id']]['out_degree'];
             ++$metrics[$edge['target_id']]['in_degree'];
-            if (!isset($testNodes[$edge['source_id']])) {
-                ++$productionInDegree[$edge['target_id']];
-            }
-            if (in_array($edge['kind'], ['implements', 'extends'], true)) {
-                $inheritanceInDegree[$edge['target_id']] = ($inheritanceInDegree[$edge['target_id']] ?? 0) + 1;
-            }
             $sourceBoundaries = array_diff(array_column($boundaries[$edge['source_id']] ?? [], 'id'), $repositoryWide);
             $targetBoundaries = array_diff(array_column($boundaries[$edge['target_id']] ?? [], 'id'), $repositoryWide);
             if ($sourceBoundaries !== [] && $targetBoundaries !== [] && array_intersect($sourceBoundaries, $targetBoundaries) === []) {
@@ -550,122 +484,54 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             return true;
         });
 
-        return [
-            'metrics' => $metrics,
-            'production_in_degree' => $productionInDegree,
-            'inheritance_in_degree' => $inheritanceInDegree,
-            'edges_examined' => $edgesExamined,
-            'truncation_reasons' => $reasons,
-        ];
+        return ['metrics' => $metrics, 'edges_examined' => $edgesExamined, 'truncation_reasons' => $reasons];
     }
 
     /**
-     * One pass over the node slice, sorting each component into the three things
-     * architecture_health reports on: hubs, static hotspots, and provisional
-     * unreferenced-code candidates.
+     * One pass over the node slice, sorting each component into the two
+     * rankings architecture_health reports: hubs and static hotspots.
      *
-     * Extracted from architectureHealth for length, and it is the natural seam:
-     * everything before it gathers the slice and its degrees, everything after it
-     * ranks, reconciles and renders. Nothing here reads the database.
-     *
-     * The two exclusion counters returned alongside are the ones this loop owns.
-     * Every OTHER exclusion tally comes from DeadCodeAnalysis::classify(), which
-     * runs later — but `isCandidate()` rejects convention-discovered roles here,
-     * before classify() ever sees the node, so a node dropped for its role would
-     * otherwise vanish without appearing in any count.
-     *
-     * Those role exclusions come back as ID => reachability rather than a
-     * count, and for BOTH reachability classes a node can fall into, not just
-     * `unreferenced`. Like `provisional`, they are selected on a zero
-     * (production) in-degree measured against the bounded slice, so under
-     * truncation the set can hold a node whose only inbound edge was dropped.
-     * Only the caller knows whether the scan was bounded, so only the caller
-     * can reconcile the set and count what survives — and the reachability
-     * travels along because the two classes reconcile differently: an
-     * `unreferenced` node is cleared by any inbound edge the bounded walk
-     * missed, but a `test_only` one has inbound (test) edges by construction
-     * and can only be cleared by a PRODUCTION one.
+     * Extracted from architectureHealth for length: everything before it
+     * gathers the slice and its degrees, everything after it ranks and renders.
+     * Dead-code candidates are not drawn from the slice; DeadCodeCandidates
+     * finds them over the whole project. Nothing here reads the database.
      *
      * @param array<string, array<string, mixed>> $nodes id => node row
      * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
-     * @param array<string, int> $productionInDegree Inbound edges whose source is not test code.
      * @param array<string, list<array<string, mixed>>> $roles
      * @param array<string, list<array<string, mixed>>> $boundaries
      * @param array<string, true> $cycleMembers
-     * @return array{
-     *     hubs: list<array<string, mixed>>,
-     *     hotspots: list<array<string, mixed>>,
-     *     provisional: array<string, array<string, mixed>>,
-     *     excluded_external: int,
-     *     excluded_tests: int,
-     *     convention_excluded: array<string, string>,
-     * }
+     * @return array{hubs: list<array<string, mixed>>, hotspots: list<array<string, mixed>>, excluded_external: int, excluded_tests: int}
      */
-    private function rankNodes(array $nodes, array $metrics, array $productionInDegree, array $roles, array $boundaries, array $cycleMembers, DeadCodeAnalysis $deadCode, bool $includeExternal, bool $includeTests): array
+    private function rankNodes(array $nodes, array $metrics, array $roles, array $boundaries, array $cycleMembers, bool $includeExternal, bool $includeTests): array
     {
-        $hubs = $hotspots = $provisional = $conventionExcluded = [];
+        $hubs = $hotspots = [];
         $excludedExternal = $excludedTests = 0;
         foreach ($nodes as $id => $row) {
             $degree = $metrics[$id]['in_degree'] + $metrics[$id]['out_degree'];
+            if ($degree === 0) {
+                continue;
+            }
             $component = [
                 'id' => $id, 'kind' => $row['kind'], 'canonical_name' => $row['canonical_name'],
                 'display_name' => $row['display_name'], 'origin' => $row['origin'], 'confidence' => $row['confidence'],
                 'roles' => $roles[$id] ?? [], 'boundaries' => $boundaries[$id] ?? [],
             ];
-            if ($degree > 0) {
-                $externalNode = ReportableComponent::isExternal((string) $row['kind'], $row['origin']);
-                $testNode = ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'));
-                if (!$includeExternal && $externalNode) {
-                    ++$excludedExternal;
-                } elseif (!$includeTests && $testNode) {
-                    ++$excludedTests;
-                } else {
-                    $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
-                    $hotspots[] = [
-                        'component' => $component,
-                        'factors' => $metrics[$id] + ['cycle_participant' => isset($cycleMembers[$id])],
-                        'score' => $degree + (2 * $metrics[$id]['cross_boundary_degree']) + (isset($cycleMembers[$id]) ? 3 : 0),
-                    ];
-                }
-            }
-            // `test_only` is the second half of the same question, and it is
-            // asked here for the same node in the same pass: nothing outside
-            // the test suite reaches this, even though something does. When
-            // include_tests is on the caller has asked for test code to count
-            // as part of the architecture, so the distinction is collapsed.
-            $reachability = match (true) {
-                $metrics[$id]['in_degree'] === 0 => 'unreferenced',
-                !$includeTests && $productionInDegree[$id] === 0 => 'test_only',
-                default => null,
-            };
-            if ($reachability !== null) {
-                if ($deadCode->isCandidate($row, $roles[$id] ?? [])) {
-                    $provisional[$id] = [
-                        'component' => $component, 'row' => $row, 'roles' => $roles[$id] ?? [],
-                        'out_degree' => $metrics[$id]['out_degree'], 'reachability' => $reachability,
-                    ];
-                } elseif ($deadCode->isConventionExcluded($row, $roles[$id] ?? [])) {
-                    // Kept for BOTH reachability classes, not just
-                    // `unreferenced`: a `test_only` node carrying a convention
-                    // role was previously turned away here without landing in
-                    // either list, vanishing from the candidates and from the
-                    // audit trail that is this branch's only reason to exist.
-                    // The reachability travels with the id because the two
-                    // classes need different reconciliation once the caller
-                    // re-checks a bounded scan's provisional zero — a
-                    // `test_only` node has inbound (test) edges by
-                    // construction, so it cannot be cleared by "any inbound
-                    // edge" the way an `unreferenced` one is.
-                    $conventionExcluded[(string) $id] = $reachability;
-                }
+            if (!$includeExternal && ReportableComponent::isExternal((string) $row['kind'], $row['origin'])) {
+                ++$excludedExternal;
+            } elseif (!$includeTests && ReportableComponent::isTest(array_column($roles[$id] ?? [], 'role'))) {
+                ++$excludedTests;
+            } else {
+                $hubs[] = ['component' => $component, 'metrics' => $metrics[$id], 'score' => $degree];
+                $hotspots[] = [
+                    'component' => $component,
+                    'factors' => $metrics[$id] + ['cycle_participant' => isset($cycleMembers[$id])],
+                    'score' => $degree + (2 * $metrics[$id]['cross_boundary_degree']) + (isset($cycleMembers[$id]) ? 3 : 0),
+                ];
             }
         }
 
-        return [
-            'hubs' => $hubs, 'hotspots' => $hotspots, 'provisional' => $provisional,
-            'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests,
-            'convention_excluded' => $conventionExcluded,
-        ];
+        return ['hubs' => $hubs, 'hotspots' => $hotspots, 'excluded_external' => $excludedExternal, 'excluded_tests' => $excludedTests];
     }
 
     /**
@@ -695,9 +561,14 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * sits past the cut and a tally taken from the slice reads as zero while
      * the full list still has some.
      *
+     * The hub walk's truncation and the candidate search's are reported
+     * apart: the node bound limits the ranking only, and a candidate search
+     * that ran out of time must not read as a complete list.
+     *
      * @param list<string> $truncationReasons
+     * @param list<string> $candidateTruncationReasons
      */
-    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons): string
+    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons, array $candidateTruncationReasons): string
     {
         $summary = sprintf(
             'Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates, %d of them reached only by tests.',
@@ -707,7 +578,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $testOnlyCandidates,
         );
         if ($truncationReasons !== []) {
-            $summary .= sprintf(' The ranking was truncated (%s), so components beyond that bound are not reported.', implode(', ', $truncationReasons));
+            $summary .= sprintf(' The ranking was truncated (%s), so hubs and hotspots beyond that bound are not reported.', implode(', ', $truncationReasons));
+        }
+        if (in_array('time_limit', $candidateTruncationReasons, true)) {
+            $summary .= ' The candidate search ran out of time, so the candidate list is partial.';
+        }
+        if (in_array('result_limit', $candidateTruncationReasons, true)) {
+            $summary .= ' More candidates follow this page; candidate_offset pages past it.';
         }
 
         return $summary;
@@ -726,9 +603,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * with its own members and which therefore ranks nothing.
      *
      * What it does not share is the rest of that method. `architecture_health`
-     * also computes hotspots, runs a full cycle detection, and reconciles
-     * dead-code candidates, and it pays for all three before it can hand back
-     * hubs. Measured against this repository's own graph (6,058 components,
+     * also computes hotspots, runs a full cycle detection, and finds dead-code
+     * candidates across the whole project, and it pays for all three before it
+     * can hand back hubs. Measured against this repository's own graph (6,058 components,
      * 35,162 relationships) that is around 0.4s, against roughly 0.05s here.
      * The session brief is billed on every session start, resume and compact,
      * behind a hook that bounds itself at three seconds, so the whole report is
