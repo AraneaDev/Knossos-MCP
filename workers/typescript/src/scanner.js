@@ -9,6 +9,7 @@ import {
     bindingKeyword,
     callName,
     declarationModifiers,
+    functionBindingOf,
     isFunctionBinding,
     reference,
 } from "./typescript-fact-utils.js";
@@ -1516,11 +1517,19 @@ class TypeScriptLanguageFactCollector {
                 ? reference(`external_${hint}`, name)
                 : null;
         }
+        // A call resolves to the arrow or function expression itself; the
+        // node is the module-level binding it initialises.
+        const binding = functionBindingOf(declaration);
+        if (binding !== null)
+            return reference(
+                "function",
+                canonicalForDeclaration(binding, relative),
+            );
         // Declared in this project, but not as anything `declaration()` emits:
-        // a type parameter, an inline `{ ... }` type, a `const f = () => ...`
-        // arrow. The name built for it would match no node, and the core turns
-        // a dangling edge into an external component that is neither external
-        // nor a component.
+        // a type parameter, an inline `{ ... }` type, an arrow bound inside a
+        // function. The name built for it would match no node, and the core
+        // turns a dangling edge into an external component that is neither
+        // external nor a component.
         if (!isDeclaration(declaration)) return null;
         const kind = declarationKind(declaration, hint);
         const canonical = canonicalForDeclaration(declaration, relative);

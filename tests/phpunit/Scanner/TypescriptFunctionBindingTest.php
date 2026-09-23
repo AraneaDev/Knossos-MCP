@@ -57,6 +57,22 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         self::assertTrue($api->attributes['exported'] ?? null);
     }
 
+    public function testCallsAndReferencesReachTheBindingAndItsBodyIsTheirSource(): void
+    {
+        $scan = $this->scan();
+        $arrow = 'ts:function:src/bindings.ts#exportedArrow';
+        $helper = 'ts:function:src/bindings.ts#helper';
+
+        // The body's calls and `new` are the binding's, not the module's.
+        self::assertTrue($scan->hasEdge('calls', $arrow, $helper));
+        self::assertTrue($scan->hasEdge('constructs', $helper, 'ts:class:src/bindings.ts#Widget'));
+        self::assertFalse($scan->hasEdge('calls', 'ts:module:src/bindings.ts', $helper));
+        // A call from another file, through an import, resolves to the binding.
+        self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', $arrow));
+        // Passed as a value, it is referenced.
+        self::assertTrue($scan->hasEdge('references', 'ts:module:src/bindings.ts', $helper));
+    }
+
     private function scan(): FunctionBindingScan
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/function-bindings';
