@@ -505,7 +505,10 @@ export class TypeScriptScanner {
             // the request.
             let contribution;
             try {
-                const collector = new FactCollector(root, sourceFile, checker);
+                const collector = new FactCollector(root, sourceFile, checker, {
+                    options: program.getCompilerOptions(),
+                    requested: requestedSet,
+                });
                 collector.collect();
                 contribution = {
                     owner_key: `knossos.typescript:file:${relative}`,
@@ -553,11 +556,12 @@ export class TypeScriptScanner {
 }
 
 class FactCollector {
-    constructor(root, sourceFile, checker) {
+    constructor(root, sourceFile, checker, project = {}) {
         this.language = new TypeScriptLanguageFactCollector(
             root,
             sourceFile,
             checker,
+            project,
         );
     }
 
@@ -584,8 +588,10 @@ class FactCollector {
 }
 
 class TypeScriptLanguageFactCollector {
-    constructor(root, sourceFile, checker) {
+    constructor(root, sourceFile, checker, project = {}) {
         this.root = root;
+        // The program's compiler options and the request's discovered files.
+        this.project = project;
         this.sourceFile = sourceFile;
         this.checker = checker;
         this.relative = relativeInside(root, sourceFile.fileName);
@@ -1200,11 +1206,74 @@ class TypeScriptLanguageFactCollector {
     }
 
     /**
+     * `require.context('./modules', false, /\.js$/)`: webpack bundles every
+     * file of the directory the pattern matches, so each is imported. Matched
+     * against the request's discovered files, never a directory listing, so
+     * the edges depend on nothing discovery did not hash; speculative, like
+     * any import a path literal names.
+     */
+    requireContextImports(node) {
+        const [directoryArg, recursiveArg, patternArg] = node.arguments;
+        const directory = this.contextDirectory(directoryArg.text);
+        const pattern =
+            patternArg === undefined
+                ? /^\.\/.*$/
+                : regularExpressionOf(patternArg);
+        if (directory === null || pattern === null) return;
+        const recursive =
+            recursiveArg === undefined ||
+            recursiveArg.kind === ts.SyntaxKind.TrueKeyword;
+        for (const relative of this.project.requested ?? []) {
+            const absolute = normalize(path.join(this.root, relative));
+            if (!contains(directory, absolute) || absolute === directory)
+                continue;
+            const inner = path.posix.relative(directory, absolute);
+            if (
+                (recursive || !inner.includes("/")) &&
+                pattern.test(`./${inner}`)
+            )
+                this.speculativeImport(relative, node);
+        }
+    }
+
+    /**
+     * The directory a `require.context` names: relative to this file, or
+     * through the program's `paths` (which carry a bundler's aliases).
+     */
+    contextDirectory(specifier) {
+        const here = path.dirname(
+            realSourcePath(normalize(this.sourceFile.fileName)),
+        );
+        if (specifier.startsWith("."))
+            return normalize(path.resolve(here, specifier));
+        const options = this.project.options ?? {};
+        const base = options.pathsBasePath ?? options.baseUrl ?? this.root;
+        for (const [key, targets] of Object.entries(options.paths ?? {})) {
+            const prefix = key.endsWith("*") ? key.slice(0, -1) : null;
+            const target = targets[0];
+            if (target === undefined) continue;
+            if (key === specifier) return normalize(path.resolve(base, target));
+            if (prefix !== null && specifier.startsWith(prefix))
+                return normalize(
+                    path.resolve(
+                        base,
+                        target.replace("*", specifier.slice(prefix.length)),
+                    ),
+                );
+        }
+        return null;
+    }
+
+    /**
      * Source paths a call names by literal: `resolve(__dirname, 'x/y.tsx')`
      * (or `join`, or `import.meta.dirname`), relative to this file; and
      * `navigator.serviceWorker.register('/sw.js')`, a URL under the web root.
      */
     pathLiteralImports(node) {
+        if (isRequireContext(node)) {
+            this.requireContextImports(node);
+            return;
+        }
         const callee = node.expression;
         const name = ts.isIdentifier(callee)
             ? callee.text
@@ -2265,6 +2334,30 @@ function aliasTarget(expression) {
     )
         return url.arguments[0].text;
     return null;
+}
+
+/** `require.context('<literal>', …)`, webpack's directory import. */
+function isRequireContext(node) {
+    const callee = node.expression;
+    return (
+        ts.isPropertyAccessExpression(callee) &&
+        ts.isIdentifier(callee.expression) &&
+        callee.expression.text === "require" &&
+        callee.name.text === "context" &&
+        node.arguments.length >= 1 &&
+        ts.isStringLiteralLike(node.arguments[0])
+    );
+}
+
+/** The RegExp a regular expression literal spells, or null. */
+function regularExpressionOf(node) {
+    if (!ts.isRegularExpressionLiteral(node)) return null;
+    const match = /^\/(.*)\/([a-z]*)$/s.exec(node.text);
+    try {
+        return match === null ? null : new RegExp(match[1], match[2]);
+    } catch {
+        return null;
+    }
 }
 
 /**

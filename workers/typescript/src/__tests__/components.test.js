@@ -471,3 +471,40 @@ describe("a Vue prop's factories", () => {
         expect(invoked).toEqual(["default", "validator"]);
     });
 });
+
+describe("webpack's require.context", () => {
+    it("imports every matching file of the directory it names", () => {
+        const { contributions } = scan({
+            "webpack.mix.js":
+                "const path = require('path');\nmix.webpackConfig({ resolve: { alias: { '~': path.join(__dirname, './js') } } });\n",
+            "js/store/index.js":
+                "const modules = require.context('./modules', false, /.*\\.js$/);\nexport default modules;\n",
+            "js/store/modules/auth.js": "export default {};\n",
+            "js/store/modules/nested/deep.js": "export default {};\n",
+            "js/store/modules/notes.txt.js": "export default {};\n",
+            "js/App.vue":
+                "<template><div/></template>\n<script>\nconst layouts = require.context('~/layouts', false, /.*\\.vue$/);\nexport default { layouts };\n</script>\n",
+            "js/layouts/basic.vue": "<template><div/></template>\n",
+            "js/layouts/helper.js": "export default {};\n",
+        });
+        const imports = edges(contributions, "imports").map(
+            (e) => `${e.source} -> ${e.target}`,
+        );
+
+        expect(imports).toContain(
+            "ts:module:js/store/index.js -> ts:module:js/store/modules/auth.js",
+        );
+        expect(imports).toContain(
+            "ts:module:js/store/index.js -> ts:module:js/store/modules/notes.txt.js",
+        );
+        // Not recursive.
+        expect(imports.some((i) => i.includes("nested/deep.js"))).toBe(false);
+        expect(imports).toContain(
+            "ts:module:js/App.vue -> ts:module:js/layouts/basic.vue",
+        );
+        // The pattern does not match.
+        expect(imports.some((i) => i.includes("layouts/helper.js"))).toBe(
+            false,
+        );
+    });
+});
