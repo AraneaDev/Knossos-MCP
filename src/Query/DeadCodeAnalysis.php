@@ -32,7 +32,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * Node kinds an unreferenced-code candidate can be. Anything else — a route,
      * a config value, a file — is not a unit anyone deletes on this evidence.
      */
-    private const CANDIDATE_KINDS = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
+    public const CANDIDATE_KINDS = ['class', 'interface', 'trait', 'enum', 'function', 'method', 'module'];
 
     /**
      * Classify provisionally unreferenced components, dropping the ones nothing
@@ -45,15 +45,12 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * reader to ignore the whole list.
      *
      * @param array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int, reachability: string}> $provisional
-     * @param array<string, array<string, mixed>> $nodes
-     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
-     * @param array<string, int> $inheritanceInDegree
      * @param list<string> $edgeKinds
      * @param bool $includeTests Treat test-only member reachability as live.
      *
      * @return array{candidates: list<array<string, mixed>>, excluded: array<string, int>}
      */
-    public function classify(string $projectId, array $provisional, array $nodes, array $metrics, array $inheritanceInDegree, array $edgeKinds, int $minConfidenceRank, bool $includeTests = false): array
+    public function classify(string $projectId, array $provisional, CandidateGraphFacts $facts, array $edgeKinds, int $minConfidenceRank, bool $includeTests = false): array
     {
         $candidates = [];
         $methodNames = [];
@@ -64,8 +61,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
         $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
         $excludedInherited = 0;
-        $idsByCanonicalName = self::indexByCanonicalName($nodes);
-        $untypedCalls = self::untypedMemberCalls($nodes);
+        $untypedCalls = $facts->untypedMemberNames();
         $excludedConstructors = 0;
         $excludedContracts = 0;
         $excludedEntryScripts = 0;
@@ -101,8 +97,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             // both it and its members stay reportable.
             if ($context['implemented'] && $context['declaring_type'] !== null) {
                 $declaringType = $context['declaring_type'];
-                $declaringUses = ($metrics[$declaringType]['in_degree'] ?? 0)
-                    - ($inheritanceInDegree[$declaringType] ?? 0);
+                $declaringUses = $facts->inDegree($declaringType) - $facts->inheritanceInDegree($declaringType);
                 if ($declaringUses > 0) {
                     ++$excludedContracts;
                     continue;
@@ -111,7 +106,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             // Marked by its scanner as called by a runtime or a foreign host
             // (`Drop::drop`, a `#[no_mangle]` export): no source names it,
             // however live it is. Counted with the engine-invoked members.
-            if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)
+            if (self::isEngineInvokedMemberOfReferencedType($candidate['row'], $facts)
                 || ReportableComponent::isRuntimeInvoked($candidate['row']['attributes_json'] ?? null)) {
                 ++$excludedConstructors;
                 continue;
@@ -122,7 +117,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             // nothing imports stays reportable — an orphaned one is precisely
             // what this analysis exists to surface.
             if (ReportableComponent::isExecutableScript((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)
-                || self::isPackageInitWithModules($candidate['row'], $idsByCanonicalName)) {
+                || self::isPackageInitWithModules($candidate['row'], $facts)) {
                 ++$excludedEntryScripts;
                 continue;
             }
@@ -218,11 +213,9 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * with it the member) really may be dead, and it is reported through the
      * type, which is the more useful unit to delete.
      *
-     * @param array<string, mixed>  $node
-     * @param array<string, string> $idsByCanonicalName
-     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
+     * @param array<string, mixed> $node
      */
-    private function isEngineInvokedMemberOfReferencedType(array $node, array $idsByCanonicalName, array $metrics): bool
+    private static function isEngineInvokedMemberOfReferencedType(array $node, CandidateGraphFacts $facts): bool
     {
         if ($node['kind'] !== 'method') {
             return false;
@@ -232,40 +225,9 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             return false;
         }
         $owner = self::owningTypeName((string) $node['canonical_name']);
-        if ($owner === null) {
-            return false;
-        }
-        $ownerId = $idsByCanonicalName[$owner] ?? null;
+        $ownerId = $owner === null ? null : $facts->idOf($owner);
 
-        return $ownerId !== null && ($metrics[$ownerId]['in_degree'] ?? 0) > 0;
-    }
-
-    /**
-     * Member names the scanners saw called on a receiver they could not type.
-     *
-     * A module node lists the calls in its own source; a scanner without a
-     * module node for every file puts them on the calling declaration.
-     *
-     * @param array<array-key, array<string, mixed>> $nodes
-     * @return array<string, true>
-     */
-    private static function untypedMemberCalls(array $nodes): array
-    {
-        $names = [];
-        foreach ($nodes as $node) {
-            $json = $node['attributes_json'] ?? null;
-            if (!is_string($json) || !str_contains($json, 'unresolved_member_calls')) {
-                continue;
-            }
-            $calls = json_decode($json, true)['unresolved_member_calls'] ?? null;
-            foreach (is_array($calls) ? $calls : [] as $name) {
-                if (is_string($name)) {
-                    $names[$name] = true;
-                }
-            }
-        }
-
-        return $names;
+        return $ownerId !== null && $facts->inDegree($ownerId) > 0;
     }
 
     /**
@@ -275,9 +237,9 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      * imported, and nothing names it; if none of those modules is used either,
      * they carry the report.
      *
-     * @param array<string, mixed> $node @param array<string, string> $idsByCanonicalName
+     * @param array<string, mixed> $node
      */
-    private static function isPackageInitWithModules(array $node, array $idsByCanonicalName): bool
+    private static function isPackageInitWithModules(array $node, CandidateGraphFacts $facts): bool
     {
         if ($node['kind'] !== 'module' || !is_string($node['attributes_json'] ?? null)) {
             return false;
@@ -286,14 +248,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         if (!is_array($attributes) || ($attributes['package_init'] ?? false) !== true) {
             return false;
         }
-        $prefix = $node['canonical_name'] . '.';
-        foreach (array_keys($idsByCanonicalName) as $canonical) {
-            if (str_starts_with((string) $canonical, $prefix)) {
-                return true;
-            }
-        }
-
-        return false;
+        return $facts->hasCanonicalPrefix($node['canonical_name'] . '.');
     }
 
     /**
@@ -573,64 +528,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * Undo, from the whole edge table, what a bounded graph walk under-counted.
-     *
-     * Two distinct things go wrong once the node/edge/time caps drop edges. A
-     * dropped inbound edge to a candidate makes a referenced symbol look
-     * unreferenced; those candidates are removed here. Less obviously, the
-     * exclusions in {@see self::classify()} read the DECLARING type's degrees —
-     * a constructor is only excused when its class is used somewhere, a contract
-     * method only when its type is used for something other than being
-     * implemented — so an under-counted owner promotes an ordinary constructor
-     * to a `probable` dead-code claim. Scanning this repository under the CLI's
-     * default 20,000-edge cap did exactly that to
-     * `LaravelContainerFactCollector::__construct`, which is instantiated one
-     * file away. Owner degrees are therefore re-read authoritatively too.
-     *
-     * @param array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int, reachability: string}> $provisional
-     * @param array<string, array<string, mixed>> $nodes
-     * @param list<string> $edgeKinds
-     * @param array<string, array{in_degree: int, out_degree: int, cross_boundary_degree: int}> $metrics
-     * @param array<string, int> $inheritanceInDegree
-     *
-     * @return array<string, array{component: array<string, mixed>, row: array<string, mixed>, roles: list<array<string, mixed>>, out_degree: int, reachability: string}> the surviving candidates
-     */
-    public function reconcileBoundedWalk(string $projectId, array $provisional, array $nodes, array $edgeKinds, int $minConfidenceRank, array &$metrics, array &$inheritanceInDegree): array
-    {
-        // Each class is re-checked against the evidence that selected it. An
-        // `unreferenced` candidate is cleared by ANY inbound edge the bounded
-        // walk missed; a `test_only` one only by an inbound edge from outside
-        // the test suite, because the edges from inside it are exactly why the
-        // candidate is in this list rather than the other one. Reconciling both
-        // against the same query would clear every test_only candidate on the
-        // strength of the test edge that defines it.
-        $byClass = ['unreferenced' => [], 'test_only' => []];
-        foreach ($provisional as $id => $candidate) {
-            $byClass[($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 'test_only' : 'unreferenced'][] = (string) $id;
-        }
-        foreach ($this->referencedNodes($projectId, $byClass['unreferenced'], $edgeKinds, $minConfidenceRank) as $referencedId) {
-            unset($provisional[$referencedId]);
-        }
-        foreach ($this->referencedNodes($projectId, $byClass['test_only'], $edgeKinds, $minConfidenceRank, true) as $referencedId) {
-            unset($provisional[$referencedId]);
-        }
-        $idsByCanonicalName = self::indexByCanonicalName($nodes);
-        $owners = [];
-        foreach ($provisional as $candidate) {
-            $ownerId = $idsByCanonicalName[self::owningTypeName((string) $candidate['row']['canonical_name']) ?? ''] ?? null;
-            if ($ownerId !== null && isset($metrics[$ownerId]) && $metrics[$ownerId]['in_degree'] === 0) {
-                $owners[$ownerId] = $metrics[$ownerId];
-            }
-        }
-        foreach ($this->inboundDegrees($projectId, array_keys($owners), $edgeKinds, $minConfidenceRank) as $ownerId => $degrees) {
-            $metrics[$ownerId] = ['in_degree' => $degrees['in_degree']] + $owners[$ownerId];
-            $inheritanceInDegree[$ownerId] = $degrees['inheritance_in_degree'];
-        }
-
-        return $provisional;
-    }
-
-    /**
      * The canonical name of the type a member belongs to, or null when the name
      * is not a member name at all.
      *
@@ -643,22 +540,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $separator = strrpos($canonicalName, '::');
 
         return $separator === false || $separator === 0 ? null : substr($canonicalName, 0, $separator);
-    }
-
-    /**
-     * Node ids keyed by canonical name, for resolving an owning type to its node.
-     *
-     * @param array<string, array<string, mixed>> $nodes
-     * @return array<string, string>
-     */
-    private static function indexByCanonicalName(array $nodes): array
-    {
-        $ids = [];
-        foreach ($nodes as $nodeId => $nodeRow) {
-            $ids[(string) $nodeRow['canonical_name']] = $nodeId;
-        }
-
-        return $ids;
     }
 
     /**
@@ -716,114 +597,6 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         }
 
         return $reachability;
-    }
-
-    /**
-     * Authoritative inbound-edge counts for the given nodes, read from the whole
-     * edge table rather than the slice a bounded walk managed to read.
-     *
-     * Inheritance is counted separately because the contract exclusion has to
-     * discount it: a type being implemented is not evidence that anything uses it.
-     *
-     * @param list<string> $nodeIds
-     * @param list<string> $edgeKinds
-     * @return array<string, array{in_degree: int, inheritance_in_degree: int}>
-     */
-    private function inboundDegrees(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank): array
-    {
-        $degrees = [];
-        foreach (array_chunk($nodeIds, 500) as $chunk) {
-            $targets = implode(',', array_fill(0, count($chunk), '?'));
-            $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT target_id, kind, COUNT(*) AS edge_count FROM edges WHERE project_id = ? ' .
-                sprintf('AND kind IN (%s) ', $kinds) .
-                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-                sprintf('AND target_id IN (%s) GROUP BY target_id, kind', $targets),
-            );
-            $statement->execute([$projectId, ...$edgeKinds, $minConfidenceRank, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $id = (string) $row['target_id'];
-                $count = (int) $row['edge_count'];
-                $degrees[$id] ??= ['in_degree' => 0, 'inheritance_in_degree' => 0];
-                $degrees[$id]['in_degree'] += $count;
-                if (in_array((string) $row['kind'], ['implements', 'extends'], true)) {
-                    $degrees[$id]['inheritance_in_degree'] += $count;
-                }
-            }
-        }
-
-        return $degrees;
-    }
-
-    /**
-     * Which of the given nodes have at least one inbound edge in the full edge
-     * table, unconstrained by the scan's node/edge budget. Used to clear
-     * dead-code candidates whose in-degree was only zero because the slice the
-     * health scan read stopped short of the edges pointing at them.
-     *
-     * @param list<string> $nodeIds
-     * @param list<string> $edgeKinds
-     * @param bool $productionOnly Ignore edges whose source is test code, so the
-     *        answer is "reached by something the product runs" rather than
-     *        "reached by anything at all".
-     * @return list<string>
-     */
-    private function referencedNodes(string $projectId, array $nodeIds, array $edgeKinds, int $minConfidenceRank, bool $productionOnly = false): array
-    {
-        $referenced = [];
-        $testSource = $productionOnly
-            ? sprintf(
-                'AND NOT EXISTS (SELECT 1 FROM classifications c WHERE c.node_id = edges.source_id AND c.role = %s) ',
-                $this->pdo->quote(ReportableComponent::TEST_ROLE),
-            )
-            : '';
-        foreach (array_chunk($nodeIds, 500) as $chunk) {
-            $targets = implode(',', array_fill(0, count($chunk), '?'));
-            $kinds = implode(',', array_fill(0, count($edgeKinds), '?'));
-            $statement = $this->pdo->prepare(
-                'SELECT DISTINCT target_id FROM edges WHERE project_id = ? ' .
-                sprintf('AND kind IN (%s) ', $kinds) .
-                "AND CASE confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
-                $testSource .
-                sprintf('AND target_id IN (%s)', $targets),
-            );
-            $statement->execute([$projectId, ...$edgeKinds, $minConfidenceRank, ...$chunk]);
-            foreach ($statement->fetchAll() as $row) {
-                $referenced[] = (string) $row['target_id'];
-            }
-        }
-        return $referenced;
-    }
-
-    /**
-     * Which of `$ids` nothing references in the WHOLE edge table.
-     *
-     * The counterpart to {@link reconcileBoundedWalk} for callers that need the
-     * same correction without the candidate bookkeeping. A zero in-degree
-     * measured against a bounded slice is provisional — a node, edge or time
-     * limit drops edges, and a dropped inbound edge makes a referenced symbol
-     * look unreferenced — so any tally drawn from that zero has to be re-checked
-     * against the full table before it is reported as fact.
-     *
-     * `$productionOnly` asks the narrower question a `test_only` id needs: not
-     * "does anything reference this", which a test's own edge would always
-     * answer yes to, but "does anything the product runs". Passing it for an
-     * `unreferenced` id would be wrong in the other direction — it would clear
-     * on a test edge alone the very id that is unreferenced by production code.
-     *
-     * @param list<string> $ids
-     * @param list<string> $edgeKinds
-     * @return list<string>
-     */
-    public function unreferenced(string $projectId, array $ids, array $edgeKinds, int $minConfidenceRank, bool $productionOnly = false): array
-    {
-        if ($ids === []) {
-            return [];
-        }
-        $referenced = array_flip($this->referencedNodes($projectId, $ids, $edgeKinds, $minConfidenceRank, $productionOnly));
-
-        return array_values(array_filter($ids, static fn(string $id): bool => !isset($referenced[$id])));
     }
 
     /**

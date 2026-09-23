@@ -342,32 +342,23 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $provisional = $ranked['provisional'];
         $excludedExternal = $ranked['excluded_external'];
         $excludedTests = $ranked['excluded_tests'];
-        // The in-degree above only counts edges from the slice actually read, so
-        // a zero is provisional: node/edge/time limits drop edges, and a dropped
-        // inbound edge makes a referenced symbol look unreferenced. Re-check the
-        // survivors against the whole edge table before calling anything dead —
-        // and before COUNTING anything excluded, because both lists were drawn
-        // from the same provisional zero.
-        $boundedScan = array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== [];
-        if ($provisional !== [] && $boundedScan) {
-            $provisional = $deadCode->reconcileBoundedWalk($projectId, $provisional, $nodes, $edgeKinds, $confidenceRank[$minConfidence], $metrics, $inheritanceInDegree);
-        }
         $conventionExcluded = $ranked['convention_excluded'];
-        if ($conventionExcluded !== [] && $boundedScan) {
-            // Reconciled per reachability class, not as one list: an
-            // `unreferenced` id is cleared by ANY inbound edge the bounded walk
-            // missed, but a `test_only` id has inbound (test) edges by
-            // construction and would be wrongly cleared by that same check —
-            // it needs the production-only reading instead.
-            $unreferencedIds = array_keys(array_filter($conventionExcluded, static fn(string $reachability): bool => $reachability !== 'test_only'));
-            $testOnlyIds = array_keys(array_filter($conventionExcluded, static fn(string $reachability): bool => $reachability === 'test_only'));
-            $conventionExcluded = [
-                ...$deadCode->unreferenced($projectId, $unreferencedIds, $edgeKinds, $confidenceRank[$minConfidence]),
-                ...$deadCode->unreferenced($projectId, $testOnlyIds, $edgeKinds, $confidenceRank[$minConfidence], true),
-            ];
+        $facts = new CandidateGraphFacts($this->pdo, $projectId, $edgeKinds, $confidenceRank[$minConfidence]);
+        $boundedScan = array_intersect(['node_limit', 'edge_limit', 'time_limit'], $truncationReasons) !== [];
+        if ($boundedScan) {
+            $provisional = array_filter(
+                $provisional,
+                static fn(array $candidate): bool => $facts->inDegree((string) $candidate['component']['id']) === 0
+                    || ($candidate['reachability'] ?? '') === 'test_only',
+            );
+            $conventionExcluded = array_filter(
+                $conventionExcluded,
+                static fn(string $reachability, int|string $id): bool => $reachability === 'test_only' || $facts->inDegree((string) $id) === 0,
+                ARRAY_FILTER_USE_BOTH,
+            );
         }
         $excludedConventionDiscovered = count($conventionExcluded);
-        $classified = $deadCode->classify($projectId, $provisional, $nodes, $metrics, $inheritanceInDegree, $edgeKinds, $confidenceRank[$minConfidence], $includeTests);
+        $classified = $deadCode->classify($projectId, $provisional, $facts, $edgeKinds, $confidenceRank[$minConfidence], $includeTests);
         $deadCandidates = $classified['candidates'];
         $excluded = $classified['excluded'];
         $rank = static function (array &$items): void {
