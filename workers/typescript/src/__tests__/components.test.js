@@ -364,7 +364,8 @@ describe("an extensionless import of a Vue component", () => {
                 "<template><div/></template>\n<script>\nexport default { name: 'Card' };\n</script>\n",
             "src/main.js":
                 "import Card from './components/Card';\nexport default [Card];\n",
-            "src/other.js": "import Missing from './components/Nothing';\nexport default Missing;\n",
+            "src/other.js":
+                "import Missing from './components/Nothing';\nexport default Missing;\n",
         });
         const imports = edges(contributions, "imports").map(
             (e) => `${e.source} -> ${e.target}`,
@@ -374,5 +375,53 @@ describe("an extensionless import of a Vue component", () => {
             "ts:module:src/main.js -> ts:module:src/components/Card.vue",
         );
         expect(imports.some((i) => i.includes("Nothing.vue"))).toBe(false);
+    });
+});
+
+describe("a Vue Options API component", () => {
+    const source = `<template>
+  <button @click="save">{{ label }}</button>
+</template>
+<script>
+export default {
+    data() { return { n: 0 }; },
+    mounted() { this.helper(); },
+    metaInfo() { return {}; },
+    watch: { "$route.query.id"() {}, n(value) {} },
+    computed: { label() { return ""; } },
+    methods: {
+        save() {},
+        helper() {},
+        unused() {},
+    },
+};
+</script>
+`;
+
+    it("marks what Vue calls itself, and references what the component uses", () => {
+        const { contributions } = scan({ "src/Form.vue": source });
+        const nodes = contributions.flatMap((c) => c.nodes);
+        const invoked = nodes
+            .filter((n) => n.attributes.runtime_invoked === true)
+            .map((n) => n.display_name)
+            .sort();
+        const referenced = contributions
+            .flatMap((c) => c.edges)
+            .filter(
+                (e) =>
+                    e.kind === "references" &&
+                    e.source === "ts:module:src/Form.vue",
+            )
+            .map((e) => e.target.split("::").at(-1))
+            .sort();
+
+        expect(invoked).toEqual([
+            "$route.query.id",
+            "data",
+            "metaInfo",
+            "mounted",
+            "n",
+        ]);
+        expect(referenced).toEqual(["helper", "label", "save"]);
     });
 });

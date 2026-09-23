@@ -599,6 +599,8 @@ class TypeScriptLanguageFactCollector {
         this.application = new TypeScriptApplicationEnricher(this);
         this.nest = new NestJsFactEnricher(this);
         this.untypedCalls = new Set();
+        // Each declaration's node id, by the syntax node it was read from.
+        this.declaredIds = new Map();
     }
 
     get nodes() {
@@ -635,6 +637,8 @@ class TypeScriptLanguageFactCollector {
         if (component !== undefined)
             this.unresolvedTemplateNames(component.templateRanges);
         if (component?.dialect === "astro") this.astroProps();
+        if (component?.dialect === "vue")
+            this.vueOptions(component.templateRanges);
         if (this.untypedCalls.size === 0) return;
         this.accumulator.nodesById.get(
             this.moduleId,
@@ -687,6 +691,79 @@ class TypeScriptLanguageFactCollector {
             reference(kind, `${this.relative}#Props`),
             props,
         );
+    }
+
+    /**
+     * A Vue Options API component: Vue calls its lifecycle hooks and watchers
+     * itself, and its methods and computed properties are reached by name,
+     * through `this` or from the template, which no static edge records. A
+     * method or computed property this component names gets a reference from
+     * its module; one it never names stays reportable.
+     */
+    vueOptions(templateRanges) {
+        const options = vueOptionsObject(this.sourceFile);
+        if (options === undefined) return;
+        const used = this.vueUsedNames(templateRanges);
+        const groups = new Map();
+        for (const property of options.properties) {
+            const name = memberName(property);
+            if (VUE_HOOKS.has(name)) this.markRuntimeInvoked(property);
+            if (
+                ts.isPropertyAssignment(property) &&
+                ts.isObjectLiteralExpression(property.initializer)
+            )
+                groups.set(name, property.initializer.properties);
+        }
+        for (const watcher of groups.get("watch") ?? []) {
+            this.markRuntimeInvoked(watcher);
+            // `watch: { total: 'recount' }` names its handler method.
+            if (
+                ts.isPropertyAssignment(watcher) &&
+                ts.isStringLiteralLike(watcher.initializer)
+            )
+                used.add(watcher.initializer.text);
+        }
+        for (const member of [
+            ...(groups.get("methods") ?? []),
+            ...(groups.get("computed") ?? []),
+        ]) {
+            const id = this.declaredIds.get(member);
+            if (id !== undefined && used.has(memberName(member)))
+                this.addEdge("references", this.moduleId, id, member);
+        }
+    }
+
+    /** Names a Vue component uses: `this.name` in its script, any name in its template. */
+    vueUsedNames(templateRanges) {
+        const used = new Set();
+        const visit = (node) => {
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                node.expression.kind === ts.SyntaxKind.ThisKeyword
+            )
+                used.add(node.name.text);
+            else if (
+                ts.isIdentifier(node) &&
+                templateRanges.some(
+                    ([from, to]) =>
+                        node.getStart(this.sourceFile) >= from &&
+                        node.end <= to,
+                )
+            )
+                used.add(node.text);
+            ts.forEachChild(node, visit);
+        };
+        visit(this.sourceFile);
+        return used;
+    }
+
+    /** Mark a declared member as called by its framework rather than by code. */
+    markRuntimeInvoked(member) {
+        const id = this.declaredIds.get(member);
+        const fact =
+            id === undefined ? undefined : this.accumulator.nodesById.get(id);
+        if (fact !== undefined)
+            fact.attributes = { ...fact.attributes, runtime_invoked: true };
     }
 
     enter(node) {
@@ -813,6 +890,7 @@ class TypeScriptLanguageFactCollector {
             ? `${parent.canonical}::${descriptor.name}`
             : `${this.relative}#${this.container.length > 0 ? `${this.container.map((item) => item.name).join(".")}.` : ""}${descriptor.name}`;
         const id = reference(descriptor.kind, canonical);
+        this.declaredIds.set(node, id);
         this.addNode(
             id,
             descriptor.kind,
@@ -2120,6 +2198,62 @@ function svelteKitAliases(text) {
     };
     visit(file);
     return aliases;
+}
+
+/**
+ * Options Vue, vue-router, vue-meta and Nuxt call on a component themselves.
+ */
+const VUE_HOOKS = new Set([
+    "data",
+    "setup",
+    "render",
+    "beforeCreate",
+    "created",
+    "beforeMount",
+    "mounted",
+    "beforeUpdate",
+    "updated",
+    "beforeDestroy",
+    "destroyed",
+    "beforeUnmount",
+    "unmounted",
+    "activated",
+    "deactivated",
+    "errorCaptured",
+    "renderTracked",
+    "renderTriggered",
+    "serverPrefetch",
+    "beforeRouteEnter",
+    "beforeRouteUpdate",
+    "beforeRouteLeave",
+    "metaInfo",
+    "head",
+    "asyncData",
+    "fetch",
+]);
+
+/**
+ * The options object a Vue component exports: `export default { … }`, or the
+ * object passed to `defineComponent(…)` / `Vue.extend(…)` there.
+ */
+function vueOptionsObject(sourceFile) {
+    const exported = sourceFile.statements.find(
+        (statement) =>
+            ts.isExportAssignment(statement) && !statement.isExportEquals,
+    )?.expression;
+    if (exported === undefined) return undefined;
+    if (ts.isObjectLiteralExpression(exported)) return exported;
+    const argument = ts.isCallExpression(exported)
+        ? exported.arguments[0]
+        : undefined;
+    return argument !== undefined && ts.isObjectLiteralExpression(argument)
+        ? argument
+        : undefined;
+}
+
+/** An object literal member's static name, or null. */
+function memberName(member) {
+    return member.name === undefined ? null : staticPropertyName(member.name);
 }
 
 /** A property name written as an identifier or a string, or null. */
