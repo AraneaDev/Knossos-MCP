@@ -12,6 +12,7 @@ import {
     functionBindingOf,
     isFunctionBinding,
     reference,
+    unwrapExpression,
 } from "./typescript-fact-utils.js";
 import {
     blankSource,
@@ -900,24 +901,27 @@ class TypeScriptLanguageFactCollector {
 
     /** A `returns` edge per named type a function or method declares it returns. */
     returnEdges(node, id) {
-        if (
-            (ts.isFunctionDeclaration(node) ||
+        // A function binding declares its return type on the arrow or
+        // function expression; a type on the binding itself is a function
+        // type, not a return type.
+        const returnType = isFunctionBinding(node)
+            ? unwrapExpression(node.initializer).type
+            : ts.isFunctionDeclaration(node) ||
                 ts.isMethodDeclaration(node) ||
-                ts.isMethodSignature(node)) &&
-            node.type
-        ) {
-            // `Clipboard | null` has no symbol of its own: each named member
-            // of a union is a type the function may return.
-            const returned = ts.isUnionTypeNode(node.type)
-                ? node.type.types.filter((member) =>
-                      ts.isTypeReferenceNode(member),
-                  )
-                : [node.type];
-            for (const typeNode of returned) {
-                const target = this.typeNodeReference(typeNode);
-                if (target !== null)
-                    this.addEdge("returns", id, target, typeNode);
-            }
+                ts.isMethodSignature(node)
+              ? node.type
+              : undefined;
+        if (returnType === undefined) return;
+        // `Clipboard | null` has no symbol of its own: each named member
+        // of a union is a type the function may return.
+        const returned = ts.isUnionTypeNode(returnType)
+            ? returnType.types.filter((member) =>
+                  ts.isTypeReferenceNode(member),
+              )
+            : [returnType];
+        for (const typeNode of returned) {
+            const target = this.typeNodeReference(typeNode);
+            if (target !== null) this.addEdge("returns", id, target, typeNode);
         }
     }
 

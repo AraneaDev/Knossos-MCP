@@ -73,6 +73,23 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         self::assertTrue($scan->hasEdge('references', 'ts:module:src/bindings.ts', $helper));
     }
 
+    public function testRolesAndReturnContractsBelongToTheFunctionNode(): void
+    {
+        $scan = $this->scan();
+
+        // One node, the function, carries the component role.
+        $card = $scan->node('src/Card.tsx#Card');
+        self::assertNotNull($card);
+        self::assertSame('function', $card->kind);
+        self::assertSame(['react.component'], $card->attributes['typescript_framework_roles'] ?? null);
+        self::assertSame(1, $scan->nodesNamed('src/Card.tsx#Card'));
+        // `export const GET = async () => ...` in a route file handles the route.
+        self::assertNotNull($scan->node('GET /api/items => app/api/items/route.ts#GET'));
+        self::assertTrue($scan->hasEdge('routes_to', 'ts:route:GET /api/items => app/api/items/route.ts#GET', 'ts:function:app/api/items/route.ts#GET'));
+        // The arrow's declared return type is its contract.
+        self::assertTrue($scan->hasEdge('returns', 'ts:function:src/bindings.ts#make', 'ts:interface:src/handler.ts#Handler'));
+    }
+
     private function scan(): FunctionBindingScan
     {
         $root = self::repositoryRoot() . '/tests/Fixtures/function-bindings';
