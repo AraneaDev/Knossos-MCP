@@ -408,3 +408,19 @@ describe("Astro diagnostics", () => {
         expect(kept(2322)).toBe(true);
     });
 });
+
+describe("comments inside expressions", () => {
+    it("do not open a string with an apostrophe", () => {
+        const { virtual } = svelte(
+            "<span\n  class={css({\n    // the header's band\n    color: \"x\",\n  })}>text</span\n>\n<p>{after}</p>\n<b title={/* it's */ y}>z</b>",
+        );
+        expect(virtual).toContain("{after}");
+        expect(virtual).toContain('color: "x"');
+        expect(virtual).toContain("y}");
+        const astro = expectInvariants(
+            "---\nconst x = 1;\n---\n<span title={`the site's own ${x}`}>a</span>\n<p>{x}</p>\n",
+            "astro",
+        ).text;
+        expect(astro.split("\n")[4]).toBe("   {x}    ");
+    });
+});

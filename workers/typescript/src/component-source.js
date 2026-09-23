@@ -181,9 +181,12 @@ function tagEnd(text, from, braces) {
     let depth = 0;
     for (let i = from; i < text.length; i++) {
         const c = text[i];
-        if (quote !== null) {
+        const comment = depth > 0 && quote === null ? commentEnd(text, i) : -1;
+        if (comment >= 0) i = comment;
+        else if (quote !== null) {
             if (c === quote) quote = null;
-        } else if (c === '"' || c === "'") quote = c;
+        } else if (c === '"' || c === "'" || (depth > 0 && c === "`"))
+            quote = c;
         else if (braces && c === "{") depth++;
         else if (braces && c === "}") depth = Math.max(0, depth - 1);
         else if (c === ">" && depth === 0) return i;
@@ -445,7 +448,7 @@ function braceExpression(writer, open, close, dialect) {
     const inner = writer.text.slice(open + 1, close);
     let from = 0;
     let to = inner.length;
-    if (dialect === "svelte" && /^\s*[#:@/]/.test(inner)) {
+    if (dialect === "svelte" && /^\s*(?:[#:@]|\/(?![/*]))/.test(inner)) {
         const rule = SVELTE_BLOCKS.find(([head]) => head.test(inner));
         if (rule === undefined) return;
         from = rule[0].exec(inner)[0].length;
@@ -477,12 +480,32 @@ function matchingBrace(text, open, end) {
     let depth = 0;
     for (let i = open; i < end; i++) {
         const c = text[i];
-        if (c === '"' || c === "'" || c === "`") {
+        const comment = commentEnd(text, i);
+        if (comment >= 0) i = comment;
+        else if (c === '"' || c === "'" || c === "`") {
             const close = closingQuote(text, i, end);
             if (close < 0) return -1;
             i = close;
         } else if (c === "{") depth++;
         else if (c === "}" && --depth === 0) return i;
+    }
+    return -1;
+}
+
+/**
+ * The offset of the last character of a JavaScript comment starting at `i`,
+ * or -1 when none starts there. Inside an expression an apostrophe in a
+ * comment (`// the header's band`) is not a string.
+ */
+function commentEnd(text, i) {
+    if (text[i] !== "/") return -1;
+    if (text[i + 1] === "/") {
+        const newline = text.indexOf("\n", i);
+        return newline < 0 ? text.length - 1 : newline - 1;
+    }
+    if (text[i + 1] === "*") {
+        const close = text.indexOf("*/", i + 2);
+        return close < 0 ? text.length - 1 : close + 1;
     }
     return -1;
 }
