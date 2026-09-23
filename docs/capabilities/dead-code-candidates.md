@@ -199,6 +199,18 @@ marked `possible`, can fill the first page. `candidate_confidence: "probable"`
 `candidate_offset` (`--candidate-offset=N`) pages past the first `limit`.
 `bounds.candidates_total` says how many there are after the filter.
 
+### Scope and budget
+
+Candidates are found over the whole project. `max_nodes`, `max_edges` and `timeout_ms` bound
+the hub and hotspot ranking only, and `nodes_examined`, `edges_examined`, `truncated` and
+`truncation_reasons` describe that ranking.
+
+The candidate search has its own budget, `candidate_timeout_ms` (CLI:
+`--candidate-timeout`), default 5000 and at most 60000. When it runs out, the result holds the
+candidates classified so far, `bounds.candidates_truncated` is `true`,
+`bounds.candidate_truncation_reasons` is `["time_limit"]`, and `candidates_total` counts what
+was classified.
+
 ## Acting on a candidate
 
 - Confirm it is genuinely unused, then delete it.
@@ -214,8 +226,10 @@ marked `possible`, can fill the first page. `candidate_confidence: "probable"`
 
 - Candidates depend on the selected `edge_kinds` and `min_confidence`. Narrowing
   either produces more candidates, not fewer.
-- The scan is bounded by `max_nodes`, `max_edges`, and `timeout_ms`; a truncated
-  run reports `truncated` with the reason, and its candidate list is partial.
+- The candidate search is bounded by `candidate_timeout_ms` alone; a search cut
+  short reports `candidates_truncated`, and its candidate list is partial.
+  `max_nodes`, `max_edges` and `timeout_ms` bound the hub ranking, not the
+  candidates.
 - `limit` caps the reported list; the counters in `bounds` describe the whole
   examined graph, not the reported slice.
 - A reference from a non-code file suppresses the candidate but contributes no

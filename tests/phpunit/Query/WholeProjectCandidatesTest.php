@@ -135,4 +135,17 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
             self::assertSame('candidate_timeout_ms must be between 1 and 60000.', $error->getMessage());
         }
     }
+
+    /** A large graph's candidates are found inside the default budget. */
+    public function testFiftyThousandNodesFitTheDefaultBudget(): void
+    {
+        [$pdo, $projectId] = $this->seedGraphWithEdges(50_000);
+
+        $started = hrtime(true);
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 10)->data;
+        $elapsedMs = (hrtime(true) - $started) / 1_000_000;
+
+        self::assertFalse($data['bounds']['candidates_truncated']);
+        self::assertLessThan(5_000, $elapsedMs);
+    }
 }
