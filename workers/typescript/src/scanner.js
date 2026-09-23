@@ -1301,7 +1301,8 @@ class TypeScriptLanguageFactCollector {
 
     /**
      * Source paths a call names by literal: `resolve(__dirname, 'x/y.tsx')`
-     * (or `join`, or `import.meta.dirname`), relative to this file; and
+     * (or `join`, or `import.meta.dirname`), relative to this file, or
+     * `join(root, 'scripts', 'x.ts')` from a base it cannot know; and
      * `navigator.serviceWorker.register('/sw.js')`, a URL under the web root.
      */
     pathLiteralImports(node) {
@@ -1319,18 +1320,23 @@ class TypeScriptLanguageFactCollector {
         if (
             (name === "resolve" || name === "join") &&
             args.length >= 2 &&
-            isDirnameExpression(args[0]) &&
             args.slice(1).every((arg) => ts.isStringLiteralLike(arg))
         ) {
-            const relative = sourcePathTarget(
-                this.root,
-                path.dirname(this.sourceFile.fileName),
-                args
-                    .slice(1)
-                    .map((arg) => arg.text)
-                    .join("/"),
-            );
-            if (relative !== null) this.speculativeImport(relative, node);
+            const joined = args
+                .slice(1)
+                .map((arg) => arg.text)
+                .join("/");
+            // `__dirname` names this file's directory. Any other base
+            // (`root`, `ROOT`, `process.cwd()`) is unknown here, so both usual
+            // answers are offered: this file's directory and the project
+            // root. Speculative, so a guess the graph does not hold is dropped.
+            const bases = isDirnameExpression(args[0])
+                ? [path.dirname(this.sourceFile.fileName)]
+                : [path.dirname(this.sourceFile.fileName), this.root];
+            for (const base of bases) {
+                const relative = sourcePathTarget(this.root, base, joined);
+                if (relative !== null) this.speculativeImport(relative, node);
+            }
             return;
         }
         if (

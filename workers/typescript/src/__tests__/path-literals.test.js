@@ -81,3 +81,45 @@ describe("a source path written as a literal", () => {
         expect(imports.some((t) => t.endsWith(".svg"))).toBe(false);
     });
 });
+
+describe("a path joined from a root variable", () => {
+    it("is a speculative import relative to the file and to the project", () => {
+        const root = fixture({
+            "tools/shots.ts": [
+                "declare function join(...parts: string[]): string;",
+                "declare const root: string;",
+                "declare function spawn(file: string): void;",
+                "spawn(join(root, 'scripts', 'shots.ts'));",
+                "spawn(join(root, 'helpers/local.ts'));",
+                "spawn(join(root, 'scripts', 'missing.ts'));",
+                "",
+            ].join("\n"),
+            "scripts/shots.ts": "export {};\n",
+            "tools/helpers/local.ts": "export {};\n",
+        });
+        const contributions = [];
+        new TypeScriptScanner().scan(
+            {
+                root,
+                files: [
+                    "tools/shots.ts",
+                    "scripts/shots.ts",
+                    "tools/helpers/local.ts",
+                ],
+            },
+            (c) => contributions.push(c),
+        );
+        const imports = contributions
+            .flatMap((c) => c.edges)
+            .filter(
+                (e) =>
+                    e.kind === "imports" && e.attributes.speculative === true,
+            )
+            .map((e) => e.target)
+            .sort();
+
+        // Speculative: the core keeps only the edges whose module exists.
+        expect(imports).toContain("ts:module:scripts/shots.ts");
+        expect(imports).toContain("ts:module:tools/helpers/local.ts");
+    });
+});
