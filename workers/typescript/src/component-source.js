@@ -57,6 +57,7 @@ export function toVirtualSource(text, dialect) {
         text,
         out,
         kind: dialect === "astro" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        blocked: commentedTails(text, blocks.scripts),
     };
     for (const [from, to] of blocks.markup) {
         if (dialect === "vue") vueMarkup(writer, from, to);
@@ -274,6 +275,37 @@ function parseAttributes(source) {
 }
 
 /**
+ * The spans a script's trailing line comment reaches: from the end of a
+ * script that ends inside a `//` comment to the end of that line. The
+ * comment runs on in the virtual text, so anything written there would be
+ * swallowed, and an expression continuing onto the next line would leave
+ * half of itself behind.
+ */
+function commentedTails(text, scripts) {
+    const tails = [];
+    for (const [from, to] of scripts) {
+        const scanner = ts.createScanner(
+            ts.ScriptTarget.Latest,
+            false,
+            ts.LanguageVariant.Standard,
+            text.slice(from, to),
+        );
+        let last = ts.SyntaxKind.Unknown;
+        while (scanner.scan() !== ts.SyntaxKind.EndOfFileToken)
+            last = scanner.getToken();
+        if (last !== ts.SyntaxKind.SingleLineCommentTrivia) continue;
+        const newline = text.slice(to).search(/[\r\n]/);
+        tails.push([to, newline < 0 ? text.length : to + newline]);
+    }
+    return tails;
+}
+
+/** Whether a write at `offset` falls where a script's trailing comment reaches. */
+function isBlocked(writer, offset) {
+    return writer.blocked.some(([from, to]) => offset >= from && offset < to);
+}
+
+/**
  * Write the expression at [exprStart, exprEnd) back in place, framed by
  * `open` at `openAt` and `close` at `closeAt`, when the framed text parses on
  * its own. A fragment that does not parse stays blank, so no template
@@ -290,6 +322,7 @@ function placeFramed(
     rewrite = (value) => value,
 ) {
     const { text, out } = writer;
+    if (isBlocked(writer, openAt)) return false;
     const expression = rewrite(text.slice(exprStart, exprEnd));
     if (expression.trim() === "") return false;
     const frame =
@@ -321,7 +354,7 @@ function parsesCleanly(source, kind) {
  * namespaced tags stay blank.
  */
 function writeTagReference(writer, lt, name) {
-    if (name.includes(":")) return;
+    if (name.includes(":") || isBlocked(writer, lt)) return;
     let identifier;
     if (/^[A-Z]/.test(name)) identifier = name;
     else if (name.includes("-"))
