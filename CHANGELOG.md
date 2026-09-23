@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.11](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.10...v0.16.11) (2026-09-23)
+
+
+### Fixes
+
+* **query:** find dead-code candidates over the whole project ([#117](https://github.com/AraneaDev/Knossos-MCP/issues/117)) ([95c14d9](https://github.com/AraneaDev/Knossos-MCP/commit/95c14d9db8f605b0be3fc3e16ebedc122db7c855))
+
 ## [0.16.10](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.9...v0.16.10) (2026-09-23)
 
 
