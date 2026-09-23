@@ -54,6 +54,7 @@ final class ToolConfigModuleRuleTest extends TestCase
             'markdownlint-cli2 dotfile' => ['.markdownlint-cli2.mjs'],
             'pnpmfile' => ['.pnpmfile.cjs'],
             'gulpfile' => ['gulpfile.js'],
+            'laravel mix' => ['webpack.mix.js'],
             'capitalised gruntfile' => ['Gruntfile.js'],
             'pytest conftest' => ['tests/conftest.py'],
             // Extension and stem are both matched case-insensitively; a

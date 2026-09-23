@@ -40,7 +40,7 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
     private const STEM_SUFFIXES = ['.config', '.conf'];
 
     /** Whole filenames that name a tool's entry file outright. */
-    private const EXACT_STEMS = ['gulpfile', 'gruntfile', 'conftest'];
+    private const EXACT_STEMS = ['gulpfile', 'gruntfile', 'conftest', 'webpack.mix'];
 
     /** {@inheritDoc} */
     public function id(): string
