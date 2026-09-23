@@ -4189,12 +4189,13 @@ function fallbackGroups(root, remaining, parsedConfigs) {
 // What a file outside a config's `include` takes from it: how to resolve
 // and parse, as its test runner or bundler reads it. Not how strictly to
 // check, which the config applies to its own files only, and not its build
-// layout (`rootDir`, `composite`), which such a file would break.
+// layout (`rootDir`, `composite`), which such a file would break. Nor its
+// `module`/`moduleResolution`: a test runner resolves as a bundler does,
+// and a legacy `node` resolution loses the package `imports` field and, under
+// the bundled compiler, the `@types` a test reads (`Buffer`, `process`).
 const RESOLUTION_OPTIONS = [
     "baseUrl",
     "paths",
-    "module",
-    "moduleResolution",
     "moduleSuffixes",
     "customConditions",
     "resolvePackageJsonExports",
