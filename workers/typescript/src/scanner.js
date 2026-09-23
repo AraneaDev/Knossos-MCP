@@ -271,6 +271,7 @@ export class TypeScriptScanner {
             parseConfig(root, configPath, reads),
         ]);
         request.owners = configOwners(root, parsedConfigs);
+        request.outputSources = outputSources(root, parsedConfigs);
 
         for (const [configPath, parsed] of parsedConfigs) {
             request.owner = configPath;
@@ -1747,6 +1748,8 @@ function parseConfig(root, configPath, reads) {
     const ownFileNames = [...fileNames];
     const pending = [...(parsed.projectReferences ?? [])];
     const visited = new Set([absolute]);
+    // Where each referenced config emits, which outputSources() maps back.
+    const referencedOutputs = [];
     while (pending.length > 0) {
         const reference = pending.pop();
         const referenceConfig = normalize(
@@ -1770,10 +1773,12 @@ function parseConfig(root, configPath, reads) {
         for (const file of referenced.fileNames) {
             if (allowedCompilerPath(root, file)) fileNames.add(file);
         }
+        referencedOutputs.push([referenceConfig, referenced.options]);
         pending.push(...(referenced.projectReferences ?? []));
     }
     parsed.fileNames = [...fileNames].map(offeredComponentPath);
     parsed.ownFileNames = ownFileNames.map(offeredComponentPath);
+    parsed.referencedOutputs = referencedOutputs;
     // References are kept, and the host resolves a reference's build output
     // back to its source (see createRestrictedProgram), so an import of
     // `../lib/dist/index.js` or a package.json `imports` alias onto it lands
@@ -2405,6 +2410,7 @@ function programConfig(request, directory, parsed) {
             maxFileBytes,
         ),
         vueProject: inVueProject(root, directory, request.vueProjects),
+        outputSources: request.outputSources ?? [],
     };
 }
 
@@ -2870,6 +2876,8 @@ function createRestrictedProgram(
         host,
         cache,
         parsed.vueProject === true,
+        parsed.outputSources ?? [],
+        (file) => allowedCompilerPath(root, file),
     );
     return ts.createProgram({
         rootNames: withSvelteRunes(parsed.fileNames, options, host),
@@ -2893,7 +2901,78 @@ function createRestrictedProgram(
  * stays off elsewhere. The resolution mode follows a project reference's own
  * options, as the compiler's default loader does.
  */
-function componentResolver(host, cache, vueProject) {
+/**
+ * Where each config in the scan, and each config one references, emits
+ * (`outDir`) and what it emits from (`rootDir`, else its own directory).
+ */
+function outputSources(root, parsedConfigs) {
+    const configs = parsedConfigs.flatMap(([configPath, parsed]) => [
+        [path.join(root, configPath), parsed.options],
+        ...(parsed.referencedOutputs ?? []),
+    ]);
+    return configs
+        .flatMap(([configFile, options]) =>
+            options.outDir === undefined
+                ? []
+                : [
+                      {
+                          outDir: normalize(options.outDir),
+                          rootDir: normalize(
+                              options.rootDir ?? path.dirname(configFile),
+                          ),
+                      },
+                  ],
+        )
+        .sort((a, b) => b.outDir.length - a.outDir.length);
+}
+
+const BUILD_SOURCE_EXTENSIONS = new Map([
+    [".ts", ts.Extension.Ts],
+    [".tsx", ts.Extension.Tsx],
+    [".mts", ts.Extension.Mts],
+    [".cts", ts.Extension.Cts],
+]);
+
+/**
+ * A module that resolved to, or only failed to find, another config's build
+ * output, which is never read (see allowedCompilerPath), as the source that
+ * output is built from: `#shared/x` naming `dist/shared/x.js` is that config's `x.ts`, the
+ * file its build keeps the output in step with. Undefined when no failed
+ * lookup lies in a known `outDir` or the source is not there.
+ */
+function sourceOfBuildOutput(result, outputs, host) {
+    const locations = [
+        ...(result.resolvedModule === undefined
+            ? []
+            : [result.resolvedModule.resolvedFileName]),
+        ...(result.failedLookupLocations ?? []),
+    ];
+    for (const location of locations) {
+        // Every output directory holding it, the nearest first: a config
+        // emitting to `dist/shared` beside one emitting to `dist`.
+        for (const output of outputs) {
+            if (!location.startsWith(output.outDir + "/")) continue;
+            const stem = location
+                .slice(output.outDir.length + 1)
+                .replace(/\.(?:d\.)?[cm]?[jt]sx?$/, "");
+            for (const [suffix, extension] of BUILD_SOURCE_EXTENSIONS) {
+                const candidate = `${output.rootDir}/${stem}${suffix}`;
+                if (host.fileExists(candidate))
+                    return {
+                        resolvedModule: {
+                            resolvedFileName: candidate,
+                            extension,
+                            isExternalLibraryImport: false,
+                        },
+                        failedLookupLocations: result.failedLookupLocations,
+                    };
+            }
+        }
+    }
+    return undefined;
+}
+
+function componentResolver(host, cache, vueProject, outputs, readable) {
     return (
         literals,
         containingFile,
@@ -2917,9 +2996,15 @@ function componentResolver(host, cache, vueProject) {
                             compilerOptions,
                     ),
                 );
+            const direct = resolve(literal.text);
+            // Resolved to build output is resolved to nothing: it is never
+            // read (see allowedCompilerPath).
             const resolved = componentTarget(
                 literal.text,
-                resolve(literal.text),
+                direct.resolvedModule === undefined ||
+                    !readable(direct.resolvedModule.resolvedFileName)
+                    ? (sourceOfBuildOutput(direct, outputs, host) ?? direct)
+                    : direct,
             );
             if (
                 !vueProject ||

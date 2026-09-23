@@ -51,4 +51,42 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
         // Its `rootDir` describes the package's build, not a test beside it.
         self::assertSame([], $codes);
     }
+
+    public function testAnImportOfAnotherConfigsBuildOutputReachesItsSources(): void
+    {
+        // `extends` does not carry `references`, so the test config reaches
+        // `#shared/*` only through the build output another config emits,
+        // which is never read: its sources stand for it.
+        $imports = $this->imports(['web/tsconfig.json', 'web/tsconfig.shared.json', 'web/tsconfig.test.json']);
+
+        self::assertContains('ts:module:web/tests/util.test.ts -> ts:module:shared/greet.ts', $imports);
+    }
+
+    /**
+     * @param list<string> $configs
+     * @return list<string> `source -> target` of every imports edge
+     */
+    private function imports(array $configs): array
+    {
+        $client = $this->typescriptWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan([
+                'root' => self::repositoryRoot() . '/tests/Fixtures/fallback-options',
+                'files' => ['shared/greet.ts', 'web/src/util.ts', 'web/tests/util.test.ts'],
+                'config_files' => $configs,
+            ]), false);
+        } finally {
+            $client->shutdown();
+        }
+        $imports = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'imports') {
+                    $imports[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+        }
+
+        return $imports;
+    }
 }

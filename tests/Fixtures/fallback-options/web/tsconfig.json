@@ -11,7 +11,8 @@
       "@/*": [
         "src/*"
       ]
-    }
+    },
+    "outDir": "./dist"
   },
   "include": [
     "src/**/*.ts"
