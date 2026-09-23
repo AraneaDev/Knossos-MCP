@@ -933,6 +933,8 @@ name = "server"
 server = "server.main:run"
 TOML);
         assertSame([], $application->metadata['library_roots']);
+        // Nor is a Poetry project that says it is no package.
+        assertSame([], $this->pythonUnit("[build-system]\nrequires = [\"poetry-core\"]\n\n[tool.poetry]\nname = \"service\"\npackage-mode = false\n")->metadata['library_roots']);
         // Nor is a project with nothing to build.
         assertSame([], $this->pythonUnit("[project]\nname = \"app\"\n")->metadata['library_roots']);
     }

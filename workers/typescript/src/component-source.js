@@ -97,7 +97,9 @@ function routeProps(fileName) {
         route[1] === "page"
             ? '{ data: import("./$types").PageData; form: import("./$types").ActionData; [prop: string]: any }'
             : '{ data: import("./$types").LayoutData; [prop: string]: any }';
-    return `\nexport {};\ndeclare function $props(): ${props};\n`;
+    // `$props.id()` is the rune's too, and the global's namespace is shadowed
+    // along with its function.
+    return `\nexport {};\ndeclare function $props(): ${props};\ndeclare namespace $props {\n    function id(): string;\n}\n`;
 }
 
 /**

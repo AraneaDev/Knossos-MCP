@@ -4198,6 +4198,9 @@ function fallbackGroups(root, remaining, parsedConfigs) {
 const RESOLUTION_OPTIONS = [
     "baseUrl",
     "paths",
+    // Where `paths` resolve from when no `baseUrl` is set: the config's own
+    // directory, which TypeScript records here and nowhere else.
+    "pathsBasePath",
     "moduleSuffixes",
     "customConditions",
     "resolvePackageJsonExports",

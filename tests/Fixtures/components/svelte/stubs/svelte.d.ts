@@ -3,3 +3,6 @@
 declare function $state<T>(initial: T): T;
 declare function $derived<T>(expression: T): T;
 declare function $props<T = any>(): T;
+declare namespace $props {
+  function id(): string;
+}

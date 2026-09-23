@@ -1762,7 +1762,7 @@ final readonly class ProjectDiscoverer
     /**
      * The directory a Python library publishes: its pyproject's own, when the
      * project has something to build (`[build-system]` beside `[project]` or
-     * Poetry's table) and installs no command. A package that installs a
+     * Poetry's table, and not `package-mode = false`) and installs no command. A package that installs a
      * command is an application, whose functions nothing outside calls.
      *
      * @return list<string>
@@ -1772,8 +1772,11 @@ final readonly class ProjectDiscoverer
         $buildable = preg_match('/^\[build-system\]/m', $contents) === 1
             && preg_match('/^\[(?:project|tool\.poetry)\]/m', $contents) === 1;
         $installsCommand = preg_match('/^\[(?:project\.(?:gui-)?scripts|tool\.poetry\.scripts)\]/m', $contents) === 1;
+        // Poetry writes a build system for every project; one that is no
+        // package says so with `package-mode = false`.
+        $notAPackage = preg_match('/^\s*package-mode\s*=\s*false\b/m', $contents) === 1;
 
-        return $buildable && !$installsCommand ? [self::manifestDirectory($relative)] : [];
+        return $buildable && !$installsCommand && !$notAPackage ? [self::manifestDirectory($relative)] : [];
     }
 
     /**
