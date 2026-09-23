@@ -10,6 +10,8 @@ import {
     callName,
     declarationModifiers,
     functionBindingOf,
+    holderOf,
+    isExpressionWrapper,
     isFunctionBinding,
     reference,
     unwrapExpression,
@@ -3072,14 +3074,7 @@ function isContextualObjectLiteral(node) {
         !node.properties.some((member) => ts.isMethodDeclaration(member))
     )
         return false;
-    let current = node.parent;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    )
-        current = current.parent;
+    const current = holderOf(node);
     return !(
         current !== undefined &&
         ts.isVariableDeclaration(current) &&
@@ -3090,14 +3085,7 @@ function isContextualObjectLiteral(node) {
 // The object literal an initializer evaluates to, through parentheses, `as`
 // and `satisfies`, or null.
 function objectLiteralOf(expression) {
-    let current = expression;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    )
-        current = current.expression;
+    const current = unwrapExpression(expression);
     return current !== undefined && ts.isObjectLiteralExpression(current)
         ? current
         : null;
@@ -3108,12 +3096,7 @@ function objectLiteralOf(expression) {
 function objectLiteralContract(node) {
     if (node.type !== undefined) return node.type;
     let current = node.initializer;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    ) {
+    while (current !== undefined && isExpressionWrapper(current)) {
         if (ts.isSatisfiesExpression(current)) return current.type;
         current = current.expression;
     }

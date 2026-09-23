@@ -50,16 +50,28 @@ export function addFrameworkRoute(
     );
 }
 
+/** Parentheses, `as` or `satisfies`: syntax around a value that is not a value of its own. */
+export function isExpressionWrapper(node) {
+    return (
+        ts.isParenthesizedExpression(node) ||
+        ts.isAsExpression(node) ||
+        ts.isSatisfiesExpression(node)
+    );
+}
+
 /** An expression's value through parentheses, `as` and `satisfies`. */
 export function unwrapExpression(expression) {
     let current = expression;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    )
+    while (current !== undefined && isExpressionWrapper(current))
         current = current.expression;
+    return current;
+}
+
+/** The node holding an expression, past any parentheses, `as` and `satisfies` around it. */
+export function holderOf(node) {
+    let current = node.parent;
+    while (current !== undefined && isExpressionWrapper(current))
+        current = current.parent;
     return current;
 }
 
@@ -97,14 +109,7 @@ export function functionBindingOf(node) {
         !(ts.isArrowFunction(node) || ts.isFunctionExpression(node))
     )
         return null;
-    let current = node.parent;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    )
-        current = current.parent;
+    const current = holderOf(node);
     return current !== undefined &&
         isFunctionBinding(current) &&
         unwrapExpression(current.initializer) === node
