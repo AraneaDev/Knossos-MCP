@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.12...v0.17.0) (2026-09-23)
+
+
+### Features
+
+* **typescript:** module-level function bindings as graph nodes ([#121](https://github.com/AraneaDev/Knossos-MCP/issues/121)) ([c29bb43](https://github.com/AraneaDev/Knossos-MCP/commit/c29bb43e87ccdc98a6ef6bf9845020b63f86e1c8))
+
 ## [0.16.12](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.11...v0.16.12) (2026-09-23)
 
 
