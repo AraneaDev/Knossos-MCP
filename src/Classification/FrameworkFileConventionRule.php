@@ -27,6 +27,31 @@ final readonly class FrameworkFileConventionRule implements ClassificationRule
     private function __construct(private string $framework, private array $appRoots, private array $patterns) {}
 
     /**
+     * SvelteKit's route modules and components, hooks, param matchers and
+     * service worker.
+     *
+     * Route modules (`+page`, `+layout`, their `.server` variants, `+server`)
+     * and route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`)
+     * under `src/routes/`, the hooks files, param matchers in `src/params/` and
+     * the service worker are entered by the framework and imported by
+     * nothing. Outside a directory holding a `svelte.config.*`, `src/hooks.ts`
+     * is as likely to be a module of React hooks, so the roots matter.
+     *
+     * @param list<string> $appRoots directories holding a `svelte.config.*`
+     */
+    public static function svelteKit(array $appRoots): self
+    {
+        return new self('sveltekit', $appRoots, [
+            '#^src/routes/(?:.+/)?\+(?:page|layout)(?:\.server)?\.[cm]?[jt]s$#',
+            '#^src/routes/(?:.+/)?\+(?:page|layout|error)(?:@[^/]*)?\.svelte$#',
+            '#^src/routes/(?:.+/)?\+server\.[cm]?[jt]s$#',
+            '#^src/hooks(?:\.server|\.client)?\.[cm]?[jt]s$#',
+            '#^src/params/[^/]+\.[cm]?[jt]s$#',
+            '#^src/service-worker(?:/index)?\.[cm]?[jt]s$#',
+        ]);
+    }
+
+    /**
      * Astro's endpoints, middleware and content configuration.
      *
      * @param list<string> $appRoots directories holding an `astro.config.*`

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Classification;
 
-use Knossos\Classification\SvelteKitConventionRule;
+use Knossos\Classification\FrameworkFileConventionRule;
 use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\NodeFact;
@@ -20,7 +20,7 @@ use PHPUnit\Framework\Attributes\Group;
  * has a `svelte.config.*`: elsewhere `src/hooks.ts` is an ordinary module.
  */
 #[Group('classification')]
-final class SvelteKitConventionRuleTest extends KnossosTestCase
+final class SvelteKitConventionsTest extends KnossosTestCase
 {
     /** @return array<string, array{string, bool}> */
     public static function paths(): array
@@ -51,7 +51,7 @@ final class SvelteKitConventionRuleTest extends KnossosTestCase
     #[DataProvider('paths')]
     public function testClassifiesFilesSvelteKitLoadsByPosition(string $path, bool $expected): void
     {
-        $rule = new SvelteKitConventionRule(['apps/web']);
+        $rule = FrameworkFileConventionRule::svelteKit(['apps/web']);
         $node = new NodeFact('ts:module:' . $path, 'module', $path, basename($path), Origin::Ast, Confidence::Certain, new Evidence($path, 1, 1));
 
         $facts = $rule->classify($node);
@@ -64,7 +64,7 @@ final class SvelteKitConventionRuleTest extends KnossosTestCase
 
     public function testAnAppAtTheProjectRootIsRecognised(): void
     {
-        $rule = new SvelteKitConventionRule(['']);
+        $rule = FrameworkFileConventionRule::svelteKit(['']);
         $node = new NodeFact('ts:module:src/hooks.server.ts', 'module', 'src/hooks.server.ts', 'hooks.server.ts', Origin::Ast, Confidence::Certain, new Evidence('src/hooks.server.ts', 1, 1));
 
         self::assertNotSame([], $rule->classify($node));

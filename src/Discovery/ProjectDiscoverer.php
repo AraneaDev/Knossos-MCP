@@ -55,19 +55,7 @@ final readonly class ProjectDiscoverer
 
         while ($stack !== []) {
             $directory = array_pop($stack);
-            // A directory's `.gitignore` governs its siblings, which the
-            // iterator may reach first, so it is read before any of them. The
-            // same read later answers its unit's hash, so the rules applied and
-            // the hash recorded cannot describe two different files.
-            $ignoreFile = $directory . '/.gitignore';
-            if (is_file($ignoreFile) && !is_link($ignoreFile)) {
-                $ignoreRelative = $this->relative($root, $ignoreFile);
-                $gitIgnoreReads[$ignoreRelative] = $this->contents->read($ignoreFile, $this->config->maxFileBytes);
-                $ignoreBytes = $gitIgnoreReads[$ignoreRelative]->bytes;
-                if ($ignoreBytes !== null) {
-                    $gitIgnore->add($this->relative($root, $directory), $ignoreBytes);
-                }
-            }
+            $this->readGitIgnore($root, $directory, $gitIgnore, $gitIgnoreReads);
             try {
                 // UnexpectedValueException, which is a RuntimeException, is what
                 // DirectoryIterator throws for a directory it cannot open. Caught
@@ -231,6 +219,44 @@ final readonly class ProjectDiscoverer
             }
         }
 
+        return self::result($root, $files, $units, $diagnostics, $unparsedManifestHashes);
+    }
+
+    /**
+     * Read a directory's `.gitignore` into the rules before its entries are walked.
+     *
+     * It governs its siblings, which the iterator may reach first, so it is
+     * read before any of them. The same read later answers its unit's hash, so
+     * the rules applied and the hash recorded cannot describe two different
+     * files.
+     *
+     * @param array<string, FileContent> $gitIgnoreReads
+     */
+    private function readGitIgnore(string $root, string $directory, GitIgnoreRules $gitIgnore, array &$gitIgnoreReads): void
+    {
+        $ignoreFile = $directory . '/.gitignore';
+        if (!is_file($ignoreFile) || is_link($ignoreFile)) {
+            return;
+        }
+        $ignoreRelative = $this->relative($root, $ignoreFile);
+        $gitIgnoreReads[$ignoreRelative] = $this->contents->read($ignoreFile, $this->config->maxFileBytes);
+        $ignoreBytes = $gitIgnoreReads[$ignoreRelative]->bytes;
+        if ($ignoreBytes !== null) {
+            $gitIgnore->add($this->relative($root, $directory), $ignoreBytes);
+        }
+    }
+
+    /**
+     * The walk's files and units in a stable order, with the entry points
+     * derived across units, and the input and configuration hashes over both.
+     *
+     * @param list<DiscoveredFile> $files
+     * @param list<ProjectUnit> $units
+     * @param list<DiscoveryDiagnostic> $diagnostics
+     * @param array<string, string> $unparsedManifestHashes
+     */
+    private static function result(string $root, array $files, array $units, array $diagnostics, array $unparsedManifestHashes): DiscoveryResult
+    {
         usort($files, static fn(DiscoveredFile $left, DiscoveredFile $right): int =>
             $left->relativePath <=> $right->relativePath);
         usort($units, static fn(ProjectUnit $left, ProjectUnit $right): int =>

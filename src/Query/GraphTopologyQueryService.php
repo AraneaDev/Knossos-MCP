@@ -376,29 +376,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         };
         $rank($hubs);
         $rank($hotspots);
-        // Ordered by reachability class before name, so `limit` slices along a
-        // meaningful line rather than an alphabetical accident: a project whose
-        // test-only candidates happen to sort first would otherwise fill the
-        // default limit of 20 with them and hide every component nothing
-        // references at all. `unreferenced` leads because it is the stronger
-        // claim — nothing reaches it, from anywhere — and the summary names the
-        // test-only count so a caller knows there is more to see.
-        $classRank = static fn(array $candidate): int => ($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 1 : 0;
-        usort($deadCandidates, static fn(array $a, array $b): int => ($classRank($a) <=> $classRank($b))
-            ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
+        $deadCandidates = self::orderedCandidates($deadCandidates, $candidateConfidence);
         // Tallied on the FULL list, before result_limit slices it away: ordering
         // test_only last means truncation hides them first, and a summary built
         // from the slice would then report 0 test-only findings whenever there
         // were enough unreferenced ones to fill the limit on their own.
-        // A large project's page of 100 filled with framework methods marked
-        // only possible, hiding every probable candidate behind them; the
-        // filter and the offset let a caller see past that.
-        if ($candidateConfidence === 'probable') {
-            $deadCandidates = array_values(array_filter(
-                $deadCandidates,
-                static fn(array $candidate): bool => ($candidate['confidence'] ?? null) === 'probable',
-            ));
-        }
         $testOnlyCandidates = count(array_filter(
             $deadCandidates,
             static fn(array $candidate): bool => ($candidate['reachability'] ?? null) === 'test_only',
@@ -465,6 +447,38 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             ],
             $truncated,
         );
+    }
+
+
+    /**
+     * Dead-code candidates in report order, filtered to the confidence asked for.
+     *
+     * @param list<array<string, mixed>> $candidates
+     * @return list<array<string, mixed>>
+     */
+    private static function orderedCandidates(array $candidates, string $candidateConfidence): array
+    {
+        // Ordered by reachability class before name, so `limit` slices along a
+        // meaningful line rather than an alphabetical accident: a project whose
+        // test-only candidates happen to sort first would otherwise fill the
+        // default limit of 20 with them and hide every component nothing
+        // references at all. `unreferenced` leads because it is the stronger
+        // claim — nothing reaches it, from anywhere — and the summary names the
+        // test-only count so a caller knows there is more to see.
+        $classRank = static fn(array $candidate): int => ($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 1 : 0;
+        usort($candidates, static fn(array $a, array $b): int => ($classRank($a) <=> $classRank($b))
+            ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
+        // A large project's page of 100 filled with framework methods marked
+        // only possible, hiding every probable candidate behind them; the
+        // filter and the offset let a caller see past that.
+        if ($candidateConfidence === 'probable') {
+            $candidates = array_values(array_filter(
+                $candidates,
+                static fn(array $candidate): bool => ($candidate['confidence'] ?? null) === 'probable',
+            ));
+        }
+
+        return $candidates;
     }
 
     /**
