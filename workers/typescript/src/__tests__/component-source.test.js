@@ -424,3 +424,14 @@ describe("comments inside expressions", () => {
         expect(astro.split("\n")[4]).toBe("   {x}    ");
     });
 });
+
+describe("a comparison inside a text expression", () => {
+    it("is not a tag, even with an apostrophe after it", () => {
+        const source =
+            "<script>\nlet a = 1, b = 2;\n</script>\n{#if a<b}Don't stop{/if}\n<p>{a}</p>\n";
+        const virtual = expectInvariants(source, "svelte").text;
+
+        expect(virtual).toContain("let a = 1, b = 2;");
+        expect(virtual).toContain("{a}");
+    });
+});

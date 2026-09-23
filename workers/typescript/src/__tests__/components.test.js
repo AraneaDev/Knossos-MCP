@@ -542,3 +542,19 @@ describe("webpack's require.context", () => {
         ]);
     });
 });
+
+describe("require() in a plain JavaScript component script", () => {
+    it("imports what it names, as it does in a .js file", () => {
+        const { contributions } = scan({
+            "src/util.js": "export function util() {}\n",
+            "src/Foo.vue": "<template><div/></template>\n",
+            "src/App.vue":
+                "<template><div/></template>\n<script>\nconst util = require('./util');\nexport default { components: { Foo: require('./Foo.vue').default }, x: obj.require('./not') };\n</script>\n",
+        });
+        const imports = edges(contributions, "imports").map((e) => e.target);
+
+        expect(imports).toContain("ts:module:src/util.js");
+        expect(imports).toContain("ts:module:src/Foo.vue");
+        expect(imports.some((t) => t.includes("not"))).toBe(false);
+    });
+});

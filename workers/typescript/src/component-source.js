@@ -50,6 +50,8 @@ export function toVirtualSource(text, dialect) {
     const blocks = scanBlocks(text, dialect);
     for (const [from, to] of blocks.scripts) {
         for (let i = from; i < to; i++) out[i] = text[i];
+        if (!blocks.typed && dialect !== "astro")
+            commonJsRequires(text, out, from, to);
     }
     const writer = {
         text,
@@ -66,6 +68,20 @@ export function toVirtualSource(text, dialect) {
         templateRanges: blocks.markup,
         typed: blocks.typed,
     };
+}
+
+/**
+ * A plain JavaScript script is offered to the compiler as TypeScript, where
+ * `require('./x')` imports nothing. Each call on a literal is rewritten in
+ * place as the dynamic `import ('./x')`, the same length, so what it loads is
+ * imported as it would be from a `.js` file.
+ */
+function commonJsRequires(text, out, from, to) {
+    const call = /(?<![\w$.])require(?=\s*\(\s*['"`])/g;
+    call.lastIndex = from;
+    let match;
+    while ((match = call.exec(text)) !== null && match.index < to)
+        write(out, match.index, "import ");
 }
 
 /** Write `value` over `out` from `offset`, one code unit per slot. */
@@ -104,9 +120,9 @@ function scanBlocks(text, dialect) {
     for (;;) {
         const lt = text.indexOf("<", position);
         if (lt < 0) break;
-        if (text.startsWith("<!--", lt)) {
-            const close = text.indexOf("-->", lt + 4);
-            position = close < 0 ? text.length : close + 3;
+        const skipped = skipBeforeTag(text, position, lt, dialect);
+        if (skipped >= 0) {
+            position = skipped;
             continue;
         }
         const open = /^<([A-Za-z][\w:-]*)/.exec(text.slice(lt, lt + 64));
@@ -158,6 +174,25 @@ function scanBlocks(text, dialect) {
     }
     flush(text.length);
     return { scripts, markup, typed };
+}
+
+/**
+ * Where the block scan resumes when what lies ahead of the `<` at `lt` is not
+ * a tag, or -1 when it is one to read. Svelte and Astro text holds `{…}`
+ * expressions, where `a<b` is a comparison, so an expression that opens
+ * before the `<` is skipped whole; and a comment is skipped to its end.
+ */
+function skipBeforeTag(text, position, lt, dialect) {
+    const brace = dialect === "vue" ? -1 : text.indexOf("{", position);
+    if (brace >= 0 && brace < lt) {
+        const close = matchingBrace(text, brace, text.length);
+        return close < 0 ? brace + 1 : close + 1;
+    }
+    if (text.startsWith("<!--", lt)) {
+        const close = text.indexOf("-->", lt + 4);
+        return close < 0 ? text.length : close + 3;
+    }
+    return -1;
 }
 
 /** A script the bundler runs: not `is:inline`, and JavaScript or TypeScript. */
