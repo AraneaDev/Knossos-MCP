@@ -263,6 +263,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         if ($candidateOffset < 0) {
             throw new InvalidArgumentException('candidate_offset must not be negative.');
         }
+        if ($candidateTimeoutMs < 1 || $candidateTimeoutMs > 60_000) {
+            throw new InvalidArgumentException('candidate_timeout_ms must be between 1 and 60000.');
+        }
         if ($maxNodes < 1 || $maxNodes > 50_000) {
             throw new InvalidArgumentException('max_nodes must be between 1 and 50000.');
         }
@@ -404,6 +407,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'bounds' => [
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
                     'candidate_confidence' => $candidateConfidence, 'candidate_offset' => $candidateOffset,
+                    'candidate_timeout_ms' => $candidateTimeoutMs,
                     'candidates_total' => $candidatesTotal,
                     'candidates_truncated' => $found['truncated'],
                     'candidate_truncation_reasons' => $found['truncated'] ? ['time_limit'] : [],

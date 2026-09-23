@@ -51,7 +51,7 @@ Usage:
                               [--min-confidence=LEVEL] [--max-nodes=N]
                               [--max-edges=N] [--timeout-ms=N] [--include-external]
                               [--include-tests] [--candidate-confidence=LEVEL]
-                              [--candidate-offset=N] [--json]
+                              [--candidate-offset=N] [--candidate-timeout=MS] [--json]
   knossos check-architecture <project-id> --policies=FILE [--limit=N]
                              [--min-confidence=LEVEL] [--max-edges=N]
                              [--timeout-ms=N] [--json]

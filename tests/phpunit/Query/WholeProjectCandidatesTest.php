@@ -102,4 +102,37 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         self::assertSame([], $data['dead_code_candidates']);
         self::assertFalse($data['bounds']['candidates_truncated']);
     }
+
+    public function testTheCandidateBudgetIsCheckedAndReported(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $time = 0;
+        // Every reading of the clock moves it 2 ms on, so a 1 ms budget runs
+        // out before the first stage after the unreferenced query.
+        $queries = new ArchitectureQueryService($pdo, function () use (&$time): int {
+            $time += 2_000_000;
+
+            return $time;
+        });
+
+        $data = $queries->architectureHealth($ids['project'], limit: 100, candidateTimeoutMs: 1)->data;
+
+        self::assertTrue($data['bounds']['candidates_truncated']);
+        self::assertSame(['time_limit'], $data['bounds']['candidate_truncation_reasons']);
+        self::assertSame(1, $data['bounds']['candidate_timeout_ms']);
+        self::assertSame(count($data['dead_code_candidates']), $data['bounds']['candidates_total']);
+    }
+
+    public function testTheCandidateBudgetRejectsValuesOutsideItsRange(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        foreach ([0, 60_001] as $timeout) {
+            $error = captureThrows(fn() => $queries->architectureHealth($ids['project'], candidateTimeoutMs: $timeout), \InvalidArgumentException::class);
+            self::assertSame('candidate_timeout_ms must be between 1 and 60000.', $error->getMessage());
+        }
+    }
 }

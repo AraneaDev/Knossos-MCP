@@ -693,6 +693,7 @@ final readonly class ToolService
             self::boolean($arguments, 'include_tests', false),
             array_key_exists('candidate_confidence', $arguments) ? self::string($arguments, 'candidate_confidence') : 'possible',
             self::integer($arguments, 'candidate_offset', 0, 0, 100_000),
+            self::integer($arguments, 'candidate_timeout_ms', 5000, 1, 60_000),
         );
     }
 

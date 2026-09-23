@@ -426,6 +426,7 @@ final readonly class ToolCatalog
                         'include_tests' => ['type' => 'boolean', 'default' => false, 'description' => 'Include test-role components in hubs and hotspots.'],
                         'candidate_confidence' => ['type' => 'string', 'enum' => ['probable', 'possible'], 'default' => 'possible', 'description' => 'Report only dead-code candidates at this confidence or above; probable leaves out framework-invoked members.'],
                         'candidate_offset' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 100000, 'default' => 0, 'description' => 'Skip this many dead-code candidates, to page past the first limit.'],
+                        'candidate_timeout_ms' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 60000, 'default' => 5000, 'description' => 'Time budget for finding dead-code candidates across the whole project, separate from timeout_ms, which bounds the hub walk. When it runs out, bounds.candidates_truncated is true.'],
                     ],
                     'required' => ['project_id'],
                     'additionalProperties' => false,
