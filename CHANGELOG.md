@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.12](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.11...v0.16.12) (2026-09-23)
+
+
+### Fixes
+
+* **query:** demote methods of object literals handed to unseen code ([#119](https://github.com/AraneaDev/Knossos-MCP/issues/119)) ([16206d9](https://github.com/AraneaDev/Knossos-MCP/commit/16206d9036ca35ae531249035cf6b560e0a9dcb1))
+
 ## [0.16.11](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.10...v0.16.11) (2026-09-23)
 
 
