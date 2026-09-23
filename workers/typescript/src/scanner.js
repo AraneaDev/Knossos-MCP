@@ -2297,7 +2297,11 @@ function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
             continue;
         if (name.startsWith("svelte.")) aliases.$lib ??= "src/lib";
         const text = readRecorded(root, config, reads, maxFileBytes);
-        if (text !== undefined) Object.assign(aliases, declaredAliases(text));
+        if (text !== undefined)
+            Object.assign(
+                aliases,
+                declaredAliases(text, name.startsWith("vite.")),
+            );
     }
     if (Object.keys(aliases).length === 0) return parsed;
     const paths = { ...parsed.options.paths };
@@ -2316,10 +2320,12 @@ function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
 /**
  * The entries of every `alias` object in a config whose target can be read
  * without running it: a string, `path.join|resolve(__dirname, …)`, or
- * `fileURLToPath(new URL('./x', import.meta.url))`. An exact-match key
- * (`vue$`) names a package, not a directory, and is skipped.
+ * `fileURLToPath(new URL('./x', import.meta.url))`, as an object or as
+ * Vite's `[{ find, replacement }]` array. An exact-match key (`vue$`) names a
+ * package, not a directory, and is skipped. With `rootRelative` (Vite), a
+ * target starting with `/` is read against the config's directory.
  */
-function declaredAliases(text) {
+function declaredAliases(text, rootRelative) {
     const file = ts.createSourceFile(
         "config.ts",
         text,
@@ -2328,26 +2334,53 @@ function declaredAliases(text) {
         ts.ScriptKind.TS,
     );
     const aliases = {};
+    const add = (name, expression) => {
+        const target = name === null ? null : aliasTarget(expression);
+        if (target === null || name.endsWith("$")) return;
+        // Vite reads `/src` against the project root, not the filesystem's.
+        aliases[name] =
+            rootRelative && target.startsWith("/") ? `.${target}` : target;
+    };
     const visit = (node) => {
-        if (
+        const entries =
             ts.isPropertyAssignment(node) &&
-            staticPropertyName(node.name) === "alias" &&
-            ts.isObjectLiteralExpression(node.initializer)
-        ) {
-            for (const entry of node.initializer.properties) {
-                const name = ts.isPropertyAssignment(entry)
-                    ? staticPropertyName(entry.name)
-                    : null;
-                const target =
-                    name === null ? null : aliasTarget(entry.initializer);
-                if (target !== null && !name.endsWith("$"))
-                    aliases[name] = target;
+            staticPropertyName(node.name) === "alias"
+                ? node.initializer
+                : undefined;
+        if (entries !== undefined && ts.isObjectLiteralExpression(entries)) {
+            for (const entry of entries.properties) {
+                if (ts.isPropertyAssignment(entry))
+                    add(staticPropertyName(entry.name), entry.initializer);
+            }
+        }
+        // Vite's array form: `[{ find: '@', replacement: '/src' }]`, with a
+        // string `find`; a regular expression names no fixed prefix.
+        if (entries !== undefined && ts.isArrayLiteralExpression(entries)) {
+            for (const entry of entries.elements) {
+                const find = objectField(entry, "find");
+                const replacement = objectField(entry, "replacement");
+                if (
+                    find !== undefined &&
+                    replacement !== undefined &&
+                    ts.isStringLiteralLike(find)
+                )
+                    add(find.text, replacement);
             }
         }
         ts.forEachChild(node, visit);
     };
     visit(file);
     return aliases;
+}
+
+/** The initializer of `key` in an object literal, or undefined. */
+function objectField(node, key) {
+    if (!ts.isObjectLiteralExpression(node)) return undefined;
+    return node.properties.find(
+        (property) =>
+            ts.isPropertyAssignment(property) &&
+            staticPropertyName(property.name) === key,
+    )?.initializer;
 }
 
 /** A directory an alias maps to, relative to its config, or null. */

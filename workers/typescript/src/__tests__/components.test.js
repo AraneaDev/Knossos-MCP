@@ -558,3 +558,17 @@ describe("require() in a plain JavaScript component script", () => {
         expect(imports.some((t) => t.includes("not"))).toBe(false);
     });
 });
+
+describe("Vite's alias forms", () => {
+    it("reads root-relative replacements and the array form", () => {
+        const { contributions } = scan({
+            "vite.config.ts":
+                "export default { resolve: { alias: [{ find: '~', replacement: '/src' }, { find: /^re$/, replacement: '/src' }] } };\n",
+            "src/main.ts": "import { util } from '~/util';\nutil();\n",
+            "src/util.ts": "export function util(): void {}\n",
+        });
+        const imports = edges(contributions, "imports").map((e) => e.target);
+
+        expect(imports).toContain("ts:module:src/util.ts");
+    });
+});
