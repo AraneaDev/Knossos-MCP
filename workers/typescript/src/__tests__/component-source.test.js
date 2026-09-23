@@ -5,6 +5,7 @@ import {
     ComponentParseError,
     blankSource,
     componentAliasSuffix,
+    componentDiagnosticKept,
     componentDialect,
     toVirtualSource,
 } from "../component-source.js";
@@ -335,5 +336,35 @@ describe("Astro markup", () => {
         const virtual = expectInvariants(source, "astro").text;
         expect(virtual).not.toContain("not");
         expect(virtual).toContain("{real}");
+    });
+});
+
+describe("component diagnostics", () => {
+    const text =
+        "<template></template><script setup>defineProps(); missing();</script>";
+    const script = [text.indexOf("defineProps"), text.indexOf("</script>")];
+    const at = (name, code, typed = true, dialect = "vue") =>
+        componentDiagnosticKept(
+            { dialect, scriptRanges: [script], typed },
+            {
+                file: { text },
+                start: text.indexOf(name),
+                length: name.length,
+                code,
+            },
+        );
+
+    it("drops what falls outside the script", () => {
+        expect(at("template", 2304)).toBe(false);
+    });
+
+    it("drops a missing framework global, keeps any other", () => {
+        expect(at("defineProps", 2304)).toBe(false);
+        expect(at("missing", 2304)).toBe(true);
+    });
+
+    it("keeps only syntax errors for an untyped script", () => {
+        expect(at("missing", 2304, false)).toBe(false);
+        expect(at("missing", 1005, false)).toBe(true);
     });
 });

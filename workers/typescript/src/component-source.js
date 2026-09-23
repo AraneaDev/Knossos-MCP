@@ -494,3 +494,49 @@ function closingQuote(text, open, end) {
     }
     return -1;
 }
+/** Names each framework's compiler provides to a component's script. */
+const FRAMEWORK_GLOBALS = {
+    vue: new Set([
+        "defineProps",
+        "defineEmits",
+        "withDefaults",
+        "defineExpose",
+        "defineModel",
+        "defineOptions",
+        "defineSlots",
+    ]),
+    svelte: new Set([
+        "$state",
+        "$derived",
+        "$effect",
+        "$props",
+        "$bindable",
+        "$inspect",
+        "$host",
+    ]),
+    astro: new Set(["Astro"]),
+};
+
+/**
+ * Whether a compiler diagnostic on a component describes its own code.
+ *
+ * Template regions are generated, a missing framework global is provided by
+ * the framework's compiler, and a plain-JavaScript script is not type-checked
+ * (as with `checkJs: false`), so only its syntax errors (below 2000) count.
+ */
+export function componentDiagnosticKept(component, diagnostic) {
+    const start = diagnostic.start ?? 0;
+    if (
+        !component.scriptRanges.some(
+            ([from, to]) => start >= from && start < to,
+        )
+    )
+        return false;
+    if (!component.typed && diagnostic.code >= 2000) return false;
+    if (diagnostic.code !== 2304) return true;
+    const name = diagnostic.file.text.slice(
+        start,
+        start + (diagnostic.length ?? 0),
+    );
+    return !FRAMEWORK_GLOBALS[component.dialect].has(name);
+}
