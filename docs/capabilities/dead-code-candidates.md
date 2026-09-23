@@ -205,11 +205,13 @@ Candidates are found over the whole project. `max_nodes`, `max_edges` and `timeo
 the hub and hotspot ranking only, and `nodes_examined`, `edges_examined`, `truncated` and
 `truncation_reasons` describe that ranking.
 
-The candidate search has its own budget, `candidate_timeout_ms` (CLI:
-`--candidate-timeout`), default 5000 and at most 60000. When it runs out, the result holds the
-candidates classified so far, `bounds.candidates_truncated` is `true`,
-`bounds.candidate_truncation_reasons` is `["time_limit"]`, and `candidates_total` counts what
-was classified.
+The candidate list reports its own truncation in `bounds.candidates_truncated` and
+`bounds.candidate_truncation_reasons`:
+
+- `result_limit`: more candidates follow the page. `candidate_offset` pages past it.
+- `time_limit`: the candidate search ran out of its own budget, `candidate_timeout_ms` (CLI:
+  `--candidate-timeout`), default 5000 and at most 60000. The result holds the candidates
+  classified so far, and `candidates_total` counts what was classified.
 
 ## Acting on a candidate
 
@@ -227,7 +229,8 @@ was classified.
 - Candidates depend on the selected `edge_kinds` and `min_confidence`. Narrowing
   either produces more candidates, not fewer.
 - The candidate search is bounded by `candidate_timeout_ms` alone; a search cut
-  short reports `candidates_truncated`, and its candidate list is partial.
+  short reports `time_limit` among `candidate_truncation_reasons`, and its candidate list is
+  partial.
   `max_nodes`, `max_edges` and `timeout_ms` bound the hub ranking, not the
   candidates.
 - `limit` caps the reported list. The candidate counters in `bounds` describe the

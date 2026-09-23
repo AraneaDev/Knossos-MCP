@@ -146,6 +146,7 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         self::assertSame(6, $all['bounds']['candidates_total']);
         self::assertSame(['kind' => 'class', 'display_name' => 'App\\Box'], array_intersect_key($all['dead_code_candidates'][4]['component'], ['kind' => 1, 'display_name' => 1]));
 
+        self::assertSame([], $all['bounds']['candidate_truncation_reasons']);
         // One at a time, each page holds what the full list holds there, and
         // carries the whole component.
         foreach ($all['dead_code_candidates'] as $offset => $expected) {
@@ -153,6 +154,28 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
             self::assertSame([$expected], $page['dead_code_candidates'], (string) $offset);
             self::assertSame(6, $page['bounds']['candidates_total']);
         }
+    }
+
+    public function testAPageShortOfTheCandidatesIsNotAShortRanking(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $repository->saveEdge(StableId::edge($project, 'calls', $ids['invoice'], $ids['checkout'], 'back:1'), $project, 'calls', $ids['invoice'], $ids['checkout'], $ids['file'], 20, 20, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        foreach (['App\\deadA', 'App\\deadB', 'App\\deadC', 'App\\deadD'] as $line => $name) {
+            $repository->saveNode(StableId::symbol($project, 'php', 'function', $name), $project, 'php', 'function', $name, $name, null, $ids['file'], 30 + $line, 30 + $line, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($project, $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 2);
+
+        // The candidates report their own page: truncation_reasons describe
+        // the hub ranking, which fits the limit.
+        self::assertSame(['result_limit'], $result->data['bounds']['candidate_truncation_reasons']);
+        self::assertTrue($result->data['bounds']['candidates_truncated']);
+        self::assertSame([], $result->data['bounds']['truncation_reasons']);
+        self::assertFalse($result->truncated);
+        self::assertStringContainsString('More candidates follow this page', $result->summary);
+        self::assertStringNotContainsString('The ranking was truncated', $result->summary);
     }
 
     public function testTheCandidateBudgetIsCheckedAndReported(): void
@@ -261,7 +284,7 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
             ini_set('memory_limit', (string) $limit);
         }
 
-        self::assertFalse($data['bounds']['candidates_truncated']);
+        self::assertSame(['result_limit'], $data['bounds']['candidate_truncation_reasons']);
         self::assertGreaterThan(50_000, $data['bounds']['candidates_total']);
         self::assertLessThan(5_000, $elapsedMs);
     }

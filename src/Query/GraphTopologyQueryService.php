@@ -368,9 +368,15 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $truncationReasons[] = 'result_limit';
             }
         }
+        // The candidate list reports its own truncation: `truncation_reasons`
+        // describe the hub ranking, and a full page of candidates said the
+        // hubs had been cut when they had not.
+        $candidateTruncationReasons = [];
+        if ($found['truncated']) {
+            $candidateTruncationReasons[] = 'time_limit';
+        }
         if ($candidatesTotal > $candidateOffset + $limit) {
-            $truncated = true;
-            $truncationReasons[] = 'result_limit';
+            $candidateTruncationReasons[] = 'result_limit';
         }
         $hubs = array_slice($hubs, 0, $limit);
         $hotspots = array_slice($hotspots, 0, $limit);
@@ -400,7 +406,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons, $found['truncated']),
+            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons, $candidateTruncationReasons),
             [
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
@@ -408,8 +414,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                     'candidate_confidence' => $candidateConfidence, 'candidate_offset' => $candidateOffset,
                     'candidate_timeout_ms' => $candidateTimeoutMs,
                     'candidates_total' => $candidatesTotal,
-                    'candidates_truncated' => $found['truncated'],
-                    'candidate_truncation_reasons' => $found['truncated'] ? ['time_limit'] : [],
+                    'candidates_truncated' => $candidateTruncationReasons !== [],
+                    'candidate_truncation_reasons' => $candidateTruncationReasons,
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excluded['inherited'],
@@ -560,8 +566,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * that ran out of time must not read as a complete list.
      *
      * @param list<string> $truncationReasons
+     * @param list<string> $candidateTruncationReasons
      */
-    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons, bool $candidatesTruncated): string
+    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons, array $candidateTruncationReasons): string
     {
         $summary = sprintf(
             'Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates, %d of them reached only by tests.',
@@ -573,8 +580,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         if ($truncationReasons !== []) {
             $summary .= sprintf(' The ranking was truncated (%s), so hubs and hotspots beyond that bound are not reported.', implode(', ', $truncationReasons));
         }
-        if ($candidatesTruncated) {
+        if (in_array('time_limit', $candidateTruncationReasons, true)) {
             $summary .= ' The candidate search ran out of time, so the candidate list is partial.';
+        }
+        if (in_array('result_limit', $candidateTruncationReasons, true)) {
+            $summary .= ' More candidates follow this page; candidate_offset pages past it.';
         }
 
         return $summary;
