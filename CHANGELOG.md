@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.0...v0.17.1) (2026-09-23)
+
+
+### Fixes
+
+* findings from re-running Knossos over 53 repositories ([#123](https://github.com/AraneaDev/Knossos-MCP/issues/123)) ([f049ba9](https://github.com/AraneaDev/Knossos-MCP/commit/f049ba9faea6532d036aa0654709981c6b1adaec))
+
 ## [0.17.0](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.12...v0.17.0) (2026-09-23)
 
 
