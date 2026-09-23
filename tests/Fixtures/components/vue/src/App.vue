@@ -14,6 +14,7 @@
     <svg:rect />
     <b @click
       ="split">y</b>
+    <b @click="reset">z</b>
   </main>
 </template>
 
@@ -27,6 +28,7 @@ const ready = true;
 const isActive = false;
 const other = false;
 const bare = 1;
+const reset = (): void => {};
 const Nav = { Item: {} };
 function select(user: unknown): void {}
 function track(): void {}

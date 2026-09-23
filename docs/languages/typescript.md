@@ -24,6 +24,18 @@ Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that
 distinction.
 
+## Declarations
+
+Besides classes, interfaces, enums, type aliases, namespaces, functions and methods, a
+module-level binding whose value is an arrow or function expression is a `function` node:
+`const f = () => {}`, `let f = function () {}`, through parentheses, `as` and `satisfies`. It
+carries `binding` (`const`, `let` or `var`), is the source of the calls in its body, and is the
+target of calls and references to it. A binding inside a function or block, or one whose
+initializer wraps the function in a call (`memo(() => ...)`), is not a node.
+
+`exported` and `default` on any variable binding are read from its statement, so
+`export const api = { ... }` is exported.
+
 ## Components
 
 `.vue`, `.svelte` and `.astro` files are scanned as TypeScript. The worker reads each one into
