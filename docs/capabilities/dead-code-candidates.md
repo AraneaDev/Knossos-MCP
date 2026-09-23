@@ -44,10 +44,10 @@ their own. They are counted in `bounds.excluded_convention_discovered`; see
 
 ## Confidence
 
-| Confidence | Meaning                                                                                                                                                                                                                                                          |
-| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                                                                                                                 |
-| `possible` | No inbound reference, but the component is reached in ways a scan cannot see: a non-`ast` origin, a framework role, a member of a type extending an external ancestor, or a method or function sharing its name with a call on a receiver no scanner could type. |
+| Confidence | Meaning                                                                                                                                                                                                                                                                                                                                              |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                                                                                                                                                                                                     |
+| `possible` | No inbound reference, but the component is reached in ways a scan cannot see: a non-`ast` origin, a framework role, a member of a type extending an external ancestor, a method of an object literal handed to other code with no type naming its methods, or a method or function sharing its name with a call on a receiver no scanner could type. |
 
 The untyped-call ground is a name match. A JavaScript function taking an
 untyped parameter, a closure argument in Rust, or a PHP parameter without a
@@ -56,6 +56,12 @@ lists the names called that way on the file's module node (on the calling
 declaration in PHP) as `unresolved_member_calls`, and any method by one of those
 names drops to `possible`. That holds even when the call reaches a different
 class, which is why such a method is not excluded outright.
+
+An object literal passed as an argument, returned, or nested in an array or another literal
+(`filters: [{ name: 'all', func() {} }]` handed to a component prop) is called by whatever
+receives it. When the TypeScript scanner finds a type for it in the project, that type is its
+contract and its methods are judged against it; when it finds none, its methods drop to
+`possible`. A literal typed only by a library counts as extending an external ancestor.
 
 The `reason` field names the specific ground, so a caller never has to infer why
 a candidate was demoted.
