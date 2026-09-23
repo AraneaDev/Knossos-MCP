@@ -1061,6 +1061,7 @@ class TypeScriptLanguageFactCollector {
         const target = this.symbolReference(
             this.checker.getSymbolAtLocation(node.expression),
             "class",
+            true,
         );
         if (source !== null && target !== null)
             this.addEdge("constructs", source, target, node);
@@ -1129,6 +1130,7 @@ class TypeScriptLanguageFactCollector {
             this.symbolReference(
                 signature?.declaration?.symbol,
                 callableKind(signature?.declaration),
+                true,
             );
         const source = this.currentSource();
         if (source !== null && target !== null)
@@ -1164,7 +1166,7 @@ class TypeScriptLanguageFactCollector {
         return symbol?.declarations?.some((declaration) =>
             isFunctionBinding(declaration),
         )
-            ? this.symbolReference(symbol, "function")
+            ? this.symbolReference(symbol, "function", true)
             : null;
     }
 
@@ -1195,7 +1197,7 @@ class TypeScriptLanguageFactCollector {
             moduleSymbol,
         );
         const target = exported
-            ? this.symbolReference(exported, "function")
+            ? this.symbolReference(exported, "function", true)
             : null;
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
@@ -1236,7 +1238,7 @@ class TypeScriptLanguageFactCollector {
                 moduleSymbol,
             );
             const target = exported
-                ? this.symbolReference(exported, "function")
+                ? this.symbolReference(exported, "function", true)
                 : null;
             if (source !== null && target !== null && source !== target)
                 this.addEdge("references", source, target, element);
@@ -1471,7 +1473,11 @@ class TypeScriptLanguageFactCollector {
         );
         if (!declaration) return;
 
-        const target = this.symbolReference(symbol, callableKind(declaration));
+        const target = this.symbolReference(
+            symbol,
+            callableKind(declaration),
+            true,
+        );
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
@@ -1523,13 +1529,19 @@ class TypeScriptLanguageFactCollector {
         return reference("module", relative);
     }
 
-    symbolReference(input, hint = "class") {
+    symbolReference(input, hint = "class", value = false) {
         const symbol = unalias(this.checker, input);
-        const declaration = symbol?.declarations?.find(
-            (item) =>
-                relativeInside(this.root, item.getSourceFile().fileName) !==
-                null,
-        );
+        const inProject = (item) =>
+            relativeInside(this.root, item.getSourceFile().fileName) !== null;
+        // A type and a value may share a name and so one symbol. Read as a
+        // value (called, constructed, referenced), it is the value's
+        // declaration, whichever of the two came first.
+        const declaration =
+            (value
+                ? symbol?.declarations?.find(
+                      (item) => inProject(item) && !isTypeOnlyDeclaration(item),
+                  )
+                : undefined) ?? symbol?.declarations?.find(inProject);
         if (!declaration) {
             const name = symbol?.getName();
             return name && !name.startsWith("__")
@@ -3124,6 +3136,11 @@ function objectLiteralContract(node) {
         current = current.expression;
     }
     return undefined;
+}
+
+/** A declaration that names only a type: no value is behind it. */
+function isTypeOnlyDeclaration(node) {
+    return ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node);
 }
 
 function containerDeclaration(node) {

@@ -40,5 +40,15 @@ export const mapped = [1].map(helper);
 export const annotated: (n: number) => number = (n) => n;
 export const load = () => import("./handler");
 using disposer = (() => {}) as any;
+export type parsed = string;
+export const parsed = () => "";
+export type area = number;
+export function area(): number {
+  return 1;
+}
+export interface Gadget {
+  size?: number;
+}
+export class Gadget {}
 export default () => 12;
 export { reassignable, legacy, length, ambientFn };

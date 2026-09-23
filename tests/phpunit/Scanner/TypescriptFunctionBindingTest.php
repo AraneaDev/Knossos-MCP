@@ -75,6 +75,13 @@ final class TypescriptFunctionBindingTest extends KnossosTestCase
         // not the arrow's; the callee is still the binding.
         self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:function:src/bindings.ts#typedAs'));
         self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:function:src/bindings.ts#annotated'));
+        // A type sharing the value's name merges with it into one symbol; a
+        // call names the value, whichever was declared first.
+        self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:function:src/bindings.ts#parsed'));
+        self::assertTrue($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:function:src/bindings.ts#area'));
+        self::assertFalse($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:type_alias:src/bindings.ts#parsed'));
+        self::assertFalse($scan->hasEdge('calls', 'ts:function:src/user.ts#callIt', 'ts:type_alias:src/bindings.ts#area'));
+        self::assertTrue($scan->hasEdge('constructs', 'ts:function:src/user.ts#callIt', 'ts:class:src/bindings.ts#Gadget'));
         // A dynamic import in the body is the function's own value import.
         $load = $scan->edge('imports', 'ts:function:src/bindings.ts#load', 'ts:module:src/handler.ts');
         self::assertNotNull($load);
