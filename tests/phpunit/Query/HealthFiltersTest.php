@@ -417,6 +417,48 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testDeadCodeDemotesMethodsOfAnObjectLiteralHandedAroundWithoutAContract(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $file = $ids['file'];
+        $owner = 'ts:file:src/table.ts';
+        // `filters: [{ func() {} }]`: a literal handed to code that names no
+        // type for it, so whatever receives it may call its methods.
+        $literal = StableId::symbol($ids['project'], 'ts', 'object', 'src/table.ts#{object}@3:5');
+        $func = StableId::symbol($ids['project'], 'ts', 'method', 'src/table.ts#{object}@3:5::func');
+        $class = StableId::symbol($ids['project'], 'ts', 'class', 'src/table.ts#Table');
+        $render = StableId::symbol($ids['project'], 'ts', 'method', 'src/table.ts#Table::render');
+        $repository->saveNode($literal, $ids['project'], 'ts', 'object', 'src/table.ts#{object}@3:5', '{object}@3:5', null, $file, 3, 5, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveNode($func, $ids['project'], 'ts', 'method', 'src/table.ts#{object}@3:5::func', 'func', null, $file, 4, 4, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveNode($class, $ids['project'], 'ts', 'class', 'src/table.ts#Table', 'Table', null, $file, 7, 9, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveNode($render, $ids['project'], 'ts', 'method', 'src/table.ts#Table::render', 'render', null, $file, 8, 8, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $literal, $func, 'c1'), $ids['project'], 'contains', $literal, $func, $file, 4, 4, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $class, $render, 'c2'), $ids['project'], 'contains', $class, $render, $file, 8, 8, 'ast', 'certain', [], $owner, $ids['scan']);
+        // A literal typed as a project interface has a contract: a method the
+        // interface does not name is reached by nothing the scan cannot see.
+        $handler = StableId::symbol($ids['project'], 'ts', 'interface', 'src/table.ts#Handler');
+        $typed = StableId::symbol($ids['project'], 'ts', 'object', 'src/table.ts#{object}@12:5');
+        $extra = StableId::symbol($ids['project'], 'ts', 'method', 'src/table.ts#{object}@12:5::extra');
+        $repository->saveNode($handler, $ids['project'], 'ts', 'interface', 'src/table.ts#Handler', 'Handler', null, $file, 10, 10, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveNode($typed, $ids['project'], 'ts', 'object', 'src/table.ts#{object}@12:5', '{object}@12:5', null, $file, 12, 14, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveNode($extra, $ids['project'], 'ts', 'method', 'src/table.ts#{object}@12:5::extra', 'extra', null, $file, 13, 13, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'contains', $typed, $extra, 'c3'), $ids['project'], 'contains', $typed, $extra, $file, 13, 13, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->saveEdge(StableId::edge($ids['project'], 'implements', $typed, $handler, 'i1'), $ids['project'], 'implements', $typed, $handler, $file, 12, 12, 'ast', 'certain', [], $owner, $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $byName = [];
+        foreach ($data['dead_code_candidates'] as $candidate) {
+            $byName[$candidate['component']['canonical_name']] = $candidate;
+        }
+        assertSame('possible', $byName['src/table.ts#{object}@3:5::func']['confidence']);
+        assertSame(true, str_contains($byName['src/table.ts#{object}@3:5::func']['reason'], 'object literal'));
+        // A class names its own type, so nothing outside the scan is implied.
+        assertSame('probable', $byName['src/table.ts#Table::render']['confidence']);
+        assertSame('probable', $byName['src/table.ts#{object}@12:5::extra']['confidence']);
+    }
+
+    #[Group('query')]
     public function testDeadCodeExcludesConstructorsOfTypesThatAreReferenced(): void
     {
         // `new App\Invoice(...)` is recorded as a `constructs` edge to the CLASS,

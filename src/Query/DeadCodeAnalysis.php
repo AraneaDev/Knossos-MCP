@@ -86,6 +86,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'implemented' => false,
                 'declaring_type' => null,
                 'external_ancestor' => null,
+                'uncontracted_literal' => false,
             ];
             if ($context['inherited']) {
                 ++$excludedInherited;
@@ -154,6 +155,10 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 && isset($untypedCalls[(string) $candidate['row']['display_name']])) {
                 $confidence = 'possible';
                 $reason = 'No inbound static reference was found, but a member of this name is called on a receiver the scan could not type, which may be this one.';
+            }
+            if ($context['uncontracted_literal'] && $confidence === 'probable') {
+                $confidence = 'possible';
+                $reason = 'No inbound static reference was found, but this method belongs to an object literal handed to other code with no type naming its methods; whatever receives the literal may call it.';
             }
             if ($context['external_ancestor'] !== null) {
                 $confidence = 'possible';
@@ -379,7 +384,10 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
      *
      * @param list<string> $methodIds
      * @param array<string, string> $methodNames method node id => display_name
-     * @return array<string, array{inherited: bool, implemented: bool, declaring_type: ?string, external_ancestor: ?string}>
+     * An object literal handed around as a value with no type at all is the
+     * third way: the code it is handed to calls its methods unseen.
+     *
+     * @return array<string, array{inherited: bool, implemented: bool, declaring_type: ?string, external_ancestor: ?string, uncontracted_literal: bool}>
      */
     private function inheritedMethodContext(string $projectId, array $methodIds, array $methodNames): array
     {
@@ -387,15 +395,17 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             return [];
         }
         $classOfMethod = [];
+        $kindOfClass = [];
         foreach (array_chunk($methodIds, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
             $statement = $this->pdo->prepare(
-                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'contains' " .
-                sprintf('AND target_id IN (%s)', $placeholders),
+                "SELECT e.source_id, e.target_id, n.kind FROM edges e JOIN nodes n ON n.id = e.source_id WHERE e.project_id = ? AND e.kind = 'contains' " .
+                sprintf('AND e.target_id IN (%s)', $placeholders),
             );
             $statement->execute([$projectId, ...$chunk]);
             foreach ($statement->fetchAll() as $row) {
                 $classOfMethod[$row['target_id']] = $row['source_id'];
+                $kindOfClass[$row['source_id']] = (string) $row['kind'];
             }
         }
         // Walk the extends/implements closure transitively (bounded depth) so a
@@ -522,6 +532,10 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                     && isset($subtypeMembers[$classId][$methodNames[$methodId]]),
                 'declaring_type' => $classId,
                 'external_ancestor' => $externalAncestor,
+                // An object literal passed, returned or nested as a value,
+                // with no type naming its methods: whatever receives it may
+                // call them, and no scan of this project sees that call.
+                'uncontracted_literal' => $classId !== null && ($kindOfClass[$classId] ?? null) === 'object' && $ancestors === [],
             ];
         }
         return $result;
