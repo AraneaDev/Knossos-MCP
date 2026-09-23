@@ -5,7 +5,13 @@ import ts from "typescript";
 import { FactAccumulator } from "./fact-accumulator.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
 import { TypeScriptApplicationEnricher } from "./typescript-application-enricher.js";
-import { callName, reference } from "./typescript-fact-utils.js";
+import {
+    bindingKeyword,
+    callName,
+    declarationModifiers,
+    isFunctionBinding,
+    reference,
+} from "./typescript-fact-utils.js";
 import {
     blankSource,
     componentAliasSuffix,
@@ -2903,9 +2909,7 @@ function declarationDescriptor(node, sourceFile) {
     const name = declarationName(node, sourceFile);
     if (name === null) return null;
     const kind = declarationKind(node, "class");
-    const modifiers = ts.canHaveModifiers(node)
-        ? (ts.getModifiers(node) ?? [])
-        : [];
+    const modifiers = declarationModifiers(node);
     return {
         kind,
         name,
@@ -2922,6 +2926,9 @@ function declarationDescriptor(node, sourceFile) {
             static: modifiers.some(
                 (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
             ),
+            ...(isFunctionBinding(node)
+                ? { binding: bindingKeyword(node) }
+                : {}),
         },
     };
 }
@@ -2943,6 +2950,7 @@ function declarationKind(node, fallback) {
         return "method";
     if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node))
         return "property";
+    if (isFunctionBinding(node)) return "function";
     if (isObjectLiteralBinding(node)) return "variable";
     if (isContextualObjectLiteral(node)) return "object";
     return fallback;
@@ -3014,6 +3022,7 @@ function isDeclaration(node) {
         ts.isConstructorDeclaration(node) ||
         ts.isPropertyDeclaration(node) ||
         ts.isPropertySignature(node) ||
+        isFunctionBinding(node) ||
         isObjectLiteralBinding(node) ||
         isContextualObjectLiteral(node)
     );
@@ -3100,6 +3109,7 @@ function objectLiteralContract(node) {
 
 function containerDeclaration(node) {
     return (
+        isFunctionBinding(node) ||
         isObjectLiteralBinding(node) ||
         isContextualObjectLiteral(node) ||
         ts.isClassDeclaration(node) ||
@@ -3157,9 +3167,10 @@ function canonicalForDeclaration(declaration, relative) {
  * Declarations a value reference is allowed to point at: the callables and
  * types dead-code analysis reasons about. Variables, parameters, properties and
  * imports are excluded — an edge per local read would dominate the graph without
- * telling us anything about reachability. The one variable admitted is an
+ * telling us anything about reachability. The variables admitted are an
  * object-literal binding with methods, which the graph holds as a component
- * (see {@link isObjectLiteralBinding}) and which is used by being handed around.
+ * (see {@link isObjectLiteralBinding}) and which is used by being handed around,
+ * and a module-level function binding (see `isFunctionBinding`).
  */
 function referenceableDeclaration(node) {
     return (
@@ -3169,6 +3180,7 @@ function referenceableDeclaration(node) {
         ts.isInterfaceDeclaration(node) ||
         ts.isEnumDeclaration(node) ||
         ts.isTypeAliasDeclaration(node) ||
+        isFunctionBinding(node) ||
         isObjectLiteralBinding(node)
     );
 }

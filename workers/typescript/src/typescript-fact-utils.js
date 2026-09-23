@@ -49,3 +49,89 @@ export function addFrameworkRoute(
         "framework_convention",
     );
 }
+
+/** An expression's value through parentheses, `as` and `satisfies`. */
+export function unwrapExpression(expression) {
+    let current = expression;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    )
+        current = current.expression;
+    return current;
+}
+
+/**
+ * `const f = () => {}` or `var f = function () {}` as a statement of the
+ * module itself: a function written as a binding, which the graph holds as
+ * the function it is. Bindings inside a function or block, and initializers
+ * that wrap the function in a call, are left alone.
+ */
+export function isFunctionBinding(node) {
+    if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name))
+        return false;
+    const list = node.parent;
+    const statement = list?.parent;
+    if (
+        list === undefined ||
+        !ts.isVariableDeclarationList(list) ||
+        statement === undefined ||
+        !ts.isVariableStatement(statement) ||
+        statement.parent === undefined ||
+        !ts.isSourceFile(statement.parent)
+    )
+        return false;
+    const value = unwrapExpression(node.initializer);
+    return (
+        value !== undefined &&
+        (ts.isArrowFunction(value) || ts.isFunctionExpression(value))
+    );
+}
+
+/** The function binding an arrow or function expression initialises, or null. */
+export function functionBindingOf(node) {
+    if (
+        node === undefined ||
+        !(ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+    )
+        return null;
+    let current = node.parent;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    )
+        current = current.parent;
+    return current !== undefined &&
+        isFunctionBinding(current) &&
+        unwrapExpression(current.initializer) === node
+        ? current
+        : null;
+}
+
+/** The keyword a variable declaration is bound with. */
+export function bindingKeyword(declaration) {
+    const flags = declaration.parent.flags;
+    if ((flags & ts.NodeFlags.Const) !== 0) return "const";
+    if ((flags & ts.NodeFlags.Let) !== 0) return "let";
+    return "var";
+}
+
+/**
+ * A declaration's modifiers. `export` and `default` on a variable sit on its
+ * statement, not on the declaration, so every binding read as not exported.
+ */
+export function declarationModifiers(node) {
+    const owner =
+        ts.isVariableDeclaration(node) &&
+        node.parent !== undefined &&
+        ts.isVariableDeclarationList(node.parent) &&
+        node.parent.parent !== undefined &&
+        ts.isVariableStatement(node.parent.parent)
+            ? node.parent.parent
+            : node;
+    return ts.canHaveModifiers(owner) ? (ts.getModifiers(owner) ?? []) : [];
+}
