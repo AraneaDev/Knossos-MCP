@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.10](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.9...v0.16.10) (2026-09-23)
+
+
+### Fixes
+
+* component reader and resolution follow-ups ([#115](https://github.com/AraneaDev/Knossos-MCP/issues/115)) ([2af9f90](https://github.com/AraneaDev/Knossos-MCP/commit/2af9f90a1987d96a5702e136dceb4d1a298ae6d1))
+
 ## [0.16.9](https://github.com/AraneaDev/Knossos-MCP/compare/v0.16.8...v0.16.9) (2026-09-23)
 
 
