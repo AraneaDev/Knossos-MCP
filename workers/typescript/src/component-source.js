@@ -383,5 +383,114 @@ function vueDirective(writer, name, valueStart, valueEnd) {
     );
 }
 
-/** Svelte and Astro markup; implemented in Task 3. */
-function braceMarkup() {}
+/**
+ * Svelte block tags: the prefix blanked before the expression, and what ends
+ * the expression when more follows it. A tag not listed (`{:else}`, `{/if}`,
+ * `{:then v}`, `{#snippet …}`) declares or closes, and stays blank.
+ */
+const SVELTE_BLOCKS = [
+    [/^\s*#(?:if|key)\s+/, null],
+    [/^\s*:else\s+if\s+/, null],
+    [/^\s*@(?:html|render|debug)\s+/, null],
+    [/^\s*#each\s+/, /\s+as\b/],
+    [/^\s*#await\s+/, /\s+(?:then|catch)\b/],
+    [/^\s*@const\s+[^=]*=\s*/, null],
+];
+
+/**
+ * Svelte and Astro markup: every `{…}` expression, and component tags.
+ *
+ * Quotes only count inside a tag, since text is full of apostrophes. Svelte
+ * reads `{…}` inside a quoted attribute too; Astro treats quoted values as
+ * plain strings.
+ */
+function braceMarkup(writer, start, end, dialect) {
+    const { text } = writer;
+    let inTag = false;
+    let quote = null;
+    let i = start;
+    while (i < end) {
+        const c = text[i];
+        if (!inTag && text.startsWith("<!--", i)) {
+            const close = text.indexOf("-->", i + 4);
+            i = close < 0 || close >= end ? end : close + 3;
+            continue;
+        }
+        if (c === "{" && (quote === null || dialect === "svelte")) {
+            const close = matchingBrace(text, i, end);
+            if (close > 0) {
+                braceExpression(writer, i, close, dialect);
+                i = close + 1;
+                continue;
+            }
+        } else if (inTag) {
+            if (quote !== null) {
+                if (c === quote) quote = null;
+            } else if (c === '"' || c === "'") quote = c;
+            else if (c === ">") inTag = false;
+        } else if (c === "<" && /[A-Za-z]/.test(text[i + 1] ?? "")) {
+            const name = /^<([A-Za-z][\w.:-]*)/.exec(text.slice(i, i + 128));
+            writeTagReference(writer, i, name[1]);
+            inTag = true;
+            i += name[0].length;
+            continue;
+        }
+        i++;
+    }
+}
+
+/** One `{…}` written back as a block statement holding its expression. */
+function braceExpression(writer, open, close, dialect) {
+    const inner = writer.text.slice(open + 1, close);
+    let from = 0;
+    let to = inner.length;
+    if (dialect === "svelte" && /^\s*[#:@/]/.test(inner)) {
+        const rule = SVELTE_BLOCKS.find(([head]) => head.test(inner));
+        if (rule === undefined) return;
+        from = rule[0].exec(inner)[0].length;
+        const stop = rule[1]?.exec(inner.slice(from));
+        if (stop) to = from + stop.index;
+    } else {
+        const spread = /^\s*\.\.\./.exec(inner);
+        if (spread !== null) from = spread[0].length;
+    }
+    placeFramed(
+        writer,
+        open + 1 + from,
+        open + 1 + to,
+        open,
+        "{",
+        close,
+        "}",
+        dialect === "svelte" ? storeReads : undefined,
+    );
+}
+
+/** Svelte's `$store` auto-subscription read as the store binding itself. */
+function storeReads(expression) {
+    return expression.replace(/(^|[^\w$])\$(?=[A-Za-z_])/g, "$1 ");
+}
+
+/** The offset of the `}` closing the `{` at `open`, skipping strings, or -1. */
+function matchingBrace(text, open, end) {
+    let depth = 0;
+    for (let i = open; i < end; i++) {
+        const c = text[i];
+        if (c === '"' || c === "'" || c === "`") {
+            const close = closingQuote(text, i, end);
+            if (close < 0) return -1;
+            i = close;
+        } else if (c === "{") depth++;
+        else if (c === "}" && --depth === 0) return i;
+    }
+    return -1;
+}
+
+/** The offset of the unescaped quote closing the one at `open`, or -1. */
+function closingQuote(text, open, end) {
+    for (let i = open + 1; i < end; i++) {
+        if (text[i] === "\\") i++;
+        else if (text[i] === text[open]) return i;
+    }
+    return -1;
+}

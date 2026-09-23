@@ -229,3 +229,111 @@ describe("Vue templates", () => {
         expect(file.parseDiagnostics).toEqual([]);
     });
 });
+
+function svelte(markup, script = "let a = 1;") {
+    const source = `<script lang="ts">\n${script}\n</script>\n${markup}\n`;
+    return { source, virtual: expectInvariants(source, "svelte").text };
+}
+
+describe("Svelte markup", () => {
+    it("keeps expressions as blocks, in text and attributes", () => {
+        const { virtual } = svelte(
+            '<a href={url} class="x {active}">{label}</a>',
+        );
+        expect(virtual).toContain("{url}");
+        expect(virtual).toContain("{active}");
+        expect(virtual).toContain("{label}");
+    });
+
+    it("keeps the expression of each block tag and blanks the keyword", () => {
+        const { virtual } = svelte(
+            "{#if ready}{:else if waiting}{/if}{#each items as item, i (item.id)}{item.name}{/each}{#await load() then v}{/await}{@html body}{@const total = sum(xs)}{#key k}{/key}",
+        );
+        for (const kept of [
+            "ready}",
+            "waiting}",
+            "items",
+            "load()",
+            "body}",
+            "sum(xs)}",
+            "k}",
+        ])
+            expect(virtual).toContain(kept);
+        for (const gone of [
+            "#if",
+            "else",
+            "#each",
+            " as ",
+            "then v",
+            "@html",
+            "@const",
+            "total",
+            "/if",
+        ])
+            expect(virtual).not.toContain(gone);
+    });
+
+    it("keeps directive expressions and spreads", () => {
+        const { virtual } = svelte(
+            "<input bind:value={name} on:input={update} {...rest} />",
+        );
+        expect(virtual).toContain("{name}");
+        expect(virtual).toContain("{update}");
+        expect(virtual).toContain("rest}");
+        expect(virtual).not.toContain("...");
+    });
+
+    it("reads a $store as the store itself", () => {
+        const { virtual } = svelte("<p>{$count} {$$props.x}</p>");
+        expect(virtual).toContain("{ count}");
+        expect(virtual).toContain("$$props.x");
+    });
+
+    it("is not thrown off by an apostrophe in text", () => {
+        const { virtual } = svelte("<p>Don't {shown}</p>");
+        expect(virtual).toContain("{shown}");
+    });
+
+    it("is not thrown off by > inside an attribute expression", () => {
+        const { virtual } = svelte(
+            "<div class={a > b ? 'x' : 'y'}><Child /></div>",
+        );
+        expect(virtual).toContain("{a > b ? 'x' : 'y'}");
+        expect(virtual).toContain(";Child");
+    });
+
+    it("blanks snippets and namespaced tags", () => {
+        const { virtual } = svelte(
+            "{#snippet row(x)}{/snippet}<svelte:head></svelte:head>",
+        );
+        expect(virtual).not.toContain("row");
+        expect(virtual).not.toContain("svelte");
+    });
+});
+
+describe("Astro markup", () => {
+    it("keeps JSX inside expressions and parses as TSX", () => {
+        const source =
+            "---\nconst items = [1];\n---\n<ul>{items.map((i) => <li><Item value={i} /></li>)}</ul>\n<Footer />\n";
+        const virtual = expectInvariants(source, "astro").text;
+        expect(virtual).toContain(
+            "{items.map((i) => <li><Item value={i} /></li>)}",
+        );
+        expect(virtual).toContain(";Footer");
+        const file = ts.createSourceFile(
+            "x.tsx",
+            virtual,
+            ts.ScriptTarget.Latest,
+            false,
+            ts.ScriptKind.TSX,
+        );
+        expect(file.parseDiagnostics).toEqual([]);
+    });
+
+    it("treats quoted attributes as strings", () => {
+        const source = '---\n---\n<a title="{not}" href={real}>x</a>\n';
+        const virtual = expectInvariants(source, "astro").text;
+        expect(virtual).not.toContain("not");
+        expect(virtual).toContain("{real}");
+    });
+});
