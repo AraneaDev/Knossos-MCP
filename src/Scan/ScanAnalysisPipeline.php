@@ -12,6 +12,7 @@ use Knossos\Classification\{
     LaravelRoleRule,
     LibraryPublicApiRule,
     ManifestEntryPointRule,
+    ManifestLibraryApiRule,
     NameSuffixRule,
     NestJsRoleRule,
     PythonFrameworkRoleRule,
@@ -55,6 +56,7 @@ final readonly class ScanAnalysisPipeline
             new ManifestEntryPointRule(self::manifestEntryPoints($plan)),
             FrameworkFileConventionRule::svelteKit(self::svelteKitRoots($plan)),
             new LibraryPublicApiRule(...self::publishedApi($plan, $contributions)),
+            new ManifestLibraryApiRule(self::libraryRoots($plan, 'composer'), self::libraryRoots($plan, 'python')),
             FrameworkFileConventionRule::astro(self::appRoots($plan, '#(?:^|/)astro\\.config\\.[cm]?[jt]s$#', 0)),
             FrameworkFileConventionRule::vitePress(self::appRoots($plan, '#(?:^|/)\\.vitepress/config\\.[cm]?[jt]s$#', 1)),
         ];
@@ -150,6 +152,28 @@ final readonly class ScanAnalysisPipeline
         }
         $roots = array_map(strval(...), array_keys($roots));
         sort($roots, SORT_STRING);
+
+        return $roots;
+    }
+
+    /**
+     * The directories the `$kind` manifests of the project publish as a library.
+     *
+     * @return list<string>
+     */
+    private static function libraryRoots(ScanPlan $plan, string $kind): array
+    {
+        $roots = [];
+        foreach ($plan->preparation->discovery->units as $unit) {
+            if ($unit->kind !== $kind) {
+                continue;
+            }
+            foreach ($unit->metadata['library_roots'] ?? [] as $root) {
+                if (is_string($root)) {
+                    $roots[] = $root;
+                }
+            }
+        }
 
         return $roots;
     }

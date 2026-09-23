@@ -197,6 +197,25 @@ only (`<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
 reads configuration, such as `src/utils/config-loader.ts`, is ordinary source
 and stays reportable.
 
+### Why a published library's API is excluded
+
+A package other projects install is called by code outside the repository, so nothing inside
+has to call its public API for that API to be wanted. Such components are classified
+`library.public_api` and not reported:
+
+- a JavaScript or TypeScript package that is not private and names an entry (`main`,
+  `exports`): what that entry exports and re-exports;
+- a Composer package whose `composer.json` says `"type": "library"`: the classes, interfaces,
+  traits and enums under its `autoload` PSR-4 roots, and their public and protected methods.
+  Composer's default type is `library`, but an application that never names its type is the
+  common case, so only an explicit one counts;
+- a Python project whose `pyproject.toml` has a `[build-system]` and `[project]` (or Poetry's
+  table) and installs no command (`[project.scripts]`, `[project.gui-scripts]`,
+  `[tool.poetry.scripts]`): every module, class, function and method under its directory
+  whose name has no segment made private by a leading underscore. A dunder counts as public.
+
+What a library keeps private stays reportable, and so do its tests.
+
 ## Filtering and paging
 
 A large project can have hundreds of candidates, and a framework's lifecycle methods,

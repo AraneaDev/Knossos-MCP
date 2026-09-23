@@ -218,6 +218,34 @@ final class ProjectDiscovererTest extends KnossosTestCase
         $this->assertArrayHasKey('App\\Tests\\', $psr4);
     }
 
+    public function testDiscoverReadsAComposerLibrarysAutoloadRootsAsItsPublishedCode(): void
+    {
+        mkdir($this->root . '/sdk');
+        file_put_contents($this->root . '/sdk/composer.json', json_encode([
+            'name' => 'test/sdk',
+            'type' => 'library',
+            'autoload' => ['psr-4' => ['Sdk\\' => 'src/', 'Sdk\\Extra\\' => ['extra/']]],
+            'autoload-dev' => ['psr-4' => ['Sdk\\Tests\\' => 'tests/']],
+        ], JSON_THROW_ON_ERROR));
+        file_put_contents($this->root . '/composer.json', json_encode([
+            'name' => 'test/app',
+            'autoload' => ['psr-4' => ['App\\' => 'app/']],
+        ], JSON_THROW_ON_ERROR));
+
+        $units = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root)->units;
+        $roots = [];
+        foreach ($units as $unit) {
+            if ($unit->kind === 'composer') {
+                $roots[$unit->configPath] = $unit->metadata['library_roots'];
+            }
+        }
+
+        // An application's classes are its own; only a library publishes.
+        // Composer's default type is library, but an application that never
+        // named its type is the common case, so only an explicit one counts.
+        $this->assertSame(['composer.json' => [], 'sdk/composer.json' => ['sdk/extra', 'sdk/src']], $roots);
+    }
+
     public function testDiscoverHandlesComposerWithDevOnlyAutoload(): void
     {
         file_put_contents($this->root . '/composer.json', json_encode([
@@ -880,6 +908,33 @@ worker = "demo.jobs.worker:run"
 TOML
 );
         assertSame(['demo/cli.py', 'demo/jobs/worker.py'], $unit->metadata['entry_points']);
+    }
+
+    public function testDiscoverReadsABuildablePythonPackageWithoutScriptsAsALibrary(): void
+    {
+        $library = $this->pythonUnit(<<<'TOML'
+[build-system]
+requires = ["hatchling"]
+
+[project]
+name = "sdk"
+TOML);
+        assertSame([''], $library->metadata['library_roots']);
+
+        // A package that installs a command is an application.
+        $application = $this->pythonUnit(<<<'TOML'
+[build-system]
+requires = ["hatchling"]
+
+[project]
+name = "server"
+
+[project.scripts]
+server = "server.main:run"
+TOML);
+        assertSame([], $application->metadata['library_roots']);
+        // Nor is a project with nothing to build.
+        assertSame([], $this->pythonUnit("[project]\nname = \"app\"\n")->metadata['library_roots']);
     }
 
     public function testDiscoverReadsPoetryMetadataAsPythonFallback(): void
