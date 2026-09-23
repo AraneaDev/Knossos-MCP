@@ -35,6 +35,7 @@ final readonly class FrameworkFileConventionRule implements ClassificationRule
     {
         return new self('astro', $appRoots, [
             '#^src/pages/.+\.[cm]?[jt]s$#',
+            '#^src/pages/.+\.astro$#',
             '#^src/middleware(?:/index)?\.[cm]?[jt]s$#',
             '#^src/content(?:/config|\.config)\.[cm]?[jt]s$#',
         ]);

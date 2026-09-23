@@ -43,6 +43,14 @@ final class ProjectDiscovererTest extends KnossosTestCase
 
     // ── Directory-level diagnostics ──────────────────────────────────
 
+    /** Vue, Svelte and Astro components are read by the TypeScript worker. */
+    public function testComponentsAreScannedAsTypeScript(): void
+    {
+        foreach (['src/App.vue', 'src/lib/Counter.svelte', 'src/pages/index.astro', 'src/App.VUE'] as $path) {
+            self::assertSame('typescript', ProjectDiscoverer::languageFor($path), $path);
+        }
+    }
+
     public function testDiscoverReportsUnreadableDirectoryDiagnostic(): void
     {
         if (posix_getuid() === 0) {

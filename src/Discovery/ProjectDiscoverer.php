@@ -926,7 +926,7 @@ final readonly class ProjectDiscoverer
 
     /** Extensions a scanner emits nodes for (or anything else cannot be matched later). */
     private const ENTRY_POINT_EXTENSIONS = [
-        'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'py', 'pyi', 'rs',
+        'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte', 'astro', 'py', 'pyi', 'rs',
     ];
 
     /**
@@ -1816,7 +1816,7 @@ final readonly class ProjectDiscoverer
         $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
         $byExtension = match ($extension) {
             'php' => 'php',
-            'ts', 'tsx', 'mts', 'cts' => 'typescript',
+            'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte', 'astro' => 'typescript',
             'js', 'jsx', 'mjs', 'cjs' => 'javascript',
             'py', 'pyi' => 'python',
             'rs' => 'rust',

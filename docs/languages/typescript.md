@@ -24,10 +24,32 @@ Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that
 distinction.
 
+## Components
+
+`.vue`, `.svelte` and `.astro` files are scanned as TypeScript. The worker reads each one into
+position-preserving virtual source: script blocks (and Astro's frontmatter and bundled
+`<script>` elements) keep their bytes, template expressions and component tags are written back
+where they stand, and everything else is blank. Line and column numbers are therefore the
+component's own, and an import of `./Card.vue` resolves through relative paths, `paths` and
+`baseUrl` like any other module.
+
+- A helper, store or child component used only from a template has its edge.
+- A template name that resolves to nothing (an Options API method reached through the
+  component instance) is listed in the module's `unresolved_member_calls`, so a method by that
+  name is only possibly dead.
+- SvelteKit route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`) and Astro pages
+  (`src/pages/**/*.astro`) are entry points.
+- A component that cannot be delimited, or whose script is `lang="tsx"` or `lang="jsx"`, keeps
+  its module node and reports `COMPONENT_UNPARSED`.
+- Every component is a module, with its compiled component as the default
+  export, whatever its script declares.
+
+Not handled: Nuxt auto-imported components and file-based routing, globally registered
+components, Vue template type semantics (slot props, `$emit` names, `v-model` modifiers), `.mdx`
+and Markdown pages.
+
 ## Limits
 
 No framework module is imported and no bundler or Next/Vue application is
 started. Dynamic route segments stay in their source spelling, dynamic request
 URLs are omitted, and framework roles do not override language symbol kinds.
-Single-file Vue components are not parsed until an isolated SFC parser is added;
-Vue TypeScript modules remain supported.

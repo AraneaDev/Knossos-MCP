@@ -33,6 +33,8 @@ final class FrameworkFileConventionRuleTest extends KnossosTestCase
             'middleware' => ['site/src/middleware.ts', true],
             'content config' => ['site/src/content.config.ts', true],
             'legacy content config' => ['site/src/content/config.ts', true],
+            'page component' => ['site/src/pages/blog/[slug].astro', true],
+            'layout component' => ['site/src/layouts/Base.astro', false],
             'library module' => ['site/src/lib/chart.ts', false],
             'pages of another app' => ['other/src/pages/index.ts', false],
         ];

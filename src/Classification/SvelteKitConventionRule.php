@@ -15,6 +15,8 @@ use Knossos\Scanner\Protocol\Origin;
  * under `src/routes/`, the hooks files, param matchers in `src/params/` and
  * the service worker are entered by the framework and imported by nothing, so
  * each carried an in-degree of zero while serving every request.
+ * Its route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`)
+ * are loaded the same way.
  *
  * The positions only mean this inside a SvelteKit app, which is a directory
  * holding a `svelte.config.*`. Outside one, `src/hooks.ts` is as likely to be
@@ -65,6 +67,7 @@ final readonly class SvelteKitConventionRule implements ClassificationRule
     private static function isConventionPath(string $path): bool
     {
         return preg_match('#^src/routes/(?:.+/)?\+(?:page|layout)(?:\.server)?\.[cm]?[jt]s$#', $path) === 1
+            || preg_match('#^src/routes/(?:.+/)?\+(?:page|layout|error)(?:@[^/]*)?\.svelte$#', $path) === 1
             || preg_match('#^src/routes/(?:.+/)?\+server\.[cm]?[jt]s$#', $path) === 1
             || preg_match('#^src/hooks(?:\.server|\.client)?\.[cm]?[jt]s$#', $path) === 1
             || preg_match('#^src/params/[^/]+\.[cm]?[jt]s$#', $path) === 1
