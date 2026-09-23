@@ -1,1 +1,1 @@
-{"compilerOptions":{"strict":true,"noEmit":true,"allowJs":true,"baseUrl":".","paths":{"@/*":["src/*"]}},"include":["src/**/*.ts","src/**/*.js","src/**/*.vue"]}
+{"compilerOptions":{"strict":true,"noEmit":true,"allowJs":true,"baseUrl":".","paths":{"*":["vendor/*"],"@/*":["src/*"]}},"include":["src/**/*.ts","src/**/*.js","src/**/*.vue"]}

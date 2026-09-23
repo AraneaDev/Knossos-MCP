@@ -558,3 +558,58 @@ describe("require() in a plain JavaScript component script", () => {
         expect(imports.some((t) => t.includes("not"))).toBe(false);
     });
 });
+
+describe("Vite's alias forms", () => {
+    it("reads root-relative replacements and the array form", () => {
+        const { contributions } = scan({
+            "vite.config.ts":
+                "export default { resolve: { alias: [{ find: '~', replacement: '/src' }, { find: /^re$/, replacement: '/src' }] } };\n",
+            "src/main.ts": "import { util } from '~/util';\nutil();\n",
+            "src/util.ts": "export function util(): void {}\n",
+        });
+        const imports = edges(contributions, "imports").map((e) => e.target);
+
+        expect(imports).toContain("ts:module:src/util.ts");
+    });
+});
+
+describe("require.context through tsconfig paths", () => {
+    it("takes the longest matching prefix, as the compiler does", () => {
+        const { contributions } = scan(
+            {
+                "tsconfig.json":
+                    '{"compilerOptions":{"allowJs":true,"baseUrl":".","paths":{"*":["vendor/*"],"~/*":["src/*"]}},"include":["src"]}',
+                "src/store.js":
+                    "const layouts = require.context('~/layouts');\nexport default layouts;\n",
+            },
+            ["src/store.js"],
+            ["tsconfig.json"],
+        );
+        const directories = edges(contributions, "imports")
+            .filter((e) => e.target.startsWith("ts:module_context:"))
+            .map(
+                (e) =>
+                    JSON.parse(e.target.slice("ts:module_context:".length))
+                        .directory,
+            );
+
+        expect(directories).toEqual(["src/layouts"]);
+    });
+});
+
+describe("an import that names a component", () => {
+    it("means the component even with a same-named .ts file beside it", () => {
+        const { contributions } = scan({
+            "src/Card.vue":
+                "<template><div/></template>\n<script>\nexport default {};\n</script>\n",
+            "src/Card.vue.ts": "export const shim = 1;\n",
+            "src/Page.vue":
+                "<template><Card /></template>\n<script>\nimport Card from './Card.vue';\nexport default { components: { Card } };\n</script>\n",
+        });
+        const imports = edges(contributions, "imports")
+            .filter((e) => e.source === "ts:module:src/Page.vue")
+            .map((e) => e.target);
+
+        expect(imports).toEqual(["ts:module:src/Card.vue"]);
+    });
+});

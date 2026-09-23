@@ -7,6 +7,7 @@
       track()
     " />
     <user-list v-for="u of users" />
+    <li v-for="{ id } in listUsers()">{{ id }}</li>
     <data-table v-slot="{ row }" #cell="{ value }" :rows=bare>{{ row }}</data-table>
     <b @click="broken(">x</b>
     <Nav.Item v-else-if="other" v-else />
@@ -29,6 +30,7 @@ const bare = 1;
 const Nav = { Item: {} };
 function select(user: unknown): void {}
 function track(): void {}
+function listUsers(): { id: number }[] { return users; }
 const props = defineProps<{ title?: string }>();
 const n: number = "x";
 </script>

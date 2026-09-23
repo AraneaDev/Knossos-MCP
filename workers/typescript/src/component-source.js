@@ -57,6 +57,11 @@ export function toVirtualSource(text, dialect) {
         text,
         out,
         kind: dialect === "astro" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        blocked: commentedTails(
+            text,
+            blocks.scripts,
+            dialect === "astro" ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+        ),
     };
     for (const [from, to] of blocks.markup) {
         if (dialect === "vue") vueMarkup(writer, from, to);
@@ -164,7 +169,12 @@ function scanBlocks(text, dialect) {
                 throw new ComponentParseError(
                     `script lang="${lang}" is not supported`,
                 );
-            if (lang === "ts") typed = true;
+            if (
+                lang === "ts" ||
+                lang === "typescript" ||
+                /^text\/typescript$/i.test(String(attributes.get("type") ?? ""))
+            )
+                typed = true;
             if (executableScript(attributes))
                 scripts.push([contentStart, closeTag]);
         } else if (block === "template") {
@@ -274,6 +284,49 @@ function parseAttributes(source) {
 }
 
 /**
+ * The spans a script's trailing line comment reaches: from the end of a
+ * script that ends inside a `//` comment to the end of that line. The
+ * comment runs on in the virtual text, so anything written there would be
+ * swallowed, and an expression continuing onto the next line would leave
+ * half of itself behind.
+ */
+function commentedTails(text, scripts, kind) {
+    const tails = [];
+    for (const [from, to] of scripts) {
+        // Parsed, not just scanned: only the parser knows that the `//` in
+        // `/[//]/` belongs to a regular expression.
+        const script = text.slice(from, to);
+        const file = ts.createSourceFile(
+            kind === ts.ScriptKind.TSX ? "script.tsx" : "script.ts",
+            script,
+            ts.ScriptTarget.Latest,
+            false,
+            kind,
+        );
+        // A comment on the last statement's line is a trailing one; one on
+        // a line of its own, a leading one of the end-of-file token.
+        const end = file.endOfFileToken.pos;
+        const trailing = [
+            ...(ts.getTrailingCommentRanges(script, end) ?? []),
+            ...(ts.getLeadingCommentRanges(script, end) ?? []),
+        ].at(-1);
+        if (
+            trailing?.kind !== ts.SyntaxKind.SingleLineCommentTrivia ||
+            trailing.end !== script.length
+        )
+            continue;
+        const newline = text.slice(to).search(/[\r\n]/);
+        tails.push([to, newline < 0 ? text.length : to + newline]);
+    }
+    return tails;
+}
+
+/** Whether a write at `offset` falls where a script's trailing comment reaches. */
+function isBlocked(writer, offset) {
+    return writer.blocked.some(([from, to]) => offset >= from && offset < to);
+}
+
+/**
  * Write the expression at [exprStart, exprEnd) back in place, framed by
  * `open` at `openAt` and `close` at `closeAt`, when the framed text parses on
  * its own. A fragment that does not parse stays blank, so no template
@@ -290,6 +343,7 @@ function placeFramed(
     rewrite = (value) => value,
 ) {
     const { text, out } = writer;
+    if (isBlocked(writer, openAt)) return false;
     const expression = rewrite(text.slice(exprStart, exprEnd));
     if (expression.trim() === "") return false;
     const frame =
@@ -321,7 +375,7 @@ function parsesCleanly(source, kind) {
  * namespaced tags stay blank.
  */
 function writeTagReference(writer, lt, name) {
-    if (name.includes(":")) return;
+    if (name.includes(":") || isBlocked(writer, lt)) return;
     let identifier;
     if (/^[A-Z]/.test(name)) identifier = name;
     else if (name.includes("-"))
@@ -333,6 +387,14 @@ function writeTagReference(writer, lt, name) {
     else return;
     if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(identifier)) return;
     write(writer.out, lt, `;${identifier}`);
+    // Ended with `;` when the next slot is blank markup on the same line, so
+    // an attribute expression after it (`<Card {x}>`) starts a new statement.
+    const after = lt + 1 + identifier.length;
+    if (
+        writer.out[after] === " " &&
+        !/[\r\n{]/.test(writer.text[after] ?? "\n")
+    )
+        writer.out[after] = ";";
 }
 
 /** Vue template markup: interpolations, directive values and component tags. */
@@ -402,11 +464,9 @@ function vueDirective(writer, name, valueStart, valueEnd) {
     if (!/^(?:v-|:|@)/.test(name)) return;
     let exprStart = valueStart;
     if (name === "v-for") {
-        const head = /^\s*(?:\([^)]*\)|\S+)\s+(?:in|of)\s+/.exec(
-            writer.text.slice(valueStart, valueEnd),
-        );
-        if (head === null) return;
-        exprStart = valueStart + head[0].length;
+        const head = vForHeadLength(writer.text.slice(valueStart, valueEnd));
+        if (head < 0) return;
+        exprStart = valueStart + head;
     }
     // An event handler is a statement list (`a(); b()`), which parentheses
     // cannot hold; every other directive is one expression.
@@ -420,6 +480,37 @@ function vueDirective(writer, name, valueStart, valueEnd) {
         valueEnd,
         handler ? "}" : ")",
     );
+}
+
+/**
+ * The length of a `v-for` value's head up to its iterable, or -1: the
+ * binding (`item`, `(item, i)`, `{ id, name }`, `([a, b], i)`), then `in` or
+ * `of`. A bracketed binding is matched to its closing bracket, so a
+ * destructuring pattern with commas or nested brackets is one head.
+ */
+function vForHeadLength(value) {
+    const start = value.length - value.trimStart().length;
+    let end = start;
+    const open = value[start];
+    if (open === "(" || open === "{" || open === "[") {
+        const pairs = { "(": ")", "{": "}", "[": "]" };
+        const stack = [];
+        for (end = start; end < value.length; end++) {
+            if (value[end] in pairs) stack.push(pairs[value[end]]);
+            else if (
+                value[end] === stack.at(-1) &&
+                stack.pop() &&
+                stack.length === 0
+            )
+                break;
+        }
+        end++;
+    } else {
+        while (end < value.length && !/\s/.test(value[end])) end++;
+    }
+    const keyword = /\s+(?:in|of)\s+/y;
+    keyword.lastIndex = end;
+    return end > start && keyword.test(value) ? keyword.lastIndex : -1;
 }
 
 /**

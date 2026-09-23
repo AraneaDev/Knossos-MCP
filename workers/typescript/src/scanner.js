@@ -1271,25 +1271,38 @@ class TypeScriptLanguageFactCollector {
             return normalize(path.resolve(here, specifier));
         const options = this.project.options ?? {};
         const base = options.pathsBasePath ?? options.baseUrl ?? this.root;
+        // An exact key wins; otherwise the longest matching prefix, as the
+        // compiler picks among `paths` patterns.
+        let best = null;
         for (const [key, targets] of Object.entries(options.paths ?? {})) {
-            const prefix = key.endsWith("*") ? key.slice(0, -1) : null;
             const target = targets[0];
             if (target === undefined) continue;
             if (key === specifier) return normalize(path.resolve(base, target));
-            if (prefix !== null && specifier.startsWith(prefix))
-                return normalize(
-                    path.resolve(
-                        base,
-                        target.replace("*", specifier.slice(prefix.length)),
-                    ),
-                );
+            const prefix = key.endsWith("*") ? key.slice(0, -1) : null;
+            if (
+                prefix !== null &&
+                specifier.startsWith(prefix) &&
+                (best === null || prefix.length > best.prefix.length)
+            )
+                best = { prefix, target };
         }
-        return null;
+        return best === null
+            ? null
+            : normalize(
+                  path.resolve(
+                      base,
+                      best.target.replace(
+                          "*",
+                          specifier.slice(best.prefix.length),
+                      ),
+                  ),
+              );
     }
 
     /**
      * Source paths a call names by literal: `resolve(__dirname, 'x/y.tsx')`
-     * (or `join`, or `import.meta.dirname`), relative to this file; and
+     * (or `join`, or `import.meta.dirname`), relative to this file, or
+     * `join(root, 'scripts', 'x.ts')` from a base it cannot know; and
      * `navigator.serviceWorker.register('/sw.js')`, a URL under the web root.
      */
     pathLiteralImports(node) {
@@ -1307,18 +1320,25 @@ class TypeScriptLanguageFactCollector {
         if (
             (name === "resolve" || name === "join") &&
             args.length >= 2 &&
-            isDirnameExpression(args[0]) &&
             args.slice(1).every((arg) => ts.isStringLiteralLike(arg))
         ) {
-            const relative = sourcePathTarget(
-                this.root,
-                path.dirname(this.sourceFile.fileName),
-                args
-                    .slice(1)
-                    .map((arg) => arg.text)
-                    .join("/"),
-            );
-            if (relative !== null) this.speculativeImport(relative, node);
+            // A literal first segment is part of the path (`join('src',
+            // 'util.ts')`); any other first argument is the unknown base.
+            const joined = args
+                .slice(ts.isStringLiteralLike(args[0]) ? 0 : 1)
+                .map((arg) => arg.text)
+                .join("/");
+            // `__dirname` names this file's directory. Any other base
+            // (`root`, `ROOT`, `process.cwd()`) is unknown here, so both usual
+            // answers are offered: this file's directory and the project
+            // root. Speculative, so a guess the graph does not hold is dropped.
+            const bases = isDirnameExpression(args[0])
+                ? [path.dirname(this.sourceFile.fileName)]
+                : [path.dirname(this.sourceFile.fileName), this.root];
+            for (const base of bases) {
+                const relative = sourcePathTarget(this.root, base, joined);
+                if (relative !== null) this.speculativeImport(relative, node);
+            }
             return;
         }
         if (
@@ -2297,7 +2317,11 @@ function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
             continue;
         if (name.startsWith("svelte.")) aliases.$lib ??= "src/lib";
         const text = readRecorded(root, config, reads, maxFileBytes);
-        if (text !== undefined) Object.assign(aliases, declaredAliases(text));
+        if (text !== undefined)
+            Object.assign(
+                aliases,
+                declaredAliases(text, name.startsWith("vite.")),
+            );
     }
     if (Object.keys(aliases).length === 0) return parsed;
     const paths = { ...parsed.options.paths };
@@ -2316,10 +2340,12 @@ function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
 /**
  * The entries of every `alias` object in a config whose target can be read
  * without running it: a string, `path.join|resolve(__dirname, …)`, or
- * `fileURLToPath(new URL('./x', import.meta.url))`. An exact-match key
- * (`vue$`) names a package, not a directory, and is skipped.
+ * `fileURLToPath(new URL('./x', import.meta.url))`, as an object or as
+ * Vite's `[{ find, replacement }]` array. An exact-match key (`vue$`) names a
+ * package, not a directory, and is skipped. With `rootRelative` (Vite), a
+ * target starting with `/` is read against the config's directory.
  */
-function declaredAliases(text) {
+function declaredAliases(text, rootRelative) {
     const file = ts.createSourceFile(
         "config.ts",
         text,
@@ -2328,26 +2354,53 @@ function declaredAliases(text) {
         ts.ScriptKind.TS,
     );
     const aliases = {};
+    const add = (name, expression) => {
+        const target = name === null ? null : aliasTarget(expression);
+        if (target === null || name.endsWith("$")) return;
+        // Vite reads `/src` against the project root, not the filesystem's.
+        aliases[name] =
+            rootRelative && target.startsWith("/") ? `.${target}` : target;
+    };
     const visit = (node) => {
-        if (
+        const entries =
             ts.isPropertyAssignment(node) &&
-            staticPropertyName(node.name) === "alias" &&
-            ts.isObjectLiteralExpression(node.initializer)
-        ) {
-            for (const entry of node.initializer.properties) {
-                const name = ts.isPropertyAssignment(entry)
-                    ? staticPropertyName(entry.name)
-                    : null;
-                const target =
-                    name === null ? null : aliasTarget(entry.initializer);
-                if (target !== null && !name.endsWith("$"))
-                    aliases[name] = target;
+            staticPropertyName(node.name) === "alias"
+                ? node.initializer
+                : undefined;
+        if (entries !== undefined && ts.isObjectLiteralExpression(entries)) {
+            for (const entry of entries.properties) {
+                if (ts.isPropertyAssignment(entry))
+                    add(staticPropertyName(entry.name), entry.initializer);
+            }
+        }
+        // Vite's array form: `[{ find: '@', replacement: '/src' }]`, with a
+        // string `find`; a regular expression names no fixed prefix.
+        if (entries !== undefined && ts.isArrayLiteralExpression(entries)) {
+            for (const entry of entries.elements) {
+                const find = objectField(entry, "find");
+                const replacement = objectField(entry, "replacement");
+                if (
+                    find !== undefined &&
+                    replacement !== undefined &&
+                    ts.isStringLiteralLike(find)
+                )
+                    add(find.text, replacement);
             }
         }
         ts.forEachChild(node, visit);
     };
     visit(file);
     return aliases;
+}
+
+/** The initializer of `key` in an object literal, or undefined. */
+function objectField(node, key) {
+    if (!ts.isObjectLiteralExpression(node)) return undefined;
+    return node.properties.find(
+        (property) =>
+            ts.isPropertyAssignment(property) &&
+            staticPropertyName(property.name) === key,
+    )?.initializer;
 }
 
 /** A directory an alias maps to, relative to its config, or null. */
@@ -2619,13 +2672,19 @@ function createRestrictedProgram(
         allowedCompilerPath(root, file)
             ? readRecorded(root, file, reads, maxFileBytes)
             : undefined;
-    // Only in a Vue project: the rule is its bundlers', and a retry probes
-    // paths that are then recorded.
-    if (parsed.vueProject === true)
-        host.resolveModuleNameLiterals = componentExtensionResolver(
-            host,
-            options,
-        );
+    const cache = ts.createModuleResolutionCache(
+        host.getCurrentDirectory(),
+        host.getCanonicalFileName,
+        options,
+    );
+    // Shared with the compiler's own lookups (type references, package.json
+    // formats), so a manifest is read once, not once per cache.
+    host.getModuleResolutionCache = () => cache;
+    host.resolveModuleNameLiterals = componentResolver(
+        host,
+        cache,
+        parsed.vueProject === true,
+    );
     return ts.createProgram({
         rootNames: parsed.fileNames,
         options,
@@ -2636,21 +2695,19 @@ function createRestrictedProgram(
 }
 
 /**
- * Module resolution as the compiler does it, plus the `.vue` extension for a
- * path that resolves to nothing without it.
+ * Module resolution as the compiler does it, with two corrections for
+ * components.
  *
- * webpack and Vue CLI list `.vue` in `resolve.extensions`, so Vue projects
- * import `./components/Card` and mean `Card.vue`, which the compiler never
- * tries. Every component imported that way read as unused. Only a relative
- * or path-mapped specifier with no extension is retried, and only when it
- * resolved to nothing.
+ * An import that names a component (`./Card.vue`) means the component even
+ * when a real `Card.vue.ts` sits beside it, which the compiler would try
+ * first. And in a Vue project (`vueProject`, from the manifests), a relative
+ * or path-mapped specifier with no extension that resolves to nothing
+ * resolves to `.vue`, as webpack and Vue CLI list it in
+ * `resolve.extensions`; the retry probes paths that are then recorded, so it
+ * stays off elsewhere. The resolution mode follows a project reference's own
+ * options, as the compiler's default loader does.
  */
-function componentExtensionResolver(host, options) {
-    const cache = ts.createModuleResolutionCache(
-        host.getCurrentDirectory(),
-        host.getCanonicalFileName,
-        options,
-    );
+function componentResolver(host, cache, vueProject) {
     return (
         literals,
         containingFile,
@@ -2670,11 +2727,16 @@ function componentExtensionResolver(host, options) {
                     ts.getModeForUsageLocation(
                         containingSourceFile,
                         literal,
-                        compilerOptions,
+                        redirectedReference?.commandLine.options ??
+                            compilerOptions,
                     ),
                 );
-            const resolved = resolve(literal.text);
+            const resolved = componentTarget(
+                literal.text,
+                resolve(literal.text),
+            );
             if (
+                !vueProject ||
                 resolved.resolvedModule !== undefined ||
                 !literal.text.includes("/") ||
                 path.posix.extname(literal.text) !== ""
@@ -2685,6 +2747,33 @@ function componentExtensionResolver(host, options) {
                 ? component
                 : resolved;
         });
+}
+
+/**
+ * A resolution of a component specifier that landed on a real `X.vue.ts`
+ * beside `X.vue`, redirected to the component's own alias; anything else as
+ * it is.
+ */
+function componentTarget(specifier, resolved) {
+    const dialect = componentDialect(specifier);
+    const file = resolved.resolvedModule?.resolvedFileName;
+    if (dialect === null || file === undefined) return resolved;
+    const suffix = componentAliasSuffix(dialect);
+    const component = file.slice(0, -suffix.length);
+    if (
+        !file.endsWith(suffix) ||
+        componentDialect(component) !== dialect ||
+        !isRegularFile(file) ||
+        !isRegularFile(component)
+    )
+        return resolved;
+    return {
+        ...resolved,
+        resolvedModule: {
+            ...resolved.resolvedModule,
+            resolvedFileName: `${component}${COMPONENT_ALIAS_MARK}${suffix}`,
+        },
+    };
 }
 
 function diagnosticsForProgram(program, root, maxFileBytes) {

@@ -198,7 +198,7 @@ describe("Vue templates", () => {
                 source.indexOf("<user-card"),
                 source.indexOf("<user-card") + 10,
             ),
-        ).toBe(";UserCard ");
+        ).toBe(";UserCard;");
         expect(virtual).toContain(";RouterLink");
         expect(virtual).not.toContain("div");
     });
@@ -433,5 +433,79 @@ describe("a comparison inside a text expression", () => {
 
         expect(virtual).toContain("let a = 1, b = 2;");
         expect(virtual).toContain("{a}");
+    });
+});
+
+describe("follow-up: component reader minors", () => {
+    it("keeps the iterable of a v-for that destructures its item", () => {
+        const { virtual } = vue(
+            '<li v-for="{ id, name } in items">{{ name }}</li><li v-for="([a, b], i) of pairs">x</li>',
+        );
+        expect(virtual).toContain(";(items)");
+        expect(virtual).toContain(";(pairs)");
+    });
+
+    it("leaves blank what follows a script ending inside a line comment", () => {
+        // The comment would swallow the rest of that line, and an
+        // expression continuing onto the next line would then close a
+        // brace nothing opened.
+        const source =
+            "<script>\nlet a = 1, c = 2; // note</script><p>{a +\n a}</p>\n<p>{c}</p>\n";
+        const virtual = expectInvariants(source, "svelte").text;
+        const file = ts.createSourceFile(
+            "x.ts",
+            virtual,
+            ts.ScriptTarget.Latest,
+            false,
+            ts.ScriptKind.TS,
+        );
+
+        expect(file.parseDiagnostics).toEqual([]);
+        expect(virtual).toContain("{c}");
+    });
+
+    it("does not read // inside a regular expression as a comment", () => {
+        const source =
+            "<script>\nconst slash = /[//]/;</script><p>{value}</p>\n";
+        const virtual = expectInvariants(source, "svelte").text;
+
+        expect(virtual).toContain("{value}");
+    });
+
+    it("reads every spelling of a TypeScript script as typed", () => {
+        for (const attributes of [
+            'lang="ts"',
+            'lang="typescript"',
+            'type="text/typescript"',
+            'lang="TS"',
+        ])
+            expect(
+                toVirtualSource(
+                    `<script ${attributes}>\nlet a = 1;\n</script>\n`,
+                    "svelte",
+                ).typed,
+                attributes,
+            ).toBe(true);
+        expect(
+            toVirtualSource(
+                '<script lang="js">\nlet a = 1;\n</script>\n',
+                "svelte",
+            ).typed,
+        ).toBe(false);
+    });
+
+    it("ends a component tag's reference before an expression on the same line", () => {
+        const { virtual } = svelte(
+            "<Card {value} title={t} />\n<Nav.Item on:click={go}/>",
+        );
+        const file = ts.createSourceFile(
+            "x.ts",
+            virtual,
+            ts.ScriptTarget.Latest,
+            false,
+            ts.ScriptKind.TS,
+        );
+        expect(file.parseDiagnostics).toEqual([]);
+        expect(virtual).toContain(";Card;");
     });
 });
