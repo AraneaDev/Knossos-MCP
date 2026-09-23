@@ -333,6 +333,14 @@ function writeTagReference(writer, lt, name) {
     else return;
     if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(identifier)) return;
     write(writer.out, lt, `;${identifier}`);
+    // Ended with `;` when the next slot is blank markup on the same line, so
+    // an attribute expression after it (`<Card {x}>`) starts a new statement.
+    const after = lt + 1 + identifier.length;
+    if (
+        writer.out[after] === " " &&
+        !/[\r\n{]/.test(writer.text[after] ?? "\n")
+    )
+        writer.out[after] = ";";
 }
 
 /** Vue template markup: interpolations, directive values and component tags. */
@@ -402,11 +410,9 @@ function vueDirective(writer, name, valueStart, valueEnd) {
     if (!/^(?:v-|:|@)/.test(name)) return;
     let exprStart = valueStart;
     if (name === "v-for") {
-        const head = /^\s*(?:\([^)]*\)|\S+)\s+(?:in|of)\s+/.exec(
-            writer.text.slice(valueStart, valueEnd),
-        );
-        if (head === null) return;
-        exprStart = valueStart + head[0].length;
+        const head = vForHeadLength(writer.text.slice(valueStart, valueEnd));
+        if (head < 0) return;
+        exprStart = valueStart + head;
     }
     // An event handler is a statement list (`a(); b()`), which parentheses
     // cannot hold; every other directive is one expression.
@@ -420,6 +426,37 @@ function vueDirective(writer, name, valueStart, valueEnd) {
         valueEnd,
         handler ? "}" : ")",
     );
+}
+
+/**
+ * The length of a `v-for` value's head up to its iterable, or -1: the
+ * binding (`item`, `(item, i)`, `{ id, name }`, `([a, b], i)`), then `in` or
+ * `of`. A bracketed binding is matched to its closing bracket, so a
+ * destructuring pattern with commas or nested brackets is one head.
+ */
+function vForHeadLength(value) {
+    const start = value.length - value.trimStart().length;
+    let end = start;
+    const open = value[start];
+    if (open === "(" || open === "{" || open === "[") {
+        const pairs = { "(": ")", "{": "}", "[": "]" };
+        const stack = [];
+        for (end = start; end < value.length; end++) {
+            if (value[end] in pairs) stack.push(pairs[value[end]]);
+            else if (
+                value[end] === stack.at(-1) &&
+                stack.pop() &&
+                stack.length === 0
+            )
+                break;
+        }
+        end++;
+    } else {
+        while (end < value.length && !/\s/.test(value[end])) end++;
+    }
+    const keyword = /\s+(?:in|of)\s+/y;
+    keyword.lastIndex = end;
+    return end > start && keyword.test(value) ? keyword.lastIndex : -1;
 }
 
 /**

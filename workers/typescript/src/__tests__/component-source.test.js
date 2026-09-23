@@ -198,7 +198,7 @@ describe("Vue templates", () => {
                 source.indexOf("<user-card"),
                 source.indexOf("<user-card") + 10,
             ),
-        ).toBe(";UserCard ");
+        ).toBe(";UserCard;");
         expect(virtual).toContain(";RouterLink");
         expect(virtual).not.toContain("div");
     });
@@ -433,5 +433,22 @@ describe("a comparison inside a text expression", () => {
 
         expect(virtual).toContain("let a = 1, b = 2;");
         expect(virtual).toContain("{a}");
+    });
+});
+
+describe("follow-up: component reader minors", () => {
+    it("keeps the iterable of a v-for that destructures its item", () => {
+        const { virtual } = vue(
+            '<li v-for="{ id, name } in items">{{ name }}</li><li v-for="([a, b], i) of pairs">x</li>',
+        );
+        expect(virtual).toContain(";(items)");
+        expect(virtual).toContain(";(pairs)");
+    });
+
+    it("ends a component tag's reference before an expression on the same line", () => {
+        const { virtual } = svelte("<Card {value} title={t} />\n<Nav.Item on:click={go}/>");
+        const file = ts.createSourceFile("x.ts", virtual, ts.ScriptTarget.Latest, false, ts.ScriptKind.TS);
+        expect(file.parseDiagnostics).toEqual([]);
+        expect(virtual).toContain(";Card;");
     });
 });
