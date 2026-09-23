@@ -78,13 +78,16 @@ export function toVirtualSource(text, dialect) {
 }
 
 /**
- * The `Astro` global as Astro's own tooling gives it to a component: `props`
- * typed by the component's `Props`, when its frontmatter declares one, and
- * every other member left open. The shared `astro/client` declaration types
- * `props` as a loose record, so a field read from it took the type of its
+ * The `Astro` global as Astro's own tooling gives it to a component: its
+ * `AstroGlobal`, with `props` typed by the component's `Props` when its
+ * frontmatter declares one. The shared `astro/client` declaration leaves
+ * `props` a loose record, so a field read from it took the type of its
  * destructuring default (`params = {}` became `{}`) and code Astro accepts
  * reported type errors. Appended after the component's own text, which it
  * therefore moves nowhere, and module-scoped, so it shadows that global.
+ * Where Astro is not installed the import resolves to nothing and `Astro` is
+ * untyped, as it was; what the appended text reports lies outside every
+ * script range, so it is never kept.
  */
 function astroGlobal(text, scripts) {
     const declaresProps = scripts.some(([from, to]) =>
@@ -92,8 +95,10 @@ function astroGlobal(text, scripts) {
             text.slice(from, to),
         ),
     );
-    const props = declaresProps ? "Props" : "Record<string, any>";
-    return `\nexport {};\ndeclare const Astro: { readonly props: ${props}; readonly [member: string]: any };\n`;
+    const global = declaresProps
+        ? 'import("astro").AstroGlobal<Props>'
+        : 'import("astro").AstroGlobal';
+    return `\nexport {};\ndeclare const Astro: ${global};\n`;
 }
 
 /**

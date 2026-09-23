@@ -103,6 +103,8 @@ final class ComponentWorkerTest extends KnossosTestCase
         // `Astro.props` is the component's Props, as Astro types it: its
         // fields are not typed from their destructuring defaults.
         self::assertSame([], $scan->diagnosticCodes('src/components/Pager.astro'));
+        // `Astro` itself is the framework's own global, which helpers take.
+        self::assertSame([], $scan->diagnosticCodes('src/pages/detail.astro'));
     }
 
     /**

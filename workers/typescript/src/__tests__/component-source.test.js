@@ -17,7 +17,7 @@ function expectInvariants(source, dialect) {
     const virtual = toVirtualSource(source, dialect);
     if (dialect === "astro")
         expect(virtual.text.slice(source.length)).toMatch(
-            /^\nexport \{\};\ndeclare const Astro: \{ readonly props: /,
+            /^\nexport \{\};\ndeclare const Astro: import\("astro"\)\.AstroGlobal/,
         );
     else expect(virtual.text.length).toBe(source.length);
     for (let i = 0; i < source.length; i++) {

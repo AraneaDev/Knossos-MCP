@@ -1,0 +1,9 @@
+---
+import type { AstroGlobal } from "astro";
+
+function resolve(astro: AstroGlobal): string {
+  return astro.params.id ?? "";
+}
+const id = resolve(Astro);
+---
+<p>{id}</p>
