@@ -37,6 +37,20 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
 - A template name that resolves to nothing (an Options API method reached through the
   component instance) is listed in the module's `unresolved_member_calls`, so a method by that
   name is only possibly dead.
+- A Vue Options API component (`export default { … }`, `defineComponent({ … })`): the hooks
+  Vue, vue-router, vue-meta and Nuxt call (`mounted`, `data`, `beforeRouteEnter`,
+  `metaInfo`...), watchers and prop `default`/`validator` factories are marked as called
+  by the runtime, and a method or computed property the component names through `this.x`, its
+  template or a watcher string gets a reference.
+- In a Vue project an extensionless import (`./components/Card`) that resolves to nothing
+  else resolves to `Card.vue`, as webpack and Vue CLI do.
+- Module aliases a bundler declares in `vite.config.*`, `webpack.config.*`, `webpack.mix.js`,
+  `vue.config.js` or `svelte.config.*` (including SvelteKit's `$lib`) apply when no tsconfig
+  `paths` maps the same name. Only targets that can be read without running the config
+  count: a string, `path.join|resolve(__dirname, …)`, or
+  `fileURLToPath(new URL('./x', import.meta.url))`.
+- webpack's `require.context('./dir', recursive, /pattern/)` imports every discovered file
+  it matches.
 - SvelteKit route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`) and Astro pages
   (`src/pages/**/*.astro`) are entry points.
 - A component that cannot be delimited, or whose script is `lang="tsx"` or `lang="jsx"`, keeps
