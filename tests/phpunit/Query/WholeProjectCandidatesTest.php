@@ -47,6 +47,10 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         $repository->completeScan($project, $ids['scan']);
 
         $result = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 100, maxNodes: 1);
+        // The node bound limits the hub ranking, not the candidates, and the
+        // summary says which.
+        self::assertStringContainsString('so hubs and hotspots beyond that bound are not reported', $result->summary);
+        self::assertStringNotContainsString('candidate search ran out of time', $result->summary);
 
         $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $result->data['dead_code_candidates']);
         self::assertContains('zzz/late.ts#unused', $names);
@@ -109,19 +113,56 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         $repository->completeScan($ids['project'], $ids['scan']);
         $time = 0;
         // Every reading of the clock moves it 2 ms on, so a 1 ms budget runs
-        // out before the first stage after the unreferenced query.
+        // out before the first query.
         $queries = new ArchitectureQueryService($pdo, function () use (&$time): int {
             $time += 2_000_000;
 
             return $time;
         });
 
-        $data = $queries->architectureHealth($ids['project'], limit: 100, candidateTimeoutMs: 1)->data;
+        $result = $queries->architectureHealth($ids['project'], limit: 100, candidateTimeoutMs: 1);
+        $data = $result->data;
+
+        // The summary an agent reads first says the list is partial.
+        self::assertStringContainsString('The candidate search ran out of time, so the candidate list is partial.', $result->summary);
 
         self::assertTrue($data['bounds']['candidates_truncated']);
         self::assertSame(['time_limit'], $data['bounds']['candidate_truncation_reasons']);
         self::assertSame(1, $data['bounds']['candidate_timeout_ms']);
         self::assertSame(count($data['dead_code_candidates']), $data['bounds']['candidates_total']);
+    }
+
+    /**
+     * A budget that runs out between chunks keeps the chunks already
+     * classified: the reader gets a partial list that says it is partial.
+     */
+    public function testABudgetSpentMidwayKeepsWhatWasClassified(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $pdo->beginTransaction();
+        for ($index = 0; $index < 700; ++$index) {
+            $name = sprintf('src/f.ts#unused%03d', $index);
+            $repository->saveNode(StableId::symbol($project, 'ts', 'function', $name), $project, 'ts', 'function', $name, sprintf('unused%03d', $index), null, $ids['file'], 1, 2, 'ast', 'certain', [], 'ts:file:src/f.ts', $ids['scan']);
+        }
+        $pdo->commit();
+        $repository->completeScan($project, $ids['scan']);
+        $time = 0;
+        // 2 ms per reading of the clock against a 7 ms budget: the checks
+        // before the two queries and before the first chunk pass, and the one
+        // before the second chunk of 500 fails.
+        $queries = new ArchitectureQueryService($pdo, function () use (&$time): int {
+            $time += 2_000_000;
+
+            return $time;
+        });
+
+        $data = $queries->architectureHealth($project, limit: 100, candidateTimeoutMs: 7)->data;
+
+        self::assertTrue($data['bounds']['candidates_truncated']);
+        self::assertGreaterThanOrEqual(400, $data['bounds']['candidates_total']);
+        self::assertLessThan(700, $data['bounds']['candidates_total']);
+        self::assertCount(100, $data['dead_code_candidates']);
     }
 
     public function testTheCandidateBudgetRejectsValuesOutsideItsRange(): void
@@ -136,16 +177,37 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         }
     }
 
-    /** A large graph's candidates are found inside the default budget. */
-    public function testFiftyThousandNodesFitTheDefaultBudget(): void
+    /**
+     * A large graph whose nodes are nearly all candidates, found inside the
+     * default budget.
+     *
+     * The worst case is many unreferenced containers with members: each one
+     * asks whether a member is reached from outside it. The store has no
+     * planner statistics, as a freshly scanned one does not, so the queries
+     * must choose their indexes without them.
+     */
+    public function testTwentyFiveThousandContainersWithMembersFitTheDefaultBudget(): void
     {
-        [$pdo, $projectId] = $this->seedGraphWithEdges(50_000);
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $pdo->beginTransaction();
+        for ($index = 0; $index < 25_000; ++$index) {
+            $class = sprintf('App\\Unused%05d', $index);
+            $classId = StableId::symbol($project, 'php', 'class', $class);
+            $methodId = StableId::symbol($project, 'php', 'method', $class . '::run');
+            $repository->saveNode($classId, $project, 'php', 'class', $class, sprintf('Unused%05d', $index), null, $ids['file'], 1, 9, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+            $repository->saveNode($methodId, $project, 'php', 'method', $class . '::run', 'run', null, $ids['file'], 2, 8, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+            $repository->saveEdge(StableId::edge($project, 'contains', $classId, $methodId, (string) $index), $project, 'contains', $classId, $methodId, $ids['file'], 2, 2, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $pdo->commit();
+        $repository->completeScan($project, $ids['scan']);
 
         $started = hrtime(true);
-        $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 10)->data;
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 10)->data;
         $elapsedMs = (hrtime(true) - $started) / 1_000_000;
 
         self::assertFalse($data['bounds']['candidates_truncated']);
+        self::assertGreaterThan(50_000, $data['bounds']['candidates_total']);
         self::assertLessThan(5_000, $elapsedMs);
     }
 }

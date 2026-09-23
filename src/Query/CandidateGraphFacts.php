@@ -63,14 +63,11 @@ final class CandidateGraphFacts
         if ($prefix === '') {
             return true;
         }
+        // A byte of 0xFF never occurs in UTF-8, which every canonical name
+        // is, so raising the last byte always gives a valid bound.
         if (!array_key_exists($prefix, $this->prefixes)) {
-            $last = ord($prefix[strlen($prefix) - 1]);
-            $statement = $last === 0xFF
-                ? $this->pdo->prepare('SELECT 1 FROM nodes WHERE project_id = ? AND canonical_name >= ? AND substr(canonical_name, 1, ?) = ? LIMIT 1')
-                : $this->pdo->prepare('SELECT 1 FROM nodes WHERE project_id = ? AND canonical_name >= ? AND canonical_name < ? LIMIT 1');
-            $statement->execute($last === 0xFF
-                ? [$this->projectId, $prefix, strlen($prefix), $prefix]
-                : [$this->projectId, $prefix, substr($prefix, 0, -1) . chr($last + 1)]);
+            $statement = $this->pdo->prepare('SELECT 1 FROM nodes WHERE project_id = ? AND canonical_name >= ? AND canonical_name < ? LIMIT 1');
+            $statement->execute([$this->projectId, $prefix, substr($prefix, 0, -1) . chr(ord($prefix[strlen($prefix) - 1]) + 1)]);
             $this->prefixes[$prefix] = $statement->fetchColumn() !== false;
         }
 
@@ -95,25 +92,43 @@ final class CandidateGraphFacts
             $this->countOutbound($chunk);
         }
 
-        return array_intersect_key($this->degrees, array_flip($ids));
+        $degrees = [];
+        foreach ($ids as $id) {
+            $degrees[$id] = $this->degrees[$id];
+        }
+
+        return $degrees;
     }
 
     /** Inbound edges of the selected kinds at or above the floor. */
     public function inDegree(string $id): int
     {
-        return $this->degrees([$id])[$id]['in_degree'];
+        return $this->degreesOf($id)['in_degree'];
     }
 
     /** Inbound `extends` and `implements` edges, a subset of the in-degree. */
     public function inheritanceInDegree(string $id): int
     {
-        return $this->degrees([$id])[$id]['inheritance_in_degree'];
+        return $this->degreesOf($id)['inheritance_in_degree'];
     }
 
     /** Outbound edges of the selected kinds at or above the floor. */
     public function outDegree(string $id): int
     {
-        return $this->degrees([$id])[$id]['out_degree'];
+        return $this->degreesOf($id)['out_degree'];
+    }
+
+    /**
+     * One node's degrees, from the memo when a batch already loaded them.
+     *
+     * Read directly rather than through degrees(), whose result is built per
+     * call: asked once per candidate, that made a large project quadratic.
+     *
+     * @return array{in_degree: int, inheritance_in_degree: int, out_degree: int}
+     */
+    private function degreesOf(string $id): array
+    {
+        return $this->degrees[$id] ?? $this->degrees([$id])[$id];
     }
 
     /**

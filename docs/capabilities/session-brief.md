@@ -241,8 +241,8 @@ against this repository's own graph it produced `assertSame`,
 assertion helper, an SPL class, two PHP built-ins, and one real component.
 
 The full `architecture_health` report is not what produces this. That call
-also computes hotspots, detects cycles and reconciles dead-code candidates
-before it can hand back a hub list, which on this repository's graph costs
+also computes hotspots, detects cycles and finds dead-code candidates across
+the whole project before it can hand back a hub list, which on this repository's graph costs
 about 0.4s against 0.03s for the ranking alone. This runs on every session
 start behind a hook that bounds itself at three seconds, so the brief asks
 for the ranking and nothing else.

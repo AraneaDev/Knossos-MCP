@@ -52,7 +52,7 @@ final readonly class DeadCodeCandidates extends AbstractArchitectureQueryService
                 $found['truncated'] = true;
                 break;
             }
-            $found = $this->classifyChunk($projectId, $chunk, $facts, $analysis, $edgeKinds, $minConfidenceRank, $includeTests, $found);
+            $this->classifyChunk($projectId, $chunk, $facts, $analysis, $edgeKinds, $minConfidenceRank, $includeTests, $found);
         }
 
         return $found;
@@ -61,13 +61,14 @@ final readonly class DeadCodeCandidates extends AbstractArchitectureQueryService
     /**
      * One chunk: roles and boundaries loaded, the convention-discovered set
      * counted, the rest classified and added to what was found so far.
+     * `$found` is taken by reference: returning it copied every candidate
+     * found so far once per chunk.
      *
      * @param array<string, array{0: array<string, mixed>, 1: string}> $chunk
      * @param list<string> $edgeKinds
      * @param array{candidates: list<array<string, mixed>>, rows: array<string, array<string, mixed>>, excluded: array<string, int>, convention_excluded: int, truncated: bool} $found
-     * @return array{candidates: list<array<string, mixed>>, rows: array<string, array<string, mixed>>, excluded: array<string, int>, convention_excluded: int, truncated: bool}
      */
-    private function classifyChunk(string $projectId, array $chunk, CandidateGraphFacts $facts, DeadCodeAnalysis $analysis, array $edgeKinds, int $minConfidenceRank, bool $includeTests, array $found): array
+    private function classifyChunk(string $projectId, array $chunk, CandidateGraphFacts $facts, DeadCodeAnalysis $analysis, array $edgeKinds, int $minConfidenceRank, bool $includeTests, array &$found): void
     {
         $ids = array_map('strval', array_keys($chunk));
         $roles = $this->roles($ids);
@@ -100,8 +101,6 @@ final readonly class DeadCodeCandidates extends AbstractArchitectureQueryService
         foreach ($classified['excluded'] as $reason => $count) {
             $found['excluded'][$reason] = ($found['excluded'][$reason] ?? 0) + $count;
         }
-
-        return $found;
     }
 
     /**

@@ -401,7 +401,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         return new ResultEnvelope(
             $projectId,
             $project['active_scan_id'],
-            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons),
+            self::healthSummary(count($hubs), count($hotspots), count($deadCandidates), $testOnlyCandidates, $truncationReasons, $found['truncated']),
             [
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
@@ -587,9 +587,13 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * sits past the cut and a tally taken from the slice reads as zero while
      * the full list still has some.
      *
+     * The hub walk's truncation and the candidate search's are reported
+     * apart: the node bound limits the ranking only, and a candidate search
+     * that ran out of time must not read as a complete list.
+     *
      * @param list<string> $truncationReasons
      */
-    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons): string
+    private static function healthSummary(int $hubs, int $hotspots, int $deadCandidates, int $testOnlyCandidates, array $truncationReasons, bool $candidatesTruncated): string
     {
         $summary = sprintf(
             'Ranked %d hubs, %d static hotspots, and %d unreferenced-code candidates, %d of them reached only by tests.',
@@ -599,7 +603,10 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $testOnlyCandidates,
         );
         if ($truncationReasons !== []) {
-            $summary .= sprintf(' The ranking was truncated (%s), so components beyond that bound are not reported.', implode(', ', $truncationReasons));
+            $summary .= sprintf(' The ranking was truncated (%s), so hubs and hotspots beyond that bound are not reported.', implode(', ', $truncationReasons));
+        }
+        if ($candidatesTruncated) {
+            $summary .= ' The candidate search ran out of time, so the candidate list is partial.';
         }
 
         return $summary;
@@ -618,9 +625,9 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      * with its own members and which therefore ranks nothing.
      *
      * What it does not share is the rest of that method. `architecture_health`
-     * also computes hotspots, runs a full cycle detection, and reconciles
-     * dead-code candidates, and it pays for all three before it can hand back
-     * hubs. Measured against this repository's own graph (6,058 components,
+     * also computes hotspots, runs a full cycle detection, and finds dead-code
+     * candidates across the whole project, and it pays for all three before it
+     * can hand back hubs. Measured against this repository's own graph (6,058 components,
      * 35,162 relationships) that is around 0.4s, against roughly 0.05s here.
      * The session brief is billed on every session start, resume and compact,
      * behind a hook that bounds itself at three seconds, so the whole report is

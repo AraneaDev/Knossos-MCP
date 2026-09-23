@@ -572,15 +572,20 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $testRole = $this->pdo->quote(ReportableComponent::TEST_ROLE);
         foreach (array_chunk($containerIds, 500) as $chunk) {
             $containers = implode(',', array_fill(0, count($chunk), '?'));
+            // The join order and the indexes are fixed (`CROSS JOIN` keeps
+            // `members` outside): without planner statistics, which a freshly
+            // scanned store has none of, SQLite put the edge table outside and
+            // walked every edge of the project for each member, so a project
+            // of 25,000 containers took half a second per chunk.
             $statement = $this->pdo->prepare(
                 'WITH RECURSIVE members(container_id, member_id) AS (' .
-                'SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = \'contains\' AND source_id IN (' . $containers . ') ' .
+                'SELECT source_id, target_id FROM edges INDEXED BY edges_project_source_idx WHERE project_id = ? AND kind = \'contains\' AND source_id IN (' . $containers . ') ' .
                 'UNION ' .
-                'SELECT members.container_id, child.target_id FROM members JOIN edges child ON child.project_id = ? AND child.kind = \'contains\' AND child.source_id = members.member_id' .
+                'SELECT members.container_id, child.target_id FROM members CROSS JOIN edges child INDEXED BY edges_project_source_idx ON child.project_id = ? AND child.kind = \'contains\' AND child.source_id = members.member_id' .
                 ') ' .
                 'SELECT members.container_id, COUNT(*) AS any_reference, ' .
                 'MAX(CASE WHEN NOT EXISTS (SELECT 1 FROM classifications c WHERE c.node_id = usage.source_id AND c.role = ' . $testRole . ') THEN 1 ELSE 0 END) AS production_reference ' .
-                'FROM members JOIN edges usage ON usage.project_id = ? AND usage.target_id = members.member_id ' .
+                'FROM members CROSS JOIN edges usage INDEXED BY edges_project_target_idx ON usage.project_id = ? AND usage.target_id = members.member_id ' .
                 sprintf('AND usage.kind IN (%s) ', $kinds) .
                 "AND CASE usage.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
                 'WHERE usage.source_id <> members.container_id ' .

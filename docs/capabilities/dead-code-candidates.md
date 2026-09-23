@@ -68,8 +68,8 @@ auditable rather than invisible.
 
 | `bounds` counter                 | Excluded                                                                                                                                                                                                                                                                                         |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `excluded_external_components`   | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.                                                                                                                                                                       |
-| `excluded_test_components`       | Nodes classified `quality.test_module`: a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`.                                                                                                                                                            |
+| `excluded_external_components`   | Hub ranking, not candidates: nodes in the examined window resolved outside the project (`external_*` kinds, `external`/`unresolved` origins), left out of hubs and hotspots. Include with `include_external`. External nodes are never candidates.                                               |
+| `excluded_test_components`       | Hub ranking, not candidates: nodes in the examined window classified `quality.test_module`, left out of hubs and hotspots. Include with `include_tests`. An unreferenced test module is counted in `excluded_convention_discovered`, since a runner discovers it by glob.                        |
 | `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.                                                                                                                                                              |
 | `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                                                                                                                                                                        |
 | `excluded_constructors`          | Engine-invoked members (constructors, destructors, magic/protocol methods) whose declaring type is referenced (see below), and components a scanner marks `runtime_invoked`: Rust's `Drop::drop`, and functions exported to a foreign host (`#[no_mangle]`, `#[wasm_bindgen]`, an `extern` ABI). |
@@ -230,8 +230,9 @@ was classified.
   short reports `candidates_truncated`, and its candidate list is partial.
   `max_nodes`, `max_edges` and `timeout_ms` bound the hub ranking, not the
   candidates.
-- `limit` caps the reported list; the counters in `bounds` describe the whole
-  examined graph, not the reported slice.
+- `limit` caps the reported list. The candidate counters in `bounds` describe the
+  whole project; `excluded_external_components` and `excluded_test_components`
+  describe the hub ranking's window. None describe only the reported slice.
 - A reference from a non-code file suppresses the candidate but contributes no
   edge, so `list_usages` will not name the HTML shell, the Compose file or the
   tool config as a dependant. The claiming file is recorded on the role as
