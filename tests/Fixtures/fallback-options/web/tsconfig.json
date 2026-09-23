@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "composite": true,
+    "noUncheckedIndexedAccess": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "rootDir": "src",
+    "baseUrl": ".",
+    "paths": { "@/*": ["src/*"] }
+  },
+  "include": ["src/**/*.ts"]
+}

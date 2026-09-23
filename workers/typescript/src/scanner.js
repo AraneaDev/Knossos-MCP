@@ -292,17 +292,7 @@ export class TypeScriptScanner {
             (relative) => !emitted.has(normalize(relative)),
         );
         if (remaining.length > 0) {
-            // Whatever no config's program emitted, owned or not.
-            request.owner = undefined;
-            request.owners = new Map();
-            const parsed = fallbackConfig(root, remaining);
-            tally(
-                this.#scanProgram(
-                    `${root}\0<fallback>`,
-                    programConfig(request, root, parsed),
-                    request,
-                ),
-            );
+            this.#scanFallback(root, remaining, parsedConfigs, request, tally);
         }
 
         // Backstop: the PHP side requires exactly one contribution per requested
@@ -336,6 +326,38 @@ export class TypeScriptScanner {
             programs_reused: programsReused,
             input_hashes: reads.toResult(),
         };
+    }
+
+    /**
+     * Whatever no config's program emitted, owned or not, read under the
+     * options of the config beside it: a package's tests are often outside
+     * its tsconfig's `include`, and its test runner still resolves them
+     * through that package's aliases and paths.
+     */
+    #scanFallback(root, remaining, parsedConfigs, request, tally) {
+        request.owner = undefined;
+        request.owners = new Map();
+        for (const [directory, group] of fallbackGroups(
+            root,
+            remaining,
+            parsedConfigs,
+        )) {
+            tally(
+                this.#scanProgram(
+                    `${directory}\0<fallback>`,
+                    programConfig(
+                        request,
+                        directory,
+                        fallbackConfig(
+                            root,
+                            group.files,
+                            group.parsed?.options,
+                        ),
+                    ),
+                    request,
+                ),
+            );
+        }
     }
 
     /**
@@ -4053,17 +4075,85 @@ function configOwners(root, parsedConfigs) {
 }
 
 /** The program for requested files no config's program emitted. */
-function fallbackConfig(root, remaining) {
+/**
+ * Files no config's program emitted, grouped by the nearest config whose
+ * directory holds them (the project root, with no config, for the rest).
+ *
+ * @returns {Map<string, {files: string[], parsed: object | undefined}>} directory => group
+ */
+function fallbackGroups(root, remaining, parsedConfigs) {
+    const configs = parsedConfigs
+        .map(([configPath, parsed]) => ({
+            directory: path.dirname(path.join(root, configPath)),
+            parsed,
+        }))
+        .sort((a, b) => b.directory.length - a.directory.length);
+    const groups = new Map();
+    for (const relative of remaining) {
+        const absolute = path.join(root, relative);
+        const config = configs.find(({ directory }) =>
+            absolute.startsWith(directory + path.sep),
+        );
+        const directory = config?.directory ?? root;
+        const group = groups.get(directory) ?? {
+            files: [],
+            parsed: config?.parsed,
+        };
+        group.files.push(relative);
+        groups.set(directory, group);
+    }
+    return groups;
+}
+
+// What a file outside a config's `include` takes from it: how to resolve
+// and parse, as its test runner or bundler reads it. Not how strictly to
+// check, which the config applies to its own files only, and not its build
+// layout (`rootDir`, `composite`), which such a file would break.
+const RESOLUTION_OPTIONS = [
+    "baseUrl",
+    "paths",
+    "module",
+    "moduleResolution",
+    "moduleSuffixes",
+    "customConditions",
+    "resolvePackageJsonExports",
+    "resolvePackageJsonImports",
+    "resolveJsonModule",
+    "allowImportingTsExtensions",
+    "allowArbitraryExtensions",
+    "esModuleInterop",
+    "allowSyntheticDefaultImports",
+    "jsx",
+    "jsxFactory",
+    "jsxFragmentFactory",
+    "jsxImportSource",
+    "lib",
+    "target",
+    "types",
+    "typeRoots",
+    "experimentalDecorators",
+    "emitDecoratorMetadata",
+    "useDefineForClassFields",
+    "verbatimModuleSyntax",
+];
+
+const FALLBACK_OPTIONS = {
+    allowJs: true,
+    checkJs: false,
+    noEmit: true,
+    target: ts.ScriptTarget.Latest,
+    module: ts.ModuleKind.ESNext,
+    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    jsx: ts.JsxEmit.Preserve,
+};
+
+function fallbackConfig(root, remaining, configOptions) {
+    const inherited = {};
+    for (const option of RESOLUTION_OPTIONS)
+        if (configOptions?.[option] !== undefined)
+            inherited[option] = configOptions[option];
     return {
-        options: {
-            allowJs: true,
-            checkJs: false,
-            noEmit: true,
-            target: ts.ScriptTarget.Latest,
-            module: ts.ModuleKind.ESNext,
-            moduleResolution: ts.ModuleResolutionKind.Bundler,
-            jsx: ts.JsxEmit.Preserve,
-        },
+        options: { ...FALLBACK_OPTIONS, ...inherited },
         // An extensionless script, or one whose extension is not in lower
         // case, only ever reaches the fallback program: no tsconfig `include`
         // matches either name.

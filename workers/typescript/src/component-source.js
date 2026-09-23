@@ -101,6 +101,17 @@ function routeProps(fileName) {
 }
 
 /**
+ * The type parameters a script tag declares: `generics="T"` in Svelte,
+ * `generic="T"` in Vue.
+ */
+function scriptGenerics(attributes, dialect) {
+    const parameters = attributes.get(
+        dialect === "vue" ? "generic" : "generics",
+    );
+    return typeof parameters === "string" ? [parameters] : [];
+}
+
+/**
  * A generic component's type parameters, which its script tag declares in an
  * attribute (`generics="T extends { id: number }"`) where the compiler never
  * sees them, so every use of `T` was a name that does not exist. Each becomes
@@ -278,11 +289,7 @@ function scanBlocks(text, dialect) {
                 typed = true;
             if (executableScript(attributes))
                 scripts.push([contentStart, closeTag]);
-            // `<script lang="ts" generics="T">` (Svelte), `generic` (Vue).
-            const parameters = attributes.get(
-                dialect === "vue" ? "generic" : "generics",
-            );
-            if (typeof parameters === "string") generics.push(parameters);
+            generics.push(...scriptGenerics(attributes, dialect));
         } else if (block === "template") {
             markup.push([contentStart, closeTag]);
         }
