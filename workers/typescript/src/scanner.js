@@ -1271,20 +1271,32 @@ class TypeScriptLanguageFactCollector {
             return normalize(path.resolve(here, specifier));
         const options = this.project.options ?? {};
         const base = options.pathsBasePath ?? options.baseUrl ?? this.root;
+        // An exact key wins; otherwise the longest matching prefix, as the
+        // compiler picks among `paths` patterns.
+        let best = null;
         for (const [key, targets] of Object.entries(options.paths ?? {})) {
-            const prefix = key.endsWith("*") ? key.slice(0, -1) : null;
             const target = targets[0];
             if (target === undefined) continue;
             if (key === specifier) return normalize(path.resolve(base, target));
-            if (prefix !== null && specifier.startsWith(prefix))
-                return normalize(
-                    path.resolve(
-                        base,
-                        target.replace("*", specifier.slice(prefix.length)),
-                    ),
-                );
+            const prefix = key.endsWith("*") ? key.slice(0, -1) : null;
+            if (
+                prefix !== null &&
+                specifier.startsWith(prefix) &&
+                (best === null || prefix.length > best.prefix.length)
+            )
+                best = { prefix, target };
         }
-        return null;
+        return best === null
+            ? null
+            : normalize(
+                  path.resolve(
+                      base,
+                      best.target.replace(
+                          "*",
+                          specifier.slice(best.prefix.length),
+                      ),
+                  ),
+              );
     }
 
     /**

@@ -572,3 +572,27 @@ describe("Vite's alias forms", () => {
         expect(imports).toContain("ts:module:src/util.ts");
     });
 });
+
+describe("require.context through tsconfig paths", () => {
+    it("takes the longest matching prefix, as the compiler does", () => {
+        const { contributions } = scan(
+            {
+                "tsconfig.json":
+                    '{"compilerOptions":{"allowJs":true,"baseUrl":".","paths":{"*":["vendor/*"],"~/*":["src/*"]}},"include":["src"]}',
+                "src/store.js":
+                    "const layouts = require.context('~/layouts');\nexport default layouts;\n",
+            },
+            ["src/store.js"],
+            ["tsconfig.json"],
+        );
+        const directories = edges(contributions, "imports")
+            .filter((e) => e.target.startsWith("ts:module_context:"))
+            .map(
+                (e) =>
+                    JSON.parse(e.target.slice("ts:module_context:".length))
+                        .directory,
+            );
+
+        expect(directories).toEqual(["src/layouts"]);
+    });
+});
