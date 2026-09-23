@@ -166,7 +166,8 @@ final class HealthTest extends KnossosTestCase
         });
 
         RowCountingStatement::reset();
-        $envelope = $expired->architectureHealth($projectId, timeoutMs: 1);
+        // Both budgets spent: the hub walk's and the candidate search's.
+        $envelope = $expired->architectureHealth($projectId, timeoutMs: 1, candidateTimeoutMs: 1);
 
         assertSame(true, $envelope->truncated);
         assertSame(true, in_array('time_limit', $envelope->data['bounds']['truncation_reasons'], true));
@@ -198,7 +199,7 @@ final class HealthTest extends KnossosTestCase
             return $time;
         });
 
-        $bounded = $expired->architectureHealth($ids['project'], timeoutMs: 1);
+        $bounded = $expired->architectureHealth($ids['project'], timeoutMs: 1, candidateTimeoutMs: 1);
         $whole = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project']);
 
         assertSame([], $bounded->data['hubs']);

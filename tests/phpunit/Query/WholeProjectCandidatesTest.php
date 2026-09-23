@@ -37,4 +37,69 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         }
         self::assertSame('possible', $confidence['src/a.ts#Mode::label'] ?? null);
     }
+
+    public function testADeadFunctionPastTheWindowIsReported(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $dead = StableId::symbol($project, 'ts', 'function', 'zzz/late.ts#unused');
+        $repository->saveNode($dead, $project, 'ts', 'function', 'zzz/late.ts#unused', 'unused', null, $ids['file'], 7, 9, 'ast', 'certain', [], 'ts:file:zzz/late.ts', $ids['scan']);
+        $repository->completeScan($project, $ids['scan']);
+
+        $result = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 100, maxNodes: 1);
+
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $result->data['dead_code_candidates']);
+        self::assertContains('zzz/late.ts#unused', $names);
+        // Its evidence is reported though the window never read the node.
+        self::assertContains(['component_id' => $dead, 'path' => 'src/Checkout.php', 'start_line' => 7, 'end_line' => 9], $result->evidence);
+    }
+
+    public function testConventionAndTestOnlyNodesPastTheWindowAreCounted(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $controller = StableId::symbol($project, 'php', 'class', 'Zzz\\HomeController');
+        $repository->saveNode($controller, $project, 'php', 'class', 'Zzz\\HomeController', 'HomeController', null, $ids['file'], 1, 5, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveClassification(StableId::classification($project, $controller, 'laravel.controller', 'laravel.path.v1'), $project, $controller, 'laravel.controller', 'framework_convention', 'probable', 'laravel.path.v1', $ids['file'], 1, 5, [], $ids['scan']);
+        $helper = StableId::symbol($project, 'php', 'function', 'Zzz\\onlyTested');
+        $test = StableId::symbol($project, 'php', 'class', 'Zzz\\HelperTest');
+        $repository->saveNode($helper, $project, 'php', 'function', 'Zzz\\onlyTested', 'onlyTested', null, $ids['file'], 10, 12, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveNode($test, $project, 'php', 'class', 'Zzz\\HelperTest', 'HelperTest', null, $ids['file'], 20, 30, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->saveClassification(StableId::classification($project, $test, 'quality.test_module', 'core.test.modules.v1'), $project, $test, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 20, 30, [], $ids['scan']);
+        $repository->saveEdge(StableId::edge($project, 'calls', $test, $helper, 't:1'), $project, 'calls', $test, $helper, $ids['file'], 25, 25, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($project, $ids['scan']);
+
+        $queries = new ArchitectureQueryService($pdo);
+        $data = $queries->architectureHealth($project, limit: 100, maxNodes: 1)->data;
+
+        $reachability = [];
+        foreach ($data['dead_code_candidates'] as $candidate) {
+            $reachability[$candidate['component']['canonical_name']] = $candidate['reachability'];
+        }
+        self::assertSame('test_only', $reachability['Zzz\\onlyTested'] ?? null);
+        // The controller, and the test class, whose test role is itself a
+        // convention: nothing references either, and neither is reported.
+        self::assertSame(2, $data['bounds']['excluded_convention_discovered']);
+        self::assertFalse($data['bounds']['candidates_truncated']);
+
+        // With tests counted as architecture, the test caller makes it live.
+        $included = $queries->architectureHealth($project, limit: 100, maxNodes: 1, includeTests: true)->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $included['dead_code_candidates']);
+        self::assertNotContains('Zzz\\onlyTested', $names);
+    }
+
+    public function testAProjectWithNoCandidatesReportsNone(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        // The fixture's checkout calls the invoice service; a call back makes
+        // every node referenced.
+        $repository->saveEdge(StableId::edge($project, 'calls', $ids['invoice'], $ids['checkout'], 'back:1'), $project, 'calls', $ids['invoice'], $ids['checkout'], $ids['file'], 20, 20, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($project, $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 100)->data;
+
+        self::assertSame([], $data['dead_code_candidates']);
+        self::assertFalse($data['bounds']['candidates_truncated']);
+    }
 }
