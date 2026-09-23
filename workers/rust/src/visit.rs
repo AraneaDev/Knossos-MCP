@@ -762,7 +762,7 @@ impl Walk<'_> {
     ///
     /// `enclosing` is the full `rust:<kind>:<canonical>` reference of the
     /// function or method whose block this is, exactly as `declare` returned
-    /// it wrapped in [`reference`] — its kind is already known for certain at
+    /// it wrapped in [`reference`](fn@reference) — its kind is already known for certain at
     /// the call site, unlike a call target's, so it is never guessed.
     /// `container` is the module `enclosing` itself is declared in (the same
     /// value `walk_item` was called with, never an `impl` block's type path),
@@ -1810,57 +1810,76 @@ impl Calls<'_, '_> {
     /// each piece loses a leading `"key":` or `key:`, and what remains is
     /// parsed on its own; a piece that still does not parse is searched
     /// through its bracketed groups the same way. Nothing is guessed: only
-    /// token runs that parse as Rust expressions are walked.
+    /// token runs that parse as Rust expressions are walked. The groups still
+    /// to search are kept in a worklist, so the walk is one loop rather than
+    /// two functions calling each other.
     fn visit_macro_tokens(&mut self, tokens: proc_macro2::TokenStream) {
         use syn::parse::Parser;
         let parser = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
-        if let Ok(arguments) = parser.parse2(tokens.clone()) {
-            for argument in &arguments {
-                self.visit_expr(argument);
+        let mut pending = vec![tokens];
+        while let Some(tokens) = pending.pop() {
+            if let Ok(arguments) = parser.parse2(tokens.clone()) {
+                for argument in &arguments {
+                    self.visit_expr(argument);
+                }
+                continue;
             }
-            return;
-        }
-        let mut piece: Vec<proc_macro2::TokenTree> = Vec::new();
-        for token in tokens {
-            if matches!(&token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ',') {
-                self.visit_macro_piece(std::mem::take(&mut piece));
-            } else {
-                piece.push(token);
+            for piece in top_level_pieces(tokens) {
+                match macro_piece(piece) {
+                    Ok(expression) => self.visit_expr(&expression),
+                    Err(groups) => pending.extend(groups),
+                }
             }
         }
-        self.visit_macro_piece(piece);
     }
+}
 
-    /// One comma-separated piece of a macro body; see [`Calls::visit_macro_tokens`].
-    fn visit_macro_piece(&mut self, mut piece: Vec<proc_macro2::TokenTree>) {
-        let keyed = matches!(
-            piece.as_slice(),
-            [
-                proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Ident(_),
-                proc_macro2::TokenTree::Punct(colon),
-                next,
-                ..
-            ] if colon.as_char() == ':'
-                && colon.spacing() == proc_macro2::Spacing::Alone
-                && !matches!(next, proc_macro2::TokenTree::Punct(p) if p.as_char() == ':')
-        );
-        if keyed {
-            piece.drain(..2);
-        }
-        if piece.is_empty() {
-            return;
-        }
-        let stream: proc_macro2::TokenStream = piece.iter().cloned().collect();
-        if let Ok(expression) = syn::parse2::<syn::Expr>(stream) {
-            self.visit_expr(&expression);
-            return;
-        }
-        for token in piece {
-            if let proc_macro2::TokenTree::Group(group) = token {
-                self.visit_macro_tokens(group.stream());
-            }
+/// A macro body split at its top-level commas.
+fn top_level_pieces(tokens: proc_macro2::TokenStream) -> Vec<Vec<proc_macro2::TokenTree>> {
+    let mut pieces = vec![Vec::new()];
+    for token in tokens {
+        if matches!(&token, proc_macro2::TokenTree::Punct(punct) if punct.as_char() == ',') {
+            pieces.push(Vec::new());
+        } else if let Some(piece) = pieces.last_mut() {
+            piece.push(token);
         }
     }
+    pieces
+}
+
+/// One comma-separated piece of a macro body, without a leading `"key":` or
+/// `key:`: the expression it parses as, or else the bracketed groups inside
+/// it, which may hold expressions of their own. See [`Calls::visit_macro_tokens`].
+fn macro_piece(
+    mut piece: Vec<proc_macro2::TokenTree>,
+) -> Result<syn::Expr, Vec<proc_macro2::TokenStream>> {
+    let keyed = matches!(
+        piece.as_slice(),
+        [
+            proc_macro2::TokenTree::Literal(_) | proc_macro2::TokenTree::Ident(_),
+            proc_macro2::TokenTree::Punct(colon),
+            next,
+            ..
+        ] if colon.as_char() == ':'
+            && colon.spacing() == proc_macro2::Spacing::Alone
+            && !matches!(next, proc_macro2::TokenTree::Punct(p) if p.as_char() == ':')
+    );
+    if keyed {
+        piece.drain(..2);
+    }
+    if piece.is_empty() {
+        return Err(Vec::new());
+    }
+    let stream: proc_macro2::TokenStream = piece.iter().cloned().collect();
+    syn::parse2::<syn::Expr>(stream).map_err(|_| {
+        piece
+            .into_iter()
+            .filter_map(|token| match token {
+                proc_macro2::TokenTree::Group(group) => Some(group.stream()),
+                _ => None,
+            })
+            .collect()
+    })
 }
 
 /// Whether a function is exported to a caller outside Rust: `#[no_mangle]`
