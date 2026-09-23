@@ -596,3 +596,20 @@ describe("require.context through tsconfig paths", () => {
         expect(directories).toEqual(["src/layouts"]);
     });
 });
+
+describe("an import that names a component", () => {
+    it("means the component even with a same-named .ts file beside it", () => {
+        const { contributions } = scan({
+            "src/Card.vue":
+                "<template><div/></template>\n<script>\nexport default {};\n</script>\n",
+            "src/Card.vue.ts": "export const shim = 1;\n",
+            "src/Page.vue":
+                "<template><Card /></template>\n<script>\nimport Card from './Card.vue';\nexport default { components: { Card } };\n</script>\n",
+        });
+        const imports = edges(contributions, "imports")
+            .filter((e) => e.source === "ts:module:src/Page.vue")
+            .map((e) => e.target);
+
+        expect(imports).toEqual(["ts:module:src/Card.vue"]);
+    });
+});

@@ -2664,13 +2664,19 @@ function createRestrictedProgram(
         allowedCompilerPath(root, file)
             ? readRecorded(root, file, reads, maxFileBytes)
             : undefined;
-    // Only in a Vue project: the rule is its bundlers', and a retry probes
-    // paths that are then recorded.
-    if (parsed.vueProject === true)
-        host.resolveModuleNameLiterals = componentExtensionResolver(
-            host,
-            options,
-        );
+    const cache = ts.createModuleResolutionCache(
+        host.getCurrentDirectory(),
+        host.getCanonicalFileName,
+        options,
+    );
+    // Shared with the compiler's own lookups (type references, package.json
+    // formats), so a manifest is read once, not once per cache.
+    host.getModuleResolutionCache = () => cache;
+    host.resolveModuleNameLiterals = componentResolver(
+        host,
+        cache,
+        parsed.vueProject === true,
+    );
     return ts.createProgram({
         rootNames: parsed.fileNames,
         options,
@@ -2681,21 +2687,19 @@ function createRestrictedProgram(
 }
 
 /**
- * Module resolution as the compiler does it, plus the `.vue` extension for a
- * path that resolves to nothing without it.
+ * Module resolution as the compiler does it, with two corrections for
+ * components.
  *
- * webpack and Vue CLI list `.vue` in `resolve.extensions`, so Vue projects
- * import `./components/Card` and mean `Card.vue`, which the compiler never
- * tries. Every component imported that way read as unused. Only a relative
- * or path-mapped specifier with no extension is retried, and only when it
- * resolved to nothing.
+ * An import that names a component (`./Card.vue`) means the component even
+ * when a real `Card.vue.ts` sits beside it, which the compiler would try
+ * first. And in a Vue project (`vueProject`, from the manifests), a relative
+ * or path-mapped specifier with no extension that resolves to nothing
+ * resolves to `.vue`, as webpack and Vue CLI list it in
+ * `resolve.extensions`; the retry probes paths that are then recorded, so it
+ * stays off elsewhere. The resolution mode follows a project reference's own
+ * options, as the compiler's default loader does.
  */
-function componentExtensionResolver(host, options) {
-    const cache = ts.createModuleResolutionCache(
-        host.getCurrentDirectory(),
-        host.getCanonicalFileName,
-        options,
-    );
+function componentResolver(host, cache, vueProject) {
     return (
         literals,
         containingFile,
@@ -2715,11 +2719,16 @@ function componentExtensionResolver(host, options) {
                     ts.getModeForUsageLocation(
                         containingSourceFile,
                         literal,
-                        compilerOptions,
+                        redirectedReference?.commandLine.options ??
+                            compilerOptions,
                     ),
                 );
-            const resolved = resolve(literal.text);
+            const resolved = componentTarget(
+                literal.text,
+                resolve(literal.text),
+            );
             if (
+                !vueProject ||
                 resolved.resolvedModule !== undefined ||
                 !literal.text.includes("/") ||
                 path.posix.extname(literal.text) !== ""
@@ -2730,6 +2739,33 @@ function componentExtensionResolver(host, options) {
                 ? component
                 : resolved;
         });
+}
+
+/**
+ * A resolution of a component specifier that landed on a real `X.vue.ts`
+ * beside `X.vue`, redirected to the component's own alias; anything else as
+ * it is.
+ */
+function componentTarget(specifier, resolved) {
+    const dialect = componentDialect(specifier);
+    const file = resolved.resolvedModule?.resolvedFileName;
+    if (dialect === null || file === undefined) return resolved;
+    const suffix = componentAliasSuffix(dialect);
+    const component = file.slice(0, -suffix.length);
+    if (
+        !file.endsWith(suffix) ||
+        componentDialect(component) !== dialect ||
+        !isRegularFile(file) ||
+        !isRegularFile(component)
+    )
+        return resolved;
+    return {
+        ...resolved,
+        resolvedModule: {
+            ...resolved.resolvedModule,
+            resolvedFileName: `${component}${COMPONENT_ALIAS_MARK}${suffix}`,
+        },
+    };
 }
 
 function diagnosticsForProgram(program, root, maxFileBytes) {
