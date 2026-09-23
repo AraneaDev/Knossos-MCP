@@ -4192,7 +4192,9 @@ function fallbackGroups(root, remaining, parsedConfigs) {
 // layout (`rootDir`, `composite`), which such a file would break. Nor its
 // `module`/`moduleResolution`: a test runner resolves as a bundler does,
 // and a legacy `node` resolution loses the package `imports` field and, under
-// the bundled compiler, the `@types` a test reads (`Buffer`, `process`).
+// the bundled compiler, the `@types` a test reads (`Buffer`, `process`). Nor
+// the environment (`lib`, `target`, `types`): a test runs in its runner's,
+// not in the one the config describes for its own files.
 const RESOLUTION_OPTIONS = [
     "baseUrl",
     "paths",
@@ -4209,14 +4211,9 @@ const RESOLUTION_OPTIONS = [
     "jsxFactory",
     "jsxFragmentFactory",
     "jsxImportSource",
-    "lib",
-    "target",
-    "types",
-    "typeRoots",
     "experimentalDecorators",
     "emitDecoratorMetadata",
     "useDefineForClassFields",
-    "verbatimModuleSyntax",
 ];
 
 const FALLBACK_OPTIONS = {
