@@ -734,15 +734,8 @@ class TypeScriptLanguageFactCollector {
                     this.markRuntimeInvoked(factory);
             }
         }
-        for (const watcher of groups.get("watch") ?? []) {
-            this.markRuntimeInvoked(watcher);
-            // `watch: { total: 'recount' }` names its handler method.
-            if (
-                ts.isPropertyAssignment(watcher) &&
-                ts.isStringLiteralLike(watcher.initializer)
-            )
-                used.add(watcher.initializer.text);
-        }
+        for (const watcher of groups.get("watch") ?? [])
+            this.vueWatcher(watcher, used);
         for (const member of [
             ...(groups.get("methods") ?? []),
             ...(groups.get("computed") ?? []),
@@ -750,6 +743,28 @@ class TypeScriptLanguageFactCollector {
             const id = this.declaredIds.get(member);
             if (id !== undefined && used.has(memberName(member)))
                 this.addEdge("references", this.moduleId, id, member);
+        }
+    }
+
+    /**
+     * A Vue watcher, which Vue calls: `n(value) {}`, `total: 'recount'` (a
+     * method named by string), or `deep: { handler() {} }` /
+     * `deep: { handler: 'recount' }`.
+     */
+    vueWatcher(watcher, used) {
+        this.markRuntimeInvoked(watcher);
+        if (!ts.isPropertyAssignment(watcher)) return;
+        const value = watcher.initializer;
+        if (ts.isStringLiteralLike(value)) used.add(value.text);
+        if (!ts.isObjectLiteralExpression(value)) return;
+        for (const option of value.properties) {
+            if (memberName(option) !== "handler") continue;
+            this.markRuntimeInvoked(option);
+            if (
+                ts.isPropertyAssignment(option) &&
+                ts.isStringLiteralLike(option.initializer)
+            )
+                used.add(option.initializer.text);
         }
     }
 

@@ -1,0 +1,24 @@
+---
+import Card from '~/components/Card.astro';
+import { title } from '../lib/site';
+const items = [1, 2];
+const json = '[]';
+if (!items.length) return Astro.redirect('/');
+---
+<html>
+  <head><title>{title()}</title></head>
+  <body>
+    <a title="{not}" href={title()}>x</a>
+    <ul>{items.map((i) => <li><Card heading={String(i)} /></li>)}</ul>
+    <Card heading="x" {...{}} />
+    <script id="data" type="application/json" is:inline set:html={json} />
+    <script is:inline>window.x = 1;</script>
+    <script type="application/ld+json">{"a": 1}</script>
+    <script>
+      import { boot } from '../lib/site';
+      const items = 1;
+      boot();
+    </script>
+    <style>body { margin: 0; }</style>
+  </body>
+</html>
