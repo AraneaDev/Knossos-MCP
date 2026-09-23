@@ -3,8 +3,11 @@ import ts from "typescript";
 import {
     addFrameworkRoute,
     callName,
+    declarationModifiers,
+    isFunctionBinding,
     propertyNameText,
     reference,
+    unwrapExpression,
 } from "./typescript-fact-utils.js";
 
 /** Adds framework-convention facts without owning or traversing the AST. */
@@ -54,8 +57,8 @@ export class TypeScriptApplicationEnricher {
             ? node
             : ts.isVariableDeclaration(node) &&
                 node.initializer &&
-                isFunctionLike(node.initializer)
-              ? node.initializer
+                isFunctionLike(unwrapExpression(node.initializer))
+              ? unwrapExpression(node.initializer)
               : null;
         if (functionNode && hasUseDirective(functionNode, "use server"))
             roles.push("nextjs.server_action");
@@ -86,6 +89,10 @@ export class TypeScriptApplicationEnricher {
     }
 
     variable(node) {
+        // A module-level function binding is a declaration of its own, and
+        // declaration() gives it these roles; a node here would be a second
+        // one under the same name.
+        if (isFunctionBinding(node)) return;
         if (!ts.isIdentifier(node.name) || !node.initializer) return;
         const initializer = node.initializer;
         const factory = ts.isCallExpression(initializer)
@@ -180,9 +187,8 @@ function fetchMethod(call) {
 }
 
 function hasModifier(node, kind) {
-    return (
-        ts.canHaveModifiers(node) &&
-        (ts.getModifiers(node) ?? []).some((modifier) => modifier.kind === kind)
+    return declarationModifiers(node).some(
+        (modifier) => modifier.kind === kind,
     );
 }
 

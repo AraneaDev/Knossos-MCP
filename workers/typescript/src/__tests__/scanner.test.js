@@ -556,6 +556,8 @@ describe("TypeScriptScanner.scan import type marking", () => {
 // Neither the dynamic branch nor a bare `type_only: true` merge is allowed to
 // erase the fact that a value import is also present, in EITHER parse order,
 // or `dependency_cycles` would silently drop a real runtime dependency.
+// Both imports are the module's own: an arrow bound at module level is a
+// function node, and a dynamic import inside it would be that function's edge.
 describe("TypeScriptScanner.scan merges a type-only import with a dynamic import of the same module", () => {
     it.each([
         [
@@ -563,7 +565,7 @@ describe("TypeScriptScanner.scan merges a type-only import with a dynamic import
             "src/type-then-dynamic.ts",
             [
                 "import type { Foo } from './heavy';",
-                "export const load = () => import('./heavy');",
+                "export const loaded = import('./heavy');",
                 "export type UseFoo = Foo;",
                 "",
             ].join("\n"),
@@ -572,7 +574,7 @@ describe("TypeScriptScanner.scan merges a type-only import with a dynamic import
             "dynamic import first",
             "src/dynamic-then-type.ts",
             [
-                "export const load = () => import('./heavy');",
+                "export const loaded = import('./heavy');",
                 "import type { Foo } from './heavy';",
                 "export type UseFoo = Foo;",
                 "",

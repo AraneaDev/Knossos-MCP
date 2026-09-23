@@ -22,7 +22,7 @@ final class ComponentWorkerTest extends KnossosTestCase
         $scan = $this->scanFixture('vue', ['tsconfig.json'], ['vue_projects' => ['']]);
 
         // Template usages: interpolations, multi-statement handlers, v-for iterables, kebab-case tags.
-        foreach (['src/util.ts#formatDate', 'src/App.vue#select', 'src/App.vue#track'] as $target) {
+        foreach (['src/util.ts#formatDate', 'src/App.vue#select', 'src/App.vue#track', 'src/App.vue#reset'] as $target) {
             self::assertTrue($scan->reaches('src/App.vue', $target), $target);
         }
         self::assertTrue($scan->imports('src/App.vue', 'src/components/UserCard.vue'));

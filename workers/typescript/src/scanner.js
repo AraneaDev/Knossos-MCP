@@ -5,7 +5,17 @@ import ts from "typescript";
 import { FactAccumulator } from "./fact-accumulator.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
 import { TypeScriptApplicationEnricher } from "./typescript-application-enricher.js";
-import { callName, reference } from "./typescript-fact-utils.js";
+import {
+    bindingKeyword,
+    callName,
+    declarationModifiers,
+    functionBindingOf,
+    holderOf,
+    isExpressionWrapper,
+    isFunctionBinding,
+    reference,
+    unwrapExpression,
+} from "./typescript-fact-utils.js";
 import {
     blankSource,
     componentAliasSuffix,
@@ -893,24 +903,27 @@ class TypeScriptLanguageFactCollector {
 
     /** A `returns` edge per named type a function or method declares it returns. */
     returnEdges(node, id) {
-        if (
-            (ts.isFunctionDeclaration(node) ||
+        // A function binding declares its return type on the arrow or
+        // function expression; a type on the binding itself is a function
+        // type, not a return type.
+        const returnType = isFunctionBinding(node)
+            ? unwrapExpression(node.initializer).type
+            : ts.isFunctionDeclaration(node) ||
                 ts.isMethodDeclaration(node) ||
-                ts.isMethodSignature(node)) &&
-            node.type
-        ) {
-            // `Clipboard | null` has no symbol of its own: each named member
-            // of a union is a type the function may return.
-            const returned = ts.isUnionTypeNode(node.type)
-                ? node.type.types.filter((member) =>
-                      ts.isTypeReferenceNode(member),
-                  )
-                : [node.type];
-            for (const typeNode of returned) {
-                const target = this.typeNodeReference(typeNode);
-                if (target !== null)
-                    this.addEdge("returns", id, target, typeNode);
-            }
+                ts.isMethodSignature(node)
+              ? node.type
+              : undefined;
+        if (returnType === undefined) return;
+        // `Clipboard | null` has no symbol of its own: each named member
+        // of a union is a type the function may return.
+        const returned = ts.isUnionTypeNode(returnType)
+            ? returnType.types.filter((member) =>
+                  ts.isTypeReferenceNode(member),
+              )
+            : [returnType];
+        for (const typeNode of returned) {
+            const target = this.typeNodeReference(typeNode);
+            if (target !== null) this.addEdge("returns", id, target, typeNode);
         }
     }
 
@@ -1048,6 +1061,7 @@ class TypeScriptLanguageFactCollector {
         const target = this.symbolReference(
             this.checker.getSymbolAtLocation(node.expression),
             "class",
+            true,
         );
         if (source !== null && target !== null)
             this.addEdge("constructs", source, target, node);
@@ -1111,10 +1125,13 @@ class TypeScriptLanguageFactCollector {
             ts.isPropertyAccessExpression(node.expression)
         )
             this.untypedCalls.add(node.expression.name.text);
-        const target = this.symbolReference(
-            signature?.declaration?.symbol,
-            callableKind(signature?.declaration),
-        );
+        const target =
+            this.bindingCallee(node) ??
+            this.symbolReference(
+                signature?.declaration?.symbol,
+                callableKind(signature?.declaration),
+                true,
+            );
         const source = this.currentSource();
         if (source !== null && target !== null)
             this.addEdge("calls", source, target, node);
@@ -1130,6 +1147,27 @@ class TypeScriptLanguageFactCollector {
                 "framework_convention",
             );
         this.application.call(node, source, calledName);
+    }
+
+    /**
+     * The function binding a call names, or null. A binding typed by an
+     * annotation or a cast is called through that type's signature, whose
+     * declaration is the type rather than the arrow, so the callee's own
+     * symbol is what names the node.
+     */
+    bindingCallee(node) {
+        const callee = ts.isPropertyAccessExpression(node.expression)
+            ? node.expression.name
+            : node.expression;
+        const symbol = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(callee),
+        );
+        return symbol?.declarations?.some((declaration) =>
+            isFunctionBinding(declaration),
+        )
+            ? this.symbolReference(symbol, "function", true)
+            : null;
     }
 
     /**
@@ -1159,7 +1197,7 @@ class TypeScriptLanguageFactCollector {
             moduleSymbol,
         );
         const target = exported
-            ? this.symbolReference(exported, "function")
+            ? this.symbolReference(exported, "function", true)
             : null;
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
@@ -1200,7 +1238,7 @@ class TypeScriptLanguageFactCollector {
                 moduleSymbol,
             );
             const target = exported
-                ? this.symbolReference(exported, "function")
+                ? this.symbolReference(exported, "function", true)
                 : null;
             if (source !== null && target !== null && source !== target)
                 this.addEdge("references", source, target, element);
@@ -1435,7 +1473,11 @@ class TypeScriptLanguageFactCollector {
         );
         if (!declaration) return;
 
-        const target = this.symbolReference(symbol, callableKind(declaration));
+        const target = this.symbolReference(
+            symbol,
+            callableKind(declaration),
+            true,
+        );
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
@@ -1487,13 +1529,19 @@ class TypeScriptLanguageFactCollector {
         return reference("module", relative);
     }
 
-    symbolReference(input, hint = "class") {
+    symbolReference(input, hint = "class", value = false) {
         const symbol = unalias(this.checker, input);
-        const declaration = symbol?.declarations?.find(
-            (item) =>
-                relativeInside(this.root, item.getSourceFile().fileName) !==
-                null,
-        );
+        const inProject = (item) =>
+            relativeInside(this.root, item.getSourceFile().fileName) !== null;
+        // A type and a value may share a name and so one symbol. Read as a
+        // value (called, constructed, referenced), it is the value's
+        // declaration, whichever of the two came first.
+        const declaration =
+            (value
+                ? symbol?.declarations?.find(
+                      (item) => inProject(item) && !isTypeOnlyDeclaration(item),
+                  )
+                : undefined) ?? symbol?.declarations?.find(inProject);
         if (!declaration) {
             const name = symbol?.getName();
             return name && !name.startsWith("__")
@@ -1510,11 +1558,19 @@ class TypeScriptLanguageFactCollector {
                 ? reference(`external_${hint}`, name)
                 : null;
         }
+        // A call resolves to the arrow or function expression itself; the
+        // node is the module-level binding it initialises.
+        const binding = functionBindingOf(declaration);
+        if (binding !== null)
+            return reference(
+                "function",
+                canonicalForDeclaration(binding, relative),
+            );
         // Declared in this project, but not as anything `declaration()` emits:
-        // a type parameter, an inline `{ ... }` type, a `const f = () => ...`
-        // arrow. The name built for it would match no node, and the core turns
-        // a dangling edge into an external component that is neither external
-        // nor a component.
+        // a type parameter, an inline `{ ... }` type, an arrow bound inside a
+        // function. The name built for it would match no node, and the core
+        // turns a dangling edge into an external component that is neither
+        // external nor a component.
         if (!isDeclaration(declaration)) return null;
         const kind = declarationKind(declaration, hint);
         const canonical = canonicalForDeclaration(declaration, relative);
@@ -2903,9 +2959,7 @@ function declarationDescriptor(node, sourceFile) {
     const name = declarationName(node, sourceFile);
     if (name === null) return null;
     const kind = declarationKind(node, "class");
-    const modifiers = ts.canHaveModifiers(node)
-        ? (ts.getModifiers(node) ?? [])
-        : [];
+    const modifiers = declarationModifiers(node);
     return {
         kind,
         name,
@@ -2922,6 +2976,9 @@ function declarationDescriptor(node, sourceFile) {
             static: modifiers.some(
                 (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
             ),
+            ...(isFunctionBinding(node)
+                ? { binding: bindingKeyword(node) }
+                : {}),
         },
     };
 }
@@ -2943,6 +3000,7 @@ function declarationKind(node, fallback) {
         return "method";
     if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node))
         return "property";
+    if (isFunctionBinding(node)) return "function";
     if (isObjectLiteralBinding(node)) return "variable";
     if (isContextualObjectLiteral(node)) return "object";
     return fallback;
@@ -3014,6 +3072,7 @@ function isDeclaration(node) {
         ts.isConstructorDeclaration(node) ||
         ts.isPropertyDeclaration(node) ||
         ts.isPropertySignature(node) ||
+        isFunctionBinding(node) ||
         isObjectLiteralBinding(node) ||
         isContextualObjectLiteral(node)
     );
@@ -3050,14 +3109,7 @@ function isContextualObjectLiteral(node) {
         !node.properties.some((member) => ts.isMethodDeclaration(member))
     )
         return false;
-    let current = node.parent;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    )
-        current = current.parent;
+    const current = holderOf(node);
     return !(
         current !== undefined &&
         ts.isVariableDeclaration(current) &&
@@ -3068,14 +3120,7 @@ function isContextualObjectLiteral(node) {
 // The object literal an initializer evaluates to, through parentheses, `as`
 // and `satisfies`, or null.
 function objectLiteralOf(expression) {
-    let current = expression;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    )
-        current = current.expression;
+    const current = unwrapExpression(expression);
     return current !== undefined && ts.isObjectLiteralExpression(current)
         ? current
         : null;
@@ -3086,20 +3131,21 @@ function objectLiteralOf(expression) {
 function objectLiteralContract(node) {
     if (node.type !== undefined) return node.type;
     let current = node.initializer;
-    while (
-        current !== undefined &&
-        (ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isSatisfiesExpression(current))
-    ) {
+    while (current !== undefined && isExpressionWrapper(current)) {
         if (ts.isSatisfiesExpression(current)) return current.type;
         current = current.expression;
     }
     return undefined;
 }
 
+/** A declaration that names only a type: no value is behind it. */
+function isTypeOnlyDeclaration(node) {
+    return ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node);
+}
+
 function containerDeclaration(node) {
     return (
+        isFunctionBinding(node) ||
         isObjectLiteralBinding(node) ||
         isContextualObjectLiteral(node) ||
         ts.isClassDeclaration(node) ||
@@ -3157,9 +3203,10 @@ function canonicalForDeclaration(declaration, relative) {
  * Declarations a value reference is allowed to point at: the callables and
  * types dead-code analysis reasons about. Variables, parameters, properties and
  * imports are excluded — an edge per local read would dominate the graph without
- * telling us anything about reachability. The one variable admitted is an
+ * telling us anything about reachability. The variables admitted are an
  * object-literal binding with methods, which the graph holds as a component
- * (see {@link isObjectLiteralBinding}) and which is used by being handed around.
+ * (see {@link isObjectLiteralBinding}) and which is used by being handed around,
+ * and a module-level function binding (see `isFunctionBinding`).
  */
 function referenceableDeclaration(node) {
     return (
@@ -3169,6 +3216,7 @@ function referenceableDeclaration(node) {
         ts.isInterfaceDeclaration(node) ||
         ts.isEnumDeclaration(node) ||
         ts.isTypeAliasDeclaration(node) ||
+        isFunctionBinding(node) ||
         isObjectLiteralBinding(node)
     );
 }
