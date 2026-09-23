@@ -416,13 +416,28 @@ final readonly class GraphReconciler
                     ));
                 }
 
-                $deferred = str_contains($edge->targetReference, ':method_of_return:');
+                if (str_contains($edge->targetReference, ':module_context:')) {
+                    // One edge per module the loaded directory holds, found
+                    // here because only the graph, not a worker's request,
+                    // knows every module.
+                    foreach (self::contextTargets($edge->targetReference, $nodeMap) as $targetId) {
+                        $record = $this->edgeWithEvidence($projectId, $edge, $sourceId, $targetId, $contribution->ownerKey, $fileIds);
+                        $edges[$record['id']] = $record;
+                    }
+                    continue;
+                }
+                $returned = str_contains($edge->targetReference, ':method_of_return:');
+                // A scanner marks an edge speculative when it knows the
+                // receiver's type but not whether that type declares the member
+                // (it may be a trait's or a base's): kept only when it resolves.
+                $deferred = $returned || ($edge->attributes['speculative'] ?? false) === true;
                 $reference = match (true) {
-                    $deferred => $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources),
+                    $returned => $this->returnedMemberReference($edge->targetReference, $returnTypes, $inheritanceSources),
                     str_contains($edge->targetReference, ':namespaced_function:') => self::namespacedFunctionReference($edge->targetReference, $nodeMap),
                     default => $edge->targetReference,
                 };
-                $targetId = $reference === null ? null : ($nodeMap[$reference]
+                $targetId = $reference === null ? null : (self::implementationTarget($reference, $nodeMap)
+                    ?? $nodeMap[$reference]
                     ?? $this->aliasedTypeTarget($reference, $nodeMap)
                     ?? $this->inheritedMemberTarget($reference, $nodeMap, $inheritanceSources));
                 if ($targetId === null && $deferred) {
@@ -460,26 +475,75 @@ final readonly class GraphReconciler
                     $external[$targetId] ??= $externalNode;
                 }
 
-                $evidenceKey = sprintf(
-                    '%s:%d:%d:%s',
-                    $edge->evidence->relativePath,
-                    $edge->evidence->startLine,
-                    $edge->evidence->endLine,
-                    $contribution->ownerKey,
-                );
-                $id = StableId::edge($projectId, $edge->kind, $sourceId, $targetId, $evidenceKey);
-                $edges[$id] = $this->edgeRecord(
-                    $id,
-                    $edge,
-                    $sourceId,
-                    $targetId,
-                    $contribution->ownerKey,
-                    $fileIds,
-                );
+                $record = $this->edgeWithEvidence($projectId, $edge, $sourceId, $targetId, $contribution->ownerKey, $fileIds);
+                $edges[$record['id']] = $record;
             }
         }
 
         return [$external, $edges, $warnings];
+    }
+
+    /**
+     * An edge's record, identified by its kind, ends and evidence.
+     *
+     * @param array<string, string> $fileIds
+     * @return array<string, mixed>
+     */
+    private function edgeWithEvidence(string $projectId, EdgeFact $edge, string $sourceId, string $targetId, string $ownerKey, array $fileIds): array
+    {
+        $evidenceKey = sprintf(
+            '%s:%d:%d:%s',
+            $edge->evidence->relativePath,
+            $edge->evidence->startLine,
+            $edge->evidence->endLine,
+            $ownerKey,
+        );
+        $id = StableId::edge($projectId, $edge->kind, $sourceId, $targetId, $evidenceKey);
+
+        return $this->edgeRecord($id, $edge, $sourceId, $targetId, $ownerKey, $fileIds);
+    }
+
+    /**
+     * The modules a directory import loads: `require.context(dir, recursive,
+     * pattern)`, named by the scanner as `<language>:module_context:<json>`.
+     *
+     * Each module under the directory whose `./`-relative path the pattern
+     * matches, descending only when the import is recursive. A pattern PCRE
+     * cannot compile loads nothing.
+     *
+     * @param array<string, string> $nodeMap
+     * @return list<string>
+     */
+    private static function contextTargets(string $reference, array $nodeMap): array
+    {
+        [$language, , $json] = array_pad(explode(':', $reference, 3), 3, '');
+        $context = json_decode($json, true);
+        if (!is_array($context) || !is_string($context['directory'] ?? null) || !is_string($context['pattern'] ?? null)) {
+            return [];
+        }
+        $flags = preg_replace('/[^imsu]/', '', (string) ($context['flags'] ?? ''));
+        $pattern = '~' . str_replace('~', '\\~', $context['pattern']) . '~' . $flags;
+        $prefix = $context['directory'] === '' ? '' : $context['directory'] . '/';
+        $modulePrefix = $language . ':module:' . $prefix;
+        $targets = [];
+        foreach ($nodeMap as $candidate => $nodeId) {
+            if (!str_starts_with($candidate, $modulePrefix)) {
+                continue;
+            }
+            $inner = substr($candidate, strlen($modulePrefix));
+            if ($inner === '' || (($context['recursive'] ?? true) !== true && str_contains($inner, '/'))) {
+                continue;
+            }
+            $matched = @preg_match($pattern, './' . $inner);
+            if ($matched === false) {
+                return [];
+            }
+            if ($matched === 1) {
+                $targets[] = $nodeId;
+            }
+        }
+
+        return $targets;
     }
 
     /**
@@ -513,6 +577,27 @@ final readonly class GraphReconciler
         }
 
         return $types;
+    }
+
+    /**
+     * The implementation behind a reference into a hand-written declaration file.
+     *
+     * `tokens.mjs` with `tokens.d.mts` beside it is imported through the
+     * declaration, so every call named `tokens.d.mts#lees` while the code that
+     * runs is `tokens.mjs#lees`. When the graph holds the implementation under
+     * the same name and kind, the edge goes there; otherwise null, and the
+     * declaration keeps it.
+     *
+     * @param array<string, string> $nodeMap
+     */
+    private static function implementationTarget(string $reference, array $nodeMap): ?string
+    {
+        $implementation = preg_replace('~\.d\.(m|c)?ts(?=#|$)~', '.$1js', $reference, 1, $count);
+        if ($count !== 1 || !is_string($implementation) || $implementation === $reference) {
+            return null;
+        }
+
+        return $nodeMap[$implementation] ?? null;
     }
 
     /**

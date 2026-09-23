@@ -38,6 +38,12 @@ final readonly class ReportableComponent
     public const CONVENTION_DISCOVERED_ROLES = [
         'application.controller', 'application.command', 'application.entry_point',
         'laravel.controller', 'laravel.command', 'laravel.job', 'laravel.listener',
+        'laravel.migration', 'laravel.seeder', 'laravel.factory', 'laravel.entry_method',
+        'symfony.controller', 'symfony.command', 'symfony.event_subscriber', 'symfony.event_listener',
+        'symfony.message_handler', 'symfony.route_handler', 'symfony.fixture', 'symfony.voter',
+        'symfony.form_type', 'symfony.twig_extension',
+        'nestjs.framework_handler',
+        'library.public_api',
         self::TEST_ROLE,
         'tooling.config',
     ];
@@ -117,7 +123,10 @@ final readonly class ReportableComponent
             return false;
         }
         $decoded = json_decode($attributesJson, true);
-        return is_array($decoded) && ($decoded['declaration_file'] ?? false) === true;
+        // `ambient` is the same thing written in an ordinary file:
+        // `declare global { ... }` or `declare module 'x' { ... }`.
+        return is_array($decoded)
+            && (($decoded['declaration_file'] ?? false) === true || ($decoded['ambient'] ?? false) === true);
     }
 
     /**

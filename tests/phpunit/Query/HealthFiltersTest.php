@@ -186,6 +186,116 @@ final class HealthFiltersTest extends KnossosTestCase
         assertSame(1, $health['bounds']['excluded_type_declarations']);
     }
 
+    /**
+     * A method called on a receiver no scanner could type (plain JavaScript, a
+     * Python loop variable, a Rust closure parameter) has a caller the graph
+     * cannot draw. Scanners record the member names they saw called that way,
+     * and a candidate by such a name is only possibly dead, with the reason
+     * saying so. It stays reported: the name may belong to something else.
+     */
+    #[Group('query')]
+    public function testAMethodCalledByNameOnAnUntypedReceiverIsOnlyPossiblyDead(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $module = StableId::symbol($ids['project'], 'typescript', 'module', 'src/loop.js');
+        $repository->saveNode($module, $ids['project'], 'typescript', 'module', 'src/loop.js', 'loop.js', null, $ids['file'], 1, 1, 'ast', 'certain', ['unresolved_member_calls' => ['label']], 'php:file:src/Checkout.php', $ids['scan']);
+        foreach (['label', 'unrelated'] as $method) {
+            $id = StableId::symbol($ids['project'], 'typescript', 'function', "src/mode.ts#{$method}");
+            $repository->saveNode($id, $ids['project'], 'typescript', 'function', "src/mode.ts#{$method}", $method, null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], limit: 100)->data;
+        $byName = [];
+        foreach ($data['dead_code_candidates'] as $candidate) {
+            $byName[$candidate['component']['canonical_name']] = $candidate;
+        }
+
+        assertSame('possible', $byName['src/mode.ts#label']['confidence']);
+        assertSame(true, str_contains($byName['src/mode.ts#label']['reason'], 'could not type'));
+        assertSame('probable', $byName['src/mode.ts#unrelated']['confidence']);
+    }
+
+    /**
+     * Python runs a package's `__init__.py` whenever any module inside the
+     * package is imported, so `from shop.cart import Cart` reaches `shop`
+     * although nothing names it. A package's own module was reported dead in
+     * every Python project. Only a package with modules of its own is
+     * excluded; the submodules carry the report if none of them is used.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesAPackageInitWhosePackageHasModules(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        foreach ([['shop', ['package_init' => true]], ['shop.cart', []], ['lonely', ['package_init' => true]]] as [$canonical, $attributes]) {
+            $id = StableId::symbol($ids['project'], 'python', 'module', $canonical);
+            $repository->saveNode($id, $ids['project'], 'python', 'module', $canonical, $canonical, null, $ids['file'], 1, 1, 'ast', 'certain', $attributes, 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'], limit: 100)->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('shop', $names, true));
+        assertSame(true, in_array('shop.cart', $names, true));
+        assertSame(true, in_array('lonely', $names, true));
+        assertSame(1, $data['bounds']['excluded_entry_scripts']);
+    }
+
+    /**
+     * A large project has hundreds of candidates, sorted unreferenced-first by
+     * name, and `limit` stops at 100. Framework methods marked only possible
+     * filled that page on every Laravel and Symfony application, so nothing
+     * behind them could be seen. Candidates can now be filtered to the
+     * probable ones and paged with an offset.
+     */
+    #[Group('query')]
+    public function testDeadCodeCandidatesCanBeFilteredByConfidenceAndPaged(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        foreach (['a_possible' => 'derived', 'b_probable' => 'ast', 'c_probable' => 'ast', 'd_probable' => 'ast'] as $name => $origin) {
+            $id = StableId::symbol($ids['project'], 'typescript', 'function', "src/x.ts#{$name}");
+            $repository->saveNode($id, $ids['project'], 'typescript', 'function', "src/x.ts#{$name}", $name, null, $ids['file'], 1, 1, $origin, 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $service = new ArchitectureQueryService($pdo);
+
+        $all = $service->architectureHealth($ids['project'], limit: 100)->data;
+        $names = static fn(array $data): array => array_values(array_filter(
+            array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']),
+            static fn(string $n): bool => str_starts_with($n, 'src/x.ts#'),
+        ));
+        assertSame(true, in_array('src/x.ts#a_possible', $names($all), true));
+
+        $page = $service->architectureHealth($ids['project'], limit: 1, candidateConfidence: 'probable', candidateOffset: 1)->data;
+        $probable = $service->architectureHealth($ids['project'], limit: 100, candidateConfidence: 'probable')->data;
+
+        assertSame(false, in_array('src/x.ts#a_possible', $names($probable), true));
+        $ordered = array_map(static fn(array $c): string => $c['component']['canonical_name'], $probable['dead_code_candidates']);
+        assertSame([$ordered[1]], array_map(static fn(array $c): string => $c['component']['canonical_name'], $page['dead_code_candidates']));
+        assertSame(count($ordered), $page['bounds']['candidates_total']);
+        assertSame(1, $page['bounds']['candidate_offset']);
+        assertSame('probable', $page['bounds']['candidate_confidence']);
+    }
+
+    /**
+     * `declare global { interface Window { ... } }` in an ordinary file is a
+     * type declaration all the same: it augments what the runtime defines.
+     */
+    #[Group('query')]
+    public function testAmbientDeclarationsAreExcludedLikeTypeDeclarations(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $window = StableId::symbol($ids['project'], 'typescript', 'interface', 'src/engines.ts#global.Window');
+        $repository->saveNode($window, $ids['project'], 'typescript', 'interface', 'src/engines.ts#global.Window', 'Window', null, $ids['file'], 1, 1, 'ast', 'certain', ['ambient' => true], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $health = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $candidate): string => $candidate['component']['canonical_name'], $health['dead_code_candidates']);
+        assertSame(false, in_array('src/engines.ts#global.Window', $names, true));
+        assertSame(1, $health['bounds']['excluded_type_declarations']);
+    }
+
     #[Group('query')]
     public function testHealthFlagsPassThroughToolDispatch(): void
     {
@@ -444,6 +554,30 @@ final class HealthFiltersTest extends KnossosTestCase
         // The ATTRIBUTE-driven exclusion must not be double-counted as a
         // role-driven one: they are separate signals and separate tallies.
         assertSame(0, $data['bounds']['excluded_convention_discovered']);
+    }
+
+    /**
+     * A scanner marks `runtime_invoked` on what a runtime or a foreign host
+     * calls and no source ever names: `Drop::drop`, and a `#[no_mangle]`
+     * export a wasm host calls. The quality gate's metric already honoured the
+     * mark while health still listed every such node as dead.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesRuntimeInvokedComponents(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $export = StableId::symbol($ids['project'], 'rust', 'function', 'crate::alloc');
+        $repository->saveNode($export, $ids['project'], 'rust', 'function', 'crate::alloc', 'alloc', null, $ids['file'], 1, 1, 'ast', 'certain', ['runtime_invoked' => true], 'php:file:src/Checkout.php', $ids['scan']);
+        $plain = StableId::symbol($ids['project'], 'rust', 'function', 'crate::unused');
+        $repository->saveNode($plain, $ids['project'], 'rust', 'function', 'crate::unused', 'unused', null, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('crate::alloc', $names, true));
+        assertSame(true, in_array('crate::unused', $names, true));
+        assertSame(1, $data['bounds']['excluded_constructors']);
     }
 
     /**
@@ -847,5 +981,18 @@ final class HealthFiltersTest extends KnossosTestCase
         // Something DOES reference it, so nothing was excluded for its role. The
         // unreconciled counter reported 1 here — an exclusion that never happened.
         assertSame(0, $result->data['bounds']['excluded_convention_discovered']);
+    }
+
+    public function testCandidateFiltersRejectValuesOutsideTheirRange(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        $confidence = captureThrows(fn() => $queries->architectureHealth($ids['project'], candidateConfidence: 'certain'), \InvalidArgumentException::class);
+        $offset = captureThrows(fn() => $queries->architectureHealth($ids['project'], candidateOffset: -1), \InvalidArgumentException::class);
+
+        assertSame('candidate_confidence must be probable or possible.', $confidence->getMessage());
+        assertSame('candidate_offset must not be negative.', $offset->getMessage());
     }
 }

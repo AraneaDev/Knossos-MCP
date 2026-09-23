@@ -6,6 +6,13 @@ import { FactAccumulator } from "./fact-accumulator.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
 import { TypeScriptApplicationEnricher } from "./typescript-application-enricher.js";
 import { callName, reference } from "./typescript-fact-utils.js";
+import {
+    blankSource,
+    componentAliasSuffix,
+    componentDialect,
+    componentDiagnosticKept,
+    toVirtualSource,
+} from "./component-source.js";
 
 const SOURCE_EXTENSIONS = new Set([
     ".ts",
@@ -30,6 +37,21 @@ const SHEBANG_ALIAS_SUFFIX = ".knossos-shebang.js";
 // lose its facts on every scan. It is offered under its name plus this mark and
 // the lower-cased extension, and mapped back the same way.
 const CASE_ALIAS_MARK = ".knossos-alias";
+// A component (`.vue`, `.svelte`, `.astro`) is offered to the compiler as
+// `X.vue.ts` (`X.astro.tsx`), so module resolution finds it through relative
+// paths, `paths` and `baseUrl` without a resolver of its own. When a real
+// `X.vue.ts` exists it wins, and the component is offered under this mark.
+const COMPONENT_ALIAS_MARK = ".knossos-component";
+const COMPONENT_ALIAS = /\.(vue|svelte|astro)(\.knossos-component)?(\.tsx?)$/i;
+// Lets a tsconfig `include` match components, so they are checked under the
+// options of the project that holds them.
+const COMPONENT_FILE_EXTENSIONS = [".vue", ".svelte", ".astro"].map(
+    (extension) => ({
+        extension,
+        isMixedContent: false,
+        scriptKind: ts.ScriptKind.Deferred,
+    }),
+);
 const EXCLUDED_DIRECTORIES = new Set([
     ".git",
     ".knossos",
@@ -42,6 +64,8 @@ const EXCLUDED_DIRECTORIES = new Set([
     // output and mutation-testing sandboxes (.stryker-tmp holds a full project
     // copy per sandbox) are not source and would multiply program discovery.
     ".stryker-tmp",
+    ".pnpm-store",
+    ".yarn",
     ".worktrees",
     "build",
     "dist",
@@ -53,6 +77,12 @@ const EXCLUDED_DIRECTORIES = new Set([
 // database beside the project under the same convention, and those must not be
 // discovered as the project's own source.
 const EXCLUDED_DIRECTORY_PREFIXES = [".knossos-"];
+// Consecutive segments excluded wherever they appear, as the PHP IgnoreMatcher
+// excludes them: VitePress's dependency cache and build below the site.
+const EXCLUDED_SEGMENT_SEQUENCES = [
+    [".vitepress", "cache"],
+    [".vitepress", "dist"],
+];
 // Dependency trees may be read for module resolution even though discovery
 // does not scan them as project-owned source. Generated and tool-owned trees
 // remain blocked at this boundary.
@@ -82,6 +112,12 @@ const MAX_CACHED_PROGRAMS = 2;
 // path: a path-keyed map could pair one read's facts with another read's hash,
 // which is precisely the false match the hash exists to prevent.
 const parsedContentHashes = new WeakMap();
+/**
+ * A component's virtual source, by the source file made from it: its dialect,
+ * the script and template ranges, whether its script is TypeScript, and, for
+ * one that could not be read, why.
+ */
+const componentSources = new WeakMap();
 
 /**
  * Every project file one scan request read to derive facts, for the result's
@@ -168,7 +204,7 @@ export class TypeScriptScanner {
     /**
      * Stream deterministic owned contributions for the requested source files.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown}} params
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown}} params
      * @param {(contribution: object) => void} emit
      * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
      */
@@ -209,6 +245,10 @@ export class TypeScriptScanner {
             requestedSet,
             emitted,
             emit,
+            versions: params.typescript_versions,
+            vueProjects: Array.isArray(params.vue_projects)
+                ? params.vue_projects
+                : [],
         };
         const tally = (outcome) => {
             if (outcome === undefined) return;
@@ -216,9 +256,25 @@ export class TypeScriptScanner {
             if (outcome.reused) ++programsReused;
         };
 
-        for (const configPath of configPaths) {
-            const parsed = parseConfig(root, configPath, reads);
-            tally(this.#scanProgram(`${root}\0${configPath}`, parsed, request));
+        const parsedConfigs = configPaths.map((configPath) => [
+            configPath,
+            parseConfig(root, configPath, reads),
+        ]);
+        request.owners = configOwners(root, parsedConfigs);
+
+        for (const [configPath, parsed] of parsedConfigs) {
+            request.owner = configPath;
+            tally(
+                this.#scanProgram(
+                    `${root}\0${configPath}`,
+                    programConfig(
+                        request,
+                        path.dirname(path.join(root, configPath)),
+                        parsed,
+                    ),
+                    request,
+                ),
+            );
             if (emitted.size === requestedSet.size) break;
         }
 
@@ -226,26 +282,17 @@ export class TypeScriptScanner {
             (relative) => !emitted.has(normalize(relative)),
         );
         if (remaining.length > 0) {
-            const options = {
-                allowJs: true,
-                checkJs: false,
-                noEmit: true,
-                target: ts.ScriptTarget.Latest,
-                module: ts.ModuleKind.ESNext,
-                moduleResolution: ts.ModuleResolutionKind.Bundler,
-                jsx: ts.JsxEmit.Preserve,
-            };
-            const parsed = {
-                options,
-                // An extensionless script, or one whose extension is not in
-                // lower case, only ever reaches the fallback program: no
-                // tsconfig `include` matches either name.
-                fileNames: remaining.map((relative) =>
-                    offeredPath(path.join(root, relative)),
+            // Whatever no config's program emitted, owned or not.
+            request.owner = undefined;
+            request.owners = new Map();
+            const parsed = fallbackConfig(root, remaining);
+            tally(
+                this.#scanProgram(
+                    `${root}\0<fallback>`,
+                    programConfig(request, root, parsed),
+                    request,
                 ),
-                projectReferences: undefined,
-            };
-            tally(this.#scanProgram(`${root}\0<fallback>`, parsed, request));
+            );
         }
 
         // Backstop: the PHP side requires exactly one contribution per requested
@@ -297,7 +344,16 @@ export class TypeScriptScanner {
     #scanProgram(
         key,
         parsed,
-        { root, maxFileBytes, reads, requestedSet, emitted, emit },
+        {
+            root,
+            maxFileBytes,
+            reads,
+            requestedSet,
+            emitted,
+            emit,
+            owner,
+            owners,
+        },
     ) {
         this.#reserveProgramSlot(key);
         const oldProgram = this.programCache.get(key);
@@ -312,7 +368,16 @@ export class TypeScriptScanner {
             );
             this.#cacheProgram(key, program);
             recordUnreadSourceFiles(root, program, reads, maxFileBytes);
-            this.#emitProgram(root, program, requestedSet, emitted, emit);
+            this.#emitProgram(
+                root,
+                program,
+                requestedSet,
+                emitted,
+                emit,
+                maxFileBytes,
+                owner,
+                owners ?? new Map(),
+            );
         } catch (error) {
             if (!isStackOverflow(error)) throw error;
             const covered = [
@@ -393,9 +458,22 @@ export class TypeScriptScanner {
         }
     }
 
-    #emitProgram(root, program, requestedSet, emitted, emit) {
+    #emitProgram(
+        root,
+        program,
+        requestedSet,
+        emitted,
+        emit,
+        maxFileBytes,
+        owner,
+        owners,
+    ) {
         const checker = program.getTypeChecker();
-        const diagnosticsByFile = diagnosticsForProgram(program, root);
+        const diagnosticsByFile = diagnosticsForProgram(
+            program,
+            root,
+            maxFileBytes,
+        );
 
         for (const sourceFile of program.getSourceFiles()) {
             const relative = relativeInside(root, sourceFile.fileName);
@@ -403,7 +481,10 @@ export class TypeScriptScanner {
                 relative === null ||
                 belowNodeModules(relative) ||
                 !requestedSet.has(relative) ||
-                emitted.has(relative)
+                emitted.has(relative) ||
+                // Another config includes this file itself; its program
+                // describes it under the options the project really uses.
+                (owners.has(relative) && owners.get(relative) !== owner)
             ) {
                 continue;
             }
@@ -427,7 +508,9 @@ export class TypeScriptScanner {
             // the request.
             let contribution;
             try {
-                const collector = new FactCollector(root, sourceFile, checker);
+                const collector = new FactCollector(root, sourceFile, checker, {
+                    options: program.getCompilerOptions(),
+                });
                 collector.collect();
                 contribution = {
                     owner_key: `knossos.typescript:file:${relative}`,
@@ -475,11 +558,12 @@ export class TypeScriptScanner {
 }
 
 class FactCollector {
-    constructor(root, sourceFile, checker) {
+    constructor(root, sourceFile, checker, project = {}) {
         this.language = new TypeScriptLanguageFactCollector(
             root,
             sourceFile,
             checker,
+            project,
         );
     }
 
@@ -494,6 +578,7 @@ class FactCollector {
     collect() {
         this.language.initialize();
         this.visit(this.language.sourceFile);
+        this.language.finish();
     }
 
     visit(node) {
@@ -505,8 +590,10 @@ class FactCollector {
 }
 
 class TypeScriptLanguageFactCollector {
-    constructor(root, sourceFile, checker) {
+    constructor(root, sourceFile, checker, project = {}) {
         this.root = root;
+        // The program's compiler options.
+        this.project = project;
         this.sourceFile = sourceFile;
         this.checker = checker;
         this.relative = relativeInside(root, sourceFile.fileName);
@@ -519,6 +606,9 @@ class TypeScriptLanguageFactCollector {
         );
         this.application = new TypeScriptApplicationEnricher(this);
         this.nest = new NestJsFactEnricher(this);
+        this.untypedCalls = new Set();
+        // Each declaration's node id, by the syntax node it was read from.
+        this.declaredIds = new Map();
     }
 
     get nodes() {
@@ -537,9 +627,178 @@ class TypeScriptLanguageFactCollector {
             this.sourceFile,
             {
                 declaration_file: this.sourceFile.isDeclarationFile,
-                executable: startsWithShebang(this.sourceFile.text),
+                executable:
+                    startsWithShebang(this.sourceFile.text) ||
+                    hasMainGuard(this.sourceFile),
             },
         );
+    }
+
+    /**
+     * Records on the module node the member names called on a receiver the
+     * checker could not type (`any`, an untyped parameter in JavaScript).
+     * Such a call has no edge, and a method by one of these names may be what
+     * it reaches, so the core reports that method as only possibly dead.
+     */
+    finish() {
+        const component = componentSources.get(this.sourceFile);
+        if (component !== undefined)
+            this.unresolvedTemplateNames(component.templateRanges);
+        if (component?.dialect === "astro") this.astroProps();
+        if (component?.dialect === "vue")
+            this.vueOptions(component.templateRanges);
+        if (this.untypedCalls.size === 0) return;
+        this.accumulator.nodesById.get(
+            this.moduleId,
+        ).attributes.unresolved_member_calls = [...this.untypedCalls].sort();
+    }
+
+    /**
+     * Names a component's template uses that resolve to nothing, such as an
+     * Options API method reached through the component instance. They join
+     * the member names called on untyped receivers, so a method by one of
+     * them is reported as only possibly dead.
+     */
+    unresolvedTemplateNames(ranges) {
+        const inTemplate = (node) => {
+            const start = node.getStart(this.sourceFile);
+            return ranges.some(([from, to]) => start >= from && node.end <= to);
+        };
+        const visit = (node) => {
+            if (
+                ts.isIdentifier(node) &&
+                inTemplate(node) &&
+                !isNamePosition(node) &&
+                this.checker.getSymbolAtLocation(node) === undefined
+            )
+                this.untypedCalls.add(node.text);
+            ts.forEachChild(node, visit);
+        };
+        visit(this.sourceFile);
+    }
+
+    /**
+     * Astro types a component's `Astro.props` from the `Props` its frontmatter
+     * declares, by that name, so the component references it even when no
+     * line of its source does.
+     */
+    astroProps() {
+        const props = this.sourceFile.statements.find(
+            (statement) =>
+                (ts.isInterfaceDeclaration(statement) ||
+                    ts.isTypeAliasDeclaration(statement)) &&
+                statement.name.text === "Props",
+        );
+        if (props === undefined) return;
+        const kind = ts.isInterfaceDeclaration(props)
+            ? "interface"
+            : "type_alias";
+        this.addEdge(
+            "references",
+            this.moduleId,
+            reference(kind, `${this.relative}#Props`),
+            props,
+        );
+    }
+
+    /**
+     * A Vue Options API component: Vue calls its lifecycle hooks and watchers
+     * itself, and its methods and computed properties are reached by name,
+     * through `this` or from the template, which no static edge records. A
+     * method or computed property this component names gets a reference from
+     * its module; one it never names stays reportable.
+     */
+    vueOptions(templateRanges) {
+        const options = vueOptionsObject(this.sourceFile);
+        if (options === undefined) return;
+        const used = this.vueUsedNames(templateRanges);
+        const groups = new Map();
+        for (const property of options.properties) {
+            const name = memberName(property);
+            if (VUE_HOOKS.has(name)) this.markRuntimeInvoked(property);
+            if (
+                ts.isPropertyAssignment(property) &&
+                ts.isObjectLiteralExpression(property.initializer)
+            )
+                groups.set(name, property.initializer.properties);
+        }
+        // `props: { items: { default() {}, validator(v) {} } }`.
+        for (const prop of groups.get("props") ?? []) {
+            if (
+                !ts.isPropertyAssignment(prop) ||
+                !ts.isObjectLiteralExpression(prop.initializer)
+            )
+                continue;
+            for (const factory of prop.initializer.properties) {
+                if (["default", "validator"].includes(memberName(factory)))
+                    this.markRuntimeInvoked(factory);
+            }
+        }
+        for (const watcher of groups.get("watch") ?? [])
+            this.vueWatcher(watcher, used);
+        for (const member of [
+            ...(groups.get("methods") ?? []),
+            ...(groups.get("computed") ?? []),
+        ]) {
+            const id = this.declaredIds.get(member);
+            if (id !== undefined && used.has(memberName(member)))
+                this.addEdge("references", this.moduleId, id, member);
+        }
+    }
+
+    /**
+     * A Vue watcher, which Vue calls: `n(value) {}`, `total: 'recount'` (a
+     * method named by string), or `deep: { handler() {} }` /
+     * `deep: { handler: 'recount' }`.
+     */
+    vueWatcher(watcher, used) {
+        this.markRuntimeInvoked(watcher);
+        if (!ts.isPropertyAssignment(watcher)) return;
+        const value = watcher.initializer;
+        if (ts.isStringLiteralLike(value)) used.add(value.text);
+        if (!ts.isObjectLiteralExpression(value)) return;
+        for (const option of value.properties) {
+            if (memberName(option) !== "handler") continue;
+            this.markRuntimeInvoked(option);
+            if (
+                ts.isPropertyAssignment(option) &&
+                ts.isStringLiteralLike(option.initializer)
+            )
+                used.add(option.initializer.text);
+        }
+    }
+
+    /** Names a Vue component uses: `this.name` in its script, any name in its template. */
+    vueUsedNames(templateRanges) {
+        const used = new Set();
+        const visit = (node) => {
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                node.expression.kind === ts.SyntaxKind.ThisKeyword
+            )
+                used.add(node.name.text);
+            else if (
+                ts.isIdentifier(node) &&
+                templateRanges.some(
+                    ([from, to]) =>
+                        node.getStart(this.sourceFile) >= from &&
+                        node.end <= to,
+                )
+            )
+                used.add(node.text);
+            ts.forEachChild(node, visit);
+        };
+        visit(this.sourceFile);
+        return used;
+    }
+
+    /** Mark a declared member as called by its framework rather than by code. */
+    markRuntimeInvoked(member) {
+        const id = this.declaredIds.get(member);
+        const fact =
+            id === undefined ? undefined : this.accumulator.nodesById.get(id);
+        if (fact !== undefined)
+            fact.attributes = { ...fact.attributes, runtime_invoked: true };
     }
 
     enter(node) {
@@ -550,7 +809,11 @@ class TypeScriptLanguageFactCollector {
         if (ts.isImportDeclaration(node)) this.importDeclaration(node);
         if (ts.isExportDeclaration(node)) this.exportDeclaration(node);
         if (ts.isImportEqualsDeclaration(node)) this.importEquals(node);
-        if (ts.isVariableDeclaration(node)) this.application.variable(node);
+        if (ts.isPropertyAssignment(node)) this.entryPointsProperty(node);
+        if (ts.isVariableDeclaration(node)) {
+            this.application.variable(node);
+            this.dynamicImportBindings(node);
+        }
         if (ts.isNewExpression(node)) this.newExpression(node);
         if (ts.isCallExpression(node)) this.callExpression(node);
         if (ts.isTypeReferenceNode(node)) this.typeReference(node);
@@ -559,6 +822,96 @@ class TypeScriptLanguageFactCollector {
 
     leave(pushed) {
         if (pushed) this.container.pop();
+    }
+
+    /** `extends` / `implements` edges and constructor `injects` edges of a class or interface. */
+    heritageEdges(node, id) {
+        if (
+            !ts.isClassDeclaration(node) &&
+            !ts.isClassExpression(node) &&
+            !ts.isInterfaceDeclaration(node)
+        )
+            return;
+        for (const clause of node.heritageClauses ?? []) {
+            for (const type of clause.types) {
+                const target = this.symbolReference(
+                    this.checker.getSymbolAtLocation(type.expression),
+                    "class",
+                );
+                if (target !== null) {
+                    this.addEdge(
+                        clause.token === ts.SyntaxKind.ImplementsKeyword
+                            ? "implements"
+                            : "extends",
+                        id,
+                        target,
+                        type,
+                    );
+                }
+            }
+        }
+        const constructor = node.members?.find((member) =>
+            ts.isConstructorDeclaration(member),
+        );
+        for (const parameter of constructor?.parameters ?? []) {
+            if (parameter.type) {
+                const target = this.typeNodeReference(parameter.type);
+                if (target !== null)
+                    this.addEdge("injects", id, target, parameter);
+            }
+        }
+    }
+
+    /** The contract an object literal implements, from its context or its binding's annotation. */
+    objectLiteralContracts(node, id) {
+        if (isContextualObjectLiteral(node)) {
+            const contextual = this.checker.getContextualType(node);
+            const parts = contextual?.isUnion()
+                ? contextual.types
+                : contextual
+                  ? [contextual]
+                  : [];
+            for (const part of parts) {
+                const symbol = part.aliasSymbol ?? part.symbol;
+                if (!symbol || symbol.getName().startsWith("__")) continue;
+                const target = this.symbolReference(symbol, "class");
+                if (target !== null && target !== id)
+                    this.addEdge("implements", id, target, node);
+            }
+        }
+
+        if (isObjectLiteralBinding(node)) {
+            const contract = objectLiteralContract(node);
+            const target =
+                contract !== undefined && ts.isTypeReferenceNode(contract)
+                    ? this.typeNodeReference(contract)
+                    : null;
+            if (target !== null && target !== id)
+                this.addEdge("implements", id, target, contract);
+        }
+    }
+
+    /** A `returns` edge per named type a function or method declares it returns. */
+    returnEdges(node, id) {
+        if (
+            (ts.isFunctionDeclaration(node) ||
+                ts.isMethodDeclaration(node) ||
+                ts.isMethodSignature(node)) &&
+            node.type
+        ) {
+            // `Clipboard | null` has no symbol of its own: each named member
+            // of a union is a type the function may return.
+            const returned = ts.isUnionTypeNode(node.type)
+                ? node.type.types.filter((member) =>
+                      ts.isTypeReferenceNode(member),
+                  )
+                : [node.type];
+            for (const typeNode of returned) {
+                const target = this.typeNodeReference(typeNode);
+                if (target !== null)
+                    this.addEdge("returns", id, target, typeNode);
+            }
+        }
     }
 
     declaration(node) {
@@ -572,6 +925,7 @@ class TypeScriptLanguageFactCollector {
             ? `${parent.canonical}::${descriptor.name}`
             : `${this.relative}#${this.container.length > 0 ? `${this.container.map((item) => item.name).join(".")}.` : ""}${descriptor.name}`;
         const id = reference(descriptor.kind, canonical);
+        this.declaredIds.set(node, id);
         this.addNode(
             id,
             descriptor.kind,
@@ -585,7 +939,7 @@ class TypeScriptLanguageFactCollector {
             // whether anyone imports the declaration of it.
             this.sourceFile.isDeclarationFile
                 ? { ...descriptor.attributes, declaration_file: true }
-                : descriptor.attributes,
+                : ambientAttributes(node, descriptor.attributes),
         );
         this.addEdge("contains", parent.id, id, node);
         const nest = this.nest.declaration(node, id, canonical);
@@ -607,50 +961,9 @@ class TypeScriptLanguageFactCollector {
             fact.attributes = { ...fact.attributes, nestjs_roles: nest.roles };
         }
 
-        if (
-            ts.isClassDeclaration(node) ||
-            ts.isClassExpression(node) ||
-            ts.isInterfaceDeclaration(node)
-        ) {
-            for (const clause of node.heritageClauses ?? []) {
-                for (const type of clause.types) {
-                    const target = this.symbolReference(
-                        this.checker.getSymbolAtLocation(type.expression),
-                        "class",
-                    );
-                    if (target !== null) {
-                        this.addEdge(
-                            clause.token === ts.SyntaxKind.ImplementsKeyword
-                                ? "implements"
-                                : "extends",
-                            id,
-                            target,
-                            type,
-                        );
-                    }
-                }
-            }
-            const constructor = node.members?.find((member) =>
-                ts.isConstructorDeclaration(member),
-            );
-            for (const parameter of constructor?.parameters ?? []) {
-                if (parameter.type) {
-                    const target = this.typeNodeReference(parameter.type);
-                    if (target !== null)
-                        this.addEdge("injects", id, target, parameter);
-                }
-            }
-        }
-
-        if (
-            (ts.isFunctionDeclaration(node) ||
-                ts.isMethodDeclaration(node) ||
-                ts.isMethodSignature(node)) &&
-            node.type
-        ) {
-            const target = this.typeNodeReference(node.type);
-            if (target !== null) this.addEdge("returns", id, target, node.type);
-        }
+        this.heritageEdges(node, id);
+        this.objectLiteralContracts(node, id);
+        this.returnEdges(node, id);
 
         if (containerDeclaration(node)) {
             this.container.push({
@@ -687,6 +1000,16 @@ class TypeScriptLanguageFactCollector {
         if (target !== null)
             this.addEdge("re_exports", this.moduleId, target, node, {
                 type_only: node.isTypeOnly,
+                // What the re-export passes on under the source's own names;
+                // absent for `export *`, which passes on everything.
+                ...(node.exportClause && ts.isNamedExports(node.exportClause)
+                    ? {
+                          names: node.exportClause.elements.map(
+                              (element) =>
+                                  (element.propertyName ?? element.name).text,
+                          ),
+                      }
+                    : {}),
             });
     }
 
@@ -707,6 +1030,20 @@ class TypeScriptLanguageFactCollector {
     }
 
     newExpression(node) {
+        const url = importMetaUrlModule(node, this.sourceFile, this.root);
+        if (url !== null)
+            this.addEdge(
+                "imports",
+                this.currentSource() ?? this.moduleId,
+                reference("module", url),
+                node,
+                {
+                    dynamic: true,
+                    url: true,
+                    type_only: false,
+                    speculative: true,
+                },
+            );
         const source = this.currentSource();
         const target = this.symbolReference(
             this.checker.getSymbolAtLocation(node.expression),
@@ -767,7 +1104,13 @@ class TypeScriptLanguageFactCollector {
             return;
         }
 
+        this.pathLiteralImports(node);
         const signature = this.checker.getResolvedSignature(node);
+        if (
+            signature?.declaration === undefined &&
+            ts.isPropertyAccessExpression(node.expression)
+        )
+            this.untypedCalls.add(node.expression.name.text);
         const target = this.symbolReference(
             signature?.declaration?.symbol,
             callableKind(signature?.declaration),
@@ -823,6 +1166,214 @@ class TypeScriptLanguageFactCollector {
             this.addEdge("references", source, target, specifier);
     }
 
+    /**
+     * The exports `const { App, Panel: P } = await import('./tui')` takes.
+     *
+     * Destructuring names each export exactly, so, unlike a module object
+     * handed around whole, it resolves without guessing. Without this, a
+     * module loaded lazily this way had its `imports` edge while every export
+     * it takes looked unreferenced. A rest element names no export.
+     */
+    dynamicImportBindings(node) {
+        if (!ts.isObjectBindingPattern(node.name) || !node.initializer) return;
+        let call = unwrapParentheses(node.initializer);
+        if (ts.isAwaitExpression(call))
+            call = unwrapParentheses(call.expression);
+        if (
+            !ts.isCallExpression(call) ||
+            call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+            call.arguments.length !== 1 ||
+            !ts.isStringLiteral(call.arguments[0])
+        )
+            return;
+        const specifier = call.arguments[0];
+        if (this.internalModuleTarget(specifier) === null) return;
+        const moduleSymbol = this.checker.getSymbolAtLocation(specifier);
+        if (!moduleSymbol) return;
+        const source = this.currentSource();
+        for (const element of node.name.elements) {
+            if (element.dotDotDotToken) continue;
+            const name = element.propertyName ?? element.name;
+            if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) continue;
+            const exported = this.checker.tryGetMemberInModuleExports(
+                name.text,
+                moduleSymbol,
+            );
+            const target = exported
+                ? this.symbolReference(exported, "function")
+                : null;
+            if (source !== null && target !== null && source !== target)
+                this.addEdge("references", source, target, element);
+        }
+    }
+
+    /**
+     * A speculative import of a project module a source path names as a
+     * literal: the only evidence, so the core keeps the edge only when the
+     * graph holds that module.
+     */
+    speculativeImport(relative, node) {
+        this.addEdge(
+            "imports",
+            this.currentSource() ?? this.moduleId,
+            reference("module", relative),
+            node,
+            { dynamic: true, type_only: false, speculative: true },
+        );
+    }
+
+    /**
+     * `require.context('./modules', false, /\.js$/)`: webpack bundles every
+     * file of the directory the pattern matches. Which files those are is the
+     * whole graph's business, not this request's (a request holds only the
+     * files that changed), so one unexpanded edge names the directory, the
+     * recursion and the pattern, and the reconciler expands it against every
+     * module the graph holds.
+     */
+    requireContextImports(node) {
+        const [directoryArg, recursiveArg, patternArg] = node.arguments;
+        const absolute = this.contextDirectory(directoryArg.text);
+        const directory =
+            absolute === null ? null : relativeInside(this.root, absolute);
+        const pattern =
+            patternArg === undefined
+                ? { source: "^\\.\\/.*$", flags: "" }
+                : regularExpressionOf(patternArg);
+        if (directory === null || pattern === null) return;
+        this.addEdge(
+            "imports",
+            this.currentSource() ?? this.moduleId,
+            reference(
+                "module_context",
+                JSON.stringify({
+                    directory: directory === "." ? "" : directory,
+                    recursive:
+                        recursiveArg === undefined ||
+                        recursiveArg.kind === ts.SyntaxKind.TrueKeyword,
+                    pattern: pattern.source,
+                    flags: pattern.flags,
+                }),
+            ),
+            node,
+            { dynamic: true, type_only: false, context: true },
+        );
+    }
+
+    /**
+     * The directory a `require.context` names: relative to this file, or
+     * through the program's `paths` (which carry a bundler's aliases).
+     */
+    contextDirectory(specifier) {
+        const here = path.dirname(
+            realSourcePath(normalize(this.sourceFile.fileName)),
+        );
+        if (specifier.startsWith("."))
+            return normalize(path.resolve(here, specifier));
+        const options = this.project.options ?? {};
+        const base = options.pathsBasePath ?? options.baseUrl ?? this.root;
+        for (const [key, targets] of Object.entries(options.paths ?? {})) {
+            const prefix = key.endsWith("*") ? key.slice(0, -1) : null;
+            const target = targets[0];
+            if (target === undefined) continue;
+            if (key === specifier) return normalize(path.resolve(base, target));
+            if (prefix !== null && specifier.startsWith(prefix))
+                return normalize(
+                    path.resolve(
+                        base,
+                        target.replace("*", specifier.slice(prefix.length)),
+                    ),
+                );
+        }
+        return null;
+    }
+
+    /**
+     * Source paths a call names by literal: `resolve(__dirname, 'x/y.tsx')`
+     * (or `join`, or `import.meta.dirname`), relative to this file; and
+     * `navigator.serviceWorker.register('/sw.js')`, a URL under the web root.
+     */
+    pathLiteralImports(node) {
+        if (isRequireContext(node)) {
+            this.requireContextImports(node);
+            return;
+        }
+        const callee = node.expression;
+        const name = ts.isIdentifier(callee)
+            ? callee.text
+            : ts.isPropertyAccessExpression(callee)
+              ? callee.name.text
+              : null;
+        const args = node.arguments;
+        if (
+            (name === "resolve" || name === "join") &&
+            args.length >= 2 &&
+            isDirnameExpression(args[0]) &&
+            args.slice(1).every((arg) => ts.isStringLiteralLike(arg))
+        ) {
+            const relative = sourcePathTarget(
+                this.root,
+                path.dirname(this.sourceFile.fileName),
+                args
+                    .slice(1)
+                    .map((arg) => arg.text)
+                    .join("/"),
+            );
+            if (relative !== null) this.speculativeImport(relative, node);
+            return;
+        }
+        if (
+            name === "register" &&
+            ts.isPropertyAccessExpression(callee) &&
+            ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "serviceWorker" &&
+            args.length >= 1 &&
+            ts.isStringLiteralLike(args[0]) &&
+            args[0].text.startsWith("/")
+        ) {
+            // Served from the web root, which is `public/` or `static/` in
+            // most toolchains, or the project root itself.
+            const url = args[0].text.slice(1).split(/[?#]/)[0];
+            for (const base of ["public", "static", ""]) {
+                const relative = sourcePathTarget(
+                    this.root,
+                    this.root,
+                    base === "" ? url : `${base}/${url}`,
+                );
+                if (relative !== null) this.speculativeImport(relative, node);
+            }
+        }
+    }
+
+    /**
+     * `build({ entryPoints: ['src/boot.ts'] })`: a bundler's entries, named
+     * by path relative to where the build runs, which is this file's
+     * directory for a build script beside its package.
+     */
+    entryPointsProperty(node) {
+        const name =
+            ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)
+                ? node.name.text
+                : null;
+        if (!["entryPoints", "entrypoints", "entry", "input"].includes(name))
+            return;
+        const values = ts.isArrayLiteralExpression(node.initializer)
+            ? node.initializer.elements
+            : ts.isObjectLiteralExpression(node.initializer)
+              ? node.initializer.properties
+                    .filter((member) => ts.isPropertyAssignment(member))
+                    .map((member) => member.initializer)
+              : [node.initializer];
+        for (const value of values) {
+            if (!ts.isStringLiteralLike(value)) continue;
+            const relative = sourcePathTarget(
+                this.root,
+                path.dirname(this.sourceFile.fileName),
+                value.text,
+            );
+            if (relative !== null) this.speculativeImport(relative, value);
+        }
+    }
+
     typeReference(node) {
         const source = this.currentSource();
         const target = this.typeNodeReference(node);
@@ -851,9 +1402,13 @@ class TypeScriptLanguageFactCollector {
     valueReference(node) {
         if (!valueReferencePosition(node)) return;
 
+        // A shorthand `{ discover }` names the object's property; the value it
+        // copies is the function, which only this lookup returns.
         const symbol = unalias(
             this.checker,
-            this.checker.getSymbolAtLocation(node),
+            ts.isShorthandPropertyAssignment(node.parent)
+                ? this.checker.getShorthandAssignmentValueSymbol(node.parent)
+                : this.checker.getSymbolAtLocation(node),
         );
         const declaration = symbol?.declarations?.find((item) =>
             referenceableDeclaration(item),
@@ -935,6 +1490,12 @@ class TypeScriptLanguageFactCollector {
                 ? reference(`external_${hint}`, name)
                 : null;
         }
+        // Declared in this project, but not as anything `declaration()` emits:
+        // a type parameter, an inline `{ ... }` type, a `const f = () => ...`
+        // arrow. The name built for it would match no node, and the core turns
+        // a dangling edge into an external component that is neither external
+        // nor a component.
+        if (!isDeclaration(declaration)) return null;
         const kind = declarationKind(declaration, hint);
         const canonical = canonicalForDeclaration(declaration, relative);
         return reference(kind, canonical);
@@ -1005,12 +1566,18 @@ function parseConfig(root, configPath, reads) {
         absolute,
         { noEmit: true },
         host,
+        undefined,
+        undefined,
+        COMPONENT_FILE_EXTENSIONS,
     );
     if (!parsed)
         throw new Error(`Unable to parse TypeScript config: ${configPath}`);
     const fileNames = new Set(
         parsed.fileNames.filter((file) => allowedCompilerPath(root, file)),
     );
+    // The files the config lists itself, before its references are merged
+    // in: what decides which config describes a file (see scan()).
+    const ownFileNames = [...fileNames];
     const pending = [...(parsed.projectReferences ?? [])];
     const visited = new Set([absolute]);
     while (pending.length > 0) {
@@ -1028,6 +1595,9 @@ function parseConfig(root, configPath, reads) {
             referenceConfig,
             { noEmit: true },
             host,
+            undefined,
+            undefined,
+            COMPONENT_FILE_EXTENSIONS,
         );
         if (!referenced) continue;
         for (const file of referenced.fileNames) {
@@ -1035,10 +1605,12 @@ function parseConfig(root, configPath, reads) {
         }
         pending.push(...(referenced.projectReferences ?? []));
     }
-    parsed.fileNames = [...fileNames];
-    // Analysis consumes referenced sources directly; build-mode output redirection
-    // would otherwise require users to compile projects before scanning.
-    parsed.projectReferences = undefined;
+    parsed.fileNames = [...fileNames].map(offeredComponentPath);
+    parsed.ownFileNames = ownFileNames.map(offeredComponentPath);
+    // References are kept, and the host resolves a reference's build output
+    // back to its source (see createRestrictedProgram), so an import of
+    // `../lib/dist/index.js` or a package.json `imports` alias onto it lands
+    // on lib/src without the project ever having been built.
     return parsed;
 }
 
@@ -1165,17 +1737,66 @@ function readHashedSourceFile(
         return undefined;
     }
     const contentHash = createHash("sha256").update(buffer).digest("hex");
+    const decoded = decodeLikeTypeScript(buffer);
+    const component = componentSource(readPath, decoded);
     const sourceFile = ts.createSourceFile(
         fileName,
-        decodeLikeTypeScript(buffer),
-        languageVersion,
+        component?.text ?? decoded,
+        component === undefined
+            ? languageVersion
+            : asComponentModule(languageVersion),
         true,
         scriptKind,
     );
+    if (component !== undefined) componentSources.set(sourceFile, component);
     parsedContentHashes.set(sourceFile, contentHash);
     reads.created(sourceFile);
     recordWalked(reads, root, walked, contentHash, maxFileBytes);
     return sourceFile;
+}
+
+/**
+ * The virtual source a component is parsed from, or undefined for any other
+ * file. One that cannot be delimited is parsed as blank text, so it keeps its
+ * module node, and says why.
+ */
+function componentSource(readPath, decoded) {
+    const dialect = componentDialect(readPath);
+    if (dialect === null) return undefined;
+    try {
+        return { dialect, ...toVirtualSource(decoded, dialect) };
+    } catch (error) {
+        rethrowStackOverflow(error);
+        return {
+            dialect,
+            text: blankSource(decoded),
+            scriptRanges: [],
+            templateRanges: [],
+            typed: false,
+            unparsed: errorMessage(error),
+        };
+    }
+}
+
+/**
+ * Parse options that make a component a module whatever its script says.
+ *
+ * A `<script setup>` that neither imports nor exports reads to the compiler as
+ * a global script, and an import of the component then resolves to nothing.
+ * Every component is a module to its bundler, with its compiled component as
+ * the default export.
+ */
+function asComponentModule(languageVersion) {
+    const options =
+        typeof languageVersion === "object"
+            ? languageVersion
+            : { languageVersion };
+    return {
+        ...options,
+        setExternalModuleIndicator: (file) => {
+            file.externalModuleIndicator = true;
+        },
+    };
 }
 
 /**
@@ -1188,7 +1809,8 @@ function readHashedSourceFile(
  * file) and the handle, not the path, is checked, so a path swapped for a FIFO
  * after a check of it cannot slip through.
  */
-function readBounded(file, maxBytes) {
+function readBounded(file, requestedMaxBytes) {
+    const maxBytes = byteCapFor(file, requestedMaxBytes);
     const handle = fs.openSync(
         file,
         fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
@@ -1570,6 +2192,302 @@ function recordUnreadSourceFiles(root, program, reads, maxFileBytes) {
     }
 }
 
+// The defaults TypeScript 5.x applied to options a config leaves unset, where
+// 6.0 changed them: every `@types` package rather than none, non-strict, and no
+// check on side-effect imports.
+const TYPESCRIPT_5_DEFAULTS = Object.freeze({
+    types: ["*"],
+    strict: false,
+    noUncheckedSideEffectImports: false,
+});
+
+/**
+ * The parsed config with the defaults of the project's own TypeScript under it.
+ *
+ * The worker bundles 6.x. A project built with 5.x never opted into 6.0's new
+ * defaults, and checking it under them reported every `process`, `Buffer` and
+ * implicit `any` its own `tsc` accepts. An option the config sets explicitly
+ * still wins, and a project that names no TypeScript keeps the bundled defaults.
+ *
+ * `versions` maps a manifest's directory (`""` for the root) to the major
+ * version its `typescript` dependency declares. The core reads those from the
+ * manifests discovery already hashed, so deciding this reads nothing here.
+ * The nearest manifest at or above the config's directory answers.
+ */
+function withProjectCompilerDefaults(root, directory, parsed, versions) {
+    const major = projectTypeScriptMajor(root, directory, versions);
+    if (major === null || major >= 6) return parsed;
+    return {
+        ...parsed,
+        options: { ...TYPESCRIPT_5_DEFAULTS, ...parsed.options },
+    };
+}
+
+/**
+ * The parsed config a program is built from, for the project at `directory`:
+ * see the two functions it applies.
+ */
+function programConfig(request, directory, parsed) {
+    const { root, versions, reads, maxFileBytes } = request;
+    return {
+        ...withBundlerAliases(
+            root,
+            directory,
+            withProjectCompilerDefaults(root, directory, parsed, versions),
+            reads,
+            maxFileBytes,
+        ),
+        vueProject: inVueProject(root, directory, request.vueProjects),
+    };
+}
+
+/**
+ * Whether a program's directory lies on the path of a package that depends
+ * on Vue: at or below it (the package holds the config), or above it (the
+ * config, or the project root for the fallback program, holds the package).
+ * Decided from manifests the core read, never from the files in a request.
+ */
+function inVueProject(root, directory, vueProjects) {
+    const relative = relativeInside(root, directory);
+    if (relative === null) return false;
+    const here = relative === "." ? "" : relative;
+    return vueProjects.some(
+        (project) =>
+            typeof project === "string" &&
+            (project === "" ||
+                here === "" ||
+                here === project ||
+                here.startsWith(`${project}/`) ||
+                project.startsWith(`${here}/`)),
+    );
+}
+
+// Bundler and framework configs that declare module aliases, by directory.
+const ALIAS_CONFIGS = [
+    "svelte.config.js",
+    "svelte.config.mjs",
+    "svelte.config.ts",
+    "vite.config.js",
+    "vite.config.mjs",
+    "vite.config.ts",
+    "vite.config.mts",
+    "webpack.config.js",
+    "webpack.config.cjs",
+    "webpack.config.mjs",
+    "webpack.mix.js",
+    "vue.config.js",
+];
+
+/**
+ * The parsed config with the module aliases the project's bundler declares,
+ * for any name the config does not map already.
+ *
+ * An import of `~/components/App` or `$lib/format` means what the bundler's
+ * `resolve.alias` (or SvelteKit's `kit.alias`) says, and a project that
+ * relies on the bundler has no tsconfig `paths` for it; SvelteKit writes its
+ * aliases, `$lib` included, into a generated tsconfig no checkout has. Such
+ * imports resolved to nothing, and everything imported that way read as
+ * unused. The configs are read, and recorded, only when they exist.
+ */
+function withBundlerAliases(root, directory, parsed, reads, maxFileBytes) {
+    const aliases = {};
+    for (const name of ALIAS_CONFIGS) {
+        const config = path.join(directory, name);
+        if (!allowedCompilerPath(root, config) || !isRegularFile(config))
+            continue;
+        if (name.startsWith("svelte.")) aliases.$lib ??= "src/lib";
+        const text = readRecorded(root, config, reads, maxFileBytes);
+        if (text !== undefined) Object.assign(aliases, declaredAliases(text));
+    }
+    if (Object.keys(aliases).length === 0) return parsed;
+    const paths = { ...parsed.options.paths };
+    for (const [name, target] of Object.entries(aliases)) {
+        const absolute = normalize(path.resolve(directory, target));
+        if (name.endsWith("/*")) {
+            paths[name] ??= [absolute];
+            continue;
+        }
+        paths[name] ??= [absolute];
+        paths[`${name}/*`] ??= [`${absolute}/*`];
+    }
+    return { ...parsed, options: { ...parsed.options, paths } };
+}
+
+/**
+ * The entries of every `alias` object in a config whose target can be read
+ * without running it: a string, `path.join|resolve(__dirname, …)`, or
+ * `fileURLToPath(new URL('./x', import.meta.url))`. An exact-match key
+ * (`vue$`) names a package, not a directory, and is skipped.
+ */
+function declaredAliases(text) {
+    const file = ts.createSourceFile(
+        "config.ts",
+        text,
+        ts.ScriptTarget.Latest,
+        true,
+        ts.ScriptKind.TS,
+    );
+    const aliases = {};
+    const visit = (node) => {
+        if (
+            ts.isPropertyAssignment(node) &&
+            staticPropertyName(node.name) === "alias" &&
+            ts.isObjectLiteralExpression(node.initializer)
+        ) {
+            for (const entry of node.initializer.properties) {
+                const name = ts.isPropertyAssignment(entry)
+                    ? staticPropertyName(entry.name)
+                    : null;
+                const target =
+                    name === null ? null : aliasTarget(entry.initializer);
+                if (target !== null && !name.endsWith("$"))
+                    aliases[name] = target;
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(file);
+    return aliases;
+}
+
+/** A directory an alias maps to, relative to its config, or null. */
+function aliasTarget(expression) {
+    if (ts.isStringLiteralLike(expression)) {
+        // A path, not a package (`lodash-es`, `@scope/pkg`).
+        const target = expression.text;
+        return /^\.{0,2}\//.test(target) ||
+            (target.includes("/") && !target.startsWith("@"))
+            ? target
+            : null;
+    }
+    if (!ts.isCallExpression(expression)) return null;
+    const callee = expression.expression.getText();
+    const [first, ...rest] = expression.arguments;
+    if (
+        /(?:^|\.)(?:join|resolve)$/.test(callee) &&
+        first !== undefined &&
+        ts.isIdentifier(first) &&
+        first.text === "__dirname" &&
+        rest.every((part) => ts.isStringLiteralLike(part))
+    )
+        return path.posix.join(".", ...rest.map((part) => part.text));
+    const url = expression.arguments[0];
+    if (
+        callee === "fileURLToPath" &&
+        url !== undefined &&
+        ts.isNewExpression(url) &&
+        url.arguments?.[0] !== undefined &&
+        ts.isStringLiteralLike(url.arguments[0])
+    )
+        return url.arguments[0].text;
+    return null;
+}
+
+/** `require.context('<literal>', …)`, webpack's directory import. */
+function isRequireContext(node) {
+    const callee = node.expression;
+    return (
+        ts.isPropertyAccessExpression(callee) &&
+        ts.isIdentifier(callee.expression) &&
+        callee.expression.text === "require" &&
+        callee.name.text === "context" &&
+        node.arguments.length >= 1 &&
+        ts.isStringLiteralLike(node.arguments[0])
+    );
+}
+
+/**
+ * The source and flags of a regular expression literal, or null. The
+ * stateful `g` and `y` flags are dropped: webpack tests each key on its own.
+ */
+function regularExpressionOf(node) {
+    if (!ts.isRegularExpressionLiteral(node)) return null;
+    const match = /^\/(.*)\/([a-z]*)$/s.exec(node.text);
+    if (match === null) return null;
+    const flags = match[2].replace(/[gy]/g, "");
+    try {
+        new RegExp(match[1], flags);
+    } catch {
+        return null;
+    }
+    return { source: match[1], flags };
+}
+
+/**
+ * Options Vue, vue-router, vue-meta and Nuxt call on a component themselves.
+ */
+const VUE_HOOKS = new Set([
+    "data",
+    "setup",
+    "render",
+    "beforeCreate",
+    "created",
+    "beforeMount",
+    "mounted",
+    "beforeUpdate",
+    "updated",
+    "beforeDestroy",
+    "destroyed",
+    "beforeUnmount",
+    "unmounted",
+    "activated",
+    "deactivated",
+    "errorCaptured",
+    "renderTracked",
+    "renderTriggered",
+    "serverPrefetch",
+    "beforeRouteEnter",
+    "beforeRouteUpdate",
+    "beforeRouteLeave",
+    "metaInfo",
+    "head",
+    "asyncData",
+    "fetch",
+]);
+
+/**
+ * The options object a Vue component exports: `export default { … }`, or the
+ * object passed to `defineComponent(…)` / `Vue.extend(…)` there.
+ */
+function vueOptionsObject(sourceFile) {
+    const exported = sourceFile.statements.find(
+        (statement) =>
+            ts.isExportAssignment(statement) && !statement.isExportEquals,
+    )?.expression;
+    if (exported === undefined) return undefined;
+    if (ts.isObjectLiteralExpression(exported)) return exported;
+    const argument = ts.isCallExpression(exported)
+        ? exported.arguments[0]
+        : undefined;
+    return argument !== undefined && ts.isObjectLiteralExpression(argument)
+        ? argument
+        : undefined;
+}
+
+/** An object literal member's static name, or null. */
+function memberName(member) {
+    return member.name === undefined ? null : staticPropertyName(member.name);
+}
+
+/** A property name written as an identifier or a string, or null. */
+function staticPropertyName(name) {
+    return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : null;
+}
+
+function projectTypeScriptMajor(root, directory, versions) {
+    if (versions === null || typeof versions !== "object") return null;
+    let relative = relativeInside(root, directory);
+    while (relative !== null) {
+        const key = relative === "." ? "" : relative;
+        const major = versions[key];
+        if (Number.isInteger(major)) return major;
+        if (key === "") return null;
+        const parent = path.posix.dirname(key);
+        relative = parent === "." ? "" : parent;
+    }
+    return null;
+}
+
 function defaultLibDirectory() {
     return normalize(path.dirname(ts.getDefaultLibFilePath({})));
 }
@@ -1594,6 +2512,9 @@ function createRestrictedProgram(
         skipDefaultLibCheck: true,
     };
     const host = ts.createCompilerHost(options, true);
+    // What an editor does: a referenced project's outputs stand for its
+    // sources, so nothing has to be built before it can be analysed.
+    host.useSourceOfProjectReferenceRedirect = () => true;
     host.getSourceFile = (fileName, languageVersion) => {
         // A refused path is left out of the program, so the facts of every file
         // that imports or includes it are computed as if it did not exist. It
@@ -1610,6 +2531,12 @@ function createRestrictedProgram(
             recordRefused(reads, root, absolute, maxFileBytes);
             return undefined;
         };
+        // Refused for where it sits, which no state of the file can change,
+        // so there is no read to report. Recording it as a failed read named a
+        // readable regular file as unreadable, and the core's commit-time
+        // re-read aborted every scan whose source reaches into its own build
+        // output, such as a `bin/` script importing `../dist/index.js`.
+        if (excludedByProjectLayoutPath(root, absolute)) return undefined;
         if (!allowedCompilerPath(root, fileName)) return refused();
         // The per-file byte cap is enforced on requested files, but the program
         // also pulls in import-reachable and included sources. Guard those too so
@@ -1651,6 +2578,11 @@ function createRestrictedProgram(
     // walk a location other than the name resolution returned, and that answer
     // is recorded as absent, since no single state of the tree describes it.
     host.realpath = (file) => {
+        // An alias exists nowhere on disk: its realpath is the real file's,
+        // under the same alias, and the walk is of the real file.
+        const original = realSourcePath(normalize(file));
+        if (original !== normalize(file))
+            return `${host.realpath(original)}${normalize(file).slice(original.length)}`;
         let real;
         try {
             real = realpathNative(file);
@@ -1687,6 +2619,13 @@ function createRestrictedProgram(
         allowedCompilerPath(root, file)
             ? readRecorded(root, file, reads, maxFileBytes)
             : undefined;
+    // Only in a Vue project: the rule is its bundlers', and a retry probes
+    // paths that are then recorded.
+    if (parsed.vueProject === true)
+        host.resolveModuleNameLiterals = componentExtensionResolver(
+            host,
+            options,
+        );
     return ts.createProgram({
         rootNames: parsed.fileNames,
         options,
@@ -1696,13 +2635,96 @@ function createRestrictedProgram(
     });
 }
 
-function diagnosticsForProgram(program, root) {
+/**
+ * Module resolution as the compiler does it, plus the `.vue` extension for a
+ * path that resolves to nothing without it.
+ *
+ * webpack and Vue CLI list `.vue` in `resolve.extensions`, so Vue projects
+ * import `./components/Card` and mean `Card.vue`, which the compiler never
+ * tries. Every component imported that way read as unused. Only a relative
+ * or path-mapped specifier with no extension is retried, and only when it
+ * resolved to nothing.
+ */
+function componentExtensionResolver(host, options) {
+    const cache = ts.createModuleResolutionCache(
+        host.getCurrentDirectory(),
+        host.getCanonicalFileName,
+        options,
+    );
+    return (
+        literals,
+        containingFile,
+        redirectedReference,
+        compilerOptions,
+        containingSourceFile,
+    ) =>
+        literals.map((literal) => {
+            const resolve = (name) =>
+                ts.resolveModuleName(
+                    name,
+                    containingFile,
+                    compilerOptions,
+                    host,
+                    cache,
+                    redirectedReference,
+                    ts.getModeForUsageLocation(
+                        containingSourceFile,
+                        literal,
+                        compilerOptions,
+                    ),
+                );
+            const resolved = resolve(literal.text);
+            if (
+                resolved.resolvedModule !== undefined ||
+                !literal.text.includes("/") ||
+                path.posix.extname(literal.text) !== ""
+            )
+                return resolved;
+            const component = resolve(`${literal.text}.vue`);
+            return component.resolvedModule !== undefined
+                ? component
+                : resolved;
+        });
+}
+
+function diagnosticsForProgram(program, root, maxFileBytes) {
     const result = new Map();
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
         if (!diagnostic.file) continue;
+        const component = componentSources.get(diagnostic.file);
+        if (
+            component !== undefined &&
+            !componentDiagnosticKept(component, diagnostic)
+        )
+            continue;
         if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
+        if (namesComponentDefaultExport(diagnostic)) continue;
         const relative = relativeInside(root, diagnostic.file.fileName);
         if (relative === null || belowNodeModules(relative)) continue;
+        const overCap = declarationOverCap(
+            program,
+            diagnostic,
+            root,
+            maxFileBytes,
+        );
+        if (overCap !== null) {
+            const start = diagnostic.file.getLineAndCharacterOfPosition(
+                diagnostic.start ?? 0,
+            );
+            const list = result.get(relative) ?? [];
+            list.push({
+                severity: "warning",
+                code: "TS_DECLARATION_OVER_CAP",
+                message: overCap,
+                evidence: {
+                    path: relative,
+                    start_line: start.line + 1,
+                    end_line: start.line + 1,
+                },
+            });
+            result.set(relative, list);
+            continue;
+        }
         const start = diagnostic.start ?? 0;
         const startPosition =
             diagnostic.file.getLineAndCharacterOfPosition(start);
@@ -1732,7 +2754,60 @@ function diagnosticsForProgram(program, root) {
         list.push(item);
         result.set(relative, list);
     }
+    componentParseDiagnostics(program, root, result);
     return result;
+}
+
+/**
+ * `Module "X.vue" has no default export`: a component's default export is
+ * the component its bundler compiles, which its virtual source never spells.
+ */
+function namesComponentDefaultExport(diagnostic) {
+    if (diagnostic.code !== 1192) return false;
+    const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    const module = /Module '"([^"]+)"'/.exec(text)?.[1];
+    return module !== undefined && componentDialect(module) !== null;
+}
+
+/** A `COMPONENT_UNPARSED` warning for each component that could not be read. */
+function componentParseDiagnostics(program, root, result) {
+    for (const sourceFile of program.getSourceFiles()) {
+        const component = componentSources.get(sourceFile);
+        const relative = relativeInside(root, sourceFile.fileName);
+        if (component?.unparsed === undefined || relative === null) continue;
+        const list = result.get(relative) ?? [];
+        list.push({
+            severity: "warning",
+            code: "COMPONENT_UNPARSED",
+            message: `${relative} was not read as a ${component.dialect} component: ${component.unparsed}`,
+            evidence: { path: relative, start_line: 1, end_line: 1 },
+        });
+        result.set(relative, list);
+    }
+}
+
+/**
+ * Why a `Cannot find module` is not what it says, or null when it is.
+ *
+ * A file over the byte cap is refused to bound memory, and a package whose
+ * declaration file is that large resolves perfectly well: the compiler just
+ * never receives it, and reports the import as missing. Read as a missing
+ * dependency, that sends someone to install a package they already have.
+ */
+function declarationOverCap(program, diagnostic, root, maxFileBytes) {
+    if (diagnostic.code !== 2307) return null;
+    const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    const name = /Cannot find module '([^']+)'/.exec(text)?.[1];
+    if (name === undefined) return null;
+    let resolved;
+    program.forEachResolvedModule((resolution, moduleName) => {
+        if (moduleName === name)
+            resolved ??= resolution.resolvedModule?.resolvedFileName;
+    }, diagnostic.file);
+    if (resolved === undefined || !exceedsByteCap(resolved, maxFileBytes))
+        return null;
+    const shown = relativeInside(root, resolved) ?? resolved;
+    return `Module '${name}' resolves to ${shown}, which is over the ${maxFileBytes}-byte per-file cap, so the scan did not read it and names imported from it are unresolved.`;
 }
 
 function declarationDescriptor(node, sourceFile) {
@@ -1779,6 +2854,8 @@ function declarationKind(node, fallback) {
         return "method";
     if (ts.isPropertyDeclaration(node) || ts.isPropertySignature(node))
         return "property";
+    if (isObjectLiteralBinding(node)) return "variable";
+    if (isContextualObjectLiteral(node)) return "object";
     return fallback;
 }
 
@@ -1795,7 +2872,8 @@ function declarationName(node, sourceFile) {
     if (
         (ts.isClassDeclaration(node) ||
             ts.isClassExpression(node) ||
-            ts.isFunctionDeclaration(node)) &&
+            ts.isFunctionDeclaration(node) ||
+            isContextualObjectLiteral(node)) &&
         !node.name
     ) {
         // Include the column so minified single-line bundles don't collapse
@@ -1803,12 +2881,37 @@ function declarationName(node, sourceFile) {
         const position = sourceFile.getLineAndCharacterOfPosition(
             node.getStart(sourceFile),
         );
-        return `{anonymous}@${position.line + 1}:${position.character + 1}`;
+        const label = ts.isObjectLiteralExpression(node)
+            ? "{object}"
+            : "{anonymous}";
+        return `${label}@${position.line + 1}:${position.character + 1}`;
     }
     return null;
 }
 
+// Inside `declare global { ... }` or `declare module 'x' { ... }`: a
+// description of something the runtime or another package defines, which is
+// no more code than a `.d.ts` is. The block itself counts as inside.
+function insideAmbientDeclaration(node) {
+    for (let current = node; current; current = current.parent) {
+        if (
+            ts.isModuleDeclaration(current) &&
+            ((current.flags & ts.NodeFlags.GlobalAugmentation) !== 0 ||
+                ts.isStringLiteral(current.name))
+        )
+            return true;
+    }
+    return false;
+}
+
 function isDeclaration(node) {
+    // A member of an inline `{ ... }` type describes a shape, not code, and
+    // has no name of its own to be declared under.
+    if (
+        (ts.isMethodSignature(node) || ts.isPropertySignature(node)) &&
+        ts.isTypeLiteralNode(node.parent)
+    )
+        return false;
     return (
         ts.isClassDeclaration(node) ||
         ts.isClassExpression(node) ||
@@ -1821,12 +2924,95 @@ function isDeclaration(node) {
         ts.isMethodSignature(node) ||
         ts.isConstructorDeclaration(node) ||
         ts.isPropertyDeclaration(node) ||
-        ts.isPropertySignature(node)
+        ts.isPropertySignature(node) ||
+        isObjectLiteralBinding(node) ||
+        isContextualObjectLiteral(node)
     );
+}
+
+/**
+ * `const charon: View = { query() {} }`: a binding whose object literal
+ * declares methods, which is how TypeScript writes an implementation without a
+ * class. The binding is the container its methods belong to, so they are named
+ * after it rather than after the module, and two literals in one file cannot
+ * share a member name; and its declared or `satisfies` type is the contract it
+ * implements, which is what reaches those methods from a caller typed as it.
+ */
+function isObjectLiteralBinding(node) {
+    if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name))
+        return false;
+    const literal = objectLiteralOf(node.initializer);
+    return (
+        literal !== null &&
+        literal.properties.some((member) => ts.isMethodDeclaration(member))
+    );
+}
+
+/**
+ * An object literal with methods that no binding names: passed as an argument
+ * (`register({ handle() {} })`, `new Proxy(t, { get() {} })`), returned, or
+ * nested in another literal. It implements the type of the place it is passed
+ * to, so it is a container of its own, named by position, with that type as
+ * its contract. A literal that initialises a binding is the binding's.
+ */
+function isContextualObjectLiteral(node) {
+    if (
+        !ts.isObjectLiteralExpression(node) ||
+        !node.properties.some((member) => ts.isMethodDeclaration(member))
+    )
+        return false;
+    let current = node.parent;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    )
+        current = current.parent;
+    return !(
+        current !== undefined &&
+        ts.isVariableDeclaration(current) &&
+        isObjectLiteralBinding(current)
+    );
+}
+
+// The object literal an initializer evaluates to, through parentheses, `as`
+// and `satisfies`, or null.
+function objectLiteralOf(expression) {
+    let current = expression;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    )
+        current = current.expression;
+    return current !== undefined && ts.isObjectLiteralExpression(current)
+        ? current
+        : null;
+}
+
+// The type an object-literal binding declares it implements: its annotation,
+// or the nearest `satisfies`.
+function objectLiteralContract(node) {
+    if (node.type !== undefined) return node.type;
+    let current = node.initializer;
+    while (
+        current !== undefined &&
+        (ts.isParenthesizedExpression(current) ||
+            ts.isAsExpression(current) ||
+            ts.isSatisfiesExpression(current))
+    ) {
+        if (ts.isSatisfiesExpression(current)) return current.type;
+        current = current.expression;
+    }
+    return undefined;
 }
 
 function containerDeclaration(node) {
     return (
+        isObjectLiteralBinding(node) ||
+        isContextualObjectLiteral(node) ||
         ts.isClassDeclaration(node) ||
         ts.isClassExpression(node) ||
         ts.isInterfaceDeclaration(node) ||
@@ -1882,7 +3068,9 @@ function canonicalForDeclaration(declaration, relative) {
  * Declarations a value reference is allowed to point at: the callables and
  * types dead-code analysis reasons about. Variables, parameters, properties and
  * imports are excluded — an edge per local read would dominate the graph without
- * telling us anything about reachability.
+ * telling us anything about reachability. The one variable admitted is an
+ * object-literal binding with methods, which the graph holds as a component
+ * (see {@link isObjectLiteralBinding}) and which is used by being handed around.
  */
 function referenceableDeclaration(node) {
     return (
@@ -1891,7 +3079,55 @@ function referenceableDeclaration(node) {
         ts.isClassDeclaration(node) ||
         ts.isInterfaceDeclaration(node) ||
         ts.isEnumDeclaration(node) ||
-        ts.isTypeAliasDeclaration(node)
+        ts.isTypeAliasDeclaration(node) ||
+        isObjectLiteralBinding(node)
+    );
+}
+
+/** A declaration's attributes, marked `ambient` inside `declare global` / `declare module`. */
+function ambientAttributes(node, attributes) {
+    return insideAmbientDeclaration(node)
+        ? { ...attributes, ambient: true }
+        : attributes;
+}
+
+/** An identifier that is the whole of a statement or of a parenthesised expression. */
+function isBareValue(parent, node) {
+    return (
+        (ts.isExpressionStatement(parent) ||
+            ts.isParenthesizedExpression(parent)) &&
+        parent.expression === node
+    );
+}
+
+/** A member, property or attribute name, or an intrinsic JSX tag: never a binding. */
+function isNamePosition(node) {
+    const parent = node.parent;
+    return (
+        (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+        (ts.isPropertyAssignment(parent) && parent.name === node) ||
+        ts.isJsxAttribute(parent) ||
+        ((ts.isJsxOpeningElement(parent) ||
+            ts.isJsxSelfClosingElement(parent) ||
+            ts.isJsxClosingElement(parent)) &&
+            /^[a-z]/.test(node.text))
+    );
+}
+
+/**
+ * `input.run ?? defaultRun`, `a || b` and `flag ? a : b`: a fallback or a
+ * choice between functions, either of which may be the one that runs.
+ */
+function isChoiceOperand(parent, node) {
+    if (ts.isConditionalExpression(parent))
+        return parent.whenTrue === node || parent.whenFalse === node;
+    return (
+        ts.isBinaryExpression(parent) &&
+        [
+            ts.SyntaxKind.QuestionQuestionToken,
+            ts.SyntaxKind.BarBarToken,
+            ts.SyntaxKind.AmpersandAmpersandToken,
+        ].includes(parent.operatorToken.kind)
     );
 }
 
@@ -1933,13 +3169,23 @@ function valueReferencePosition(node) {
         parent.arguments?.includes(node)
     )
         return true;
-    // `const run = handler;` / `private fn = handler;`
+    // `const run = handler;` / `private fn = handler;`, and a default:
+    // `(row = DefaultRow) => ...` or `{ render = DefaultRow }`.
     if (
         (ts.isVariableDeclaration(parent) ||
-            ts.isPropertyDeclaration(parent)) &&
+            ts.isPropertyDeclaration(parent) ||
+            ts.isParameter(parent) ||
+            ts.isBindingElement(parent)) &&
         parent.initializer === node
     )
         return true;
+    if (isChoiceOperand(parent, node)) return true;
+    // `handler;` and `(handler)`: how a component's tags and event handlers
+    // reach the checker (see component-source.js), and a value use anywhere.
+    if (isBareValue(parent, node)) return true;
+    // `<Button onClick={addItem}>` and `{renderRow}`: a function handed to
+    // React inside JSX, as a prop or a child.
+    if (ts.isJsxExpression(parent) && parent.expression === node) return true;
     // `return handler;` and `() => handler`
     if (ts.isReturnStatement(parent) && parent.expression === node) return true;
     if (ts.isArrowFunction(parent) && parent.body === node) return true;
@@ -2088,13 +3334,28 @@ function maxFileBytesFrom(limits) {
         : 2_000_000;
 }
 
+// A dependency's declaration file may hold a whole framework's type surface
+// (Phaser ships 6 MB in one file), and refusing it cost every class extending
+// one of its types all of its inherited members. Declarations below
+// node_modules get this multiple of the cap a project's own sources get. The
+// core's commit-time check applies the same rule (UndiscoveredInputVerifier).
+const DEPENDENCY_DECLARATION_CAP_FACTOR = 16;
+
+function byteCapFor(file, maxBytes) {
+    return /(?:^|\/)node_modules\/.+\.d\.[cm]?ts$/.test(normalize(file))
+        ? maxBytes * DEPENDENCY_DECLARATION_CAP_FACTOR
+        : maxBytes;
+}
+
 // Default-library declaration files are exempt: skipping one would break type
 // resolution for every file. Only project sources under the root are capped.
 function exceedsByteCap(fileName, maxFileBytes) {
     const normalized = realSourcePath(normalize(path.resolve(fileName)));
     if (contains(defaultLibDirectory(), normalized)) return false;
     try {
-        return fs.statSync(normalized).size > maxFileBytes;
+        return (
+            fs.statSync(normalized).size > byteCapFor(normalized, maxFileBytes)
+        );
     } catch (error) {
         rethrowStackOverflow(error);
         return false;
@@ -2191,7 +3452,10 @@ function validateRequestedFiles(root, files, limits = {}) {
                 throw new UnreadableInput(
                     `TypeScript input no longer resolves to itself: ${relative}`,
                 );
-            if (!SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase())) {
+            if (
+                !SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()) &&
+                componentDialect(absolute) === null
+            ) {
                 if (path.extname(absolute) !== "")
                     throw new Error(
                         `Unsupported TypeScript input: ${relative}`,
@@ -2365,6 +3629,179 @@ function startsWithShebang(text) {
     return text.replace(/^\uFEFF/, "").startsWith("#!");
 }
 
+// Source extensions a module URL can name; an asset URL names none of them.
+const MODULE_URL_EXTENSION = /\.(?:[cm]?[jt]sx?)$/;
+
+// The project module `new URL('./gen.worker.ts', import.meta.url)` names: how
+// Vite, webpack and the browser load a module worker, which no import names.
+// Decided from the literal alone, so the answer cannot depend on which files
+// share a request; a path that leaves the project, lands below node_modules or
+// in build output, or names an asset, is no module of this project.
+function importMetaUrlModule(node, sourceFile, root) {
+    const args = node.arguments ?? [];
+    if (
+        !ts.isIdentifier(node.expression) ||
+        node.expression.text !== "URL" ||
+        args.length < 2 ||
+        !ts.isStringLiteralLike(args[0]) ||
+        !isImportMetaUrl(args[1])
+    )
+        return null;
+    const specifier = args[0].text;
+    if (
+        !(specifier.startsWith("./") || specifier.startsWith("../")) ||
+        !MODULE_URL_EXTENSION.test(specifier)
+    )
+        return null;
+    const absolute = normalize(
+        path.resolve(path.dirname(sourceFile.fileName), specifier),
+    );
+    const relative = relativeInside(root, absolute);
+    if (
+        relative === null ||
+        belowNodeModules(relative) ||
+        excludedByProjectLayout(relative)
+    )
+        return null;
+    return relative;
+}
+
+// `__dirname`, or `import.meta.dirname`.
+function isDirnameExpression(expression) {
+    if (ts.isIdentifier(expression)) return expression.text === "__dirname";
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "dirname" &&
+        ts.isMetaProperty(expression.expression)
+    );
+}
+
+// The project-relative source module a path names, resolved against
+// `directory`, or null for one outside the project, below node_modules, in
+// excluded build output, or not a source file at all.
+function sourcePathTarget(root, directory, specifier) {
+    if (!MODULE_URL_EXTENSION.test(specifier)) return null;
+    const relative = relativeInside(
+        root,
+        normalize(path.resolve(directory, specifier)),
+    );
+    if (
+        relative === null ||
+        relative === "" ||
+        belowNodeModules(relative) ||
+        excludedByProjectLayout(relative)
+    )
+        return null;
+    return relative;
+}
+
+function isImportMetaUrl(expression) {
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "url" &&
+        ts.isMetaProperty(expression.expression) &&
+        expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
+    );
+}
+
+// Whether a file-scope `if` runs its body only when the file is the program
+// entered: `import.meta.main` (Bun, Deno) or CommonJS `require.main === module`.
+// This is JavaScript's `__main__` guard, and it says the same thing a shebang
+// does: something outside the graph runs the file, so no inbound edge is owed.
+// A guard nested in a function, or a negated one, says nothing about that.
+function hasMainGuard(sourceFile) {
+    return sourceFile.statements.some(
+        (statement) =>
+            ts.isIfStatement(statement) &&
+            isMainGuardCondition(unwrapParentheses(statement.expression)),
+    );
+}
+
+function isMainGuardCondition(expression) {
+    if (isImportMetaMain(expression)) return true;
+    if (!ts.isBinaryExpression(expression)) return false;
+    const operator = expression.operatorToken.kind;
+    if (
+        operator !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+        operator !== ts.SyntaxKind.EqualsEqualsToken
+    )
+        return false;
+    const left = unwrapParentheses(expression.left);
+    const right = unwrapParentheses(expression.right);
+    return (
+        (isRequireMain(left) && isIdentifierNamed(right, "module")) ||
+        (isIdentifierNamed(left, "module") && isRequireMain(right))
+    );
+}
+
+function isImportMetaMain(expression) {
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "main" &&
+        ts.isMetaProperty(expression.expression) &&
+        expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
+    );
+}
+
+function isRequireMain(expression) {
+    return (
+        ts.isPropertyAccessExpression(expression) &&
+        expression.name.text === "main" &&
+        isIdentifierNamed(expression.expression, "require")
+    );
+}
+
+function isIdentifierNamed(expression, name) {
+    return ts.isIdentifier(expression) && expression.text === name;
+}
+
+function unwrapParentheses(expression) {
+    let current = expression;
+    while (ts.isParenthesizedExpression(current)) current = current.expression;
+    return current;
+}
+
+/**
+ * Which config describes each file: the first whose own file list includes it.
+ *
+ * A program reaches far more than that (a solution config's references, an
+ * import across a package boundary), and a file emitted by whichever program
+ * reached it first was checked under options its project never uses.
+ */
+function configOwners(root, parsedConfigs) {
+    const owners = new Map();
+    for (const [configPath, parsed] of parsedConfigs) {
+        for (const fileName of parsed.ownFileNames ?? parsed.fileNames) {
+            const relative = relativeInside(root, fileName);
+            if (relative !== null && !owners.has(relative))
+                owners.set(relative, configPath);
+        }
+    }
+    return owners;
+}
+
+/** The program for requested files no config's program emitted. */
+function fallbackConfig(root, remaining) {
+    return {
+        options: {
+            allowJs: true,
+            checkJs: false,
+            noEmit: true,
+            target: ts.ScriptTarget.Latest,
+            module: ts.ModuleKind.ESNext,
+            moduleResolution: ts.ModuleResolutionKind.Bundler,
+            jsx: ts.JsxEmit.Preserve,
+        },
+        // An extensionless script, or one whose extension is not in lower
+        // case, only ever reaches the fallback program: no tsconfig `include`
+        // matches either name.
+        fileNames: remaining.map((relative) =>
+            offeredPath(path.join(root, relative)),
+        ),
+        projectReferences: undefined,
+    };
+}
+
 function validateRoot(input) {
     if (typeof input !== "string" || input.length === 0)
         throw new Error("A project root is required.");
@@ -2417,6 +3854,13 @@ function allowedCompilerPath(root, candidate) {
     return walked.location === undefined || contains(root, walked.location);
 }
 
+/** Whether an in-root absolute path lies where the project's exclusions refuse it. */
+function excludedByProjectLayoutPath(root, absolute) {
+    if (!contains(root, absolute)) return false;
+    const relative = normalize(path.relative(root, absolute));
+    return relative !== "" && excludedByProjectLayout(relative);
+}
+
 /**
  * Whether the project's own directory exclusions refuse a project-relative path.
  *
@@ -2442,10 +3886,20 @@ function excludedByProjectLayout(relative) {
     );
     const governed =
         dependencyRoot === -1 ? segments : segments.slice(0, dependencyRoot);
-    return governed.some(
-        (segment) =>
-            isExcludedDirectoryName(segment) &&
-            !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+    return (
+        governed.some(
+            (segment) =>
+                isExcludedDirectoryName(segment) &&
+                !RESOLUTION_ALLOWED_EXCLUDED.has(segment),
+        ) ||
+        governed.some(
+            (segment, index) =>
+                index + 1 < governed.length &&
+                EXCLUDED_SEGMENT_SEQUENCES.some(
+                    ([first, second]) =>
+                        segment === first && governed[index + 1] === second,
+                ),
+        )
     );
 }
 
@@ -2474,6 +3928,20 @@ function relativeInside(root, candidate) {
 function realSourcePath(candidate) {
     if (candidate.endsWith(SHEBANG_ALIAS_SUFFIX))
         return candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length);
+    const component = COMPONENT_ALIAS.exec(candidate);
+    if (component !== null) {
+        const original = candidate.slice(
+            0,
+            component.index + 1 + component[1].length,
+        );
+        if (
+            component[3].toLowerCase() ===
+                componentAliasSuffix(componentDialect(original)) &&
+            (component[2] !== undefined || !isRegularFile(candidate)) &&
+            isRegularFile(original)
+        )
+            return original;
+    }
     const caseAlias = /\.knossos-alias(\.[a-z]+)$/.exec(candidate);
     if (caseAlias !== null && SOURCE_EXTENSIONS.has(caseAlias[1])) {
         const original = candidate.slice(0, caseAlias.index);
@@ -2499,11 +3967,28 @@ function realSourcePath(candidate) {
 // script as a `.js` alias, a file whose extension is not in lower case under its
 // lower-cased extension, and anything else as itself.
 function offeredPath(absolute) {
+    const dialect = componentDialect(absolute);
+    if (dialect !== null) {
+        const suffix = componentAliasSuffix(dialect);
+        return isRegularFile(`${absolute}${suffix}`)
+            ? `${absolute}${COMPONENT_ALIAS_MARK}${suffix}`
+            : `${absolute}${suffix}`;
+    }
     const extension = path.extname(absolute);
     if (extension === "") return `${absolute}${SHEBANG_ALIAS_SUFFIX}`;
     if (extension !== extension.toLowerCase())
         return `${absolute}${CASE_ALIAS_MARK}${extension.toLowerCase()}`;
     return absolute;
+}
+
+/** A component's alias (see offeredPath); any other file as itself. */
+function offeredComponentPath(file) {
+    return componentDialect(file) === null ? file : offeredPath(file);
+}
+
+/** Whether a path is a regular file, following links as the compiler does. */
+function isRegularFile(candidate) {
+    return fs.statSync(candidate, { throwIfNoEntry: false })?.isFile() ?? false;
 }
 
 function contains(root, candidate) {

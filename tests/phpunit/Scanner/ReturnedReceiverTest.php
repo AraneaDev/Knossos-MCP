@@ -24,6 +24,98 @@ use PHPUnit\Framework\Attributes\Group;
  */
 final class ReturnedReceiverTest extends KnossosTestCase
 {
+    /**
+     * `foreach (Feature::cases() as $feature)` hands out the enum's own cases,
+     * and `(new Kernel())->server()->run()` calls a method on what a
+     * constructed object returns. Neither receiver was typed, so the enum's
+     * methods and the server's entry point read as unreferenced.
+     */
+    #[Group('php-scanner')]
+    public function testEnumCasesInAForeachAndACallOnAConstructedObjectsResultResolve(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-incremental-cases-' . bin2hex(random_bytes(6));
+        if (!mkdir($root . '/src', 0o755, true)) {
+            throw new \RuntimeException('Unable to create fixture tree.');
+        }
+        try {
+            file_put_contents($root . '/composer.json', json_encode(['name' => 'fixture/cases'], JSON_THROW_ON_ERROR));
+            file_put_contents($root . '/src/Feature.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                enum Feature: string
+                {
+                    case Search = 'search';
+
+                    public function label(): string
+                    {
+                        return ucfirst($this->value);
+                    }
+                }
+                PHP);
+            file_put_contents($root . '/src/Server.php', <<<'PHP'
+                <?php
+
+                namespace Fixture;
+
+                final class Server
+                {
+                    public function run(): void
+                    {
+                    }
+                }
+
+                final class Kernel
+                {
+                    public function server(): Server
+                    {
+                        return new Server();
+                    }
+                }
+
+                final class Entry
+                {
+                    public function labels(): array
+                    {
+                        $labels = [];
+                        foreach (Feature::cases() as $feature) {
+                            $labels[] = $feature->label();
+                        }
+
+                        return $labels;
+                    }
+
+                    public function boot(): void
+                    {
+                        (new Kernel())->server()->run();
+                    }
+                }
+                PHP);
+            $pdo = SqliteConnection::open($root . '/graph.sqlite');
+            (new MigrationRunner($pdo, self::repositoryRoot() . '/migrations'))->migrate();
+
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'full');
+
+            $calls = $pdo->query(
+                "SELECT s.canonical_name AS source, t.canonical_name AS target FROM edges e " .
+                "JOIN nodes s ON s.id = e.source_id JOIN nodes t ON t.id = e.target_id " .
+                "WHERE e.kind = 'calls' AND t.display_name IN ('label', 'run') ORDER BY s.canonical_name",
+            )->fetchAll();
+
+            assertSame(
+                [
+                    ['source' => 'Fixture\\Entry::boot', 'target' => 'Fixture\\Server::run'],
+                    ['source' => 'Fixture\\Entry::labels', 'target' => 'Fixture\\Feature::label'],
+                ],
+                array_map(static fn(array $row): array => ['source' => $row['source'], 'target' => $row['target']], $calls),
+            );
+        } finally {
+            unset($pdo);
+            $this->removeFixtureTree($root);
+        }
+    }
+
     #[Group('php-scanner')]
     public function testACallOnAValueReturnedByAnotherFileResolvesToTheDeclaringMethod(): void
     {

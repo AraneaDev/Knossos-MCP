@@ -38,6 +38,9 @@ final readonly class IgnoreMatcher
         // (each with its own tsconfig), which would otherwise multiply the
         // TypeScript program count and make scans slow or time out.
         '.stryker-tmp',
+        // Package-manager stores: dependency code, like node_modules.
+        '.pnpm-store',
+        '.yarn',
         'build',
         'dist',
         'site',
@@ -57,6 +60,16 @@ final readonly class IgnoreMatcher
         // and scanning them produces NDJSON frames large enough to overflow the
         // worker's line limit on any non-trivial project.
         '_ide_helper',
+    ];
+
+    /**
+     * Consecutive segments excluded wherever they appear: VitePress writes its
+     * prebundled dependencies and its build below the site's own directory,
+     * and `cache` or `dist` alone would say too little to exclude on.
+     */
+    private const EXCLUDED_SEGMENT_SEQUENCES = [
+        ['.vitepress', 'cache'],
+        ['.vitepress', 'dist'],
     ];
 
     private const EXCLUDED_PREFIXES = [
@@ -135,6 +148,13 @@ final readonly class IgnoreMatcher
         foreach (self::EXCLUDED_PREFIXES as $prefix) {
             if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
                 return true;
+            }
+        }
+        foreach (self::EXCLUDED_SEGMENT_SEQUENCES as [$first, $second]) {
+            for ($i = 0, $last = count($segments) - 1; $i < $last; ++$i) {
+                if ($segments[$i] === $first && $segments[$i + 1] === $second) {
+                    return true;
+                }
             }
         }
 

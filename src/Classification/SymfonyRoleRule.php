@@ -11,6 +11,16 @@ use Knossos\Scanner\Protocol\Origin;
 /** Infers roles from Symfony attributes and base classes, where that framework declares them. */
 final readonly class SymfonyRoleRule implements ClassificationRule
 {
+    /** Base-class suffix => the role Symfony's autoconfiguration gives what extends it. */
+    private const AUTOCONFIGURED_PARENTS = [
+        '\\AbstractController' => 'symfony.controller',
+        '\\Console\\Command\\Command' => 'symfony.command',
+        '\\FixturesBundle\\Fixture' => 'symfony.fixture',
+        '\\Authorization\\Voter\\Voter' => 'symfony.voter',
+        '\\Form\\AbstractType' => 'symfony.form_type',
+        '\\Twig\\Extension\\AbstractExtension' => 'symfony.twig_extension',
+    ];
+
     /** {@inheritDoc} */
     public function id(): string
     {
@@ -25,8 +35,22 @@ final readonly class SymfonyRoleRule implements ClassificationRule
         }
         $roles = [];
         $parent = $node->attributes['extends'] ?? null;
-        if (is_string($parent) && str_ends_with($parent, '\\AbstractController')) {
-            $roles['symfony.controller'] = ['source' => 'extends', 'target' => $parent];
+        if (is_string($parent)) {
+            // What Symfony autoconfigures from the base class alone.
+            $qualified = '\\' . ltrim($parent, '\\');
+            foreach (self::AUTOCONFIGURED_PARENTS as $suffix => $role) {
+                if (str_ends_with($qualified, $suffix)) {
+                    $roles[$role] = ['source' => 'extends', 'target' => $parent];
+                }
+            }
+        }
+        // Serializers, forms and Twig call an entity's accessors through
+        // reflection, so none is referenced by name. A role, not a convention:
+        // it makes an unused one possibly dead rather than hiding it.
+        if ($node->kind === 'method'
+            && str_contains($node->canonicalName, '\\Entity\\')
+            && preg_match('/^(?:get|set|is|has|add|remove)[A-Z_]/', $node->displayName) === 1) {
+            $roles['doctrine.entity_accessor'] = ['source' => 'naming', 'target' => $node->displayName];
         }
         $interfaces = $node->attributes['implements'] ?? [];
         if (is_array($interfaces)) {

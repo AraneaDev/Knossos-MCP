@@ -1830,6 +1830,83 @@ final class GraphReconcilerTest extends TestCase
      * @param array<string, mixed> $overrides
      */
     /**
+     * A scanner that knows a receiver's type but not whether the type itself
+     * declares the method (Rust's `p.clone()` may be a trait's) marks the edge
+     * `speculative`. It is kept when the method exists and dropped when it
+     * does not, rather than fabricated into an external method on a type the
+     * project declares.
+     */
+    /**
+     * A JavaScript module with a hand-written declaration beside it
+     * (`tokens.mjs` and `tokens.d.mts`) is imported through the declaration,
+     * so every call edged to `tokens.d.mts#lees` and the implementation that
+     * runs looked unused. An edge to a declaration goes to the implementation
+     * when the graph holds one under the same name.
+     */
+    #[Group('reconciliation')]
+    public function testAnEdgeToADeclarationFileGoesToItsImplementation(): void
+    {
+        $node = static fn(string $canonical): NodeFact => new NodeFact(
+            localId: 'ts:function:' . $canonical,
+            kind: 'function',
+            canonicalName: $canonical,
+            displayName: $canonical,
+            origin: Origin::Ast,
+            confidence: Confidence::Certain,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $nodes = [$node('src/a.ts#run'), $node('scripts/tokens.d.mts#lees'), $node('scripts/tokens.mjs#lees'), $node('types/only.d.ts#declared')];
+        $edges = [];
+        foreach (['ts:function:scripts/tokens.d.mts#lees', 'ts:function:types/only.d.ts#declared'] as $index => $target) {
+            $edges[] = new EdgeFact('calls', 'ts:function:src/a.ts#run', $target, Origin::Ast, Confidence::Probable, new Evidence('src/Foo.php', $index + 1, $index + 1));
+        }
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution($nodes, $edges)],
+        ]);
+
+        (new GraphReconciler($this->repo))->reconcile($request);
+
+        $canonical = [];
+        foreach ($this->repo->nodes as $row) {
+            $canonical[$row[0]] = $row[4];
+        }
+        $targets = array_map(static fn(array $row): string => $canonical[$row[4]], $this->repo->edges);
+        sort($targets);
+        // The implementation is reached; a declaration with no implementation keeps its edge.
+        assertSame(['scripts/tokens.mjs#lees', 'types/only.d.ts#declared'], $targets);
+    }
+
+    #[Group('reconciliation')]
+    public function testASpeculativeEdgeIsKeptOnlyWhenItsTargetExists(): void
+    {
+        $caller = $this->minimalNode('rust:function:crate::go', 'crate::go');
+        $declared = $this->minimalNode('rust:method:crate::Policy::evaluate', 'crate::Policy::evaluate');
+        $edges = [];
+        foreach (['rust:method:crate::Policy::evaluate', 'rust:method:crate::Policy::clone'] as $index => $target) {
+            $edges[] = new EdgeFact(
+                kind: 'calls',
+                sourceReference: $caller->localId,
+                targetReference: $target,
+                origin: Origin::Ast,
+                confidence: Confidence::Probable,
+                evidence: new Evidence('src/Foo.php', $index + 1, $index + 1),
+                attributes: ['speculative' => true],
+            );
+        }
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller, $declared], $edges)],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        assertSame(2, $result->nodes);
+        assertSame(1, $result->edges);
+        assertSame(0, $result->unresolvedNodes);
+    }
+
+    /**
      * A deferred receiver reference is a shape a third-party scanner can emit,
      * so a malformed one must be ignored rather than resolved into something
      * arbitrary or fabricated as an external symbol.
@@ -2150,6 +2227,30 @@ final class GraphReconcilerTest extends TestCase
             configurationHash: 'c1',
             contribution: new ScanContribution('test.knossos:file:src/Foo.php'),
         );
+    }
+    /**
+     * A directory import names its modules by pattern, expanded here against
+     * every module the graph holds. A context that is not well formed, or a
+     * JavaScript pattern PCRE cannot compile (`[^]` matches any character in
+     * JavaScript and is an error in PCRE), loads nothing rather than
+     * guessing.
+     */
+    public function testADirectoryImportExpandsToTheModulesItsPatternMatches(): void
+    {
+        $targets = new \ReflectionMethod(GraphReconciler::class, 'contextTargets');
+        $nodeMap = [
+            'ts:module:js/store/modules/auth.js' => 'n1',
+            'ts:module:js/store/modules/nested/deep.js' => 'n2',
+            'ts:module:js/store/modules/notes.txt' => 'n3',
+            'ts:module:js/store/index.js' => 'n4',
+            'ts:function:js/store/modules/auth.js#login' => 'n5',
+        ];
+        $context = static fn(array $fields): string => 'ts:module_context:' . json_encode($fields);
+
+        assertSame(['n1'], $targets->invoke(null, $context(['directory' => 'js/store/modules', 'recursive' => false, 'pattern' => '\\.js$', 'flags' => 'g']), $nodeMap));
+        assertSame(['n1', 'n2'], $targets->invoke(null, $context(['directory' => 'js/store/modules', 'recursive' => true, 'pattern' => '\\.JS$', 'flags' => 'i']), $nodeMap));
+        assertSame([], $targets->invoke(null, 'ts:module_context:not json', $nodeMap));
+        assertSame([], $targets->invoke(null, $context(['directory' => 'js/store/modules', 'recursive' => true, 'pattern' => '[^]']), $nodeMap));
     }
 }
 
@@ -2503,5 +2604,6 @@ final class FakeGraphRepository implements GraphRepository
     {
         return [];
     }
+
 
 }

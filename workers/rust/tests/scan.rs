@@ -1195,14 +1195,111 @@ impl<F: Fn()> Handler for F {
 
 #[test]
 fn a_method_call_on_an_unknown_receiver_emits_no_edge() {
-    // `value.run()` names no resolvable target: the worker has no type
-    // information, so an edge here would be a guess. Dropping it is the
-    // documented behaviour.
-    let source = "pub fn go(value: Thing) { value.run(); }\n";
+    // A receiver no signature, annotation or constructor names: the result of
+    // a call, and a closure parameter. An edge here would be a guess.
+    let source = "pub fn go() { make().run(); let f = |v| v.run(); f(1); }\n";
     let contributions = scan_fixture("unknown-receiver", &[("src/lib.rs", source)]);
     let edges = contributions[0]["edges"].as_array().unwrap();
 
-    assert!(!edges.iter().any(|edge| edge["kind"] == "calls"));
+    assert!(
+        !edges
+            .iter()
+            .any(|edge| edge["kind"] == "calls"
+                && edge["target"].as_str().unwrap().ends_with("::run")),
+        "{edges:?}"
+    );
+}
+
+/// The `calls` edges from `source` into a `::<method>` target, as
+/// `(target, speculative)` pairs.
+fn method_calls(contributions: &[Value], source: &str) -> Vec<(String, bool)> {
+    let mut calls: Vec<(String, bool)> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["kind"] == "calls" && edge["source"] == source)
+        .map(|edge| {
+            (
+                edge["target"].as_str().unwrap().to_owned(),
+                edge["attributes"]["speculative"] == Value::Bool(true),
+            )
+        })
+        .collect();
+    calls.sort();
+    calls
+}
+
+#[test]
+fn a_method_call_on_a_receiver_of_known_type_is_a_speculative_edge() {
+    // Rust names a receiver's type in the signature, the annotation or the
+    // constructor, so `self.evaluate()`, `p.evaluate()` on `p: &Policy` and
+    // `let q = Policy::new(); q.evaluate()` all say which method they call.
+    // Leaving them out reported nearly every method as unreferenced. The
+    // target is still a guess for a trait method (`p.clone()`), so the edge is
+    // speculative: the core keeps it only when the method exists.
+    let source = r#"
+pub struct Policy;
+
+impl Policy {
+    pub fn new() -> Self { Policy }
+    pub fn evaluate(&self) {}
+    pub fn evaluate_all(&self) { self.evaluate(); }
+}
+
+pub fn by_parameter(p: &Policy) { p.evaluate(); p.clone(); }
+
+pub fn by_binding() {
+    let q = Policy::new();
+    q.evaluate();
+    let r: Policy = make();
+    r.evaluate();
+    let s = Policy {};
+    s.evaluate();
+}
+
+fn make() -> Policy { Policy }
+"#;
+    let contributions = scan_fixture("known-receiver", &[("src/lib.rs", source)]);
+
+    assert_eq!(
+        method_calls(&contributions, "rust:method:crate::Policy::evaluate_all"),
+        vec![("rust:method:crate::Policy::evaluate".to_owned(), true)]
+    );
+    assert_eq!(
+        method_calls(&contributions, "rust:function:crate::by_parameter"),
+        vec![
+            ("rust:method:crate::Policy::clone".to_owned(), true),
+            ("rust:method:crate::Policy::evaluate".to_owned(), true),
+        ]
+    );
+    let by_binding = method_calls(&contributions, "rust:function:crate::by_binding");
+    assert_eq!(
+        by_binding
+            .iter()
+            .filter(|(target, _)| target == "rust:method:crate::Policy::evaluate")
+            .count(),
+        1,
+        "three receivers, one deduplicated edge: {by_binding:?}"
+    );
+    assert!(by_binding.contains(&("rust:method:crate::Policy::evaluate".to_owned(), true)));
+}
+
+#[test]
+fn a_rebinding_of_unknown_type_forgets_the_receivers_type() {
+    let source = r#"
+pub struct Policy;
+impl Policy { pub fn new() -> Self { Policy } pub fn evaluate(&self) {} }
+pub fn go() {
+    let p = Policy::new();
+    let p = something();
+    p.evaluate();
+}
+fn something() -> u8 { 0 }
+"#;
+    let contributions = scan_fixture("rebound-receiver", &[("src/lib.rs", source)]);
+
+    assert!(!method_calls(&contributions, "rust:function:crate::go")
+        .iter()
+        .any(|(target, _)| target.ends_with("::evaluate")),);
 }
 
 #[test]
@@ -1933,4 +2030,483 @@ fn a_cargo_manifest_over_the_byte_cap_is_reported_as_null_and_names_no_crate() {
         .unwrap()
         .iter()
         .any(|node| node["kind"] == "package"));
+}
+
+/// Every edge of `kind` as a `(source, target)` pair, sorted.
+fn edges_of(contributions: &[Value], kind: &str) -> Vec<(String, String)> {
+    let mut edges: Vec<(String, String)> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["kind"] == kind)
+        .map(|edge| {
+            (
+                edge["source"].as_str().unwrap().to_owned(),
+                edge["target"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    edges.sort();
+    edges
+}
+
+#[test]
+fn calls_inside_macro_arguments_are_edges() {
+    // `format!`, `assert_eq!` and `println!` bodies are token streams to syn,
+    // so a helper only ever called inside one read as uncalled.
+    let source = r#"
+fn helper() -> u8 { 1 }
+fn other() -> u8 { 2 }
+pub fn go() {
+    let s = format!("{}-{}", helper(), 3);
+    assert_eq!(other(), 2);
+    println!("{s}");
+}
+"#;
+    let contributions = scan_fixture("macro-calls", &[("src/lib.rs", source)]);
+    let calls = edges_of(&contributions, "calls");
+
+    assert!(
+        calls.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::helper".to_owned()
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::other".to_owned()
+        )),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn types_named_in_fields_signatures_and_patterns_are_references() {
+    // A struct or enum used only as a type, a field, or a match arm has no
+    // call to be reached by, so without these edges it read as unreferenced.
+    let source = r#"
+pub enum HookState { Live, Absent }
+pub struct Rule;
+pub struct Policy { rules: Vec<Rule> }
+pub trait Gate {}
+pub fn check(s: HookState) -> Option<Rule> {
+    match s {
+        HookState::Live => None,
+        HookState::Absent => None,
+    }
+}
+pub fn boxed(_g: &dyn Gate) {}
+"#;
+    let contributions = scan_fixture("type-references", &[("src/lib.rs", source)]);
+    let references = edges_of(&contributions, "references");
+
+    for (source, target) in [
+        ("rust:class:crate::Policy", "rust:class:crate::Rule"),
+        ("rust:function:crate::check", "rust:class:crate::HookState"),
+        ("rust:function:crate::check", "rust:class:crate::Rule"),
+        ("rust:function:crate::boxed", "rust:interface:crate::Gate"),
+    ] {
+        assert!(
+            references.contains(&(source.to_owned(), target.to_owned())),
+            "{source} -> {target} missing from {references:?}"
+        );
+    }
+    // Every such edge is speculative: `Vec` and `Option` name nothing here,
+    // and the core drops what does not resolve.
+    let all_speculative = contributions
+        .iter()
+        .flat_map(|contribution| contribution["edges"].as_array().unwrap().clone())
+        .filter(|edge| edge["kind"] == "references")
+        .all(|edge| edge["attributes"]["speculative"] == Value::Bool(true));
+    assert!(all_speculative);
+}
+
+#[test]
+fn functions_named_by_serde_attributes_are_references() {
+    let source = r#"
+#[derive(serde::Deserialize)]
+pub struct Config {
+    #[serde(default = "default_action", skip_serializing_if = "is_false")]
+    pub flag: bool,
+}
+fn default_action() -> bool { true }
+fn is_false(value: &bool) -> bool { !*value }
+"#;
+    let contributions = scan_fixture("serde-references", &[("src/lib.rs", source)]);
+    let references = edges_of(&contributions, "references");
+
+    for target in [
+        "rust:function:crate::default_action",
+        "rust:function:crate::is_false",
+    ] {
+        assert!(
+            references.contains(&("rust:class:crate::Config".to_owned(), target.to_owned())),
+            "{target} missing from {references:?}"
+        );
+    }
+}
+
+#[test]
+fn calls_in_a_const_initializer_are_edges_from_the_module() {
+    let source = "const fn seed() -> u8 { 1 }\npub const ALL: [u8; 1] = [seed()];\n";
+    let contributions = scan_fixture("const-calls", &[("src/lib.rs", source)]);
+
+    assert!(edges_of(&contributions, "calls").contains(&(
+        "rust:module:crate".to_owned(),
+        "rust:function:crate::seed".to_owned()
+    )));
+}
+
+#[test]
+fn a_use_through_a_child_module_is_anchored_at_that_module() {
+    // In a crate root, `use policy::Policy;` names the `mod policy` declared
+    // beside it. Rendered as written, `policy::Policy::builtin()` became an
+    // external method on a crate nobody depends on.
+    let files = [
+        (
+            "src/main.rs",
+            "mod policy;\nuse policy::Policy;\nfn main() { Policy::builtin(); }\n",
+        ),
+        (
+            "src/policy.rs",
+            "pub struct Policy;\nimpl Policy { pub fn builtin() {} }\n",
+        ),
+    ];
+    let contributions = scan_fixture("child-module-use", &files);
+
+    assert!(edges_of(&contributions, "calls").contains(&(
+        "rust:function:crate::main".to_owned(),
+        "rust:method:crate::policy::Policy::builtin".to_owned()
+    )));
+    assert!(edges_of(&contributions, "imports").contains(&(
+        "rust:module:crate".to_owned(),
+        "rust:module:crate::policy".to_owned()
+    )));
+}
+
+#[test]
+fn a_function_passed_by_name_is_a_reference_when_this_file_declares_it() {
+    // `.map(helper)` and `.or_else(fallback)` hand a function over without
+    // calling it. A bare name is usually a local binding, so it counts only
+    // when this file declares a function by that name.
+    let source = r#"
+fn helper(x: u8) -> u8 { x }
+pub fn go(values: Vec<u8>) -> usize {
+    let local = 1;
+    values.into_iter().map(helper).filter(|v| *v > local).count()
+}
+"#;
+    let contributions = scan_fixture("function-by-name", &[("src/lib.rs", source)]);
+    let references = edges_of(&contributions, "references");
+
+    assert!(
+        references.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::helper".to_owned()
+        )),
+        "{references:?}"
+    );
+    assert!(
+        !references
+            .iter()
+            .any(|(_, target)| target.ends_with("::local")),
+        "{references:?}"
+    );
+}
+
+#[test]
+fn a_workspace_members_modules_are_rooted_at_its_crate_name() {
+    // A member crate's `src/` is its own crate root. Named by directory, its
+    // modules came out as `crates::engine::src::app`, so every `crate::` path
+    // inside it and every `use engine::...` from a sibling crate named
+    // nothing, and the whole crate read as unreferenced.
+    let files = [
+        ("Cargo.toml", "[workspace]\nmembers = [\"crates/*\"]\n"),
+        ("crates/core-lib/Cargo.toml", "[package]\nname = \"core-lib\"\n"),
+        ("crates/core-lib/src/lib.rs", "pub mod app;\n"),
+        (
+            "crates/core-lib/src/app.rs",
+            "pub struct Engine;\npub fn boot() -> Engine { crate::app::helper(); Engine }\nfn helper() {}\n",
+        ),
+        ("crates/cli/Cargo.toml", "[package]\nname = \"cli\"\n"),
+        ("crates/cli/src/main.rs", "use core_lib::app::boot;\nfn main() { let _e = boot(); }\n"),
+    ];
+    let contributions = scan_fixture_with(
+        "workspace-members",
+        &files,
+        &serde_json::json!({
+            "config_files": ["Cargo.toml", "crates/cli/Cargo.toml", "crates/core-lib/Cargo.toml"],
+        }),
+    );
+    let modules: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .filter(|node| node["kind"] == "module")
+        .map(|node| node["canonical_name"].as_str().unwrap().to_owned())
+        .collect();
+    let calls = edges_of(&contributions, "calls");
+
+    assert!(modules.contains(&"core_lib::app".to_owned()), "{modules:?}");
+    assert!(modules.contains(&"cli".to_owned()), "{modules:?}");
+    assert!(
+        calls.contains(&(
+            "rust:function:core_lib::app::boot".to_owned(),
+            "rust:function:core_lib::app::helper".to_owned()
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&(
+            "rust:function:cli::main".to_owned(),
+            "rust:function:core_lib::app::boot".to_owned()
+        )),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn a_trait_impl_for_a_foreign_type_is_a_node_of_the_module_declaring_it() {
+    // `impl<T: GitSource> GitSource for Arc<T>` attached its methods to
+    // `std::sync::Arc`, a name the project does not own, with nothing tying
+    // them to the trait they implement, so every forwarding method read as
+    // dead. The impl block is the project's, and it implements the trait.
+    let source = r#"
+use std::sync::Arc;
+pub trait GitSource { fn status(&self); }
+pub struct Repo;
+impl GitSource for Repo { fn status(&self) {} }
+impl<T: GitSource> GitSource for Arc<T> {
+    fn status(&self) { (**self).status() }
+}
+"#;
+    let contributions = scan_fixture("foreign-trait-impl", &[("src/lib.rs", source)]);
+    let names: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .map(|node| node["canonical_name"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert!(
+        !names.iter().any(|name| name.starts_with("std::")),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&"crate::<impl GitSource for Arc>::status".to_owned()),
+        "{names:?}"
+    );
+    assert!(edges_of(&contributions, "implements").contains(&(
+        "rust:class:crate::<impl GitSource for Arc>".to_owned(),
+        "rust:interface:crate::GitSource".to_owned()
+    )));
+}
+
+#[test]
+fn a_call_on_a_returned_value_defers_to_the_declared_return_type() {
+    // `s.mode().label()`: the receiver of `label` is whatever `State::mode`
+    // returns, which may be declared in another file. The worker names the
+    // call and states each method's return type; the core joins the two.
+    let source = r#"
+pub enum Mode { A }
+impl Mode { pub fn label(&self) -> &'static str { "a" } }
+pub struct State;
+impl State {
+    pub fn new() -> Self { State }
+    pub fn mode(&self) -> Mode { Mode::A }
+}
+pub fn go(s: &State) -> usize { s.mode().label().len() + State::new().mode().label().len() }
+"#;
+    let contributions = scan_fixture("returned-receiver", &[("src/lib.rs", source)]);
+    let calls = edges_of(&contributions, "calls");
+    let returns = edges_of(&contributions, "returns");
+
+    for target in [
+        "rust:method_of_return:crate::State::mode::label",
+        "rust:method_of_return:crate::State::new::mode",
+    ] {
+        assert!(
+            calls.contains(&("rust:function:crate::go".to_owned(), target.to_owned())),
+            "{target}: {calls:?}"
+        );
+    }
+    assert!(
+        returns.contains(&(
+            "rust:method:crate::State::mode".to_owned(),
+            "rust:class:crate::Mode".to_owned()
+        )),
+        "{returns:?}"
+    );
+    assert!(
+        returns.contains(&(
+            "rust:method:crate::State::new".to_owned(),
+            "rust:class:crate::State".to_owned()
+        )),
+        "{returns:?}"
+    );
+}
+
+#[test]
+fn a_method_called_on_an_enum_variant_resolves_to_the_enum() {
+    let source = r#"
+pub enum Theme { Regular, HighContrast }
+impl Theme { pub fn cycles_to(&self) -> Theme { Theme::HighContrast } }
+pub fn go() { let _ = Theme::Regular.cycles_to(); }
+"#;
+    let contributions = scan_fixture("variant-receiver", &[("src/lib.rs", source)]);
+
+    assert_eq!(
+        method_calls(&contributions, "rust:function:crate::go"),
+        vec![("rust:method:crate::Theme::cycles_to".to_owned(), true)]
+    );
+}
+
+#[test]
+fn a_function_exported_to_a_foreign_caller_is_runtime_invoked() {
+    // `#[no_mangle] pub extern "C" fn` and `#[wasm_bindgen]` functions are
+    // called by the host embedding the library, never from Rust.
+    let source = r#"
+#[no_mangle]
+pub extern "C" fn alloc(len: usize) -> usize { len }
+#[wasm_bindgen]
+pub fn greet() {}
+#[export_name = "run"]
+pub fn run_exported() {}
+pub fn ordinary() {}
+"#;
+    let contributions = scan_fixture("ffi-exports", &[("src/lib.rs", source)]);
+    let invoked: Vec<String> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .filter(|node| node["attributes"]["runtime_invoked"] == Value::Bool(true))
+        .map(|node| node["canonical_name"].as_str().unwrap().to_owned())
+        .collect();
+
+    assert_eq!(
+        invoked,
+        vec!["crate::alloc", "crate::greet", "crate::run_exported"]
+    );
+}
+
+#[test]
+fn calls_inside_a_json_like_macro_are_edges() {
+    // `json!({ "attrs": a.iter().map(attr).collect() })` is no list of
+    // expressions, so the whole body was dropped along with every call in it.
+    let source = r#"
+fn attr(x: &u8) -> u8 { *x }
+fn span() -> u8 { 1 }
+fn nested() -> u8 { 2 }
+pub fn go(values: Vec<u8>) {
+    let _ = serde_json::json!({
+        "attrs": values.iter().map(attr).collect::<Vec<_>>(),
+        "span": span(),
+        "inner": { "deep": [nested()] },
+    });
+}
+"#;
+    let contributions = scan_fixture("json-macro", &[("src/lib.rs", source)]);
+    let calls = edges_of(&contributions, "calls");
+    let references = edges_of(&contributions, "references");
+
+    assert!(
+        calls.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::span".to_owned()
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::nested".to_owned()
+        )),
+        "{calls:?}"
+    );
+    assert!(
+        references.contains(&(
+            "rust:function:crate::go".to_owned(),
+            "rust:function:crate::attr".to_owned()
+        )),
+        "{references:?}"
+    );
+}
+
+#[test]
+fn a_method_called_through_struct_fields_resolves_to_the_field_type() {
+    // `self.walk.facts.edge()` calls `Facts::edge` through two fields. Field
+    // types were not tracked, so every method only ever reached that way (a
+    // collaborator held in a struct) read as unreferenced.
+    let source = r#"
+pub struct Facts;
+impl Facts { pub fn edge(&self) {} }
+pub struct Walk { facts: Facts, count: usize }
+pub struct Calls<'a> { walk: &'a mut Walk }
+impl Calls<'_> {
+    fn go(&mut self) { self.walk.facts.edge(); self.walk.count.count_ones(); }
+}
+"#;
+    let contributions = scan_fixture("field-receiver", &[("src/lib.rs", source)]);
+
+    assert!(method_calls(&contributions, "rust:method:crate::Calls::go")
+        .contains(&("rust:method:crate::Facts::edge".to_owned(), true)));
+}
+
+#[test]
+fn a_library_crate_root_is_entered_from_outside() {
+    // A library's `lib.rs` is entered by its dependents, and a `cdylib` or
+    // wasm crate by a host outside the repository. Nothing in the graph
+    // imports it, so its module read as dead.
+    let files = [
+        ("Cargo.toml", "[package]\nname = \"engine\"\n"),
+        ("src/lib.rs", "pub mod grid;\n"),
+        ("src/grid.rs", "pub fn get() {}\n"),
+    ];
+    let contributions = scan_fixture_with(
+        "library-root",
+        &files,
+        &serde_json::json!({ "config_files": ["Cargo.toml"] }),
+    );
+    let executable: Vec<(String, bool)> = contributions
+        .iter()
+        .flat_map(|contribution| contribution["nodes"].as_array().unwrap().clone())
+        .filter(|node| node["kind"] == "module")
+        .map(|node| {
+            (
+                node["canonical_name"].as_str().unwrap().to_owned(),
+                node["attributes"]["executable"] == Value::Bool(true),
+            )
+        })
+        .collect();
+
+    assert!(
+        executable.contains(&("crate".to_owned(), true)),
+        "{executable:?}"
+    );
+    assert!(
+        executable.contains(&("crate::grid".to_owned(), false)),
+        "{executable:?}"
+    );
+}
+
+#[test]
+fn a_method_called_on_an_untyped_receiver_is_listed_on_the_module() {
+    let contributions = scan_fixture(
+        "untyped-calls",
+        &[(
+            "src/lib.rs",
+            "pub struct Mode;\nimpl Mode {\n    pub fn label(&self) {}\n    pub fn typed(&self) {}\n}\npub fn run(mode: &Mode, all: &[Mode]) {\n    mode.typed();\n    all.iter().for_each(|m| m.label());\n}\n",
+        )],
+    );
+    let module = contributions[0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["kind"] == "module")
+        .unwrap();
+    let names = module["attributes"]["unresolved_member_calls"]
+        .as_array()
+        .unwrap();
+
+    // The closure parameter has no stated type; `mode` does.
+    assert!(names.contains(&serde_json::json!("label")));
+    assert!(!names.contains(&serde_json::json!("typed")));
 }

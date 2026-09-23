@@ -122,6 +122,32 @@ final class ScanPlannerDefaultsTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The TypeScript worker reads module aliases from these configs, so an edit
+     * to one has to invalidate cached TypeScript contributions like a
+     * tsconfig edit does; otherwise every other file keeps imports resolved
+     * under the old aliases until a forced full scan.
+     */
+    #[Group('scan')]
+    public function testEditingABundlerAliasConfigChangesTheTypescriptHash(): void
+    {
+        foreach (['vite.config.ts', 'svelte.config.js', 'webpack.config.js', 'webpack.mix.js', 'vue.config.js'] as $config) {
+            $root = self::emptyRoot();
+            try {
+                file_put_contents($root . '/' . $config, "export default { resolve: { alias: { '~': './a' } } };\n");
+                $before = $this->planner()->prepare($root, null, null, null, null, null, null)->configurationHashes['typescript'];
+
+                file_put_contents($root . '/' . $config, "export default { resolve: { alias: { '~': './b' } } };\n");
+                $after = $this->planner()->prepare($root, null, null, null, null, null, null)->configurationHashes['typescript'];
+
+                assertSame(false, $before === $after, $config . ' must be part of the TypeScript configuration hash.');
+            } finally {
+                @unlink($root . '/' . $config);
+                self::removeRoot($root);
+            }
+        }
+    }
+
     private function planner(): ScanPlanner
     {
         return new ScanPlanner($this->freshTestDatabase(), [sys_get_temp_dir()]);

@@ -50,13 +50,20 @@ final class ToolConfigModuleRuleTest extends TestCase
             'karma conf' => ['karma.conf.js'],
             'eslintrc dotfile' => ['.eslintrc.cjs'],
             'prettierrc dotfile' => ['.prettierrc.js'],
+            // A module whose name starts with a dot is a tool's, rc or not.
+            'markdownlint-cli2 dotfile' => ['.markdownlint-cli2.mjs'],
+            'pnpmfile' => ['.pnpmfile.cjs'],
             'gulpfile' => ['gulpfile.js'],
+            'laravel mix' => ['webpack.mix.js'],
             'capitalised gruntfile' => ['Gruntfile.js'],
             'pytest conftest' => ['tests/conftest.py'],
             // Extension and stem are both matched case-insensitively; a
             // case-sensitive comparison would silently miss these.
             'uppercase extension' => ['VITE.CONFIG.TS'],
             'mixed-case stem' => ['Vite.Config.ts'],
+            // VitePress loads its site config and theme entry by position.
+            'vitepress config' => ['docs/.vitepress/config.mts'],
+            'vitepress theme entry' => ['.vitepress/theme/index.ts'],
         ];
     }
 
@@ -77,6 +84,9 @@ final class ToolConfigModuleRuleTest extends TestCase
         return [
             'config loader' => ['src/utils/config-loader.ts'],
             'config module' => ['src/config.ts'],
+            // Only VitePress's own positions count, not every file below it.
+            'vitepress theme component' => ['.vitepress/theme/services/content.ts'],
+            'theme index outside vitepress' => ['src/theme/index.ts'],
             'name containing config' => ['src/reconfigure.ts'],
             'php class' => ['src/Configuration/ProjectConfigurationLoader.php'],
             'json config is not a module' => ['tsconfig.json'],

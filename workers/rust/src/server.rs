@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::facts::Facts;
 use crate::protocol::{Contribution, Manifest};
-use crate::resolve::{module_path, module_path_with_binary_root};
+use crate::resolve::module_path_in_crate;
 use crate::visit::Declarations;
 
 /// Default cap on one scanned file, overridden by `params.limits.max_file_bytes`.
@@ -172,9 +172,6 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
     }
     let mut input_hashes: BTreeMap<String, Option<String>> = BTreeMap::new();
     let crates = cargo_crates(&root, &config_files, max_file_bytes, &mut input_hashes);
-    let has_library_root = crates
-        .iter()
-        .any(|(root_file, _)| root_file.ends_with("src/lib.rs"));
 
     // Pass 1: read, validate, and parse every file.
     let mut prepared: Vec<Prepared> = Vec::with_capacity(relatives.len());
@@ -194,7 +191,7 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
             relative, parsed, ..
         } = item
         {
-            let module = module_path_for_file(relative, has_library_root);
+            let module = module_path_for_file(relative, &crates);
             crate::visit::collect_declarations(&module, &parsed.items, &mut declarations);
             crate::visit::collect_test_modules(&module, &parsed.items, &mut test_modules);
         }
@@ -223,7 +220,7 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                 parsed,
                 content_hash,
             } => {
-                let module = module_path_for_file(&relative, has_library_root);
+                let module = module_path_for_file(&relative, &crates);
                 let display = module.rsplit("::").next().unwrap_or(&module).to_owned();
                 let mut facts = Facts::new(&relative);
                 facts.set_content_hash(content_hash);
@@ -237,9 +234,15 @@ fn scan(params: &Value, emit: &mut dyn FnMut(&Value)) -> Result<Value, String> {
                     &declarations,
                     &test_modules,
                 );
-                if let Some((_, crate_name)) =
+                if let Some((root_file, crate_name)) =
                     crates.iter().find(|(root_file, _)| root_file == &relative)
                 {
+                    // A library is entered by its dependents, or by a host
+                    // outside the repository for a cdylib; nothing in the
+                    // graph imports its root.
+                    if root_file.ends_with("src/lib.rs") {
+                        facts.mark_executable();
+                    }
                     facts.node_with_attributes(
                         "package",
                         crate_name,
@@ -498,14 +501,42 @@ fn cargo_crates(
     crates
 }
 
-/// Resolve one requested file's module identity, disambiguating a binary
-/// root only when the same Cargo package also has a library root.
-fn module_path_for_file(relative: &str, has_library_root: bool) -> String {
-    let binary_root = has_library_root && relative == "src/main.rs";
-    if binary_root {
-        module_path_with_binary_root(relative, true)
-    } else {
-        module_path(relative)
+/// Resolve one requested file's module identity.
+///
+/// A file under a workspace member's `src/` is rooted at that crate's name,
+/// the deepest member claiming it winning; anything else is rooted at `crate`
+/// as before. A binary root is disambiguated only when the same package also
+/// has a library root.
+fn module_path_for_file(relative: &str, crates: &[(String, String)]) -> String {
+    let has_library = |directory: &str| {
+        crates
+            .iter()
+            .any(|(root_file, _)| root_file == &format!("{directory}src/lib.rs"))
+    };
+    let member = crates
+        .iter()
+        .filter_map(|(root_file, name)| {
+            let directory = root_file
+                .strip_suffix("src/lib.rs")
+                .or_else(|| root_file.strip_suffix("src/main.rs"))?;
+            (!directory.is_empty() && relative.starts_with(&format!("{directory}src/")))
+                .then_some((directory, name))
+        })
+        .max_by_key(|(directory, _)| directory.len());
+    match member {
+        Some((directory, name)) => {
+            let inner = &relative[directory.len()..];
+            module_path_in_crate(
+                inner,
+                &name.replace('-', "_"),
+                has_library(directory) && inner == "src/main.rs",
+            )
+        }
+        None => module_path_in_crate(
+            relative,
+            "crate",
+            has_library("") && relative == "src/main.rs",
+        ),
     }
 }
 

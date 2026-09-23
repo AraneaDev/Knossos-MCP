@@ -173,7 +173,7 @@ describe("input_hashes: a package under node_modules", () => {
     it("reports an over-cap declaration behind a link by null from its probe and from its refusal alike", () => {
         const root = pnpmTree();
         write(root, {
-            [`${PNPM}/index.d.ts`]: `${DECLARATION}${"// pad\n".repeat(40)}`,
+            [`${PNPM}/index.d.ts`]: `${DECLARATION}${"// pad\n".repeat(600)}`,
         });
         const limits = { max_file_bytes: 200 };
         const shared = new TypeScriptScanner();
@@ -351,7 +351,36 @@ describe("input_hashes: a dependency's own layout governs below node_modules", (
             "src/g.ts",
         ]).input_hashes;
 
-        expect(hashes["dist/generated.ts"]).toBeNull();
+        // Refused by where it sits, which no state of the file can change,
+        // so no read is reported for it. A null here named a readable regular
+        // file as unreadable, and the core's commit-time re-read aborted the
+        // scan of every project whose source reaches into its own build output.
+        expect(Object.keys(hashes)).not.toContain("dist/generated.ts");
+        for (const [key, value] of Object.entries(hashes)) {
+            expect([key, value]).toEqual([key, pathState(root, key)]);
+        }
+    });
+
+    it("refuses a dynamic import of the project's own build output without reporting it", () => {
+        const root = fixture({
+            "bin/cli.js":
+                '#!/usr/bin/env node\nimport("../dist/index.js").then((m) => m.main());\n',
+            "dist/index.js": "export function main() {}\n",
+        });
+
+        const contributions = [];
+        const hashes = new TypeScriptScanner().scan(
+            { root, files: ["bin/cli.js"] },
+            (c) => contributions.push(c),
+        ).input_hashes;
+
+        expect(Object.keys(hashes)).not.toContain("dist/index.js");
+        for (const [key, value] of Object.entries(hashes)) {
+            expect([key, value]).toEqual([key, pathState(root, key)]);
+        }
+        // Still outside the program: nothing is emitted for the build output.
+        const owners = contributions.map((c) => c.owner_key);
+        expect(owners.some((owner) => owner.includes("dist/"))).toBe(false);
     });
 
     it("applies the exclusions above the dependency root, so a build dir holding a node_modules stays out", () => {
@@ -365,8 +394,11 @@ describe("input_hashes: a dependency's own layout governs below node_modules", (
             "src/h.ts",
         ]).input_hashes;
 
-        expect(
-            hashes["build/vendored/node_modules/dep/dist/index.d.ts"],
-        ).toBeNull();
+        expect(Object.keys(hashes)).not.toContain(
+            "build/vendored/node_modules/dep/dist/index.d.ts",
+        );
+        for (const [key, value] of Object.entries(hashes)) {
+            expect([key, value]).toEqual([key, pathState(root, key)]);
+        }
     });
 });

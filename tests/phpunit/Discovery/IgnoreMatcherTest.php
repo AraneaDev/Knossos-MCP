@@ -170,6 +170,21 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('deep/logs/a.log'));
     }
 
+    /**
+     * VitePress writes its prebundled dependencies and its build under its own
+     * directory, wherever the site lives. Both are generated, and a committed
+     * dependency cache graphed thousands of Vue internals as project code.
+     */
+    public function testVitePressCacheAndBuildOutputAreExcludedWhereverTheSiteLives(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('docs/.vitepress/cache/deps/chunk-A.js'));
+        assertSame(true, $matcher->matches('.vitepress/dist/assets/app.js'));
+        assertSame(false, $matcher->matches('docs/.vitepress/theme/index.ts'));
+        assertSame(false, $matcher->matches('src/cache/store.ts'));
+    }
+
     public function testALeadingSlashAnchorsToTheProjectRoot(): void
     {
         $matcher = new IgnoreMatcher(['/logs']);
@@ -523,6 +538,21 @@ final class IgnoreMatcherTest extends TestCase
         $matcher = new IgnoreMatcher([]);
 
         assertSame(true, $matcher->matches('.stryker-tmp/sandbox-1/tsconfig.json'));
+    }
+
+    /**
+     * pnpm's content-addressed store and Yarn Berry's `.yarn` hold dependency
+     * code, like `node_modules`. A project-local `.pnpm-store` that nobody
+     * ignored added half a gigabyte of hash-named files to a scan, and every
+     * one was reported as unreferenced project code.
+     */
+    public function testMatchesPackageManagerStores(): void
+    {
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('.pnpm-store/v10/files/22/fdb5a4-index.js'));
+        assertSame(true, $matcher->matches('.yarn/releases/yarn-4.5.0.cjs'));
+        assertSame(true, $matcher->matches('packages/web/.yarn/cache/x.js'));
     }
 
     public function testMatchesPathInsideWorktreesSegment(): void

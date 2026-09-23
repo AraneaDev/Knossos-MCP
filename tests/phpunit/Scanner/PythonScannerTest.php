@@ -86,16 +86,22 @@ final class PythonScannerTest extends KnossosTestCase
         $root = self::repositoryRoot() . '/tests/Fixtures/python';
         $contributions = iterator_to_array($this->pythonWorkerClient()->scan([
             'root' => $root,
-            'files' => ['shop/cli.py', 'shop/guarded.py', 'shop/service.py'],
+            'files' => ['shop/cli.py', 'shop/guarded.py', 'shop/service.py', 'shop/__init__.py'],
         ]));
         $executable = [];
+        $packageInit = [];
         foreach ($contributions as $contribution) {
             foreach ($contribution->nodes as $node) {
                 if ($node->kind === 'module') {
                     $executable[$node->canonicalName] = $node->attributes['executable'] ?? false;
+                    $packageInit[$node->canonicalName] = $node->attributes['package_init'] ?? false;
                 }
             }
         }
+
+        // A package's own module runs whenever anything inside it is imported.
+        assertSame(true, $packageInit['shop']);
+        assertSame(false, $packageInit['shop.service']);
 
         // A shebang and a `__main__` guard each say the file is run directly.
         assertSame(true, $executable['shop.cli']);
@@ -103,6 +109,310 @@ final class PythonScannerTest extends KnossosTestCase
         // A library module nothing imports is exactly what dead-code analysis
         // exists to surface, so it must stay reportable.
         assertSame(false, $executable['shop.service']);
+    }
+
+    /**
+     * `python3 app/main.py` puts `app/` first on `sys.path`, so the script's
+     * `from monitor import Probe` names its sibling `app/monitor.py` even when
+     * `app/` is a package. Resolution only tried the source roots, so the
+     * import stayed external and every module the script loads was reported as
+     * unreferenced. A library module gets no such fallback, and a sibling
+     * named after a standard-library module never captures its import.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerResolvesAScriptsSiblingImportsFromItsOwnDirectory(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-script-dir-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/main.py' => implode("\n", [
+                'import json',
+                'import helpers',
+                'from monitor import Probe',
+                '',
+                'def main():',
+                '    return Probe().run(), helpers.VALUE, json.dumps({})',
+                '',
+                'if __name__ == "__main__":',
+                '    main()',
+                '',
+            ]),
+            'app/monitor.py' => "class Probe:\n    def run(self):\n        return 1\n",
+            'app/helpers.py' => "VALUE = 1\n",
+            'app/json.py' => "def dumps(value):\n    return ''\n",
+            'app/library.py' => "from monitor import Probe\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['app/main.py', 'app/library.py'],
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $edges = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                $edges[] = [$edge->kind, $edge->sourceReference, $edge->targetReference];
+            }
+        }
+
+        assertArrayContains(['imports', 'py:module:app.main', 'py:module:app.monitor'], $edges);
+        assertArrayContains(['imports', 'py:module:app.main', 'py:module:app.helpers'], $edges);
+        assertArrayContains(['calls', 'py:function:app.main.main', 'py:class:app.monitor.Probe'], $edges);
+        // The standard library wins over a sibling that shadows it.
+        assertArrayContains(['imports', 'py:module:app.main', 'py:module:json'], $edges);
+        // A module imported by others has no directory of its own on sys.path.
+        assertArrayContains(['imports', 'py:module:app.library', 'py:module:monitor'], $edges);
+    }
+
+    /**
+     * A bound method handed over as a value, `timer.timeout.connect(self.tick)`,
+     * is how every Qt slot and most callbacks are wired, and a `@property` is
+     * only ever read. Neither is a call, so both carried no inbound edge and
+     * were reported as unreferenced while running on every event.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReferencesBoundMethodsReadAsValues(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-bound-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o755, true);
+        file_put_contents($root . '/widget.py', implode("\n", [
+            'class Widget:',
+            '    def __init__(self, timer):',
+            '        self.data = 1',
+            '        timer.connect(self.tick)',
+            '        handlers = {"size": self.size}',
+            '        print(self.data, handlers)',
+            '        self.helper()',
+            '',
+            '    def tick(self):',
+            '        return self.data',
+            '',
+            '    @property',
+            '    def size(self):',
+            '        return 1',
+            '',
+            '    def helper(self):',
+            '        return self.size',
+            '',
+        ]));
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['widget.py']]));
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/widget.py');
+            @rmdir($root);
+        }
+
+        $edges = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                $edges[] = [$edge->kind, $edge->sourceReference, $edge->targetReference];
+            }
+        }
+
+        assertArrayContains(['references', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::tick'], $edges);
+        assertArrayContains(['references', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::size'], $edges);
+        assertArrayContains(['references', 'py:method:widget.Widget::helper', 'py:method:widget.Widget::size'], $edges);
+        assertArrayContains(['calls', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::helper'], $edges);
+        // A data attribute is not a declaration, and a call is not also a reference.
+        $targets = array_map(fn(array $edge): string => $edge[2], $edges);
+        assertSame(false, in_array('py:method:widget.Widget::data', $targets, true));
+        assertSame(false, in_array(['references', 'py:method:widget.Widget::__init__', 'py:method:widget.Widget::helper'], $edges, true));
+    }
+
+    /**
+     * `from .tools import cors` imports the submodule `tools/cors.py` through
+     * its package. The name was looked up among the package's own declarations,
+     * found nothing, and every `cors.make_tool()` went unresolved, so whole
+     * tool modules read as unreferenced.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerResolvesASubmoduleImportedFromItsPackage(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-submodule-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app/tools', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/tools/__init__.py' => "VERSION = 1\n",
+            'app/tools/cors.py' => "def make_tool():\n    return 1\n",
+            'app/registry.py' => "from .tools import cors, VERSION\n\ndef build():\n    return cors.make_tool(), VERSION\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/registry.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app/tools');
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $edges = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                $edges[] = [$edge->kind, $edge->sourceReference, $edge->targetReference];
+            }
+        }
+
+        assertArrayContains(['imports', 'py:module:app.registry', 'py:module:app.tools.cors'], $edges);
+        assertArrayContains(['calls', 'py:function:app.registry.build', 'py:function:app.tools.cors.make_tool'], $edges);
+    }
+
+    /**
+     * A function handed over by name, returned from a factory
+     * (`def make_tool(): def handler(): ...; return handler`) or listed in a
+     * registry, is never called where it is named. Only calls were edges, so
+     * every tool handler built this way read as dead.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerReferencesFunctionsUsedAsValues(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-values-' . bin2hex(random_bytes(6));
+        mkdir($root, 0o755, true);
+        file_put_contents($root . '/tools.py', implode("\n", [
+            'def make_tool():',
+            '    def handler():',
+            '        return 1',
+            '    return handler',
+            '',
+            'def ping():',
+            '    return 2',
+            '',
+            'class Probe:',
+            '    pass',
+            '',
+            'LIMIT = 3',
+            'REGISTRY = [ping, Probe, LIMIT]',
+            '',
+            'def run():',
+            '    return make_tool()()',
+            '',
+        ]));
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['tools.py']]));
+            $client->shutdown();
+        } finally {
+            @unlink($root . '/tools.py');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertArrayContains(['py:function:tools.make_tool', 'py:function:tools.make_tool.<locals>.handler'], $references);
+        assertArrayContains(['py:module:tools', 'py:function:tools.ping'], $references);
+        assertArrayContains(['py:module:tools', 'py:class:tools.Probe'], $references);
+        // A call is a call, not also a reference, and a constant is no declaration.
+        $targets = array_map(fn(array $edge): string => $edge[1], $references);
+        assertSame(false, in_array('py:function:tools.make_tool', $targets, true));
+        assertSame([], array_values(array_filter($targets, fn(string $t): bool => str_contains($t, 'LIMIT'))));
+    }
+
+    /**
+     * A service module creates one instance at import time
+     * (`user_repo = UserRepository()`) and the rest of the codebase imports
+     * that instance. Its type was known only inside the declaring module, so
+     * every method called through the imported instance read as unreferenced.
+     */
+    #[Group('python-scanner')]
+    public function testPythonWorkerTypesAnImportedModuleLevelInstance(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-py-singleton-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app/clients', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/repo.py' => "class Repo:\n    def count(self):\n        return 1\n\nrepo: Repo = Repo()\n",
+            'app/clients/__init__.py' => "from .client import DockerClient\n\ndocker_client = DockerClient()\n",
+            'app/clients/client.py' => "class DockerClient:\n    def ls(self):\n        return []\n",
+            'app/service.py' => implode("\n", [
+                'from .repo import repo',
+                'from app.clients import docker_client',
+                '',
+                'def run():',
+                '    return repo.count(), docker_client.ls()',
+                '',
+                'def shadowed(repo):',
+                '    return repo.count()',
+                '',
+                'def called():',
+                '    return repo()',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/service.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app/clients');
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $calls = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertArrayContains(['py:function:app.service.run', 'py:method:app.repo.Repo::count'], $calls);
+        assertArrayContains(['py:function:app.service.run', 'py:method:app.clients.client.DockerClient::ls'], $calls);
+        // A parameter named like the instance is a different value.
+        assertSame(false, in_array(['py:function:app.service.shadowed', 'py:method:app.repo.Repo::count'], $calls, true));
+        // Calling the instance itself names no declaration.
+        assertSame([], array_values(array_filter($calls, fn(array $c): bool => str_starts_with($c[1], 'py:instance:'))));
+        // The shadowing parameter's call has no type to resolve through, so
+        // the module records the member name for dead-code confidence.
+        $untyped = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $untyped = $node->attributes['unresolved_member_calls'] ?? null;
+                }
+            }
+        }
+        assertSame(['count'], $untyped);
     }
 
     #[Group('python-scanner')]

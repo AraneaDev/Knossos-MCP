@@ -52,7 +52,7 @@ final class QueryCommand implements CliCommand
             'explain-flow' => ['db', 'json', 'max-depth', 'max-paths', 'edge-kind', 'min-confidence', 'timeout-ms'],
             'impact-analysis' => ['db', 'json', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
             'dependency-cycles' => ['db', 'json', 'edge-kind', 'min-confidence', 'limit', 'max-nodes', 'max-edges', 'timeout-ms', 'include-self-loops'],
-            'architecture-health' => ['db', 'json', 'edge-kind', 'min-confidence', 'limit', 'max-nodes', 'max-edges', 'timeout-ms', 'include-external', 'include-tests'],
+            'architecture-health' => ['db', 'json', 'edge-kind', 'min-confidence', 'limit', 'max-nodes', 'max-edges', 'timeout-ms', 'include-external', 'include-tests', 'candidate-confidence', 'candidate-offset'],
             'check-architecture' => ['db', 'json', 'policies', 'min-confidence', 'limit', 'max-edges', 'timeout-ms'],
             'suggest-location' => ['db', 'json', 'limit', 'max-members', 'max-edges', 'timeout-ms'],
             'change-impact' => ['db', 'json', 'since-days', 'max-commits', 'max-depth', 'limit', 'edge-kind', 'min-confidence', 'timeout-ms'],
@@ -283,7 +283,7 @@ final class QueryCommand implements CliCommand
     private function architectureHealth(array $p, array $o, CliCommandContext $c): int
     {
         $project = $p[0] ?? throw new InvalidArgumentException('Usage: knossos architecture-health <project-id> [options]');
-        $result = $this->queries($c)->architectureHealth($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-external'), $c->options->flag($o, 'include-tests'));
+        $result = $this->queries($c)->architectureHealth($project, $o['edge-kind'] ?? [], $c->options->single($o, 'min-confidence') ?? 'possible', $c->options->integer($o, 'limit', 20, 1, 100), $c->options->integer($o, 'max-nodes', 10_000, 1, 50_000), $c->options->integer($o, 'max-edges', 100_000, 1, 100_000), $c->options->integer($o, 'timeout-ms', 1000, 1, 5000), $c->options->flag($o, 'include-external'), $c->options->flag($o, 'include-tests'), $c->options->single($o, 'candidate-confidence') ?? 'possible', $c->options->integer($o, 'candidate-offset', 0, 0, 100_000));
         return $this->result($result, $o, $c);
     }
 

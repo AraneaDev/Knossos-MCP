@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Query\Drift;
 
+use Knossos\Discovery\FilesystemContentReader;
+use Knossos\Discovery\GitIgnoreRules;
 use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Discovery\ProjectDiscoverer;
 use PDO;
@@ -29,7 +31,14 @@ use PDO;
  */
 final readonly class ScannedPaths implements TrackedPathPredicate
 {
-    public function __construct(private IgnoreMatcher $ignores) {}
+    /** Bytes of one `.gitignore` read, matching discovery's default per-file cap. */
+    private const GITIGNORE_MAX_BYTES = 2_000_000;
+
+    /**
+     * @param ?GitIgnoreRules $gitIgnore the tree's `.gitignore` files, which the walk
+     *        applies as well; null for a caller that has no tree to read them from
+     */
+    public function __construct(private IgnoreMatcher $ignores, private ?GitIgnoreRules $gitIgnore = null) {}
 
     /**
      * The project's own configured ignores on top of the defaults IgnoreMatcher already applies.
@@ -43,9 +52,11 @@ final readonly class ScannedPaths implements TrackedPathPredicate
      */
     public static function forProject(PDO $pdo, string $projectId): self
     {
-        $statement = $pdo->prepare('SELECT config_json FROM projects WHERE id = :id');
+        $statement = $pdo->prepare('SELECT config_json, root_realpath FROM projects WHERE id = :id');
         $statement->execute(['id' => $projectId]);
-        $raw = $statement->fetchColumn();
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $raw = is_array($row) ? ($row['config_json'] ?? null) : null;
+        $root = is_array($row) && is_string($row['root_realpath'] ?? null) ? rtrim($row['root_realpath'], '/') : null;
         $patterns = [];
         if (is_string($raw) && $raw !== '') {
             // A malformed config must not make a probe throw: the graph is
@@ -56,7 +67,18 @@ final readonly class ScannedPaths implements TrackedPathPredicate
             }
         }
 
-        return new self(new IgnoreMatcher($patterns));
+        // Read from the tree as it stands: a `.gitignore` edited since the scan
+        // is itself drift, so the verdict is stale either way.
+        $gitIgnore = $root === null ? null : new GitIgnoreRules(static function (string $directory) use ($root): ?string {
+            $path = $root . ($directory === '' ? '' : '/' . $directory) . '/.gitignore';
+            if (!is_file($path) || is_link($path)) {
+                return null;
+            }
+
+            return (new FilesystemContentReader())->read($path, self::GITIGNORE_MAX_BYTES)->bytes;
+        });
+
+        return new self(new IgnoreMatcher($patterns), $gitIgnore);
     }
 
     /**
@@ -76,8 +98,13 @@ final readonly class ScannedPaths implements TrackedPathPredicate
      */
     public function tracks(string $relativePath, string $absolutePath): bool
     {
-        if (!ProjectDiscoverer::isConfigurationFile($relativePath) && $this->ignores->matches($relativePath)) {
-            return false;
+        if (!ProjectDiscoverer::isConfigurationFile($relativePath)) {
+            if ($this->ignores->matches($relativePath)) {
+                return false;
+            }
+            if ($this->gitIgnore?->ignoresWithAncestors($relativePath, is_dir($absolutePath)) === true) {
+                return false;
+            }
         }
 
         return is_dir($absolutePath)

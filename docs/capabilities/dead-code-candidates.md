@@ -44,10 +44,18 @@ their own. They are counted in `bounds.excluded_convention_discovered`; see
 
 ## Confidence
 
-| Confidence | Meaning                                                                                                                                                                   |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                          |
-| `possible` | No inbound reference, but the component is reached in ways a scan cannot see: a non-`ast` origin, a framework role, or a member of a type extending an external ancestor. |
+| Confidence | Meaning                                                                                                                                                                                                                                                          |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `probable` | No inbound reference, and nothing about the component suggests dynamic dispatch.                                                                                                                                                                                 |
+| `possible` | No inbound reference, but the component is reached in ways a scan cannot see: a non-`ast` origin, a framework role, a member of a type extending an external ancestor, or a method or function sharing its name with a call on a receiver no scanner could type. |
+
+The untyped-call ground is a name match. A JavaScript function taking an
+untyped parameter, a closure argument in Rust, or a PHP parameter without a
+declared type calls methods no scan can bind to a declaration. Each scanner
+lists the names called that way on the file's module node (on the calling
+declaration in PHP) as `unresolved_member_calls`, and any method by one of those
+names drops to `possible`. That holds even when the call reaches a different
+class, which is why such a method is not excluded outright.
 
 The `reason` field names the specific ground, so a caller never has to infer why
 a candidate was demoted.
@@ -58,18 +66,18 @@ Several classes of component have a structurally zero in-degree and would drown
 the real signal. Each exclusion is counted in `bounds` so the filtering is
 auditable rather than invisible.
 
-| `bounds` counter                 | Excluded                                                                                                                                             |
-| -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `excluded_external_components`   | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.                           |
-| `excluded_test_components`       | Nodes classified `quality.test_module`: a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`.                |
-| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.                  |
-| `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                            |
-| `excluded_constructors`          | Engine-invoked members (constructors, destructors, magic/protocol methods) whose declaring type is referenced (see below).                           |
-| `excluded_entry_scripts`         | Modules a scanner marked as executable scripts (a shebang, a `__main__` guard, PHP file-scope code) whose bodies something outside the graph enters. |
-| `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts` (see below).                                                                                    |
-| `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                                  |
-| `excluded_convention_discovered` | Components carrying an entry-point role: a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).                 |
-| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](agent-integration.md#component-annotations).                                                     |
+| `bounds` counter                 | Excluded                                                                                                                                                                                                                                                                                         |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `excluded_external_components`   | Nodes resolved outside the project (`external_*` kinds, `external`/`unresolved` origins). Include with `include_external`.                                                                                                                                                                       |
+| `excluded_test_components`       | Nodes classified `quality.test_module`: a runner discovers these by glob, so in-degree 0 is structural. Include with `include_tests`.                                                                                                                                                            |
+| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.                                                                                                                                                              |
+| `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                                                                                                                                                                        |
+| `excluded_constructors`          | Engine-invoked members (constructors, destructors, magic/protocol methods) whose declaring type is referenced (see below), and components a scanner marks `runtime_invoked`: Rust's `Drop::drop`, and functions exported to a foreign host (`#[no_mangle]`, `#[wasm_bindgen]`, an `extern` ABI). |
+| `excluded_entry_scripts`         | Modules a scanner marked as executable scripts (a shebang, a `__main__` guard, PHP file-scope code, a library crate's root) whose bodies something outside the graph enters, and a Python package's `__init__` when the package holds other modules.                                             |
+| `excluded_type_declarations`     | Modules and symbols declared in a `.d.ts` / `.d.mts`, and declarations inside `declare global { }` or `declare module 'x' { }` in any file (see below).                                                                                                                                          |
+| `suppressed_candidates`          | Canonical names matched by `dead_code_suppressions` in [project configuration](../guides/project-configuration.md).                                                                                                                                                                              |
+| `excluded_convention_discovered` | Components carrying an entry-point role: a controller, a command, a job, `application.entry_point`, or `tooling.config` (see below).                                                                                                                                                             |
+| `annotated_false_positives`      | Components carrying a `false_positive` [annotation](agent-integration.md#component-annotations).                                                                                                                                                                                                 |
 
 ### Why engine-invoked members are excluded
 
@@ -182,6 +190,14 @@ only (`<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
 `gruntfile`, or `conftest.py`) and deliberately narrow: a module that merely
 reads configuration, such as `src/utils/config-loader.ts`, is ordinary source
 and stays reportable.
+
+## Filtering and paging
+
+A large project can have hundreds of candidates, and a framework's lifecycle methods,
+marked `possible`, can fill the first page. `candidate_confidence: "probable"`
+(CLI: `--candidate-confidence=probable`) reports only the stronger claims, and
+`candidate_offset` (`--candidate-offset=N`) pages past the first `limit`.
+`bounds.candidates_total` says how many there are after the filter.
 
 ## Acting on a candidate
 

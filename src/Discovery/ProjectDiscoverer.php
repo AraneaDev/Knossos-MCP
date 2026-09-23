@@ -49,9 +49,13 @@ final readonly class ProjectDiscoverer
         $stack = [$root];
         $inputCount = 0;
         $seen = 0;
+        $gitIgnore = new GitIgnoreRules();
+        /** @var array<string, FileContent> $gitIgnoreReads each `.gitignore` read, kept to hash as its unit */
+        $gitIgnoreReads = [];
 
         while ($stack !== []) {
             $directory = array_pop($stack);
+            $this->readGitIgnore($root, $directory, $gitIgnore, $gitIgnoreReads);
             try {
                 // UnexpectedValueException, which is a RuntimeException, is what
                 // DirectoryIterator throws for a directory it cannot open. Caught
@@ -97,10 +101,15 @@ final readonly class ProjectDiscoverer
                     }
 
                     if ($entry->isDir()) {
-                        $stack[] = $absolute;
+                        if (!$gitIgnore->ignores($relative, true)) {
+                            $stack[] = $absolute;
+                        }
                         continue;
                     }
                     if (!$entry->isFile()) {
+                        continue;
+                    }
+                    if (!self::isConfigurationFile($relative) && $gitIgnore->ignores($relative, false)) {
                         continue;
                     }
 
@@ -154,7 +163,9 @@ final readonly class ProjectDiscoverer
                 // over the limit by the time the bytes are asked for. Reading
                 // it whole on the strength of a stale size is an unbounded
                 // allocation driven by the tree being scanned.
-                $read = $unitKind === null ? null : $this->contents->read($absolute, $this->config->maxFileBytes);
+                $read = $unitKind === null
+                    ? null
+                    : ($gitIgnoreReads[$relative] ?? $this->contents->read($absolute, $this->config->maxFileBytes));
                 if ($read !== null && $read->oversized) {
                     // The same diagnostic a file already too large when its
                     // size was checked gets: it is the same fact, learned one
@@ -208,10 +219,50 @@ final readonly class ProjectDiscoverer
             }
         }
 
+        return self::result($root, $files, $units, $diagnostics, $unparsedManifestHashes);
+    }
+
+    /**
+     * Read a directory's `.gitignore` into the rules before its entries are walked.
+     *
+     * It governs its siblings, which the iterator may reach first, so it is
+     * read before any of them. The same read later answers its unit's hash, so
+     * the rules applied and the hash recorded cannot describe two different
+     * files.
+     *
+     * @param array<string, FileContent> $gitIgnoreReads
+     */
+    private function readGitIgnore(string $root, string $directory, GitIgnoreRules $gitIgnore, array &$gitIgnoreReads): void
+    {
+        $ignoreFile = $directory . '/.gitignore';
+        if (!is_file($ignoreFile) || is_link($ignoreFile)) {
+            return;
+        }
+        $ignoreRelative = $this->relative($root, $ignoreFile);
+        $gitIgnoreReads[$ignoreRelative] = $this->contents->read($ignoreFile, $this->config->maxFileBytes);
+        $ignoreBytes = $gitIgnoreReads[$ignoreRelative]->bytes;
+        if ($ignoreBytes !== null) {
+            $gitIgnore->add($this->relative($root, $directory), $ignoreBytes);
+        }
+    }
+
+    /**
+     * The walk's files and units in a stable order, with the entry points
+     * derived across units, and the input and configuration hashes over both.
+     *
+     * @param list<DiscoveredFile> $files
+     * @param list<ProjectUnit> $units
+     * @param list<DiscoveryDiagnostic> $diagnostics
+     * @param array<string, string> $unparsedManifestHashes
+     */
+    private static function result(string $root, array $files, array $units, array $diagnostics, array $unparsedManifestHashes): DiscoveryResult
+    {
         usort($files, static fn(DiscoveredFile $left, DiscoveredFile $right): int =>
             $left->relativePath <=> $right->relativePath);
         usort($units, static fn(ProjectUnit $left, ProjectUnit $right): int =>
             [$left->kind, $left->configPath] <=> [$right->kind, $right->configPath]);
+        $units = self::withBuildOutputSources($units);
+        $units = self::withClassNameEntryPoints($units);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -280,6 +331,11 @@ final readonly class ProjectDiscoverer
                 'entry_points' => self::cargoEntryPoints($contents, $relative, dirname($absolute)),
             ]);
         }
+        // Its patterns decide which files the walk takes, so an edit to one
+        // changes what a rescan produces; it carries nothing else.
+        if ($kind === 'gitignore') {
+            return new ProjectUnit($kind, $relative, $contentHash);
+        }
         if ($kind === 'requirements') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'requires' => self::pipRequirements($contents),
@@ -293,6 +349,27 @@ final readonly class ProjectDiscoverer
         if ($kind === 'yaml') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+                'class_names' => self::yamlClassNames($contents),
+            ]);
+        }
+        if ($kind === 'dockerfile') {
+            // Read as text for paths, as a YAML file is: a build context is the
+            // project root, so a path resolves there as well as beside the file.
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+            ]);
+        }
+        if ($kind === 'agent_config') {
+            // Read as text for paths, as a YAML file is: the commands are shell
+            // lines, and `$CLAUDE_PLUGIN_ROOT/src/x.ts` leaves a token the path
+            // reader anchors at the project root.
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::yamlPathEntryPoints(
+                    // `$CLAUDE_PLUGIN_ROOT/src/x.ts` names `src/x.ts` in the
+                    // plugin; left in, the variable's name reads as a directory.
+                    preg_replace('#\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/#', '/', self::jsonStrings($contents)) ?? '',
+                    $relative,
+                ),
             ]);
         }
         if ($kind === 'tool_config') {
@@ -324,12 +401,16 @@ final readonly class ProjectDiscoverer
                 'name' => is_string($decoded['name'] ?? null) ? $decoded['name'] : null,
                 'type' => is_string($decoded['type'] ?? null) ? $decoded['type'] : null,
                 'workspaces' => self::workspaces($decoded['workspaces'] ?? []),
+                'typescript_range' => self::typescriptRange($decoded),
+                'vue' => self::dependsOn($decoded, 'vue'),
                 'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
+                'public_entry_points' => self::publicEntryPoints($decoded, $relative),
             ],
             'azure_function' => [
                 'entry_points' => self::azureFunctionEntryPoints($decoded, $relative),
             ],
             'typescript' => self::typescriptMetadata($decoded),
+            'knip' => ['entry_points' => self::knipEntryPoints($decoded, $relative)],
             'knossos' => ['version' => $decoded['version'] ?? null],
             default => [],
         };
@@ -872,7 +953,7 @@ final readonly class ProjectDiscoverer
 
     /** Extensions a scanner emits nodes for (or anything else cannot be matched later). */
     private const ENTRY_POINT_EXTENSIONS = [
-        'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'py', 'pyi', 'rs',
+        'php', 'js', 'jsx', 'mjs', 'cjs', 'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte', 'astro', 'py', 'pyi', 'rs',
     ];
 
     /**
@@ -885,6 +966,10 @@ final readonly class ProjectDiscoverer
      */
     private const CONFIG_REFERENCE_KEYS = [
         'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
+        // Bundlers and desktop shells (esbuild, Bun, Electrobun).
+        'entrypoint', 'entrypoints', 'entryPoints',
+        // A process a tool starts, such as Playwright's `webServer.command`.
+        'command',
     ];
 
     /**
@@ -1251,9 +1336,13 @@ final readonly class ProjectDiscoverer
                 continue;
             }
             foreach ($tokens[1] as $token) {
-                $path = self::entryPointPath($token, $directory);
-                if ($path !== null) {
-                    $paths[$path] = true;
+                // A `command` is a shell line; any other value is one path,
+                // which a split on whitespace leaves whole.
+                foreach (preg_split('/\s+/', trim($token)) ?: [] as $word) {
+                    $path = self::entryPointPath($word, $directory);
+                    if ($path !== null) {
+                        $paths[$path] = true;
+                    }
                 }
             }
         }
@@ -1307,6 +1396,333 @@ final readonly class ProjectDiscoverer
         }
 
         return $directory === '' ? $token : $directory . '/' . $token;
+    }
+
+    /**
+     * Every string value in a JSON document, one per line, or the raw text when it does not parse.
+     *
+     * JSON may escape a slash as `\/`, which hides a path from a reader of
+     * the raw text; the decoded strings carry it plainly.
+     */
+    private static function jsonStrings(string $contents): string
+    {
+        try {
+            $decoded = JsonConfig::decode($contents, true);
+        } catch (DiscoveryException) {
+            return $contents;
+        }
+        $strings = [];
+        array_walk_recursive($decoded, static function (mixed $value) use (&$strings): void {
+            if (is_string($value)) {
+                $strings[] = $value;
+            }
+        });
+
+        return implode("\n", $strings);
+    }
+
+    /**
+     * The files knip is told are entry points: `entry` at the top and in each workspace.
+     *
+     * Read key by key rather than as text, because the same file's `ignore`
+     * and `project` lists name files that are not entry points at all.
+     *
+     * @param array<string, mixed> $config
+     * @return list<string>
+     */
+    private static function knipEntryPoints(array $config, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $scopes = [[$directory, $config['entry'] ?? null]];
+        foreach (is_array($config['workspaces'] ?? null) ? $config['workspaces'] : [] as $workspace => $settings) {
+            if (is_string($workspace) && is_array($settings) && !str_contains($workspace, '*')) {
+                $scopes[] = [self::joinPath($directory, trim($workspace, './')), $settings['entry'] ?? null];
+            }
+        }
+        $paths = [];
+        foreach ($scopes as [$anchor, $entries]) {
+            foreach (is_array($entries) ? $entries : [$entries] as $entry) {
+                $path = is_string($entry) ? self::entryPointPath($entry, $anchor) : null;
+                if ($path !== null) {
+                    $paths[$path] = true;
+                }
+            }
+        }
+        $paths = array_keys($paths);
+        sort($paths, SORT_STRING);
+
+        return $paths;
+    }
+
+    /**
+     * The modules a library publishes: its `main`, `module`, `types` and every
+     * path under `exports`, for a package that is not private. What they
+     * re-export is API for consumers outside the repository.
+     *
+     * @param array<string, mixed> $manifest
+     * @return list<string>
+     */
+    private static function publicEntryPoints(array $manifest, string $configPath): array
+    {
+        if (($manifest['private'] ?? false) === true) {
+            return [];
+        }
+        $candidates = [];
+        foreach (['main', 'module', 'types', 'typings'] as $field) {
+            if (is_string($manifest[$field] ?? null)) {
+                $candidates[] = $manifest[$field];
+            }
+        }
+        if (is_string($manifest['exports'] ?? null) || is_array($manifest['exports'] ?? null)) {
+            $exports = is_array($manifest['exports']) ? $manifest['exports'] : [$manifest['exports']];
+            array_walk_recursive($exports, static function (mixed $value) use (&$candidates): void {
+                if (is_string($value)) {
+                    $candidates[] = $value;
+                }
+            });
+        }
+        $directory = self::manifestDirectory($configPath);
+        $paths = [];
+        foreach ($candidates as $candidate) {
+            $path = self::entryPointPath($candidate, $directory);
+            if ($path !== null) {
+                $paths[$path] = true;
+            }
+        }
+        $paths = array_keys($paths);
+        sort($paths, SORT_STRING);
+
+        return $paths;
+    }
+
+    /**
+     * Whether a package.json lists a package in any of its dependency tables.
+     *
+     * @param array<string, mixed> $manifest
+     */
+    private static function dependsOn(array $manifest, string $package): bool
+    {
+        foreach (['dependencies', 'devDependencies', 'peerDependencies'] as $table) {
+            if (is_array($manifest[$table] ?? null) && array_key_exists($package, $manifest[$table])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The `typescript` version a package.json declares, from the first dependency table naming it.
+     *
+     * @param array<string, mixed> $manifest
+     */
+    private static function typescriptRange(array $manifest): ?string
+    {
+        foreach (['devDependencies', 'dependencies', 'peerDependencies'] as $table) {
+            $range = is_array($manifest[$table] ?? null) ? ($manifest[$table]['typescript'] ?? null) : null;
+            if (is_string($range)) {
+                return $range;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * PHP class names a YAML file mentions: `class: App\\Doctrine\\Filter`, a
+     * service id, a listener. Loose on purpose, for the reason the path
+     * reader is: a name that maps to no scanned file matches nothing.
+     *
+     * @return list<string>
+     */
+    private static function yamlClassNames(string $contents): array
+    {
+        $stripped = preg_replace('/#.*$/m', '', $contents) ?? $contents;
+        preg_match_all('/(?<![\\\\\w])[A-Z][A-Za-z0-9_]*(?:\\\\{1,2}[A-Z][A-Za-z0-9_]*)+/', $stripped, $matches);
+        $names = [];
+        foreach ($matches[0] as $match) {
+            $names[str_replace('\\\\', '\\', $match)] = true;
+        }
+        $names = array_keys($names);
+        sort($names, SORT_STRING);
+
+        return $names;
+    }
+
+    /**
+     * Add, to each YAML unit, the files its class names are declared in.
+     *
+     * Symfony and Doctrine wire classes up by name in YAML, and the container
+     * instantiates them; nothing in PHP references them. Composer's PSR-4 map
+     * turns a class name into its file, which is what entry points match on.
+     *
+     * @param list<ProjectUnit> $units
+     * @return list<ProjectUnit>
+     */
+    private static function withClassNameEntryPoints(array $units): array
+    {
+        $prefixes = [];
+        foreach ($units as $unit) {
+            if ($unit->kind !== 'composer' || !is_array($unit->metadata['psr4'] ?? null)) {
+                continue;
+            }
+            $directory = self::manifestDirectory($unit->configPath);
+            foreach ($unit->metadata['psr4'] as $namespace => $paths) {
+                foreach (is_array($paths) ? $paths : [$paths] as $path) {
+                    if (is_string($namespace) && is_string($path) && $namespace !== '') {
+                        $prefixes[] = [$namespace, self::joinPath($directory, trim($path, '/'))];
+                    }
+                }
+            }
+        }
+        if ($prefixes === []) {
+            return $units;
+        }
+        // Longest namespace first, as Composer resolves them.
+        usort($prefixes, static fn(array $a, array $b): int => strlen($b[0]) <=> strlen($a[0]));
+
+        return array_map(static function (ProjectUnit $unit) use ($prefixes): ProjectUnit {
+            $classNames = $unit->metadata['class_names'] ?? [];
+            if ($unit->kind !== 'yaml' || !is_array($classNames) || $classNames === []) {
+                return $unit;
+            }
+            $paths = array_fill_keys($unit->metadata['entry_points'] ?? [], true);
+            foreach ($classNames as $className) {
+                foreach ($prefixes as [$namespace, $directory]) {
+                    if (is_string($className) && str_starts_with($className, $namespace)) {
+                        $rest = str_replace('\\', '/', substr($className, strlen($namespace)));
+                        $paths[self::joinPath($directory, $rest . '.php')] = true;
+                        break;
+                    }
+                }
+            }
+            $paths = array_keys($paths);
+            sort($paths, SORT_STRING);
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, [
+                ...$unit->metadata,
+                'entry_points' => $paths,
+            ]);
+        }, $units);
+    }
+
+    /** Output extension => the source extensions the compiler emits it from. */
+    private const BUILD_OUTPUT_SOURCES = [
+        'js' => ['ts', 'tsx', 'js', 'jsx'],
+        'mjs' => ['mts', 'mjs'],
+        'cjs' => ['cts', 'cjs'],
+    ];
+
+    /**
+     * Add, beside each package entry point inside a tsconfig's `outDir`, the
+     * sources the compiler emits it from.
+     *
+     * A compiled package's `main`, `bin` and scripts name its build output,
+     * which discovery never walks, so the name matched nothing and the source
+     * behind it looked unreferenced. Without a `rootDir` the compiler infers
+     * one, so the tsconfig's own directory and its `src/` are both offered.
+     * Matching downstream is by exact path, so a candidate naming no file
+     * costs nothing.
+     *
+     * @param list<ProjectUnit> $units
+     * @return list<ProjectUnit>
+     */
+    private static function withBuildOutputSources(array $units): array
+    {
+        $layouts = [];
+        foreach ($units as $unit) {
+            $outDir = $unit->kind === 'typescript' ? self::layoutPath($unit->metadata['out_dir'] ?? null) : null;
+            if ($outDir === null || $outDir === '') {
+                continue;
+            }
+            $directory = self::manifestDirectory($unit->configPath);
+            $rootDir = self::layoutPath($unit->metadata['root_dir'] ?? null);
+            $layouts[] = [
+                self::joinPath($directory, $outDir),
+                $rootDir !== null ? [self::joinPath($directory, $rootDir)] : [$directory, self::joinPath($directory, 'src')],
+            ];
+        }
+        if ($layouts === []) {
+            return $units;
+        }
+
+        return array_map(static function (ProjectUnit $unit) use ($layouts): ProjectUnit {
+            if ($unit->kind !== 'node') {
+                return $unit;
+            }
+            $metadata = $unit->metadata;
+            foreach (['entry_points', 'public_entry_points'] as $key) {
+                if (is_array($metadata[$key] ?? null) && $metadata[$key] !== []) {
+                    $metadata[$key] = self::withSourcesOf($metadata[$key], $layouts);
+                }
+            }
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, $metadata);
+        }, $units);
+    }
+
+    /**
+     * Entry points with, beside each one in an `outDir`, the sources it is built from.
+     *
+     * @param list<mixed> $entryPoints
+     * @param list<array{0: string, 1: list<string>}> $layouts
+     * @return list<string>
+     */
+    private static function withSourcesOf(array $entryPoints, array $layouts): array
+    {
+        $paths = array_fill_keys(array_values(array_filter($entryPoints, is_string(...))), true);
+        foreach ($entryPoints as $entryPoint) {
+            foreach ($layouts as [$outDir, $sourceDirs]) {
+                if (!is_string($entryPoint) || !str_starts_with($entryPoint, $outDir . '/')) {
+                    continue;
+                }
+                $rest = substr($entryPoint, strlen($outDir) + 1);
+                // A declaration the compiler emitted (`index.d.ts`) stands for
+                // the source it describes, as the `.js` beside it does.
+                if (preg_match('/^(.*)\.d\.(m|c)?ts$/', $rest, $declaration) === 1) {
+                    $stem = $declaration[1];
+                    $extension = ($declaration[2] ?? '') . 'js';
+                } else {
+                    $extension = strtolower(pathinfo($rest, PATHINFO_EXTENSION));
+                    $stem = substr($rest, 0, -strlen($extension) - 1);
+                }
+                foreach (self::BUILD_OUTPUT_SOURCES[$extension] ?? [] as $sourceExtension) {
+                    foreach ($sourceDirs as $sourceDir) {
+                        $paths[self::joinPath($sourceDir, $stem . '.' . $sourceExtension)] = true;
+                    }
+                }
+            }
+        }
+        $paths = array_map(strval(...), array_keys($paths));
+        sort($paths, SORT_STRING);
+
+        return $paths;
+    }
+
+    /** A tsconfig directory option as a clean relative path, or null when it is absent or leaves its directory. */
+    private static function layoutPath(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+        $path = trim(str_replace('\\', '/', trim($value)), '/');
+        while (str_starts_with($path, './')) {
+            $path = substr($path, 2);
+        }
+        if ($path === '.') {
+            return '';
+        }
+        if (str_starts_with($value, '/') || in_array('..', explode('/', $path), true)) {
+            return null;
+        }
+
+        return $path;
+    }
+
+    /** Two project-relative path parts joined, either of which may be the root `''`. */
+    private static function joinPath(string $directory, string $path): string
+    {
+        return trim($directory === '' ? $path : ($path === '' ? $directory : $directory . '/' . $path), '/');
     }
 
     /**
@@ -1394,6 +1810,8 @@ final readonly class ProjectDiscoverer
             'extends' => is_string($config['extends'] ?? null) ? $config['extends'] : null,
             'allow_js' => ($compiler['allowJs'] ?? false) === true,
             'base_url' => is_string($compiler['baseUrl'] ?? null) ? $compiler['baseUrl'] : null,
+            'out_dir' => is_string($compiler['outDir'] ?? null) ? $compiler['outDir'] : null,
+            'root_dir' => is_string($compiler['rootDir'] ?? null) ? $compiler['rootDir'] : null,
             'paths' => is_array($compiler['paths'] ?? null) ? $compiler['paths'] : [],
             'references' => $references,
         ];
@@ -1439,7 +1857,7 @@ final readonly class ProjectDiscoverer
         $extension = strtolower(pathinfo($relativePath, PATHINFO_EXTENSION));
         $byExtension = match ($extension) {
             'php' => 'php',
-            'ts', 'tsx', 'mts', 'cts' => 'typescript',
+            'ts', 'tsx', 'mts', 'cts', 'vue', 'svelte', 'astro' => 'typescript',
             'js', 'jsx', 'mjs', 'cjs' => 'javascript',
             'py', 'pyi' => 'python',
             'rs' => 'rust',
@@ -1496,6 +1914,13 @@ final readonly class ProjectDiscoverer
     public static function unitKindFor(string $relativePath): ?string
     {
         $basename = strtolower(basename($relativePath));
+        if ($basename === '.gitignore') {
+            return 'gitignore';
+        }
+        // A container's CMD and ENTRYPOINT start a script nothing imports.
+        if ($basename === 'dockerfile' || str_starts_with($basename, 'dockerfile.') || str_ends_with($basename, '.dockerfile')) {
+            return 'dockerfile';
+        }
         if ($basename === 'composer.json') {
             return 'composer';
         }
@@ -1525,6 +1950,16 @@ final readonly class ProjectDiscoverer
         // tokenises shell commands crudely.
         if (str_ends_with($basename, '.yml') || str_ends_with($basename, '.yaml')) {
             return 'yaml';
+        }
+        // A Claude Code plugin runs its hooks and MCP servers from commands in
+        // these files, which name the scripts by path; nothing imports them.
+        $normalized = str_replace('\\', '/', $relativePath);
+        if (in_array($basename, ['hooks.json', '.mcp.json', 'plugin.json'], true)
+            || preg_match('#(?:^|/)\.claude/settings(?:\.[a-z]+)?\.json$#', strtolower($normalized)) === 1) {
+            return 'agent_config';
+        }
+        if (in_array($basename, ['knip.json', 'knip.jsonc', '.knip.json', '.knip.jsonc'], true)) {
+            return 'knip';
         }
         if ($basename === 'pyproject.toml') {
             return 'python';

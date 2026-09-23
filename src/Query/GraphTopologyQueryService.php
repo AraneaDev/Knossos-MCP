@@ -253,10 +253,16 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
      *
      * @param list<string> $edgeKinds
      */
-    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false): ResultEnvelope
+    public function architectureHealth(string $projectId, array $edgeKinds = [], string $minConfidence = 'possible', int $limit = 20, int $maxNodes = 10_000, int $maxEdges = 100_000, int $timeoutMs = 1000, bool $includeExternal = false, bool $includeTests = false, string $candidateConfidence = 'possible', int $candidateOffset = 0): ResultEnvelope
     {
         $project = $this->project($projectId);
         self::assertLimit($limit);
+        if (!in_array($candidateConfidence, ['probable', 'possible'], true)) {
+            throw new InvalidArgumentException('candidate_confidence must be probable or possible.');
+        }
+        if ($candidateOffset < 0) {
+            throw new InvalidArgumentException('candidate_offset must not be negative.');
+        }
         if ($maxNodes < 1 || $maxNodes > 50_000) {
             throw new InvalidArgumentException('max_nodes must be between 1 and 50000.');
         }
@@ -370,16 +376,7 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         };
         $rank($hubs);
         $rank($hotspots);
-        // Ordered by reachability class before name, so `limit` slices along a
-        // meaningful line rather than an alphabetical accident: a project whose
-        // test-only candidates happen to sort first would otherwise fill the
-        // default limit of 20 with them and hide every component nothing
-        // references at all. `unreferenced` leads because it is the stronger
-        // claim — nothing reaches it, from anywhere — and the summary names the
-        // test-only count so a caller knows there is more to see.
-        $classRank = static fn(array $candidate): int => ($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 1 : 0;
-        usort($deadCandidates, static fn(array $a, array $b): int => ($classRank($a) <=> $classRank($b))
-            ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
+        $deadCandidates = self::orderedCandidates($deadCandidates, $candidateConfidence);
         // Tallied on the FULL list, before result_limit slices it away: ordering
         // test_only last means truncation hides them first, and a summary built
         // from the slice would then report 0 test-only findings whenever there
@@ -388,15 +385,20 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             $deadCandidates,
             static fn(array $candidate): bool => ($candidate['reachability'] ?? null) === 'test_only',
         ));
-        foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
+        $candidatesTotal = count($deadCandidates);
+        foreach ([$hubs, $hotspots] as $items) {
             if (count($items) > $limit) {
                 $truncated = true;
                 $truncationReasons[] = 'result_limit';
             }
         }
+        if ($candidatesTotal > $candidateOffset + $limit) {
+            $truncated = true;
+            $truncationReasons[] = 'result_limit';
+        }
         $hubs = array_slice($hubs, 0, $limit);
         $hotspots = array_slice($hotspots, 0, $limit);
-        $deadCandidates = array_slice($deadCandidates, 0, $limit);
+        $deadCandidates = array_slice($deadCandidates, $candidateOffset, $limit);
         $evidence = [];
         $reported = [];
         foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
@@ -422,6 +424,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 'hubs' => $hubs, 'static_hotspots' => $hotspots, 'dead_code_candidates' => $deadCandidates,
                 'bounds' => [
                     'limit' => $limit, 'max_nodes' => $maxNodes, 'max_edges' => $maxEdges, 'timeout_ms' => $timeoutMs,
+                    'candidate_confidence' => $candidateConfidence, 'candidate_offset' => $candidateOffset,
+                    'candidates_total' => $candidatesTotal,
                     'nodes_examined' => count($nodes), 'edges_examined' => $edgesExamined,
                     'excluded_external_components' => $excludedExternal, 'excluded_test_components' => $excludedTests,
                     'excluded_inherited_methods' => $excluded['inherited'],
@@ -443,6 +447,38 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
             ],
             $truncated,
         );
+    }
+
+
+    /**
+     * Dead-code candidates in report order, filtered to the confidence asked for.
+     *
+     * @param list<array<string, mixed>> $candidates
+     * @return list<array<string, mixed>>
+     */
+    private static function orderedCandidates(array $candidates, string $candidateConfidence): array
+    {
+        // Ordered by reachability class before name, so `limit` slices along a
+        // meaningful line rather than an alphabetical accident: a project whose
+        // test-only candidates happen to sort first would otherwise fill the
+        // default limit of 20 with them and hide every component nothing
+        // references at all. `unreferenced` leads because it is the stronger
+        // claim — nothing reaches it, from anywhere — and the summary names the
+        // test-only count so a caller knows there is more to see.
+        $classRank = static fn(array $candidate): int => ($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 1 : 0;
+        usort($candidates, static fn(array $a, array $b): int => ($classRank($a) <=> $classRank($b))
+            ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
+        // A large project's page of 100 filled with framework methods marked
+        // only possible, hiding every probable candidate behind them; the
+        // filter and the offset let a caller see past that.
+        if ($candidateConfidence === 'probable') {
+            $candidates = array_values(array_filter(
+                $candidates,
+                static fn(array $candidate): bool => ($candidate['confidence'] ?? null) === 'probable',
+            ));
+        }
+
+        return $candidates;
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Scan;
 
+use Knossos\Discovery\ProjectUnit;
 use Knossos\Scanner\Worker\WorkerException;
 use Knossos\Scanner\Worker\WorkerExecutionPolicy;
 use Throwable;
@@ -162,6 +163,14 @@ final readonly class LanguageScanRunner
                 static fn($unit): string => $unit->configPath,
                 array_filter($plan->preparation->discovery->units, static fn($unit): bool => $unit->kind === 'typescript'),
             ));
+            $versions = self::typescriptVersions($plan->preparation->discovery->units);
+            if ($versions !== []) {
+                $request['typescript_versions'] = (object) $versions;
+            }
+            $vue = self::vueProjects($plan->preparation->discovery->units);
+            if ($vue !== []) {
+                $request['vue_projects'] = $vue;
+            }
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
         } elseif ($descriptor->key === 'rust') {
@@ -398,5 +407,56 @@ final readonly class LanguageScanRunner
     private static function elapsedMilliseconds(int $startedAt): float
     {
         return round((hrtime(true) - $startedAt) / 1_000_000, 3);
+    }
+
+    /**
+     * The directories (`''` for the root) whose package.json depends on Vue.
+     *
+     * Its bundlers resolve `./Card` to `Card.vue`, and the worker needs to know
+     * where that applies from manifests discovery hashed, not from which files
+     * a request holds.
+     *
+     * @param list<ProjectUnit> $units
+     * @return list<string>
+     */
+    private static function vueProjects(array $units): array
+    {
+        $directories = [];
+        foreach ($units as $unit) {
+            if ($unit->kind === 'node' && ($unit->metadata['vue'] ?? false) === true) {
+                $directory = dirname($unit->configPath);
+                $directories[] = $directory === '.' ? '' : $directory;
+            }
+        }
+        sort($directories, SORT_STRING);
+
+        return $directories;
+    }
+
+    /**
+     * The TypeScript major each package.json declares, keyed by its directory (`''` for the root).
+     *
+     * TypeScript 6.0 changed defaults such as `types` and `strict`, so a
+     * project on 5.x checked under the worker's bundled 6.x reported errors its
+     * own compiler never does. The ranges come from manifests discovery already
+     * hashed, so the worker decides which defaults apply without reading more.
+     * A range naming no number, such as `latest`, is left out.
+     *
+     * @param list<ProjectUnit> $units
+     * @return array<string, int>
+     */
+    private static function typescriptVersions(array $units): array
+    {
+        $versions = [];
+        foreach ($units as $unit) {
+            $range = $unit->kind === 'node' ? ($unit->metadata['typescript_range'] ?? null) : null;
+            if (is_string($range) && preg_match('/(\d+)/', $range, $match) === 1) {
+                $directory = dirname($unit->configPath);
+                $versions[$directory === '.' ? '' : $directory] = (int) $match[1];
+            }
+        }
+        ksort($versions, SORT_STRING);
+
+        return $versions;
     }
 }

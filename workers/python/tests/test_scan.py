@@ -585,10 +585,11 @@ def test_a_function_held_in_a_dispatch_table_is_referenced(scan_collect, project
     assert "py:function:registry.derive_b" in referenced
 
 
-def test_value_references_do_not_descend_into_calls_or_comprehensions(scan_collect, project) -> None:
-    # The narrow scope is the point: descending further would turn every
-    # mention of a symbol into an edge and inflate the in-degree the hub
-    # ranking is built on.
+def test_a_function_passed_or_collected_as_a_value_is_referenced(scan_collect, project) -> None:
+    # A function handed to another call (a callback, a registration) or
+    # collected into a value runs through whatever receives it, so it is a
+    # real use. Reading it as none reported every handler registered that way
+    # as dead.
     root = project(
         {
             "narrow.py": (
@@ -605,7 +606,7 @@ def test_value_references_do_not_descend_into_calls_or_comprehensions(scan_colle
     edges = [e for c in scan_collect(root, ["narrow.py"]) for e in c["edges"]]
     referenced = {e["target"] for e in edges if e["kind"] == "references"}
 
-    assert "py:function:narrow.helper" not in referenced
+    assert "py:function:narrow.helper" in referenced
 
 
 def test_routes_register_through_a_qualified_fastapi_annotation(scan_collect, project) -> None:

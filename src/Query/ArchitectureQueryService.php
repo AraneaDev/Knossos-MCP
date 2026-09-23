@@ -77,13 +77,6 @@ final readonly class ArchitectureQueryService
         $this->annotationQueries = new AnnotationService($pdo, $clock);
     }
 
-    /** @return array<string, mixed>|null */
-    /** {@see StalenessProbe::probe()} */
-    public function staleness(string $projectId): ?array
-    {
-        return $this->stalenessProbe->probe($projectId);
-    }
-
     /**
      * The verdict together with the scan it was measured against, for a caller
      * that will hand it on to be attached to an answer.
@@ -225,8 +218,10 @@ final readonly class ArchitectureQueryService
         int $timeoutMs = 1000,
         bool $includeExternal = false,
         bool $includeTests = false,
+        string $candidateConfidence = 'possible',
+        int $candidateOffset = 0,
     ): ResultEnvelope {
-        return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests);
+        return $this->topologyQueries->architectureHealth($projectId, $edgeKinds, $minConfidence, $limit, $maxNodes, $maxEdges, $timeoutMs, $includeExternal, $includeTests, $candidateConfidence, $candidateOffset);
     }
 
     /** @param list<array<string, mixed>> $policies */

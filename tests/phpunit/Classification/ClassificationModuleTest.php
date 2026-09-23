@@ -16,6 +16,7 @@ use Knossos\Classification\PythonFrameworkRoleRule;
 use Knossos\Classification\SymfonyRoleRule;
 use Knossos\Classification\TestModuleRule;
 use Knossos\Classification\TypeScriptFrameworkRoleRule;
+use Knossos\Query\ReportableComponent;
 use Knossos\Scanner\Protocol\Confidence;
 use Knossos\Scanner\Protocol\Evidence;
 use Knossos\Scanner\Protocol\NodeFact;
@@ -134,6 +135,15 @@ final class ClassificationModuleTest extends KnossosTestCase
         assertSame(['source' => '@nestjs/common decorator'], $facts[0]->attributes);
     }
 
+    public function testNestJsRoleRuleKeepsAFrameworkHandlerAsAConvention(): void
+    {
+        // A @Cron/@OnEvent method or a Passport validate(): NestJS calls it.
+        $node = self::makeNode('ts:method:src/jobs.ts#Cleanup::cleanup', kind: 'method', attributes: ['nestjs_roles' => ['nestjs.framework_handler']]);
+        $facts = (new NestJsRoleRule())->classify($node);
+        assertSame('nestjs.framework_handler', $facts[0]->role ?? null);
+        assertSame(true, ReportableComponent::isDiscoveredByConvention(['nestjs.framework_handler']));
+    }
+
     public function testNestJsRoleRuleSkipsUnknownRoles(): void
     {
         // Negative: a role outside the whitelist is silently skipped.
@@ -223,6 +233,56 @@ final class ClassificationModuleTest extends KnossosTestCase
         assertSame(1, count($facts));
         assertSame('laravel.controller', $facts[0]->role);
         assertSame(Confidence::Probable, $facts[0]->confidence);
+    }
+
+    /**
+     * Laravel runs migrations, seeders and factories it finds by directory;
+     * nothing references a migration class, so every one read as probably
+     * dead, and in an older app the migrations alone filled the report.
+     */
+    public function testLaravelPathRoleRuleRecognisesDatabaseDirectories(): void
+    {
+        foreach ([
+            'database/migrations/2014_10_12_000000_create_users_table.php' => 'laravel.migration',
+            'database/seeders/DatabaseSeeder.php' => 'laravel.seeder',
+            'database/seeds/UsersTableSeeder.php' => 'laravel.seeder',
+            'database/factories/UserFactory.php' => 'laravel.factory',
+        ] as $path => $role) {
+            $facts = (new LaravelPathRoleRule())->classify(self::makeNode('php:class:' . $path, relativePath: $path));
+            assertSame($role, $facts[0]->role ?? null, $path);
+            assertSame(true, ReportableComponent::isDiscoveredByConvention([$role]), $role);
+        }
+    }
+
+    /**
+     * Laravel's pipeline, queue and console call `handle` (and `terminate`,
+     * `failed`, `__invoke`) on middleware, jobs, listeners and commands. The
+     * class was a convention, but its entry method, never named by the
+     * project, read as probably dead. A module's own `Middleware` directory
+     * counts as much as `Http/Middleware`.
+     */
+    public function testLaravelPathRoleRuleMarksTheMethodsTheFrameworkCalls(): void
+    {
+        $rule = new LaravelPathRoleRule();
+        $method = static fn(string $path, string $name): NodeFact => self::makeNode('php:method:' . $path . '::' . $name, kind: 'method', displayName: $name, relativePath: $path);
+
+        foreach ([
+            ['app/Http/Middleware/EnsureRole.php', 'handle'],
+            ['app/Modules/ExternalApi/Middleware/ClientAuth.php', 'handle'],
+            ['app/Http/Middleware/TrackRequests.php', 'terminate'],
+            ['app/Jobs/SendInvoice.php', 'failed'],
+            ['app/Listeners/NotifyAdmins.php', 'handle'],
+            ['app/Console/Commands/SyncPortals.php', 'handle'],
+        ] as [$path, $name]) {
+            $facts = $rule->classify($method($path, $name));
+            assertSame('laravel.entry_method', $facts[0]->role ?? null, $path . '::' . $name);
+        }
+        assertSame(true, ReportableComponent::isDiscoveredByConvention(['laravel.entry_method']));
+        // Any other method of such a class stays reportable.
+        assertSame([], $rule->classify($method('app/Jobs/SendInvoice.php', 'buildPayload')));
+        // And a `handle` outside every convention directory is an ordinary method.
+        assertSame([], $rule->classify($method('app/Models/Invoice.php', 'handle')));
+        assertSame('laravel.middleware', $rule->classify(self::makeNode('php:class:app/Modules/ExternalApi/Middleware/ClientAuth.php', relativePath: 'app/Modules/ExternalApi/Middleware/ClientAuth.php'))[0]->role ?? null);
     }
 
     public function testLaravelPathRoleRuleSkipsUnmatchedPath(): void

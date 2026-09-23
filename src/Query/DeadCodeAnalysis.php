@@ -65,6 +65,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $inheritance = $this->inheritedMethodContext($projectId, array_keys($methodNames), $methodNames);
         $excludedInherited = 0;
         $idsByCanonicalName = self::indexByCanonicalName($nodes);
+        $untypedCalls = self::untypedMemberCalls($nodes);
         $excludedConstructors = 0;
         $excludedContracts = 0;
         $excludedEntryScripts = 0;
@@ -107,7 +108,11 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                     continue;
                 }
             }
-            if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)) {
+            // Marked by its scanner as called by a runtime or a foreign host
+            // (`Drop::drop`, a `#[no_mangle]` export): no source names it,
+            // however live it is. Counted with the engine-invoked members.
+            if ($this->isEngineInvokedMemberOfReferencedType($candidate['row'], $idsByCanonicalName, $metrics)
+                || ReportableComponent::isRuntimeInvoked($candidate['row']['attributes_json'] ?? null)) {
                 ++$excludedConstructors;
                 continue;
             }
@@ -116,7 +121,8 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             // information about whether it is wanted. An ordinary module that
             // nothing imports stays reportable — an orphaned one is precisely
             // what this analysis exists to surface.
-            if (ReportableComponent::isExecutableScript((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)) {
+            if (ReportableComponent::isExecutableScript((string) $candidate['row']['kind'], $candidate['row']['attributes_json'] ?? null)
+                || self::isPackageInitWithModules($candidate['row'], $idsByCanonicalName)) {
                 ++$excludedEntryScripts;
                 continue;
             }
@@ -146,6 +152,14 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             $reason = $reachability === 'test_only'
                 ? 'The only inbound static references come from test code, so nothing the product runs reaches this.'
                 : 'No inbound static reference was found among the selected edge kinds.';
+            // A call by this name on a receiver its scanner could not type may
+            // be the one that reaches it, so the absence of an edge proves less.
+            if ($confidence === 'probable'
+                && in_array($candidate['row']['kind'], ['method', 'function'], true)
+                && isset($untypedCalls[(string) $candidate['row']['display_name']])) {
+                $confidence = 'possible';
+                $reason = 'No inbound static reference was found, but a member of this name is called on a receiver the scan could not type, which may be this one.';
+            }
             if ($context['external_ancestor'] !== null) {
                 $confidence = 'possible';
                 $reason = sprintf(
@@ -224,6 +238,62 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $ownerId = $idsByCanonicalName[$owner] ?? null;
 
         return $ownerId !== null && ($metrics[$ownerId]['in_degree'] ?? 0) > 0;
+    }
+
+    /**
+     * Member names the scanners saw called on a receiver they could not type.
+     *
+     * A module node lists the calls in its own source; a scanner without a
+     * module node for every file puts them on the calling declaration.
+     *
+     * @param array<array-key, array<string, mixed>> $nodes
+     * @return array<string, true>
+     */
+    private static function untypedMemberCalls(array $nodes): array
+    {
+        $names = [];
+        foreach ($nodes as $node) {
+            $json = $node['attributes_json'] ?? null;
+            if (!is_string($json) || !str_contains($json, 'unresolved_member_calls')) {
+                continue;
+            }
+            $calls = json_decode($json, true)['unresolved_member_calls'] ?? null;
+            foreach (is_array($calls) ? $calls : [] as $name) {
+                if (is_string($name)) {
+                    $names[$name] = true;
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * A Python package's `__init__` module whose package holds other modules.
+     *
+     * The import system runs it whenever any module in the package is
+     * imported, and nothing names it; if none of those modules is used either,
+     * they carry the report.
+     *
+     * @param array<string, mixed> $node @param array<string, string> $idsByCanonicalName
+     */
+    private static function isPackageInitWithModules(array $node, array $idsByCanonicalName): bool
+    {
+        if ($node['kind'] !== 'module' || !is_string($node['attributes_json'] ?? null)) {
+            return false;
+        }
+        $attributes = json_decode($node['attributes_json'], true);
+        if (!is_array($attributes) || ($attributes['package_init'] ?? false) !== true) {
+            return false;
+        }
+        $prefix = $node['canonical_name'] . '.';
+        foreach (array_keys($idsByCanonicalName) as $canonical) {
+            if (str_starts_with((string) $canonical, $prefix)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

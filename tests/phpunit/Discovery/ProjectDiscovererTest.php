@@ -43,6 +43,14 @@ final class ProjectDiscovererTest extends KnossosTestCase
 
     // ── Directory-level diagnostics ──────────────────────────────────
 
+    /** Vue, Svelte and Astro components are read by the TypeScript worker. */
+    public function testComponentsAreScannedAsTypeScript(): void
+    {
+        foreach (['src/App.vue', 'src/lib/Counter.svelte', 'src/pages/index.astro', 'src/App.VUE'] as $path) {
+            self::assertSame('typescript', ProjectDiscoverer::languageFor($path), $path);
+        }
+    }
+
     public function testDiscoverReportsUnreadableDirectoryDiagnostic(): void
     {
         if (posix_getuid() === 0) {
@@ -340,6 +348,211 @@ final class ProjectDiscovererTest extends KnossosTestCase
         $nodeUnits = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'node'));
         $this->assertNotEmpty($nodeUnits);
         assertSame(['.github/actions/setup/index.js'], $nodeUnits[0]->metadata['entry_points']);
+    }
+
+    /**
+     * A file git ignores is a cache, a local tool's state or generated output,
+     * not the project's source, and each one scanned became a node that
+     * dead-code analysis reported as unreferenced. Every `.gitignore` in the
+     * tree applies below its own directory, and each is itself a unit, so an
+     * edit to one changes what a rescan would walk.
+     */
+    public function testDiscoverSkipsWhatTheTreesGitignoreFilesIgnore(): void
+    {
+        $files = [
+            '.gitignore' => "/var/\n*.gen.ts\n.agents/\n",
+            'var/cache/Container.php' => "<?php\n",
+            'src/a.ts' => "export const a = 1;\n",
+            'src/b.gen.ts' => "export const b = 1;\n",
+            '.agents/skills/helper.js' => "export const h = 1;\n",
+            'web/.gitignore' => "styled-system\n",
+            'web/styled-system/css.mjs' => "export const css = 1;\n",
+            'web/app.ts' => "export const app = 1;\n",
+            'storage/views/.gitignore' => "*\n!.gitignore\n",
+            'storage/views/compiled.php' => "<?php\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            @mkdir(dirname($this->root . '/' . $relative), 0700, true);
+            file_put_contents($this->root . '/' . $relative, $contents);
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $paths = array_map(fn(DiscoveredFile $file): string => $file->relativePath, $result->files);
+        sort($paths);
+        assertSame(['src/a.ts', 'web/app.ts'], $paths);
+        $gitignores = array_values(array_map(
+            fn(ProjectUnit $unit): string => $unit->configPath,
+            array_filter($result->units, fn(ProjectUnit $unit): bool => $unit->kind === 'gitignore'),
+        ));
+        assertSame(['.gitignore', 'storage/views/.gitignore', 'web/.gitignore'], $gitignores);
+    }
+
+    /**
+     * A Claude Code plugin runs its hooks and MCP servers from commands in JSON
+     * files, and knip lists a project's entry files under `entry`. Nothing
+     * imports any of those files, so each carried no inbound edge while running
+     * on every tool call. Knip's `ignore` names files that must not count.
+     */
+    public function testDiscoverReadsEntryPointsFromAgentPluginFilesAndKnip(): void
+    {
+        foreach (['hooks', '.claude-plugin', '.claude', 'packages/web'] as $directory) {
+            mkdir($this->root . '/' . $directory, 0700, true);
+        }
+        file_put_contents($this->root . '/hooks/hooks.json', json_encode(['hooks' => ['PreToolUse' => [['hooks' => [
+            ['type' => 'command', 'command' => 'bun "$CLAUDE_PLUGIN_ROOT/src/hooks/pre-tool-use.ts"'],
+        ]]]]], JSON_THROW_ON_ERROR));
+        file_put_contents($this->root . '/.mcp.json', '{"mcpServers":{"x":{"command":"node","args":["${CLAUDE_PLUGIN_ROOT}/dist/server.js","bin/serve.mjs"]}}}');
+        file_put_contents($this->root . '/.claude/settings.json', '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 tools/on_stop.py"}]}]}}');
+        file_put_contents($this->root . '/knip.json', json_encode([
+            'entry' => ['src/cli.ts', 'scripts/*.ts'],
+            'ignore' => ['src/legacy.ts'],
+            'workspaces' => ['packages/web' => ['entry' => 'main.tsx']],
+        ], JSON_THROW_ON_ERROR));
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            foreach ($unit->metadata['entry_points'] ?? [] as $path) {
+                $entryPoints[$path] = $unit->configPath;
+            }
+        }
+        assertSame('hooks/hooks.json', $entryPoints['src/hooks/pre-tool-use.ts'] ?? null);
+        assertSame('.mcp.json', $entryPoints['bin/serve.mjs'] ?? null);
+        assertSame('.mcp.json', $entryPoints['dist/server.js'] ?? null);
+        assertSame('.claude/settings.json', $entryPoints['tools/on_stop.py'] ?? null);
+        assertSame('knip.json', $entryPoints['src/cli.ts'] ?? null);
+        assertSame('knip.json', $entryPoints['packages/web/main.tsx'] ?? null);
+        assertSame(false, isset($entryPoints['src/legacy.ts']));
+    }
+
+    /**
+     * The TypeScript a package declares decides which compiler defaults its
+     * sources are checked under, since 6.0 changed several of them.
+     */
+    public function testDiscoverRecordsTheTypescriptRangeEachManifestDeclares(): void
+    {
+        mkdir($this->root . '/web', 0700, true);
+        mkdir($this->root . '/lib', 0700, true);
+        file_put_contents($this->root . '/package.json', '{"devDependencies":{"typescript":"^5.9.3"}}');
+        file_put_contents($this->root . '/web/package.json', '{"dependencies":{"typescript":"6.0.3"}}');
+        file_put_contents($this->root . '/lib/package.json', '{"dependencies":{"react":"19"}}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $ranges = [];
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                $ranges[$unit->configPath] = $unit->metadata['typescript_range'];
+            }
+        }
+        assertSame(['lib/package.json' => null, 'package.json' => '^5.9.3', 'web/package.json' => '6.0.3'], $ranges);
+    }
+
+    /**
+     * Whether a package depends on Vue decides whether its bundler resolves
+     * `./Card` to `Card.vue`; the worker is told per manifest, never by what
+     * a request happens to hold.
+     */
+    public function testDiscoverRecordsWhetherEachManifestDependsOnVue(): void
+    {
+        mkdir($this->root . '/web', 0700, true);
+        mkdir($this->root . '/lib', 0700, true);
+        file_put_contents($this->root . '/package.json', '{"devDependencies":{"typescript":"^5.9.3"}}');
+        file_put_contents($this->root . '/web/package.json', '{"dependencies":{"vue":"^3.5.0"}}');
+        file_put_contents($this->root . '/lib/package.json', '{"peerDependencies":{"vue":"^2.7.0"}}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $vue = [];
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                $vue[$unit->configPath] = $unit->metadata['vue'];
+            }
+        }
+        ksort($vue);
+        assertSame(['lib/package.json' => true, 'package.json' => false, 'web/package.json' => true], $vue);
+    }
+
+    /**
+     * An agent config is read for the paths it names even when it is not
+     * valid JSON (cut off mid-edit): its raw text still names them.
+     */
+    public function testAnAgentConfigThatDoesNotParseStillNamesItsScripts(): void
+    {
+        mkdir($this->root . '/.claude', 0700, true);
+        file_put_contents($this->root . '/.claude/settings.json', '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 tools/on_stop.py"}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            foreach ($unit->metadata['entry_points'] ?? [] as $path) {
+                $entryPoints[] = $path;
+            }
+        }
+        assertArrayContains('tools/on_stop.py', $entryPoints);
+    }
+
+    /**
+     * An `outDir` that is the config's own directory, or that leaves it, names
+     * no separate build output, so nothing is mapped back to a source.
+     */
+    public function testAnOutDirThatIsNoSeparateDirectoryMapsNothing(): void
+    {
+        foreach (['inplace' => '.', 'absolute' => '/tmp/out', 'outside' => '../out'] as $package => $outDir) {
+            mkdir($this->root . '/' . $package, 0700, true);
+            file_put_contents($this->root . '/' . $package . '/package.json', '{"main":"out/index.js"}');
+            file_put_contents($this->root . '/' . $package . '/tsconfig.json', json_encode(['compilerOptions' => ['outDir' => $outDir]], JSON_THROW_ON_ERROR));
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                assertSame([dirname($unit->configPath) . '/out/index.js'], $unit->metadata['entry_points'], $unit->configPath);
+            }
+        }
+    }
+
+    /**
+     * A package's `main`, `bin` and scripts name what runs, which for a
+     * compiled package is the build output: `dist/index.js`. Discovery skips
+     * `dist/`, so the name matched nothing and the source it is compiled from,
+     * `src/index.ts`, was reported as reachable only from its tests. The
+     * tsconfig's `outDir` and `rootDir` say which source each output comes from.
+     */
+    public function testDiscoverMapsEntryPointsInTheBuildOutputBackToTheirSources(): void
+    {
+        mkdir($this->root . '/packages/cli', 0700, true);
+        file_put_contents($this->root . '/package.json', json_encode([
+            'main' => 'dist/index.js',
+            'bin' => ['tool' => './dist/bin/tool.mjs'],
+            'scripts' => ['start' => 'node dist/server.js', 'lint' => 'eslint lib/other.js'],
+        ], JSON_THROW_ON_ERROR));
+        file_put_contents($this->root . '/tsconfig.json', json_encode([
+            'compilerOptions' => ['outDir' => './dist/', 'rootDir' => 'src'],
+        ], JSON_THROW_ON_ERROR));
+        // No rootDir: the compiler infers one, so both usual answers are offered.
+        file_put_contents($this->root . '/packages/cli/package.json', '{"main":"out/main.js"}');
+        file_put_contents($this->root . '/packages/cli/tsconfig.json', '{"compilerOptions":{"outDir":"out"}}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                $entryPoints[$unit->configPath] = $unit->metadata['entry_points'];
+            }
+        }
+        foreach (['src/index.ts', 'src/index.tsx', 'src/bin/tool.mts', 'src/server.ts', 'dist/index.js'] as $path) {
+            assertArrayContains($path, $entryPoints['package.json']);
+        }
+        // Only output under outDir is mapped.
+        assertSame(false, in_array('src/other.ts', $entryPoints['package.json'], true));
+        assertArrayContains('packages/cli/src/main.ts', $entryPoints['packages/cli/package.json']);
+        assertArrayContains('packages/cli/main.ts', $entryPoints['packages/cli/package.json']);
     }
 
     /**
@@ -1465,6 +1678,90 @@ TOML);
             'frontend/src/test/setup.ts',
             'frontend/src/test/global.ts',
         ], $units[0]->metadata['entry_points']);
+    }
+
+    /**
+     * Bundler and desktop-shell configs name the modules they build from under
+     * `entrypoint` or `entryPoints`. The bundled main process is loaded by the
+     * shell and imported by nothing, so it read as unreferenced.
+     */
+    public function testDiscoverReadsTheEntrypointsABundlerConfigNames(): void
+    {
+        file_put_contents($this->root . '/electrobun.config.ts', implode("\n", [
+            'export default {',
+            "  build: { bun: { entrypoint: 'electrobun/index.ts' }, views: { main: { entrypoint: 'src/Main.tsx' } } },",
+            '};',
+            '',
+        ]));
+        file_put_contents($this->root . '/esbuild.config.mjs', "export default { entryPoints: ['src/worker.ts'] };\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'tool_config') {
+                $entryPoints = [...$entryPoints, ...$unit->metadata['entry_points']];
+            }
+        }
+        sort($entryPoints);
+        assertSame(['electrobun/index.ts', 'src/Main.tsx', 'src/worker.ts'], $entryPoints);
+    }
+
+    /**
+     * Symfony and Doctrine wire classes up by name in YAML: a Doctrine filter,
+     * a service, an event listener. The class is instantiated by the container
+     * and referenced by nothing in PHP, so it read as dead. Composer's PSR-4
+     * map turns the class name into the file that declares it.
+     */
+    public function testDiscoverReadsClassNamesFromYamlThroughThePsr4Map(): void
+    {
+        mkdir($this->root . '/config/packages', 0700, true);
+        file_put_contents($this->root . '/composer.json', json_encode([
+            'autoload' => ['psr-4' => ['App\\' => 'src/', 'Acme\\Lib\\' => ['lib/']]],
+        ], JSON_THROW_ON_ERROR));
+        file_put_contents($this->root . '/config/packages/doctrine.yaml', implode("\n", [
+            'doctrine:',
+            '    orm:',
+            '        filters:',
+            '            end_of_sale:',
+            '                class: App\\AppBundle\\Doctrine\\EndOfSaleFilter',
+            'services:',
+            "    'Acme\\Lib\\Mailer': ~",
+            '    Vendor\\Unmapped\\Thing: ~',
+            '',
+        ]));
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $yaml = array_values(array_filter($result->units, fn(ProjectUnit $u): bool => $u->configPath === 'config/packages/doctrine.yaml'))[0];
+        assertArrayContains('src/AppBundle/Doctrine/EndOfSaleFilter.php', $yaml->metadata['entry_points']);
+        assertArrayContains('lib/Mailer.php', $yaml->metadata['entry_points']);
+        assertSame([], array_values(array_filter($yaml->metadata['entry_points'], fn(string $p): bool => str_contains($p, 'Unmapped'))));
+    }
+
+    /**
+     * A server started by the container (`CMD ["node", "server/index.mjs"]`)
+     * or by the test runner (`webServer: { command: 'node server/index.mjs' }`)
+     * is imported by nothing, and both files name it only in a command line.
+     */
+    public function testDiscoverReadsEntryPointsFromDockerfilesAndCommandLines(): void
+    {
+        mkdir($this->root . '/docker', 0700, true);
+        file_put_contents($this->root . '/Dockerfile', "FROM node:22\nCOPY . .\nCMD [\"node\", \"server/index.mjs\"]\n");
+        file_put_contents($this->root . '/docker/worker.Dockerfile', "FROM python:3.12\nENTRYPOINT python3 jobs/run.py --once\n");
+        file_put_contents($this->root . '/playwright.config.ts', "export default { webServer: { command: 'node server/preview.mjs --port 4173' } };\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            foreach ($unit->metadata['entry_points'] ?? [] as $path) {
+                $entryPoints[$path] = $unit->configPath;
+            }
+        }
+        assertSame('Dockerfile', $entryPoints['server/index.mjs'] ?? null);
+        assertSame('docker/worker.Dockerfile', $entryPoints['jobs/run.py'] ?? null);
+        assertSame('playwright.config.ts', $entryPoints['server/preview.mjs'] ?? null);
     }
 
     /**

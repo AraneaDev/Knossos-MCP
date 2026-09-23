@@ -129,6 +129,527 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame(false, $executable['src/helper.js']);
     }
 
+    /**
+     * The JavaScript `__main__` guard. A module whose body runs under
+     * `if (import.meta.main)` is compiled or launched as an entry point and is
+     * imported, if at all, only by its tests, so without the flag it was
+     * reported as reached only by tests. `require.main === module` is the
+     * CommonJS form.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerMarksMainGuardedModulesExecutable(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-main-guard-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"main-guard-fixture"}',
+            'src/hook.ts' => "export function handle() {}\nif (import.meta.main) {\n    handle();\n}\n",
+            'src/cli.cjs' => "function run() {}\nif (require.main === module) run();\n",
+            'src/reversed.js' => "function run() {}\nif (module === require.main) {\n    run();\n}\n",
+            'src/nested.ts' => "export function check() {\n    if (import.meta.main) return 1;\n    return 0;\n}\n",
+            'src/negated.ts' => "export function lib() {}\nif (!import.meta.main) lib();\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => array_values(array_filter(
+                    array_keys($files),
+                    fn(string $relative): bool => $relative !== 'package.json',
+                )),
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $executable = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $executable[$node->canonicalName] = $node->attributes['executable'] ?? false;
+                }
+            }
+        }
+
+        assertSame(true, $executable['src/hook.ts']);
+        assertSame(true, $executable['src/cli.cjs']);
+        assertSame(true, $executable['src/reversed.js']);
+        // Only a guard at file scope says how the file is entered.
+        assertSame(false, $executable['src/nested.ts']);
+        // A negated guard runs its body when the module is imported, not run.
+        assertSame(false, $executable['src/negated.ts']);
+    }
+
+    /**
+     * A generic type parameter, an inline object return type and a
+     * `const read = () => ...` helper are declared inside the project but are
+     * not nodes the scanner emits. References to them were given canonical
+     * names like `src/ledger.ts#readAll.T`, `src/ledger.ts#totals.` and
+     * `src/ledger.ts#`, which matched nothing, and the core turned every such
+     * dangling edge into an external component.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerDoesNotReferenceDeclarationsItNeverEmits(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-unemitted-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"unemitted-fixture"}',
+            'src/ledger.ts' => implode("\n", [
+                'export function readAll<T>(items: T[]): T[] {',
+                '    return items;',
+                '}',
+                'export function totals(): { added: number } {',
+                '    return { added: 1 };',
+                '}',
+                'const read = (p: string): string => p;',
+                'export function run(): string {',
+                '    readAll<string>([]);',
+                '    return read("x");',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan([
+                'root' => $root,
+                'files' => ['src/ledger.ts'],
+            ]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $declared = [];
+        $targets = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                $declared[$node->localId] = true;
+            }
+            foreach ($contribution->edges as $edge) {
+                $targets[] = $edge->targetReference;
+            }
+        }
+
+        $dangling = array_values(array_filter(
+            $targets,
+            fn(string $target): bool => !isset($declared[$target])
+                && !str_starts_with($target, 'ts:external_')
+                && !str_starts_with($target, 'ts:package:'),
+        ));
+        assertSame([], $dangling);
+        // The call to the declared generic function is still an edge.
+        assertArrayContains('ts:function:src/ledger.ts#readAll', $targets);
+    }
+
+    /**
+     * `new Worker(new URL('./gen.worker.ts', import.meta.url))` is how Vite,
+     * webpack and the browser load a module worker. No import names the file,
+     * so it carried no inbound edge and was reported as unreferenced while it
+     * ran on every page. Asset URLs and paths leaving the project stay out.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerLinksAModuleLoadedThroughAnImportMetaUrl(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-url-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src/workers', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"url-fixture"}',
+            'src/pool.ts' => implode("\n", [
+                'export function start(): Worker {',
+                "    new URL('../../outside.ts', import.meta.url);",
+                "    new URL('./logo.svg', import.meta.url);",
+                "    new URL('./workers/sim.worker.ts', 'https://example.com/');",
+                "    return new Worker(new URL('./workers/gen.worker.ts', import.meta.url), { type: 'module' });",
+                '}',
+                '',
+            ]),
+            'src/workers/gen.worker.ts' => "self.onmessage = () => {};\nexport {};\n",
+            'src/workers/sim.worker.ts' => "export {};\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/pool.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src/workers');
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $imports = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'imports') {
+                    $imports[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertSame([['ts:function:src/pool.ts#start', 'ts:module:src/workers/gen.worker.ts']], $imports);
+    }
+
+    /**
+     * `const { App } = await import('./tui/App')` loads a module lazily and
+     * names the exports it takes. Only a dynamic import's `default` was
+     * resolved, so a component loaded this way was reported as reached by
+     * nothing but its tests. Destructuring names each export exactly, so no
+     * guess is involved; a rest element names none.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReferencesExportsDestructuredFromADynamicImport(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-dynamic-named-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src/tui', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"dynamic-named-fixture"}',
+            'src/cli.ts' => implode("\n", [
+                'export async function run(): Promise<unknown[]> {',
+                "    const { App, Panel: Renamed, ...rest } = await import('./tui/App');",
+                '    return [App, Renamed, rest];',
+                '}',
+                '',
+            ]),
+            'src/tui/App.ts' => "export function App() {}\nexport class Panel {}\nexport function Unused() {}\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/cli.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src/tui');
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references' && str_contains($edge->targetReference, 'src/tui/')) {
+                    $references[] = $edge->targetReference;
+                }
+            }
+        }
+        sort($references);
+
+        assertSame(['ts:class:src/tui/App.ts#Panel', 'ts:function:src/tui/App.ts#App'], $references);
+    }
+
+    /**
+     * `{ discover, hydrate }` names two functions in shorthand, and
+     * `row = DefaultRow` names one as a parameter default. The shorthand was a
+     * listed position, but the name resolves to the object's property rather
+     * than the function it copies, and a default was not a position at all, so
+     * both functions read as unreferenced.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReferencesShorthandPropertiesAndDefaults(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-shorthand-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"shorthand-fixture"}',
+            'src/reader.ts' => implode("\n", [
+                'function discover(): number { return 1; }',
+                'function DefaultRow(): string { return "row"; }',
+                'function fallbackRun(): number { return 2; }',
+                'function eitherRun(): number { return 3; }',
+                'export function choose(run?: () => number, flag = false): number {',
+                '    const picked = run ?? fallbackRun;',
+                '    const other = flag ? eitherRun : picked;',
+                '    return picked() + other();',
+                '}',
+                'export const reader = { discover };',
+                'export function list(row: () => string = DefaultRow): string { return row(); }',
+                'export function pick({ render = DefaultRow }: { render?: () => string } = {}): string { return render(); }',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/reader.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = [$edge->sourceReference, $edge->targetReference];
+                }
+            }
+        }
+
+        assertArrayContains(['ts:module:src/reader.ts', 'ts:function:src/reader.ts#discover'], $references);
+        assertArrayContains(['ts:function:src/reader.ts#list', 'ts:function:src/reader.ts#DefaultRow'], $references);
+        assertArrayContains(['ts:function:src/reader.ts#pick', 'ts:function:src/reader.ts#DefaultRow'], $references);
+        // `run ?? fallbackRun` and `flag ? eitherRun : picked` hand a function over too.
+        assertArrayContains(['ts:function:src/reader.ts#choose', 'ts:function:src/reader.ts#fallbackRun'], $references);
+        assertArrayContains(['ts:function:src/reader.ts#choose', 'ts:function:src/reader.ts#eitherRun'], $references);
+    }
+
+    /**
+     * `function make(): Clipboard | null` returns an object literal that
+     * implements `Clipboard`. The union has no symbol of its own, so no
+     * `returns` edge was drawn and the literal's methods were not tied to the
+     * interface its callers use.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReturnsEachNamedMemberOfAUnion(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-union-return-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"union-return-fixture"}',
+            'src/clip.ts' => implode("\n", [
+                'export interface Clipboard { writeText(text: string): void; }',
+                'export interface Fallback { note(): void; }',
+                'export function make(): Clipboard | Fallback | null {',
+                '    return { writeText() {} };',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/clip.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $returns = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'returns') {
+                    $returns[] = $edge->targetReference;
+                }
+            }
+        }
+        sort($returns);
+
+        assertSame(['ts:interface:src/clip.ts#Clipboard', 'ts:interface:src/clip.ts#Fallback'], $returns);
+    }
+
+    /**
+     * `fs?: { readFile(p: string): string }` inside an interface, or as a
+     * parameter's type, is a structural type, not code. Its members were
+     * emitted as methods named after the enclosing interface or function
+     * (`Input::readFile`), claiming a member the interface does not have, and
+     * reported as dead code that there is nothing to delete for.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerDoesNotDeclareMembersOfTypeLiterals(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-type-literal-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"type-literal-fixture"}',
+            'src/input.ts' => implode("\n", [
+                'export interface Input {',
+                '    relFile: string;',
+                '    fs?: { readFile(p: string): string; size: number };',
+                '}',
+                'export function run(input: Input, io: { write(c: string): void }): string {',
+                '    io.write(input.relFile);',
+                '    return input.fs?.readFile(input.relFile) ?? "";',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/input.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $names = [];
+        $declared = [];
+        $targets = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                $names[] = $node->canonicalName;
+                $declared[$node->localId] = true;
+            }
+            foreach ($contribution->edges as $edge) {
+                $targets[] = $edge->targetReference;
+            }
+        }
+
+        // The interface's own member stays; the anonymous shapes' members go.
+        assertArrayContains('src/input.ts#Input::relFile', $names);
+        foreach (['src/input.ts#Input::readFile', 'src/input.ts#Input::size', 'src/input.ts#run::write'] as $name) {
+            assertSame(false, in_array($name, $names, true));
+        }
+        // And nothing points at them either.
+        $dangling = array_filter($targets, fn(string $t): bool => !isset($declared[$t]) && str_starts_with($t, 'ts:') && !str_starts_with($t, 'ts:external_') && !str_starts_with($t, 'ts:package:'));
+        assertSame([], array_values($dangling));
+    }
+
+    /**
+     * `declare global { interface Window { api: Api } }` augments a type the
+     * runtime defines, and `declare module 'x' { ... }` describes a module
+     * someone else ships. Neither is code, exactly as a `.d.ts` is not, but
+     * they sat in ordinary files and were reported as unreferenced.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerMarksAmbientDeclarationsInOrdinaryFiles(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-ambient-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"ambient-fixture"}',
+            'src/engines.ts' => implode("\n", [
+                'declare global {',
+                '    interface Window { player?: string }',
+                '}',
+                "declare module 'legacy-lib' {",
+                '    export function start(): void;',
+                '}',
+                'export function play(): string { return window.player ?? ""; }',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/engines.ts']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $ambient = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                $ambient[$node->canonicalName] = ($node->attributes['ambient'] ?? false) === true;
+            }
+        }
+
+        assertSame(true, $ambient['src/engines.ts#global.Window']);
+        assertSame(true, $ambient['src/engines.ts#global.Window::player']);
+        assertSame(true, $ambient['src/engines.ts#legacy-lib.start']);
+        assertSame(false, $ambient['src/engines.ts#play']);
+    }
+
+    /**
+     * `<Button onClick={addItem}>` and `{renderRow}` hand a function to React
+     * inside a JSX expression, which was not a value position. Every handler a
+     * component declares for its own markup read as unreferenced.
+     */
+    #[Group('typescript-scanner')]
+    public function testTypescriptWorkerReferencesFunctionsPassedInJsx(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-ts-jsx-handler-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o755, true);
+        $files = [
+            'package.json' => '{"name":"jsx-handler-fixture"}',
+            'tsconfig.json' => '{"compilerOptions":{"jsx":"react-jsx","noEmit":true,"strict":true},"include":["src"]}',
+            'src/editor.tsx' => implode("\n", [
+                'function renderRow(): string { return "row"; }',
+                'export function Editor(): unknown {',
+                '    function addItem(): void {}',
+                '    return <div><button onClick={addItem}>add</button>{renderRow}</div>;',
+                '}',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->typescriptWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['src/editor.tsx'], 'config_files' => ['tsconfig.json']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_keys($files) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/src');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = $edge->targetReference;
+                }
+            }
+        }
+
+        assertArrayContains('ts:function:src/editor.tsx#Editor.addItem', $references);
+        assertArrayContains('ts:function:src/editor.tsx#renderRow', $references);
+    }
+
     #[Group('typescript-scanner')]
     public function testTypescriptWorkerExtractsCrossProjectArchitecture(): void
     {

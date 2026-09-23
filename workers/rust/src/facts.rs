@@ -1,6 +1,6 @@
 //! Collecting one file's facts in a deterministic order.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use proc_macro2::Span;
 use serde_json::Value;
@@ -67,6 +67,10 @@ pub struct Facts {
     /// declares a top-level `fn main`, or (for an extensionless script) a
     /// shebang. Applied to the module node in `finish()`.
     executable: bool,
+    /// Method names called on a receiver the walk could not type. Listed on
+    /// the module node in `finish()`, where the core reads them to report a
+    /// method by one of these names as only possibly dead.
+    untyped_calls: BTreeSet<String>,
     /// SHA-256 hex of the raw bytes this file was parsed from; absent until
     /// [`Facts::set_content_hash`] is called, which happens only for a file
     /// that was actually read.
@@ -87,6 +91,7 @@ impl Facts {
             external: HashSet::new(),
             pending_attributes: Vec::new(),
             executable: false,
+            untyped_calls: BTreeSet::new(),
             test_scope: 0,
             content_hash: None,
         }
@@ -111,7 +116,7 @@ impl Facts {
 
     /// Record one declared symbol.
     ///
-    /// The `local_id` is derived from `kind` and `canonical` via [`reference`],
+    /// The `local_id` is derived from `kind` and `canonical` via [`reference()`],
     /// so every call site gets the language prefix for free instead of having
     /// to remember to build it.
     pub fn node(&mut self, kind: &str, canonical: &str, display: &str, start: Span, end: Span) {
@@ -215,6 +220,11 @@ impl Facts {
         self.executable = true;
     }
 
+    /// Record a method called on a receiver whose type is unknown.
+    pub fn untyped_call(&mut self, method: String) {
+        self.untyped_calls.insert(method);
+    }
+
     /// Record the hash of the bytes this file's facts come from.
     pub fn set_content_hash(&mut self, hash: String) {
         self.content_hash = Some(hash);
@@ -223,7 +233,7 @@ impl Facts {
     /// Record one relationship.
     ///
     /// `source` and `target` must already be full references built via
-    /// [`reference`] (or another worker's equivalent) — this method does not
+    /// [`reference()`] (or another worker's equivalent) — this method does not
     /// prefix them itself, since the endpoint's kind is not always the same as
     /// `kind`, the edge's own kind (e.g. `contains`).
     pub fn edge(
@@ -243,6 +253,29 @@ impl Facts {
             confidence,
             evidence,
             attributes: BTreeMap::new(),
+        });
+    }
+
+    /// Record one edge whose target the source names but cannot vouch for:
+    /// a method called through a receiver whose type is stated (`self`, a
+    /// typed parameter, an annotated or constructed binding), or a type named
+    /// in a signature, field or pattern. Whether the method is the type's own
+    /// or a trait's, and whether a type path names a declaration or `Vec`, is
+    /// not known here, so the edge is marked `speculative` and the core keeps
+    /// it only when its target exists anywhere in the graph, instead of
+    /// inventing an external symbol.
+    pub fn speculative_edge(&mut self, kind: &str, source: &str, target: &str, span: Span) {
+        let evidence = self.evidence(span, span);
+        let mut attributes = BTreeMap::new();
+        attributes.insert("speculative".to_owned(), Value::Bool(true));
+        self.edges.push(Edge {
+            kind: kind.to_owned(),
+            source: source.to_owned(),
+            target: target.to_owned(),
+            origin: "ast",
+            confidence: "probable",
+            evidence,
+            attributes,
         });
     }
 
@@ -347,6 +380,20 @@ impl Facts {
             let module = self.nodes[0].canonical_name.clone(); // the module node is always first
             self.pending_attributes
                 .push((module, "executable".to_owned(), Value::Bool(true)));
+        }
+        if !self.untyped_calls.is_empty() {
+            let module = self.nodes[0].canonical_name.clone();
+            let names = self
+                .untyped_calls
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect();
+            self.pending_attributes.push((
+                module,
+                "unresolved_member_calls".to_owned(),
+                Value::Array(names),
+            ));
         }
         for (canonical, key, value) in &self.pending_attributes {
             if let Some(node) = self

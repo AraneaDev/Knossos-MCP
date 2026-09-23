@@ -24,10 +24,49 @@ Repeated edges are collapsed to the persistence identity. Mixed type/value
 imports retain `type_only_variants` so deduplication does not erase that
 distinction.
 
+## Components
+
+`.vue`, `.svelte` and `.astro` files are scanned as TypeScript. The worker reads each one into
+position-preserving virtual source: script blocks (and Astro's frontmatter and bundled
+`<script>` elements) keep their bytes, template expressions and component tags are written back
+where they stand, and everything else is blank. Line and column numbers are therefore the
+component's own, and an import of `./Card.vue` resolves through relative paths, `paths` and
+`baseUrl` like any other module.
+
+- A helper, store or child component used only from a template has its edge.
+- A template name that resolves to nothing (an Options API method reached through the
+  component instance) is listed in the module's `unresolved_member_calls`, so a method by that
+  name is only possibly dead.
+- A Vue Options API component (`export default { … }`, `defineComponent({ … })`): the hooks
+  Vue, vue-router, vue-meta and Nuxt call (`mounted`, `data`, `beforeRouteEnter`,
+  `metaInfo`...), watchers and prop `default`/`validator` factories are marked as called
+  by the runtime, and a method or computed property the component names through `this.x`, its
+  template or a watcher string gets a reference.
+- Under a `package.json` that depends on `vue`, an extensionless import (`./components/Card`)
+  that resolves to nothing else resolves to `Card.vue`, as webpack and Vue CLI do.
+- `require('./x')` in a component script without `lang="ts"` imports what it names, as it
+  does in a `.js` file.
+- Module aliases a bundler declares in `vite.config.*`, `webpack.config.*`, `webpack.mix.js`,
+  `vue.config.js` or `svelte.config.*` (including SvelteKit's `$lib`) apply when no tsconfig
+  `paths` maps the same name. Only targets that can be read without running the config
+  count: a string, `path.join|resolve(__dirname, …)`, or
+  `fileURLToPath(new URL('./x', import.meta.url))`.
+- webpack's `require.context('./dir', recursive, /pattern/)` imports every module in the
+  graph it matches. The match happens when the graph is assembled, so an incremental scan
+  that re-reads only the loading file keeps every edge.
+- SvelteKit route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`) and Astro pages
+  (`src/pages/**/*.astro`) are entry points.
+- A component that cannot be delimited, or whose script is `lang="tsx"` or `lang="jsx"`, keeps
+  its module node and reports `COMPONENT_UNPARSED`.
+- Every component is a module, with its compiled component as the default
+  export, whatever its script declares.
+
+Not handled: Nuxt auto-imported components and file-based routing, globally registered
+components, Vue template type semantics (slot props, `$emit` names, `v-model` modifiers), `.mdx`
+and Markdown pages.
+
 ## Limits
 
 No framework module is imported and no bundler or Next/Vue application is
 started. Dynamic route segments stay in their source spelling, dynamic request
 URLs are omitted, and framework roles do not override language symbol kinds.
-Single-file Vue components are not parsed until an isolated SFC parser is added;
-Vue TypeScript modules remain supported.
