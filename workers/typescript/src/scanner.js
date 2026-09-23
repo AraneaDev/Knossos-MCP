@@ -1123,8 +1123,16 @@ class TypeScriptLanguageFactCollector {
         if (
             signature?.declaration === undefined &&
             ts.isPropertyAccessExpression(node.expression)
-        )
-            this.untypedCalls.add(node.expression.name.text);
+        ) {
+            // `x.m.bind(...)` on an untyped `x` may reach any `m`; the name
+            // `bind` says nothing about which.
+            const bound = boundFunction(node.expression);
+            this.untypedCalls.add(
+                bound !== undefined && ts.isPropertyAccessExpression(bound)
+                    ? bound.name.text
+                    : node.expression.name.text,
+            );
+        }
         const target =
             this.bindingCallee(node) ??
             this.symbolReference(
@@ -3351,8 +3359,25 @@ function valueReferencePosition(node) {
     // ends there, because each step moves to the parent.
     if (ts.isPropertyAccessExpression(parent) && parent.name === node)
         return valueReferencePosition(parent);
+    // `handler.bind(ctx)`, `this.handler.call(ctx)`, `fn.apply(ctx, args)`:
+    // the function is handed on or invoked through Function.prototype, so
+    // the checker resolves the call to `bind` and never to the function.
+    if (boundFunction(parent) === node) return true;
 
     return false;
+}
+
+/**
+ * The function a `.bind(...)`, `.call(...)` or `.apply(...)` call is made
+ * on, given the `x.bind` access, or undefined.
+ */
+function boundFunction(access) {
+    return ts.isPropertyAccessExpression(access) &&
+        ["bind", "call", "apply"].includes(access.name.text) &&
+        ts.isCallExpression(access.parent) &&
+        access.parent.expression === access
+        ? access.expression
+        : undefined;
 }
 
 /**
