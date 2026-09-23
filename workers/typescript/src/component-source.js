@@ -234,8 +234,154 @@ function parseAttributes(source) {
     return attributes;
 }
 
-/** Vue markup; implemented in Task 2. */
-function vueMarkup() {}
+/**
+ * Write the expression at [exprStart, exprEnd) back in place, framed by
+ * `open` at `openAt` and `close` at `closeAt`, when the framed text parses on
+ * its own. A fragment that does not parse stays blank, so no template
+ * content can turn the script around it into a syntax error.
+ */
+function placeFramed(
+    writer,
+    exprStart,
+    exprEnd,
+    openAt,
+    open,
+    closeAt,
+    close,
+    rewrite = (value) => value,
+) {
+    const { text, out } = writer;
+    const expression = rewrite(text.slice(exprStart, exprEnd));
+    if (expression.trim() === "") return false;
+    const frame =
+        text.slice(openAt, openAt + open.length) +
+        text.slice(closeAt, closeAt + close.length);
+    if (/[\r\n]/.test(frame)) return false;
+    if (!parsesCleanly(open + expression + close, writer.kind)) return false;
+    write(out, openAt, open);
+    write(out, exprStart, expression);
+    write(out, closeAt, close);
+    return true;
+}
+
+/** Whether a fragment parses without syntax errors. */
+function parsesCleanly(source, kind) {
+    const probe = ts.createSourceFile(
+        kind === ts.ScriptKind.TSX ? "probe.tsx" : "probe.ts",
+        source,
+        ts.ScriptTarget.Latest,
+        false,
+        kind,
+    );
+    return probe.parseDiagnostics.length === 0;
+}
+
+/**
+ * Write a component tag back as `;Name` at its `<`: PascalCase as it is,
+ * kebab-case as PascalCase padded with spaces. Plain HTML elements and
+ * namespaced tags stay blank.
+ */
+function writeTagReference(writer, lt, name) {
+    if (name.includes(":")) return;
+    let identifier;
+    if (/^[A-Z]/.test(name)) identifier = name;
+    else if (name.includes("-"))
+        identifier = name
+            .split("-")
+            .filter((part) => part !== "")
+            .map((part) => part[0].toUpperCase() + part.slice(1))
+            .join("");
+    else return;
+    if (!/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(identifier)) return;
+    write(writer.out, lt, `;${identifier}`);
+}
+
+/** Vue template markup: interpolations, directive values and component tags. */
+function vueMarkup(writer, start, end) {
+    const { text } = writer;
+    let i = start;
+    while (i < end) {
+        if (text.startsWith("<!--", i)) {
+            const close = text.indexOf("-->", i + 4);
+            i = close < 0 || close >= end ? end : close + 3;
+        } else if (text.startsWith("{{", i)) {
+            const close = text.indexOf("}}", i + 2);
+            if (close < 0 || close >= end) {
+                i += 2;
+                continue;
+            }
+            placeFramed(writer, i + 2, close, i, ";(", close, ")");
+            i = close + 2;
+        } else if (text[i] === "<" && /[A-Za-z]/.test(text[i + 1] ?? "")) {
+            i = vueElement(writer, i, end);
+        } else {
+            i++;
+        }
+    }
+}
+
+/** One Vue start tag: its name, then each quoted attribute value. */
+function vueElement(writer, lt, end) {
+    const { text } = writer;
+    const name = /^<([A-Za-z][\w.:-]*)/.exec(text.slice(lt, lt + 128));
+    writeTagReference(writer, lt, name[1]);
+    const close = tagEnd(text, lt + name[0].length, false);
+    const stop = close < 0 || close >= end ? end : close;
+    const attributeName = /[^\s=>/"']+/y;
+    const assignment = /\s*=\s*(["'])/y;
+    let i = lt + name[0].length;
+    while (i < stop) {
+        attributeName.lastIndex = i;
+        const attribute = attributeName.exec(text);
+        if (attribute === null) {
+            i++;
+            continue;
+        }
+        assignment.lastIndex = attributeName.lastIndex;
+        const value = assignment.exec(text);
+        if (value === null) {
+            i = attributeName.lastIndex;
+            continue;
+        }
+        const valueStart = assignment.lastIndex;
+        const valueEnd = text.indexOf(value[1], valueStart);
+        if (valueEnd < 0 || valueEnd > stop) break;
+        vueDirective(writer, attribute[0], valueStart, valueEnd);
+        i = valueEnd + 1;
+    }
+    return close < 0 || close >= end ? end : close + 1;
+}
+
+/**
+ * A directive's value written back as `;(expression)`, or as `;{handler}`
+ * for an event, framed by the two characters before it (`="`) and its closing
+ * quote. Slot bindings declare names rather than use them, and a `v-for`
+ * keeps only its iterable.
+ */
+function vueDirective(writer, name, valueStart, valueEnd) {
+    if (name.startsWith("#") || /^v-slot(?::|$)/.test(name)) return;
+    if (!/^(?:v-|:|@)/.test(name)) return;
+    let exprStart = valueStart;
+    if (name === "v-for") {
+        const head = /^\s*(?:\([^)]*\)|\S+)\s+(?:in|of)\s+/.exec(
+            writer.text.slice(valueStart, valueEnd),
+        );
+        if (head === null) return;
+        exprStart = valueStart + head[0].length;
+    }
+    // An event handler is a statement list (`a(); b()`), which parentheses
+    // cannot hold; every other directive is one expression.
+    const handler = /^(?:@|v-on:)/.test(name);
+    placeFramed(
+        writer,
+        exprStart,
+        valueEnd,
+        exprStart - 2,
+        handler ? ";{" : ";(",
+        valueEnd,
+        handler ? "}" : ")",
+    );
+}
 
 /** Svelte and Astro markup; implemented in Task 3. */
 function braceMarkup() {}

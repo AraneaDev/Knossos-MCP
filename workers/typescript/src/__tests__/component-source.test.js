@@ -1,3 +1,4 @@
+import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -131,5 +132,100 @@ describe("script blocks", () => {
                 "vue",
             ),
         ).toThrow(/lang="tsx"/);
+    });
+});
+
+// The template part of a Vue component, wrapped so tests read as markup.
+function vue(template, script = "export default {};") {
+    const source = `<template>\n${template}\n</template>\n<script setup lang="ts">\n${script}\n</script>\n`;
+    return { source, virtual: expectInvariants(source, "vue").text };
+}
+
+describe("Vue templates", () => {
+    it("writes an interpolation back as a statement", () => {
+        const { source, virtual } = vue("<p>{{ format(x) }}</p>");
+        const at = source.indexOf("{{");
+        expect(virtual.slice(at, at + 15)).toBe(";( format(x) ) ");
+    });
+
+    it("writes directive values back and blanks plain attributes", () => {
+        const { virtual } = vue(
+            '<button class="card" @click="save(item)" :to="route" v-if="ok">x</button>',
+        );
+        expect(virtual).toContain(";{save(item)}");
+        expect(virtual).toContain(";(route)");
+        expect(virtual).toContain(";(ok)");
+        expect(virtual).not.toContain("card");
+    });
+
+    it("keeps only the iterable of a v-for", () => {
+        const { virtual } = vue('<li v-for="(item, i) in items">x</li>');
+        expect(virtual).toContain(";(items)");
+        expect(virtual).not.toContain("item,");
+    });
+
+    it("blanks slot bindings", () => {
+        const { virtual } = vue(
+            '<Table v-slot="{ row }" #cell="{ value }"></Table>',
+        );
+        expect(virtual).not.toContain("row");
+        expect(virtual).not.toContain("value");
+    });
+
+    it("keeps a handler spanning several lines", () => {
+        const { source, virtual } = vue(
+            '<b @click="\n  first();\n  second()\n">x</b>',
+        );
+        // A handler is a statement list, so it is framed as a block.
+        expect(virtual).toContain("{\n  first();");
+        expect(virtual).toContain("second()");
+        expect(virtual.split("\n").length).toBe(source.split("\n").length);
+    });
+
+    it("writes component tags as references, kebab-case as PascalCase", () => {
+        const { source, virtual } = vue(
+            "<UserCard /><user-card></user-card><div/><router-link/>",
+        );
+        expect(
+            virtual.slice(
+                source.indexOf("<UserCard"),
+                source.indexOf("<UserCard") + 9,
+            ),
+        ).toBe(";UserCard");
+        expect(
+            virtual.slice(
+                source.indexOf("<user-card"),
+                source.indexOf("<user-card") + 10,
+            ),
+        ).toBe(";UserCard ");
+        expect(virtual).toContain(";RouterLink");
+        expect(virtual).not.toContain("div");
+    });
+
+    it("leaves an expression that does not parse on its own blank", () => {
+        const { virtual } = vue('<b @click="a(">x</b><i :x="ok">y</i>');
+        expect(virtual).not.toContain("a(");
+        expect(virtual).toContain(";(ok)");
+    });
+
+    it("blanks HTML comments in the template", () => {
+        const { virtual } = vue("<!-- {{ hidden() }} --><p>{{ shown() }}</p>");
+        expect(virtual).not.toContain("hidden");
+        expect(virtual).toContain("shown()");
+    });
+
+    it("parses as TypeScript without syntax errors", () => {
+        const { virtual } = vue(
+            '<UserCard v-for="u in users" :key="u.id" @click="select(u)">{{ u.name }}</UserCard>',
+            "const users = [];\nfunction select(u: unknown) {}",
+        );
+        const file = ts.createSourceFile(
+            "x.ts",
+            virtual,
+            ts.ScriptTarget.Latest,
+            false,
+            ts.ScriptKind.TS,
+        );
+        expect(file.parseDiagnostics).toEqual([]);
     });
 });
