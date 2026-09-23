@@ -522,9 +522,7 @@ class ProjectModuleIndex:
         self._cache[module] = declarations
         return declarations
 
-    def _add_instances(
-        self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str]
-    ) -> None:
+    def _add_instances(self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str]) -> None:
         """Add the module-level instances ``tree`` creates to its declarations.
 
         ``user_repo = UserRepository()`` at module level is how a service hands
@@ -816,10 +814,7 @@ def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
 def bound_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
     """The names a function binds: its parameters, and every name it assigns."""
     arguments = node.args
-    names = {
-        argument.arg
-        for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]
-    }
+    names = {argument.arg for argument in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}
     for extra in (arguments.vararg, arguments.kwarg):
         if extra is not None:
             names.add(extra.arg)
@@ -1760,11 +1755,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
             )
             if target is None:
                 target = self.aliases.get(node.id) or self.index.module_declarations(self.module).get(node.id)
-            if (
-                target is not None
-                and target.startswith(("py:function:", "py:class:"))
-                and target != self.current()
-            ):
+            if target is not None and target.startswith(("py:function:", "py:class:")) and target != self.current():
                 self.facts.add_edge("references", self.current(), target, node)
         self.generic_visit(node)
 
