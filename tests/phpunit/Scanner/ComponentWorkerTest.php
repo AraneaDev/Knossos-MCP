@@ -26,6 +26,14 @@ final class ComponentWorkerTest extends KnossosTestCase
             self::assertTrue($scan->reaches('src/App.vue', $target), $target);
         }
         self::assertTrue($scan->imports('src/App.vue', 'src/components/UserCard.vue'));
+        // A v-for that destructures its item keeps its iterable.
+        self::assertTrue($scan->reaches('src/App.vue', 'src/App.vue#listUsers'));
+        // Vite's array form with a root-relative replacement.
+        self::assertTrue($scan->imports('src/main.js', 'src/util.ts'));
+        // `./Card.vue` means the component, though a Card.vue.ts sits beside it.
+        self::assertTrue($scan->imports('src/components/DataTable.vue', 'src/components/Card.vue'));
+        // A path joined from a root variable.
+        self::assertTrue($scan->imports('tools/shots.js', 'src/util.ts'));
         // Extensionless imports resolve to a component, through a bundler alias too.
         self::assertTrue($scan->imports('src/main.js', 'src/App.vue'));
         self::assertTrue($scan->imports('src/main.js', 'src/store/index.js'));
@@ -67,6 +75,11 @@ final class ComponentWorkerTest extends KnossosTestCase
         }
         self::assertSame([], $scan->diagnosticPaths('COMPONENT_UNPARSED'));
         self::assertContains('src/routes/about/+page.svelte', $scan->moduleNames());
+        // A script ending inside a line comment leaves the rest of that line
+        // blank, and the markup after it is still read.
+        self::assertTrue($scan->reaches('src/routes/comment/+page.svelte', 'src/lib/format.ts#format'));
+        // lang="typescript" is TypeScript, so its type errors are reported.
+        self::assertSame(['src/routes/comment/+page.svelte'], $scan->diagnosticPaths('TS2322'));
     }
 
     public function testAnAstroSitesFrontmatterMarkupAndScriptsBecomeFacts(): void
