@@ -254,3 +254,28 @@ describe("template usages", () => {
         );
     });
 });
+
+describe("a component as a module", () => {
+    it("is importable with nothing to import or export itself", () => {
+        const { contributions } = scan({
+            "src/App.vue":
+                '<template><user-card /></template>\n<script setup lang="ts">\nimport UserCard from "./UserCard.vue";\n</script>\n',
+            "src/UserCard.vue":
+                '<template><p>card</p></template>\n<script setup lang="ts"></script>\n',
+            "src/main.ts":
+                'import App from "./App.vue";\nexport default App;\n',
+        });
+        const imports = edges(contributions, "imports").map(
+            (e) => `${e.source} -> ${e.target}`,
+        );
+
+        expect(imports).toContain(
+            "ts:module:src/App.vue -> ts:module:src/UserCard.vue",
+        );
+        // A component's default export is its compiled component, which the
+        // virtual source does not spell out.
+        expect(
+            contributions.flatMap((c) => c.diagnostics).map((d) => d.code),
+        ).toEqual([]);
+    });
+});

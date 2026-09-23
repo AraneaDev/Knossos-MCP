@@ -1540,7 +1540,9 @@ function readHashedSourceFile(
     const sourceFile = ts.createSourceFile(
         fileName,
         component?.text ?? decoded,
-        languageVersion,
+        component === undefined
+            ? languageVersion
+            : asComponentModule(languageVersion),
         true,
         scriptKind,
     );
@@ -1572,6 +1574,27 @@ function componentSource(readPath, decoded) {
             unparsed: errorMessage(error),
         };
     }
+}
+
+/**
+ * Parse options that make a component a module whatever its script says.
+ *
+ * A `<script setup>` that neither imports nor exports reads to the compiler as
+ * a global script, and an import of the component then resolves to nothing.
+ * Every component is a module to its bundler, with its compiled component as
+ * the default export.
+ */
+function asComponentModule(languageVersion) {
+    const options =
+        typeof languageVersion === "object"
+            ? languageVersion
+            : { languageVersion };
+    return {
+        ...options,
+        setExternalModuleIndicator: (file) => {
+            file.externalModuleIndicator = true;
+        },
+    };
 }
 
 /**
@@ -2158,6 +2181,7 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
         )
             continue;
         if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
+        if (namesComponentDefaultExport(diagnostic)) continue;
         const relative = relativeInside(root, diagnostic.file.fileName);
         if (relative === null || belowNodeModules(relative)) continue;
         const overCap = declarationOverCap(
@@ -2215,6 +2239,17 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
     }
     componentParseDiagnostics(program, root, result);
     return result;
+}
+
+/**
+ * `Module "X.vue" has no default export`: a component's default export is
+ * the component its bundler compiles, which its virtual source never spells.
+ */
+function namesComponentDefaultExport(diagnostic) {
+    if (diagnostic.code !== 1192) return false;
+    const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
+    const module = /Module '"([^"]+)"'/.exec(text)?.[1];
+    return module !== undefined && componentDialect(module) !== null;
 }
 
 /** A `COMPONENT_UNPARSED` warning for each component that could not be read. */
