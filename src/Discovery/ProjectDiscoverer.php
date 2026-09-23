@@ -1538,9 +1538,7 @@ final readonly class ProjectDiscoverer
     private static function yamlClassNames(string $contents): array
     {
         $stripped = preg_replace('/#.*$/m', '', $contents) ?? $contents;
-        if (preg_match_all('/(?<![\\\\\w])[A-Z][A-Za-z0-9_]*(?:\\\\{1,2}[A-Z][A-Za-z0-9_]*)+/', $stripped, $matches) === false) {
-            return [];
-        }
+        preg_match_all('/(?<![\\\\\w])[A-Z][A-Za-z0-9_]*(?:\\\\{1,2}[A-Z][A-Za-z0-9_]*)+/', $stripped, $matches);
         $names = [];
         foreach ($matches[0] as $match) {
             $names[str_replace('\\\\', '\\', $match)] = true;

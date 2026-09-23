@@ -46,6 +46,12 @@ final class GitIgnoreRulesTest extends KnossosTestCase
         yield 'a comment is not a pattern' => ['# cache', '# cache', false, false];
         yield 'an escaped hash is a literal' => ['\\#notes.ts', '#notes.ts', false, true];
         yield 'trailing spaces are dropped' => ["cache   ", 'cache', true, true];
+        yield 'a bare double star matches everything' => ['**', 'a/b.ts', false, true];
+        yield 'a class may open with a closing bracket' => ['file[]x].ts', 'file].ts', false, true];
+        yield 'a negated class may open with a closing bracket' => ['file[!]].ts', 'fileA.ts', false, true];
+        // Git ignores a pattern it cannot read; so does this.
+        yield 'an unclosed class is no pattern' => ['file[0-9.ts', 'file[0-9.ts', false, false];
+        yield 'a lone slash is no pattern' => ['/', 'a.ts', false, false];
     }
 
     #[DataProvider('rootPatterns')]
@@ -55,6 +61,15 @@ final class GitIgnoreRulesTest extends KnossosTestCase
         $rules->add('', $pattern . "\n");
 
         self::assertSame($expected, $rules->ignores($path, $isDirectory));
+    }
+
+    public function testTheRootItselfIsNeverIgnored(): void
+    {
+        $rules = new GitIgnoreRules();
+        $rules->add('', "*\n");
+
+        self::assertSame(false, $rules->ignores('', true));
+        self::assertSame(false, $rules->ignores('/', true));
     }
 
     public function testTheLastMatchingPatternInAFileWins(): void

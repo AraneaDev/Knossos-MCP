@@ -982,4 +982,17 @@ final class HealthFiltersTest extends KnossosTestCase
         // unreconciled counter reported 1 here — an exclusion that never happened.
         assertSame(0, $result->data['bounds']['excluded_convention_discovered']);
     }
+
+    public function testCandidateFiltersRejectValuesOutsideTheirRange(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $repository->completeScan($ids['project'], $ids['scan']);
+        $queries = new ArchitectureQueryService($pdo);
+
+        $confidence = captureThrows(fn() => $queries->architectureHealth($ids['project'], candidateConfidence: 'certain'), \InvalidArgumentException::class);
+        $offset = captureThrows(fn() => $queries->architectureHealth($ids['project'], candidateOffset: -1), \InvalidArgumentException::class);
+
+        assertSame('candidate_confidence must be probable or possible.', $confidence->getMessage());
+        assertSame('candidate_offset must not be negative.', $offset->getMessage());
+    }
 }

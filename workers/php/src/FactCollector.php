@@ -146,14 +146,11 @@ final class FactCollector extends NodeVisitorAbstract
         if ($comment === null) {
             return;
         }
-        $matched = preg_match_all(
+        preg_match_all(
             '/\b(?:class|repositoryClass|targetEntity|entityClass|handler)\s*=\s*"\\\\{0,2}([A-Za-z_][A-Za-z0-9_]*(?:\\\\{1,2}[A-Za-z_][A-Za-z0-9_]*)+)"/',
             $comment->getText(),
             $matches,
         );
-        if ($matched === false) {
-            return;
-        }
         foreach (array_unique($matches[1]) as $className) {
             $this->addEdge('references', $this->currentSource(), self::reference('class', str_replace('\\\\', '\\', $className)), $node);
         }

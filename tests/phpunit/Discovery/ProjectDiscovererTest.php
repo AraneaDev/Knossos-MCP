@@ -476,6 +476,47 @@ final class ProjectDiscovererTest extends KnossosTestCase
     }
 
     /**
+     * An agent config is read for the paths it names even when it is not
+     * valid JSON (cut off mid-edit): its raw text still names them.
+     */
+    public function testAnAgentConfigThatDoesNotParseStillNamesItsScripts(): void
+    {
+        mkdir($this->root . '/.claude', 0700, true);
+        file_put_contents($this->root . '/.claude/settings.json', '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"python3 tools/on_stop.py"}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            foreach ($unit->metadata['entry_points'] ?? [] as $path) {
+                $entryPoints[] = $path;
+            }
+        }
+        assertArrayContains('tools/on_stop.py', $entryPoints);
+    }
+
+    /**
+     * An `outDir` that is the config's own directory, or that leaves it, names
+     * no separate build output, so nothing is mapped back to a source.
+     */
+    public function testAnOutDirThatIsNoSeparateDirectoryMapsNothing(): void
+    {
+        foreach (['inplace' => '.', 'absolute' => '/tmp/out', 'outside' => '../out'] as $package => $outDir) {
+            mkdir($this->root . '/' . $package, 0700, true);
+            file_put_contents($this->root . '/' . $package . '/package.json', '{"main":"out/index.js"}');
+            file_put_contents($this->root . '/' . $package . '/tsconfig.json', json_encode(['compilerOptions' => ['outDir' => $outDir]], JSON_THROW_ON_ERROR));
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                assertSame([dirname($unit->configPath) . '/out/index.js'], $unit->metadata['entry_points'], $unit->configPath);
+            }
+        }
+    }
+
+    /**
      * A package's `main`, `bin` and scripts name what runs, which for a
      * compiled package is the build output: `dist/index.js`. Discovery skips
      * `dist/`, so the name matched nothing and the source it is compiled from,

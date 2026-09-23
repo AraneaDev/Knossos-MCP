@@ -2228,6 +2228,30 @@ final class GraphReconcilerTest extends TestCase
             contribution: new ScanContribution('test.knossos:file:src/Foo.php'),
         );
     }
+    /**
+     * A directory import names its modules by pattern, expanded here against
+     * every module the graph holds. A context that is not well formed, or a
+     * JavaScript pattern PCRE cannot compile (`[^]` matches any character in
+     * JavaScript and is an error in PCRE), loads nothing rather than
+     * guessing.
+     */
+    public function testADirectoryImportExpandsToTheModulesItsPatternMatches(): void
+    {
+        $targets = new \ReflectionMethod(GraphReconciler::class, 'contextTargets');
+        $nodeMap = [
+            'ts:module:js/store/modules/auth.js' => 'n1',
+            'ts:module:js/store/modules/nested/deep.js' => 'n2',
+            'ts:module:js/store/modules/notes.txt' => 'n3',
+            'ts:module:js/store/index.js' => 'n4',
+            'ts:function:js/store/modules/auth.js#login' => 'n5',
+        ];
+        $context = static fn(array $fields): string => 'ts:module_context:' . json_encode($fields);
+
+        assertSame(['n1'], $targets->invoke(null, $context(['directory' => 'js/store/modules', 'recursive' => false, 'pattern' => '\\.js$', 'flags' => 'g']), $nodeMap));
+        assertSame(['n1', 'n2'], $targets->invoke(null, $context(['directory' => 'js/store/modules', 'recursive' => true, 'pattern' => '\\.JS$', 'flags' => 'i']), $nodeMap));
+        assertSame([], $targets->invoke(null, 'ts:module_context:not json', $nodeMap));
+        assertSame([], $targets->invoke(null, $context(['directory' => 'js/store/modules', 'recursive' => true, 'pattern' => '[^]']), $nodeMap));
+    }
 }
 
 /**
@@ -2580,5 +2604,6 @@ final class FakeGraphRepository implements GraphRepository
     {
         return [];
     }
+
 
 }
