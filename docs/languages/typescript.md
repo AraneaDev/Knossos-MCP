@@ -42,15 +42,18 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
   `metaInfo`...), watchers and prop `default`/`validator` factories are marked as called
   by the runtime, and a method or computed property the component names through `this.x`, its
   template or a watcher string gets a reference.
-- In a Vue project an extensionless import (`./components/Card`) that resolves to nothing
-  else resolves to `Card.vue`, as webpack and Vue CLI do.
+- Under a `package.json` that depends on `vue`, an extensionless import (`./components/Card`)
+  that resolves to nothing else resolves to `Card.vue`, as webpack and Vue CLI do.
+- `require('./x')` in a component script without `lang="ts"` imports what it names, as it
+  does in a `.js` file.
 - Module aliases a bundler declares in `vite.config.*`, `webpack.config.*`, `webpack.mix.js`,
   `vue.config.js` or `svelte.config.*` (including SvelteKit's `$lib`) apply when no tsconfig
   `paths` maps the same name. Only targets that can be read without running the config
   count: a string, `path.join|resolve(__dirname, …)`, or
   `fileURLToPath(new URL('./x', import.meta.url))`.
-- webpack's `require.context('./dir', recursive, /pattern/)` imports every discovered file
-  it matches.
+- webpack's `require.context('./dir', recursive, /pattern/)` imports every module in the
+  graph it matches. The match happens when the graph is assembled, so an incremental scan
+  that re-reads only the loading file keeps every edge.
 - SvelteKit route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`) and Astro pages
   (`src/pages/**/*.astro`) are entry points.
 - A component that cannot be delimited, or whose script is `lang="tsx"` or `lang="jsx"`, keeps
