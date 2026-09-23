@@ -25,8 +25,20 @@ final class CandidateGraphFacts
     /** @var array<string, bool> */
     private array $prefixes = [];
 
-    /** @var array<string, array{in_degree: int, inheritance_in_degree: int, out_degree: int}> */
-    private array $degrees = [];
+    /**
+     * Degrees memoized per id, one flat map each rather than an array per id:
+     * a project's every candidate stays here for the whole query, and a
+     * three-key array per id was a third of what a large one needed.
+     *
+     * @var array<string, int>
+     */
+    private array $inDegrees = [];
+
+    /** @var array<string, int> */
+    private array $inheritanceInDegrees = [];
+
+    /** @var array<string, int> */
+    private array $outDegrees = [];
 
     /** @var array<string, true>|null */
     private ?array $untyped = null;
@@ -83,10 +95,12 @@ final class CandidateGraphFacts
      */
     public function degrees(array $ids): array
     {
-        $missing = array_values(array_filter(array_unique($ids), fn(string $id): bool => !isset($this->degrees[$id])));
+        $missing = array_values(array_filter(array_unique($ids), fn(string $id): bool => !isset($this->inDegrees[$id])));
         foreach (array_chunk($missing, self::CHUNK) as $chunk) {
             foreach ($chunk as $id) {
-                $this->degrees[$id] = ['in_degree' => 0, 'inheritance_in_degree' => 0, 'out_degree' => 0];
+                $this->inDegrees[$id] = 0;
+                $this->inheritanceInDegrees[$id] = 0;
+                $this->outDegrees[$id] = 0;
             }
             $this->countInbound($chunk);
             $this->countOutbound($chunk);
@@ -94,7 +108,7 @@ final class CandidateGraphFacts
 
         $degrees = [];
         foreach ($ids as $id) {
-            $degrees[$id] = $this->degrees[$id];
+            $degrees[$id] = ['in_degree' => $this->inDegrees[$id], 'inheritance_in_degree' => $this->inheritanceInDegrees[$id], 'out_degree' => $this->outDegrees[$id]];
         }
 
         return $degrees;
@@ -103,32 +117,39 @@ final class CandidateGraphFacts
     /** Inbound edges of the selected kinds at or above the floor. */
     public function inDegree(string $id): int
     {
-        return $this->degreesOf($id)['in_degree'];
+        $this->load($id);
+
+        return $this->inDegrees[$id];
     }
 
     /** Inbound `extends` and `implements` edges, a subset of the in-degree. */
     public function inheritanceInDegree(string $id): int
     {
-        return $this->degreesOf($id)['inheritance_in_degree'];
+        $this->load($id);
+
+        return $this->inheritanceInDegrees[$id];
     }
 
     /** Outbound edges of the selected kinds at or above the floor. */
     public function outDegree(string $id): int
     {
-        return $this->degreesOf($id)['out_degree'];
+        $this->load($id);
+
+        return $this->outDegrees[$id];
     }
 
     /**
-     * One node's degrees, from the memo when a batch already loaded them.
+     * Loads one node's degrees unless a batch already did.
      *
-     * Read directly rather than through degrees(), whose result is built per
-     * call: asked once per candidate, that made a large project quadratic.
-     *
-     * @return array{in_degree: int, inheritance_in_degree: int, out_degree: int}
+     * The memo is checked directly rather than through degrees(), whose result
+     * is built per call: asked once per candidate, that made a large project
+     * quadratic.
      */
-    private function degreesOf(string $id): array
+    private function load(string $id): void
     {
-        return $this->degrees[$id] ?? $this->degrees([$id])[$id];
+        if (!isset($this->inDegrees[$id])) {
+            $this->degrees([$id]);
+        }
     }
 
     /**
@@ -171,9 +192,9 @@ final class CandidateGraphFacts
         $statement->execute([$this->projectId, ...$this->edgeKinds, $this->minConfidenceRank, ...$ids]);
         foreach ($statement->fetchAll() as $row) {
             $id = (string) $row['target_id'];
-            $this->degrees[$id]['in_degree'] += (int) $row['edge_count'];
+            $this->inDegrees[$id] += (int) $row['edge_count'];
             if (in_array((string) $row['kind'], ['implements', 'extends'], true)) {
-                $this->degrees[$id]['inheritance_in_degree'] += (int) $row['edge_count'];
+                $this->inheritanceInDegrees[$id] += (int) $row['edge_count'];
             }
         }
     }
@@ -191,7 +212,7 @@ final class CandidateGraphFacts
         );
         $statement->execute([$this->projectId, ...$this->edgeKinds, $this->minConfidenceRank, ...$ids]);
         foreach ($statement->fetchAll() as $row) {
-            $this->degrees[(string) $row['source_id']]['out_degree'] = (int) $row['edge_count'];
+            $this->outDegrees[(string) $row['source_id']] = (int) $row['edge_count'];
         }
     }
 

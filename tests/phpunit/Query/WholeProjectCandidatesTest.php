@@ -107,6 +107,54 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         self::assertFalse($data['bounds']['candidates_truncated']);
     }
 
+    public function testPagesFollowReportOrderWhenAContainerTurnsTestOnly(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $project = $ids['project'];
+        $repository->saveEdge(StableId::edge($project, 'calls', $ids['invoice'], $ids['checkout'], 'back:1'), $project, 'calls', $ids['invoice'], $ids['checkout'], $ids['file'], 20, 20, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $node = function (string $kind, string $name, int $line) use ($repository, $project, $ids): string {
+            $id = StableId::symbol($project, 'php', $kind, $name);
+            $repository->saveNode($id, $project, 'php', $kind, $name, $name, null, $ids['file'], $line, $line, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+
+            return $id;
+        };
+        $test = $node('class', 'Tests\\BoxTest', 1);
+        $repository->saveClassification(StableId::classification($project, $test, 'quality.test_module', 'core.test.modules.v1'), $project, $test, 'quality.test_module', 'derived', 'probable', 'core.test.modules.v1', $ids['file'], 1, 1, [], $ids['scan']);
+        $calledByTest = function (string $target) use ($repository, $project, $ids, $test): void {
+            $repository->saveEdge(StableId::edge($project, 'calls', $test, $target, $target), $project, 'calls', $test, $target, $ids['file'], 1, 1, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        };
+        // Nothing references the class itself, so it arrives with the
+        // unreferenced nodes, ahead of the functions only tests call though
+        // it sorts after them, and becomes test-only because only a test
+        // calls its member.
+        $box = $node('class', 'App\\Box', 3);
+        $run = $node('method', 'App\\Box::run', 4);
+        $repository->saveEdge(StableId::edge($project, 'contains', $box, $run, 'box'), $project, 'contains', $box, $run, $ids['file'], 4, 4, 'ast', 'certain', [], 'php:file:src/Checkout.php', $ids['scan']);
+        $calledByTest($run);
+        foreach (['App\\A0', 'App\\A1', 'App\\A2', 'App\\A3'] as $line => $name) {
+            $calledByTest($node('function', $name, 10 + $line));
+        }
+        $repository->completeScan($project, $ids['scan']);
+
+        $queries = new ArchitectureQueryService($pdo);
+        $all = $queries->architectureHealth($project, limit: 100)->data;
+        $entries = array_map(static fn(array $c): array => [$c['reachability'], $c['component']['canonical_name']], $all['dead_code_candidates']);
+        self::assertSame([
+            ['test_only', 'App\\A0'], ['test_only', 'App\\A1'], ['test_only', 'App\\A2'], ['test_only', 'App\\A3'],
+            ['test_only', 'App\\Box'], ['test_only', 'App\\Box::run'],
+        ], $entries);
+        self::assertSame(6, $all['bounds']['candidates_total']);
+        self::assertSame(['kind' => 'class', 'display_name' => 'App\\Box'], array_intersect_key($all['dead_code_candidates'][4]['component'], ['kind' => 1, 'display_name' => 1]));
+
+        // One at a time, each page holds what the full list holds there, and
+        // carries the whole component.
+        foreach ($all['dead_code_candidates'] as $offset => $expected) {
+            $page = $queries->architectureHealth($project, limit: 1, candidateOffset: $offset)->data;
+            self::assertSame([$expected], $page['dead_code_candidates'], (string) $offset);
+            self::assertSame(6, $page['bounds']['candidates_total']);
+        }
+    }
+
     public function testTheCandidateBudgetIsCheckedAndReported(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
@@ -202,9 +250,16 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         $pdo->commit();
         $repository->completeScan($project, $ids['scan']);
 
-        $started = hrtime(true);
-        $data = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 10)->data;
-        $elapsedMs = (hrtime(true) - $started) / 1_000_000;
+        // Inside PHP's default 128 MB, as the server runs in its image: holding
+        // every candidate at once exhausted it, so only the page is kept.
+        $limit = ini_set('memory_limit', '128M');
+        try {
+            $started = hrtime(true);
+            $data = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 10)->data;
+            $elapsedMs = (hrtime(true) - $started) / 1_000_000;
+        } finally {
+            ini_set('memory_limit', (string) $limit);
+        }
 
         self::assertFalse($data['bounds']['candidates_truncated']);
         self::assertGreaterThan(50_000, $data['bounds']['candidates_total']);

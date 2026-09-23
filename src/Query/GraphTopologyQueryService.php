@@ -342,7 +342,8 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         $excludedExternal = $ranked['excluded_external'];
         $excludedTests = $ranked['excluded_tests'];
         $candidateDeadline = $this->now() + ($candidateTimeoutMs * 1_000_000);
-        $found = (new DeadCodeCandidates($this->pdo, $this->clock))->find($projectId, $edgeKinds, $confidenceRank[$minConfidence], $includeTests, $candidateDeadline);
+        $candidateSearch = new DeadCodeCandidates($this->pdo, $this->clock);
+        $found = $candidateSearch->find($projectId, $edgeKinds, $confidenceRank[$minConfidence], $includeTests, $candidateDeadline, $candidateConfidence, $candidateOffset, $limit);
         $deadCandidates = $found['candidates'];
         $excluded = $found['excluded'] + [
             'inherited' => 0, 'contracts' => 0, 'constructors' => 0, 'entry_scripts' => 0,
@@ -355,16 +356,12 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         };
         $rank($hubs);
         $rank($hotspots);
-        $deadCandidates = self::orderedCandidates($deadCandidates, $candidateConfidence);
-        // Tallied on the FULL list, before result_limit slices it away: ordering
-        // test_only last means truncation hides them first, and a summary built
-        // from the slice would then report 0 test-only findings whenever there
-        // were enough unreferenced ones to fill the limit on their own.
-        $testOnlyCandidates = count(array_filter(
-            $deadCandidates,
-            static fn(array $candidate): bool => ($candidate['reachability'] ?? null) === 'test_only',
-        ));
-        $candidatesTotal = count($deadCandidates);
+        // Tallied on the FULL list, not the page: ordering test_only last means
+        // the page hides them first, and a summary built from it would then
+        // report 0 test-only findings whenever there were enough unreferenced
+        // ones to fill the limit on their own.
+        $testOnlyCandidates = $found['test_only'];
+        $candidatesTotal = $found['total'];
         foreach ([$hubs, $hotspots] as $items) {
             if (count($items) > $limit) {
                 $truncated = true;
@@ -377,7 +374,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         }
         $hubs = array_slice($hubs, 0, $limit);
         $hotspots = array_slice($hotspots, 0, $limit);
-        $deadCandidates = array_slice($deadCandidates, $candidateOffset, $limit);
         $evidence = [];
         $reported = [];
         foreach ([$hubs, $hotspots, $deadCandidates] as $items) {
@@ -385,8 +381,11 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
                 $reported[$item['component']['id']] = true;
             }
         }
+        // A candidate past the hub window has no row here; only the reported
+        // page's are loaded.
+        $candidateRows = $candidateSearch->rows(array_values(array_diff(array_map('strval', array_keys($reported)), array_map('strval', array_keys($nodes)))));
         foreach (array_keys($reported) as $id) {
-            $row = $nodes[$id] ?? $found['rows'][$id] ?? null;
+            $row = $nodes[$id] ?? $candidateRows[$id] ?? null;
             if ($row === null) {
                 continue;
             }
@@ -434,37 +433,6 @@ final readonly class GraphTopologyQueryService extends AbstractArchitectureQuery
         );
     }
 
-
-    /**
-     * Dead-code candidates in report order, filtered to the confidence asked for.
-     *
-     * @param list<array<string, mixed>> $candidates
-     * @return list<array<string, mixed>>
-     */
-    private static function orderedCandidates(array $candidates, string $candidateConfidence): array
-    {
-        // Ordered by reachability class before name, so `limit` slices along a
-        // meaningful line rather than an alphabetical accident: a project whose
-        // test-only candidates happen to sort first would otherwise fill the
-        // default limit of 20 with them and hide every component nothing
-        // references at all. `unreferenced` leads because it is the stronger
-        // claim — nothing reaches it, from anywhere — and the summary names the
-        // test-only count so a caller knows there is more to see.
-        $classRank = static fn(array $candidate): int => ($candidate['reachability'] ?? 'unreferenced') === 'test_only' ? 1 : 0;
-        usort($candidates, static fn(array $a, array $b): int => ($classRank($a) <=> $classRank($b))
-            ?: ($a['component']['canonical_name'] <=> $b['component']['canonical_name']));
-        // A large project's page of 100 filled with framework methods marked
-        // only possible, hiding every probable candidate behind them; the
-        // filter and the offset let a caller see past that.
-        if ($candidateConfidence === 'probable') {
-            $candidates = array_values(array_filter(
-                $candidates,
-                static fn(array $candidate): bool => ($candidate['confidence'] ?? null) === 'probable',
-            ));
-        }
-
-        return $candidates;
-    }
 
     /**
      * One streamed pass over the edge slice, producing the degrees the hub and
