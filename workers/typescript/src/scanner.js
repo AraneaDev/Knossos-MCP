@@ -6,6 +6,13 @@ import { FactAccumulator } from "./fact-accumulator.js";
 import { NestJsFactEnricher } from "./nestjs-fact-enricher.js";
 import { TypeScriptApplicationEnricher } from "./typescript-application-enricher.js";
 import { callName, reference } from "./typescript-fact-utils.js";
+import {
+    blankSource,
+    componentAliasSuffix,
+    componentDialect,
+    componentDiagnosticKept,
+    toVirtualSource,
+} from "./component-source.js";
 
 const SOURCE_EXTENSIONS = new Set([
     ".ts",
@@ -30,6 +37,21 @@ const SHEBANG_ALIAS_SUFFIX = ".knossos-shebang.js";
 // lose its facts on every scan. It is offered under its name plus this mark and
 // the lower-cased extension, and mapped back the same way.
 const CASE_ALIAS_MARK = ".knossos-alias";
+// A component (`.vue`, `.svelte`, `.astro`) is offered to the compiler as
+// `X.vue.ts` (`X.astro.tsx`), so module resolution finds it through relative
+// paths, `paths` and `baseUrl` without a resolver of its own. When a real
+// `X.vue.ts` exists it wins, and the component is offered under this mark.
+const COMPONENT_ALIAS_MARK = ".knossos-component";
+const COMPONENT_ALIAS = /\.(vue|svelte|astro)(\.knossos-component)?(\.tsx?)$/i;
+// Lets a tsconfig `include` match components, so they are checked under the
+// options of the project that holds them.
+const COMPONENT_FILE_EXTENSIONS = [".vue", ".svelte", ".astro"].map(
+    (extension) => ({
+        extension,
+        isMixedContent: false,
+        scriptKind: ts.ScriptKind.Deferred,
+    }),
+);
 const EXCLUDED_DIRECTORIES = new Set([
     ".git",
     ".knossos",
@@ -90,6 +112,12 @@ const MAX_CACHED_PROGRAMS = 2;
 // path: a path-keyed map could pair one read's facts with another read's hash,
 // which is precisely the false match the hash exists to prevent.
 const parsedContentHashes = new WeakMap();
+/**
+ * A component's virtual source, by the source file made from it: its dialect,
+ * the script and template ranges, whether its script is TypeScript, and, for
+ * one that could not be read, why.
+ */
+const componentSources = new WeakMap();
 
 /**
  * Every project file one scan request read to derive facts, for the result's
@@ -1309,6 +1337,9 @@ function parseConfig(root, configPath, reads) {
         absolute,
         { noEmit: true },
         host,
+        undefined,
+        undefined,
+        COMPONENT_FILE_EXTENSIONS,
     );
     if (!parsed)
         throw new Error(`Unable to parse TypeScript config: ${configPath}`);
@@ -1335,6 +1366,9 @@ function parseConfig(root, configPath, reads) {
             referenceConfig,
             { noEmit: true },
             host,
+            undefined,
+            undefined,
+            COMPONENT_FILE_EXTENSIONS,
         );
         if (!referenced) continue;
         for (const file of referenced.fileNames) {
@@ -1342,8 +1376,8 @@ function parseConfig(root, configPath, reads) {
         }
         pending.push(...(referenced.projectReferences ?? []));
     }
-    parsed.fileNames = [...fileNames];
-    parsed.ownFileNames = ownFileNames;
+    parsed.fileNames = [...fileNames].map(offeredComponentPath);
+    parsed.ownFileNames = ownFileNames.map(offeredComponentPath);
     // References are kept, and the host resolves a reference's build output
     // back to its source (see createRestrictedProgram), so an import of
     // `../lib/dist/index.js` or a package.json `imports` alias onto it lands
@@ -1474,17 +1508,43 @@ function readHashedSourceFile(
         return undefined;
     }
     const contentHash = createHash("sha256").update(buffer).digest("hex");
+    const decoded = decodeLikeTypeScript(buffer);
+    const component = componentSource(readPath, decoded);
     const sourceFile = ts.createSourceFile(
         fileName,
-        decodeLikeTypeScript(buffer),
+        component?.text ?? decoded,
         languageVersion,
         true,
         scriptKind,
     );
+    if (component !== undefined) componentSources.set(sourceFile, component);
     parsedContentHashes.set(sourceFile, contentHash);
     reads.created(sourceFile);
     recordWalked(reads, root, walked, contentHash, maxFileBytes);
     return sourceFile;
+}
+
+/**
+ * The virtual source a component is parsed from, or undefined for any other
+ * file. One that cannot be delimited is parsed as blank text, so it keeps its
+ * module node, and says why.
+ */
+function componentSource(readPath, decoded) {
+    const dialect = componentDialect(readPath);
+    if (dialect === null) return undefined;
+    try {
+        return { dialect, ...toVirtualSource(decoded, dialect) };
+    } catch (error) {
+        rethrowStackOverflow(error);
+        return {
+            dialect,
+            text: blankSource(decoded),
+            scriptRanges: [],
+            templateRanges: [],
+            typed: false,
+            unparsed: errorMessage(error),
+        };
+    }
 }
 
 /**
@@ -2064,6 +2124,12 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
     const result = new Map();
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
         if (!diagnostic.file) continue;
+        const component = componentSources.get(diagnostic.file);
+        if (
+            component !== undefined &&
+            !componentDiagnosticKept(component, diagnostic)
+        )
+            continue;
         if (diagnostic.code === 6059) continue; // Analysis-only project-reference source merging triggers this.
         const relative = relativeInside(root, diagnostic.file.fileName);
         if (relative === null || belowNodeModules(relative)) continue;
@@ -2120,7 +2186,25 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
         list.push(item);
         result.set(relative, list);
     }
+    componentParseDiagnostics(program, root, result);
     return result;
+}
+
+/** A `COMPONENT_UNPARSED` warning for each component that could not be read. */
+function componentParseDiagnostics(program, root, result) {
+    for (const sourceFile of program.getSourceFiles()) {
+        const component = componentSources.get(sourceFile);
+        const relative = relativeInside(root, sourceFile.fileName);
+        if (component?.unparsed === undefined || relative === null) continue;
+        const list = result.get(relative) ?? [];
+        list.push({
+            severity: "warning",
+            code: "COMPONENT_UNPARSED",
+            message: `${relative} was not read as a ${component.dialect} component: ${component.unparsed}`,
+            evidence: { path: relative, start_line: 1, end_line: 1 },
+        });
+        result.set(relative, list);
+    }
 }
 
 /**
@@ -2763,7 +2847,10 @@ function validateRequestedFiles(root, files, limits = {}) {
                 throw new UnreadableInput(
                     `TypeScript input no longer resolves to itself: ${relative}`,
                 );
-            if (!SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase())) {
+            if (
+                !SOURCE_EXTENSIONS.has(path.extname(absolute).toLowerCase()) &&
+                componentDialect(absolute) === null
+            ) {
                 if (path.extname(absolute) !== "")
                     throw new Error(
                         `Unsupported TypeScript input: ${relative}`,
@@ -3236,6 +3323,20 @@ function relativeInside(root, candidate) {
 function realSourcePath(candidate) {
     if (candidate.endsWith(SHEBANG_ALIAS_SUFFIX))
         return candidate.slice(0, -SHEBANG_ALIAS_SUFFIX.length);
+    const component = COMPONENT_ALIAS.exec(candidate);
+    if (component !== null) {
+        const original = candidate.slice(
+            0,
+            component.index + 1 + component[1].length,
+        );
+        if (
+            component[3].toLowerCase() ===
+                componentAliasSuffix(componentDialect(original)) &&
+            (component[2] !== undefined || !isRegularFile(candidate)) &&
+            isRegularFile(original)
+        )
+            return original;
+    }
     const caseAlias = /\.knossos-alias(\.[a-z]+)$/.exec(candidate);
     if (caseAlias !== null && SOURCE_EXTENSIONS.has(caseAlias[1])) {
         const original = candidate.slice(0, caseAlias.index);
@@ -3261,11 +3362,28 @@ function realSourcePath(candidate) {
 // script as a `.js` alias, a file whose extension is not in lower case under its
 // lower-cased extension, and anything else as itself.
 function offeredPath(absolute) {
+    const dialect = componentDialect(absolute);
+    if (dialect !== null) {
+        const suffix = componentAliasSuffix(dialect);
+        return isRegularFile(`${absolute}${suffix}`)
+            ? `${absolute}${COMPONENT_ALIAS_MARK}${suffix}`
+            : `${absolute}${suffix}`;
+    }
     const extension = path.extname(absolute);
     if (extension === "") return `${absolute}${SHEBANG_ALIAS_SUFFIX}`;
     if (extension !== extension.toLowerCase())
         return `${absolute}${CASE_ALIAS_MARK}${extension.toLowerCase()}`;
     return absolute;
+}
+
+/** A component's alias (see offeredPath); any other file as itself. */
+function offeredComponentPath(file) {
+    return componentDialect(file) === null ? file : offeredPath(file);
+}
+
+/** Whether a path is a regular file, following links as the compiler does. */
+function isRegularFile(candidate) {
+    return fs.statSync(candidate, { throwIfNoEntry: false })?.isFile() ?? false;
 }
 
 function contains(root, candidate) {
