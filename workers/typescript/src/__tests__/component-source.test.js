@@ -11,10 +11,15 @@ import {
 } from "../component-source.js";
 
 // The virtual text is what the compiler parses in place of a component, so
-// every offset in it must be the component's own.
+// every offset in it must be the component's own. Astro alone appends its
+// global's declaration after the component's text, which moves nothing.
 function expectInvariants(source, dialect) {
     const virtual = toVirtualSource(source, dialect);
-    expect(virtual.text.length).toBe(source.length);
+    if (dialect === "astro")
+        expect(virtual.text.slice(source.length)).toMatch(
+            /^\nexport \{\};\ndeclare const Astro: \{ readonly props: /,
+        );
+    else expect(virtual.text.length).toBe(source.length);
     for (let i = 0; i < source.length; i++) {
         if (source[i] === "\n" || source[i] === "\r")
             expect(virtual.text[i]).toBe(source[i]);

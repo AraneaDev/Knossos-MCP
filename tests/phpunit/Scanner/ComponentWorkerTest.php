@@ -100,6 +100,9 @@ final class ComponentWorkerTest extends KnossosTestCase
             self::assertSame([], $scan->diagnosticPaths($code), $code);
         }
         self::assertSame(['src/pages/broken.astro'], $scan->diagnosticPaths('COMPONENT_UNPARSED'));
+        // `Astro.props` is the component's Props, as Astro types it: its
+        // fields are not typed from their destructuring defaults.
+        self::assertSame([], $scan->diagnosticCodes('src/components/Pager.astro'));
     }
 
     /**
@@ -229,6 +232,22 @@ final readonly class ComponentScan
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /** @return list<string> the diagnostic codes reported on `file`, sorted */
+    public function diagnosticCodes(string $file): array
+    {
+        $codes = [];
+        foreach ($this->contributions as $contribution) {
+            if ($contribution->ownerKey === 'knossos.typescript:file:' . $file) {
+                foreach ($contribution->diagnostics as $diagnostic) {
+                    $codes[] = $diagnostic->code;
+                }
+            }
+        }
+        sort($codes, SORT_STRING);
+
+        return $codes;
     }
 
     /** Whether a reference names `file`'s module or a declaration in it. */

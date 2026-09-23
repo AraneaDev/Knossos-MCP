@@ -49,6 +49,8 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
 `baseUrl` like any other module.
 
 - A helper, store or child component used only from a template has its edge.
+- In an `.astro` file, `Astro.props` has the component's `Props` type, as Astro's own tooling
+  gives it, so fields read from it are not typed from their destructuring defaults.
 - A template name that resolves to nothing (an Options API method reached through the
   component instance) is listed in the module's `unresolved_member_calls`, so a method by that
   name is only possibly dead.

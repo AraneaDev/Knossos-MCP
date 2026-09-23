@@ -68,11 +68,32 @@ export function toVirtualSource(text, dialect) {
         else braceMarkup(writer, from, to, dialect);
     }
     return {
-        text: out.join(""),
+        text:
+            out.join("") +
+            (dialect === "astro" ? astroGlobal(text, blocks.scripts) : ""),
         scriptRanges: blocks.scripts,
         templateRanges: blocks.markup,
         typed: blocks.typed,
     };
+}
+
+/**
+ * The `Astro` global as Astro's own tooling gives it to a component: `props`
+ * typed by the component's `Props`, when its frontmatter declares one, and
+ * every other member left open. The shared `astro/client` declaration types
+ * `props` as a loose record, so a field read from it took the type of its
+ * destructuring default (`params = {}` became `{}`) and code Astro accepts
+ * reported type errors. Appended after the component's own text, which it
+ * therefore moves nowhere, and module-scoped, so it shadows that global.
+ */
+function astroGlobal(text, scripts) {
+    const declaresProps = scripts.some(([from, to]) =>
+        /\b(?:interface\s+Props\s*(?:extends\b|\{)|type\s+Props\s*=)/.test(
+            text.slice(from, to),
+        ),
+    );
+    const props = declaresProps ? "Props" : "Record<string, any>";
+    return `\nexport {};\ndeclare const Astro: { readonly props: ${props}; readonly [member: string]: any };\n`;
 }
 
 /**
