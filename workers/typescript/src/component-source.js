@@ -165,7 +165,12 @@ function scanBlocks(text, dialect) {
                 throw new ComponentParseError(
                     `script lang="${lang}" is not supported`,
                 );
-            if (lang === "ts") typed = true;
+            if (
+                lang === "ts" ||
+                lang === "typescript" ||
+                /^text\/typescript$/i.test(String(attributes.get("type") ?? ""))
+            )
+                typed = true;
             if (executableScript(attributes))
                 scripts.push([contentStart, closeTag]);
         } else if (block === "template") {

@@ -464,6 +464,28 @@ describe("follow-up: component reader minors", () => {
         expect(virtual).toContain("{c}");
     });
 
+    it("reads every spelling of a TypeScript script as typed", () => {
+        for (const attributes of [
+            'lang="ts"',
+            'lang="typescript"',
+            'type="text/typescript"',
+            'lang="TS"',
+        ])
+            expect(
+                toVirtualSource(
+                    `<script ${attributes}>\nlet a = 1;\n</script>\n`,
+                    "svelte",
+                ).typed,
+                attributes,
+            ).toBe(true);
+        expect(
+            toVirtualSource(
+                '<script lang="js">\nlet a = 1;\n</script>\n',
+                "svelte",
+            ).typed,
+        ).toBe(false);
+    });
+
     it("ends a component tag's reference before an expression on the same line", () => {
         const { virtual } = svelte(
             "<Card {value} title={t} />\n<Nav.Item on:click={go}/>",
