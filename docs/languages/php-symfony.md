@@ -16,7 +16,7 @@ container, or booting the kernel.
 | Events      | `#[AsEventListener]`, `EventSubscriberInterface`, static subscriber arrays        | listener/subscriber roles and `listens_to` edges  |
 | Services    | `#[AsAlias]`, `#[Autoconfigure]`, typed constructors, `#[Autowire(service: ...)]` | service roles, `binds`, and `injects` edges       |
 | Validation  | Doctrine annotations such as `@AdminEmail`, a `Constraint`'s `<Name>Validator`    | `references` edges                                |
-| Migrations  | classes extending Doctrine's `AbstractMigration`                                  | migration role                                    |
+| Migrations  | the directories Doctrine Migrations' `migrations_paths` names in YAML             | entry points                                      |
 
 Attribute values must be statically representable strings, string arrays, or
 class constants. Dynamic route paths, command names, and event targets produce

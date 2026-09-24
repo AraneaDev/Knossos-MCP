@@ -263,6 +263,7 @@ final readonly class ProjectDiscoverer
             [$left->kind, $left->configPath] <=> [$right->kind, $right->configPath]);
         $units = self::withBuildOutputSources($units);
         $units = self::withClassNameEntryPoints($units);
+        $units = self::withMigrationEntryPoints($units, $files);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -351,6 +352,7 @@ final readonly class ProjectDiscoverer
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
                 'class_names' => self::yamlClassNames($contents),
+                'migration_directories' => self::doctrineMigrationDirectories($contents),
             ]);
         }
         if ($kind === 'dockerfile') {
@@ -1610,6 +1612,81 @@ final readonly class ProjectDiscoverer
         sort($names, SORT_STRING);
 
         return $names;
+    }
+
+    /**
+     * The directories a Doctrine Migrations config loads migrations from.
+     *
+     * `migrations_paths` maps a namespace to a directory, usually under
+     * `%kernel.project_dir%`; Doctrine loads every class there and nothing
+     * imports one. Only a block directly under that key is read, and a
+     * directory outside the project names nothing.
+     *
+     * @return list<string>
+     */
+    private static function doctrineMigrationDirectories(string $contents): array
+    {
+        $directories = [];
+        $indent = null;
+        foreach (explode("\n", $contents) as $line) {
+            if ($indent === null) {
+                if (preg_match('/^(\s*)migrations_paths\s*:\s*$/', $line, $key) === 1) {
+                    $indent = strlen($key[1]);
+                }
+                continue;
+            }
+            if (trim($line) === '' || str_starts_with(trim($line), '#')) {
+                continue;
+            }
+            if (preg_match('/^(\s*)\S/', $line, $lead) !== 1 || strlen($lead[1]) <= $indent) {
+                $indent = null;
+                continue;
+            }
+            if (preg_match('/:\s*[\'"]?(?:%kernel\.project_dir%\/)?([A-Za-z0-9_.\/-]+?)\/?[\'"]?\s*$/', $line, $value) !== 1) {
+                continue;
+            }
+            $directory = $value[1];
+            if (str_starts_with($directory, './')) {
+                $directory = substr($directory, 2);
+            }
+            if ($directory !== '' && !str_starts_with($directory, '/') && !in_array('..', explode('/', $directory), true)) {
+                $directories[$directory] = true;
+            }
+        }
+
+        return array_keys($directories);
+    }
+
+    /**
+     * Add, to each YAML unit, the PHP files below the migration directories it names.
+     *
+     * @param list<ProjectUnit> $units
+     * @param list<DiscoveredFile> $files
+     * @return list<ProjectUnit>
+     */
+    private static function withMigrationEntryPoints(array $units, array $files): array
+    {
+        return array_map(static function (ProjectUnit $unit) use ($files): ProjectUnit {
+            $directories = $unit->metadata['migration_directories'] ?? [];
+            if ($unit->kind !== 'yaml' || !is_array($directories) || $directories === []) {
+                return $unit;
+            }
+            $paths = array_fill_keys($unit->metadata['entry_points'] ?? [], true);
+            foreach ($files as $file) {
+                foreach ($directories as $directory) {
+                    if (is_string($directory) && str_starts_with($file->relativePath, $directory . '/') && str_ends_with($file->relativePath, '.php')) {
+                        $paths[$file->relativePath] = true;
+                    }
+                }
+            }
+            $paths = array_map(strval(...), array_keys($paths));
+            sort($paths, SORT_STRING);
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, [
+                ...$unit->metadata,
+                'entry_points' => $paths,
+            ]);
+        }, $units);
     }
 
     /**

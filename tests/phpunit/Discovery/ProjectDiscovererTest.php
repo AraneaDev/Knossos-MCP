@@ -1850,6 +1850,37 @@ TOML);
     }
 
     /**
+     * Doctrine loads every migration in the directories `migrations_paths`
+     * names, and nothing imports one. A migration class outside them is not
+     * loaded, so it stays reportable.
+     */
+    public function testDiscoverReadsDoctrineMigrationDirectoriesAsEntryPoints(): void
+    {
+        mkdir($this->root . '/config/packages', 0700, true);
+        mkdir($this->root . '/src/Migrations/Archive', 0700, true);
+        mkdir($this->root . '/src/Legacy', 0700, true);
+        file_put_contents($this->root . '/config/packages/doctrine_migrations.yaml', implode("\n", [
+            'doctrine_migrations:',
+            '    migrations_paths:',
+            "        'DoctrineMigrations': '%kernel.project_dir%/src/Migrations'",
+            '',
+        ]));
+        foreach (['src/Migrations/Version1.php', 'src/Migrations/Archive/Version0.php', 'src/Legacy/Version9.php'] as $file) {
+            file_put_contents($this->root . '/' . $file, "<?php\nfinal class V {}\n");
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('src/Migrations/Version1.php', $entryPoints);
+        self::assertContains('src/Migrations/Archive/Version0.php', $entryPoints);
+        self::assertNotContains('src/Legacy/Version9.php', $entryPoints);
+    }
+
+    /**
      * The reason this reader is key-scoped rather than tokenising the whole
      * file the way the YAML one does. A config names files to EXCLUDE as well
      * as files to load, and an excluded path is exactly the kind of file that
