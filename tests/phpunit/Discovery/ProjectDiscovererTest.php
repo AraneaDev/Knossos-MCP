@@ -2148,6 +2148,7 @@ TOML);
     {
         mkdir($this->root . '/front/src', 0700, true);
         mkdir($this->root . '/desktop/src', 0700, true);
+        mkdir($this->root . '/nobuild/src', 0700, true);
         mkdir($this->root . '/plain/src', 0700, true);
         $files = [
             'front/package.json' => '{"name":"front","private":true,"dependencies":{"react":"^17.0.0","react-scripts":"4.0.3"}}',
@@ -2156,6 +2157,9 @@ TOML);
             'plain/src/index.js' => "export {};\n",
             'desktop/Cargo.toml' => "[package]\nname = \"desktop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
             'desktop/build.rs' => "fn main() {}\n",
+            // `build = false` turns the conventional script off.
+            'nobuild/Cargo.toml' => "[package]\nname = \"nobuild\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = false\n",
+            'nobuild/build.rs' => "fn main() {}\n",
             'desktop/src/main.rs' => "fn main() {}\n",
         ];
         foreach ($files as $relative => $contents) {
@@ -2171,6 +2175,7 @@ TOML);
         self::assertContains('front/src/index.js', $entryPoints);
         self::assertNotContains('plain/src/index.js', $entryPoints);
         self::assertContains('desktop/build.rs', $entryPoints);
+        self::assertNotContains('nobuild/build.rs', $entryPoints);
     }
 
     /**
@@ -2181,11 +2186,12 @@ TOML);
      */
     public function testDiscoverReadsTheFilesToolConfigsLoad(): void
     {
-        foreach (['backend/src/migrations', 'resources/js', 'front/cypress/cypress/plugins', 'front/cypress/cypress/support'] as $directory) {
+        foreach (['backend/src/migrations', 'backend/src/subscribers/audit', 'resources/js', 'front/cypress/cypress/plugins', 'front/cypress/cypress/support', 'e2e/cypress/plugins', 'e2e/cypress/support', 'e2e/tools'] as $directory) {
             mkdir($this->root . '/' . $directory, 0700, true);
         }
         $files = [
-            'backend/typeorm.config.ts' => "export default { migrations: ['src/migrations/*.ts'], entities: [] };\n",
+            'backend/typeorm.config.ts' => "export default { migrations: ['src/migrations/*.ts'], subscribers: ['src/subscribers/**/*{.js,.ts}'] };\n",
+            'backend/src/subscribers/audit/AuditSubscriber.ts' => "export class AuditSubscriber {}\n",
             'backend/src/migrations/1700000000001-Init.ts' => "export class Init1700000000001 {}\n",
             'backend/src/other.ts' => "export const other = 1;\n",
             'webpack.mix.js' => "const mix = require('laravel-mix');\nmix.js('resources/js/app.js', 'public/js').sass('resources/sass/app.scss', 'public/css');\n",
@@ -2195,6 +2201,11 @@ TOML);
             'front/cypress/cypress.json' => '{"pluginsFile": "cypress/plugins/index.js", "numTestsKeptInMemory": 1}',
             'front/cypress/cypress/plugins/index.js' => "module.exports = () => {};\n",
             'front/cypress/cypress/support/index.js' => "export {};\n",
+            // A config that names its own plugins file and turns support off.
+            'e2e/cypress.json' => '{"pluginsFile": "tools/plugins.js", "supportFile": false}',
+            'e2e/tools/plugins.js' => "module.exports = () => {};\n",
+            'e2e/cypress/plugins/index.js' => "module.exports = () => {};\n",
+            'e2e/cypress/support/index.js' => "export {};\n",
         ];
         foreach ($files as $relative => $contents) {
             file_put_contents($this->root . '/' . $relative, $contents);
@@ -2213,6 +2224,10 @@ TOML);
         self::assertContains('front/cypress/cypress/plugins/index.js', $entryPoints);
         // Cypress's default support file, which the config did not override.
         self::assertContains('front/cypress/cypress/support/index.js', $entryPoints);
+        self::assertContains('backend/src/subscribers/audit/AuditSubscriber.ts', $entryPoints);
+        self::assertContains('e2e/tools/plugins.js', $entryPoints);
+        self::assertNotContains('e2e/cypress/plugins/index.js', $entryPoints);
+        self::assertNotContains('e2e/cypress/support/index.js', $entryPoints);
     }
 
     /**

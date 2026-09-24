@@ -835,7 +835,7 @@ final readonly class ProjectDiscoverer
         if ($package !== null) {
             if (preg_match('/^\s*build\s*=\s*"([^"]+)"/m', $package, $build) === 1) {
                 $candidates[] = $build[1];
-            } elseif (is_file($absoluteDirectory . '/build.rs')) {
+            } elseif (preg_match('/^\s*build\s*=\s*false\b/m', $package) !== 1 && is_file($absoluteDirectory . '/build.rs')) {
                 $candidates[] = 'build.rs';
             }
         }
@@ -1534,9 +1534,13 @@ final readonly class ProjectDiscoverer
             && preg_match_all('/\.(?:js|ts|typeScript|react|preact|vue)\(\s*[\'"`]([^\'"`]+)[\'"`]/', $contents, $calls) > 0) {
             array_push($values, ...$calls[1]);
         }
-        // Cypress loads these unless its config names others.
+        // Cypress loads these unless its config names others or turns them off.
         if (basename($configPath) === 'cypress.json') {
-            array_push($values, 'cypress/plugins/index.js', 'cypress/plugins/index.ts', 'cypress/support/index.js', 'cypress/support/index.ts');
+            foreach (['pluginsFile' => 'cypress/plugins/index', 'supportFile' => 'cypress/support/index'] as $key => $default) {
+                if (preg_match('/[\'"]' . $key . '[\'"]\s*:/', $contents) !== 1) {
+                    array_push($values, $default . '.js', $default . '.ts');
+                }
+            }
         }
         $paths = [];
         $globs = [];
@@ -1545,9 +1549,11 @@ final readonly class ProjectDiscoverer
             // which a split on whitespace leaves whole.
             foreach (preg_split('/\s+/', trim($token)) ?: [] as $word) {
                 if (str_contains($word, '*')) {
-                    $glob = self::entryGlob($word, $directory);
-                    if ($glob !== null) {
-                        $globs[$glob] = true;
+                    foreach (self::expandBraces($word) as $alternative) {
+                        $glob = self::entryGlob($alternative, $directory);
+                        if ($glob !== null) {
+                            $globs[$glob] = true;
+                        }
                     }
                     continue;
                 }
@@ -1559,6 +1565,26 @@ final readonly class ProjectDiscoverer
         }
 
         return ['entry_points' => array_keys($paths), 'entry_globs' => array_keys($globs)];
+    }
+
+    /**
+     * A glob's brace alternatives spelled out: `*{.js,.ts}` is `*.js` and
+     * `*.ts`, the form TypeORM documents for its file lists.
+     *
+     * @return list<string>
+     */
+    private static function expandBraces(string $glob): array
+    {
+        if (preg_match('/\{([^{}]*)\}/', $glob, $brace, PREG_OFFSET_CAPTURE) !== 1) {
+            return [$glob];
+        }
+        $expanded = [];
+        foreach (explode(',', $brace[1][0]) as $option) {
+            $replaced = substr_replace($glob, $option, $brace[0][1], strlen($brace[0][0]));
+            array_push($expanded, ...self::expandBraces($replaced));
+        }
+
+        return $expanded;
     }
 
     /**
