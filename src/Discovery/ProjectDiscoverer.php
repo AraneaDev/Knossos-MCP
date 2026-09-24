@@ -1656,13 +1656,15 @@ final readonly class ProjectDiscoverer
         $directories = [];
         $indent = null;
         foreach (explode("\n", $contents) as $line) {
+            // A comment tail is not part of the value.
+            $line = preg_replace('/(?:^|\s)#.*$/', '', $line) ?? $line;
             if ($indent === null) {
                 if (preg_match('/^(\s*)migrations_paths\s*:\s*$/', $line, $key) === 1) {
                     $indent = strlen($key[1]);
                 }
                 continue;
             }
-            if (trim($line) === '' || str_starts_with(trim($line), '#')) {
+            if (trim($line) === '') {
                 continue;
             }
             if (preg_match('/^(\s*)\S/', $line, $lead) !== 1 || strlen($lead[1]) <= $indent) {

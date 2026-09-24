@@ -1938,8 +1938,8 @@ TOML);
         mkdir($this->root . '/src/Legacy', 0700, true);
         file_put_contents($this->root . '/config/packages/doctrine_migrations.yaml', implode("\n", [
             'doctrine_migrations:',
-            '    migrations_paths:',
-            "        'DoctrineMigrations': '%kernel.project_dir%/src/Migrations'",
+            '    migrations_paths: # where the migrations live',
+            "        'DoctrineMigrations': '%kernel.project_dir%/src/Migrations' # the only path",
             '',
         ]));
         foreach (['src/Migrations/Version1.php', 'src/Migrations/Archive/Version0.php', 'src/Legacy/Version9.php'] as $file) {
