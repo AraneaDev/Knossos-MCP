@@ -670,7 +670,8 @@ class TypeScriptLanguageFactCollector {
                 declaration_file: this.sourceFile.isDeclarationFile,
                 executable:
                     startsWithShebang(this.sourceFile.text) ||
-                    hasMainGuard(this.sourceFile),
+                    hasMainGuard(this.sourceFile) ||
+                    isClassicScript(this.sourceFile),
             },
         );
     }
@@ -2722,6 +2723,20 @@ function storeMemberNames(node) {
                 names.push(member(value.text));
     }
     return names.filter((text) => text !== "");
+}
+
+/**
+ * A JavaScript file with no import, export, `require` or `module.exports`:
+ * a page loads it with a `<script>` tag, or Node runs it, and nothing can
+ * import anything from it. The binder has set both indicators by the time
+ * facts are collected.
+ */
+function isClassicScript(sourceFile) {
+    return (
+        /\.c?js$/.test(sourceFile.fileName) &&
+        sourceFile.externalModuleIndicator === undefined &&
+        sourceFile.commonJsModuleIndicator === undefined
+    );
 }
 
 /** What a `require` specifier may leave off, in the order Node tries it. */
