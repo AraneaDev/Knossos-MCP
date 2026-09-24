@@ -59,7 +59,8 @@ class, which is why such a method is not excluded outright.
 
 An object literal passed as an argument, returned, or nested in an array or another literal
 (`filters: [{ name: 'all', func() {} }]` handed to a component prop) is called by whatever
-receives it. When the TypeScript scanner finds a type for it in the project, that type is its
+receives it, and so is one a `const` binding holds once the binding is handed on the same way.
+When the TypeScript scanner finds a type for it in the project, that type is its
 contract and its methods are judged against it; when it finds none, its methods drop to
 `possible`. A literal typed only by a library counts as extending an external ancestor.
 

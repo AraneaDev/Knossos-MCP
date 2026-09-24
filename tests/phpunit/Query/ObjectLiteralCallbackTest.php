@@ -25,7 +25,7 @@ final class ObjectLiteralCallbackTest extends KnossosTestCase
         $files = [
             'package.json' => '{"name":"app","private":true}',
             'src/main.js' => "import table from './table.js';\nexport default table;\n",
-            'src/table.js' => "export default {\n  data() {\n    return {\n      filters: [{ name: 'all', func() { return true; } }],\n    };\n  },\n};\nexport class Unused {\n  render() { return 1; }\n}\nconst local = { unused() { return 2; } };\n",
+            'src/table.js' => "export default {\n  data() {\n    return {\n      filters: [{ name: 'all', func() { return true; } }],\n    };\n  },\n};\nexport class Unused {\n  render() { return 1; }\n}\nconst local = { unused() { return 2; } };\nconst renderer = { heading() { return 3; } };\nexport function install(lib) {\n  lib.use({ renderer });\n}\n",
         ];
         foreach ($files as $relative => $contents) {
             file_put_contents($root . '/' . $relative, $contents);
@@ -48,5 +48,7 @@ final class ObjectLiteralCallbackTest extends KnossosTestCase
         // A literal a binding names is that binding's, not handed anywhere:
         // nothing implies an unseen caller.
         self::assertSame('probable', $confidence['unused'] ?? null);
+        // A binding handed on as a value goes wherever the literal would.
+        self::assertSame('possible', $confidence['heading'] ?? null);
     }
 }

@@ -504,6 +504,7 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         };
 
         $subtypeMembers = $this->subtypeMemberNames($projectId, array_values(array_unique(array_values($classOfMethod))));
+        $handedBindings = $this->referencedBindings($projectId, array_keys(array_filter($kindOfClass, static fn(string $kind): bool => $kind === 'variable')));
 
         $result = [];
         foreach ($methodIds as $methodId) {
@@ -534,11 +535,38 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 'external_ancestor' => $externalAncestor,
                 // An object literal passed, returned or nested as a value,
                 // with no type naming its methods: whatever receives it may
-                // call them, and no scan of this project sees that call.
-                'uncontracted_literal' => $classId !== null && ($kindOfClass[$classId] ?? null) === 'object' && $ancestors === [],
+                // call them, and no scan of this project sees that call. A
+                // binding holding one goes the same way once it is handed on.
+                'uncontracted_literal' => $classId !== null
+                    && (($kindOfClass[$classId] ?? null) === 'object' || isset($handedBindings[$classId]))
+                    && $ancestors === [],
             ];
         }
         return $result;
+    }
+
+    /**
+     * The bindings among `$bindingIds` something reads as a value.
+     *
+     * @param list<string> $bindingIds
+     * @return array<string, true>
+     */
+    private function referencedBindings(string $projectId, array $bindingIds): array
+    {
+        $referenced = [];
+        foreach (array_chunk($bindingIds, 500) as $chunk) {
+            $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+            $statement = $this->pdo->prepare(
+                "SELECT DISTINCT target_id FROM edges WHERE project_id = ? AND kind = 'references' " .
+                sprintf('AND target_id IN (%s)', $placeholders),
+            );
+            $statement->execute([$projectId, ...$chunk]);
+            foreach ($statement->fetchAll(\PDO::FETCH_COLUMN) as $id) {
+                $referenced[(string) $id] = true;
+            }
+        }
+
+        return $referenced;
     }
 
     /**
