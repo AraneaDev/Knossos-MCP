@@ -128,13 +128,19 @@ final class TypescriptRequireTest extends KnossosTestCase
             $client->shutdown();
         }
         $references = [];
+        $speculative = [];
         foreach ($contributions as $contribution) {
             foreach ($contribution->edges as $edge) {
                 if ($edge->kind === 'references' && str_contains($edge->targetReference, 'lazy-service.ts#')) {
                     $references[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
                 }
+                if ($edge->kind === 'references' && str_contains($edge->targetReference, 'lazy/server.ts#')) {
+                    $speculative[] = [$edge->targetReference, ($edge->attributes['speculative'] ?? false) === true];
+                }
             }
         }
+        // Outside the program: named by path, kept only if the export exists.
+        self::assertSame([['ts:function:src/lazy/server.ts#handle', true]], $speculative);
         sort($references);
 
         self::assertSame([

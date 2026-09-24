@@ -1285,10 +1285,8 @@ class TypeScriptLanguageFactCollector {
                     : node.expression.name.text,
             );
         }
-        const target = this.callTarget(node, signature);
         const source = this.currentSource();
-        if (source !== null && target !== null)
-            this.addEdge("calls", source, target, node);
+        const target = this.callEdge(node, signature, source);
 
         const calledName = callName(node.expression);
         if (source !== null && calledName?.startsWith("use") && target !== null)
@@ -1709,8 +1707,14 @@ class TypeScriptLanguageFactCollector {
                 : null;
         if (exported !== null) {
             const source = this.currentSource();
-            if (source !== null && source !== exported)
-                this.addEdge("references", source, exported, node);
+            if (source !== null && source !== exported.target)
+                this.addEdge(
+                    "references",
+                    source,
+                    exported.target,
+                    node,
+                    exported.speculative ? { speculative: true } : {},
+                );
             return;
         }
 
@@ -1738,6 +1742,30 @@ class TypeScriptLanguageFactCollector {
     }
 
     /**
+     * Emit the `calls` edge a call makes and return its target: the resolved
+     * declaration, or a loaded module's export read behind an inline type,
+     * which is speculative when the module is outside the program.
+     */
+    callEdge(node, signature, source) {
+        const required =
+            ts.isPropertyAccessExpression(node.expression) &&
+            signature?.declaration === undefined
+                ? this.requiredExport(node.expression)
+                : null;
+        const target =
+            this.callTarget(node, signature) ?? required?.target ?? null;
+        if (source !== null && target !== null)
+            this.addEdge(
+                "calls",
+                source,
+                target,
+                node,
+                required?.speculative ? { speculative: true } : {},
+            );
+        return target;
+    }
+
+    /**
      * The declaration a call reaches: a local binding's function, the
      * signature the checker resolved, or a loaded module's export read
      * behind an inline type.
@@ -1749,10 +1777,7 @@ class TypeScriptLanguageFactCollector {
                 signature?.declaration?.symbol,
                 callableKind(signature?.declaration),
                 true,
-            ) ??
-            (ts.isPropertyAccessExpression(node.expression)
-                ? this.requiredExport(node.expression)
-                : null)
+            )
         );
     }
 
@@ -1787,7 +1812,8 @@ class TypeScriptLanguageFactCollector {
     /**
      * The export a member read names when its object is a module loaded by
      * `require('./x')` behind an inline type (`as { handle: ... }`) that
-     * hides the module's own: `service.handle` is the module's `handle`.
+     * hides the module's own: `service.handle` is the module's `handle`. For
+     * a module the program leaves out, the reference is speculative.
      */
     requiredExport(access) {
         if (!ts.isIdentifier(access.expression)) return null;
@@ -1816,20 +1842,34 @@ class TypeScriptLanguageFactCollector {
                 this.checker.getSymbolAtLocation(call.arguments[0]),
             )?.declarations?.find((item) => ts.isSourceFile(item)) ??
             this.requiredSourceFile(call.arguments[0]);
-        const module =
-            file !== undefined && ts.isSourceFile(file)
-                ? this.checker.getSymbolAtLocation(file)
-                : undefined;
+        if (file === undefined) return null;
+        if (!ts.isSourceFile(file)) {
+            // A file the program leaves out: its exports are unknown, so the
+            // function the name would be is named, and kept only if it exists.
+            const relative = relativeInside(this.root, file.fileName);
+            return relative === null
+                ? null
+                : {
+                      target: reference(
+                          "function",
+                          `${relative}#${access.name.text}`,
+                      ),
+                      speculative: true,
+                  };
+        }
         const symbol = unalias(
             this.checker,
-            module?.exports?.get(access.name.text),
+            this.checker
+                .getSymbolAtLocation(file)
+                ?.exports?.get(access.name.text),
         );
         const declaration = symbol?.declarations?.find((item) =>
             referenceableDeclaration(item),
         );
-        return declaration
+        const target = declaration
             ? this.symbolReference(symbol, callableKind(declaration), true)
             : null;
+        return target === null ? null : { target, speculative: false };
     }
 
     /**

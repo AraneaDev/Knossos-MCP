@@ -22,3 +22,10 @@ export function wire(): void {
     const service = require('./lazy-service') as { handleMessage: () => string };
     onMessage = service.handleMessage;
 }
+
+// The module is outside the program (a tsconfig `exclude`), so only its path
+// and the member's name say what is read.
+export function excluded(): () => string {
+    const server = require('./lazy/server') as { handle: () => string };
+    return server.handle;
+}
