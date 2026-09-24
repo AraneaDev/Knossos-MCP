@@ -1555,9 +1555,6 @@ final readonly class ProjectDiscoverer
             $path = self::entryPointPath($candidate, $directory);
             if ($path !== null) {
                 $paths[$path] = true;
-                foreach (self::sourceTwins($path, $directory) as $twin) {
-                    $paths[$twin] = true;
-                }
             }
         }
         $paths = array_keys($paths);
@@ -1567,12 +1564,15 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * The sources a published build output is compiled from.
+     * The sources a published build output is compiled from, when no tsconfig says.
      *
      * `dist/esm.mjs` is not in the scan (the build directory is excluded), and
      * what its consumers call is `src/esm.ts`, compiled to it the way
-     * `rootDir: src` and `outDir: dist` lay a library out. Each extension the
-     * source may have is named; a twin no file answers to publishes nothing.
+     * `rootDir: src` and `outDir: dist` lay a library out. A bundler builds
+     * many libraries without a tsconfig `outDir`, so this is the fallback
+     * {@see self::withBuildOutputSources()} uses for an entry no declared
+     * layout covers. Each extension the source may have is named; a twin no
+     * file answers to publishes nothing.
      *
      * @return list<string>
      */
@@ -1809,23 +1809,54 @@ final readonly class ProjectDiscoverer
                 $rootDir !== null ? [self::joinPath($directory, $rootDir)] : [$directory, self::joinPath($directory, 'src')],
             ];
         }
-        if ($layouts === []) {
-            return $units;
-        }
 
         return array_map(static function (ProjectUnit $unit) use ($layouts): ProjectUnit {
             if ($unit->kind !== 'node') {
                 return $unit;
             }
             $metadata = $unit->metadata;
+            $named = is_array($metadata['public_entry_points'] ?? null) ? $metadata['public_entry_points'] : null;
             foreach (['entry_points', 'public_entry_points'] as $key) {
                 if (is_array($metadata[$key] ?? null) && $metadata[$key] !== []) {
                     $metadata[$key] = self::withSourcesOf($metadata[$key], $layouts);
                 }
             }
+            // A published entry the manifest names and no declared layout
+            // covers: the bundler default.
+            if ($named !== null && is_array($metadata['public_entry_points'] ?? null)) {
+                $directory = self::manifestDirectory($unit->configPath);
+                $published = array_fill_keys($metadata['public_entry_points'], true);
+                foreach ($named as $entryPoint) {
+                    if (!is_string($entryPoint) || self::underLayout($entryPoint, $layouts)) {
+                        continue;
+                    }
+                    foreach (self::sourceTwins($entryPoint, $directory) as $twin) {
+                        $published[$twin] = true;
+                    }
+                }
+                $published = array_map(strval(...), array_keys($published));
+                sort($published, SORT_STRING);
+                $metadata['public_entry_points'] = $published;
+            }
 
             return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, $metadata);
         }, $units);
+    }
+
+    /**
+     * Whether a path lies in the `outDir` of a declared build layout.
+     *
+     * @param list<array{0: string, 1: list<string>}> $layouts
+     */
+    private static function underLayout(string $path, array $layouts): bool
+    {
+        foreach ($layouts as [$outDir]) {
+            if (str_starts_with($path, $outDir . '/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -1861,6 +1861,32 @@ TOML);
     }
 
     /**
+     * A published build output stands for the source compiled to it: the
+     * tsconfig's `rootDir` when it declares one, and `src/` only when no
+     * tsconfig lays the build out.
+     */
+    public function testAPublishedBuildOutputStandsForItsDeclaredSourceOnly(): void
+    {
+        mkdir($this->root . '/declared', 0700, true);
+        mkdir($this->root . '/undeclared', 0700, true);
+        file_put_contents($this->root . '/declared/package.json', '{"name":"declared","main":"dist/index.js"}');
+        file_put_contents($this->root . '/declared/tsconfig.json', '{"compilerOptions":{"outDir":"dist","rootDir":"lib"}}');
+        file_put_contents($this->root . '/undeclared/package.json', '{"name":"undeclared","module":"dist/esm.mjs"}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $published = [];
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                $published[$unit->configPath] = $unit->metadata['public_entry_points'] ?? [];
+            }
+        }
+        self::assertContains('declared/lib/index.ts', $published['declared/package.json']);
+        self::assertNotContains('declared/src/index.ts', $published['declared/package.json']);
+        self::assertContains('undeclared/src/esm.ts', $published['undeclared/package.json']);
+    }
+
+    /**
      * PHPStan loads the rules and extensions `phpstan.neon` names, by class;
      * nothing in PHP does. A rule class the config does not name is not
      * loaded, so it stays reportable.
