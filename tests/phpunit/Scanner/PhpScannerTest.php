@@ -180,6 +180,40 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * A Doctrine annotation names its class through the file's imports:
+     * `@AdminEmail` is `use Fixture\\Validator\\AdminEmail`, and nothing else in
+     * the file refers to it. A Symfony constraint is validated by the class
+     * its name plus `Validator` names, which only the validator library says.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReferencesAnnotationClassesAndAConstraintsValidator(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => $root,
+            'files' => ['src/AnnotatedEntity.php', 'src/AdminEmail.php'],
+        ]), false);
+        $client->shutdown();
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = [$edge->sourceReference, $edge->targetReference, ($edge->attributes['speculative'] ?? false) === true];
+                }
+            }
+        }
+        sort($references);
+
+        assertSame([
+            ['php:class:Fixture\\Entity\\AnnotatedEntity', 'php:class:Fixture\\Validator\\AdminEmail', false],
+            ['php:class:Fixture\\Entity\\AnnotatedEntity', 'php:class:Fixture\\Validator\\CustomerType', false],
+            // Kept only if the validator exists.
+            ['php:class:Fixture\\Validator\\AdminEmail', 'php:class:Fixture\\Validator\\AdminEmailValidator', true],
+        ], $references);
+    }
+
+    /**
      * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
      * produced no call edge at all — on either a variable or a property
      * receiver — however precisely the receiver was typed.
