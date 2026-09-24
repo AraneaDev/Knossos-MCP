@@ -1889,24 +1889,33 @@ fn macro_piece(
 }
 
 /// Whether an attribute is `#[wasm_bindgen]`, however its path is spelled,
-/// or a `cfg_attr` that applies it.
+/// or a `cfg_attr`, at any depth, that applies it.
 fn is_wasm_bindgen(attr: &syn::Attribute) -> bool {
-    let named = |path: &syn::Path| {
-        path.segments
-            .last()
-            .is_some_and(|segment| segment.ident == "wasm_bindgen")
-    };
-    if named(attr.path()) {
+    applies_wasm_bindgen(&attr.meta)
+}
+
+/// Whether one attribute's meta is `wasm_bindgen`, or a `cfg_attr` that
+/// applies it: `#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]` is how an
+/// item is exported only to the build the bindings exist for, and a
+/// `cfg_attr` may apply another.
+fn applies_wasm_bindgen(meta: &syn::Meta) -> bool {
+    if meta
+        .path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "wasm_bindgen")
+    {
         return true;
     }
-    // `#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]`: the build the
-    // bindings exist for applies it, so the item is exported all the same.
-    attr.path().is_ident("cfg_attr")
-        && attr
+    let syn::Meta::List(list) = meta else {
+        return false;
+    };
+    list.path.is_ident("cfg_attr")
+        && list
             .parse_args_with(
                 syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
             )
-            .is_ok_and(|metas| metas.iter().skip(1).any(|meta| named(meta.path())))
+            .is_ok_and(|metas| metas.iter().skip(1).any(applies_wasm_bindgen))
 }
 
 /// Whether a function is exported to a caller outside Rust: `#[no_mangle]`
@@ -2142,7 +2151,7 @@ mod tests {
     #[test]
     fn a_wasm_bindgen_impl_marks_its_public_methods_as_runtime_invoked() {
         let file: syn::File = syn::parse_str(
-            "#[wasm_bindgen]\npub struct Engine;\n#[wasm_bindgen]\nimpl Engine {\n    #[wasm_bindgen(constructor)]\n    pub fn new() -> Engine { Engine }\n    pub fn key_up(&mut self, key: &str) {}\n    fn helper(&self) {}\n}\nimpl Engine {\n    pub fn internal(&self) {}\n}\npub struct Widget;\n#[cfg_attr(target_arch = \"wasm32\", wasm_bindgen)]\nimpl Widget {\n    pub fn draw(&self) {}\n}\n#[cfg_attr(test, derive(Debug))]\nimpl Widget {\n    pub fn measure(&self) {}\n}",
+            "#[wasm_bindgen]\npub struct Engine;\n#[wasm_bindgen]\nimpl Engine {\n    #[wasm_bindgen(constructor)]\n    pub fn new() -> Engine { Engine }\n    pub fn key_up(&mut self, key: &str) {}\n    fn helper(&self) {}\n}\nimpl Engine {\n    pub fn internal(&self) {}\n}\npub struct Widget;\n#[cfg_attr(target_arch = \"wasm32\", wasm_bindgen)]\nimpl Widget {\n    pub fn draw(&self) {}\n}\n#[cfg_attr(test, derive(Debug))]\nimpl Widget {\n    pub fn measure(&self) {}\n}\n#[cfg_attr(feature = \"bindings\", cfg_attr(target_arch = \"wasm32\", wasm_bindgen))]\nimpl Widget {\n    pub fn paint(&self) {}\n}",
         )
         .expect("parses");
         let mut facts = Facts::new("src/lib.rs");
@@ -2174,6 +2183,8 @@ mod tests {
         // the same way; another conditional attribute exports nothing.
         assert!(marked("crate::Widget::draw"));
         assert!(!marked("crate::Widget::measure"));
+        // A `cfg_attr` may apply another that applies it.
+        assert!(marked("crate::Widget::paint"));
     }
 
     #[test]
