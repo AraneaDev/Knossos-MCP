@@ -1345,4 +1345,84 @@ PYTHON);
 
         return $byPath;
     }
+
+    public function testAFunctionAPackageReExportsIsCalledThroughThePackage(): void
+    {
+        // `from app import config; config.staging_dir()`: the package
+        // re-exports what its submodules declare, and a caller reaches it
+        // through the package.
+        $root = self::repositoryRoot() . '/tests/Fixtures/python-reexport';
+        $contributions = iterator_to_array($this->pythonWorkerClient()->scan([
+            'root' => $root,
+            'files' => ['app/__init__.py', 'app/config/__init__.py', 'app/config/limits.py', 'app/config/paths.py', 'app/service.py'],
+        ]), false);
+        $calls = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+        }
+
+        self::assertContains('py:function:app.service.run -> py:function:app.config.paths.staging_dir', $calls);
+        self::assertContains('py:function:app.service.run -> py:function:app.config.limits.request_window', $calls);
+    }
+
+    #[Group('python-scanner')]
+    public function testAMethodCalledOnAFreshInstanceResolvesThroughItsClass(): void
+    {
+        // `Repo().count()` calls a method on the instance just built, so the
+        // class it names types the receiver. A call on another call's result
+        // has no type to go on and counts as a call on an untyped receiver.
+        $root = sys_get_temp_dir() . '/knossos-py-fresh-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/repo.py' => "class Repo:\n    def count(self):\n        return 1\n",
+            'app/service.py' => implode("\n", [
+                'from .repo import Repo',
+                '',
+                'def run():',
+                '    return Repo().count()',
+                '',
+                'def chained(make):',
+                '    return make().render()',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/service.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $calls = [];
+        $untyped = null;
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $untyped = $node->attributes['unresolved_member_calls'] ?? null;
+                }
+            }
+        }
+
+        self::assertContains('py:function:app.service.run -> py:method:app.repo.Repo::count', $calls);
+        self::assertSame(['render'], $untyped);
+    }
 }
