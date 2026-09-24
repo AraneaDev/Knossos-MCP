@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.1...v0.17.2) (2026-09-24)
+
+
+### Fixes
+
+* findings from another dogfood cycle ([#125](https://github.com/AraneaDev/Knossos-MCP/issues/125)) ([61b80e5](https://github.com/AraneaDev/Knossos-MCP/commit/61b80e50d52ffd8407d917a9f80eae117e72c430))
+
 ## [0.17.1](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.0...v0.17.1) (2026-09-23)
 
 
