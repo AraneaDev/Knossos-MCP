@@ -140,11 +140,7 @@ export class NestJsFactEnricher {
         )
             return true;
         if (!ts.isIdentifier(node.name)) return false;
-        if (
-            NEST_CONTRACT_METHODS.includes(node.name.text) &&
-            this.managedByNest(node.parent)
-        )
-            return true;
+        if (this.nestCallsContract(node.parent, node.name.text)) return true;
         return (
             node.name.text === "validate" &&
             this.extendsPassportStrategy(node.parent)
@@ -164,13 +160,44 @@ export class NestJsFactEnricher {
         );
     }
 
-    /** Whether a class extends `PassportStrategy(Strategy)` from @nestjs/passport. */
-    extendsPassportStrategy(node) {
-        if (
-            !node ||
-            !(ts.isClassDeclaration(node) || ts.isClassExpression(node))
-        )
-            return false;
+    /**
+     * Whether Nest calls `method` on a class: a lifecycle hook on any class
+     * it manages, and a role's own method only on a class in that role.
+     */
+    nestCallsContract(node, method) {
+        if (!this.managedByNest(node)) return false;
+        if (NEST_LIFECYCLE_METHODS.includes(method)) return true;
+        const role = NEST_ROLES.find((each) => each.methods.includes(method));
+        if (role === undefined) return false;
+        return (
+            (role.decorator !== undefined &&
+                this.decorator(node, role.decorator) !== null) ||
+            (role.suffix !== undefined &&
+                (node.name?.text ?? "").endsWith(role.suffix)) ||
+            this.implementedInterfaces(node).some((name) =>
+                role.interfaces.includes(name),
+            ) ||
+            (role.base !== undefined && this.extendsCallTo(node, role.base))
+        );
+    }
+
+    /** The exported names of the interfaces a class `implements`. */
+    implementedInterfaces(node) {
+        return (node.heritageClauses ?? [])
+            .filter(
+                (clause) => clause.token === ts.SyntaxKind.ImplementsKeyword,
+            )
+            .flatMap((clause) => clause.types)
+            .map((type) => type.expression)
+            .filter((expression) => ts.isIdentifier(expression))
+            .map(
+                (expression) =>
+                    this.imports.get(expression.text) ?? expression.text,
+            );
+    }
+
+    /** Whether a class extends a call to the imported `exportedName`. */
+    extendsCallTo(node, exportedName) {
         return (node.heritageClauses ?? []).some(
             (clause) =>
                 clause.token === ts.SyntaxKind.ExtendsKeyword &&
@@ -179,8 +206,17 @@ export class NestJsFactEnricher {
                         ts.isCallExpression(type.expression) &&
                         ts.isIdentifier(type.expression.expression) &&
                         this.imports.get(type.expression.expression.text) ===
-                            "PassportStrategy",
+                            exportedName,
                 ),
+        );
+    }
+
+    /** Whether a class extends `PassportStrategy(Strategy)` from @nestjs/passport. */
+    extendsPassportStrategy(node) {
+        return (
+            node !== undefined &&
+            (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
+            this.extendsCallTo(node, "PassportStrategy")
         );
     }
 
@@ -202,22 +238,46 @@ export class NestJsFactEnricher {
     }
 }
 
-// Methods Nest calls on a class it manages: a guard, an interceptor, a pipe,
-// a filter, a middleware, a gateway, and every provider's lifecycle hooks.
-const NEST_CONTRACT_METHODS = [
-    "canActivate",
-    "intercept",
-    "transform",
-    "catch",
-    "use",
-    "handleConnection",
-    "handleDisconnect",
-    "afterInit",
+// Hooks Nest calls on every class it manages.
+const NEST_LIFECYCLE_METHODS = [
     "onModuleInit",
     "onModuleDestroy",
     "onApplicationBootstrap",
     "beforeApplicationShutdown",
     "onApplicationShutdown",
+];
+
+// The methods Nest calls on a class in one role, and how a class is known to
+// be in it: the interface it implements, its conventional name suffix, its
+// class decorator, or the mixin it extends (`AuthGuard('jwt')`).
+const NEST_ROLES = [
+    {
+        methods: ["canActivate"],
+        interfaces: ["CanActivate"],
+        suffix: "Guard",
+        base: "AuthGuard",
+    },
+    {
+        methods: ["intercept"],
+        interfaces: ["NestInterceptor"],
+        suffix: "Interceptor",
+    },
+    { methods: ["transform"], interfaces: ["PipeTransform"], suffix: "Pipe" },
+    {
+        methods: ["catch"],
+        interfaces: ["ExceptionFilter"],
+        decorator: "Catch",
+    },
+    { methods: ["use"], interfaces: ["NestMiddleware"], suffix: "Middleware" },
+    {
+        methods: ["handleConnection", "handleDisconnect", "afterInit"],
+        interfaces: [
+            "OnGatewayConnection",
+            "OnGatewayDisconnect",
+            "OnGatewayInit",
+        ],
+        decorator: "WebSocketGateway",
+    },
 ];
 
 // Class decorators that hand a class to Nest to instantiate.
