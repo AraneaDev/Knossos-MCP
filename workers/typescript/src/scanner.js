@@ -925,6 +925,8 @@ class TypeScriptLanguageFactCollector {
         if (ts.isCallExpression(node)) this.callExpression(node);
         if (ts.isTypeReferenceNode(node)) this.typeReference(node);
         if (ts.isIdentifier(node)) this.valueReference(node);
+        if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent))
+            this.destructuredMember(node);
     }
 
     leave(pushed) {
@@ -1283,13 +1285,7 @@ class TypeScriptLanguageFactCollector {
                     : node.expression.name.text,
             );
         }
-        const target =
-            this.bindingCallee(node) ??
-            this.symbolReference(
-                signature?.declaration?.symbol,
-                callableKind(signature?.declaration),
-                true,
-            );
+        const target = this.callTarget(node, signature);
         const source = this.currentSource();
         if (source !== null && target !== null)
             this.addEdge("calls", source, target, node);
@@ -1706,6 +1702,17 @@ class TypeScriptLanguageFactCollector {
     valueReference(node) {
         if (this.enumMemberRead(node)) return;
         if (!valueReferencePosition(node)) return;
+        const exported =
+            ts.isPropertyAccessExpression(node.parent) &&
+            node.parent.name === node
+                ? this.requiredExport(node.parent)
+                : null;
+        if (exported !== null) {
+            const source = this.currentSource();
+            if (source !== null && source !== exported)
+                this.addEdge("references", source, exported, node);
+            return;
+        }
 
         // A shorthand `{ discover }` names the object's property; the value it
         // copies is the function, which only this lookup returns.
@@ -1728,6 +1735,101 @@ class TypeScriptLanguageFactCollector {
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
+    }
+
+    /**
+     * The declaration a call reaches: a local binding's function, the
+     * signature the checker resolved, or a loaded module's export read
+     * behind an inline type.
+     */
+    callTarget(node, signature) {
+        return (
+            this.bindingCallee(node) ??
+            this.symbolReference(
+                signature?.declaration?.symbol,
+                callableKind(signature?.declaration),
+                true,
+            ) ??
+            (ts.isPropertyAccessExpression(node.expression)
+                ? this.requiredExport(node.expression)
+                : null)
+        );
+    }
+
+    /**
+     * `const { getSpiderResponse: fn } = await import('./service')`: a name
+     * taken out of an object is the declaration the object's property is, so
+     * a module's export destructured from a loaded module is referenced.
+     */
+    destructuredMember(element) {
+        const key = element.propertyName ?? element.name;
+        const name =
+            ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : null;
+        if (name === null) return;
+        const property = this.checker
+            .getTypeAtLocation(element.parent)
+            .getProperty(name);
+        const symbol = unalias(this.checker, property);
+        const declaration = symbol?.declarations?.find((item) =>
+            referenceableDeclaration(item),
+        );
+        if (!declaration) return;
+        const target = this.symbolReference(
+            symbol,
+            callableKind(declaration),
+            true,
+        );
+        const source = this.currentSource();
+        if (source !== null && target !== null && source !== target)
+            this.addEdge("references", source, target, element);
+    }
+
+    /**
+     * The export a member read names when its object is a module loaded by
+     * `require('./x')` behind an inline type (`as { handle: ... }`) that
+     * hides the module's own: `service.handle` is the module's `handle`.
+     */
+    requiredExport(access) {
+        if (!ts.isIdentifier(access.expression)) return null;
+        const binding = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(access.expression),
+        )?.valueDeclaration;
+        const call =
+            binding !== undefined &&
+            ts.isVariableDeclaration(binding) &&
+            binding.initializer !== undefined
+                ? unwrapExpression(binding.initializer)
+                : undefined;
+        if (
+            call === undefined ||
+            !ts.isCallExpression(call) ||
+            !ts.isIdentifier(call.expression) ||
+            call.expression.text !== "require" ||
+            call.arguments.length !== 1 ||
+            !ts.isStringLiteralLike(call.arguments[0])
+        )
+            return null;
+        const file =
+            unalias(
+                this.checker,
+                this.checker.getSymbolAtLocation(call.arguments[0]),
+            )?.declarations?.find((item) => ts.isSourceFile(item)) ??
+            this.requiredSourceFile(call.arguments[0]);
+        const module =
+            file !== undefined && ts.isSourceFile(file)
+                ? this.checker.getSymbolAtLocation(file)
+                : undefined;
+        const symbol = unalias(
+            this.checker,
+            module?.exports?.get(access.name.text),
+        );
+        const declaration = symbol?.declarations?.find((item) =>
+            referenceableDeclaration(item),
+        );
+        return declaration
+            ? this.symbolReference(symbol, callableKind(declaration), true)
+            : null;
     }
 
     /**

@@ -109,4 +109,37 @@ final class TypescriptRequireTest extends KnossosTestCase
             'ts:function:src/constructs.ts#make -> ts:class:src/constructs.ts#Actual',
         ], $constructs);
     }
+
+    /**
+     * A named export taken from a loaded module is used: destructured from an
+     * awaited `import()`, or read off `require()` behind an inline type that
+     * hides the module's own.
+     */
+    public function testANamedExportTakenFromALoadedModuleIsReferenced(): void
+    {
+        $client = $this->typescriptWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan([
+                'root' => self::repositoryRoot() . '/tests/Fixtures/ts-require',
+                'files' => ['src/lazy-service.ts', 'src/loader.ts'],
+                'config_files' => ['tsconfig.json'],
+            ]), false);
+        } finally {
+            $client->shutdown();
+        }
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references' && str_contains($edge->targetReference, 'lazy-service.ts#')) {
+                    $references[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+        }
+        sort($references);
+
+        self::assertSame([
+            'ts:function:src/loader.ts#respond -> ts:function:src/lazy-service.ts#getSpiderResponse',
+            'ts:function:src/loader.ts#route -> ts:function:src/lazy-service.ts#handleSse',
+        ], array_values(array_unique($references)));
+    }
 }
