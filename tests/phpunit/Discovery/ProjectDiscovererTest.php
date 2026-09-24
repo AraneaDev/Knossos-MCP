@@ -2110,6 +2110,141 @@ TOML);
     }
 
     /**
+     * vulture reads a whitelist as ordinary source through its `paths`; the
+     * file exists for that tool and nothing imports it.
+     */
+    public function testDiscoverReadsTheFilesVultureIsToldToScan(): void
+    {
+        mkdir($this->root . '/backend', 0700, true);
+        file_put_contents($this->root . '/backend/pyproject.toml', implode("\n", [
+            '[project]',
+            'name = "backend"',
+            '',
+            '[tool.vulture]',
+            'min_confidence = 60',
+            'paths = [',
+            '    "core",',
+            '    "vulture_whitelist.py",',
+            ']',
+            '',
+        ]));
+        file_put_contents($this->root . '/backend/vulture_whitelist.py', "_.used\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('backend/vulture_whitelist.py', $entryPoints);
+        self::assertNotContains('backend/core', $entryPoints);
+    }
+
+    /**
+     * A Create React App package is built from `src/index.js`, and Cargo runs
+     * a package's `build.rs` before compiling it. Neither is named anywhere.
+     */
+    public function testDiscoverReadsTheEntriesManifestConventionsImply(): void
+    {
+        mkdir($this->root . '/front/src', 0700, true);
+        mkdir($this->root . '/desktop/src', 0700, true);
+        mkdir($this->root . '/nobuild/src', 0700, true);
+        mkdir($this->root . '/plain/src', 0700, true);
+        mkdir($this->root . '/typed/src', 0700, true);
+        $files = [
+            'front/package.json' => '{"name":"front","private":true,"dependencies":{"react":"^17.0.0","react-scripts":"4.0.3"}}',
+            'front/src/index.js' => "export {};\n",
+            // react-scripts builds the first extension it finds, `.js` before
+            // `.tsx`; the other file is not built.
+            'front/src/index.tsx' => "export {};\n",
+            'typed/package.json' => '{"name":"typed","private":true,"dependencies":{"react-scripts":"5.0.1"}}',
+            'typed/src/index.tsx' => "export {};\n",
+            'plain/package.json' => '{"name":"plain","private":true,"dependencies":{"react":"^17.0.0"}}',
+            'plain/src/index.js' => "export {};\n",
+            'desktop/Cargo.toml' => "[package]\nname = \"desktop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            'desktop/build.rs' => "fn main() {}\n",
+            // `build = false` turns the conventional script off.
+            'nobuild/Cargo.toml' => "[package]\nname = \"nobuild\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = false\n",
+            'nobuild/build.rs' => "fn main() {}\n",
+            'desktop/src/main.rs' => "fn main() {}\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($this->root . '/' . $relative, $contents);
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('front/src/index.js', $entryPoints);
+        self::assertNotContains('front/src/index.tsx', $entryPoints);
+        self::assertContains('typed/src/index.tsx', $entryPoints);
+        self::assertNotContains('typed/src/index.js', $entryPoints);
+        self::assertNotContains('plain/src/index.js', $entryPoints);
+        self::assertContains('desktop/build.rs', $entryPoints);
+        self::assertNotContains('nobuild/build.rs', $entryPoints);
+    }
+
+    /**
+     * Tools find their files through config: TypeORM loads the migrations a
+     * glob names, Laravel Mix and Vite build the entries their config lists,
+     * and Cypress loads the plugins and support files `cypress.json` names.
+     * Nothing imports any of them.
+     */
+    public function testDiscoverReadsTheFilesToolConfigsLoad(): void
+    {
+        foreach (['bomb/src', 'backend/src/migrations', 'backend/src/subscribers/audit', 'resources/js', 'front/cypress/cypress/plugins', 'front/cypress/cypress/support', 'e2e/cypress/plugins', 'e2e/cypress/support', 'e2e/tools'] as $directory) {
+            mkdir($this->root . '/' . $directory, 0700, true);
+        }
+        $files = [
+            'backend/typeorm.config.ts' => "export default { migrations: ['src/migrations/*.ts'], subscribers: ['src/subscribers/**/*{.js,.ts}'] };\n",
+            'backend/src/subscribers/audit/AuditSubscriber.ts' => "export class AuditSubscriber {}\n",
+            'backend/src/migrations/1700000000001-Init.ts' => "export class Init1700000000001 {}\n",
+            'backend/src/other.ts' => "export const other = 1;\n",
+            // Twelve brace pairs name 4,096 globs: past the budget, so the
+            // glob is dropped rather than expanded.
+            'bomb/typeorm.config.ts' => "export default { entities: ['src/*" . str_repeat('{a,b}', 12) . ".ts'] };\n",
+            'bomb/src/' . str_repeat('a', 12) . '.ts' => "export {};\n",
+            'webpack.mix.js' => "const mix = require('laravel-mix');\nmix.js('resources/js/app.js', 'public/js').sass('resources/sass/app.scss', 'public/css');\n",
+            'vite.config.ts' => "export default { plugins: [laravel({ input: ['resources/js/main.ts'], ssr: 'resources/js/ssr.ts' })] };\n",
+            'resources/js/app.js' => "export {};\n",
+            'resources/js/ssr.ts' => "export {};\n",
+            'front/cypress/cypress.json' => '{"pluginsFile": "cypress/plugins/index.js", "numTestsKeptInMemory": 1}',
+            'front/cypress/cypress/plugins/index.js' => "module.exports = () => {};\n",
+            'front/cypress/cypress/support/index.js' => "export {};\n",
+            // A config that names its own plugins file and turns support off.
+            'e2e/cypress.json' => '{"pluginsFile": "tools/plugins.js", "supportFile": false}',
+            'e2e/tools/plugins.js' => "module.exports = () => {};\n",
+            'e2e/cypress/plugins/index.js' => "module.exports = () => {};\n",
+            'e2e/cypress/support/index.js' => "export {};\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($this->root . '/' . $relative, $contents);
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('backend/src/migrations/1700000000001-Init.ts', $entryPoints);
+        self::assertNotContains('backend/src/other.ts', $entryPoints);
+        self::assertContains('resources/js/app.js', $entryPoints);
+        self::assertContains('resources/js/ssr.ts', $entryPoints);
+        self::assertContains('front/cypress/cypress/plugins/index.js', $entryPoints);
+        // Cypress's default support file, which the config did not override.
+        self::assertContains('front/cypress/cypress/support/index.js', $entryPoints);
+        self::assertContains('backend/src/subscribers/audit/AuditSubscriber.ts', $entryPoints);
+        self::assertContains('e2e/tools/plugins.js', $entryPoints);
+        self::assertNotContains('e2e/cypress/plugins/index.js', $entryPoints);
+        self::assertNotContains('e2e/cypress/support/index.js', $entryPoints);
+        self::assertNotContains('bomb/src/' . str_repeat('a', 12) . '.ts', $entryPoints);
+    }
+
+    /**
      * The reason this reader is key-scoped rather than tokenising the whole
      * file the way the YAML one does. A config names files to EXCLUDE as well
      * as files to load, and an excluded path is exactly the kind of file that

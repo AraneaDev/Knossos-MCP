@@ -306,6 +306,7 @@ class ProjectModuleIndex:
         self.read_hashes: dict[str, str | None] = {}
         self._prefixes: list[tuple[str, ...]] | None = None
         self._cache: dict[str, dict[str, str]] = {}
+        self._protocols: set[str] = set()
 
     @property
     def prefixes(self) -> list[tuple[str, ...]]:
@@ -517,11 +518,17 @@ class ProjectModuleIndex:
                     tree = None
                 if tree is not None:
                     declarations = top_level_declarations(tree, module)
+                    self._protocols |= declared_protocols(tree, module)
                     self._cache[module] = declarations
                     self._add_reexports(tree, module, path.name == "__init__.py", declarations)
                     self._add_instances(tree, module, path.name == "__init__.py", declarations)
         self._cache[module] = declarations
         return declarations
+
+    def is_protocol(self, owner: str) -> bool:
+        """Whether ``owner`` is a structural protocol a project module declares."""
+        self.module_declarations(owner.rpartition(".")[0])
+        return owner in self._protocols
 
     def _add_reexports(self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str]) -> None:
         """Add the project declarations ``tree`` imports to its declarations.
@@ -583,14 +590,9 @@ class ProjectModuleIndex:
                 name, constructor = child.target.id, child.value
             if name is None or name in declarations:
                 continue
-            class_name = (
-                constructor.func.id
-                if isinstance(constructor, ast.Call) and isinstance(constructor.func, ast.Name)
-                else None
-            )
-            target = None if class_name is None else declarations.get(class_name) or imported.get(class_name)
-            if target is not None and target.startswith("py:class:"):
-                declarations[name] = "py:instance:" + target.removeprefix("py:class:")
+            value = assigned_declaration(constructor, declarations, imported)
+            if value is not None:
+                declarations[name] = value
 
     def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> None:
         """Make a scanned file's own declarations come from the tree just parsed.
@@ -609,6 +611,7 @@ class ProjectModuleIndex:
         if owner is None or owner.resolve() != absolute:
             return
         declarations = top_level_declarations(tree, module)
+        self._protocols |= declared_protocols(tree, module)
         self._cache[module] = declarations
         is_package = PurePosixPath(relative).stem == "__init__"
         self._add_reexports(tree, module, is_package, declarations)
@@ -842,6 +845,47 @@ def module_statements(tree: ast.Module) -> Iterator[ast.stmt]:
             handled = [item for handler in child.handlers for item in handler.body]
             nested = [*child.body, *handled, *child.orelse, *child.finalbody]
         pending.extend(reversed(nested))
+
+
+def assigned_declaration(value: ast.AST | None, declarations: dict[str, str], imported: dict[str, str]) -> str | None:
+    """What a module-level name assigned ``value`` stands for, if a class is involved.
+
+    ``repo = Repo()`` is an instance of ``Repo``; ``RepoDep = Annotated[Repo,
+    Depends(get_repo)]`` names ``Repo`` itself, the class a parameter typed by
+    the alias holds.
+    """
+    annotated = annotated_class_name(value)
+    if annotated is not None:
+        target = declarations.get(annotated) or imported.get(annotated)
+        return target if target is not None and target.startswith("py:class:") else None
+    class_name = value.func.id if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) else None
+    target = None if class_name is None else declarations.get(class_name) or imported.get(class_name)
+    if target is not None and target.startswith("py:class:"):
+        return "py:instance:" + target.removeprefix("py:class:")
+    return None
+
+
+def annotated_class_name(value: ast.AST | None) -> str | None:
+    """The class name ``Annotated[Name, ...]`` wraps, or None for anything else."""
+    if not isinstance(value, ast.Subscript) or (dotted(value.value) or "").split(".")[-1] != "Annotated":
+        return None
+    first = value.slice.elts[0] if isinstance(value.slice, ast.Tuple) and value.slice.elts else value.slice
+    return first.id if isinstance(first, ast.Name) else None
+
+
+def is_protocol_base(base: ast.expr) -> bool:
+    """Whether a class base is ``Protocol``, generic (``Protocol[T]``) or not."""
+    named = base.value if isinstance(base, ast.Subscript) else base
+    return (dotted(named) or "").split(".")[-1] == "Protocol"
+
+
+def declared_protocols(tree: ast.Module, module: str) -> set[str]:
+    """The structural protocols ``tree`` declares at module level."""
+    return {
+        f"{module}.{child.name}"
+        for child in module_statements(tree)
+        if isinstance(child, ast.ClassDef) and any(is_protocol_base(base) for base in child.bases)
+    }
 
 
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
@@ -1437,6 +1481,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.bound_names: list[frozenset[str]] = []
         # Member names called on a receiver no type was inferred for.
         self.untyped_calls: set[str] = set()
+        # Structural protocols this file declares: a call through one may
+        # reach any class with the member, declared or not.
+        self.protocols: set[str] = set()
+        self.serves_app = False
         self.module_id = ref("module", self.module)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
@@ -1470,7 +1518,11 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 "the package (__init__.py) owns it.",
                 self.tree,
             )
+        # Known before any call is visited: a call may precede the class.
+        self.protocols |= declared_protocols(self.tree, self.module)
         self.visit(self.tree)
+        if self.serves_app:
+            self.facts.nodes[self.module_id]["attributes"]["executable"] = True
         if self.untyped_calls:
             # A method by one of these names may be what such a call reaches,
             # so the core reports it as only possibly dead.
@@ -1479,6 +1531,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
     def current(self) -> str:
         return self.containers[-1][0] if self.containers else self.module_id
+
+    def is_protocol(self, owner: str) -> bool:
+        """Whether ``owner`` is a structural protocol, declared here or imported."""
+        return owner in self.protocols or self.index.is_protocol(owner)
 
     def resolve_name(self, name: str, hint: str = "class") -> str | None:
         if "." not in name:
@@ -1560,6 +1616,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             target = self.resolve_name(name, "class") if name else None
             if target:
                 self.facts.add_edge("extends", local_id, target, base)
+        if any(is_protocol_base(base) for base in node.bases):
+            self.protocols.add(canonical)
         self.class_methods[canonical] = frozenset(
             item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         )
@@ -1601,7 +1659,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.fastapi.enrich_function(node, local_id, canonical, fastapi_routes)
         self.flask.enrich_function(node, local_id, canonical, flask_routes)
         self.containers.append((local_id, canonical, kind))
-        self.local_function_scopes.append(self.local_function_declarations(node, canonical))
+        self.local_function_scopes.append(self.local_function_declarations(node, canonical, self.module))
         self.local_variable_types.append({})
         self.parameter_types.append(self.annotated_parameters(node))
         self.bound_names.append(bound_names(node))
@@ -1648,7 +1706,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
     @staticmethod
     def local_function_declarations(
-        node: ast.FunctionDef | ast.AsyncFunctionDef, parent_canonical: str
+        node: ast.FunctionDef | ast.AsyncFunctionDef, parent_canonical: str, module: str
     ) -> dict[str, str]:
         declarations: dict[str, str] = {}
         pending: list[ast.AST] = list(reversed(node.body))
@@ -1658,7 +1716,11 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 canonical = f"{parent_canonical}.<locals>.{child.name}"
                 declarations[child.name] = ref("function", canonical)
                 continue
-            if isinstance(child, (ast.ClassDef, ast.Lambda)):
+            if isinstance(child, ast.ClassDef):
+                # A class defined in a function is named at module level.
+                declarations[child.name] = ref("class", f"{module}.{child.name}")
+                continue
+            if isinstance(child, ast.Lambda):
                 continue
             pending.extend(reversed(list(ast.iter_child_nodes(child))))
         return declarations
@@ -1698,7 +1760,32 @@ class PythonAstFactCollector(ast.NodeVisitor):
             if target is not None and target != self.current():
                 self.facts.add_edge("references", self.current(), target, item)
 
+    SERVED_APPS = (
+        "fastapi.FastAPI",
+        "flask.Flask",
+        "starlette.applications.Starlette",
+        "quart.Quart",
+        "litestar.Litestar",
+        "django.core.wsgi.get_wsgi_application",
+        "django.core.asgi.get_asgi_application",
+    )
+
+    def note_served_app(self, value: ast.AST | None) -> None:
+        """Mark the module executable when it builds an app a server serves.
+
+        ``app = FastAPI()`` at module level is what ``uvicorn main:app`` or a
+        WSGI server loads by name; nothing imports the module for it.
+        """
+        if self.containers or not isinstance(value, ast.Call):
+            return
+        called = dotted(value.func) or ""
+        resolved = self.aliases.get(called) or self.resolve_name(called, "class") or ""
+        # `py:<kind>:<name>`: the name alone, whichever kind the import resolved to.
+        if resolved.split(":", 2)[-1] in self.SERVED_APPS:
+            self.serves_app = True
+
     def visit_Assign(self, node: ast.Assign) -> None:
+        self.note_served_app(node.value)
         self.emit_value_references(node.value)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             variable = node.targets[0].id
@@ -1713,6 +1800,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.note_served_app(node.value)
         self.emit_value_references(node.value)
         attribute = self.self_attribute(node.target)
         if attribute is not None:
@@ -1924,6 +2012,12 @@ class PythonAstFactCollector(ast.NodeVisitor):
             # `getattr(editor, "narrowed")` looks a member up by name on a
             # receiver the call leaves untyped.
             self.untyped_calls.add(node.args[1].value)
+        if (
+            target
+            and target.startswith("py:method:")
+            and self.is_protocol(target.removeprefix("py:method:").split("::")[0])
+        ):
+            self.untyped_calls.add(target.rsplit("::", 1)[1])
         # Calling an instance (`repo()`) names no declaration of its own.
         if target and not target.startswith("py:instance:"):
             self.facts.add_edge("calls", self.current(), target, node)

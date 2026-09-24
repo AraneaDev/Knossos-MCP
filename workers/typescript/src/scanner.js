@@ -925,6 +925,8 @@ class TypeScriptLanguageFactCollector {
         if (ts.isCallExpression(node)) this.callExpression(node);
         if (ts.isTypeReferenceNode(node)) this.typeReference(node);
         if (ts.isIdentifier(node)) this.valueReference(node);
+        if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent))
+            this.destructuredMember(node);
     }
 
     leave(pushed) {
@@ -1283,16 +1285,8 @@ class TypeScriptLanguageFactCollector {
                     : node.expression.name.text,
             );
         }
-        const target =
-            this.bindingCallee(node) ??
-            this.symbolReference(
-                signature?.declaration?.symbol,
-                callableKind(signature?.declaration),
-                true,
-            );
         const source = this.currentSource();
-        if (source !== null && target !== null)
-            this.addEdge("calls", source, target, node);
+        const target = this.callEdge(node, signature, source);
 
         const calledName = callName(node.expression);
         if (source !== null && calledName?.startsWith("use") && target !== null)
@@ -1706,6 +1700,23 @@ class TypeScriptLanguageFactCollector {
     valueReference(node) {
         if (this.enumMemberRead(node)) return;
         if (!valueReferencePosition(node)) return;
+        const exported =
+            ts.isPropertyAccessExpression(node.parent) &&
+            node.parent.name === node
+                ? this.requiredExport(node.parent)
+                : null;
+        if (exported !== null) {
+            const source = this.currentSource();
+            if (source !== null && source !== exported.target)
+                this.addEdge(
+                    "references",
+                    source,
+                    exported.target,
+                    node,
+                    exported.speculative ? { speculative: true } : {},
+                );
+            return;
+        }
 
         // A shorthand `{ discover }` names the object's property; the value it
         // copies is the function, which only this lookup returns.
@@ -1728,6 +1739,137 @@ class TypeScriptLanguageFactCollector {
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
+    }
+
+    /**
+     * Emit the `calls` edge a call makes and return its target: the resolved
+     * declaration, or a loaded module's export read behind an inline type,
+     * which is speculative when the module is outside the program.
+     */
+    callEdge(node, signature, source) {
+        const required =
+            ts.isPropertyAccessExpression(node.expression) &&
+            signature?.declaration === undefined
+                ? this.requiredExport(node.expression)
+                : null;
+        const target =
+            this.callTarget(node, signature) ?? required?.target ?? null;
+        if (source !== null && target !== null)
+            this.addEdge(
+                "calls",
+                source,
+                target,
+                node,
+                required?.speculative ? { speculative: true } : {},
+            );
+        return target;
+    }
+
+    /**
+     * The declaration a call reaches: a local binding's function, the
+     * signature the checker resolved, or a loaded module's export read
+     * behind an inline type.
+     */
+    callTarget(node, signature) {
+        return (
+            this.bindingCallee(node) ??
+            this.symbolReference(
+                signature?.declaration?.symbol,
+                callableKind(signature?.declaration),
+                true,
+            )
+        );
+    }
+
+    /**
+     * `const { getSpiderResponse: fn } = await import('./service')`: a name
+     * taken out of an object is the declaration the object's property is, so
+     * a module's export destructured from a loaded module is referenced.
+     */
+    destructuredMember(element) {
+        const key = element.propertyName ?? element.name;
+        const name =
+            ts.isIdentifier(key) || ts.isStringLiteral(key) ? key.text : null;
+        if (name === null) return;
+        const property = this.checker
+            .getTypeAtLocation(element.parent)
+            .getProperty(name);
+        const symbol = unalias(this.checker, property);
+        const declaration = symbol?.declarations?.find((item) =>
+            referenceableDeclaration(item),
+        );
+        if (!declaration) return;
+        const target = this.symbolReference(
+            symbol,
+            callableKind(declaration),
+            true,
+        );
+        const source = this.currentSource();
+        if (source !== null && target !== null && source !== target)
+            this.addEdge("references", source, target, element);
+    }
+
+    /**
+     * The export a member read names when its object is a module loaded by
+     * `require('./x')` behind an inline type (`as { handle: ... }`) that
+     * hides the module's own: `service.handle` is the module's `handle`. For
+     * a module the program leaves out, the reference is speculative.
+     */
+    requiredExport(access) {
+        if (!ts.isIdentifier(access.expression)) return null;
+        const binding = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(access.expression),
+        )?.valueDeclaration;
+        const call =
+            binding !== undefined &&
+            ts.isVariableDeclaration(binding) &&
+            binding.initializer !== undefined
+                ? unwrapExpression(binding.initializer)
+                : undefined;
+        if (
+            call === undefined ||
+            !ts.isCallExpression(call) ||
+            !ts.isIdentifier(call.expression) ||
+            call.expression.text !== "require" ||
+            call.arguments.length !== 1 ||
+            !ts.isStringLiteralLike(call.arguments[0])
+        )
+            return null;
+        const file =
+            unalias(
+                this.checker,
+                this.checker.getSymbolAtLocation(call.arguments[0]),
+            )?.declarations?.find((item) => ts.isSourceFile(item)) ??
+            this.requiredSourceFile(call.arguments[0]);
+        if (file === undefined) return null;
+        if (!ts.isSourceFile(file)) {
+            // A file the program leaves out: its exports are unknown, so the
+            // function the name would be is named, and kept only if it exists.
+            const relative = relativeInside(this.root, file.fileName);
+            return relative === null
+                ? null
+                : {
+                      target: reference(
+                          "function",
+                          `${relative}#${access.name.text}`,
+                      ),
+                      speculative: true,
+                  };
+        }
+        const symbol = unalias(
+            this.checker,
+            this.checker
+                .getSymbolAtLocation(file)
+                ?.exports?.get(access.name.text),
+        );
+        const declaration = symbol?.declarations?.find((item) =>
+            referenceableDeclaration(item),
+        );
+        const target = declaration
+            ? this.symbolReference(symbol, callableKind(declaration), true)
+            : null;
+        return target === null ? null : { target, speculative: false };
     }
 
     /**
@@ -3589,10 +3731,15 @@ function declarationName(node, sourceFile) {
 // no more code than a `.d.ts` is. The block itself counts as inside.
 function insideAmbientDeclaration(node) {
     for (let current = node; current; current = current.parent) {
+        // `declare global`, `declare module 'x'`, and `declare namespace L`,
+        // which describes a library a script tag loads.
         if (
             ts.isModuleDeclaration(current) &&
             ((current.flags & ts.NodeFlags.GlobalAugmentation) !== 0 ||
-                ts.isStringLiteral(current.name))
+                ts.isStringLiteral(current.name) ||
+                (ts.getCombinedModifierFlags(current) &
+                    ts.ModifierFlags.Ambient) !==
+                    0)
         )
             return true;
     }
@@ -3779,6 +3926,23 @@ function ambientAttributes(node, attributes) {
         : attributes;
 }
 
+/** `handler = run;`: assigned to a variable or field declared elsewhere. */
+function isAssignedValue(parent, node) {
+    return (
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        parent.right === node
+    );
+}
+
+/** `return handler;` and `() => handler`. */
+function isReturnedValue(parent, node) {
+    return (
+        (ts.isReturnStatement(parent) && parent.expression === node) ||
+        (ts.isArrowFunction(parent) && parent.body === node)
+    );
+}
+
 /** An identifier that is the whole of a statement or of a parenthesised expression. */
 function isBareValue(parent, node) {
     return (
@@ -3867,16 +4031,15 @@ function valueReferencePosition(node) {
         parent.initializer === node
     )
         return true;
-    if (isChoiceOperand(parent, node)) return true;
+    if (isChoiceOperand(parent, node) || isAssignedValue(parent, node))
+        return true;
     // `handler;` and `(handler)`: how a component's tags and event handlers
     // reach the checker (see component-source.js), and a value use anywhere.
     if (isBareValue(parent, node)) return true;
     // `<Button onClick={addItem}>` and `{renderRow}`: a function handed to
     // React inside JSX, as a prop or a child.
     if (ts.isJsxExpression(parent) && parent.expression === node) return true;
-    // `return handler;` and `() => handler`
-    if (ts.isReturnStatement(parent) && parent.expression === node) return true;
-    if (ts.isArrowFunction(parent) && parent.body === node) return true;
+    if (isReturnedValue(parent, node)) return true;
     // `<Panel />` and `<Panel>…</Panel>` — a component rendered as a JSX
     // element. Only the tag name, and only on the opening form: the closing tag
     // names the same declaration and would resolve a second symbol for an edge

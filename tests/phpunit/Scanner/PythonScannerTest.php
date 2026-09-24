@@ -1719,4 +1719,193 @@ PYTHON);
         self::assertNotContains('py:function:app.service.shadowed -> py:method:app.repo.Repo::rows', $references);
         self::assertSame(['narrowed', 'save'], $untyped);
     }
+
+    #[Group('python-scanner')]
+    public function testALocalClassAndAProtocolMemberAreReached(): void
+    {
+        // A class defined inside a function is instantiated there; and a call
+        // through a structural `Protocol` may reach any class with the member.
+        $root = sys_get_temp_dir() . '/knossos-py-local-class-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/contracts.py' => "from typing import Protocol\n\nclass Sink(Protocol):\n    def flush(self) -> None: ...\n",
+            'app/endpoints.py' => implode("\n", [
+                'from __future__ import annotations',
+                '',
+                'from typing import Generic, Protocol, TypeVar',
+                '',
+                'from app.contracts import Sink',
+                '',
+                'T = TypeVar("T")',
+                '',
+                '# Used before the protocol is declared, a generic one at that.',
+                'def use(worker: Worker) -> None:',
+                '    worker.run()',
+                '',
+                'class Worker(Protocol[T]):',
+                '    def run(self) -> None: ...',
+                '',
+                '# A protocol another module declares.',
+                'def drain(sink: Sink) -> None:',
+                '    sink.flush()',
+                '',
+                'def create(flag):',
+                '    if flag:',
+                '        class Message:',
+                '            pass',
+                '',
+                '        def root():',
+                '            return Message()',
+                '',
+                '        return root',
+                '    return None',
+                '',
+                'class Stream(Protocol):',
+                '    def read_some(self) -> bytes: ...',
+                '',
+                'class Tail:',
+                '    def read_some(self) -> bytes:',
+                '        return b""',
+                '',
+                'class Batcher:',
+                '    def __init__(self, stream: Stream) -> None:',
+                '        self._stream = stream',
+                '',
+                '    def next_batch(self) -> bytes:',
+                '        return self._stream.read_some()',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/endpoints.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $calls = [];
+        $untyped = null;
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $untyped = $node->attributes['unresolved_member_calls'] ?? null;
+                }
+            }
+        }
+
+        self::assertContains('py:function:app.endpoints.create.<locals>.root -> py:class:app.endpoints.Message', $calls);
+        self::assertSame(['flush', 'read_some', 'run'], $untyped);
+    }
+
+    #[Group('python-scanner')]
+    public function testAModuleThatBuildsAServedAppIsExecutable(): void
+    {
+        // `app = FastAPI()` is what `uvicorn main:app` serves; nothing imports
+        // the module. A router is mounted by an app, not served.
+        $root = sys_get_temp_dir() . '/knossos-py-served-app-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/main.py' => "from fastapi import FastAPI\n\napp = FastAPI(title='x')\n",
+            'app/wsgi.py' => "import flask\n\napplication: flask.Flask = flask.Flask(__name__)\n",
+            'app/routes.py' => "from fastapi import APIRouter\n\nrouter = APIRouter()\n",
+            // A class that only shares the name is not the framework's app.
+            'app/lookalike.py' => "from myfastapi import FastAPI\n\napp = FastAPI()\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/lookalike.py', 'app/main.py', 'app/routes.py', 'app/wsgi.py']]), false);
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $executable = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $executable[$node->canonicalName] = $node->attributes['executable'] ?? null;
+                }
+            }
+        }
+        ksort($executable);
+
+        self::assertSame(['app.lookalike' => false, 'app.main' => true, 'app.routes' => false, 'app.wsgi' => true], $executable);
+    }
+
+    #[Group('python-scanner')]
+    public function testAParameterTypedByAnAnnotatedAliasCallsItsClass(): void
+    {
+        // `RepoDep = Annotated[Repo, Depends(get_repo)]` is how FastAPI names
+        // an injected dependency; a parameter typed by it holds a `Repo`.
+        $root = sys_get_temp_dir() . '/knossos-py-annotated-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/repo.py' => "class Repo:\n    def count(self):\n        return 1\n",
+            'app/deps.py' => implode("\n", [
+                'from typing import Annotated',
+                '',
+                'from fastapi import Depends',
+                '',
+                'from app.repo import Repo',
+                '',
+                'def get_repo():',
+                '    return Repo()',
+                '',
+                'RepoDep = Annotated[Repo, Depends(get_repo)]',
+                '',
+            ]),
+            'app/router.py' => "from app.deps import RepoDep\n\ndef handler(repo: RepoDep):\n    return repo.count()\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/router.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $calls = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+        }
+
+        self::assertContains('py:function:app.router.handler -> py:method:app.repo.Repo::count', $calls);
+    }
 }

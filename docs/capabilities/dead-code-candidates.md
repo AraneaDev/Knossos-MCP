@@ -145,6 +145,12 @@ This is the mirror of `excluded_inherited_methods`, which drops the override on
 the grounds that the ancestor carries the contract. Together they report a
 hierarchy once, through whichever end is genuinely unreachable.
 
+The override may also be inherited rather than written: a trait's method, or a base class's,
+fulfils an interface that the using or extending class declares without redeclaring the
+method. A call through the interface reaches that method, so it counts under
+`excluded_inherited_methods` too, as long as some subtype that does not override it has an
+internal ancestor, outside the method's own hierarchy, declaring a member of that name.
+
 ### Why manifest entry points are excluded
 
 `npm run build` invokes `scripts/build.mjs` by name, and Composer invokes
@@ -153,7 +159,8 @@ carry an in-degree of zero however central they are. Five of the eight
 candidates on that same 111-file scan were scripts of this kind.
 
 Discovery reads each `package.json` and `composer.json` for the paths it names
-as `bin`, `main`/`module`, and `scripts`, and each Azure Functions
+as `bin`, `main`/`module`, and `scripts` (and, for a package depending on
+`react-scripts`, the `src/index` Create React App builds from), and each Azure Functions
 `function.json` for its `scriptFile`, anchored to the manifest's own directory
 so a monorepo package resolves correctly. Script values are shell
 commands, so they are tokenised and only tokens shaped like a source file are
@@ -181,7 +188,10 @@ as text rather than parsed. Both are loose on purpose and safe for the same
 reason the Composer script tokenising is: a token that names no file any
 scanner emitted matches nothing. A tool config is the exception and is read
 key by key, because it names files to exclude as well as files to load, and an
-excluded path is exactly the kind that turns out to be dead.
+excluded path is exactly the kind that turns out to be dead. Its keys include Vite's
+`ssr`, Cypress's `pluginsFile` and `supportFile` (and their defaults, from `cypress.json`),
+and TypeORM's `migrations`, `entities` and `subscribers`, whose globs are matched against the
+discovered files; `webpack.mix.js` names its entries as `mix.js('resources/js/app.js', ...)`.
 
 `function.json` earns its place for a second reason. A handler directory
 holding both `index.js` and a stale `index.ts` resolves the wrong way: asked

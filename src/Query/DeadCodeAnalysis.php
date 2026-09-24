@@ -310,13 +310,15 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * Member names declared by the internal types that implement or extend
-     * each of `$typeIds`.
+     * Member names the internal types that implement or extend each of
+     * `$typeIds` carry: those they declare, and those they inherit from the
+     * classes they extend or the traits they use, stopping at the type itself.
      *
      * Only direct subtypes are read. A grandchild that redeclares a member its
      * own parent already declares is reached through that parent, so one level
      * answers the question this asks: does some implementation carry this
-     * contract?
+     * contract? Each subtype's bases are walked, because an implementer may
+     * take the method from the class it extends.
      *
      * @param list<string> $typeIds
      * @return array<string, array<string, true>> type id => member display names
@@ -341,7 +343,28 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
 
         $memberNames = [];
         $subtypeIds = array_values(array_unique(array_merge(...array_values($subtypesOf))));
-        foreach (array_chunk($subtypeIds, 500) as $chunk) {
+        // A subtype carries what it inherits as well as what it declares: an
+        // implementer may take the method from the class it extends.
+        $basesOf = [];
+        $frontier = $subtypeIds;
+        for ($depth = 0; $depth < 10 && $frontier !== []; ++$depth) {
+            $found = [];
+            foreach (array_chunk($frontier, 500) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $statement = $this->pdo->prepare(
+                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') " .
+                    sprintf('AND source_id IN (%s)', $placeholders),
+                );
+                $statement->execute([$projectId, ...$chunk]);
+                foreach ($statement->fetchAll() as $row) {
+                    $basesOf[(string) $row['source_id']][] = (string) $row['target_id'];
+                    $found[] = (string) $row['target_id'];
+                }
+            }
+            $frontier = array_values(array_diff(array_unique($found), array_keys($basesOf), $subtypeIds));
+        }
+        $declaringIds = array_values(array_unique([...$subtypeIds, ...array_merge(...array_values($basesOf) ?: [[]])]));
+        foreach (array_chunk($declaringIds, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
             $statement = $this->pdo->prepare(
                 'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
@@ -357,8 +380,20 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $result = [];
         foreach ($subtypesOf as $typeId => $subtypes) {
             foreach ($subtypes as $subtypeId) {
-                foreach ($memberNames[$subtypeId] ?? [] as $name => $_) {
-                    $result[$typeId][$name] = true;
+                // The walk stops at the contract type: its own members, and
+                // what it inherits, are not what the subtype implements it with.
+                $seen = [$typeId => true];
+                $stack = [$subtypeId];
+                while ($stack !== []) {
+                    $id = array_pop($stack);
+                    if (isset($seen[$id])) {
+                        continue;
+                    }
+                    $seen[$id] = true;
+                    foreach ($memberNames[$id] ?? [] as $name => $_) {
+                        $result[$typeId][$name] = true;
+                    }
+                    array_push($stack, ...($basesOf[$id] ?? []));
                 }
             }
         }
@@ -413,7 +448,10 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         // not just one overriding a direct parent's.
         $parents = [];
         $edgesResolved = [];
-        $frontier = array_values(array_unique(array_values($classOfMethod)));
+        // The subtypes that inherit each class's members, whose own contracts
+        // those members may fulfil: walked for their ancestors too.
+        $subtypesOf = $this->inheritingSubtypes($projectId, array_values(array_unique(array_values($classOfMethod))));
+        $frontier = array_values(array_unique([...array_values($classOfMethod), ...array_merge(...array_values($subtypesOf) ?: [[]])]));
         $maxAncestorDepth = 20;
         for ($depth = 0; $depth < $maxAncestorDepth && $frontier !== []; $depth++) {
             $pending = array_values(array_filter($frontier, static fn(string $id): bool => !isset($edgesResolved[$id])));
@@ -466,7 +504,9 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                 && !in_array($ancestorMeta[$id]['origin'], ['external', 'unresolved'], true),
         ));
         $memberNames = [];
-        foreach (array_chunk($internalAncestors, 500) as $chunk) {
+        $internalSet = array_flip($internalAncestors);
+        $declaring = array_values(array_unique([...$internalAncestors, ...array_merge(...array_values($subtypesOf) ?: [[]])]));
+        foreach (array_chunk($declaring, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
             $statement = $this->pdo->prepare(
                 'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
@@ -527,6 +567,34 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                     break;
                 }
             }
+            // A subtype that does not override this member may fulfil its own
+            // contract with it: a trait's method, or a base class's, satisfying
+            // an interface the using or extending class declares.
+            if (!$inherited && $classId !== null) {
+                $name = $methodNames[$methodId];
+                $chain = array_flip([$classId, ...$ancestors]);
+                $descendants = array_flip($subtypesOf[$classId] ?? []);
+                foreach ($subtypesOf[$classId] ?? [] as $subtypeId) {
+                    if (isset($memberNames[$subtypeId][$name])) {
+                        continue;
+                    }
+                    $subtypeAncestors = $closureOf($subtypeId);
+                    // A descendant between this subtype and the method's type
+                    // that overrides it is what the subtype inherits instead.
+                    foreach ($subtypeAncestors as $ancestorId) {
+                        if (isset($descendants[$ancestorId], $memberNames[$ancestorId][$name])) {
+                            continue 2;
+                        }
+                    }
+                    foreach ($subtypeAncestors as $ancestorId) {
+                        if (!isset($chain[$ancestorId]) && !isset($descendants[$ancestorId])
+                            && isset($internalSet[$ancestorId], $memberNames[$ancestorId][$name])) {
+                            $inherited = true;
+                            break 2;
+                        }
+                    }
+                }
+            }
             $result[$methodId] = [
                 'inherited' => $inherited,
                 'implemented' => $classId !== null
@@ -542,6 +610,53 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
                     && $ancestors === [],
             ];
         }
+        return $result;
+    }
+
+    /**
+     * The types that inherit each of `$typeIds`' members, at any depth: a class
+     * extending it, or a class using it as a trait.
+     *
+     * @param list<string> $typeIds
+     * @return array<string, list<string>> type id => subtype ids
+     */
+    private function inheritingSubtypes(string $projectId, array $typeIds): array
+    {
+        $direct = [];
+        $frontier = $typeIds;
+        for ($depth = 0; $depth < 10 && $frontier !== []; ++$depth) {
+            $found = [];
+            foreach (array_chunk($frontier, 500) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $statement = $this->pdo->prepare(
+                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') " .
+                    sprintf('AND target_id IN (%s)', $placeholders),
+                );
+                $statement->execute([$projectId, ...$chunk]);
+                foreach ($statement->fetchAll() as $row) {
+                    $direct[(string) $row['target_id']][(string) $row['source_id']] = true;
+                    $found[] = (string) $row['source_id'];
+                }
+            }
+            $frontier = array_values(array_diff(array_unique($found), array_keys($direct)));
+        }
+        $result = [];
+        foreach ($typeIds as $typeId) {
+            $seen = [];
+            $stack = array_keys($direct[$typeId] ?? []);
+            while ($stack !== []) {
+                $id = array_pop($stack);
+                if (isset($seen[$id]) || $id === $typeId) {
+                    continue;
+                }
+                $seen[$id] = true;
+                array_push($stack, ...array_keys($direct[$id] ?? []));
+            }
+            if ($seen !== []) {
+                $result[$typeId] = array_keys($seen);
+            }
+        }
+
         return $result;
     }
 
