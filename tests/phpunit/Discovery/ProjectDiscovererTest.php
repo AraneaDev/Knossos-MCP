@@ -1822,6 +1822,151 @@ TOML);
     }
 
     /**
+     * `scripts/manage.sh` runs `cd server && npx tsx src/scripts/reset.ts`:
+     * the script is started by the shell script and imported by nothing, and
+     * its path is relative to the directory the line changed into.
+     */
+    public function testDiscoverReadsEntryPointsFromShellScripts(): void
+    {
+        mkdir($this->root . '/scripts', 0700, true);
+        file_put_contents($this->root . '/scripts/manage.sh', implode("\n", [
+            '#!/usr/bin/env bash',
+            '# node old/unused.js is only mentioned in a comment',
+            'case "$1" in',
+            '  reset) cd server && npx tsx src/scripts/reset.ts "$@" ;;',
+            '  seed) node tools/seed.mjs ;;',
+            // Another branch's `cd` does not reach this one.
+            '  clean) node src/cleanup.ts ;;',
+            '  build)',
+            '    cd web',
+            '    node src/build.mjs',
+            '    ;;',
+            'esac',
+            'node src/after.mjs',
+            '{',
+            '    cd api',
+            '    node src/inner.mjs',
+            '}',
+            'node src/outer.mjs',
+            '',
+        ]));
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'shell'));
+        assertSame(1, count($units));
+        $entryPoints = $units[0]->metadata['entry_points'];
+        self::assertContains('server/src/scripts/reset.ts', $entryPoints);
+        self::assertContains('tools/seed.mjs', $entryPoints);
+        self::assertNotContains('old/unused.js', $entryPoints);
+        self::assertContains('src/cleanup.ts', $entryPoints);
+        self::assertNotContains('server/src/cleanup.ts', $entryPoints);
+        self::assertContains('web/src/build.mjs', $entryPoints);
+        self::assertNotContains('web/src/after.mjs', $entryPoints);
+        // A brace block ends a `cd` inside it.
+        self::assertContains('api/src/inner.mjs', $entryPoints);
+        self::assertNotContains('api/src/outer.mjs', $entryPoints);
+    }
+
+    /**
+     * A published build output stands for the source compiled to it: the
+     * tsconfig's `rootDir` when it declares one, and `src/` only when no
+     * tsconfig lays the build out.
+     */
+    public function testAPublishedBuildOutputStandsForItsDeclaredSourceOnly(): void
+    {
+        mkdir($this->root . '/declared', 0700, true);
+        mkdir($this->root . '/undeclared', 0700, true);
+        file_put_contents($this->root . '/declared/package.json', '{"name":"declared","main":"dist/index.js"}');
+        file_put_contents($this->root . '/declared/tsconfig.json', '{"compilerOptions":{"outDir":"dist","rootDir":"lib"}}');
+        file_put_contents($this->root . '/undeclared/package.json', '{"name":"undeclared","module":"dist/esm.mjs"}');
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $published = [];
+        foreach ($result->units as $unit) {
+            if ($unit->kind === 'node') {
+                $published[$unit->configPath] = $unit->metadata['public_entry_points'] ?? [];
+            }
+        }
+        self::assertContains('declared/lib/index.ts', $published['declared/package.json']);
+        self::assertNotContains('declared/src/index.ts', $published['declared/package.json']);
+        self::assertContains('undeclared/src/esm.ts', $published['undeclared/package.json']);
+    }
+
+    /**
+     * PHPStan loads the rules and extensions `phpstan.neon` names, by class;
+     * nothing in PHP does. A rule class the config does not name is not
+     * loaded, so it stays reportable.
+     */
+    public function testDiscoverReadsTheClassesAPhpstanConfigRegisters(): void
+    {
+        mkdir($this->root . '/app/Support/PHPStan', 0700, true);
+        file_put_contents($this->root . '/composer.json', '{"autoload":{"psr-4":{"App\\\\":"app/"}}}');
+        file_put_contents($this->root . '/phpstan.neon', implode("\n", [
+            'parameters:',
+            '    excludePaths:',
+            '        - app/Legacy/Old.php',
+            '    excludePaths:',
+            '        analyse:',
+            '            - app/Legacy/Older.php',
+            'rules:',
+            '    - App\\Support\\PHPStan\\NoRawHttpRule',
+            'services:',
+            '    -',
+            '        class: App\\Support\\PHPStan\\ReturnTypeExtension',
+            '',
+        ]));
+        foreach (['NoRawHttpRule', 'ReturnTypeExtension', 'UnregisteredRule'] as $class) {
+            file_put_contents($this->root . '/app/Support/PHPStan/' . $class . '.php', "<?php\nnamespace App\\Support\\PHPStan;\nfinal class {$class} {}\n");
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('app/Support/PHPStan/NoRawHttpRule.php', $entryPoints);
+        self::assertContains('app/Support/PHPStan/ReturnTypeExtension.php', $entryPoints);
+        self::assertNotContains('app/Support/PHPStan/UnregisteredRule.php', $entryPoints);
+        // A path PHPStan is told to skip is no path it loads.
+        self::assertNotContains('app/Legacy/Old.php', $entryPoints);
+        self::assertNotContains('app/Legacy/Older.php', $entryPoints);
+    }
+
+    /**
+     * Doctrine loads every migration in the directories `migrations_paths`
+     * names, and nothing imports one. A migration class outside them is not
+     * loaded, so it stays reportable.
+     */
+    public function testDiscoverReadsDoctrineMigrationDirectoriesAsEntryPoints(): void
+    {
+        mkdir($this->root . '/config/packages', 0700, true);
+        mkdir($this->root . '/src/Migrations/Archive', 0700, true);
+        mkdir($this->root . '/src/Legacy', 0700, true);
+        file_put_contents($this->root . '/config/packages/doctrine_migrations.yaml', implode("\n", [
+            'doctrine_migrations:',
+            '    migrations_paths: # where the migrations live',
+            "        'DoctrineMigrations': '%kernel.project_dir%/src/Migrations' # the only path",
+            '',
+        ]));
+        foreach (['src/Migrations/Version1.php', 'src/Migrations/Archive/Version0.php', 'src/Legacy/Version9.php'] as $file) {
+            file_put_contents($this->root . '/' . $file, "<?php\nfinal class V {}\n");
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('src/Migrations/Version1.php', $entryPoints);
+        self::assertContains('src/Migrations/Archive/Version0.php', $entryPoints);
+        self::assertNotContains('src/Legacy/Version9.php', $entryPoints);
+    }
+
+    /**
      * The reason this reader is key-scoped rather than tokenising the whole
      * file the way the YAML one does. A config names files to EXCLUDE as well
      * as files to load, and an excluded path is exactly the kind of file that

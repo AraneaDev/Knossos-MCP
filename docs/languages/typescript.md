@@ -19,6 +19,9 @@ references remain the primary facts; framework roles use
   `calls_endpoint` edges, including a static `fetch` method option.
 - A leading shebang marks the module `executable`, which keeps a script a shell
   runs (and that nothing therefore imports) off the dead-code report.
+- A `.js` or `.cjs` file with no import, export, `require` or `module.exports` is a classic
+  script, loaded by a `<script>` tag or run by Node, and is `executable` too: nothing can
+  import anything from it.
 - A module importing `k6` or `k6/*` is a k6 load-test script: it is `executable`, and its
   default export, `setup`, `teardown`, `handleSummary` and every function a scenario names as
   its `exec` are marked `runtime_invoked`, since k6 calls them and nothing imports them.
@@ -82,6 +85,10 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
 - webpack's `require.context('./dir', recursive, /pattern/)` imports every module in the
   graph it matches. The match happens when the graph is assembled, so an incremental scan
   that re-reads only the loading file keeps every edge.
+- Vite's `import.meta.glob('./Pages/**/*.vue')`, a single pattern or an array, imports every
+  module its patterns match, the same way, reading a relative pattern from a literal `base`
+  option and matching `*`, `**`, `?`, `{a,b}` and `[ab]`. A negated pattern (`'!./x.vue'`) is ignored, so it
+  can keep a module it excludes live but never drops one.
 - SvelteKit route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`) and Astro pages
   (`src/pages/**/*.astro`) are entry points.
 - A component that cannot be delimited, or whose script is `lang="tsx"` or `lang="jsx"`, keeps

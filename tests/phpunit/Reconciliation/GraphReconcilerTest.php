@@ -1907,6 +1907,58 @@ final class GraphReconcilerTest extends TestCase
     }
 
     /**
+     * A speculative call is a guess at the receiver's type. When the guess
+     * names no member, the call still reached some method of that name, as a
+     * call on a receiver no scanner could type does: its name is recorded as
+     * one, so a method by that name is only possibly dead.
+     */
+    #[Group('reconciliation')]
+    public function testAnUnconfirmedSpeculativeCallCountsAsACallOnAnUntypedReceiver(): void
+    {
+        $caller = $this->minimalNode('rust:function:crate::go', 'crate::go');
+        $declared = $this->minimalNode('rust:method:crate::Policy::evaluate', 'crate::Policy::evaluate');
+        $edges = [];
+        // A guessed free function names no member a receiver could hold.
+        foreach (['rust:method:crate::Policy::evaluate', 'rust:method:crate::Wrong::key_up', 'rust:method_of_return:crate::make::render', 'rust:function:crate::gone'] as $index => $target) {
+            $edges[] = new EdgeFact(
+                kind: 'calls',
+                sourceReference: $caller->localId,
+                targetReference: $target,
+                origin: Origin::Ast,
+                confidence: Confidence::Probable,
+                evidence: new Evidence('src/Foo.php', $index + 1, $index + 1),
+                attributes: ['speculative' => true],
+            );
+        }
+        // A member read as a value may be a data attribute rather than a
+        // method, so a read that did not pay off says nothing about calls.
+        $edges[] = new EdgeFact(
+            kind: 'references',
+            sourceReference: $caller->localId,
+            targetReference: 'rust:method:crate::Wrong::label',
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 5, 5),
+            attributes: ['speculative' => true],
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller, $declared], $edges)],
+        ]);
+
+        (new GraphReconciler($this->repo))->reconcile($request);
+
+        $attributes = [];
+        foreach ($this->repo->nodes as $args) {
+            $attributes[$args[4]] = $args[12];
+        }
+        // The confirmed call is an edge and names nothing; the two guesses that
+        // did not pay off name the members they called.
+        assertSame(['key_up', 'render'], $attributes['crate::go']['unresolved_member_calls'] ?? null);
+        assertSame(false, isset($attributes['crate::Policy::evaluate']['unresolved_member_calls']));
+    }
+
+    /**
      * A deferred receiver reference is a shape a third-party scanner can emit,
      * so a malformed one must be ignored rather than resolved into something
      * arbitrary or fabricated as an external symbol.
@@ -1916,7 +1968,7 @@ final class GraphReconcilerTest extends TestCase
     {
         $source = $this->minimalNode('php:class:Fixture\\Caller', 'Fixture\\Caller');
         $edges = [];
-        foreach (['php:method_of_return:NoMemberSeparator', 'php:method_of_return:::member', 'php:method_of_return:Fixture\\Absent::make::use'] as $index => $reference) {
+        foreach (['php:method_of_return:NoMemberSeparator', 'php:method_of_return:::member', 'php:method_of_return:Fixture\\Absent::make::', 'php:method_of_return:Fixture\\Absent::make::use'] as $index => $reference) {
             $edges[] = new EdgeFact(
                 kind: 'calls',
                 sourceReference: $source->localId,
@@ -1933,11 +1985,18 @@ final class GraphReconcilerTest extends TestCase
 
         $result = (new GraphReconciler($this->repo))->reconcile($request);
 
-        // The declaring node survives; none of the three references produce an
+        // The declaring node survives; none of the four references produce an
         // edge, and no external symbol is invented for any of them.
         assertSame(1, $result->nodes);
         assertSame(0, $result->edges);
         assertSame(0, $result->unresolvedNodes);
+        // A call on an unresolved factory's result names its member; a
+        // reference with no owner or no member names nothing a call reached.
+        $attributes = [];
+        foreach ($this->repo->nodes as $args) {
+            $attributes[$args[4]] = $args[12];
+        }
+        assertSame(['use'], $attributes['Fixture\\Caller']['unresolved_member_calls'] ?? null);
     }
 
     /**

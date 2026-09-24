@@ -180,6 +180,69 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * A Doctrine annotation names its class through the file's imports:
+     * `@AdminEmail` is `use Fixture\\Validator\\AdminEmail`, and nothing else in
+     * the file refers to it. A Symfony constraint is validated by the class
+     * its name plus `Validator` names, which only the validator library says.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerReferencesAnnotationClassesAndAConstraintsValidator(): void
+    {
+        $root = self::repositoryRoot() . '/tests/Fixtures/php-scanner';
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => $root,
+            'files' => ['src/AnnotatedEntity.php', 'src/AdminEmail.php', 'src/Picky.php'],
+        ]), false);
+        $client->shutdown();
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = [$edge->sourceReference, $edge->targetReference, ($edge->attributes['speculative'] ?? false) === true];
+                }
+            }
+        }
+        sort($references);
+
+        assertSame([
+            ['php:class:Fixture\\Entity\\AnnotatedEntity', 'php:class:Fixture\\Validator\\AdminEmail', false],
+            ['php:class:Fixture\\Entity\\AnnotatedEntity', 'php:class:Fixture\\Validator\\CustomerType', false],
+            // Kept only if the validator exists.
+            ['php:class:Fixture\\Validator\\AdminEmail', 'php:class:Fixture\\Validator\\AdminEmailValidator', true],
+            // Its own `validatedBy()` names the validator, so no default is inferred.
+            ['php:method:Fixture\\Validator\\Picky::validatedBy', 'php:class:Fixture\\Validator\\SharedValidator', false],
+        ], $references);
+    }
+
+    /**
+     * A file may declare several namespaces, each importing a different class
+     * under one alias; an annotation resolves through its own namespace's.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerResolvesAnAnnotationThroughItsOwnNamespacesImports(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/TwoNamespaces.php'],
+        ]), false);
+        $client->shutdown();
+        $references = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'references') {
+                $references[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+            }
+        }
+        sort($references);
+
+        assertSame([
+            'php:class:Fixture\\First\\Contact -> php:class:Fixture\\Rules\\Email',
+            'php:class:Fixture\\Second\\Caller -> php:class:Fixture\\Rules\\Phone',
+        ], $references);
+    }
+
+    /**
      * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
      * produced no call edge at all — on either a variable or a property
      * receiver — however precisely the receiver was typed.
@@ -339,6 +402,71 @@ final class PhpScannerTest extends KnossosTestCase
         assertArrayContains('LARAVEL_DYNAMIC_ROUTE', $diagCodes);
 
         $client->shutdown();
+    }
+
+    /**
+     * `Route::apiResource('users', UserController::class)` registers five
+     * actions by convention, and none of them is named anywhere in the code.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerExpandsLaravelResourceRoutesToTheirActions(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/laravel-resource',
+            'files' => ['routes/api.php'],
+            'frameworks' => ['laravel'],
+        ]));
+        $client->shutdown();
+        $routes = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'routes_to') {
+                $routes[] = substr($edge->sourceReference, strlen('php:route:'));
+            }
+        }
+        sort($routes);
+
+        assertSame([
+            'DELETE /v1/users/{user} => App\\Http\\Controllers\\UserController::destroy',
+            'GET /v1/photo-tags => App\\Http\\Controllers\\PhotoController::index',
+            'GET /v1/photo-tags/{photo_tag} => App\\Http\\Controllers\\PhotoController::show',
+            'GET /v1/photos => App\\Http\\Controllers\\PhotoController::index',
+            'GET /v1/photos/{photo} => App\\Http\\Controllers\\PhotoController::show',
+            'GET /v1/photos/{photo}/edit => App\\Http\\Controllers\\PhotoController::edit',
+            'GET /v1/users => App\\Http\\Controllers\\UserController::index',
+            'GET /v1/users/{user} => App\\Http\\Controllers\\UserController::show',
+            'POST /v1/photo-tags => App\\Http\\Controllers\\PhotoController::store',
+            'POST /v1/users => App\\Http\\Controllers\\UserController::store',
+            'PUT|PATCH /v1/users/{user} => App\\Http\\Controllers\\UserController::update',
+        ], $routes);
+    }
+
+    /**
+     * An `only` the scanner cannot read keeps every action, and says so; an
+     * `except` it cannot read removes none. A literal empty `only` still
+     * registers nothing.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerKeepsResourceActionsItsModifiersCannotNarrowStatically(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/laravel-resource',
+            'files' => ['routes/dynamic.php'],
+            'frameworks' => ['laravel'],
+        ]));
+        $client->shutdown();
+        $counts = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'routes_to') {
+                $resource = preg_match('# /([^/ ]+)#', $edge->sourceReference, $match) === 1 ? $match[1] : '';
+                $counts[$resource] = ($counts[$resource] ?? 0) + 1;
+            }
+        }
+        ksort($counts);
+
+        assertSame(['labels' => 7, 'tags' => 7], $counts);
+        assertSame(['LARAVEL_DYNAMIC_ROUTE'], array_values(array_unique(array_map(fn($d) => $d->code, $contributions[0]->diagnostics))));
     }
 
     #[Group('php-scanner')]

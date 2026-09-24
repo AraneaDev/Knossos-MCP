@@ -263,6 +263,7 @@ final readonly class ProjectDiscoverer
             [$left->kind, $left->configPath] <=> [$right->kind, $right->configPath]);
         $units = self::withBuildOutputSources($units);
         $units = self::withClassNameEntryPoints($units);
+        $units = self::withMigrationEntryPoints($units, $files);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -351,6 +352,7 @@ final readonly class ProjectDiscoverer
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
                 'class_names' => self::yamlClassNames($contents),
+                'migration_directories' => self::doctrineMigrationDirectories($contents),
             ]);
         }
         if ($kind === 'dockerfile') {
@@ -358,6 +360,11 @@ final readonly class ProjectDiscoverer
             // project root, so a path resolves there as well as beside the file.
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+            ]);
+        }
+        if ($kind === 'shell') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::shellPathEntryPoints($contents, $relative),
             ]);
         }
         if ($kind === 'agent_config') {
@@ -1151,13 +1158,14 @@ final readonly class ProjectDiscoverer
     /**
      * Config keys under which a YAML value names files to EXCLUDE rather than
      * load: `ignore:` in codecov.yml, `exclude:` in a pre-commit config,
-     * `paths-ignore:` in a GitHub Actions workflow trigger. A path appearing
+     * `paths-ignore:` in a GitHub Actions workflow trigger, PHPStan's
+     * `excludePaths:` with its `analyse:` and `analyseAndScan:` lists. A path appearing
      * only under one of these is not read as an entry point — the same
      * reasoning {@see self::CONFIG_REFERENCE_KEYS} applies to a tool's own
      * config module, restated here as a deny-list because YAML's exclusion
      * keys, unlike a tool config's load keys, are not enumerable in advance.
      */
-    private const YAML_EXCLUSION_KEYS = ['exclude', 'ignore', 'paths-ignore', 'skip', 'exclude_paths', 'excludes'];
+    private const YAML_EXCLUSION_KEYS = ['exclude', 'ignore', 'paths-ignore', 'skip', 'exclude_paths', 'excludes', 'excludePaths', 'analyse', 'analyseAndScan'];
 
     /**
      * Every token in a YAML file shaped like a path to a source file.
@@ -1197,11 +1205,13 @@ final readonly class ProjectDiscoverer
      * workflow's `run:` step executes with the repository root as its working
      * directory. Both readings are offered for every token and the one naming
      * no emitted file falls away, which is the same bargain {@see self::webRootReadings()}
-     * strikes with a bundler's asset directories.
+     * strikes with a bundler's asset directories. A caller that knows of other
+     * working directories, as a shell script's `cd` names them, adds them.
      *
+     * @param list<string> $extraAnchors project-relative directories to read a path from as well
      * @return list<string>
      */
-    private static function yamlPathEntryPoints(string $contents, string $configPath): array
+    private static function yamlPathEntryPoints(string $contents, string $configPath, array $extraAnchors = []): array
     {
         $directory = self::manifestDirectory($configPath);
         $extensions = implode('|', array_map(preg_quote(...), self::ENTRY_POINT_EXTENSIONS));
@@ -1211,7 +1221,7 @@ final readonly class ProjectDiscoverer
         }
         $excludedLines = self::yamlExclusionLines($stripped);
         $paths = [];
-        $anchors = array_unique([$directory, '']);
+        $anchors = array_unique([$directory, '', ...$extraAnchors]);
         // One pass over the newlines, so the line lookup below is a search
         // rather than a rescan of the prefix for every matched token.
         $lineStarts = [0];
@@ -1231,6 +1241,63 @@ final readonly class ProjectDiscoverer
         }
 
         return array_keys($paths);
+    }
+
+    /**
+     * The files a shell script names by path, as a YAML file's are read.
+     *
+     * `cd server && npx tsx src/scripts/reset.ts` names a path relative to the
+     * directory the line changed into, and a `cd` on a line of its own moves
+     * the lines after it until its `case` branch or block ends. Each line is
+     * read from the project root, the script's own directory and whatever
+     * `cd` reaches it; a path no file answers to under any of them names
+     * nothing.
+     *
+     * @return list<string>
+     */
+    private static function shellPathEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $paths = [];
+        $current = [];
+        foreach (explode("\n", $contents) as $line) {
+            $line = preg_replace('/(?:^|\s)#.*$/', '', $line) ?? $line;
+            $inline = self::shellCdTargets($line, $directory);
+            $standalone = preg_match('/^\s*cd\s/', $line) === 1 && preg_match('/&&|;|\|/', $line) !== 1;
+            foreach (self::yamlPathEntryPoints($line, $configPath, [...$current, ...$inline]) as $path) {
+                $paths[$path] = true;
+            }
+            if ($standalone) {
+                $current = $inline;
+            } elseif (preg_match('/;;|^\s*(?:(?:esac|fi|done)\b|\})/', $line) === 1) {
+                $current = [];
+            }
+        }
+
+        return array_keys($paths);
+    }
+
+    /**
+     * The project-relative directories the `cd` commands on one line change into.
+     *
+     * @return list<string>
+     */
+    private static function shellCdTargets(string $line, string $directory): array
+    {
+        preg_match_all('#\bcd\s+[\'"]?([A-Za-z0-9_][A-Za-z0-9_./-]*)#', $line, $matches);
+        $anchors = [];
+        foreach ($matches[1] as $target) {
+            $target = rtrim(str_starts_with($target, './') ? substr($target, 2) : $target, '/');
+            if ($target === '' || in_array('..', explode('/', $target), true)) {
+                continue;
+            }
+            $anchors[$target] = true;
+            if ($directory !== '') {
+                $anchors[$directory . '/' . $target] = true;
+            }
+        }
+
+        return array_keys($anchors);
     }
 
     /**
@@ -1498,6 +1565,30 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * The sources a published build output is compiled from, when no tsconfig says.
+     *
+     * `dist/esm.mjs` is not in the scan (the build directory is excluded), and
+     * what its consumers call is `src/esm.ts`, compiled to it the way
+     * `rootDir: src` and `outDir: dist` lay a library out. A bundler builds
+     * many libraries without a tsconfig `outDir`, so this is the fallback
+     * {@see self::withBuildOutputSources()} uses for an entry no declared
+     * layout covers. Each extension the source may have is named; a twin no
+     * file answers to publishes nothing.
+     *
+     * @return list<string>
+     */
+    private static function sourceTwins(string $path, string $directory): array
+    {
+        $inside = $directory === '' ? $path : substr($path, strlen($directory) + 1);
+        if (preg_match('#^(?:dist|build|lib|out)/(.+?)(?:\.d)?\.[cm]?[jt]sx?$#', $inside, $match) !== 1) {
+            return [];
+        }
+        $prefix = ($directory === '' ? '' : $directory . '/') . 'src/' . $match[1];
+
+        return array_map(static fn(string $extension): string => $prefix . $extension, ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
+    }
+
+    /**
      * Whether a package.json lists a package in any of its dependency tables.
      *
      * @param array<string, mixed> $manifest
@@ -1549,6 +1640,83 @@ final readonly class ProjectDiscoverer
         sort($names, SORT_STRING);
 
         return $names;
+    }
+
+    /**
+     * The directories a Doctrine Migrations config loads migrations from.
+     *
+     * `migrations_paths` maps a namespace to a directory, usually under
+     * `%kernel.project_dir%`; Doctrine loads every class there and nothing
+     * imports one. Only a block directly under that key is read, and a
+     * directory outside the project names nothing.
+     *
+     * @return list<string>
+     */
+    private static function doctrineMigrationDirectories(string $contents): array
+    {
+        $directories = [];
+        $indent = null;
+        foreach (explode("\n", $contents) as $line) {
+            // A comment tail is not part of the value.
+            $line = preg_replace('/(?:^|\s)#.*$/', '', $line) ?? $line;
+            if ($indent === null) {
+                if (preg_match('/^(\s*)migrations_paths\s*:\s*$/', $line, $key) === 1) {
+                    $indent = strlen($key[1]);
+                }
+                continue;
+            }
+            if (trim($line) === '') {
+                continue;
+            }
+            if (preg_match('/^(\s*)\S/', $line, $lead) !== 1 || strlen($lead[1]) <= $indent) {
+                $indent = null;
+                continue;
+            }
+            if (preg_match('/:\s*[\'"]?(?:%kernel\.project_dir%\/)?([A-Za-z0-9_.\/-]+?)\/?[\'"]?\s*$/', $line, $value) !== 1) {
+                continue;
+            }
+            $directory = $value[1];
+            if (str_starts_with($directory, './')) {
+                $directory = substr($directory, 2);
+            }
+            if ($directory !== '' && !str_starts_with($directory, '/') && !in_array('..', explode('/', $directory), true)) {
+                $directories[$directory] = true;
+            }
+        }
+
+        return array_keys($directories);
+    }
+
+    /**
+     * Add, to each YAML unit, the PHP files below the migration directories it names.
+     *
+     * @param list<ProjectUnit> $units
+     * @param list<DiscoveredFile> $files
+     * @return list<ProjectUnit>
+     */
+    private static function withMigrationEntryPoints(array $units, array $files): array
+    {
+        return array_map(static function (ProjectUnit $unit) use ($files): ProjectUnit {
+            $directories = $unit->metadata['migration_directories'] ?? [];
+            if ($unit->kind !== 'yaml' || !is_array($directories) || $directories === []) {
+                return $unit;
+            }
+            $paths = array_fill_keys($unit->metadata['entry_points'] ?? [], true);
+            foreach ($files as $file) {
+                foreach ($directories as $directory) {
+                    if (is_string($directory) && str_starts_with($file->relativePath, $directory . '/') && str_ends_with($file->relativePath, '.php')) {
+                        $paths[$file->relativePath] = true;
+                    }
+                }
+            }
+            $paths = array_map(strval(...), array_keys($paths));
+            sort($paths, SORT_STRING);
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, [
+                ...$unit->metadata,
+                'entry_points' => $paths,
+            ]);
+        }, $units);
     }
 
     /**
@@ -1644,23 +1812,54 @@ final readonly class ProjectDiscoverer
                 $rootDir !== null ? [self::joinPath($directory, $rootDir)] : [$directory, self::joinPath($directory, 'src')],
             ];
         }
-        if ($layouts === []) {
-            return $units;
-        }
 
         return array_map(static function (ProjectUnit $unit) use ($layouts): ProjectUnit {
             if ($unit->kind !== 'node') {
                 return $unit;
             }
             $metadata = $unit->metadata;
+            $named = is_array($metadata['public_entry_points'] ?? null) ? $metadata['public_entry_points'] : null;
             foreach (['entry_points', 'public_entry_points'] as $key) {
                 if (is_array($metadata[$key] ?? null) && $metadata[$key] !== []) {
                     $metadata[$key] = self::withSourcesOf($metadata[$key], $layouts);
                 }
             }
+            // A published entry the manifest names and no declared layout
+            // covers: the bundler default.
+            if ($named !== null && is_array($metadata['public_entry_points'] ?? null)) {
+                $directory = self::manifestDirectory($unit->configPath);
+                $published = array_fill_keys($metadata['public_entry_points'], true);
+                foreach ($named as $entryPoint) {
+                    if (!is_string($entryPoint) || self::underLayout($entryPoint, $layouts)) {
+                        continue;
+                    }
+                    foreach (self::sourceTwins($entryPoint, $directory) as $twin) {
+                        $published[$twin] = true;
+                    }
+                }
+                $published = array_map(strval(...), array_keys($published));
+                sort($published, SORT_STRING);
+                $metadata['public_entry_points'] = $published;
+            }
 
             return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, $metadata);
         }, $units);
+    }
+
+    /**
+     * Whether a path lies in the `outDir` of a declared build layout.
+     *
+     * @param list<array{0: string, 1: list<string>}> $layouts
+     */
+    private static function underLayout(string $path, array $layouts): bool
+    {
+        foreach ($layouts as [$outDir]) {
+            if (str_starts_with($path, $outDir . '/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1971,6 +2170,10 @@ final readonly class ProjectDiscoverer
         if ($basename === '.gitignore') {
             return 'gitignore';
         }
+        // A shell script starts the programs it runs, which nothing imports.
+        if (str_ends_with($basename, '.sh') || str_ends_with($basename, '.bash')) {
+            return 'shell';
+        }
         // A container's CMD and ENTRYPOINT start a script nothing imports.
         if ($basename === 'dockerfile' || str_starts_with($basename, 'dockerfile.') || str_ends_with($basename, '.dockerfile')) {
             return 'dockerfile';
@@ -2003,6 +2206,11 @@ final readonly class ProjectDiscoverer
         // and none is needed, for the same reason the Composer script reader
         // tokenises shell commands crudely.
         if (str_ends_with($basename, '.yml') || str_ends_with($basename, '.yaml')) {
+            return 'yaml';
+        }
+        // NEON, PHPStan's config format, is YAML's shape: the rules and
+        // extensions it registers are class names nothing in PHP references.
+        if (str_ends_with($basename, '.neon') || str_ends_with($basename, '.neon.dist')) {
             return 'yaml';
         }
         // A Claude Code plugin runs its hooks and MCP servers from commands in

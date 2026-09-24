@@ -550,6 +550,7 @@ export class TypeScriptScanner {
             try {
                 const collector = new FactCollector(root, sourceFile, checker, {
                     options: program.getCompilerOptions(),
+                    sourceFileAt: (fileName) => program.getSourceFile(fileName),
                 });
                 collector.collect();
                 contribution = {
@@ -669,7 +670,8 @@ class TypeScriptLanguageFactCollector {
                 declaration_file: this.sourceFile.isDeclarationFile,
                 executable:
                     startsWithShebang(this.sourceFile.text) ||
-                    hasMainGuard(this.sourceFile),
+                    hasMainGuard(this.sourceFile) ||
+                    isClassicScript(this.sourceFile),
             },
         );
     }
@@ -1214,6 +1216,7 @@ class TypeScriptLanguageFactCollector {
         }
 
         this.pathLiteralImports(node);
+        for (const name of storeMemberNames(node)) this.untypedCalls.add(name);
         const signature = this.checker.getResolvedSignature(node);
         if (
             signature?.declaration === undefined &&
@@ -1401,6 +1404,90 @@ class TypeScriptLanguageFactCollector {
     }
 
     /**
+     * The program's file a relative `require('./local')` names.
+     *
+     * The compiler binds a `require` argument to its module only in a
+     * JavaScript file; in TypeScript it is a string. Each candidate is tried
+     * in the order Node loads it, so `require('./x')` beside both `x.js` and
+     * `x.ts` means the `.js`.
+     */
+    requiredSourceFile(location) {
+        const sourceFileAt = this.project.sourceFileAt;
+        if (
+            sourceFileAt === undefined ||
+            !ts.isStringLiteralLike(location) ||
+            !/^\.\.?(\/|$)/.test(location.text)
+        )
+            return undefined;
+        const base = path.resolve(
+            path.dirname(this.sourceFile.fileName),
+            location.text,
+        );
+        for (const suffix of REQUIRE_SUFFIXES) {
+            const fileName = normalize(base + suffix);
+            const file = sourceFileAt(fileName);
+            if (file !== undefined) return file;
+            // A file the program leaves out (a tsconfig `exclude`, or `.js`
+            // without `allowJs`) is still the module the call loads. Only its
+            // existence is asked, as the compiler host asks it, so nothing is
+            // read.
+            if (
+                allowedCompilerPath(this.root, fileName) &&
+                ts.sys.fileExists(fileName)
+            )
+                return { fileName };
+        }
+        return undefined;
+    }
+
+    /**
+     * `import.meta.glob('./Pages/**\/*.vue')`: Vite bundles every file the
+     * pattern matches. Each positive pattern becomes the same unexpanded edge
+     * `require.context` makes, the directory before the first wildcard and
+     * the rest as a pattern over the paths below it. A negated pattern only
+     * narrows what the others match, so leaving it out keeps a match live
+     * rather than inventing one.
+     */
+    globImports(node) {
+        const first = node.arguments[0];
+        const patterns = ts.isArrayLiteralExpression(first)
+            ? first.elements
+            : [first];
+        const base = globBase(node.arguments[1]);
+        for (const pattern of patterns) {
+            if (!ts.isStringLiteralLike(pattern)) continue;
+            // A relative pattern resolves from `base` when the call sets one.
+            const text =
+                base !== null && /^\.\.?\//.test(pattern.text)
+                    ? relativeGlob(base, pattern.text)
+                    : pattern.text;
+            const glob = globContext(text);
+            if (glob === null) continue;
+            const absolute = glob.directory.startsWith("/")
+                ? normalize(path.resolve(this.root, "." + glob.directory))
+                : this.contextDirectory(glob.directory);
+            const directory =
+                absolute === null ? null : relativeInside(this.root, absolute);
+            if (directory === null) continue;
+            this.addEdge(
+                "imports",
+                this.currentSource() ?? this.moduleId,
+                reference(
+                    "module_context",
+                    JSON.stringify({
+                        directory: directory === "." ? "" : directory,
+                        recursive: glob.recursive,
+                        pattern: glob.pattern,
+                        flags: "",
+                    }),
+                ),
+                pattern,
+                { dynamic: true, type_only: false, context: true },
+            );
+        }
+    }
+
+    /**
      * The directory a `require.context` names: relative to this file, or
      * through the program's `paths` (which carry a bundler's aliases).
      */
@@ -1449,6 +1536,10 @@ class TypeScriptLanguageFactCollector {
     pathLiteralImports(node) {
         if (isRequireContext(node)) {
             this.requireContextImports(node);
+            return;
+        }
+        if (isImportMetaGlob(node)) {
+            this.globImports(node);
             return;
         }
         const callee = node.expression;
@@ -1623,9 +1714,9 @@ class TypeScriptLanguageFactCollector {
             this.checker,
             this.checker.getSymbolAtLocation(location),
         );
-        const declaration = symbol?.declarations?.find((item) =>
-            ts.isSourceFile(item),
-        );
+        const declaration =
+            symbol?.declarations?.find((item) => ts.isSourceFile(item)) ??
+            this.requiredSourceFile(location);
         if (!declaration) return null;
         const relative = relativeInside(this.root, declaration.fileName);
         if (relative === null || belowNodeModules(relative)) return null;
@@ -2609,6 +2700,147 @@ function aliasTarget(expression) {
     )
         return url.arguments[0].text;
     return null;
+}
+
+/**
+ * The store members a call asks for by name: `dispatch('cookie/setInternal')`
+ * and `commit('SET_INTERNAL')` name an action or a mutation, and
+ * `mapActions`, `mapMutations` and `mapGetters` name them in an array or as
+ * an object's values. A namespace passed on its own names no member.
+ */
+function storeMemberNames(node) {
+    const callee = node.expression;
+    const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.name.text
+          : null;
+    const member = (text) => text.slice(text.lastIndexOf("/") + 1);
+    if (name === "dispatch" || name === "commit") {
+        const first = node.arguments[0];
+        return first !== undefined && ts.isStringLiteralLike(first)
+            ? [member(first.text)].filter((text) => text !== "")
+            : [];
+    }
+    if (!["mapActions", "mapMutations", "mapGetters"].includes(name)) return [];
+    const names = [];
+    for (const argument of node.arguments) {
+        const values = ts.isArrayLiteralExpression(argument)
+            ? argument.elements
+            : ts.isObjectLiteralExpression(argument)
+              ? argument.properties.map((property) =>
+                    ts.isPropertyAssignment(property)
+                        ? property.initializer
+                        : undefined,
+                )
+              : [];
+        for (const value of values)
+            if (value !== undefined && ts.isStringLiteralLike(value))
+                names.push(member(value.text));
+    }
+    return names.filter((text) => text !== "");
+}
+
+/**
+ * A JavaScript file with no import, export, `require` or `module.exports`:
+ * a page loads it with a `<script>` tag, or Node runs it, and nothing can
+ * import anything from it. The binder has set both indicators by the time
+ * facts are collected.
+ */
+function isClassicScript(sourceFile) {
+    return (
+        /\.c?js$/.test(sourceFile.fileName) &&
+        sourceFile.externalModuleIndicator === undefined &&
+        sourceFile.commonJsModuleIndicator === undefined
+    );
+}
+
+/** What a `require` specifier may leave off, in the order it is tried. */
+const REQUIRE_SUFFIXES = [
+    // Node's own order, then what a TypeScript loader adds.
+    ...["", ".js", "/index.js"],
+    ...[".ts", ".tsx", ".cts", ".mts", ".jsx", ".cjs", ".mjs", ".d.ts"],
+    ...["ts", "tsx", "jsx", "d.ts"].map((extension) => `/index.${extension}`),
+];
+
+/** The literal `base` an `import.meta.glob` options object sets, or null. */
+function globBase(options) {
+    if (options === undefined || !ts.isObjectLiteralExpression(options))
+        return null;
+    for (const property of options.properties) {
+        if (
+            ts.isPropertyAssignment(property) &&
+            staticPropertyName(property.name) === "base" &&
+            ts.isStringLiteralLike(property.initializer)
+        )
+            return property.initializer.text;
+    }
+    return null;
+}
+
+/** A relative glob read from `base`: `./*.vue` from `./Widgets` is `./Widgets/*.vue`. */
+function relativeGlob(base, pattern) {
+    const joined = path.posix.join(base, pattern);
+    return joined.startsWith("/") || joined.startsWith("../")
+        ? joined
+        : `./${joined}`;
+}
+
+/** `import.meta.glob(<literal or array>, …)`, Vite's glob import. */
+function isImportMetaGlob(node) {
+    const callee = node.expression;
+    return (
+        ts.isPropertyAccessExpression(callee) &&
+        ts.isMetaProperty(callee.expression) &&
+        callee.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+        (callee.name.text === "glob" || callee.name.text === "globEager") &&
+        node.arguments.length >= 1
+    );
+}
+
+/**
+ * A glob split into the directory before its first wildcard and a pattern
+ * over `./<path below it>`, the key form a module context matches. Null for
+ * a negated pattern, or one without a directory to anchor it.
+ */
+function globContext(glob) {
+    if (glob.startsWith("!")) return null;
+    const segments = glob.split("/");
+    const wild = segments.findIndex((segment) => /[*?[{]/.test(segment));
+    if (wild <= 0) return null;
+    const rest = segments.slice(wild).join("/");
+    let pattern = "";
+    for (let index = 0; index < rest.length; index++) {
+        const char = rest[index];
+        if (rest.startsWith("**/", index)) {
+            pattern += "(?:.*/)?";
+            index += 2;
+        } else if (rest.startsWith("**", index)) {
+            pattern += ".*";
+            index += 1;
+        } else if (char === "[" && rest.indexOf("]", index + 2) !== -1) {
+            // `[ab]` and `[!ab]`: one character of the class, never a `/`.
+            const close = rest.indexOf("]", index + 2);
+            const body = rest.slice(index + 1, close);
+            const negated = body.startsWith("!") || body.startsWith("^");
+            const members = (negated ? body.slice(1) : body).replace(
+                /[\\\]^]/g,
+                "\\$&",
+            );
+            pattern += negated ? `[^/${members}]` : `[${members}]`;
+            index = close;
+        } else if (char === "*") pattern += "[^/]*";
+        else if (char === "?") pattern += "[^/]";
+        else if (char === "{") pattern += "(?:";
+        else if (char === "}") pattern += ")";
+        else if (char === ",") pattern += "|";
+        else pattern += char.replace(/[.+^$()|[\]\\]/g, "\\$&");
+    }
+    return {
+        directory: segments.slice(0, wild).join("/"),
+        recursive: rest.includes("/") || rest.includes("**"),
+        pattern: `^\\./${pattern}$`,
+    };
 }
 
 /** `require.context('<literal>', …)`, webpack's directory import. */

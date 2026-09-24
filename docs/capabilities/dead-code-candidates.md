@@ -158,8 +158,12 @@ matches anything. Files that do match are classified `application.entry_point`
 (rule `core.manifest.entrypoints.v1`).
 
 Discovery also reads every `.html` file for its `<script src>` attributes,
-every `.yml`/`.yaml` file for tokens shaped like a source path, and every tool
-config module for the keys naming files the tool loads. A single-page
+every `.yml`/`.yaml` and `.neon` file, Dockerfile and shell script (`.sh`, `.bash`) for
+tokens shaped like a source path, and every tool config module for the keys
+naming files the tool loads. A shell script's path is also read from the
+directory a `cd` before it on the same line names, or a `cd` on a line of its
+own until its `case` branch or block ends, so `cd server && npx tsx src/reset.ts`
+names `server/src/reset.ts`. A single-page
 application is entered through its HTML shell, a Compose file mounts a config
 by path, and Vitest loads `setupFiles` before every test; none of those is an
 import, so each named file carried an in-degree of zero while being the reason
@@ -204,7 +208,9 @@ has to call its public API for that API to be wanted. Such components are classi
 `library.public_api` and not reported:
 
 - a JavaScript or TypeScript package that is not private and names an entry (`main`,
-  `exports`): what that entry exports and re-exports;
+  `exports`): what that entry exports and re-exports. An entry in a tsconfig's `outDir`
+  stands for the source under its `rootDir`; with no tsconfig laying the build out, an
+  entry in `dist/`, `build/`, `lib/` or `out/` stands for the same path under `src/`;
 - a Composer package whose `composer.json` says `"type": "library"`: the classes, interfaces,
   traits and enums under its `autoload` PSR-4 roots, and their public and protected methods.
   Composer's default type is `library`, but an application that never names its type is the

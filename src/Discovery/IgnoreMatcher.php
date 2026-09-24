@@ -72,6 +72,12 @@ final readonly class IgnoreMatcher
         ['.vitepress', 'dist'],
     ];
 
+    /**
+     * File-name suffixes of minified bundles: vendored libraries and build
+     * output, with no architecture of their own to read.
+     */
+    private const EXCLUDED_FILE_SUFFIXES = ['.min.js', '.min.mjs', '.min.cjs'];
+
     private const EXCLUDED_PREFIXES = [
         'public/build',
         'storage/framework',
@@ -147,6 +153,12 @@ final readonly class IgnoreMatcher
 
         foreach (self::EXCLUDED_PREFIXES as $prefix) {
             if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
+                return true;
+            }
+        }
+        $basename = $segments === [] ? '' : $segments[count($segments) - 1];
+        foreach (self::EXCLUDED_FILE_SUFFIXES as $suffix) {
+            if (str_ends_with($basename, $suffix)) {
                 return true;
             }
         }

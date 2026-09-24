@@ -21,6 +21,13 @@ final class RegularFileOpener
     private const O_CLOEXEC = 0x80000;
     private const OPEN_DEADLINE_NS = 250_000_000;
 
+    /**
+     * How long a helper late for a path that is still a regular file is
+     * waited for in all. Only a FIFO blocks the helper's open; a regular file
+     * that has not answered yet is a helper slow to start on a loaded machine.
+     */
+    private const LATE_HELPER_CAP_NS = 10_000_000_000;
+
     private static bool $ffiAttempted = false;
     private static ?object $libc = null;
 
@@ -124,7 +131,7 @@ final class RegularFileOpener
      *
      * @return resource|null
      */
-    private static function openWithHelper(string $path): mixed
+    private static function openWithHelper(string $path, int $deadlineNs = self::OPEN_DEADLINE_NS): mixed
     {
         $helper = <<<'PHP'
 $handle = @fopen($argv[1] ?? '', 'rb');
@@ -149,12 +156,17 @@ PHP;
         stream_set_blocking($output, false);
         $temporary = fopen('php://temp', 'w+b');
         $header = false;
-        $deadline = hrtime(true) + self::OPEN_DEADLINE_NS;
+        $started = hrtime(true);
+        $deadline = $started + $deadlineNs;
         $failed = false;
         while (true) {
             if (!$header && hrtime(true) >= $deadline) {
-                $failed = true;
-                break;
+                clearstatcache(true, $path);
+                if (!self::isRegular(@stat($path)) || hrtime(true) - $started >= self::LATE_HELPER_CAP_NS) {
+                    $failed = true;
+                    break;
+                }
+                $deadline = hrtime(true) + self::OPEN_DEADLINE_NS;
             }
 
             $read = [$output];
