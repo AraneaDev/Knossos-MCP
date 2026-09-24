@@ -1831,7 +1831,8 @@ final readonly class ProjectDiscoverer
     /**
      * The directories a tagged Symfony `resource:` block registers every class in.
      *
-     * `App\\Handler\\: { resource: '../src/Handler', tags: [...] }` makes each
+     * `App\\Handler\\: { resource: '../src/Handler', tags: [...] }`, inline or as a
+     * block, makes each
      * class there a service the tag's owner (a message bus, an event
      * dispatcher, the console) calls, and nothing in PHP names them. A block
      * without `tags:` only autowires, which says nothing about use, so it is
@@ -1849,8 +1850,15 @@ final readonly class ProjectDiscoverer
                 return;
             }
             $segments = [];
+            // `%kernel.project_dir%` is the project root; anything else is
+            // relative to the config file.
+            $resource = $block['resource'];
             $base = self::manifestDirectory($configPath);
-            foreach (explode('/', ($base === '' ? '' : $base . '/') . $block['resource']) as $segment) {
+            if (str_starts_with($resource, '%kernel.project_dir%/')) {
+                $resource = substr($resource, strlen('%kernel.project_dir%/'));
+                $base = '';
+            }
+            foreach (explode('/', ($base === '' ? '' : $base . '/') . $resource) as $segment) {
                 if ($segment === '..') {
                     if ($segments === []) {
                         return;
@@ -1876,6 +1884,15 @@ final readonly class ProjectDiscoverer
             }
             if (preg_match('/^\s*[\'"]?[A-Za-z_][A-Za-z0-9_\\\\]*\\\\[\'"]?\s*:\s*$/', $line) === 1) {
                 $block = ['indent' => $indent, 'resource' => null, 'tagged' => false];
+                continue;
+            }
+            // The inline form: `App\\Listener\\: { resource: '...', tags: [...] }`.
+            if (preg_match('/^\s*[\'"]?[A-Za-z_][A-Za-z0-9_\\\\]*\\\\[\'"]?\s*:\s*\{(.*)\}\s*$/', $line, $inline) === 1) {
+                $flush([
+                    'indent' => $indent,
+                    'resource' => preg_match('/\bresource\s*:\s*[\'"]?([^\'"\s*{,}]+)/', $inline[1], $resource) === 1 ? rtrim($resource[1], '/') : null,
+                    'tagged' => preg_match('/\btags\s*:/', $inline[1]) === 1,
+                ]);
                 continue;
             }
             if ($block === null) {

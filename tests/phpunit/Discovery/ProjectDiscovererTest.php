@@ -1980,6 +1980,8 @@ TOML);
         mkdir($this->root . '/config', 0700, true);
         mkdir($this->root . '/src/Handler', 0700, true);
         mkdir($this->root . '/src/Service', 0700, true);
+        mkdir($this->root . '/src/Listener', 0700, true);
+        mkdir($this->root . '/src/Command', 0700, true);
         file_put_contents($this->root . '/config/services.yaml', implode("\n", [
             'services:',
             '    App\\:',
@@ -1989,9 +1991,13 @@ TOML);
             '        public: true',
             '        tags:',
             '            - { name: command_handler }',
+            "    App\\Listener\\: { resource: '../src/Listener', tags: ['kernel.event_listener'] }",
+            '    App\\Command\\:',
+            "        resource: '%kernel.project_dir%/src/Command'",
+            '        tags: [console.command]',
             '',
         ]));
-        foreach (['src/Handler/CombineHandler.php', 'src/Service/Mailer.php'] as $file) {
+        foreach (['src/Handler/CombineHandler.php', 'src/Service/Mailer.php', 'src/Listener/OnLogin.php', 'src/Command/Sync.php'] as $file) {
             file_put_contents($this->root . '/' . $file, "<?php\nfinal class C {}\n");
         }
 
@@ -2002,6 +2008,9 @@ TOML);
             $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
         }
         self::assertContains('src/Handler/CombineHandler.php', $entryPoints);
+        // The inline form, and a path from the project directory.
+        self::assertContains('src/Listener/OnLogin.php', $entryPoints);
+        self::assertContains('src/Command/Sync.php', $entryPoints);
         self::assertNotContains('src/Service/Mailer.php', $entryPoints);
     }
 
