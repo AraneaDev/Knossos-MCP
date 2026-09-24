@@ -204,7 +204,9 @@ has to call its public API for that API to be wanted. Such components are classi
 `library.public_api` and not reported:
 
 - a JavaScript or TypeScript package that is not private and names an entry (`main`,
-  `exports`): what that entry exports and re-exports;
+  `exports`): what that entry exports and re-exports. An entry in the build output
+  (`dist/`, `build/`, `lib/`, `out/`) stands for the same path under `src/`, which it is
+  compiled from;
 - a Composer package whose `composer.json` says `"type": "library"`: the classes, interfaces,
   traits and enums under its `autoload` PSR-4 roots, and their public and protected methods.
   Composer's default type is `library`, but an application that never names its type is the

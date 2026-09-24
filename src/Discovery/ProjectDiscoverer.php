@@ -1489,12 +1489,36 @@ final readonly class ProjectDiscoverer
             $path = self::entryPointPath($candidate, $directory);
             if ($path !== null) {
                 $paths[$path] = true;
+                foreach (self::sourceTwins($path, $directory) as $twin) {
+                    $paths[$twin] = true;
+                }
             }
         }
         $paths = array_keys($paths);
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * The sources a published build output is compiled from.
+     *
+     * `dist/esm.mjs` is not in the scan (the build directory is excluded), and
+     * what its consumers call is `src/esm.ts`, compiled to it the way
+     * `rootDir: src` and `outDir: dist` lay a library out. Each extension the
+     * source may have is named; a twin no file answers to publishes nothing.
+     *
+     * @return list<string>
+     */
+    private static function sourceTwins(string $path, string $directory): array
+    {
+        $inside = $directory === '' ? $path : substr($path, strlen($directory) + 1);
+        if (preg_match('#^(?:dist|build|lib|out)/(.+?)(?:\.d)?\.[cm]?[jt]sx?$#', $inside, $match) !== 1) {
+            return [];
+        }
+        $prefix = ($directory === '' ? '' : $directory . '/') . 'src/' . $match[1];
+
+        return array_map(static fn(string $extension): string => $prefix . $extension, ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs']);
     }
 
     /**

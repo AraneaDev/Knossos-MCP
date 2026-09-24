@@ -55,4 +55,36 @@ final class LibraryPublicApiTest extends KnossosTestCase
         self::assertContains('packages/core/src/engine.ts#notPublished', $names);
         self::assertContains('packages/app/src/helper.ts#helper', $names);
     }
+
+    /**
+     * A package that publishes only its build output (`dist/esm.mjs`) is
+     * compiled from the same path under `src/`, which is what its consumers
+     * are calling.
+     */
+    public function testAnEntryInTheBuildOutputPublishesItsSourceTwin(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-public-dist-' . bin2hex(random_bytes(6));
+        mkdir($root . '/src', 0o777, true);
+        $files = [
+            'package.json' => '{"name":"@acme/sdk","main":"dist/t.js","module":"dist/esm.mjs","types":"types/index.d.ts"}',
+            'tsconfig.json' => '{"compilerOptions":{"strict":true,"noEmit":true},"include":["src"]}',
+            'src/esm.ts' => "export { TrackerCore } from './core';\n",
+            'src/core.ts' => "export class TrackerCore {\n    getStats(): number { return 1; }\n}\nexport function notPublished(): void {}\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $pdo = $this->freshTestDatabase();
+            $projectId = (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root)->projectId;
+            $data = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 100)->data;
+        } finally {
+            $this->removeTempTree($root);
+        }
+
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+        self::assertNotContains('src/core.ts#TrackerCore::getStats', $names);
+        self::assertContains('src/core.ts#notPublished', $names);
+    }
 }
