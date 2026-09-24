@@ -341,7 +341,28 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
 
         $memberNames = [];
         $subtypeIds = array_values(array_unique(array_merge(...array_values($subtypesOf))));
-        foreach (array_chunk($subtypeIds, 500) as $chunk) {
+        // A subtype carries what it inherits as well as what it declares: an
+        // implementer may take the method from the class it extends.
+        $basesOf = [];
+        $frontier = $subtypeIds;
+        for ($depth = 0; $depth < 10 && $frontier !== []; ++$depth) {
+            $found = [];
+            foreach (array_chunk($frontier, 500) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $statement = $this->pdo->prepare(
+                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind IN ('extends', 'uses_trait') " .
+                    sprintf('AND source_id IN (%s)', $placeholders),
+                );
+                $statement->execute([$projectId, ...$chunk]);
+                foreach ($statement->fetchAll() as $row) {
+                    $basesOf[(string) $row['source_id']][] = (string) $row['target_id'];
+                    $found[] = (string) $row['target_id'];
+                }
+            }
+            $frontier = array_values(array_diff(array_unique($found), array_keys($basesOf), $subtypeIds));
+        }
+        $declaringIds = array_values(array_unique([...$subtypeIds, ...array_merge(...array_values($basesOf) ?: [[]])]));
+        foreach (array_chunk($declaringIds, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
             $statement = $this->pdo->prepare(
                 'SELECT e.source_id, n.display_name FROM edges e JOIN nodes n ON n.id = e.target_id ' .
@@ -357,8 +378,18 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $result = [];
         foreach ($subtypesOf as $typeId => $subtypes) {
             foreach ($subtypes as $subtypeId) {
-                foreach ($memberNames[$subtypeId] ?? [] as $name => $_) {
-                    $result[$typeId][$name] = true;
+                $seen = [];
+                $stack = [$subtypeId];
+                while ($stack !== []) {
+                    $id = array_pop($stack);
+                    if (isset($seen[$id])) {
+                        continue;
+                    }
+                    $seen[$id] = true;
+                    foreach ($memberNames[$id] ?? [] as $name => $_) {
+                        $result[$typeId][$name] = true;
+                    }
+                    array_push($stack, ...($basesOf[$id] ?? []));
                 }
             }
         }

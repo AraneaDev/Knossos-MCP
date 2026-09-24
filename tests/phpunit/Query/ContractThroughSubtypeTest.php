@@ -41,6 +41,14 @@ final class ContractThroughSubtypeTest extends KnossosTestCase
                 'export class ClaudeAdapter extends BaseAdapter implements HookAdapter {}',
                 'export function detect(): HookAdapter { return new ClaudeAdapter(); }',
                 'export function search(): string { return detect().memoryDir(); }',
+                // The implementer inherits the method from its base, and the
+                // interface is used as a type, so its member is carried.
+                'export interface Locator { instructionFiles(): string[]; }',
+                'export class LocatorBase {',
+                "    instructionFiles(): string[] { return []; }",
+                '}',
+                'export class FileLocator extends LocatorBase implements Locator {}',
+                'export function locator(): Locator { return new FileLocator(); }',
                 '',
             ]),
         ];
@@ -59,6 +67,7 @@ final class ContractThroughSubtypeTest extends KnossosTestCase
         $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
         self::assertNotContains('App\\Unsupported::installedBase', $names);
         self::assertNotContains('web/adapter.ts#BaseAdapter::memoryDir', $names);
+        self::assertNotContains('web/adapter.ts#Locator::instructionFiles', $names);
         // A member no interface of a subtype declares stays reportable.
         self::assertContains('App\\Unsupported::unused', $names);
         self::assertContains('web/adapter.ts#BaseAdapter::stale', $names);
