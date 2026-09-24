@@ -145,6 +145,12 @@ This is the mirror of `excluded_inherited_methods`, which drops the override on
 the grounds that the ancestor carries the contract. Together they report a
 hierarchy once, through whichever end is genuinely unreachable.
 
+The override may also be inherited rather than written: a trait's method, or a base class's,
+fulfils an interface that the using or extending class declares without redeclaring the
+method. A call through the interface reaches that method, so it counts under
+`excluded_inherited_methods` too, as long as some subtype that does not override it has an
+internal ancestor, outside the method's own hierarchy, declaring a member of that name.
+
 ### Why manifest entry points are excluded
 
 `npm run build` invokes `scripts/build.mjs` by name, and Composer invokes
