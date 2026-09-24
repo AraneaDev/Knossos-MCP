@@ -1155,13 +1155,27 @@ class TypeScriptLanguageFactCollector {
                 },
             );
         const source = this.currentSource();
-        const target = this.symbolReference(
-            this.checker.getSymbolAtLocation(node.expression),
-            "class",
-            true,
-        );
+        const target =
+            this.symbolReference(
+                this.checker.getSymbolAtLocation(node.expression),
+                "class",
+                true,
+            ) ?? this.constructedClass(node.expression);
         if (source !== null && target !== null)
             this.addEdge("constructs", source, target, node);
+    }
+
+    /**
+     * The class a binding holds when `new` names the binding rather than the
+     * class: `const { Backend } = require('./local') as typeof import('./local')`
+     * then `new Backend()`. The binding's type is the class's constructor
+     * type, whose symbol is the class.
+     */
+    constructedClass(expression) {
+        const symbol = this.checker.getTypeAtLocation(expression).getSymbol();
+        return symbol?.declarations?.some((item) => ts.isClassDeclaration(item))
+            ? this.symbolReference(symbol, "class", true)
+            : null;
     }
 
     callExpression(node) {
@@ -1652,6 +1666,7 @@ class TypeScriptLanguageFactCollector {
      * in-degree signal that hub and hotspot ranking depends on.
      */
     valueReference(node) {
+        if (this.enumMemberRead(node)) return;
         if (!valueReferencePosition(node)) return;
 
         // A shorthand `{ discover }` names the object's property; the value it
@@ -1675,6 +1690,31 @@ class TypeScriptLanguageFactCollector {
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
+    }
+
+    /**
+     * `TokenType.And`: an enum read through its members, which are not nodes
+     * of their own, so the read is a reference to the enum.
+     */
+    enumMemberRead(node) {
+        const parent = node.parent;
+        if (
+            parent === undefined ||
+            !ts.isPropertyAccessExpression(parent) ||
+            parent.expression !== node
+        )
+            return false;
+        const symbol = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(node),
+        );
+        if (!symbol?.declarations?.some((item) => ts.isEnumDeclaration(item)))
+            return false;
+        const source = this.currentSource();
+        const target = this.symbolReference(symbol, "enum", true);
+        if (source !== null && target !== null && source !== target)
+            this.addEdge("references", source, target, node);
+        return true;
     }
 
     typeNodeReference(node) {
