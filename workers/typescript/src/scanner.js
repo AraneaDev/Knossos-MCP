@@ -3682,6 +3682,9 @@ function referenceableDeclaration(node) {
     return (
         ts.isFunctionDeclaration(node) ||
         ts.isMethodDeclaration(node) ||
+        // An interface's method, read off a receiver typed by the interface
+        // and handed on: `{ tick: board.tick }`.
+        ts.isMethodSignature(node) ||
         ts.isClassDeclaration(node) ||
         ts.isInterfaceDeclaration(node) ||
         ts.isEnumDeclaration(node) ||
