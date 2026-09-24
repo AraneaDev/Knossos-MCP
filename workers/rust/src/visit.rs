@@ -1220,7 +1220,20 @@ fn attr_args(
 /// path of each struct, enum, union, trait, and top-level function, plus
 /// inline modules recursed into. `mod foo;` file modules derive their own
 /// entries when their defining file is indexed.
+///
+/// A file counts once per path: `#[cfg]` alternatives of one item are one
+/// declaration, compiled in whichever form the target takes. Two files
+/// declaring one path still make it ambiguous.
 pub fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations) {
+    let mut paths = BTreeMap::new();
+    collect_declaration_paths(module, items, &mut paths);
+    for path in paths.into_keys() {
+        *out.entry(path).or_insert(0) += 1;
+    }
+}
+
+/// The paths [`collect_declarations`] indexes for one file, each once.
+fn collect_declaration_paths(module: &str, items: &[Item], out: &mut Declarations) {
     for item in items {
         match item {
             Item::Struct(node) => record(out, module, &node.ident.to_string()),
@@ -1252,7 +1265,7 @@ pub fn collect_declarations(module: &str, items: &[Item], out: &mut Declarations
             Item::Mod(node) => {
                 if let Some((_, inner)) = &node.content {
                     let nested = format!("{module}::{}", node.ident);
-                    collect_declarations(&nested, inner, out);
+                    collect_declaration_paths(&nested, inner, out);
                 }
             }
             _ => {}
@@ -1282,7 +1295,7 @@ fn impl_target_name(ty: &Type) -> Option<String> {
 
 /// Bump one canonical path's count in the declaration index.
 fn record(out: &mut Declarations, module: &str, name: &str) {
-    *out.entry(format!("{module}::{name}")).or_insert(0) += 1;
+    out.insert(format!("{module}::{name}"), 1);
 }
 
 /// A `syn` visitor that emits a `calls` edge for every resolvable call
@@ -2139,6 +2152,36 @@ mod tests {
         collect_declarations("crate::visit", &file.items, &mut declarations);
 
         assert_eq!(Some(&1), declarations.get("crate::visit::Walk::render"));
+    }
+
+    /// `#[cfg(unix)] fn is_tty()` beside `#[cfg(windows)] fn is_tty()` are one
+    /// function, compiled in whichever form the target takes, so a call to it
+    /// is not ambiguous. Two files declaring one path still are.
+    #[test]
+    fn cfg_alternatives_in_one_file_are_one_declaration() {
+        let file: syn::File = syn::parse_str(
+            "#[cfg(unix)]\nfn is_tty() -> bool { true }\n#[cfg(windows)]\nfn is_tty() -> bool { false }\n#[cfg(not(any(unix, windows)))]\nfn is_tty() -> bool { false }\nfn colour() -> bool { is_tty() }",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        collect_declarations("crate::ui", &file.items, &mut declarations);
+        assert_eq!(Some(&1), declarations.get("crate::ui::is_tty"));
+        let mut facts = Facts::new("src/ui.rs");
+
+        walk(
+            &mut facts,
+            "crate::ui",
+            &file,
+            &[],
+            &declarations,
+            &TestModules::new(),
+        );
+
+        assert!(facts
+            .finish()
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "calls" && edge.target == "rust:function:crate::ui::is_tty"));
     }
 
     /// The behaviour the index exists for: a call to an impl method becomes a
