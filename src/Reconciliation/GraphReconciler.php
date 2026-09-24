@@ -102,7 +102,8 @@ final readonly class GraphReconciler
 
         [$nodeMap, $nodes, $nodeWarnings] = $this->collectNodes($projectId, $request->contributions);
         $this->attachNodeFiles($nodes, $fileIds);
-        [$externalNodes, $edges, $edgeWarnings] = $this->resolveEdges($projectId, $request->contributions, $nodeMap, $fileIds);
+        [$externalNodes, $edges, $edgeWarnings, $unconfirmedCalls] = $this->resolveEdges($projectId, $request->contributions, $nodeMap, $fileIds);
+        self::recordUnconfirmedCalls($nodes, $unconfirmedCalls);
         $nodeWarnings = [...$nodeWarnings, ...$edgeWarnings];
         foreach ($externalNodes as $id => $node) {
             $nodes[$id] = $node;
@@ -396,12 +397,13 @@ final readonly class GraphReconciler
      * @param list<ScanContribution> $contributions
      * @param array<string, string> $nodeMap
      * @param array<string, string> $fileIds
-     * @return array{0: array<string, array<string, mixed>>, 1: array<string, array<string, mixed>>, 2: list<array<string, string>>}
+     * @return array{0: array<string, array<string, mixed>>, 1: array<string, array<string, mixed>>, 2: list<array<string, string>>, 3: array<string, array<string, true>>}
      */
     private function resolveEdges(string $projectId, array $contributions, array $nodeMap, array $fileIds): array
     {
         $external = [];
         $edges = [];
+        $unconfirmed = [];
         $warnings = [];
         $warnedReferences = [];
         $inheritanceSources = $this->inheritanceSources($contributions);
@@ -444,7 +446,13 @@ final readonly class GraphReconciler
                     // A speculative reference the graph cannot confirm. Dropping
                     // it keeps an inference that did not pay off out of the
                     // graph, rather than inventing an external symbol for a
-                    // member that may not exist.
+                    // member that may not exist. The call still reached some
+                    // method of that name, so the name is kept as a call on a
+                    // receiver nobody could type.
+                    $member = self::calledMemberName($edge->targetReference);
+                    if ($member !== null) {
+                        $unconfirmed[$sourceId][$member] = true;
+                    }
                     continue;
                 }
                 if ($targetId === null && !self::isResolvableReference((string) $reference)) {
@@ -480,7 +488,44 @@ final readonly class GraphReconciler
             }
         }
 
-        return [$external, $edges, $warnings];
+        return [$external, $edges, $warnings, $unconfirmed];
+    }
+
+    /**
+     * The member a method reference names (`<lang>:method:Owner::member`,
+     * `<lang>:method_of_return:callee::member`), or null for any other.
+     */
+    private static function calledMemberName(string $reference): ?string
+    {
+        if (!str_contains($reference, ':method:') && !str_contains($reference, ':method_of_return:')) {
+            return null;
+        }
+        $separator = strrpos($reference, '::');
+        $member = $separator === false ? '' : substr($reference, $separator + 2);
+
+        return $member === '' ? null : $member;
+    }
+
+    /**
+     * Adds each source node's unconfirmed calls to its `unresolved_member_calls`,
+     * the names dead-code analysis reads project-wide: a method by one of them is
+     * only possibly dead, as it is when a scanner could not type the receiver.
+     *
+     * @param array<string, array<string, mixed>> $nodes
+     * @param array<string, array<string, true>> $unconfirmed source node id => member names
+     */
+    private static function recordUnconfirmedCalls(array &$nodes, array $unconfirmed): void
+    {
+        foreach ($unconfirmed as $sourceId => $members) {
+            if (!isset($nodes[$sourceId])) {
+                continue;
+            }
+            $existing = $nodes[$sourceId]['attributes']['unresolved_member_calls'] ?? [];
+            $names = [...(is_array($existing) ? array_values(array_filter($existing, 'is_string')) : []), ...array_map('strval', array_keys($members))];
+            $names = array_values(array_unique($names));
+            sort($names, SORT_STRING);
+            $nodes[$sourceId]['attributes']['unresolved_member_calls'] = $names;
+        }
     }
 
     /**

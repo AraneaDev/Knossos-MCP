@@ -477,6 +477,10 @@ impl Walk<'_> {
                         .last()
                         .is_some_and(|segment| segment.ident == "Drop")
                 });
+                // `#[wasm_bindgen] impl T`: JavaScript calls what the bindings
+                // export, the public methods and the constructor, and nothing
+                // in Rust has to.
+                let exported_impl = node.attrs.iter().any(is_wasm_bindgen);
                 for member in &node.items {
                     if let ImplItem::Fn(method) = member {
                         let name = method.sig.ident.to_string();
@@ -495,7 +499,9 @@ impl Walk<'_> {
                                 );
                             }
                         }
-                        if drop_impl && name == "drop" {
+                        if (drop_impl && name == "drop")
+                            || (exported_impl && matches!(method.vis, syn::Visibility::Public(_)))
+                        {
                             self.facts.node_attribute(
                                 &method_canonical,
                                 "runtime_invoked",
@@ -1882,6 +1888,14 @@ fn macro_piece(
     })
 }
 
+/// Whether an attribute is `#[wasm_bindgen]`, however its path is spelled.
+fn is_wasm_bindgen(attr: &syn::Attribute) -> bool {
+    attr.path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "wasm_bindgen")
+}
+
 /// Whether a function is exported to a caller outside Rust: `#[no_mangle]`
 /// (also as `#[unsafe(no_mangle)]`), `#[export_name]`, `#[wasm_bindgen]`, or
 /// an `extern` ABI.
@@ -1891,10 +1905,7 @@ fn is_foreign_export(node: &syn::ItemFn) -> bool {
             let path = attr.path();
             path.is_ident("no_mangle")
                 || path.is_ident("export_name")
-                || path
-                    .segments
-                    .last()
-                    .is_some_and(|segment| segment.ident == "wasm_bindgen")
+                || is_wasm_bindgen(attr)
                 || (path.is_ident("unsafe")
                     && attr
                         .meta
@@ -2115,6 +2126,39 @@ mod tests {
     /// and the graph shows it unreferenced however heavily the type is used.
     /// The marker lets the dead-code budget discount exactly these, without
     /// blanket-excluding every method that happens to be called `drop`.
+    #[test]
+    fn a_wasm_bindgen_impl_marks_its_public_methods_as_runtime_invoked() {
+        let file: syn::File = syn::parse_str(
+            "#[wasm_bindgen]\npub struct Engine;\n#[wasm_bindgen]\nimpl Engine {\n    #[wasm_bindgen(constructor)]\n    pub fn new() -> Engine { Engine }\n    pub fn key_up(&mut self, key: &str) {}\n    fn helper(&self) {}\n}\nimpl Engine {\n    pub fn internal(&self) {}\n}",
+        )
+        .expect("parses");
+        let mut facts = Facts::new("src/lib.rs");
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &Declarations::new(),
+            &TestModules::new(),
+        );
+        let contribution = facts.finish();
+        let marked = |name: &str| {
+            contribution
+                .nodes
+                .iter()
+                .filter(|node| node.canonical_name == name)
+                .any(|node| node.attributes.contains_key("runtime_invoked"))
+        };
+
+        // JavaScript calls what the bindings export: the constructor and
+        // every public method of the exported impl.
+        assert!(marked("crate::Engine::new"));
+        assert!(marked("crate::Engine::key_up"));
+        // A private helper is not exported, nor is an impl without the attribute.
+        assert!(!marked("crate::Engine::helper"));
+        assert!(!marked("crate::Engine::internal"));
+    }
+
     #[test]
     fn a_drop_impl_marks_its_method_as_runtime_invoked() {
         let file: syn::File = syn::parse_str(
