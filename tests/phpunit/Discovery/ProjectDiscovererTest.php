@@ -1935,6 +1935,41 @@ TOML);
     }
 
     /**
+     * A tagged `resource:` block registers every class in its directory and
+     * the tag says who calls them: a message bus, an event dispatcher. An
+     * untagged block only autowires, so it proves nothing about use.
+     */
+    public function testDiscoverReadsTaggedServiceResourcesAsEntryPoints(): void
+    {
+        mkdir($this->root . '/config', 0700, true);
+        mkdir($this->root . '/src/Handler', 0700, true);
+        mkdir($this->root . '/src/Service', 0700, true);
+        file_put_contents($this->root . '/config/services.yaml', implode("\n", [
+            'services:',
+            '    App\\:',
+            "        resource: '../src/'",
+            '    App\\Handler\\:',
+            "        resource: '../src/Handler' # synchronous",
+            '        public: true',
+            '        tags:',
+            '            - { name: command_handler }',
+            '',
+        ]));
+        foreach (['src/Handler/CombineHandler.php', 'src/Service/Mailer.php'] as $file) {
+            file_put_contents($this->root . '/' . $file, "<?php\nfinal class C {}\n");
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('src/Handler/CombineHandler.php', $entryPoints);
+        self::assertNotContains('src/Service/Mailer.php', $entryPoints);
+    }
+
+    /**
      * PHPStan loads the rules and extensions `phpstan.neon` names, by class;
      * nothing in PHP does. A rule class the config does not name is not
      * loaded, so it stays reportable.

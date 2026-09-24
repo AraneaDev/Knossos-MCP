@@ -17,6 +17,7 @@ container, or booting the kernel.
 | Services    | `#[AsAlias]`, `#[Autoconfigure]`, typed constructors, `#[Autowire(service: ...)]` | service roles, `binds`, and `injects` edges       |
 | Validation  | Doctrine annotations such as `@AdminEmail`, a `Constraint`'s `<Name>Validator`    | `references` edges                                |
 | Migrations  | the directories Doctrine Migrations' `migrations_paths` names in YAML             | entry points                                      |
+| Handlers    | a `services.yaml` `resource:` block with `tags:`, every class in its directory    | entry points                                      |
 | Serializer  | JMS Serializer `@VirtualProperty` and `#[VirtualProperty]` methods                | `runtime_invoked`                                 |
 
 Attribute values must be statically representable strings, string arrays, or
@@ -27,7 +28,8 @@ whether or not Symfony enrichment recognizes a convention.
 
 ## Deliberate limits
 
-- YAML/XML service and route imports are not interpreted yet.
+- YAML/XML service and route imports are not interpreted yet, apart from a tagged
+  `resource:` block's directory.
 - Container extensions, compiler passes, runtime service decoration, generated
   containers, and expression-language values are not executed.
 - Subscriber arrays record statically visible event keys; runtime-computed

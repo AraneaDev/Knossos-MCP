@@ -264,7 +264,7 @@ final readonly class ProjectDiscoverer
             [$left->kind, $left->configPath] <=> [$right->kind, $right->configPath]);
         $units = self::withBuildOutputSources($units);
         $units = self::withClassNameEntryPoints($units);
-        $units = self::withMigrationEntryPoints($units, $files);
+        $units = self::withLoadedDirectoryEntryPoints($units, $files);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -353,7 +353,10 @@ final readonly class ProjectDiscoverer
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
                 'class_names' => self::yamlClassNames($contents),
-                'migration_directories' => self::doctrineMigrationDirectories($contents),
+                'loaded_directories' => [
+                    ...self::doctrineMigrationDirectories($contents),
+                    ...self::taggedResourceDirectories($contents, $relative),
+                ],
             ]);
         }
         if ($kind === 'dockerfile') {
@@ -1777,16 +1780,81 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * Add, to each YAML unit, the PHP files below the migration directories it names.
+     * The directories a tagged Symfony `resource:` block registers every class in.
+     *
+     * `App\\Handler\\: { resource: '../src/Handler', tags: [...] }` makes each
+     * class there a service the tag's owner (a message bus, an event
+     * dispatcher, the console) calls, and nothing in PHP names them. A block
+     * without `tags:` only autowires, which says nothing about use, so it is
+     * not read. The directory is relative to the config file; one outside the
+     * project names nothing.
+     *
+     * @return list<string>
+     */
+    private static function taggedResourceDirectories(string $contents, string $configPath): array
+    {
+        $directories = [];
+        $block = null;
+        $flush = static function (?array $block) use (&$directories, $configPath): void {
+            if ($block === null || $block['resource'] === null || !$block['tagged']) {
+                return;
+            }
+            $segments = [];
+            $base = self::manifestDirectory($configPath);
+            foreach (explode('/', ($base === '' ? '' : $base . '/') . $block['resource']) as $segment) {
+                if ($segment === '..') {
+                    if ($segments === []) {
+                        return;
+                    }
+                    array_pop($segments);
+                } elseif ($segment !== '' && $segment !== '.') {
+                    $segments[] = $segment;
+                }
+            }
+            if ($segments !== []) {
+                $directories[implode('/', $segments)] = true;
+            }
+        };
+        foreach (explode("\n", $contents) as $line) {
+            $line = preg_replace('/(?:^|\s)#.*$/', '', $line) ?? $line;
+            if (trim($line) === '') {
+                continue;
+            }
+            $indent = strlen($line) - strlen(ltrim($line));
+            if ($block !== null && $indent <= $block['indent']) {
+                $flush($block);
+                $block = null;
+            }
+            if (preg_match('/^\s*[\'"]?[A-Za-z_][A-Za-z0-9_\\\\]*\\\\[\'"]?\s*:\s*$/', $line) === 1) {
+                $block = ['indent' => $indent, 'resource' => null, 'tagged' => false];
+                continue;
+            }
+            if ($block === null) {
+                continue;
+            }
+            if (preg_match('/^\s*resource\s*:\s*[\'"]?([^\'"\s*{]+)/', $line, $resource) === 1) {
+                $block['resource'] = rtrim($resource[1], '/');
+            } elseif (preg_match('/^\s*tags\s*:/', $line) === 1) {
+                $block['tagged'] = true;
+            }
+        }
+        $flush($block);
+
+        return array_keys($directories);
+    }
+
+    /**
+     * Add, to each YAML unit, the PHP files below the directories it loads
+     * every class from: Doctrine migration paths and tagged service resources.
      *
      * @param list<ProjectUnit> $units
      * @param list<DiscoveredFile> $files
      * @return list<ProjectUnit>
      */
-    private static function withMigrationEntryPoints(array $units, array $files): array
+    private static function withLoadedDirectoryEntryPoints(array $units, array $files): array
     {
         return array_map(static function (ProjectUnit $unit) use ($files): ProjectUnit {
-            $directories = $unit->metadata['migration_directories'] ?? [];
+            $directories = $unit->metadata['loaded_directories'] ?? [];
             if ($unit->kind !== 'yaml' || !is_array($directories) || $directories === []) {
                 return $unit;
             }
