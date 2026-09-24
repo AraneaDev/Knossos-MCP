@@ -3130,19 +3130,25 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
 }
 
 /**
- * `Module "X.vue" has no default export`, and `Module "X.svelte" has no
- * exported member 'default'` where `export { default as X }` names it: a
- * component's default export is the component its bundler compiles, which
- * its virtual source never spells.
+ * `Module "X.vue" has no default export`, `Module "X.svelte" has no exported
+ * member 'default'` where `export { default as X }` names it, and `Property
+ * 'default' does not exist on type 'typeof import("X.vue")'` where a dynamic
+ * import destructures it: a component's default export is the component its
+ * bundler compiles, which its virtual source never spells. Declaring one
+ * instead, typed `any`, was worse: a test mounting it lost the component's
+ * own typing and reported errors the framework's checker does not.
  */
 function namesComponentDefaultExport(diagnostic) {
     const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
     if (
         diagnostic.code !== 1192 &&
-        !(diagnostic.code === 2305 && /member 'default'/.test(text))
+        !(diagnostic.code === 2305 && /member 'default'/.test(text)) &&
+        !(diagnostic.code === 2339 && /Property 'default'/.test(text))
     )
         return false;
-    const module = /Module '"([^"]+)"'/.exec(text)?.[1];
+    const module =
+        /Module '"([^"]+)"'/.exec(text)?.[1] ??
+        /typeof import\("([^"]+)"\)/.exec(text)?.[1];
     return module !== undefined && componentDialect(module) !== null;
 }
 

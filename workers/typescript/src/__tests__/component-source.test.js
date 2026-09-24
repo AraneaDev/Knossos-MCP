@@ -52,6 +52,17 @@ describe("component dialects", () => {
     });
 });
 
+// A component's default export stays unspelled: declared as `any`, a test
+// mounting the component lost its own typing and reported errors the
+// framework's checker does not.
+describe("a component with no export default", () => {
+    it("gets nothing appended", () => {
+        const source =
+            '<script setup lang="ts">\nconst open = true;\n</script>\n<p>{{ open }}</p>\n';
+        expect(toVirtualSource(source, "vue").text.length).toBe(source.length);
+    });
+});
+
 describe("script blocks", () => {
     it("keeps a Vue component's script and setup script in place", () => {
         const source =
