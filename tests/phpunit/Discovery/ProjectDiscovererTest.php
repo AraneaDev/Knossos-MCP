@@ -1850,6 +1850,38 @@ TOML);
     }
 
     /**
+     * PHPStan loads the rules and extensions `phpstan.neon` names, by class;
+     * nothing in PHP does. A rule class the config does not name is not
+     * loaded, so it stays reportable.
+     */
+    public function testDiscoverReadsTheClassesAPhpstanConfigRegisters(): void
+    {
+        mkdir($this->root . '/app/Support/PHPStan', 0700, true);
+        file_put_contents($this->root . '/composer.json', '{"autoload":{"psr-4":{"App\\\\":"app/"}}}');
+        file_put_contents($this->root . '/phpstan.neon', implode("\n", [
+            'rules:',
+            '    - App\\Support\\PHPStan\\NoRawHttpRule',
+            'services:',
+            '    -',
+            '        class: App\\Support\\PHPStan\\ReturnTypeExtension',
+            '',
+        ]));
+        foreach (['NoRawHttpRule', 'ReturnTypeExtension', 'UnregisteredRule'] as $class) {
+            file_put_contents($this->root . '/app/Support/PHPStan/' . $class . '.php', "<?php\nnamespace App\\Support\\PHPStan;\nfinal class {$class} {}\n");
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('app/Support/PHPStan/NoRawHttpRule.php', $entryPoints);
+        self::assertContains('app/Support/PHPStan/ReturnTypeExtension.php', $entryPoints);
+        self::assertNotContains('app/Support/PHPStan/UnregisteredRule.php', $entryPoints);
+    }
+
+    /**
      * Doctrine loads every migration in the directories `migrations_paths`
      * names, and nothing imports one. A migration class outside them is not
      * loaded, so it stays reportable.

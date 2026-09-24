@@ -2147,6 +2147,11 @@ final readonly class ProjectDiscoverer
         if (str_ends_with($basename, '.yml') || str_ends_with($basename, '.yaml')) {
             return 'yaml';
         }
+        // NEON, PHPStan's config format, is YAML's shape: the rules and
+        // extensions it registers are class names nothing in PHP references.
+        if (str_ends_with($basename, '.neon') || str_ends_with($basename, '.neon.dist')) {
+            return 'yaml';
+        }
         // A Claude Code plugin runs its hooks and MCP servers from commands in
         // these files, which name the scripts by path; nothing imports them.
         $normalized = str_replace('\\', '/', $relativePath);

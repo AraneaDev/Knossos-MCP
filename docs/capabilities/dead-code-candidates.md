@@ -158,7 +158,7 @@ matches anything. Files that do match are classified `application.entry_point`
 (rule `core.manifest.entrypoints.v1`).
 
 Discovery also reads every `.html` file for its `<script src>` attributes,
-every `.yml`/`.yaml` file, Dockerfile and shell script (`.sh`, `.bash`) for
+every `.yml`/`.yaml` and `.neon` file, Dockerfile and shell script (`.sh`, `.bash`) for
 tokens shaped like a source path, and every tool config module for the keys
 naming files the tool loads. A shell script's path is also read from each
 directory a `cd` in it names, so `cd server && npx tsx src/reset.ts` names
@@ -198,8 +198,7 @@ and, like test modules, are not reported. Recognition is by filename convention
 only (`<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
 `gruntfile`, or `conftest.py`) and deliberately narrow: a module that merely
 reads configuration, such as `src/utils/config-loader.ts`, is ordinary source
-and stays reportable. A PHP class implementing a `PHPStan\` interface, a rule or
-extension PHPStan loads from `phpstan.neon` by name, gets the same role.
+and stays reportable.
 
 ### Why a published library's API is excluded
 
