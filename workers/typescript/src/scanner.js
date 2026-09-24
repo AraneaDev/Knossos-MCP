@@ -1214,6 +1214,7 @@ class TypeScriptLanguageFactCollector {
         }
 
         this.pathLiteralImports(node);
+        for (const name of storeMemberNames(node)) this.untypedCalls.add(name);
         const signature = this.checker.getResolvedSignature(node);
         if (
             signature?.declaration === undefined &&
@@ -2654,6 +2655,45 @@ function aliasTarget(expression) {
     )
         return url.arguments[0].text;
     return null;
+}
+
+/**
+ * The store members a call asks for by name: `dispatch('cookie/setInternal')`
+ * and `commit('SET_INTERNAL')` name an action or a mutation, and
+ * `mapActions`, `mapMutations` and `mapGetters` name them in an array or as
+ * an object's values. A namespace passed on its own names no member.
+ */
+function storeMemberNames(node) {
+    const callee = node.expression;
+    const name = ts.isIdentifier(callee)
+        ? callee.text
+        : ts.isPropertyAccessExpression(callee)
+          ? callee.name.text
+          : null;
+    const member = (text) => text.slice(text.lastIndexOf("/") + 1);
+    if (name === "dispatch" || name === "commit") {
+        const first = node.arguments[0];
+        return first !== undefined && ts.isStringLiteralLike(first)
+            ? [member(first.text)].filter((text) => text !== "")
+            : [];
+    }
+    if (!["mapActions", "mapMutations", "mapGetters"].includes(name)) return [];
+    const names = [];
+    for (const argument of node.arguments) {
+        const values = ts.isArrayLiteralExpression(argument)
+            ? argument.elements
+            : ts.isObjectLiteralExpression(argument)
+              ? argument.properties.map((property) =>
+                    ts.isPropertyAssignment(property)
+                        ? property.initializer
+                        : undefined,
+                )
+              : [];
+        for (const value of values)
+            if (value !== undefined && ts.isStringLiteralLike(value))
+                names.push(member(value.text));
+    }
+    return names.filter((text) => text !== "");
 }
 
 /** `import.meta.glob(<literal or array>, …)`, Vite's glob import. */
