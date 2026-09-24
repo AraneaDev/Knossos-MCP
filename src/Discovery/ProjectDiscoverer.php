@@ -1268,7 +1268,7 @@ final readonly class ProjectDiscoverer
             }
             if ($standalone) {
                 $current = $inline;
-            } elseif (preg_match('/;;|^\s*(?:esac|fi|done|\})\b/', $line) === 1) {
+            } elseif (preg_match('/;;|^\s*(?:(?:esac|fi|done)\b|\})/', $line) === 1) {
                 $current = [];
             }
         }

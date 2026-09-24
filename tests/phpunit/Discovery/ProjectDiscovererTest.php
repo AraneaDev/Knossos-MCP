@@ -1843,6 +1843,11 @@ TOML);
             '    ;;',
             'esac',
             'node src/after.mjs',
+            '{',
+            '    cd api',
+            '    node src/inner.mjs',
+            '}',
+            'node src/outer.mjs',
             '',
         ]));
 
@@ -1858,6 +1863,9 @@ TOML);
         self::assertNotContains('server/src/cleanup.ts', $entryPoints);
         self::assertContains('web/src/build.mjs', $entryPoints);
         self::assertNotContains('web/src/after.mjs', $entryPoints);
+        // A brace block ends a `cd` inside it.
+        self::assertContains('api/src/inner.mjs', $entryPoints);
+        self::assertNotContains('api/src/outer.mjs', $entryPoints);
     }
 
     /**
