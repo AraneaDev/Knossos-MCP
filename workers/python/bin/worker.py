@@ -1776,6 +1776,23 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 return self.parameter_types[-1].get(value.id)
         return None
 
+    def fresh_instance_class(self, call: ast.Call) -> str | None:
+        """The project class ``Repo()`` builds, when its name means that class here.
+
+        A name off a module outside the project (``requests.get(url)``) reads
+        as a class only because nothing says otherwise, and a parameter or
+        local named like an imported class holds whatever was passed in.
+        """
+        callee = dotted(call.func)
+        if callee is None or self.is_local_name(callee.split(".")[0]):
+            return None
+        held = self.held_class(call)
+        return held if held is not None and self.declares_class(held) else None
+
+    def shadows_builtin(self, name: str) -> bool:
+        """Whether this scope, an import or the module binds ``name`` over the builtin."""
+        return self.is_local_name(name) or name in self.aliases or name in self.index.module_declarations(self.module)
+
     def declares_class(self, held: str) -> bool:
         """Whether a project module declares ``held`` as a top-level class."""
         module, _, name = held.rpartition(".")
@@ -1851,8 +1868,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             member = self.receiver_member(receiver, node.attr) if receiver else None
             if member is None and isinstance(node.value, ast.Call):
                 # `partial(Repo().rows, 1)`: the class just built types the read.
-                held = self.held_class(node.value)
-                if held is not None and self.declares_class(held):
+                held = self.fresh_instance_class(node.value)
+                if held is not None:
                     member = ref("method", f"{held}::{node.attr}")
             if member is not None:
                 self.facts.add_edge("references", self.current(), member, node, {"speculative": True})
@@ -1887,17 +1904,14 @@ class PythonAstFactCollector(ast.NodeVisitor):
         elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
             # `Repo().count()`: the class just instantiated types the receiver.
             # Any other call's result has no type this worker follows.
-            held = self.held_class(node.func.value)
-            if held is not None and not self.declares_class(held):
-                # `requests.get(url)`: a name off a module outside the
-                # project reads as a class only because nothing says otherwise.
-                held = None
+            held = self.fresh_instance_class(node.func.value)
             if held is None:
                 self.untyped_calls.add(node.func.attr)
             else:
                 target = ref("method", f"{held}::{node.func.attr}")
         if (
             name == "getattr"
+            and not self.shadows_builtin("getattr")
             and len(node.args) >= 2
             and isinstance(node.args[1], ast.Constant)
             and isinstance(node.args[1].value, str)

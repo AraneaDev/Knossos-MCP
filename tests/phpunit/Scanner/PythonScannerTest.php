@@ -1670,6 +1670,10 @@ PYTHON);
                 '    dynamic = getattr(editor, name)',
                 '    return functools.partial(Repo().rows, 1), narrowed, dynamic',
                 '',
+                '# A parameter shadows the imported class and the builtin alike.',
+                'def shadowed(Repo, getattr, editor):',
+                '    return Repo().rows, getattr(editor, "hidden")',
+                '',
             ]),
         ];
         foreach ($files as $relative => $contents) {
@@ -1704,6 +1708,7 @@ PYTHON);
         }
 
         self::assertContains('py:function:app.service.run -> py:method:app.repo.Repo::rows', $references);
+        self::assertNotContains('py:function:app.service.shadowed -> py:method:app.repo.Repo::rows', $references);
         self::assertSame(['narrowed'], $untyped);
     }
 }
