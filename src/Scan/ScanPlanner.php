@@ -153,7 +153,7 @@ final readonly class ScanPlanner
             // Cargo.toml is now a recorded unit (kind 'cargo'), so editing it
             // invalidates a Rust contribution's cache entry the same way
             // composer.json and package.json do for PHP and TypeScript.
-            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos'], 'rust-analysis-v3'),
+            'rust' => $this->configurationHash($discovery->units, ['cargo', 'knossos'], 'rust-analysis-v4'),
         ];
 
         return new ScanPreparation(

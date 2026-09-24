@@ -11,7 +11,7 @@ use syn::visit::Visit;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
-use crate::resolve::{flatten_use, parent_module, rebase, Aliases};
+use crate::resolve::{flatten_use, glob_prefixes, parent_module, rebase, Aliases};
 
 /// Canonical name of every top-level and inline-module declaration in the
 /// request, mapped to how many files declared it. The scan-wide view that lets
@@ -60,6 +60,9 @@ struct Walk<'a> {
     module: String,
     /// Names this file brought into scope.
     aliases: Aliases,
+    /// The modules this file's glob imports (`use a::b::*;`) bring every
+    /// public name of into scope, in the order they were written.
+    globs: Vec<String>,
     /// Target type of the current impl block, for resolving `Self`.
     current_impl_target: Option<String>,
     /// Frameworks the scan request asked this worker to enrich, by short name
@@ -97,6 +100,7 @@ pub fn walk(
         facts,
         module: module.to_owned(),
         aliases: Aliases::default(),
+        globs: Vec::new(),
         current_impl_target: None,
         frameworks,
         declarations,
@@ -238,6 +242,29 @@ impl Walk<'_> {
                             item.span(),
                         );
                         self.aliases.insert(leaf.alias, full);
+                    }
+                    let mut globs = Vec::new();
+                    glob_prefixes(&node.tree, "", &mut globs);
+                    for glob in globs {
+                        let head = glob.split("::").next().unwrap_or_default();
+                        let written = if node.leading_colon.is_none() && children.contains(head) {
+                            format!("{container}::{glob}")
+                        } else {
+                            glob
+                        };
+                        let Some(full) = rebase(container, &self.anchor_crate(&written)) else {
+                            continue;
+                        };
+                        self.facts.edge(
+                            "imports",
+                            &source,
+                            &reference("module", &full),
+                            "certain",
+                            item.span(),
+                        );
+                        if !self.globs.contains(&full) {
+                            self.globs.push(full);
+                        }
                     }
                 }
                 Item::Mod(node) => {
@@ -725,17 +752,23 @@ impl Walk<'_> {
     }
 
     /// The paths an unqualified `rendered` path could name, in scoping order.
+    ///
+    /// A name declared in the enclosing module shadows one a glob import
+    /// brings in, so the globs come right after it.
     fn index_candidates(&self, container: &str, rendered: &str) -> Vec<String> {
-        let mut candidates = Vec::with_capacity(3);
-        for candidate in [
-            format!("{container}::{rendered}"),
-            if container == self.crate_root() {
-                String::new()
-            } else {
-                format!("{}::{rendered}", self.crate_root())
-            },
-            rendered.to_owned(),
-        ] {
+        let mut candidates = Vec::with_capacity(3 + self.globs.len());
+        let globbed = self.globs.iter().map(|glob| format!("{glob}::{rendered}"));
+        for candidate in std::iter::once(format!("{container}::{rendered}"))
+            .chain(globbed)
+            .chain([
+                if container == self.crate_root() {
+                    String::new()
+                } else {
+                    format!("{}::{rendered}", self.crate_root())
+                },
+                rendered.to_owned(),
+            ])
+        {
             if !candidate.is_empty() && !candidates.contains(&candidate) {
                 candidates.push(candidate);
             }
@@ -2081,6 +2114,48 @@ mod tests {
                 .iter()
                 .map(|edge| format!("{} -> {}", edge.kind, edge.target))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// `use crate::components::*;` brings every public name of that module into
+    /// scope, so `Camera::perspective(..)` there names the components' Camera.
+    /// A glob names no symbol of its own, and ignoring it left every call
+    /// through one unresolved.
+    #[test]
+    fn a_name_a_glob_import_brings_in_resolves_through_the_index() {
+        let components: syn::File = syn::parse_str(
+            "pub struct Camera;\nimpl Camera {\n    pub fn perspective() -> Self { Camera }\n}",
+        )
+        .expect("parses");
+        let engine: syn::File = syn::parse_str(
+            "use crate::components::*;\nfn create() { let _ = Camera::perspective(); }",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        collect_declarations("crate::components", &components.items, &mut declarations);
+        collect_declarations("crate::engine", &engine.items, &mut declarations);
+        let mut facts = Facts::new("src/engine.rs");
+
+        walk(
+            &mut facts,
+            "crate::engine",
+            &engine,
+            &[],
+            &declarations,
+            &TestModules::new(),
+        );
+
+        let contribution = facts.finish();
+        let edges: Vec<String> = contribution
+            .edges
+            .iter()
+            .map(|edge| format!("{} -> {}", edge.kind, edge.target))
+            .collect();
+        assert!(
+            edges.contains(
+                &"calls -> rust:method:crate::components::Camera::perspective".to_owned()
+            ),
+            "edges were {edges:?}"
         );
     }
 

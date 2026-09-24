@@ -38,7 +38,9 @@ Nodes:
 
 Edges: `contains` for nesting, `imports` from `use`, `implements` for
 `impl Trait for Type`, `extends` for supertraits, `calls` for a resolved call
-expression, and `routes_to` from a route to its handler.
+expression, and `routes_to` from a route to its handler. A name a glob import
+(`use crate::components::*;`) brings in resolves through it, after the names the
+enclosing module declares.
 
 A crate-root `fn main` marks its module `executable`, preventing the binary
 entry module from being treated as dead code. A `package` node contains the
