@@ -3589,10 +3589,15 @@ function declarationName(node, sourceFile) {
 // no more code than a `.d.ts` is. The block itself counts as inside.
 function insideAmbientDeclaration(node) {
     for (let current = node; current; current = current.parent) {
+        // `declare global`, `declare module 'x'`, and `declare namespace L`,
+        // which describes a library a script tag loads.
         if (
             ts.isModuleDeclaration(current) &&
             ((current.flags & ts.NodeFlags.GlobalAugmentation) !== 0 ||
-                ts.isStringLiteral(current.name))
+                ts.isStringLiteral(current.name) ||
+                (ts.getCombinedModifierFlags(current) &
+                    ts.ModifierFlags.Ambient) !==
+                    0)
         )
             return true;
     }

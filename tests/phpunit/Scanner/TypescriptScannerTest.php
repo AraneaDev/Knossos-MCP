@@ -549,7 +549,8 @@ final class TypescriptScannerTest extends KnossosTestCase
     /**
      * `declare global { interface Window { api: Api } }` augments a type the
      * runtime defines, and `declare module 'x' { ... }` describes a module
-     * someone else ships. Neither is code, exactly as a `.d.ts` is not, but
+     * someone else ships, as `declare namespace L { ... }` describes a library a
+     * script tag loads. None is code, exactly as a `.d.ts` is not, but
      * they sat in ordinary files and were reported as unreferenced.
      */
     #[Group('typescript-scanner')]
@@ -565,6 +566,14 @@ final class TypescriptScannerTest extends KnossosTestCase
                 '}',
                 "declare module 'legacy-lib' {",
                 '    export function start(): void;',
+                '}',
+                // A library a script tag loads, described as a global namespace.
+                'declare namespace L {',
+                '    interface Map { getZoom(): number }',
+                '}',
+                // A namespace without `declare` is code.
+                'export namespace Geo {',
+                '    export function zoom(): number { return 1; }',
                 '}',
                 'export function play(): string { return window.player ?? ""; }',
                 '',
@@ -596,6 +605,8 @@ final class TypescriptScannerTest extends KnossosTestCase
         assertSame(true, $ambient['src/engines.ts#global.Window']);
         assertSame(true, $ambient['src/engines.ts#global.Window::player']);
         assertSame(true, $ambient['src/engines.ts#legacy-lib.start']);
+        assertSame(true, $ambient['src/engines.ts#L.Map::getZoom']);
+        assertSame(false, $ambient['src/engines.ts#Geo.zoom']);
         assertSame(false, $ambient['src/engines.ts#play']);
     }
 
