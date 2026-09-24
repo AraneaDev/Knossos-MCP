@@ -1804,7 +1804,15 @@ TOML);
     public function testDiscoverReadsEntryPointsFromDockerfilesAndCommandLines(): void
     {
         mkdir($this->root . '/docker', 0700, true);
-        file_put_contents($this->root . '/Dockerfile', "FROM node:22\nCOPY . .\nCMD [\"node\", \"server/index.mjs\"]\n");
+        file_put_contents($this->root . '/Dockerfile', implode("\n", [
+            'FROM node:22',
+            'COPY . .',
+            'COPY scripts/probe /tmp/probe',
+            'COPY --chown=app tools/lint.mjs /usr/local/bin/lint.mjs',
+            'RUN semgrep scan /tmp/probe/tree | python3 /tmp/probe/check.py && node /usr/local/bin/lint.mjs',
+            'CMD ["node", "server/index.mjs"]',
+            '',
+        ]));
         file_put_contents($this->root . '/docker/worker.Dockerfile', "FROM python:3.12\nENTRYPOINT python3 jobs/run.py --once\n");
         file_put_contents($this->root . '/playwright.config.ts', "export default { webServer: { command: 'node server/preview.mjs --port 4173' } };\n");
 
@@ -1817,6 +1825,9 @@ TOML);
             }
         }
         assertSame('Dockerfile', $entryPoints['server/index.mjs'] ?? null);
+        // Run from where a COPY put it: the path in the image names the copied file.
+        assertSame('Dockerfile', $entryPoints['scripts/probe/check.py'] ?? null);
+        assertSame('Dockerfile', $entryPoints['tools/lint.mjs'] ?? null);
         assertSame('docker/worker.Dockerfile', $entryPoints['jobs/run.py'] ?? null);
         assertSame('playwright.config.ts', $entryPoints['server/preview.mjs'] ?? null);
     }

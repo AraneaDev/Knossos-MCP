@@ -167,7 +167,9 @@ tokens shaped like a source path, and every tool config module for the keys
 naming files the tool loads. A shell script's path is also read from the
 directory a `cd` before it on the same line names, or a `cd` on a line of its
 own until its `case` branch or block ends, so `cd server && npx tsx src/reset.ts`
-names `server/src/reset.ts`. A single-page
+names `server/src/reset.ts`. In a Dockerfile, a path a `COPY` put in the image
+(`python3 /tmp/probe/check.py` after `COPY scripts/probe /tmp/probe`) is read as
+the file it was copied from. A single-page
 application is entered through its HTML shell, a Compose file mounts a config
 by path, and Vitest loads `setupFiles` before every test; none of those is an
 import, so each named file carried an in-degree of zero while being the reason
