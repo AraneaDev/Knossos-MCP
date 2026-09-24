@@ -214,6 +214,33 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * A file may declare several namespaces, each importing a different class
+     * under one alias; an annotation resolves through its own namespace's.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerResolvesAnAnnotationThroughItsOwnNamespacesImports(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/TwoNamespaces.php'],
+        ]), false);
+        $client->shutdown();
+        $references = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'references') {
+                $references[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+            }
+        }
+        sort($references);
+
+        assertSame([
+            'php:class:Fixture\\First\\Contact -> php:class:Fixture\\Rules\\Email',
+            'php:class:Fixture\\Second\\Caller -> php:class:Fixture\\Rules\\Phone',
+        ], $references);
+    }
+
+    /**
      * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
      * produced no call edge at all — on either a variable or a property
      * receiver — however precisely the receiver was typed.

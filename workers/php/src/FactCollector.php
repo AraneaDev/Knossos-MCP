@@ -58,14 +58,19 @@ final class FactCollector extends NodeVisitorAbstract
     private array $untypedCalls = [];
 
     /**
-     * The file's class imports, lower-cased alias => imported name.
+     * The file's class imports, per namespace block: its node id (0 for a file
+     * without one) => lower-cased alias => imported name.
      *
      * A docblock annotation names its class the way the code would, through
-     * these, but the parser resolves only names in code.
+     * these, but the parser resolves only names in code. A file may declare
+     * several namespaces, each importing its own classes under one alias.
      *
-     * @var array<string, string>
+     * @var array<int, array<string, string>>
      */
     private array $imports = [];
+
+    /** The namespace block the traversal is in, keyed as {@see self::$imports} is. */
+    private int $namespaceScope = 0;
 
     /** Whether this file's module node has been declared; see {@see self::fileModuleId()}. */
     private bool $moduleDeclared = false;
@@ -85,17 +90,25 @@ final class FactCollector extends NodeVisitorAbstract
     public function beforeTraverse(array $nodes): ?array
     {
         $finder = new NodeFinder();
-        foreach ($finder->findInstanceOf($nodes, Stmt\Use_::class) as $use) {
-            if ($use->type === Stmt\Use_::TYPE_NORMAL) {
-                foreach ($use->uses as $item) {
-                    $this->imports[strtolower($item->getAlias()->toString())] = $item->name->toString();
-                }
+        $scopes = [];
+        foreach ($nodes as $node) {
+            if ($node instanceof Stmt\Namespace_) {
+                $scopes[spl_object_id($node)] = $node->stmts;
             }
         }
-        foreach ($finder->findInstanceOf($nodes, Stmt\GroupUse::class) as $group) {
-            foreach ($group->uses as $item) {
-                if ($group->type === Stmt\Use_::TYPE_NORMAL || $item->type === Stmt\Use_::TYPE_NORMAL) {
-                    $this->imports[strtolower($item->getAlias()->toString())] = $group->prefix->toString() . '\\' . $item->name->toString();
+        foreach ($scopes === [] ? [0 => $nodes] : $scopes as $scope => $statements) {
+            foreach ($finder->findInstanceOf($statements, Stmt\Use_::class) as $use) {
+                if ($use->type === Stmt\Use_::TYPE_NORMAL) {
+                    foreach ($use->uses as $item) {
+                        $this->imports[$scope][strtolower($item->getAlias()->toString())] = $item->name->toString();
+                    }
+                }
+            }
+            foreach ($finder->findInstanceOf($statements, Stmt\GroupUse::class) as $group) {
+                foreach ($group->uses as $item) {
+                    if ($group->type === Stmt\Use_::TYPE_NORMAL || $item->type === Stmt\Use_::TYPE_NORMAL) {
+                        $this->imports[$scope][strtolower($item->getAlias()->toString())] = $group->prefix->toString() . '\\' . $item->name->toString();
+                    }
                 }
             }
         }
@@ -121,6 +134,9 @@ final class FactCollector extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?int
     {
+        if ($node instanceof Stmt\Namespace_) {
+            $this->namespaceScope = spl_object_id($node);
+        }
         if ($node instanceof Stmt\ClassLike) {
             $this->enterClassLike($node);
         } elseif ($node instanceof Stmt\ClassMethod) {
@@ -186,7 +202,7 @@ final class FactCollector extends NodeVisitorAbstract
                 continue;
             }
             [$head, $rest] = array_pad(explode('\\', $tag, 2), 2, null);
-            $imported = $this->imports[strtolower($head)] ?? null;
+            $imported = $this->imports[$this->namespaceScope][strtolower($head)] ?? null;
             if ($imported !== null) {
                 $classNames[] = $rest === null ? $imported : $imported . '\\' . $rest;
             }
