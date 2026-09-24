@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.3](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.2...v0.17.3) (2026-09-24)
+
+
+### Fixes
+
+* false positives from a stratified dead-code sample ([#127](https://github.com/AraneaDev/Knossos-MCP/issues/127)) ([ee4afec](https://github.com/AraneaDev/Knossos-MCP/commit/ee4afeca922df947ac3a11570f7e7e6e2b64544d))
+
 ## [0.17.2](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.1...v0.17.2) (2026-09-24)
 
 
