@@ -73,11 +73,27 @@ export function toVirtualSource(text, dialect, fileName = "") {
             out.join("") +
             (dialect === "astro" ? astroGlobal(text, blocks.scripts) : "") +
             (dialect === "svelte" ? routeProps(fileName) : "") +
-            typeParameters(blocks.generics),
+            typeParameters(blocks.generics) +
+            compiledDefaultExport(text, blocks.scripts),
         scriptRanges: blocks.scripts,
         templateRanges: blocks.markup,
         typed: blocks.typed,
     };
+}
+
+/**
+ * The component itself as the module's default export, where no script
+ * writes one: what a bundler compiles `<script setup>`, a Svelte or an Astro
+ * component into. Without it `import('./X.vue')` had no `default`, and every
+ * import of a component read as an error the framework's checker never gives.
+ */
+function compiledDefaultExport(text, scripts) {
+    const declares = scripts.some(([from, to]) =>
+        /\bexport\s+default\b|\bas\s+default\b/.test(text.slice(from, to)),
+    );
+    return declares
+        ? ""
+        : "\nexport {};\ndeclare const __knossosComponent: any;\nexport default __knossosComponent;\n";
 }
 
 /**

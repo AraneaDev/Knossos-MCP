@@ -62,6 +62,8 @@ final class ComponentWorkerTest extends KnossosTestCase
         self::assertSame([], $scan->diagnosticPaths('TS2304'));
         // A generic component's type parameters are declared in its script tag.
         self::assertSame([], $scan->diagnosticCodes('src/components/GenericList.vue'));
+        // A component compiled from `<script setup>` still has its default export.
+        self::assertSame([], $scan->diagnosticCodes('src/loader.ts'));
     }
 
     public function testASvelteKitAppsAliasesBlocksAndMarkupBecomeFacts(): void
@@ -87,7 +89,7 @@ final class ComponentWorkerTest extends KnossosTestCase
         // As svelte-check reads them: runes typed by the installed package,
         // a generic component's type parameters, and a component's default
         // export re-exported by name.
-        foreach (['src/routes/runes/+page.svelte', 'src/routes/+layout.svelte', 'src/components/Picker.svelte', 'src/components/index.ts'] as $file) {
+        foreach (['src/routes/runes/+page.svelte', 'src/routes/+layout.svelte', 'src/components/Picker.svelte', 'src/components/index.ts', 'src/lib/lazy.ts'] as $file) {
             self::assertSame([], $scan->diagnosticCodes($file), $file);
         }
     }
