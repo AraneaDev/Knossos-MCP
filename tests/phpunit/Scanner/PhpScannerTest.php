@@ -296,7 +296,8 @@ final class PhpScannerTest extends KnossosTestCase
     /**
      * A class name built from a namespace literal, `new ($prefix . $name)`,
      * may be any class in that namespace; the scanner names the namespace for
-     * the reconciler to expand. A variable reassigned since names nothing.
+     * the reconciler to expand. A variable reassigned since, rebound by a
+     * `foreach`, or shadowed by a closure's parameter names nothing.
      */
     #[Group('php-scanner')]
     public function testPhpWorkerNamesTheNamespaceARuntimeClassNameIsBuiltIn(): void

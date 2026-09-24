@@ -71,11 +71,21 @@ final class FactCollector extends NodeVisitorAbstract
 
     /**
      * Variables holding a class name built from a namespace literal
-     * (`$card = 'App\\Cards\\' . $name`), keyed by callable id and name.
+     * (`$card = 'App\\Cards\\' . $name`), keyed by the function-like scope
+     * they live in and their name.
      *
      * @var array<string, string>
      */
     private array $classPrefixes = [];
+
+    /**
+     * The function-like nodes the traversal is inside, innermost last. A
+     * closure has its own variables, so a prefix recorded in the method
+     * around it does not reach a parameter of the same name.
+     *
+     * @var list<int>
+     */
+    private array $variableScopes = [];
 
     /** The namespace block the traversal is in, keyed as {@see self::$imports} is. */
     private int $namespaceScope = 0;
@@ -144,6 +154,9 @@ final class FactCollector extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?int
     {
+        if ($node instanceof Node\FunctionLike) {
+            $this->variableScopes[] = spl_object_id($node);
+        }
         if ($node instanceof Stmt\Namespace_) {
             $this->namespaceScope = spl_object_id($node);
         }
@@ -225,6 +238,9 @@ final class FactCollector extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?int
     {
+        if ($node instanceof Node\FunctionLike) {
+            array_pop($this->variableScopes);
+        }
         if ($node instanceof Stmt\ClassMethod || $node instanceof Stmt\Function_) {
             array_pop($this->callables);
         } elseif ($node instanceof Stmt\ClassLike) {
@@ -465,12 +481,11 @@ final class FactCollector extends NodeVisitorAbstract
         if (!$node->var instanceof Expr\Variable || !is_string($node->var->name)) {
             return;
         }
-        $prefixKey = $this->currentSource() . '$' . $node->var->name;
         $prefix = self::namespacePrefix($node->expr);
         if ($prefix === null) {
-            unset($this->classPrefixes[$prefixKey]);
+            unset($this->classPrefixes[$this->prefixKey($node->var->name)]);
         } else {
-            $this->classPrefixes[$prefixKey] = $prefix;
+            $this->classPrefixes[$this->prefixKey($node->var->name)] = $prefix;
         }
         if ($node->expr instanceof Expr\New_ && $node->expr->class instanceof Name) {
             // Inferred from local construction flow — only ever probable.
@@ -517,6 +532,12 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private function foreachLoop(Stmt\Foreach_ $node): void
     {
+        // The loop rebinds its variables, whatever they held before.
+        foreach ([$node->keyVar, $node->valueVar] as $bound) {
+            if ($bound instanceof Expr\Variable && is_string($bound->name)) {
+                unset($this->classPrefixes[$this->prefixKey($bound->name)]);
+            }
+        }
         if (!$node->valueVar instanceof Expr\Variable || !is_string($node->valueVar->name)) {
             return;
         }
@@ -658,13 +679,19 @@ final class FactCollector extends NodeVisitorAbstract
         // `new ('App\\Cards\\' . $name)` or `new $card` after `$card = 'App\\Cards\\' . $name`:
         // any class in that namespace may be the one built.
         $prefix = match (true) {
-            $node->class instanceof Expr\Variable && is_string($node->class->name) => $this->classPrefixes[$this->currentSource() . '$' . $node->class->name] ?? null,
+            $node->class instanceof Expr\Variable && is_string($node->class->name) => $this->classPrefixes[$this->prefixKey($node->class->name)] ?? null,
             $node->class instanceof Expr => self::namespacePrefix($node->class),
             default => null,
         };
         if ($prefix !== null) {
             $this->addEdge('references', $this->currentSource(), 'php:class_prefix:' . $prefix, $node, 'probable');
         }
+    }
+
+    /** A variable's key in {@see self::$classPrefixes}: its scope and its name. */
+    private function prefixKey(string $variable): string
+    {
+        return ($this->variableScopes === [] ? 0 : $this->variableScopes[count($this->variableScopes) - 1]) . '$' . $variable;
     }
 
     /**

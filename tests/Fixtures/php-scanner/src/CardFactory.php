@@ -18,6 +18,23 @@ final class CardFactory
         return new ('\\App\\Widgets\\' . $command)();
     }
 
+    public function looped(array $names): void
+    {
+        $card = 'App\\Cards\\' . 'Help';
+        foreach ($names as $card) {
+            new $card();
+        }
+    }
+
+    public function closure(string $command): callable
+    {
+        $card = 'App\\Cards\\' . $command;
+
+        return static function (string $card): object {
+            return new $card();
+        };
+    }
+
     public function reassigned(string $command): object
     {
         $card = 'App\\Cards\\' . $command;
