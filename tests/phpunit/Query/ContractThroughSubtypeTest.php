@@ -49,6 +49,14 @@ final class ContractThroughSubtypeTest extends KnossosTestCase
                 '}',
                 'export class FileLocator extends LocatorBase implements Locator {}',
                 'export function locator(): Locator { return new FileLocator(); }',
+                // The base is used directly too: its own members are not
+                // made contracts by having a subclass.
+                'export function fresh(): BaseAdapter { return new BaseAdapter(); }',
+                // A middle class overrides, so the leaf never reaches the root's.
+                'export class Root { draw(): string { return "root"; } }',
+                'export class Middle extends Root { draw(): string { return "middle"; } }',
+                'export class Leaf extends Middle {}',
+                'export function paint(leaf: Leaf): string { return leaf.draw(); }',
                 '',
             ]),
         ];
@@ -71,5 +79,6 @@ final class ContractThroughSubtypeTest extends KnossosTestCase
         // A member no interface of a subtype declares stays reportable.
         self::assertContains('App\\Unsupported::unused', $names);
         self::assertContains('web/adapter.ts#BaseAdapter::stale', $names);
+        self::assertContains('web/adapter.ts#Root::draw', $names);
     }
 }

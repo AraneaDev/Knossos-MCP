@@ -310,13 +310,15 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * Member names declared by the internal types that implement or extend
-     * each of `$typeIds`.
+     * Member names the internal types that implement or extend each of
+     * `$typeIds` carry: those they declare, and those they inherit from the
+     * classes they extend or the traits they use, stopping at the type itself.
      *
      * Only direct subtypes are read. A grandchild that redeclares a member its
      * own parent already declares is reached through that parent, so one level
      * answers the question this asks: does some implementation carry this
-     * contract?
+     * contract? Each subtype's bases are walked, because an implementer may
+     * take the method from the class it extends.
      *
      * @param list<string> $typeIds
      * @return array<string, array<string, true>> type id => member display names
@@ -378,7 +380,9 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
         $result = [];
         foreach ($subtypesOf as $typeId => $subtypes) {
             foreach ($subtypes as $subtypeId) {
-                $seen = [];
+                // The walk stops at the contract type: its own members, and
+                // what it inherits, are not what the subtype implements it with.
+                $seen = [$typeId => true];
                 $stack = [$subtypeId];
                 while ($stack !== []) {
                     $id = array_pop($stack);
@@ -569,12 +573,22 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
             if (!$inherited && $classId !== null) {
                 $name = $methodNames[$methodId];
                 $chain = array_flip([$classId, ...$ancestors]);
+                $descendants = array_flip($subtypesOf[$classId] ?? []);
                 foreach ($subtypesOf[$classId] ?? [] as $subtypeId) {
                     if (isset($memberNames[$subtypeId][$name])) {
                         continue;
                     }
-                    foreach ($closureOf($subtypeId) as $ancestorId) {
-                        if (!isset($chain[$ancestorId]) && isset($internalSet[$ancestorId], $memberNames[$ancestorId][$name])) {
+                    $subtypeAncestors = $closureOf($subtypeId);
+                    // A descendant between this subtype and the method's type
+                    // that overrides it is what the subtype inherits instead.
+                    foreach ($subtypeAncestors as $ancestorId) {
+                        if (isset($descendants[$ancestorId], $memberNames[$ancestorId][$name])) {
+                            continue 2;
+                        }
+                    }
+                    foreach ($subtypeAncestors as $ancestorId) {
+                        if (!isset($chain[$ancestorId]) && !isset($descendants[$ancestorId])
+                            && isset($internalSet[$ancestorId], $memberNames[$ancestorId][$name])) {
                             $inherited = true;
                             break 2;
                         }
