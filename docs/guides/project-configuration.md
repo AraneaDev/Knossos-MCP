@@ -23,7 +23,8 @@ The published schema is
   build directories (`vendor`, `node_modules`, `dist`, `build`, `coverage`,
   `.stryker-tmp`, `.worktrees`, `site` and the rest) and any directory in this tool's own `.knossos`
   namespace, `.knossos-src` and `.knossos-ci` included, plus minified bundles
-  (`*.min.js`, `*.min.mjs`, `*.min.cjs`). Built-in exclusions
+  (`*.min.js`, `*.min.mjs`, `*.min.cjs`) and JavaScript compiled beside its source (a `.js`
+  ending with a `sourceMappingURL` comment next to a same-named `.ts`). Built-in exclusions
   apply first and a `!` pattern cannot re-include them.
 - `limits.max_files` and `limits.max_file_bytes`: bounded discovery/worker
   limits.

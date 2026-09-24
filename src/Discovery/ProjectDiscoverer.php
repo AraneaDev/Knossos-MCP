@@ -257,6 +257,7 @@ final readonly class ProjectDiscoverer
      */
     private static function result(string $root, array $files, array $units, array $diagnostics, array $unparsedManifestHashes): DiscoveryResult
     {
+        $files = self::withoutCompiledSiblings($files);
         usort($files, static fn(DiscoveredFile $left, DiscoveredFile $right): int =>
             $left->relativePath <=> $right->relativePath);
         usort($units, static fn(ProjectUnit $left, ProjectUnit $right): int =>
@@ -1640,6 +1641,50 @@ final readonly class ProjectDiscoverer
         sort($names, SORT_STRING);
 
         return $names;
+    }
+
+    /**
+     * The files, less JavaScript `tsc` compiled beside its TypeScript source.
+     *
+     * Without an `outDir` the compiler writes `errors.js` next to `errors.ts`,
+     * and every import resolves to the `.ts`, so the `.js` read as a module
+     * nothing uses. It is build output: a same-named `.ts` or `.tsx` sits
+     * beside it and it ends with the source-map comment the compiler writes.
+     * Both are facts discovery already holds (the path list and the bytes it
+     * hashed), so the decision changes only when they do.
+     *
+     * @param list<DiscoveredFile> $files
+     * @return list<DiscoveredFile>
+     */
+    private static function withoutCompiledSiblings(array $files): array
+    {
+        $paths = [];
+        foreach ($files as $file) {
+            $paths[$file->relativePath] = true;
+        }
+
+        return array_values(array_filter($files, static function (DiscoveredFile $file) use ($paths): bool {
+            if (preg_match('/^(.*)\.(?:js|jsx|mjs|cjs)$/', $file->relativePath, $stem) !== 1) {
+                return true;
+            }
+            $extension = substr($file->relativePath, strlen($stem[1]) + 1);
+            $sources = match ($extension) {
+                'mjs' => ['mts'],
+                'cjs' => ['cts'],
+                default => ['ts', 'tsx'],
+            };
+            $sibling = false;
+            foreach ($sources as $source) {
+                $sibling = $sibling || isset($paths[$stem[1] . '.' . $source]);
+            }
+            if (!$sibling) {
+                return true;
+            }
+            $size = @filesize($file->absolutePath);
+            $tail = $size === false ? false : @file_get_contents($file->absolutePath, false, null, max(0, $size - 512));
+
+            return !is_string($tail) || preg_match('~//# sourceMappingURL=\S+\s*$~', $tail) !== 1;
+        }));
     }
 
     /**

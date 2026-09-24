@@ -1869,6 +1869,35 @@ TOML);
     }
 
     /**
+     * `tsc` without an `outDir` writes `errors.js` beside `errors.ts`, and
+     * imports resolve to the `.ts`: the `.js` is build output that read as an
+     * unreferenced module. The source map comment it ends with says what it
+     * is; a hand-written `.js` beside nothing, or with no map, stays.
+     */
+    public function testDiscoverSkipsJavaScriptCompiledBesideItsTypeScriptSource(): void
+    {
+        mkdir($this->root . '/shared', 0700, true);
+        $files = [
+            'shared/errors.ts' => "export class RateLimitError extends Error {}\n",
+            'shared/errors.js' => "export class RateLimitError extends Error {\n}\n//# sourceMappingURL=errors.js.map\n",
+            'shared/plain.ts' => "export const a = 1;\n",
+            'shared/plain.js' => "export const a = 1;\n",
+            'shared/lone.js' => "export const b = 1;\n//# sourceMappingURL=lone.js.map\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($this->root . '/' . $relative, $contents);
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $paths = array_map(static fn($file): string => $file->relativePath, $result->files);
+        self::assertNotContains('shared/errors.js', $paths);
+        self::assertContains('shared/errors.ts', $paths);
+        self::assertContains('shared/plain.js', $paths);
+        self::assertContains('shared/lone.js', $paths);
+    }
+
+    /**
      * A published build output stands for the source compiled to it: the
      * tsconfig's `rootDir` when it declares one, and `src/` only when no
      * tsconfig lays the build out.
