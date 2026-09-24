@@ -494,15 +494,21 @@ final readonly class GraphReconciler
 
     /**
      * The member a method reference names (`<lang>:method:Owner::member`,
-     * `<lang>:method_of_return:callee::member`), or null for any other.
+     * `<lang>:method_of_return:callee::member`), or null for any other and for
+     * one whose owner or member is empty.
      */
     private static function calledMemberName(string $reference): ?string
     {
         if (!str_contains($reference, ':method:') && !str_contains($reference, ':method_of_return:')) {
             return null;
         }
-        $separator = strrpos($reference, '::');
-        $member = $separator === false ? '' : substr($reference, $separator + 2);
+        [, , $target] = array_pad(explode(':', $reference, 3), 3, '');
+        $separator = strrpos($target, '::');
+        if ($separator === false || $separator === 0) {
+            // No owner, so the reference names no receiver a call was made on.
+            return null;
+        }
+        $member = substr($target, $separator + 2);
 
         return $member === '' ? null : $member;
     }

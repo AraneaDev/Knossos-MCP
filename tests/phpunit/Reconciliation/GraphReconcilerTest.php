@@ -1968,7 +1968,7 @@ final class GraphReconcilerTest extends TestCase
     {
         $source = $this->minimalNode('php:class:Fixture\\Caller', 'Fixture\\Caller');
         $edges = [];
-        foreach (['php:method_of_return:NoMemberSeparator', 'php:method_of_return:::member', 'php:method_of_return:Fixture\\Absent::make::use'] as $index => $reference) {
+        foreach (['php:method_of_return:NoMemberSeparator', 'php:method_of_return:::member', 'php:method_of_return:Fixture\\Absent::make::', 'php:method_of_return:Fixture\\Absent::make::use'] as $index => $reference) {
             $edges[] = new EdgeFact(
                 kind: 'calls',
                 sourceReference: $source->localId,
@@ -1985,11 +1985,18 @@ final class GraphReconcilerTest extends TestCase
 
         $result = (new GraphReconciler($this->repo))->reconcile($request);
 
-        // The declaring node survives; none of the three references produce an
+        // The declaring node survives; none of the four references produce an
         // edge, and no external symbol is invented for any of them.
         assertSame(1, $result->nodes);
         assertSame(0, $result->edges);
         assertSame(0, $result->unresolvedNodes);
+        // A call on an unresolved factory's result names its member; a
+        // reference with no owner or no member names nothing a call reached.
+        $attributes = [];
+        foreach ($this->repo->nodes as $args) {
+            $attributes[$args[4]] = $args[12];
+        }
+        assertSame(['use'], $attributes['Fixture\\Caller']['unresolved_member_calls'] ?? null);
     }
 
     /**
