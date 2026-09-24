@@ -2110,6 +2110,37 @@ TOML);
     }
 
     /**
+     * vulture reads a whitelist as ordinary source through its `paths`; the
+     * file exists for that tool and nothing imports it.
+     */
+    public function testDiscoverReadsTheFilesVultureIsToldToScan(): void
+    {
+        mkdir($this->root . '/backend', 0700, true);
+        file_put_contents($this->root . '/backend/pyproject.toml', implode("\n", [
+            '[project]',
+            'name = "backend"',
+            '',
+            '[tool.vulture]',
+            'min_confidence = 60',
+            'paths = [',
+            '    "core",',
+            '    "vulture_whitelist.py",',
+            ']',
+            '',
+        ]));
+        file_put_contents($this->root . '/backend/vulture_whitelist.py', "_.used\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('backend/vulture_whitelist.py', $entryPoints);
+        self::assertNotContains('backend/core', $entryPoints);
+    }
+
+    /**
      * A Create React App package is built from `src/index.js`, and Cargo runs
      * a package's `build.rs` before compiling it. Neither is named anywhere.
      */

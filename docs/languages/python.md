@@ -19,7 +19,8 @@ target project.
 - ordinary and relative imports, including aliases
 
 A console script such as `shop.cli:main` is mapped to the exact source path
-`shop/cli.py`. Classification only applies when that path produced a scanner
+`shop/cli.py`, and a `.py` file listed in `[tool.vulture] paths` (a whitelist vulture reads
+as source) is an entry point too. Classification only applies when that path produced a scanner
 node, so a manifest token cannot invent an entry point.
 
 Virtual environments and tool caches such as `.venv`, `venv`, `__pycache__`,

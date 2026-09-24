@@ -786,6 +786,18 @@ final readonly class ProjectDiscoverer
             }
         }
 
+        // vulture reads a whitelist as ordinary source through its `paths`.
+        $vulture = self::tableBlock($contents, '[tool.vulture]');
+        if ($vulture !== null && preg_match('/^\s*paths\s*=\s*\[([^\]]*)\]/m', $vulture, $paths) === 1
+            && preg_match_all('/["\']([^"\']+\.py)["\']/', $paths[1], $files) > 0) {
+            foreach ($files[1] as $file) {
+                $path = self::entryPointPath($file, $directory);
+                if ($path !== null) {
+                    $scripts[] = $path;
+                }
+            }
+        }
+
         $scripts = array_values(array_unique($scripts));
         sort($scripts, SORT_STRING);
 
