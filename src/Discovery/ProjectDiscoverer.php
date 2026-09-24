@@ -360,6 +360,11 @@ final readonly class ProjectDiscoverer
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
             ]);
         }
+        if ($kind === 'shell') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::shellPathEntryPoints($contents, $relative),
+            ]);
+        }
         if ($kind === 'agent_config') {
             // Read as text for paths, as a YAML file is: the commands are shell
             // lines, and `$CLAUDE_PLUGIN_ROOT/src/x.ts` leaves a token the path
@@ -1197,11 +1202,13 @@ final readonly class ProjectDiscoverer
      * workflow's `run:` step executes with the repository root as its working
      * directory. Both readings are offered for every token and the one naming
      * no emitted file falls away, which is the same bargain {@see self::webRootReadings()}
-     * strikes with a bundler's asset directories.
+     * strikes with a bundler's asset directories. A caller that knows of other
+     * working directories, as a shell script's `cd` names them, adds them.
      *
+     * @param list<string> $extraAnchors project-relative directories to read a path from as well
      * @return list<string>
      */
-    private static function yamlPathEntryPoints(string $contents, string $configPath): array
+    private static function yamlPathEntryPoints(string $contents, string $configPath, array $extraAnchors = []): array
     {
         $directory = self::manifestDirectory($configPath);
         $extensions = implode('|', array_map(preg_quote(...), self::ENTRY_POINT_EXTENSIONS));
@@ -1211,7 +1218,7 @@ final readonly class ProjectDiscoverer
         }
         $excludedLines = self::yamlExclusionLines($stripped);
         $paths = [];
-        $anchors = array_unique([$directory, '']);
+        $anchors = array_unique([$directory, '', ...$extraAnchors]);
         // One pass over the newlines, so the line lookup below is a search
         // rather than a rescan of the prefix for every matched token.
         $lineStarts = [0];
@@ -1231,6 +1238,36 @@ final readonly class ProjectDiscoverer
         }
 
         return array_keys($paths);
+    }
+
+    /**
+     * The files a shell script names by path, as a YAML file's are read.
+     *
+     * `cd server && npx tsx src/scripts/reset.ts` names a path relative to the
+     * directory the line changed into, so every directory a `cd` names, from
+     * the project root or from the script's own, is an anchor too. A path no
+     * file answers to under any anchor names nothing.
+     *
+     * @return list<string>
+     */
+    private static function shellPathEntryPoints(string $contents, string $configPath): array
+    {
+        $directory = self::manifestDirectory($configPath);
+        $stripped = preg_replace('/(?:^|\s)#.*$/m', '', $contents) ?? $contents;
+        preg_match_all('#\bcd\s+[\'"]?([A-Za-z0-9_][A-Za-z0-9_./-]*)#', $stripped, $matches);
+        $anchors = [];
+        foreach ($matches[1] as $target) {
+            $target = rtrim(str_starts_with($target, './') ? substr($target, 2) : $target, '/');
+            if ($target === '' || str_contains($target, '..')) {
+                continue;
+            }
+            $anchors[$target] = true;
+            if ($directory !== '') {
+                $anchors[$directory . '/' . $target] = true;
+            }
+        }
+
+        return self::yamlPathEntryPoints($stripped, $configPath, array_keys($anchors));
     }
 
     /**
@@ -1994,6 +2031,10 @@ final readonly class ProjectDiscoverer
         $basename = strtolower(basename($relativePath));
         if ($basename === '.gitignore') {
             return 'gitignore';
+        }
+        // A shell script starts the programs it runs, which nothing imports.
+        if (str_ends_with($basename, '.sh') || str_ends_with($basename, '.bash')) {
+            return 'shell';
         }
         // A container's CMD and ENTRYPOINT start a script nothing imports.
         if ($basename === 'dockerfile' || str_starts_with($basename, 'dockerfile.') || str_ends_with($basename, '.dockerfile')) {

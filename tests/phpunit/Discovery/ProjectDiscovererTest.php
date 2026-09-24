@@ -1822,6 +1822,34 @@ TOML);
     }
 
     /**
+     * `scripts/manage.sh` runs `cd server && npx tsx src/scripts/reset.ts`:
+     * the script is started by the shell script and imported by nothing, and
+     * its path is relative to the directory the line changed into.
+     */
+    public function testDiscoverReadsEntryPointsFromShellScripts(): void
+    {
+        mkdir($this->root . '/scripts', 0700, true);
+        file_put_contents($this->root . '/scripts/manage.sh', implode("\n", [
+            '#!/usr/bin/env bash',
+            '# node old/unused.js is only mentioned in a comment',
+            'case "$1" in',
+            '  reset) cd server && npx tsx src/scripts/reset.ts "$@" ;;',
+            '  seed) node tools/seed.mjs ;;',
+            'esac',
+            '',
+        ]));
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $units = array_values(array_filter($result->units, fn($u): bool => $u->kind === 'shell'));
+        assertSame(1, count($units));
+        $entryPoints = $units[0]->metadata['entry_points'];
+        self::assertContains('server/src/scripts/reset.ts', $entryPoints);
+        self::assertContains('tools/seed.mjs', $entryPoints);
+        self::assertNotContains('old/unused.js', $entryPoints);
+    }
+
+    /**
      * The reason this reader is key-scoped rather than tokenising the whole
      * file the way the YAML one does. A config names files to EXCLUDE as well
      * as files to load, and an excluded path is exactly the kind of file that
