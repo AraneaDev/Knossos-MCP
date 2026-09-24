@@ -40,6 +40,7 @@ final class TypescriptRequireTest extends KnossosTestCase
         sort($imports);
         self::assertSame([
             'ts:function:src/storage.ts#createBackend -> ts:module:src/local.ts',
+            'ts:function:src/storage.ts#loadBoth -> ts:module:src/both.js',
             'ts:function:src/storage.ts#loadServer -> ts:module:src/lazy/server.ts',
         ], $imports);
     }

@@ -11,6 +11,11 @@ export function loadServer(): unknown {
     return require('./lazy/server');
 }
 
+export function loadBoth(): unknown {
+    // Node tries `both.js` before a TypeScript loader tries `both.ts`.
+    return require('./both');
+}
+
 export function missing(): unknown {
     return require('./absent');
 }

@@ -1407,8 +1407,9 @@ class TypeScriptLanguageFactCollector {
      * The program's file a relative `require('./local')` names.
      *
      * The compiler binds a `require` argument to its module only in a
-     * JavaScript file; in TypeScript it is a string. Looked up the way the
-     * compiler would try it, among the files the program holds first.
+     * JavaScript file; in TypeScript it is a string. Each candidate is tried
+     * in the order Node loads it, so `require('./x')` beside both `x.js` and
+     * `x.ts` means the `.js`.
      */
     requiredSourceFile(location) {
         const sourceFileAt = this.project.sourceFileAt;
@@ -1423,14 +1424,13 @@ class TypeScriptLanguageFactCollector {
             location.text,
         );
         for (const suffix of REQUIRE_SUFFIXES) {
-            const file = sourceFileAt(normalize(base + suffix));
-            if (file !== undefined) return file;
-        }
-        // A file the program leaves out (a tsconfig `exclude`) is still the
-        // module the call loads. Only its existence is asked, as the
-        // compiler host asks it, so nothing is read.
-        for (const suffix of REQUIRE_SUFFIXES) {
             const fileName = normalize(base + suffix);
+            const file = sourceFileAt(fileName);
+            if (file !== undefined) return file;
+            // A file the program leaves out (a tsconfig `exclude`, or `.js`
+            // without `allowJs`) is still the module the call loads. Only its
+            // existence is asked, as the compiler host asks it, so nothing is
+            // read.
             if (
                 allowedCompilerPath(this.root, fileName) &&
                 ts.sys.fileExists(fileName)
@@ -2755,13 +2755,12 @@ function isClassicScript(sourceFile) {
     );
 }
 
-/** What a `require` specifier may leave off, in the order Node tries it. */
+/** What a `require` specifier may leave off, in the order it is tried. */
 const REQUIRE_SUFFIXES = [
-    "",
-    ...[".ts", ".tsx", ".d.ts", ".js", ".jsx", ".cts", ".cjs", ".mts", ".mjs"],
-    ...["ts", "tsx", "d.ts", "js", "jsx"].map(
-        (extension) => `/index.${extension}`,
-    ),
+    // Node's own order, then what a TypeScript loader adds.
+    ...["", ".js", "/index.js"],
+    ...[".ts", ".tsx", ".cts", ".mts", ".jsx", ".cjs", ".mjs", ".d.ts"],
+    ...["ts", "tsx", "jsx", "d.ts"].map((extension) => `/index.${extension}`),
 ];
 
 /** The literal `base` an `import.meta.glob` options object sets, or null. */
