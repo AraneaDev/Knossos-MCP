@@ -43,6 +43,8 @@ final readonly class LaravelPathRoleRule implements ClassificationRule
         'laravel.job' => ['handle', 'failed', 'middleware', 'retryUntil', 'backoff', '__invoke'],
         'laravel.listener' => ['handle', 'failed', 'shouldQueue', '__invoke'],
         'laravel.command' => ['handle', '__invoke'],
+        // The Gate calls these by ability name: `authorize('view', $device)`.
+        'laravel.policy' => ['before', 'after', 'viewAny', 'view', 'create', 'update', 'delete', 'restore', 'forceDelete'],
     ];
 
     /** {@inheritDoc} */
@@ -72,7 +74,7 @@ final readonly class LaravelPathRoleRule implements ClassificationRule
     }
 
     /**
-     * The method the framework calls on a middleware, job, listener or command.
+     * The method the framework calls on a middleware, job, listener, command or policy.
      *
      * The class is a convention; its entry method is named by nothing in the
      * project either, so it gets a convention role of its own.

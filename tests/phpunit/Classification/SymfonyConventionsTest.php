@@ -35,6 +35,8 @@ final class SymfonyConventionsTest extends KnossosTestCase
             'form type' => ['Symfony\\Component\\Form\\AbstractType', 'symfony.form_type'],
             'twig extension' => ['Twig\\Extension\\AbstractExtension', 'symfony.twig_extension'],
             'controller' => ['Symfony\\Bundle\\FrameworkBundle\\Controller\\AbstractController', 'symfony.controller'],
+            // Run by `doctrine:migrations:migrate`, which finds them by directory.
+            'doctrine migration' => ['Doctrine\\Migrations\\AbstractMigration', 'doctrine.migration'],
         ];
     }
 

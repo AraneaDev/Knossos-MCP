@@ -41,7 +41,7 @@ final readonly class ReportableComponent
         'laravel.migration', 'laravel.seeder', 'laravel.factory', 'laravel.entry_method',
         'symfony.controller', 'symfony.command', 'symfony.event_subscriber', 'symfony.event_listener',
         'symfony.message_handler', 'symfony.route_handler', 'symfony.fixture', 'symfony.voter',
-        'symfony.form_type', 'symfony.twig_extension',
+        'symfony.form_type', 'symfony.twig_extension', 'doctrine.migration',
         'nestjs.framework_handler',
         'library.public_api',
         self::TEST_ROLE,

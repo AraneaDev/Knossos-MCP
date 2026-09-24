@@ -8,6 +8,7 @@ resolution.
 | Area        | Supported static idioms                                                                                                                                  | Confidence                                                  |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | Routes      | `Route::get/post/put/patch/delete/options/any/match`, controller arrays/classes, fluent names and middleware, nested `prefix`/`name`/`middleware` groups | certain when literals; dynamic URI is diagnosed and omitted |
+| Routes      | `Route::resource/apiResource` with `only`/`except`, one route per conventional action                                                                    | certain when literals                                       |
 | Roles       | framework base classes/interfaces                                                                                                                        | certain                                                     |
 | Roles       | conventional `app/` directories                                                                                                                          | probable                                                    |
 | Roles       | conservative class suffixes                                                                                                                              | possible                                                    |
@@ -15,6 +16,7 @@ resolution.
 | Listeners   | static `$listen` provider maps                                                                                                                           | certain mapping, listener retained in attributes            |
 | Container   | `$this->app->bind/singleton/scoped(Contract::class, Implementation::class)`                                                                              | certain                                                     |
 | Policies    | static `$policies` provider maps                                                                                                                         | certain mapping, policy retained in attributes              |
+| Policies    | the standard abilities (`viewAny`, `view`, `create`, `update`, `delete`, `restore`, `forceDelete`, `before`, `after`) in `Policies/`                     | probable                                                    |
 | Observers   | `Model::observe(Observer::class)`                                                                                                                        | certain                                                     |
 
 Unsupported dynamic expressions are omitted or diagnosed. Route macros,

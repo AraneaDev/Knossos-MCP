@@ -19,6 +19,9 @@ final readonly class SymfonyRoleRule implements ClassificationRule
         '\\Authorization\\Voter\\Voter' => 'symfony.voter',
         '\\Form\\AbstractType' => 'symfony.form_type',
         '\\Twig\\Extension\\AbstractExtension' => 'symfony.twig_extension',
+        // Not autoconfigured, but found the same way: `doctrine:migrations:migrate`
+        // loads every class in the migrations directory.
+        '\\Migrations\\AbstractMigration' => 'doctrine.migration',
     ];
 
     /** {@inheritDoc} */

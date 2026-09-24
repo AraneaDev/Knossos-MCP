@@ -32,6 +32,14 @@ methods, containment, imports, inheritance, and statically resolvable calls.
 Async status and decorator names are retained as node attributes. A module with
 a shebang or an `if __name__ == "__main__":` guard is marked `executable`, which
 keeps a script run by a shell or `python -m` off the dead-code report.
+
+A few calls nothing names are recognised as runtime-invoked: a function a
+decorator hands to an object (`@queue.register("scan")`, `@bus.on`), and a
+module whose file name no import can spell (`029_seed.py`), which a loader
+reads by path, together with its public top-level functions. A name a package
+imports is an attribute of that package, so `config.staging_dir()` reaches the
+submodule `config/__init__.py` re-exports it from. A class declared under
+`if TYPE_CHECKING:` is a module-level name.
 Cross-file references are resolved when their declarations are in the same
 scan request; other references remain explicit unresolved or external graph
 facts.

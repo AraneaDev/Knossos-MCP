@@ -273,6 +273,10 @@ final class ClassificationModuleTest extends KnossosTestCase
             ['app/Jobs/SendInvoice.php', 'failed'],
             ['app/Listeners/NotifyAdmins.php', 'handle'],
             ['app/Console/Commands/SyncPortals.php', 'handle'],
+            // The Gate calls a policy's abilities by name: `authorize('view', $device)`.
+            ['app/Policies/DevicePolicy.php', 'view'],
+            ['app/Policies/DevicePolicy.php', 'forceDelete'],
+            ['app/Policies/DevicePolicy.php', 'before'],
         ] as [$path, $name]) {
             $facts = $rule->classify($method($path, $name));
             assertSame('laravel.entry_method', $facts[0]->role ?? null, $path . '::' . $name);
@@ -280,6 +284,7 @@ final class ClassificationModuleTest extends KnossosTestCase
         assertSame(true, ReportableComponent::isDiscoveredByConvention(['laravel.entry_method']));
         // Any other method of such a class stays reportable.
         assertSame([], $rule->classify($method('app/Jobs/SendInvoice.php', 'buildPayload')));
+        assertSame([], $rule->classify($method('app/Policies/DevicePolicy.php', 'ownsDevice')));
         // And a `handle` outside every convention directory is an ordinary method.
         assertSame([], $rule->classify($method('app/Models/Invoice.php', 'handle')));
         assertSame('laravel.middleware', $rule->classify(self::makeNode('php:class:app/Modules/ExternalApi/Middleware/ClientAuth.php', relativePath: 'app/Modules/ExternalApi/Middleware/ClientAuth.php'))[0]->role ?? null);
