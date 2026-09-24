@@ -1835,4 +1835,57 @@ PYTHON);
 
         self::assertSame(['app.main' => true, 'app.routes' => false, 'app.wsgi' => true], $executable);
     }
+
+    #[Group('python-scanner')]
+    public function testAParameterTypedByAnAnnotatedAliasCallsItsClass(): void
+    {
+        // `RepoDep = Annotated[Repo, Depends(get_repo)]` is how FastAPI names
+        // an injected dependency; a parameter typed by it holds a `Repo`.
+        $root = sys_get_temp_dir() . '/knossos-py-annotated-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/repo.py' => "class Repo:\n    def count(self):\n        return 1\n",
+            'app/deps.py' => implode("\n", [
+                'from typing import Annotated',
+                '',
+                'from fastapi import Depends',
+                '',
+                'from app.repo import Repo',
+                '',
+                'def get_repo():',
+                '    return Repo()',
+                '',
+                'RepoDep = Annotated[Repo, Depends(get_repo)]',
+                '',
+            ]),
+            'app/router.py' => "from app.deps import RepoDep\n\ndef handler(repo: RepoDep):\n    return repo.count()\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/router.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $calls = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+        }
+
+        self::assertContains('py:function:app.router.handler -> py:method:app.repo.Repo::count', $calls);
+    }
 }

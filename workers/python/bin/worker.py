@@ -583,14 +583,9 @@ class ProjectModuleIndex:
                 name, constructor = child.target.id, child.value
             if name is None or name in declarations:
                 continue
-            class_name = (
-                constructor.func.id
-                if isinstance(constructor, ast.Call) and isinstance(constructor.func, ast.Name)
-                else None
-            )
-            target = None if class_name is None else declarations.get(class_name) or imported.get(class_name)
-            if target is not None and target.startswith("py:class:"):
-                declarations[name] = "py:instance:" + target.removeprefix("py:class:")
+            value = assigned_declaration(constructor, declarations, imported)
+            if value is not None:
+                declarations[name] = value
 
     def adopt_parsed(self, absolute: Path, relative: str, tree: ast.Module) -> None:
         """Make a scanned file's own declarations come from the tree just parsed.
@@ -842,6 +837,32 @@ def module_statements(tree: ast.Module) -> Iterator[ast.stmt]:
             handled = [item for handler in child.handlers for item in handler.body]
             nested = [*child.body, *handled, *child.orelse, *child.finalbody]
         pending.extend(reversed(nested))
+
+
+def assigned_declaration(value: ast.AST | None, declarations: dict[str, str], imported: dict[str, str]) -> str | None:
+    """What a module-level name assigned ``value`` stands for, if a class is involved.
+
+    ``repo = Repo()`` is an instance of ``Repo``; ``RepoDep = Annotated[Repo,
+    Depends(get_repo)]`` names ``Repo`` itself, the class a parameter typed by
+    the alias holds.
+    """
+    annotated = annotated_class_name(value)
+    if annotated is not None:
+        target = declarations.get(annotated) or imported.get(annotated)
+        return target if target is not None and target.startswith("py:class:") else None
+    class_name = value.func.id if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) else None
+    target = None if class_name is None else declarations.get(class_name) or imported.get(class_name)
+    if target is not None and target.startswith("py:class:"):
+        return "py:instance:" + target.removeprefix("py:class:")
+    return None
+
+
+def annotated_class_name(value: ast.AST | None) -> str | None:
+    """The class name ``Annotated[Name, ...]`` wraps, or None for anything else."""
+    if not isinstance(value, ast.Subscript) or (dotted(value.value) or "").split(".")[-1] != "Annotated":
+        return None
+    first = value.slice.elts[0] if isinstance(value.slice, ast.Tuple) and value.slice.elts else value.slice
+    return first.id if isinstance(first, ast.Name) else None
 
 
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
