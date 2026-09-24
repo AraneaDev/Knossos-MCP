@@ -2009,6 +2009,45 @@ final class GraphReconcilerTest extends TestCase
     }
 
     /**
+     * `'App\\Cards\\' . $segment . '\\' . $name` builds a name below a nested
+     * namespace, which the scanner marks with a trailing `\\**`: every class
+     * at any depth below the prefix may be the one built.
+     */
+    #[Group('reconciliation')]
+    public function testARecursiveClassPrefixReachesNestedNamespaces(): void
+    {
+        $caller = $this->minimalNode('php:method:App\\Webhook::post', 'App\\Webhook::post');
+        $help = $this->minimalNode('php:class:App\\Cards\\Help', 'App\\Cards\\Help');
+        $nested = $this->minimalNode('php:class:App\\Cards\\Parts\\Header', 'App\\Cards\\Parts\\Header');
+        $other = $this->minimalNode('php:class:App\\Cardsets\\Deck', 'App\\Cardsets\\Deck');
+        $edge = new EdgeFact(
+            kind: 'references',
+            sourceReference: $caller->localId,
+            targetReference: 'php:class_prefix:App\\Cards\\**',
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller, $help, $nested, $other], [$edge])],
+        ]);
+
+        (new GraphReconciler($this->repo))->reconcile($request);
+
+        $names = [];
+        foreach ($this->repo->nodes as $args) {
+            $names[$args[0]] = $args[4];
+        }
+        $targets = [];
+        foreach ($this->repo->edges as $args) {
+            $targets[] = $names[$args[4]] ?? '?';
+        }
+        sort($targets);
+        assertSame(['App\\Cards\\Help', 'App\\Cards\\Parts\\Header'], $targets);
+    }
+
+    /**
      * A deferred receiver reference is a shape a third-party scanner can emit,
      * so a malformed one must be ignored rather than resolved into something
      * arbitrary or fabricated as an external symbol.

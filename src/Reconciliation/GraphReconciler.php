@@ -566,7 +566,8 @@ final readonly class GraphReconciler
      * The classes directly in the namespace a runtime-built class name starts
      * with: `new ('App\\Cards\\' . $command)`, named by the scanner as
      * `<language>:class_prefix:App\\Cards`. A class in a nested namespace is
-     * not one the prefix can name, and an empty prefix names nothing.
+     * not one the prefix can name unless the reference ends `\\**`, and an
+     * empty prefix names nothing.
      *
      * @param array<string, string> $nodeMap
      * @return list<string>
@@ -574,14 +575,16 @@ final readonly class GraphReconciler
     private static function classPrefixTargets(string $reference, array $nodeMap): array
     {
         [$language, , $namespace] = array_pad(explode(':', $reference, 3), 3, '');
-        $namespace = trim($namespace, '\\');
+        // A trailing `\\**` reaches every namespace below the prefix.
+        $nested = str_ends_with($namespace, '\\**');
+        $namespace = trim($nested ? substr($namespace, 0, -3) : $namespace, '\\');
         if ($namespace === '') {
             return [];
         }
         $prefix = $language . ':class:' . $namespace . '\\';
         $targets = [];
         foreach ($nodeMap as $candidate => $nodeId) {
-            if (str_starts_with($candidate, $prefix) && !str_contains(substr($candidate, strlen($prefix)), '\\')) {
+            if (str_starts_with($candidate, $prefix) && ($nested || !str_contains(substr($candidate, strlen($prefix)), '\\'))) {
                 $targets[] = $nodeId;
             }
         }

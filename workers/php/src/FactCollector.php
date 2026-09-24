@@ -696,19 +696,34 @@ final class FactCollector extends NodeVisitorAbstract
 
     /**
      * The namespace a concatenation builds a class name in, when it starts with
-     * one written out: `'App\\Cards\\' . $name` is `App\\Cards`.
+     * one written out: `'App\\Cards\\' . $name` is `App\\Cards`. A separator
+     * written after a runtime part (`'App\\Cards\\' . $segment . '\\' . $name`)
+     * puts the class in a namespace below that one, marked `\\**`.
      */
     private static function namespacePrefix(Expr $expression): ?string
     {
-        while ($expression instanceof Expr\BinaryOp\Concat) {
-            $expression = $expression->left;
-        }
-        if (!$expression instanceof Node\Scalar\String_
-            || preg_match('/^\\\\?((?:[A-Za-z_][A-Za-z0-9_]*\\\\)+)$/', $expression->value, $match) !== 1) {
+        $parts = [];
+        $flatten = static function (Expr $part) use (&$flatten, &$parts): void {
+            if ($part instanceof Expr\BinaryOp\Concat) {
+                $flatten($part->left);
+                $flatten($part->right);
+
+                return;
+            }
+            $parts[] = $part;
+        };
+        $flatten($expression);
+        $first = array_shift($parts);
+        if (!$first instanceof Node\Scalar\String_
+            || preg_match('/^\\\\?((?:[A-Za-z_][A-Za-z0-9_]*\\\\)+)$/', $first->value, $match) !== 1) {
             return null;
         }
+        $nested = false;
+        foreach ($parts as $part) {
+            $nested = $nested || ($part instanceof Node\Scalar\String_ && str_contains($part->value, '\\'));
+        }
 
-        return rtrim($match[1], '\\');
+        return rtrim($match[1], '\\') . ($nested ? '\\**' : '');
     }
 
     /** Emit a `calls` edge for a static call, resolving `self`/`static`/`parent` against the current class. */

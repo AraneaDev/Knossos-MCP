@@ -18,6 +18,11 @@ final class CardFactory
         return new ('\\App\\Widgets\\' . $command)();
     }
 
+    public function nested(string $segment, string $name): object
+    {
+        return new ('App\\Cards\\' . $segment . '\\' . $name)();
+    }
+
     public function looped(array $names): void
     {
         $card = 'App\\Cards\\' . 'Help';
