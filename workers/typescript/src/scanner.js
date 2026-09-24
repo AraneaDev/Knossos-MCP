@@ -1453,9 +1453,15 @@ class TypeScriptLanguageFactCollector {
         const patterns = ts.isArrayLiteralExpression(first)
             ? first.elements
             : [first];
+        const base = globBase(node.arguments[1]);
         for (const pattern of patterns) {
             if (!ts.isStringLiteralLike(pattern)) continue;
-            const glob = globContext(pattern.text);
+            // A relative pattern resolves from `base` when the call sets one.
+            const text =
+                base !== null && /^\.\.?\//.test(pattern.text)
+                    ? relativeGlob(base, pattern.text)
+                    : pattern.text;
+            const glob = globContext(text);
             if (glob === null) continue;
             const absolute = glob.directory.startsWith("/")
                 ? normalize(path.resolve(this.root, "." + glob.directory))
@@ -2758,6 +2764,29 @@ const REQUIRE_SUFFIXES = [
     ),
 ];
 
+/** The literal `base` an `import.meta.glob` options object sets, or null. */
+function globBase(options) {
+    if (options === undefined || !ts.isObjectLiteralExpression(options))
+        return null;
+    for (const property of options.properties) {
+        if (
+            ts.isPropertyAssignment(property) &&
+            staticPropertyName(property.name) === "base" &&
+            ts.isStringLiteralLike(property.initializer)
+        )
+            return property.initializer.text;
+    }
+    return null;
+}
+
+/** A relative glob read from `base`: `./*.vue` from `./Widgets` is `./Widgets/*.vue`. */
+function relativeGlob(base, pattern) {
+    const joined = path.posix.join(base, pattern);
+    return joined.startsWith("/") || joined.startsWith("../")
+        ? joined
+        : `./${joined}`;
+}
+
 /** `import.meta.glob(<literal or array>, …)`, Vite's glob import. */
 function isImportMetaGlob(node) {
     const callee = node.expression;
@@ -2790,6 +2819,17 @@ function globContext(glob) {
         } else if (rest.startsWith("**", index)) {
             pattern += ".*";
             index += 1;
+        } else if (char === "[" && rest.indexOf("]", index + 2) !== -1) {
+            // `[ab]` and `[!ab]`: one character of the class, never a `/`.
+            const close = rest.indexOf("]", index + 2);
+            const body = rest.slice(index + 1, close);
+            const negated = body.startsWith("!") || body.startsWith("^");
+            const members = (negated ? body.slice(1) : body).replace(
+                /[\\\]^]/g,
+                "\\$&",
+            );
+            pattern += negated ? `[^/${members}]` : `[${members}]`;
+            index = close;
         } else if (char === "*") pattern += "[^/]*";
         else if (char === "?") pattern += "[^/]";
         else if (char === "{") pattern += "(?:";

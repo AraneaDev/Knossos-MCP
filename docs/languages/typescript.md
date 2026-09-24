@@ -86,7 +86,8 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
   graph it matches. The match happens when the graph is assembled, so an incremental scan
   that re-reads only the loading file keeps every edge.
 - Vite's `import.meta.glob('./Pages/**/*.vue')`, a single pattern or an array, imports every
-  module its patterns match, the same way. A negated pattern (`'!./x.vue'`) is ignored, so it
+  module its patterns match, the same way, reading a relative pattern from a literal `base`
+  option and matching `*`, `**`, `?`, `{a,b}` and `[ab]`. A negated pattern (`'!./x.vue'`) is ignored, so it
   can keep a module it excludes live but never drops one.
 - SvelteKit route components (`+page.svelte`, `+layout.svelte`, `+error.svelte`) and Astro pages
   (`src/pages/**/*.astro`) are entry points.

@@ -21,13 +21,18 @@ final class ViteGlobImportTest extends KnossosTestCase
         $root = sys_get_temp_dir() . '/knossos-stale-vite-glob-' . bin2hex(random_bytes(6));
         mkdir($root . '/js/Pages/Admin', 0o777, true);
         mkdir($root . '/js/Layouts', 0o777, true);
+        mkdir($root . '/js/Widgets', 0o777, true);
+        mkdir($root . '/js/Icons', 0o777, true);
         $page = "<template><div/></template>\n<script setup lang=\"ts\">\nconst title = 'x';\n</script>\n";
         $files = [
             'package.json' => '{"name":"app","private":true,"type":"module","dependencies":{"vue":"^3.4.0","vite":"^5.0.0"}}',
             'js/app.ts' => implode("\n", [
                 "const pages = import.meta.glob<object>('./Pages/**/*.vue');",
                 "const layouts = import.meta.glob(['./Layouts/{Main,Admin}.vue', '!./Layouts/Admin.vue'], { eager: true });",
-                'export default [pages, layouts];',
+                // A relative pattern resolves from `base`, and a character class matches one of its characters.
+                "const widgets = import.meta.glob('./*.vue', { base: './Widgets' });",
+                "const icons = import.meta.glob('./Icons/[ab].vue');",
+                'export default [pages, layouts, widgets, icons];',
                 '',
             ]),
             'js/Pages/Home.vue' => $page,
@@ -36,6 +41,10 @@ final class ViteGlobImportTest extends KnossosTestCase
             'js/Pages/helpers.ts' => "export const helper = 1;\n",
             'js/Layouts/Main.vue' => $page,
             'js/Layouts/Side.vue' => $page,
+            'js/Widgets/Card.vue' => $page,
+            'js/Icons/a.vue' => $page,
+            'js/Icons/b.vue' => $page,
+            'js/Icons/c.vue' => $page,
         ];
         foreach ($files as $relative => $contents) {
             file_put_contents($root . '/' . $relative, $contents);
@@ -55,5 +64,9 @@ final class ViteGlobImportTest extends KnossosTestCase
         self::assertNotContains('js/Layouts/Main.vue', $names);
         self::assertContains('js/Pages/helpers.ts', $names);
         self::assertContains('js/Layouts/Side.vue', $names);
+        self::assertNotContains('js/Widgets/Card.vue', $names);
+        self::assertNotContains('js/Icons/a.vue', $names);
+        self::assertNotContains('js/Icons/b.vue', $names);
+        self::assertContains('js/Icons/c.vue', $names);
     }
 }
