@@ -299,9 +299,10 @@ final class FactCollector extends NodeVisitorAbstract
 
         if ($node instanceof Stmt\Class_ && $node->extends instanceof Name) {
             $this->addEdge('extends', $id, self::reference('class', $parent), $node->extends);
-            if ($parent === 'Symfony\\Component\\Validator\\Constraint') {
-                // Validated by `static::class . 'Validator'` unless it says
-                // otherwise; kept only when that class exists.
+            if ($parent === 'Symfony\\Component\\Validator\\Constraint' && $node->getMethod('validatedBy') === null) {
+                // Validated by `static::class . 'Validator'` unless its own
+                // `validatedBy()` says otherwise; kept only when that class
+                // exists.
                 $this->addEdge('references', $id, self::reference('class', $name . 'Validator'), $node, attributes: ['speculative' => true]);
             }
         }

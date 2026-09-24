@@ -192,7 +192,7 @@ final class PhpScannerTest extends KnossosTestCase
         $client = $this->phpWorkerClient();
         $contributions = iterator_to_array($client->scan([
             'root' => $root,
-            'files' => ['src/AnnotatedEntity.php', 'src/AdminEmail.php'],
+            'files' => ['src/AnnotatedEntity.php', 'src/AdminEmail.php', 'src/Picky.php'],
         ]), false);
         $client->shutdown();
         $references = [];
@@ -210,6 +210,8 @@ final class PhpScannerTest extends KnossosTestCase
             ['php:class:Fixture\\Entity\\AnnotatedEntity', 'php:class:Fixture\\Validator\\CustomerType', false],
             // Kept only if the validator exists.
             ['php:class:Fixture\\Validator\\AdminEmail', 'php:class:Fixture\\Validator\\AdminEmailValidator', true],
+            // Its own `validatedBy()` names the validator, so no default is inferred.
+            ['php:method:Fixture\\Validator\\Picky::validatedBy', 'php:class:Fixture\\Validator\\SharedValidator', false],
         ], $references);
     }
 
