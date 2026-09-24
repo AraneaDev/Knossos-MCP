@@ -574,6 +574,18 @@ final class IgnoreMatcherTest extends TestCase
         assertSame(true, $matcher->matches('site/assets/chunks/app.js'));
     }
 
+    public function testMatchesAMinifiedBundleAnywhere(): void
+    {
+        // A minified file is a vendored or built bundle: it has no
+        // architecture of its own, and each one read as an unused module.
+        $matcher = new IgnoreMatcher([]);
+
+        assertSame(true, $matcher->matches('front/src/assets/js/materialize.min.js'));
+        assertSame(true, $matcher->matches('docs/lib/highlight.min.mjs'));
+        assertSame(false, $matcher->matches('src/min.js'));
+        assertSame(false, $matcher->matches('src/admin.js'));
+    }
+
     public function testMatchesPathInsideExcludedPrefixPublicBuildExactMatch(): void
     {
         $matcher = new IgnoreMatcher([]);
