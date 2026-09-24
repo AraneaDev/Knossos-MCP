@@ -417,7 +417,10 @@ final readonly class ProjectDiscoverer
                 'workspaces' => self::workspaces($decoded['workspaces'] ?? []),
                 'typescript_range' => self::typescriptRange($decoded),
                 'vue' => self::dependsOn($decoded, 'vue'),
-                'entry_points' => self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
+                'entry_points' => [
+                    ...self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
+                    ...self::createReactAppEntryPoints($decoded, $relative),
+                ],
                 'public_entry_points' => self::publicEntryPoints($decoded, $relative),
             ],
             'azure_function' => [
@@ -814,7 +817,17 @@ final readonly class ProjectDiscoverer
         // Auto-discovery finds src/main.rs and everything under src/bin/, and
         // it runs alongside any explicit [[bin]] rather than instead of it.
         // A virtual workspace has no [package] and so no binary of its own.
-        if (self::cargoAutobins($contents) && self::tableBlock($contents, '[package]') !== null) {
+        // Cargo runs a package's build script before compiling it: the file
+        // `build =` names, or a `build.rs` beside the manifest.
+        $package = self::tableBlock($contents, '[package]');
+        if ($package !== null) {
+            if (preg_match('/^\s*build\s*=\s*"([^"]+)"/m', $package, $build) === 1) {
+                $candidates[] = $build[1];
+            } elseif (is_file($absoluteDirectory . '/build.rs')) {
+                $candidates[] = 'build.rs';
+            }
+        }
+        if (self::cargoAutobins($contents) && $package !== null) {
             $candidates[] = 'src/main.rs';
             foreach (self::cargoDiscoveredBinaries($absoluteDirectory) as $discovered) {
                 $candidates[] = $discovered;
@@ -1046,6 +1059,27 @@ final readonly class ProjectDiscoverer
         sort($paths, SORT_STRING);
 
         return $paths;
+    }
+
+    /**
+     * The entry a Create React App package is built from: `react-scripts`
+     * builds `src/index.js` (or `.jsx`, `.ts`, `.tsx`), which its own config
+     * names and nothing in the project imports.
+     *
+     * @param array<string, mixed> $manifest
+     * @return list<string>
+     */
+    private static function createReactAppEntryPoints(array $manifest, string $configPath): array
+    {
+        if (!self::dependsOn($manifest, 'react-scripts')) {
+            return [];
+        }
+        $directory = self::manifestDirectory($configPath);
+
+        return array_map(
+            static fn(string $extension): string => ($directory === '' ? '' : $directory . '/') . 'src/index.' . $extension,
+            ['js', 'jsx', 'ts', 'tsx'],
+        );
     }
 
     /**

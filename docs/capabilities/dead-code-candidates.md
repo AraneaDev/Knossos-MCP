@@ -153,7 +153,8 @@ carry an in-degree of zero however central they are. Five of the eight
 candidates on that same 111-file scan were scripts of this kind.
 
 Discovery reads each `package.json` and `composer.json` for the paths it names
-as `bin`, `main`/`module`, and `scripts`, and each Azure Functions
+as `bin`, `main`/`module`, and `scripts` (and, for a package depending on
+`react-scripts`, the `src/index` Create React App builds from), and each Azure Functions
 `function.json` for its `scriptFile`, anchored to the manifest's own directory
 so a monorepo package resolves correctly. Script values are shell
 commands, so they are tokenised and only tokens shaped like a source file are

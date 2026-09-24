@@ -16,6 +16,8 @@ against the scanned project.
   and the binaries under `src/bin/`. Discovery follows Cargo's own rules, so
   `autobins = false` disables it, and on the 2015 edition (the default when no
   `edition` key is present) a hand-written `[[bin]]` disables it too
+- the package's build script: the file `build =` names, or a `build.rs` beside
+  the manifest, which Cargo runs before compiling the crate
 
 The manifest's `[package] name` becomes a Rust `package` node when the crate
 root is part of the scan request. A declared binary path becomes an exact

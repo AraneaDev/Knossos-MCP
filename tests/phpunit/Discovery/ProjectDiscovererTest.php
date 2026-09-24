@@ -2110,6 +2110,39 @@ TOML);
     }
 
     /**
+     * A Create React App package is built from `src/index.js`, and Cargo runs
+     * a package's `build.rs` before compiling it. Neither is named anywhere.
+     */
+    public function testDiscoverReadsTheEntriesManifestConventionsImply(): void
+    {
+        mkdir($this->root . '/front/src', 0700, true);
+        mkdir($this->root . '/desktop/src', 0700, true);
+        mkdir($this->root . '/plain/src', 0700, true);
+        $files = [
+            'front/package.json' => '{"name":"front","private":true,"dependencies":{"react":"^17.0.0","react-scripts":"4.0.3"}}',
+            'front/src/index.js' => "export {};\n",
+            'plain/package.json' => '{"name":"plain","private":true,"dependencies":{"react":"^17.0.0"}}',
+            'plain/src/index.js' => "export {};\n",
+            'desktop/Cargo.toml' => "[package]\nname = \"desktop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            'desktop/build.rs' => "fn main() {}\n",
+            'desktop/src/main.rs' => "fn main() {}\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($this->root . '/' . $relative, $contents);
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('front/src/index.js', $entryPoints);
+        self::assertNotContains('plain/src/index.js', $entryPoints);
+        self::assertContains('desktop/build.rs', $entryPoints);
+    }
+
+    /**
      * Tools find their files through config: TypeORM loads the migrations a
      * glob names, Laravel Mix and Vite build the entries their config lists,
      * and Cypress loads the plugins and support files `cypress.json` names.
