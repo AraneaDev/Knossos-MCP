@@ -1833,6 +1833,42 @@ TOML);
     }
 
     /**
+     * A README is where a one-off script's command is written down:
+     * `node scripts/screenshot.mjs`. Only a path a runner is given counts; a
+     * path the prose merely mentions says nothing about use.
+     */
+    public function testDiscoverReadsTheScriptsAReadmeRuns(): void
+    {
+        mkdir($this->root . '/docs', 0700, true);
+        file_put_contents($this->root . '/README.md', implode("\n", [
+            '# App',
+            '',
+            'The engine lives in `src/engine.ts`.',
+            '',
+            '```bash',
+            'node scripts/screenshot.mjs --out shots',
+            'npx tsx src/scripts/seed-demo.ts',
+            'python3 tools/report.py',
+            '```',
+            '',
+        ]));
+        file_put_contents($this->root . '/docs/guide.md', "Run `node scripts/other.mjs`.\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('scripts/screenshot.mjs', $entryPoints);
+        self::assertContains('src/scripts/seed-demo.ts', $entryPoints);
+        self::assertContains('tools/report.py', $entryPoints);
+        self::assertNotContains('src/engine.ts', $entryPoints);
+        // Only a README is read.
+        self::assertNotContains('scripts/other.mjs', $entryPoints);
+    }
+
+    /**
      * `scripts/manage.sh` runs `cd server && npx tsx src/scripts/reset.ts`:
      * the script is started by the shell script and imported by nothing, and
      * its path is relative to the directory the line changed into.

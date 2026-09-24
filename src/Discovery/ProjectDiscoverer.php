@@ -366,6 +366,11 @@ final readonly class ProjectDiscoverer
                 'entry_points' => self::yamlPathEntryPoints(self::withCopySources($contents), $relative),
             ]);
         }
+        if ($kind === 'readme') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::readmeRunnerEntryPoints($contents, $relative),
+            ]);
+        }
         if ($kind === 'shell') {
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::shellPathEntryPoints($contents, $relative),
@@ -1245,6 +1250,28 @@ final readonly class ProjectDiscoverer
         }
 
         return array_keys($paths);
+    }
+
+    /**
+     * The files a README runs: a path given straight to an interpreter
+     * (`node scripts/screenshot.mjs`, `npx tsx src/seed.ts`, `python3 x.py`).
+     *
+     * Prose mentions files for every reason, so a path only counts after a
+     * runner. Read from the README's directory and from the project root, as
+     * a YAML file's paths are.
+     *
+     * @return list<string>
+     */
+    private static function readmeRunnerEntryPoints(string $contents, string $configPath): array
+    {
+        $extensions = implode('|', array_map(preg_quote(...), self::ENTRY_POINT_EXTENSIONS));
+        preg_match_all(
+            sprintf('#\b(?:node|nodejs|deno(?:\s+run)?|bun(?:\s+run)?|tsx|ts-node|python3?|php)\s+(?:-{1,2}[a-z][\w-]*(?:=\S+)?\s+)*([A-Za-z0-9_./-]+\.(?:%s))\b#', $extensions),
+            $contents,
+            $matches,
+        );
+
+        return self::yamlPathEntryPoints(implode("\n", $matches[1]), $configPath);
     }
 
     /**
@@ -2326,6 +2353,10 @@ final readonly class ProjectDiscoverer
         $basename = strtolower(basename($relativePath));
         if ($basename === '.gitignore') {
             return 'gitignore';
+        }
+        // A README writes down the command that runs a one-off script.
+        if (preg_match('/^readme(?:\.[a-z]+)?\.md$/', $basename) === 1) {
+            return 'readme';
         }
         // A shell script starts the programs it runs, which nothing imports.
         if (str_ends_with($basename, '.sh') || str_ends_with($basename, '.bash')) {
