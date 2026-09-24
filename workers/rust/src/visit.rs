@@ -64,10 +64,15 @@ struct Walk<'a> {
     /// public name of into scope, each with the module that declares it, in
     /// the order they were written.
     globs: Vec<(String, String)>,
-    /// Glob imports as written, with their module and span, until every `use`
-    /// in the file is known: a glob's path may start with an alias declared
-    /// later in the same module.
-    pending_globs: Vec<(String, String, proc_macro2::Span)>,
+    /// Glob imports as written, with their module, whether the path is
+    /// absolute (`::dep::*`), and span, until every `use` in the file is
+    /// known: a glob's path may start with an alias declared later in the
+    /// same module.
+    pending_globs: Vec<(String, String, bool, proc_macro2::Span)>,
+    /// Each module's own imported names, for a glob's leading alias: a `use`
+    /// is scoped to the module that declares it, so sibling modules may bind
+    /// one alias to different paths. `None` marks a name bound twice.
+    module_aliases: BTreeMap<(String, String), Option<String>>,
     /// Target type of the current impl block, for resolving `Self`.
     current_impl_target: Option<String>,
     /// Frameworks the scan request asked this worker to enrich, by short name
@@ -107,6 +112,7 @@ pub fn walk(
         aliases: Aliases::default(),
         globs: Vec::new(),
         pending_globs: Vec::new(),
+        module_aliases: BTreeMap::new(),
         current_impl_target: None,
         frameworks,
         declarations,
@@ -248,6 +254,16 @@ impl Walk<'_> {
                             "certain",
                             item.span(),
                         );
+                        let key = (container.to_owned(), leaf.alias.clone());
+                        match self.module_aliases.get(&key) {
+                            Some(Some(existing)) if existing != &full => {
+                                self.module_aliases.insert(key, None);
+                            }
+                            Some(_) => {}
+                            None => {
+                                self.module_aliases.insert(key, Some(full.clone()));
+                            }
+                        }
                         self.aliases.insert(leaf.alias, full);
                     }
                     let mut globs = Vec::new();
@@ -259,8 +275,12 @@ impl Walk<'_> {
                         } else {
                             glob
                         };
-                        self.pending_globs
-                            .push((container.to_owned(), written, item.span()));
+                        self.pending_globs.push((
+                            container.to_owned(),
+                            written,
+                            node.leading_colon.is_some(),
+                            item.span(),
+                        ));
                     }
                 }
                 Item::Mod(node) => {
@@ -734,8 +754,22 @@ impl Walk<'_> {
     /// comes first.
     fn resolve_globs(&mut self) {
         let source = reference("module", &self.module);
-        for (container, written, span) in std::mem::take(&mut self.pending_globs) {
-            let expanded = self.aliases.expand(&written).unwrap_or(written);
+        for (container, written, absolute, span) in std::mem::take(&mut self.pending_globs) {
+            // `::dep::*` names the external crate whatever the file calls
+            // `dep`; otherwise a leading alias is one this module declares.
+            let expanded = if absolute {
+                written
+            } else {
+                let (head, rest) = written.split_once("::").unwrap_or((written.as_str(), ""));
+                match self
+                    .module_aliases
+                    .get(&(container.clone(), head.to_owned()))
+                {
+                    Some(Some(full)) if rest.is_empty() => full.clone(),
+                    Some(Some(full)) => format!("{full}::{rest}"),
+                    _ => written.clone(),
+                }
+            };
             let Some(full) = rebase(&container, &self.anchor_crate(&expanded)) else {
                 continue;
             };
@@ -2194,7 +2228,7 @@ mod tests {
                 .expect("parses");
         let right = left.clone();
         let engine: syn::File = syn::parse_str(
-            "use parts::*;\nuse crate::left as parts;\nfn top() { let _ = Device::open(); }\nmod a {\n    use crate::right::*;\n    fn go() { let _ = Device::open(); }\n}\nmod b {\n    fn go() { let _ = Device::open(); }\n}",
+            "use parts::*;\nuse crate::left as parts;\nuse crate::left as dep;\nfn top() { let _ = Device::open(); }\nmod a {\n    use crate::right::*;\n    fn go() { let _ = Device::open(); }\n}\nmod b {\n    fn go() { let _ = Device::open(); }\n}\nmod c {\n    use crate::left as kit;\n    use kit::*;\n    fn go() { let _ = Device::open(); }\n}\nmod d {\n    use crate::right as kit;\n    use kit::*;\n    fn go() { let _ = Device::open(); }\n}\nmod e {\n    use ::dep::*;\n    fn go() { let _ = Device::open(); }\n}",
         )
         .expect("parses");
         let mut declarations = Declarations::new();
@@ -2230,6 +2264,27 @@ mod tests {
                 &"rust:function:crate::engine::a::go -> rust:method:crate::right::Device::open"
                     .to_owned()
             ),
+            "calls were {calls:?}"
+        );
+        // Sibling modules binding the same alias to different modules.
+        assert!(
+            calls.contains(
+                &"rust:function:crate::engine::c::go -> rust:method:crate::left::Device::open"
+                    .to_owned()
+            ),
+            "calls were {calls:?}"
+        );
+        assert!(
+            calls.contains(
+                &"rust:function:crate::engine::d::go -> rust:method:crate::right::Device::open"
+                    .to_owned()
+            ),
+            "calls were {calls:?}"
+        );
+        // `::dep` is the external crate, not the file's `dep` alias.
+        assert!(
+            !calls.iter().any(|call| call
+                .starts_with("rust:function:crate::engine::e::go -> rust:method:crate::left")),
             "calls were {calls:?}"
         );
         // `b` imports nothing, so the top-level glob does not reach it.
