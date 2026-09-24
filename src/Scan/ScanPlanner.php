@@ -149,7 +149,7 @@ final readonly class ScanPlanner
             // requirements.txt for the Python framework gating above: without
             // it, adding fastapi to requirements.txt would reuse contributions
             // scanned with enrichment switched off.
-            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos'], 'python-analysis-v11'),
+            'python' => $this->configurationHash($discovery->units, ['python', 'requirements', 'knossos'], 'python-analysis-v12'),
             // Cargo.toml is now a recorded unit (kind 'cargo'), so editing it
             // invalidates a Rust contribution's cache entry the same way
             // composer.json and package.json do for PHP and TypeScript.

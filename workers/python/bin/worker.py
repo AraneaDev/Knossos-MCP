@@ -306,6 +306,7 @@ class ProjectModuleIndex:
         self.read_hashes: dict[str, str | None] = {}
         self._prefixes: list[tuple[str, ...]] | None = None
         self._cache: dict[str, dict[str, str]] = {}
+        self._protocols: set[str] = set()
 
     @property
     def prefixes(self) -> list[tuple[str, ...]]:
@@ -517,11 +518,17 @@ class ProjectModuleIndex:
                     tree = None
                 if tree is not None:
                     declarations = top_level_declarations(tree, module)
+                    self._protocols |= declared_protocols(tree, module)
                     self._cache[module] = declarations
                     self._add_reexports(tree, module, path.name == "__init__.py", declarations)
                     self._add_instances(tree, module, path.name == "__init__.py", declarations)
         self._cache[module] = declarations
         return declarations
+
+    def is_protocol(self, owner: str) -> bool:
+        """Whether ``owner`` is a structural protocol a project module declares."""
+        self.module_declarations(owner.rpartition(".")[0])
+        return owner in self._protocols
 
     def _add_reexports(self, tree: ast.Module, module: str, is_package: bool, declarations: dict[str, str]) -> None:
         """Add the project declarations ``tree`` imports to its declarations.
@@ -604,6 +611,7 @@ class ProjectModuleIndex:
         if owner is None or owner.resolve() != absolute:
             return
         declarations = top_level_declarations(tree, module)
+        self._protocols |= declared_protocols(tree, module)
         self._cache[module] = declarations
         is_package = PurePosixPath(relative).stem == "__init__"
         self._add_reexports(tree, module, is_package, declarations)
@@ -863,6 +871,21 @@ def annotated_class_name(value: ast.AST | None) -> str | None:
         return None
     first = value.slice.elts[0] if isinstance(value.slice, ast.Tuple) and value.slice.elts else value.slice
     return first.id if isinstance(first, ast.Name) else None
+
+
+def is_protocol_base(base: ast.expr) -> bool:
+    """Whether a class base is ``Protocol``, generic (``Protocol[T]``) or not."""
+    named = base.value if isinstance(base, ast.Subscript) else base
+    return (dotted(named) or "").split(".")[-1] == "Protocol"
+
+
+def declared_protocols(tree: ast.Module, module: str) -> set[str]:
+    """The structural protocols ``tree`` declares at module level."""
+    return {
+        f"{module}.{child.name}"
+        for child in module_statements(tree)
+        if isinstance(child, ast.ClassDef) and any(is_protocol_base(base) for base in child.bases)
+    }
 
 
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
@@ -1495,6 +1518,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 "the package (__init__.py) owns it.",
                 self.tree,
             )
+        # Known before any call is visited: a call may precede the class.
+        self.protocols |= declared_protocols(self.tree, self.module)
         self.visit(self.tree)
         if self.serves_app:
             self.facts.nodes[self.module_id]["attributes"]["executable"] = True
@@ -1506,6 +1531,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
     def current(self) -> str:
         return self.containers[-1][0] if self.containers else self.module_id
+
+    def is_protocol(self, owner: str) -> bool:
+        """Whether ``owner`` is a structural protocol, declared here or imported."""
+        return owner in self.protocols or self.index.is_protocol(owner)
 
     def resolve_name(self, name: str, hint: str = "class") -> str | None:
         if "." not in name:
@@ -1587,7 +1616,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
             target = self.resolve_name(name, "class") if name else None
             if target:
                 self.facts.add_edge("extends", local_id, target, base)
-        if any((dotted(base) or "").split(".")[-1] == "Protocol" for base in node.bases):
+        if any(is_protocol_base(base) for base in node.bases):
             self.protocols.add(canonical)
         self.class_methods[canonical] = frozenset(
             item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -1985,7 +2014,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         if (
             target
             and target.startswith("py:method:")
-            and target.removeprefix("py:method:").split("::")[0] in self.protocols
+            and self.is_protocol(target.removeprefix("py:method:").split("::")[0])
         ):
             self.untyped_calls.add(target.rsplit("::", 1)[1])
         # Calling an instance (`repo()`) names no declaration of its own.

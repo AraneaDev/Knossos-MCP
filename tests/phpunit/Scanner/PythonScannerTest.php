@@ -1729,8 +1729,26 @@ PYTHON);
         mkdir($root . '/app', 0o755, true);
         $files = [
             'app/__init__.py' => '',
+            'app/contracts.py' => "from typing import Protocol\n\nclass Sink(Protocol):\n    def flush(self) -> None: ...\n",
             'app/endpoints.py' => implode("\n", [
-                'from typing import Protocol',
+                'from __future__ import annotations',
+                '',
+                'from typing import Generic, Protocol, TypeVar',
+                '',
+                'from app.contracts import Sink',
+                '',
+                'T = TypeVar("T")',
+                '',
+                '# Used before the protocol is declared, a generic one at that.',
+                'def use(worker: Worker) -> None:',
+                '    worker.run()',
+                '',
+                'class Worker(Protocol[T]):',
+                '    def run(self) -> None: ...',
+                '',
+                '# A protocol another module declares.',
+                'def drain(sink: Sink) -> None:',
+                '    sink.flush()',
                 '',
                 'def create(flag):',
                 '    if flag:',
@@ -1791,7 +1809,7 @@ PYTHON);
         }
 
         self::assertContains('py:function:app.endpoints.create.<locals>.root -> py:class:app.endpoints.Message', $calls);
-        self::assertSame(['read_some'], $untyped);
+        self::assertSame(['flush', 'read_some', 'run'], $untyped);
     }
 
     #[Group('python-scanner')]
