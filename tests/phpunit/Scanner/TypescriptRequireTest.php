@@ -76,4 +76,37 @@ final class TypescriptRequireTest extends KnossosTestCase
         self::assertContains('references ts:function:src/parser.ts#isAnd -> ts:enum:src/lexer.ts#TokenType', $edges);
         self::assertSame([], array_values(array_filter($edges, static fn(string $edge): bool => str_contains($edge, '#Unused'))));
     }
+
+    /**
+     * `new` on a binding constructs the class the binding holds: the class it
+     * was assigned, whatever type annotates it, and a class expression as
+     * much as a declaration.
+     */
+    public function testNewOnABindingConstructsTheClassItWasAssigned(): void
+    {
+        $client = $this->typescriptWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan([
+                'root' => self::repositoryRoot() . '/tests/Fixtures/ts-require',
+                'files' => ['src/constructs.ts'],
+                'config_files' => ['tsconfig.json'],
+            ]), false);
+        } finally {
+            $client->shutdown();
+        }
+        $constructs = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'constructs') {
+                    $constructs[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+        }
+        sort($constructs);
+
+        self::assertSame([
+            'ts:function:src/constructs.ts#build -> ts:class:src/constructs.ts#Widget',
+            'ts:function:src/constructs.ts#make -> ts:class:src/constructs.ts#Actual',
+        ], $constructs);
+    }
 }

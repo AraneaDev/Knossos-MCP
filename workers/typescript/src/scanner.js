@@ -1167,13 +1167,51 @@ class TypeScriptLanguageFactCollector {
 
     /**
      * The class a binding holds when `new` names the binding rather than the
-     * class: `const { Backend } = require('./local') as typeof import('./local')`
-     * then `new Backend()`. The binding's type is the class's constructor
-     * type, whose symbol is the class.
+     * class. A binding assigned a class (`const B: typeof A = Actual`, or a
+     * class expression) holds that class, whatever its annotation says. A
+     * binding with no initializer to read (`const { Backend } =
+     * require('./local') as typeof import('./local')`) holds what its type
+     * says: the constructor type's symbol is the class. An annotated binding
+     * assigned anything else proves nothing.
      */
     constructedClass(expression) {
-        const symbol = this.checker.getTypeAtLocation(expression).getSymbol();
-        return symbol?.declarations?.some((item) => ts.isClassDeclaration(item))
+        const binding = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(expression),
+        )?.valueDeclaration;
+        if (
+            binding !== undefined &&
+            ts.isVariableDeclaration(binding) &&
+            binding.initializer !== undefined
+        ) {
+            const value = unwrapExpression(binding.initializer);
+            const assigned =
+                value !== undefined &&
+                (ts.isClassExpression(value) || ts.isIdentifier(value))
+                    ? this.classSymbolReference(
+                          ts.isClassExpression(value)
+                              ? this.checker
+                                    .getTypeAtLocation(value)
+                                    .getSymbol()
+                              : unalias(
+                                    this.checker,
+                                    this.checker.getSymbolAtLocation(value),
+                                ),
+                      )
+                    : null;
+            if (assigned !== null || binding.type !== undefined)
+                return assigned;
+        }
+        return this.classSymbolReference(
+            this.checker.getTypeAtLocation(expression).getSymbol(),
+        );
+    }
+
+    /** The node a class symbol names, declared or a class expression, or null. */
+    classSymbolReference(symbol) {
+        return symbol?.declarations?.some(
+            (item) => ts.isClassDeclaration(item) || ts.isClassExpression(item),
+        )
             ? this.symbolReference(symbol, "class", true)
             : null;
     }
