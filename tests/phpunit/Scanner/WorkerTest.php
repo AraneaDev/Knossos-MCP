@@ -146,6 +146,13 @@ final class WorkerTest extends KnossosTestCase
         $error = captureThrows(fn() => iterator_to_array($endless->scan([])), WorkerException::class);
         assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
         assertSame(true, (hrtime(true) - $started) / 1_000_000 < 3_000);
+
+        // Nor does a worker that is never quiet long enough to be waited on.
+        $flood = $this->fakeWorkerClient('heartbeat_flood', new WorkerLimits(requestTimeoutMs: 400, maxOutputBytes: 1_000_000_000, maxRequestMs: 1_200));
+        $started = hrtime(true);
+        $error = captureThrows(fn() => iterator_to_array($flood->scan([])), WorkerException::class);
+        assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
+        assertSame(true, (hrtime(true) - $started) / 1_000_000 < 3_000);
     }
 
     #[Group('worker')]

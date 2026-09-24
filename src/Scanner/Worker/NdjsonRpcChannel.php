@@ -199,6 +199,12 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             if ($cancelled !== null && $cancelled()) {
                 throw new WorkerException('WORKER_CANCELLED', 'Scanner worker request was cancelled.');
             }
+            // The hard cap holds for frames already buffered too: a worker
+            // writing faster than they are read would otherwise never let
+            // the wait below, where the deadline is checked, come around.
+            if ($deadline === $this->deadline && hrtime(true) >= $this->hardDeadline) {
+                throw new WorkerException('WORKER_TIMEOUT', $this->withStderr('Scanner worker request timed out.'));
+            }
             $message = $this->extractMessage();
             if ($message !== null) {
                 // A notification is the worker saying it is alive and busy:
