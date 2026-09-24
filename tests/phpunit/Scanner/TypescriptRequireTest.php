@@ -140,6 +140,7 @@ final class TypescriptRequireTest extends KnossosTestCase
         self::assertSame([
             'ts:function:src/loader.ts#respond -> ts:function:src/lazy-service.ts#getSpiderResponse',
             'ts:function:src/loader.ts#route -> ts:function:src/lazy-service.ts#handleSse',
+            'ts:function:src/loader.ts#wire -> ts:function:src/lazy-service.ts#handleMessage',
         ], array_values(array_unique($references)));
     }
 }

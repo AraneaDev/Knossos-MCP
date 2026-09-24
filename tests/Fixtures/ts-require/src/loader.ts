@@ -14,3 +14,11 @@ export function route(): () => string {
     const service = require('./lazy-service') as { handleSse: () => string };
     return service.handleSse;
 }
+
+let onMessage: (() => string) | undefined;
+
+// Assigned to a variable declared elsewhere, as a handler is wired up.
+export function wire(): void {
+    const service = require('./lazy-service') as { handleMessage: () => string };
+    onMessage = service.handleMessage;
+}

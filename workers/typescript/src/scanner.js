@@ -3886,6 +3886,23 @@ function ambientAttributes(node, attributes) {
         : attributes;
 }
 
+/** `handler = run;`: assigned to a variable or field declared elsewhere. */
+function isAssignedValue(parent, node) {
+    return (
+        ts.isBinaryExpression(parent) &&
+        parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        parent.right === node
+    );
+}
+
+/** `return handler;` and `() => handler`. */
+function isReturnedValue(parent, node) {
+    return (
+        (ts.isReturnStatement(parent) && parent.expression === node) ||
+        (ts.isArrowFunction(parent) && parent.body === node)
+    );
+}
+
 /** An identifier that is the whole of a statement or of a parenthesised expression. */
 function isBareValue(parent, node) {
     return (
@@ -3974,16 +3991,15 @@ function valueReferencePosition(node) {
         parent.initializer === node
     )
         return true;
-    if (isChoiceOperand(parent, node)) return true;
+    if (isChoiceOperand(parent, node) || isAssignedValue(parent, node))
+        return true;
     // `handler;` and `(handler)`: how a component's tags and event handlers
     // reach the checker (see component-source.js), and a value use anywhere.
     if (isBareValue(parent, node)) return true;
     // `<Button onClick={addItem}>` and `{renderRow}`: a function handed to
     // React inside JSX, as a prop or a child.
     if (ts.isJsxExpression(parent) && parent.expression === node) return true;
-    // `return handler;` and `() => handler`
-    if (ts.isReturnStatement(parent) && parent.expression === node) return true;
-    if (ts.isArrowFunction(parent) && parent.body === node) return true;
+    if (isReturnedValue(parent, node)) return true;
     // `<Panel />` and `<Panel>…</Panel>` — a component rendered as a JSX
     // element. Only the tag name, and only on the opening form: the closing tag
     // names the same declaration and would resolve a second symbol for an edge

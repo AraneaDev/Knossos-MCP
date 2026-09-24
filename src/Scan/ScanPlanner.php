@@ -144,7 +144,7 @@ final readonly class ScanPlanner
             'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v6'),
             // tool_config: the worker reads module aliases from vite, svelte, webpack and
             // vue configs, so editing one must invalidate what was resolved under it.
-            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos'], 'typescript-analysis-v15'),
+            'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos'], 'typescript-analysis-v16'),
             // 'requirements' is in the hash because detectedFramework() reads
             // requirements.txt for the Python framework gating above: without
             // it, adding fastapi to requirements.txt would reuse contributions

@@ -27,6 +27,8 @@ final class ContractThroughSubtypeTest extends KnossosTestCase
             'composer.json' => '{"name":"app/app","autoload":{"psr-4":{"App\\\\":"src/"}}}',
             'src/Lookups.php' => "<?php\nnamespace App;\ninterface Lookups { public function installedBase(): array; }\n",
             'src/Unsupported.php' => "<?php\nnamespace App;\ntrait Unsupported {\n    public function installedBase(): array { return []; }\n    public function unused(): void {}\n}\n",
+            // One user overrides the trait's method; the other relies on it.
+            'src/Custom.php' => "<?php\nnamespace App;\nfinal class Custom implements Lookups {\n    use Unsupported;\n    public function installedBase(): array { return [1]; }\n}\n",
             'src/Adapter.php' => "<?php\nnamespace App;\nfinal class Adapter implements Lookups { use Unsupported; }\n",
             'src/Service.php' => "<?php\nnamespace App;\nfinal class Service {\n    public function __construct(private Lookups \$lookups) {}\n    public function run(): array { return \$this->lookups->installedBase(); }\n}\n",
             'package.json' => '{"name":"web","private":true}',
