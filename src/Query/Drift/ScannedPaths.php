@@ -107,8 +107,16 @@ final readonly class ScannedPaths implements TrackedPathPredicate
             }
         }
 
-        return is_dir($absolutePath)
-            || ProjectDiscoverer::languageFor($relativePath, $absolutePath) !== null
+        if (is_dir($absolutePath)) {
+            return true;
+        }
+        // Skipped by discovery as build output, so a rescan would skip it again.
+        $root = substr($absolutePath, 0, strlen($absolutePath) - strlen($relativePath));
+        if (ProjectDiscoverer::isCompiledSibling($relativePath, $absolutePath, static fn(string $sibling): bool => is_file($root . $sibling))) {
+            return false;
+        }
+
+        return ProjectDiscoverer::languageFor($relativePath, $absolutePath) !== null
             || ProjectDiscoverer::unitKindFor($relativePath) !== null;
     }
 }

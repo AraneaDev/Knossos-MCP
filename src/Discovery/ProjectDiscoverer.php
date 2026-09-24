@@ -1741,28 +1741,46 @@ final readonly class ProjectDiscoverer
             $paths[$file->relativePath] = true;
         }
 
-        return array_values(array_filter($files, static function (DiscoveredFile $file) use ($paths): bool {
-            if (preg_match('/^(.*)\.(?:js|jsx|mjs|cjs)$/', $file->relativePath, $stem) !== 1) {
-                return true;
-            }
-            $extension = substr($file->relativePath, strlen($stem[1]) + 1);
-            $sources = match ($extension) {
-                'mjs' => ['mts'],
-                'cjs' => ['cts'],
-                default => ['ts', 'tsx'],
-            };
-            $sibling = false;
-            foreach ($sources as $source) {
-                $sibling = $sibling || isset($paths[$stem[1] . '.' . $source]);
-            }
-            if (!$sibling) {
-                return true;
-            }
-            $size = @filesize($file->absolutePath);
-            $tail = $size === false ? false : @file_get_contents($file->absolutePath, false, null, max(0, $size - 512));
+        return array_values(array_filter(
+            $files,
+            static fn(DiscoveredFile $file): bool => !self::isCompiledSibling(
+                $file->relativePath,
+                $file->absolutePath,
+                static fn(string $sibling): bool => isset($paths[$sibling]),
+            ),
+        ));
+    }
 
-            return !is_string($tail) || preg_match('~//# sourceMappingURL=\S+\s*$~', $tail) !== 1;
-        }));
+    /**
+     * Whether a JavaScript file is `tsc` output beside its TypeScript source:
+     * a same-named `.ts` or `.tsx` (`.mts` for `.mjs`, `.cts` for `.cjs`)
+     * exists, and the file ends with the source-map comment the compiler
+     * writes. Public because the drift probe must skip exactly what discovery
+     * skips; each caller says how a sibling's existence is known.
+     *
+     * @param callable(string): bool $exists whether a project-relative path exists
+     */
+    public static function isCompiledSibling(string $relativePath, string $absolutePath, callable $exists): bool
+    {
+        if (preg_match('/^(.*)\.(js|jsx|mjs|cjs)$/', $relativePath, $stem) !== 1) {
+            return false;
+        }
+        $sources = match ($stem[2]) {
+            'mjs' => ['mts'],
+            'cjs' => ['cts'],
+            default => ['ts', 'tsx'],
+        };
+        $sibling = false;
+        foreach ($sources as $source) {
+            $sibling = $sibling || $exists($stem[1] . '.' . $source);
+        }
+        if (!$sibling) {
+            return false;
+        }
+        $size = @filesize($absolutePath);
+        $tail = $size === false ? false : @file_get_contents($absolutePath, false, null, max(0, $size - 512));
+
+        return is_string($tail) && preg_match('~//# sourceMappingURL=\S+\s*$~', $tail) === 1;
     }
 
     /**
