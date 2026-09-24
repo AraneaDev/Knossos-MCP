@@ -1246,21 +1246,48 @@ final readonly class ProjectDiscoverer
      * The files a shell script names by path, as a YAML file's are read.
      *
      * `cd server && npx tsx src/scripts/reset.ts` names a path relative to the
-     * directory the line changed into, so every directory a `cd` names, from
-     * the project root or from the script's own, is an anchor too. A path no
-     * file answers to under any anchor names nothing.
+     * directory the line changed into, and a `cd` on a line of its own moves
+     * the lines after it until its `case` branch or block ends. Each line is
+     * read from the project root, the script's own directory and whatever
+     * `cd` reaches it; a path no file answers to under any of them names
+     * nothing.
      *
      * @return list<string>
      */
     private static function shellPathEntryPoints(string $contents, string $configPath): array
     {
         $directory = self::manifestDirectory($configPath);
-        $stripped = preg_replace('/(?:^|\s)#.*$/m', '', $contents) ?? $contents;
-        preg_match_all('#\bcd\s+[\'"]?([A-Za-z0-9_][A-Za-z0-9_./-]*)#', $stripped, $matches);
+        $paths = [];
+        $current = [];
+        foreach (explode("\n", $contents) as $line) {
+            $line = preg_replace('/(?:^|\s)#.*$/', '', $line) ?? $line;
+            $inline = self::shellCdTargets($line, $directory);
+            $standalone = preg_match('/^\s*cd\s/', $line) === 1 && preg_match('/&&|;|\|/', $line) !== 1;
+            foreach (self::yamlPathEntryPoints($line, $configPath, [...$current, ...$inline]) as $path) {
+                $paths[$path] = true;
+            }
+            if ($standalone) {
+                $current = $inline;
+            } elseif (preg_match('/;;|^\s*(?:esac|fi|done|\})\b/', $line) === 1) {
+                $current = [];
+            }
+        }
+
+        return array_keys($paths);
+    }
+
+    /**
+     * The project-relative directories the `cd` commands on one line change into.
+     *
+     * @return list<string>
+     */
+    private static function shellCdTargets(string $line, string $directory): array
+    {
+        preg_match_all('#\bcd\s+[\'"]?([A-Za-z0-9_][A-Za-z0-9_./-]*)#', $line, $matches);
         $anchors = [];
         foreach ($matches[1] as $target) {
             $target = rtrim(str_starts_with($target, './') ? substr($target, 2) : $target, '/');
-            if ($target === '' || str_contains($target, '..')) {
+            if ($target === '' || in_array('..', explode('/', $target), true)) {
                 continue;
             }
             $anchors[$target] = true;
@@ -1269,7 +1296,7 @@ final readonly class ProjectDiscoverer
             }
         }
 
-        return self::yamlPathEntryPoints($stripped, $configPath, array_keys($anchors));
+        return array_keys($anchors);
     }
 
     /**

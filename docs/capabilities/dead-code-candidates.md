@@ -160,9 +160,10 @@ matches anything. Files that do match are classified `application.entry_point`
 Discovery also reads every `.html` file for its `<script src>` attributes,
 every `.yml`/`.yaml` and `.neon` file, Dockerfile and shell script (`.sh`, `.bash`) for
 tokens shaped like a source path, and every tool config module for the keys
-naming files the tool loads. A shell script's path is also read from each
-directory a `cd` in it names, so `cd server && npx tsx src/reset.ts` names
-`server/src/reset.ts`. A single-page
+naming files the tool loads. A shell script's path is also read from the
+directory a `cd` before it on the same line names, or a `cd` on a line of its
+own until its `case` branch or block ends, so `cd server && npx tsx src/reset.ts`
+names `server/src/reset.ts`. A single-page
 application is entered through its HTML shell, a Compose file mounts a config
 by path, and Vitest loads `setupFiles` before every test; none of those is an
 import, so each named file carried an in-degree of zero while being the reason

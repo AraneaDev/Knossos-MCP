@@ -1835,7 +1835,14 @@ TOML);
             'case "$1" in',
             '  reset) cd server && npx tsx src/scripts/reset.ts "$@" ;;',
             '  seed) node tools/seed.mjs ;;',
+            // Another branch's `cd` does not reach this one.
+            '  clean) node src/cleanup.ts ;;',
+            '  build)',
+            '    cd web',
+            '    node src/build.mjs',
+            '    ;;',
             'esac',
+            'node src/after.mjs',
             '',
         ]));
 
@@ -1847,6 +1854,10 @@ TOML);
         self::assertContains('server/src/scripts/reset.ts', $entryPoints);
         self::assertContains('tools/seed.mjs', $entryPoints);
         self::assertNotContains('old/unused.js', $entryPoints);
+        self::assertContains('src/cleanup.ts', $entryPoints);
+        self::assertNotContains('server/src/cleanup.ts', $entryPoints);
+        self::assertContains('web/src/build.mjs', $entryPoints);
+        self::assertNotContains('web/src/after.mjs', $entryPoints);
     }
 
     /**
