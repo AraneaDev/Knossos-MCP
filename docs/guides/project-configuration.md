@@ -26,8 +26,9 @@ The published schema is
   apply first and a `!` pattern cannot re-include them.
 - `limits.max_files` and `limits.max_file_bytes`: bounded discovery/worker
   limits.
-- `limits.worker_timeout_ms`: finite per-request worker deadline from 1,000
-  through 120,000 milliseconds; defaults to 30,000.
+- `limits.worker_timeout_ms`: how long a language worker may stay silent during one request,
+  from 1,000 through 120,000 milliseconds; defaults to 30,000. Every file it reports and every
+  heartbeat restarts the wait, and no request runs longer than 120,000 milliseconds.
 - `boundaries`: named project-relative path or PHP namespace matchers.
 - `frameworks`: explicit static-analysis hints for supported frameworks.
 - `snapshot_retention`: immutable history count from 0 through 20.

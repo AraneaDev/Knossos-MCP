@@ -56,6 +56,12 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
   gives `data` the type the route's generated `./$types` declares.
 - A generic component's type parameters (`<script lang="ts" generics="T extends …">` in
   Svelte, `generic="T"` in Vue) are declared, each standing for its constraint.
+- A component's default export is the component its bundler compiles, which its source never
+  writes (`<script setup>`, Svelte, Astro): importing it, re-exporting it or destructuring
+  `default` from `await import('./X.vue')` is not reported as an error.
+- A file no tsconfig `include` covers (a package's tests, a nested tools package) is read with
+  its package's paths, aliases and project references, under the TypeScript and installed types
+  of the package it sits in, and with a bundler's resolution as its test runner uses.
 - A template name that resolves to nothing (an Options API method reached through the
   component instance) is listed in the module's `unresolved_member_calls`, so a method by that
   name is only possibly dead.

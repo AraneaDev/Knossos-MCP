@@ -50,5 +50,12 @@ final class Protocol
      */
     public const NOTIFICATION_INPUT_HASHES = 'scan/input_hashes';
 
+    /**
+     * Notification a worker sends while a scan request is busy with nothing
+     * to report yet, such as building a program. Like every notification it
+     * restarts the request's inactivity timeout; it carries nothing.
+     */
+    public const NOTIFICATION_HEARTBEAT = 'scan/heartbeat';
+
     private function __construct() {}
 }

@@ -171,6 +171,10 @@ final readonly class LanguageScanRunner
             if ($vue !== []) {
                 $request['vue_projects'] = $vue;
             }
+            $packages = self::packageDirectories($plan->preparation->discovery->units);
+            if ($packages !== []) {
+                $request['package_directories'] = $packages;
+            }
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
         } elseif ($descriptor->key === 'rust') {
@@ -431,6 +435,29 @@ final readonly class LanguageScanRunner
         sort($directories, SORT_STRING);
 
         return $directories;
+    }
+
+    /**
+     * The directory of every package.json (`''` for the root), sorted.
+     *
+     * A file no tsconfig includes is read as part of the package it sits in:
+     * that package's TypeScript and installed types, not the root's.
+     *
+     * @param list<ProjectUnit> $units
+     * @return list<string>
+     */
+    private static function packageDirectories(array $units): array
+    {
+        $directories = [];
+        foreach ($units as $unit) {
+            if ($unit->kind === 'node') {
+                $directory = dirname($unit->configPath);
+                $directories[] = $directory === '.' ? '' : $directory;
+            }
+        }
+        sort($directories, SORT_STRING);
+
+        return array_values(array_unique($directories));
     }
 
     /**

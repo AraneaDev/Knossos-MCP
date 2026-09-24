@@ -105,6 +105,21 @@ while (($line = fgets(STDIN)) !== false) {
         if ($mode === 'slow_scan') {
             usleep(500_000);
         }
+        // Busy for longer than the request timeout, saying so between gaps
+        // shorter than it; `_forever` never stops.
+        // Never quiet long enough for the core to wait: frames are always
+        // buffered by the time it reads.
+        if ($mode === 'heartbeat_flood') {
+            while (true) {
+                writeMessage(['jsonrpc' => '2.0', 'method' => 'scan/heartbeat']);
+            }
+        }
+        if ($mode === 'heartbeat_scan' || $mode === 'heartbeat_forever') {
+            for ($beat = 0; $mode === 'heartbeat_forever' || $beat < 6; ++$beat) {
+                usleep(150_000);
+                writeMessage(['jsonrpc' => '2.0', 'method' => 'scan/heartbeat']);
+            }
+        }
         if ($mode === 'valid_over_five_seconds') {
             usleep(5_100_000);
         }

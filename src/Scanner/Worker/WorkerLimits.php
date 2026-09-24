@@ -35,8 +35,12 @@ final readonly class WorkerLimits
         public int $maxOutputBytes = 20_000_000,
         public int $maxStderrBytes = 100_000,
         public int $maxInputHashesBytes = 64_000_000,
+        // How long a request may run however busy the worker says it is.
+        // `requestTimeoutMs` is how long it may stay silent: every message it
+        // sends during a scan restarts that wait, up to this cap.
+        public int $maxRequestMs = WorkerExecutionPolicy::MAX_REQUEST_TIMEOUT_MS,
     ) {
-        if ($requestTimeoutMs < 1 || $maxLineBytes < 128 || $maxOutputBytes < $maxLineBytes || $maxStderrBytes < 0 || $maxInputHashesBytes < 0) {
+        if ($requestTimeoutMs < 1 || $maxLineBytes < 128 || $maxOutputBytes < $maxLineBytes || $maxStderrBytes < 0 || $maxInputHashesBytes < 0 || $maxRequestMs < 1) {
             throw new InvalidArgumentException('Worker limits are invalid.');
         }
     }

@@ -259,6 +259,11 @@ export class TypeScriptScanner {
             vueProjects: Array.isArray(params.vue_projects)
                 ? params.vue_projects
                 : [],
+            packageDirectories: Array.isArray(params.package_directories)
+                ? params.package_directories.filter(
+                      (directory) => typeof directory === "string",
+                  )
+                : [],
         };
         const tally = (outcome) => {
             if (outcome === undefined) return;
@@ -342,6 +347,7 @@ export class TypeScriptScanner {
             root,
             remaining,
             parsedConfigs,
+            request.packageDirectories,
         )) {
             tally(
                 this.#scanProgram(
@@ -349,7 +355,12 @@ export class TypeScriptScanner {
                     programConfig(
                         request,
                         directory,
-                        fallbackConfig(root, group.files, group.parsed),
+                        fallbackConfig(
+                            root,
+                            group.files,
+                            group.parsed,
+                            directory,
+                        ),
                     ),
                     request,
                 ),
@@ -3119,19 +3130,25 @@ function diagnosticsForProgram(program, root, maxFileBytes) {
 }
 
 /**
- * `Module "X.vue" has no default export`, and `Module "X.svelte" has no
- * exported member 'default'` where `export { default as X }` names it: a
- * component's default export is the component its bundler compiles, which
- * its virtual source never spells.
+ * `Module "X.vue" has no default export`, `Module "X.svelte" has no exported
+ * member 'default'` where `export { default as X }` names it, and `Property
+ * 'default' does not exist on type 'typeof import("X.vue")'` where a dynamic
+ * import destructures it: a component's default export is the component its
+ * bundler compiles, which its virtual source never spells. Declaring one
+ * instead, typed `any`, was worse: a test mounting it lost the component's
+ * own typing and reported errors the framework's checker does not.
  */
 function namesComponentDefaultExport(diagnostic) {
     const text = ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n");
     if (
         diagnostic.code !== 1192 &&
-        !(diagnostic.code === 2305 && /member 'default'/.test(text))
+        !(diagnostic.code === 2305 && /member 'default'/.test(text)) &&
+        !(diagnostic.code === 2339 && /Property 'default'/.test(text))
     )
         return false;
-    const module = /Module '"([^"]+)"'/.exec(text)?.[1];
+    const module =
+        /Module '"([^"]+)"'/.exec(text)?.[1] ??
+        /typeof import\("([^"]+)"\)/.exec(text)?.[1];
     return module !== undefined && componentDialect(module) !== null;
 }
 
@@ -4157,28 +4174,47 @@ function configOwners(root, parsedConfigs) {
 
 /** The program for requested files no config's program emitted. */
 /**
- * Files no config's program emitted, grouped by the nearest config whose
- * directory holds them (the project root, with no config, for the rest).
+ * Files no config's program emitted, grouped by the package they sit in: the
+ * nearest config's directory, or the nearest package.json's where that is
+ * nearer (a nested package with no tsconfig of its own), else the root. A
+ * group takes a config's options only from a config at or below its package;
+ * a nested package is not governed by a parent's tsconfig.
  *
  * @returns {Map<string, {files: string[], parsed: object | undefined}>} directory => group
  */
-function fallbackGroups(root, remaining, parsedConfigs) {
-    const configs = parsedConfigs
-        .map(([configPath, parsed]) => ({
-            directory: path.dirname(path.join(root, configPath)),
-            parsed,
-        }))
-        .sort((a, b) => b.directory.length - a.directory.length);
+function fallbackGroups(root, remaining, parsedConfigs, packageDirectories) {
+    const configs = parsedConfigs.map(([configPath, parsed]) => ({
+        directory: path.dirname(path.join(root, configPath)),
+        parsed,
+    }));
+    const packages = packageDirectories.map((directory) =>
+        path.join(root, directory),
+    );
+    const nearest = (directories, absolute) =>
+        directories
+            .filter((directory) => absolute.startsWith(directory + path.sep))
+            .sort((a, b) => b.length - a.length)[0];
     const groups = new Map();
     for (const relative of remaining) {
         const absolute = path.join(root, relative);
-        const config = configs.find(({ directory }) =>
-            absolute.startsWith(directory + path.sep),
+        const configDirectory = nearest(
+            configs.map(({ directory }) => directory),
+            absolute,
         );
-        const directory = config?.directory ?? root;
+        const packageDirectory = nearest(packages, absolute);
+        const governed =
+            configDirectory !== undefined &&
+            (packageDirectory === undefined ||
+                configDirectory.length >= packageDirectory.length);
+        const directory = governed
+            ? configDirectory
+            : (packageDirectory ?? root);
         const group = groups.get(directory) ?? {
             files: [],
-            parsed: config?.parsed,
+            parsed: governed
+                ? configs.find((config) => config.directory === directory)
+                      ?.parsed
+                : undefined,
         };
         group.files.push(relative);
         groups.set(directory, group);
@@ -4229,14 +4265,20 @@ const FALLBACK_OPTIONS = {
     jsx: ts.JsxEmit.Preserve,
 };
 
-function fallbackConfig(root, remaining, config) {
+function fallbackConfig(root, remaining, config, directory = root) {
     const configOptions = config?.options;
     const inherited = {};
     for (const option of RESOLUTION_OPTIONS)
         if (configOptions?.[option] !== undefined)
             inherited[option] = configOptions[option];
     return {
-        options: { ...FALLBACK_OPTIONS, ...inherited },
+        options: {
+            ...FALLBACK_OPTIONS,
+            ...inherited,
+            // Where installed types are looked up from: the group's own
+            // package, not the directory the worker runs in.
+            configFilePath: path.join(directory, "tsconfig.json"),
+        },
         // An extensionless script, or one whose extension is not in lower
         // case, only ever reaches the fallback program: no tsconfig `include`
         // matches either name.
