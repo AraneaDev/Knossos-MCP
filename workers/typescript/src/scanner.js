@@ -1401,6 +1401,47 @@ class TypeScriptLanguageFactCollector {
     }
 
     /**
+     * `import.meta.glob('./Pages/**\/*.vue')`: Vite bundles every file the
+     * pattern matches. Each positive pattern becomes the same unexpanded edge
+     * `require.context` makes, the directory before the first wildcard and
+     * the rest as a pattern over the paths below it. A negated pattern only
+     * narrows what the others match, so leaving it out keeps a match live
+     * rather than inventing one.
+     */
+    globImports(node) {
+        const first = node.arguments[0];
+        const patterns = ts.isArrayLiteralExpression(first)
+            ? first.elements
+            : [first];
+        for (const pattern of patterns) {
+            if (!ts.isStringLiteralLike(pattern)) continue;
+            const glob = globContext(pattern.text);
+            if (glob === null) continue;
+            const absolute = glob.directory.startsWith("/")
+                ? normalize(path.resolve(this.root, "." + glob.directory))
+                : this.contextDirectory(glob.directory);
+            const directory =
+                absolute === null ? null : relativeInside(this.root, absolute);
+            if (directory === null) continue;
+            this.addEdge(
+                "imports",
+                this.currentSource() ?? this.moduleId,
+                reference(
+                    "module_context",
+                    JSON.stringify({
+                        directory: directory === "." ? "" : directory,
+                        recursive: glob.recursive,
+                        pattern: glob.pattern,
+                        flags: "",
+                    }),
+                ),
+                pattern,
+                { dynamic: true, type_only: false, context: true },
+            );
+        }
+    }
+
+    /**
      * The directory a `require.context` names: relative to this file, or
      * through the program's `paths` (which carry a bundler's aliases).
      */
@@ -1449,6 +1490,10 @@ class TypeScriptLanguageFactCollector {
     pathLiteralImports(node) {
         if (isRequireContext(node)) {
             this.requireContextImports(node);
+            return;
+        }
+        if (isImportMetaGlob(node)) {
+            this.globImports(node);
             return;
         }
         const callee = node.expression;
@@ -2609,6 +2654,52 @@ function aliasTarget(expression) {
     )
         return url.arguments[0].text;
     return null;
+}
+
+/** `import.meta.glob(<literal or array>, …)`, Vite's glob import. */
+function isImportMetaGlob(node) {
+    const callee = node.expression;
+    return (
+        ts.isPropertyAccessExpression(callee) &&
+        ts.isMetaProperty(callee.expression) &&
+        callee.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
+        (callee.name.text === "glob" || callee.name.text === "globEager") &&
+        node.arguments.length >= 1
+    );
+}
+
+/**
+ * A glob split into the directory before its first wildcard and a pattern
+ * over `./<path below it>`, the key form a module context matches. Null for
+ * a negated pattern, or one without a directory to anchor it.
+ */
+function globContext(glob) {
+    if (glob.startsWith("!")) return null;
+    const segments = glob.split("/");
+    const wild = segments.findIndex((segment) => /[*?[{]/.test(segment));
+    if (wild <= 0) return null;
+    const rest = segments.slice(wild).join("/");
+    let pattern = "";
+    for (let index = 0; index < rest.length; index++) {
+        const char = rest[index];
+        if (rest.startsWith("**/", index)) {
+            pattern += "(?:.*/)?";
+            index += 2;
+        } else if (rest.startsWith("**", index)) {
+            pattern += ".*";
+            index += 1;
+        } else if (char === "*") pattern += "[^/]*";
+        else if (char === "?") pattern += "[^/]";
+        else if (char === "{") pattern += "(?:";
+        else if (char === "}") pattern += ")";
+        else if (char === ",") pattern += "|";
+        else pattern += char.replace(/[.+^$()|[\]\\]/g, "\\$&");
+    }
+    return {
+        directory: segments.slice(0, wild).join("/"),
+        recursive: rest.includes("/") || rest.includes("**"),
+        pattern: `^\\./${pattern}$`,
+    };
 }
 
 /** `require.context('<literal>', …)`, webpack's directory import. */
