@@ -294,6 +294,34 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * A class name built from a namespace literal, `new ($prefix . $name)`,
+     * may be any class in that namespace; the scanner names the namespace for
+     * the reconciler to expand. A variable reassigned since names nothing.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerNamesTheNamespaceARuntimeClassNameIsBuiltIn(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/CardFactory.php'],
+        ]), false);
+        $client->shutdown();
+        $prefixes = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if (str_contains($edge->targetReference, ':class_prefix:')) {
+                $prefixes[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+            }
+        }
+        sort($prefixes);
+
+        assertSame([
+            'php:method:Fixture\\CardFactory::fromVariable -> php:class_prefix:App\\Cards',
+            'php:method:Fixture\\CardFactory::inline -> php:class_prefix:App\\Widgets',
+        ], $prefixes);
+    }
+
+    /**
      * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
      * produced no call edge at all — on either a variable or a property
      * receiver — however precisely the receiver was typed.

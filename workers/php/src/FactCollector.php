@@ -69,6 +69,14 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private array $imports = [];
 
+    /**
+     * Variables holding a class name built from a namespace literal
+     * (`$card = 'App\\Cards\\' . $name`), keyed by callable id and name.
+     *
+     * @var array<string, string>
+     */
+    private array $classPrefixes = [];
+
     /** The namespace block the traversal is in, keyed as {@see self::$imports} is. */
     private int $namespaceScope = 0;
 
@@ -457,6 +465,13 @@ final class FactCollector extends NodeVisitorAbstract
         if (!$node->var instanceof Expr\Variable || !is_string($node->var->name)) {
             return;
         }
+        $prefixKey = $this->currentSource() . '$' . $node->var->name;
+        $prefix = self::namespacePrefix($node->expr);
+        if ($prefix === null) {
+            unset($this->classPrefixes[$prefixKey]);
+        } else {
+            $this->classPrefixes[$prefixKey] = $prefix;
+        }
         if ($node->expr instanceof Expr\New_ && $node->expr->class instanceof Name) {
             // Inferred from local construction flow — only ever probable.
             $this->setVariableType($node->var->name, $this->resolvedClassName($node->expr->class), 'probable');
@@ -637,7 +652,36 @@ final class FactCollector extends NodeVisitorAbstract
     {
         if ($node->class instanceof Name) {
             $this->addEdge('constructs', $this->currentSource(), self::reference('class', $this->resolvedClassName($node->class)), $node);
+
+            return;
         }
+        // `new ('App\\Cards\\' . $name)` or `new $card` after `$card = 'App\\Cards\\' . $name`:
+        // any class in that namespace may be the one built.
+        $prefix = match (true) {
+            $node->class instanceof Expr\Variable && is_string($node->class->name) => $this->classPrefixes[$this->currentSource() . '$' . $node->class->name] ?? null,
+            $node->class instanceof Expr => self::namespacePrefix($node->class),
+            default => null,
+        };
+        if ($prefix !== null) {
+            $this->addEdge('references', $this->currentSource(), 'php:class_prefix:' . $prefix, $node, 'probable');
+        }
+    }
+
+    /**
+     * The namespace a concatenation builds a class name in, when it starts with
+     * one written out: `'App\\Cards\\' . $name` is `App\\Cards`.
+     */
+    private static function namespacePrefix(Expr $expression): ?string
+    {
+        while ($expression instanceof Expr\BinaryOp\Concat) {
+            $expression = $expression->left;
+        }
+        if (!$expression instanceof Node\Scalar\String_
+            || preg_match('/^\\\\?((?:[A-Za-z_][A-Za-z0-9_]*\\\\)+)$/', $expression->value, $match) !== 1) {
+            return null;
+        }
+
+        return rtrim($match[1], '\\');
     }
 
     /** Emit a `calls` edge for a static call, resolving `self`/`static`/`parent` against the current class. */

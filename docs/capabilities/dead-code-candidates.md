@@ -63,6 +63,10 @@ receives it. When the TypeScript scanner finds a type for it in the project, tha
 contract and its methods are judged against it; when it finds none, its methods drop to
 `possible`. A literal typed only by a library counts as extending an external ancestor.
 
+A PHP class name built at runtime from a namespace literal, `new ('App\Cards\' . $command)`
+or the same string held in a variable first, references every class directly in that
+namespace: any of them may be the one built.
+
 The `reason` field names the specific ground, so a caller never has to infer why
 a candidate was demoted.
 
