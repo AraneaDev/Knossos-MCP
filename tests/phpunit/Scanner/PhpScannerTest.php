@@ -243,6 +243,33 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * A method declared to return `self` or `static` returns its own class, so
+     * `$instance = self::getInstance(); $instance->record()` calls that
+     * class's method, not one of a class named `self`.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerTypesAReceiverAMethodReturningSelfProduces(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/Singleton.php'],
+        ]), false);
+        $client->shutdown();
+        $calls = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'calls' && $edge->sourceReference === 'php:method:Fixture\\Singleton::capture') {
+                $calls[] = $edge->targetReference;
+            }
+        }
+        sort($calls);
+
+        self::assertContains('php:method:Fixture\\Singleton::record', $calls);
+        self::assertContains('php:method:Fixture\\Singleton::flush', $calls);
+        self::assertSame([], array_values(array_filter($calls, static fn(string $call): bool => str_contains(strtolower($call), ':self::') || str_contains(strtolower($call), ':static::'))));
+    }
+
+    /**
      * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
      * produced no call edge at all — on either a variable or a property
      * receiver — however precisely the receiver was typed.

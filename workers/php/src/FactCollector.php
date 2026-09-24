@@ -123,7 +123,9 @@ final class FactCollector extends NodeVisitorAbstract
                 // does not name one receiver, and a nullable one is dereferenced
                 // at the caller's risk rather than ours.
                 if ($method->returnType instanceof Name) {
-                    $this->returnTypes[$className . '::' . $method->name->toString()] = $method->returnType->toString();
+                    // `self` and `static` name the declaring class itself.
+                    $returned = $method->returnType->toString();
+                    $this->returnTypes[$className . '::' . $method->name->toString()] = in_array(strtolower($returned), ['self', 'static'], true) ? $className : $returned;
                 }
             }
         }

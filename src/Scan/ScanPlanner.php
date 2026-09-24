@@ -141,7 +141,7 @@ final readonly class ScanPlanner
             $configuration->frameworks,
         );
         $configurationHashes = [
-            'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v5'),
+            'php' => $this->configurationHash($discovery->units, ['composer', 'knossos'], 'php-analysis-v6'),
             // tool_config: the worker reads module aliases from vite, svelte, webpack and
             // vue configs, so editing one must invalidate what was resolved under it.
             'typescript' => $this->configurationHash($discovery->units, ['node', 'typescript', 'tool_config', 'knossos'], 'typescript-analysis-v10'),
