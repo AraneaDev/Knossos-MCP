@@ -575,7 +575,7 @@ final readonly class GraphReconciler
     private static function classPrefixTargets(string $reference, array $nodeMap): array
     {
         [$language, , $namespace] = array_pad(explode(':', $reference, 3), 3, '');
-        // A trailing `\\**` reaches every namespace below the prefix.
+        // A trailing `\\**` reaches the namespaces below the prefix.
         $nested = str_ends_with($namespace, '\\**');
         $namespace = trim($nested ? substr($namespace, 0, -3) : $namespace, '\\');
         if ($namespace === '') {
@@ -584,7 +584,9 @@ final readonly class GraphReconciler
         $prefix = $language . ':class:' . $namespace . '\\';
         $targets = [];
         foreach ($nodeMap as $candidate => $nodeId) {
-            if (str_starts_with($candidate, $prefix) && ($nested || !str_contains(substr($candidate, strlen($prefix)), '\\'))) {
+            // Direct children only, or, for `\\**`, only classes in a
+            // namespace below: the expression puts a segment after the prefix.
+            if (str_starts_with($candidate, $prefix) && str_contains(substr($candidate, strlen($prefix)), '\\') === $nested) {
                 $targets[] = $nodeId;
             }
         }

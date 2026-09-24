@@ -23,6 +23,11 @@ final class CardFactory
         return new ('App\\Cards\\' . $segment . '\\' . $name)();
     }
 
+    public function fixedSegment(string $name): object
+    {
+        return new ('App\\Cards\\' . 'Parts\\' . $name)();
+    }
+
     public function looped(array $names): void
     {
         $card = 'App\\Cards\\' . 'Help';

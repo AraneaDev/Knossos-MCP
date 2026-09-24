@@ -317,6 +317,8 @@ final class PhpScannerTest extends KnossosTestCase
         sort($prefixes);
 
         assertSame([
+            // A literal segment before the runtime part narrows the namespace.
+            'php:method:Fixture\\CardFactory::fixedSegment -> php:class_prefix:App\\Cards\\Parts',
             'php:method:Fixture\\CardFactory::fromVariable -> php:class_prefix:App\\Cards',
             'php:method:Fixture\\CardFactory::inline -> php:class_prefix:App\\Widgets',
             // A separator after a runtime segment reaches into nested namespaces.

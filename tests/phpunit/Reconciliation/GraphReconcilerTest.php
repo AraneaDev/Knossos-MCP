@@ -2011,7 +2011,8 @@ final class GraphReconcilerTest extends TestCase
     /**
      * `'App\\Cards\\' . $segment . '\\' . $name` builds a name below a nested
      * namespace, which the scanner marks with a trailing `\\**`: every class
-     * at any depth below the prefix may be the one built.
+     * in a namespace below the prefix may be the one built, and none directly
+     * in it.
      */
     #[Group('reconciliation')]
     public function testARecursiveClassPrefixReachesNestedNamespaces(): void
@@ -2044,7 +2045,9 @@ final class GraphReconcilerTest extends TestCase
             $targets[] = $names[$args[4]] ?? '?';
         }
         sort($targets);
-        assertSame(['App\\Cards\\Help', 'App\\Cards\\Parts\\Header'], $targets);
+        // The expression puts a namespace segment after the prefix, so a
+        // direct child is not one it can build.
+        assertSame(['App\\Cards\\Parts\\Header'], $targets);
     }
 
     /**

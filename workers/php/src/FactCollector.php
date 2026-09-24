@@ -713,9 +713,13 @@ final class FactCollector extends NodeVisitorAbstract
             $parts[] = $part;
         };
         $flatten($expression);
-        $first = array_shift($parts);
-        if (!$first instanceof Node\Scalar\String_
-            || preg_match('/^\\\\?((?:[A-Za-z_][A-Za-z0-9_]*\\\\)+)$/', $first->value, $match) !== 1) {
+        // The literal parts before the first runtime one are the known prefix.
+        $known = '';
+        while (($head = $parts[0] ?? null) instanceof Node\Scalar\String_) {
+            $known .= $head->value;
+            array_shift($parts);
+        }
+        if (preg_match('/^\\\\?((?:[A-Za-z_][A-Za-z0-9_]*\\\\)+)$/', $known, $match) !== 1) {
             return null;
         }
         $nested = false;
