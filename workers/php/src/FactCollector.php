@@ -155,7 +155,7 @@ final class FactCollector extends NodeVisitorAbstract
     public function enterNode(Node $node): ?int
     {
         if ($node instanceof Node\FunctionLike) {
-            $this->variableScopes[] = spl_object_id($node);
+            $this->enterVariableScope($node);
         }
         if ($node instanceof Stmt\Namespace_) {
             $this->namespaceScope = spl_object_id($node);
@@ -685,6 +685,42 @@ final class FactCollector extends NodeVisitorAbstract
         };
         if ($prefix !== null) {
             $this->addEdge('references', $this->currentSource(), 'php:class_prefix:' . $prefix, $node, 'probable');
+        }
+    }
+
+    /**
+     * Open a function-like node's variable scope, carrying over the prefixes
+     * it captures: every variable of the enclosing scope for an arrow
+     * function, except those its parameters shadow, and the `use` list for a
+     * closure. Any other function starts empty.
+     */
+    private function enterVariableScope(Node\FunctionLike $node): void
+    {
+        $outer = $this->variableScopes === [] ? 0 : $this->variableScopes[count($this->variableScopes) - 1];
+        $this->variableScopes[] = spl_object_id($node);
+        $captured = [];
+        if ($node instanceof Expr\ArrowFunction) {
+            $parameters = [];
+            foreach ($node->params as $parameter) {
+                if ($parameter->var instanceof Expr\Variable && is_string($parameter->var->name)) {
+                    $parameters[$parameter->var->name] = true;
+                }
+            }
+            foreach ($this->classPrefixes as $key => $prefix) {
+                [$scope, $variable] = explode('$', $key, 2);
+                if ((int) $scope === $outer && !isset($parameters[$variable])) {
+                    $captured[$variable] = $prefix;
+                }
+            }
+        } elseif ($node instanceof Expr\Closure) {
+            foreach ($node->uses as $use) {
+                if (is_string($use->var->name) && isset($this->classPrefixes[$outer . '$' . $use->var->name])) {
+                    $captured[$use->var->name] = $this->classPrefixes[$outer . '$' . $use->var->name];
+                }
+            }
+        }
+        foreach ($captured as $variable => $prefix) {
+            $this->classPrefixes[$this->prefixKey($variable)] = $prefix;
         }
     }
 

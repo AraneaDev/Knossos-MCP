@@ -45,6 +45,18 @@ final class CardFactory
         };
     }
 
+    public function captured(string $command): array
+    {
+        $card = 'App\\Gadgets\\' . $command;
+
+        return [
+            fn(): object => new $card(),
+            function () use ($card): object {
+                return new $card();
+            },
+        ];
+    }
+
     public function reassigned(string $command): object
     {
         $card = 'App\\Cards\\' . $command;

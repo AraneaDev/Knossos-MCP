@@ -314,10 +314,13 @@ final class PhpScannerTest extends KnossosTestCase
                 $prefixes[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
             }
         }
+        $prefixes = array_values(array_unique($prefixes));
         sort($prefixes);
 
         assertSame([
             // A literal segment before the runtime part narrows the namespace.
+            // An arrow function, and a closure's `use`, capture the variable.
+            'php:method:Fixture\\CardFactory::captured -> php:class_prefix:App\\Gadgets',
             'php:method:Fixture\\CardFactory::fixedSegment -> php:class_prefix:App\\Cards\\Parts',
             'php:method:Fixture\\CardFactory::fromVariable -> php:class_prefix:App\\Cards',
             'php:method:Fixture\\CardFactory::inline -> php:class_prefix:App\\Widgets',
