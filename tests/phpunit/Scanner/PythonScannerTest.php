@@ -1674,6 +1674,14 @@ PYTHON);
                 'def shadowed(Repo, getattr, editor):',
                 '    return Repo().rows, getattr(editor, "hidden")',
                 '',
+                '# An import inside one function binds nothing in another.',
+                'def local_import():',
+                '    from app.repo import getattr',
+                '    return getattr',
+                '',
+                'def later(editor):',
+                '    return getattr(editor, "save")',
+                '',
             ]),
         ];
         foreach ($files as $relative => $contents) {
@@ -1709,6 +1717,6 @@ PYTHON);
 
         self::assertContains('py:function:app.service.run -> py:method:app.repo.Repo::rows', $references);
         self::assertNotContains('py:function:app.service.shadowed -> py:method:app.repo.Repo::rows', $references);
-        self::assertSame(['narrowed'], $untyped);
+        self::assertSame(['narrowed', 'save'], $untyped);
     }
 }
