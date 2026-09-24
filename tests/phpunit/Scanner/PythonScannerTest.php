@@ -1719,4 +1719,78 @@ PYTHON);
         self::assertNotContains('py:function:app.service.shadowed -> py:method:app.repo.Repo::rows', $references);
         self::assertSame(['narrowed', 'save'], $untyped);
     }
+
+    #[Group('python-scanner')]
+    public function testALocalClassAndAProtocolMemberAreReached(): void
+    {
+        // A class defined inside a function is instantiated there; and a call
+        // through a structural `Protocol` may reach any class with the member.
+        $root = sys_get_temp_dir() . '/knossos-py-local-class-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/endpoints.py' => implode("\n", [
+                'from typing import Protocol',
+                '',
+                'def create(flag):',
+                '    if flag:',
+                '        class Message:',
+                '            pass',
+                '',
+                '        def root():',
+                '            return Message()',
+                '',
+                '        return root',
+                '    return None',
+                '',
+                'class Stream(Protocol):',
+                '    def read_some(self) -> bytes: ...',
+                '',
+                'class Tail:',
+                '    def read_some(self) -> bytes:',
+                '        return b""',
+                '',
+                'class Batcher:',
+                '    def __init__(self, stream: Stream) -> None:',
+                '        self._stream = stream',
+                '',
+                '    def next_batch(self) -> bytes:',
+                '        return self._stream.read_some()',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/endpoints.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $calls = [];
+        $untyped = null;
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'calls') {
+                    $calls[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $untyped = $node->attributes['unresolved_member_calls'] ?? null;
+                }
+            }
+        }
+
+        self::assertContains('py:function:app.endpoints.create.<locals>.root -> py:class:app.endpoints.Message', $calls);
+        self::assertSame(['read_some'], $untyped);
+    }
 }

@@ -1437,6 +1437,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.bound_names: list[frozenset[str]] = []
         # Member names called on a receiver no type was inferred for.
         self.untyped_calls: set[str] = set()
+        # Structural protocols this file declares: a call through one may
+        # reach any class with the member, declared or not.
+        self.protocols: set[str] = set()
         self.module_id = ref("module", self.module)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
@@ -1560,6 +1563,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             target = self.resolve_name(name, "class") if name else None
             if target:
                 self.facts.add_edge("extends", local_id, target, base)
+        if any((dotted(base) or "").split(".")[-1] == "Protocol" for base in node.bases):
+            self.protocols.add(canonical)
         self.class_methods[canonical] = frozenset(
             item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         )
@@ -1601,7 +1606,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.fastapi.enrich_function(node, local_id, canonical, fastapi_routes)
         self.flask.enrich_function(node, local_id, canonical, flask_routes)
         self.containers.append((local_id, canonical, kind))
-        self.local_function_scopes.append(self.local_function_declarations(node, canonical))
+        self.local_function_scopes.append(self.local_function_declarations(node, canonical, self.module))
         self.local_variable_types.append({})
         self.parameter_types.append(self.annotated_parameters(node))
         self.bound_names.append(bound_names(node))
@@ -1648,7 +1653,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
 
     @staticmethod
     def local_function_declarations(
-        node: ast.FunctionDef | ast.AsyncFunctionDef, parent_canonical: str
+        node: ast.FunctionDef | ast.AsyncFunctionDef, parent_canonical: str, module: str
     ) -> dict[str, str]:
         declarations: dict[str, str] = {}
         pending: list[ast.AST] = list(reversed(node.body))
@@ -1658,7 +1663,11 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 canonical = f"{parent_canonical}.<locals>.{child.name}"
                 declarations[child.name] = ref("function", canonical)
                 continue
-            if isinstance(child, (ast.ClassDef, ast.Lambda)):
+            if isinstance(child, ast.ClassDef):
+                # A class defined in a function is named at module level.
+                declarations[child.name] = ref("class", f"{module}.{child.name}")
+                continue
+            if isinstance(child, ast.Lambda):
                 continue
             pending.extend(reversed(list(ast.iter_child_nodes(child))))
         return declarations
@@ -1924,6 +1933,12 @@ class PythonAstFactCollector(ast.NodeVisitor):
             # `getattr(editor, "narrowed")` looks a member up by name on a
             # receiver the call leaves untyped.
             self.untyped_calls.add(node.args[1].value)
+        if (
+            target
+            and target.startswith("py:method:")
+            and target.removeprefix("py:method:").split("::")[0] in self.protocols
+        ):
+            self.untyped_calls.add(target.rsplit("::", 1)[1])
         # Calling an instance (`repo()`) names no declaration of its own.
         if target and not target.startswith("py:instance:"):
             self.facts.add_edge("calls", self.current(), target, node)
