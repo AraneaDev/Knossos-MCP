@@ -1959,6 +1959,98 @@ final class GraphReconcilerTest extends TestCase
     }
 
     /**
+     * `new ('App\\Cards\\' . $command)` builds a class name from a namespace
+     * prefix: every class directly in that namespace may be the one built.
+     * Only the graph knows them all, so the scanner names the prefix and the
+     * reconciler expands it. A nested namespace's classes are not in it.
+     */
+    #[Group('reconciliation')]
+    public function testAClassPrefixReferenceReachesEveryClassDirectlyInTheNamespace(): void
+    {
+        $caller = $this->minimalNode('php:method:App\\Webhook::post', 'App\\Webhook::post');
+        $help = $this->minimalNode('php:class:App\\Cards\\Help', 'App\\Cards\\Help');
+        $tickets = $this->minimalNode('php:class:App\\Cards\\Tickets', 'App\\Cards\\Tickets');
+        $nested = $this->minimalNode('php:class:App\\Cards\\Parts\\Header', 'App\\Cards\\Parts\\Header');
+        $edge = new EdgeFact(
+            kind: 'references',
+            sourceReference: $caller->localId,
+            targetReference: 'php:class_prefix:App\\Cards',
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        // A bare `'\\' . $name` names no namespace to look in.
+        $global = new EdgeFact(
+            kind: 'references',
+            sourceReference: $caller->localId,
+            targetReference: 'php:class_prefix:\\',
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 2, 2),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller, $help, $tickets, $nested], [$edge, $global])],
+        ]);
+
+        $result = (new GraphReconciler($this->repo))->reconcile($request);
+
+        $names = [];
+        foreach ($this->repo->nodes as $args) {
+            $names[$args[0]] = $args[4];
+        }
+        $targets = [];
+        foreach ($this->repo->edges as $args) {
+            $targets[] = $names[$args[4]] ?? '?';
+        }
+        sort($targets);
+        assertSame(['App\\Cards\\Help', 'App\\Cards\\Tickets'], $targets);
+        assertSame(0, $result->unresolvedNodes);
+    }
+
+    /**
+     * `'App\\Cards\\' . $segment . '\\' . $name` builds a name below a nested
+     * namespace, which the scanner marks with a trailing `\\**`: every class
+     * in a namespace below the prefix may be the one built, and none directly
+     * in it.
+     */
+    #[Group('reconciliation')]
+    public function testARecursiveClassPrefixReachesNestedNamespaces(): void
+    {
+        $caller = $this->minimalNode('php:method:App\\Webhook::post', 'App\\Webhook::post');
+        $help = $this->minimalNode('php:class:App\\Cards\\Help', 'App\\Cards\\Help');
+        $nested = $this->minimalNode('php:class:App\\Cards\\Parts\\Header', 'App\\Cards\\Parts\\Header');
+        $other = $this->minimalNode('php:class:App\\Cardsets\\Deck', 'App\\Cardsets\\Deck');
+        $edge = new EdgeFact(
+            kind: 'references',
+            sourceReference: $caller->localId,
+            targetReference: 'php:class_prefix:App\\Cards\\**',
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 1, 1),
+        );
+        $request = $this->buildRequest([
+            'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
+            'contributions' => [$this->minimalContribution([$caller, $help, $nested, $other], [$edge])],
+        ]);
+
+        (new GraphReconciler($this->repo))->reconcile($request);
+
+        $names = [];
+        foreach ($this->repo->nodes as $args) {
+            $names[$args[0]] = $args[4];
+        }
+        $targets = [];
+        foreach ($this->repo->edges as $args) {
+            $targets[] = $names[$args[4]] ?? '?';
+        }
+        sort($targets);
+        // The expression puts a namespace segment after the prefix, so a
+        // direct child is not one it can build.
+        assertSame(['App\\Cards\\Parts\\Header'], $targets);
+    }
+
+    /**
      * A deferred receiver reference is a shape a third-party scanner can emit,
      * so a malformed one must be ignored rather than resolved into something
      * arbitrary or fabricated as an external symbol.

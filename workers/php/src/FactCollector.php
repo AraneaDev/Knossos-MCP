@@ -69,6 +69,24 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private array $imports = [];
 
+    /**
+     * Variables holding a class name built from a namespace literal
+     * (`$card = 'App\\Cards\\' . $name`), keyed by the function-like scope
+     * they live in and their name.
+     *
+     * @var array<string, string>
+     */
+    private array $classPrefixes = [];
+
+    /**
+     * The function-like nodes the traversal is inside, innermost last. A
+     * closure has its own variables, so a prefix recorded in the method
+     * around it does not reach a parameter of the same name.
+     *
+     * @var list<int>
+     */
+    private array $variableScopes = [];
+
     /** The namespace block the traversal is in, keyed as {@see self::$imports} is. */
     private int $namespaceScope = 0;
 
@@ -123,7 +141,9 @@ final class FactCollector extends NodeVisitorAbstract
                 // does not name one receiver, and a nullable one is dereferenced
                 // at the caller's risk rather than ours.
                 if ($method->returnType instanceof Name) {
-                    $this->returnTypes[$className . '::' . $method->name->toString()] = $method->returnType->toString();
+                    // `self` and `static` name the declaring class itself.
+                    $returned = $method->returnType->toString();
+                    $this->returnTypes[$className . '::' . $method->name->toString()] = in_array(strtolower($returned), ['self', 'static'], true) ? $className : $returned;
                 }
             }
         }
@@ -134,6 +154,9 @@ final class FactCollector extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?int
     {
+        if ($node instanceof Node\FunctionLike) {
+            $this->enterVariableScope($node);
+        }
         if ($node instanceof Stmt\Namespace_) {
             $this->namespaceScope = spl_object_id($node);
         }
@@ -215,6 +238,9 @@ final class FactCollector extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?int
     {
+        if ($node instanceof Node\FunctionLike) {
+            array_pop($this->variableScopes);
+        }
         if ($node instanceof Stmt\ClassMethod || $node instanceof Stmt\Function_) {
             array_pop($this->callables);
         } elseif ($node instanceof Stmt\ClassLike) {
@@ -330,17 +356,38 @@ final class FactCollector extends NodeVisitorAbstract
 
         $name = $class['name'] . '::' . $node->name->toString();
         $id = self::reference('method', $name);
+        $attributes = $this->attributeNames($node->attrGroups);
         $this->addNode($id, 'method', $name, $node->name->toString(), $node, [
             'visibility' => $node->isPublic() ? 'public' : ($node->isProtected() ? 'protected' : 'private'),
             'static' => $node->isStatic(),
             'abstract' => $node->isAbstract(),
-            'php_attributes' => $this->attributeNames($node->attrGroups),
+            'php_attributes' => $attributes,
+            ...(self::isVirtualProperty($node, $attributes) ? ['runtime_invoked' => true] : []),
         ]);
         $this->addEdge('contains', $class['id'], $id, $node);
         $this->callables[] = ['id' => $id, 'variables' => []];
 
         $constructor = strtolower($node->name->toString()) === '__construct';
         $this->parametersAndReturn($node->params, $node->returnType, $constructor ? $class['id'] : $id, $constructor);
+    }
+
+    /**
+     * Whether JMS Serializer reads this method as a property: `@VirtualProperty`
+     * in its docblock or `#[VirtualProperty]`. The serializer calls it by
+     * reflection, and no code names it.
+     *
+     * @param list<string> $attributes
+     */
+    private static function isVirtualProperty(Stmt\ClassMethod $node, array $attributes): bool
+    {
+        foreach ($attributes as $attribute) {
+            if (str_ends_with('\\' . $attribute, '\\VirtualProperty')) {
+                return true;
+            }
+        }
+        $comment = $node->getDocComment()?->getText() ?? '';
+
+        return preg_match('/(?:^|[\s*])@(?:[A-Za-z_\\\\]+\\\\)?VirtualProperty\b/m', $comment) === 1;
     }
 
     /**
@@ -434,6 +481,12 @@ final class FactCollector extends NodeVisitorAbstract
         if (!$node->var instanceof Expr\Variable || !is_string($node->var->name)) {
             return;
         }
+        $prefix = self::namespacePrefix($node->expr);
+        if ($prefix === null) {
+            unset($this->classPrefixes[$this->prefixKey($node->var->name)]);
+        } else {
+            $this->classPrefixes[$this->prefixKey($node->var->name)] = $prefix;
+        }
         if ($node->expr instanceof Expr\New_ && $node->expr->class instanceof Name) {
             // Inferred from local construction flow — only ever probable.
             $this->setVariableType($node->var->name, $this->resolvedClassName($node->expr->class), 'probable');
@@ -479,6 +532,12 @@ final class FactCollector extends NodeVisitorAbstract
      */
     private function foreachLoop(Stmt\Foreach_ $node): void
     {
+        // The loop rebinds its variables, whatever they held before.
+        foreach ([$node->keyVar, $node->valueVar] as $bound) {
+            if ($bound instanceof Expr\Variable && is_string($bound->name)) {
+                unset($this->classPrefixes[$this->prefixKey($bound->name)]);
+            }
+        }
         if (!$node->valueVar instanceof Expr\Variable || !is_string($node->valueVar->name)) {
             return;
         }
@@ -614,7 +673,97 @@ final class FactCollector extends NodeVisitorAbstract
     {
         if ($node->class instanceof Name) {
             $this->addEdge('constructs', $this->currentSource(), self::reference('class', $this->resolvedClassName($node->class)), $node);
+
+            return;
         }
+        // `new ('App\\Cards\\' . $name)` or `new $card` after `$card = 'App\\Cards\\' . $name`:
+        // any class in that namespace may be the one built.
+        $prefix = match (true) {
+            $node->class instanceof Expr\Variable && is_string($node->class->name) => $this->classPrefixes[$this->prefixKey($node->class->name)] ?? null,
+            $node->class instanceof Expr => self::namespacePrefix($node->class),
+            default => null,
+        };
+        if ($prefix !== null) {
+            $this->addEdge('references', $this->currentSource(), 'php:class_prefix:' . $prefix, $node, 'probable');
+        }
+    }
+
+    /**
+     * Open a function-like node's variable scope, carrying over the prefixes
+     * it captures: every variable of the enclosing scope for an arrow
+     * function, except those its parameters shadow, and the `use` list for a
+     * closure. Any other function starts empty.
+     */
+    private function enterVariableScope(Node\FunctionLike $node): void
+    {
+        $outer = $this->variableScopes === [] ? 0 : $this->variableScopes[count($this->variableScopes) - 1];
+        $this->variableScopes[] = spl_object_id($node);
+        $captured = [];
+        if ($node instanceof Expr\ArrowFunction) {
+            $parameters = [];
+            foreach ($node->params as $parameter) {
+                if ($parameter->var instanceof Expr\Variable && is_string($parameter->var->name)) {
+                    $parameters[$parameter->var->name] = true;
+                }
+            }
+            foreach ($this->classPrefixes as $key => $prefix) {
+                [$scope, $variable] = explode('$', $key, 2);
+                if ((int) $scope === $outer && !isset($parameters[$variable])) {
+                    $captured[$variable] = $prefix;
+                }
+            }
+        } elseif ($node instanceof Expr\Closure) {
+            foreach ($node->uses as $use) {
+                if (is_string($use->var->name) && isset($this->classPrefixes[$outer . '$' . $use->var->name])) {
+                    $captured[$use->var->name] = $this->classPrefixes[$outer . '$' . $use->var->name];
+                }
+            }
+        }
+        foreach ($captured as $variable => $prefix) {
+            $this->classPrefixes[$this->prefixKey($variable)] = $prefix;
+        }
+    }
+
+    /** A variable's key in {@see self::$classPrefixes}: its scope and its name. */
+    private function prefixKey(string $variable): string
+    {
+        return ($this->variableScopes === [] ? 0 : $this->variableScopes[count($this->variableScopes) - 1]) . '$' . $variable;
+    }
+
+    /**
+     * The namespace a concatenation builds a class name in, when it starts with
+     * one written out: `'App\\Cards\\' . $name` is `App\\Cards`. A separator
+     * written after a runtime part (`'App\\Cards\\' . $segment . '\\' . $name`)
+     * puts the class in a namespace below that one, marked `\\**`.
+     */
+    private static function namespacePrefix(Expr $expression): ?string
+    {
+        $parts = [];
+        $flatten = static function (Expr $part) use (&$flatten, &$parts): void {
+            if ($part instanceof Expr\BinaryOp\Concat) {
+                $flatten($part->left);
+                $flatten($part->right);
+
+                return;
+            }
+            $parts[] = $part;
+        };
+        $flatten($expression);
+        // The literal parts before the first runtime one are the known prefix.
+        $known = '';
+        while (($head = $parts[0] ?? null) instanceof Node\Scalar\String_) {
+            $known .= $head->value;
+            array_shift($parts);
+        }
+        if (preg_match('/^\\\\?((?:[A-Za-z_][A-Za-z0-9_]*\\\\)+)$/', $known, $match) !== 1) {
+            return null;
+        }
+        $nested = false;
+        foreach ($parts as $part) {
+            $nested = $nested || ($part instanceof Node\Scalar\String_ && str_contains($part->value, '\\'));
+        }
+
+        return rtrim($match[1], '\\') . ($nested ? '\\**' : '');
     }
 
     /** Emit a `calls` edge for a static call, resolving `self`/`static`/`parent` against the current class. */

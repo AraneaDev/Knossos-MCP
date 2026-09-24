@@ -257,13 +257,14 @@ final readonly class ProjectDiscoverer
      */
     private static function result(string $root, array $files, array $units, array $diagnostics, array $unparsedManifestHashes): DiscoveryResult
     {
+        $files = self::withoutCompiledSiblings($files);
         usort($files, static fn(DiscoveredFile $left, DiscoveredFile $right): int =>
             $left->relativePath <=> $right->relativePath);
         usort($units, static fn(ProjectUnit $left, ProjectUnit $right): int =>
             [$left->kind, $left->configPath] <=> [$right->kind, $right->configPath]);
         $units = self::withBuildOutputSources($units);
         $units = self::withClassNameEntryPoints($units);
-        $units = self::withMigrationEntryPoints($units, $files);
+        $units = self::withLoadedDirectoryEntryPoints($units, $files);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -352,14 +353,19 @@ final readonly class ProjectDiscoverer
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
                 'class_names' => self::yamlClassNames($contents),
-                'migration_directories' => self::doctrineMigrationDirectories($contents),
+                ...self::loadedDirectories($contents, $relative),
             ]);
         }
         if ($kind === 'dockerfile') {
             // Read as text for paths, as a YAML file is: a build context is the
             // project root, so a path resolves there as well as beside the file.
             return new ProjectUnit($kind, $relative, $contentHash, [
-                'entry_points' => self::yamlPathEntryPoints($contents, $relative),
+                'entry_points' => self::yamlPathEntryPoints(self::withCopySources($contents), $relative),
+            ]);
+        }
+        if ($kind === 'readme') {
+            return new ProjectUnit($kind, $relative, $contentHash, [
+                'entry_points' => self::readmeRunnerEntryPoints($contents, $relative),
             ]);
         }
         if ($kind === 'shell') {
@@ -1244,6 +1250,76 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * The files a README runs: a path given straight to an interpreter
+     * (`node scripts/screenshot.mjs`, `npx tsx src/seed.ts`, `python3 x.py`).
+     *
+     * Prose mentions files for every reason, so a path only counts after a
+     * runner. Read from the README's directory and from the project root, as
+     * a YAML file's paths are.
+     *
+     * @return list<string>
+     */
+    private static function readmeRunnerEntryPoints(string $contents, string $configPath): array
+    {
+        $extensions = implode('|', array_map(preg_quote(...), self::ENTRY_POINT_EXTENSIONS));
+        preg_match_all(
+            sprintf('#\b(?:node|nodejs|deno(?:\s+run)?|bun(?:\s+run)?|tsx|ts-node|python3?|php)\s+(?:-{1,2}[a-z][\w-]*(?:=\S+)?\s+)*([A-Za-z0-9_./-]+\.(?:%s))\b#', $extensions),
+            $contents,
+            $matches,
+        );
+
+        return self::yamlPathEntryPoints(implode("\n", $matches[1]), $configPath);
+    }
+
+    /**
+     * A Dockerfile with each path a `COPY` put in the image written as the
+     * source it was copied from.
+     *
+     * `COPY scripts/probe /tmp/probe` then `RUN python3 /tmp/probe/check.py`
+     * runs `scripts/probe/check.py`, but only the image path is written. Each
+     * `COPY` line's destination is rewritten to its source on every other
+     * line, the longest destination first; a `COPY` with several sources, or
+     * from another stage, names no single source and is left alone.
+     */
+    private static function withCopySources(string $contents): string
+    {
+        $mappings = [];
+        $lines = explode("\n", $contents);
+        foreach ($lines as $line) {
+            if (preg_match('#^\s*(?:COPY|ADD)\s+((?:--[a-z-]+=\S+\s+)*)(\S+)\s+(/\S+)\s*$#i', $line, $copy) !== 1
+                || str_contains($copy[1], '--from=')
+                || str_starts_with($copy[2], '/')
+                || str_contains($copy[2], '..')) {
+                continue;
+            }
+            $source = trim(str_starts_with($copy[2], './') ? substr($copy[2], 2) : $copy[2], '/');
+            $destination = rtrim($copy[3], '/');
+            // A file copied into a directory keeps its name there.
+            if (str_ends_with($copy[3], '/') && str_contains(basename($source), '.')) {
+                $destination .= '/' . basename($source);
+            }
+            if ($source !== '' && $source !== '.' && $destination !== '') {
+                $mappings[$destination] = $source;
+            }
+        }
+        if ($mappings === []) {
+            return $contents;
+        }
+        uksort($mappings, static fn(string $a, string $b): int => strlen($b) <=> strlen($a));
+        foreach ($lines as $index => $line) {
+            if (preg_match('/^\s*(?:COPY|ADD)\s/i', $line) === 1) {
+                continue;
+            }
+            foreach ($mappings as $destination => $source) {
+                $line = preg_replace('#(?<![\w./-])' . preg_quote($destination, '#') . '(?=/|\s|$|["\';|&])#', $source, $line) ?? $line;
+            }
+            $lines[$index] = $line;
+        }
+
+        return implode("\n", $lines);
+    }
+
+    /**
      * The files a shell script names by path, as a YAML file's are read.
      *
      * `cd server && npx tsx src/scripts/reset.ts` names a path relative to the
@@ -1643,6 +1719,68 @@ final readonly class ProjectDiscoverer
     }
 
     /**
+     * The files, less JavaScript `tsc` compiled beside its TypeScript source.
+     *
+     * Without an `outDir` the compiler writes `errors.js` next to `errors.ts`,
+     * and every import resolves to the `.ts`, so the `.js` read as a module
+     * nothing uses. It is build output: a same-named `.ts` or `.tsx` sits
+     * beside it and it ends with the source-map comment the compiler writes.
+     * Both are facts discovery already holds (the path list and the bytes it
+     * hashed), so the decision changes only when they do.
+     *
+     * @param list<DiscoveredFile> $files
+     * @return list<DiscoveredFile>
+     */
+    private static function withoutCompiledSiblings(array $files): array
+    {
+        $paths = [];
+        foreach ($files as $file) {
+            $paths[$file->relativePath] = true;
+        }
+
+        return array_values(array_filter(
+            $files,
+            static fn(DiscoveredFile $file): bool => !self::isCompiledSibling(
+                $file->relativePath,
+                $file->absolutePath,
+                static fn(string $sibling): bool => isset($paths[$sibling]),
+            ),
+        ));
+    }
+
+    /**
+     * Whether a JavaScript file is `tsc` output beside its TypeScript source:
+     * a same-named `.ts` or `.tsx` (`.mts` for `.mjs`, `.cts` for `.cjs`)
+     * exists, and the file ends with the source-map comment the compiler
+     * writes. Public because the drift probe must skip exactly what discovery
+     * skips; each caller says how a sibling's existence is known.
+     *
+     * @param callable(string): bool $exists whether a project-relative path exists
+     */
+    public static function isCompiledSibling(string $relativePath, string $absolutePath, callable $exists): bool
+    {
+        if (preg_match('/^(.*)\.(js|jsx|mjs|cjs)$/', $relativePath, $stem) !== 1) {
+            return false;
+        }
+        $sources = match ($stem[2]) {
+            'mjs' => ['mts'],
+            'cjs' => ['cts'],
+            default => ['ts', 'tsx'],
+        };
+        $sibling = false;
+        foreach ($sources as $source) {
+            $sibling = $sibling || $exists($stem[1] . '.' . $source);
+        }
+        if (!$sibling) {
+            return false;
+        }
+        $size = @filesize($absolutePath);
+        $tail = $size === false ? false : @file_get_contents($absolutePath, false, null, max(0, $size - 512));
+
+        return is_string($tail) && preg_match('~//# sourceMappingURL=\S+\s*$~', $tail) === 1;
+    }
+
+    /**
      * The directories a Doctrine Migrations config loads migrations from.
      *
      * `migrations_paths` maps a namespace to a directory, usually under
@@ -1688,23 +1826,180 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * Add, to each YAML unit, the PHP files below the migration directories it names.
+     * Tags whose owner calls every service carrying them: a message bus, the
+     * event dispatcher, the console, the router, Twig, the validator, forms,
+     * security. A tag like `container.no_preload` only configures the
+     * container and proves nothing about use.
+     */
+    private const INVOKING_TAG = '/(?:handler|listener|subscriber|command|controller|voter|extension|constraint_validator|form\.type|scheduler\.task)(?:$|[._])/i';
+
+    /**
+     * The directories a tagged Symfony `resource:` block registers every class
+     * in, and the paths its `exclude:` leaves out.
+     *
+     * `App\\Handler\\: { resource: '../src/Handler', tags: [...] }`, inline or as a
+     * block, makes each class there a service the tag's owner (a message bus,
+     * an event dispatcher, the console) calls, and nothing in PHP names them.
+     * Only a tag whose owner invokes what carries it counts
+     * ({@see self::INVOKING_TAG}); a block without one only autowires, which
+     * says nothing about use. Paths are relative to the config file, or to
+     * the project under `%kernel.project_dir%`; one outside the project names
+     * nothing.
+     *
+     * @return array{directories: list<string>, exclusions: list<string>}
+     */
+    private static function taggedResourceDirectories(string $contents, string $configPath): array
+    {
+        $directories = [];
+        $exclusions = [];
+        $base = self::manifestDirectory($configPath);
+        $resolve = static function (string $path) use ($base): ?string {
+            $path = trim($path, "'\" ");
+            $prefix = $base;
+            if (str_starts_with($path, '%kernel.project_dir%/')) {
+                $path = substr($path, strlen('%kernel.project_dir%/'));
+                $prefix = '';
+            }
+            $segments = [];
+            foreach (explode('/', ($prefix === '' ? '' : $prefix . '/') . $path) as $segment) {
+                if ($segment === '..') {
+                    if ($segments === []) {
+                        return null;
+                    }
+                    array_pop($segments);
+                } elseif ($segment !== '' && $segment !== '.') {
+                    $segments[] = $segment;
+                }
+            }
+
+            return $segments === [] ? null : implode('/', $segments);
+        };
+        $values = static fn(string $text): array => array_values(array_filter(array_map(
+            static fn(string $item): string => trim($item, " '\"{}"),
+            preg_split('/,/', trim($text, ' []')) ?: [],
+        ), static fn(string $item): bool => $item !== ''));
+        $tagNames = static function (string $text): array {
+            if (preg_match_all('/\bname\s*:\s*[\'"]?([\w.\-]+)/', $text, $named) > 0) {
+                return $named[1];
+            }
+            preg_match_all('/[\'"]?([A-Za-z_][\w.\-]*)[\'"]?/', trim($text, ' []-'), $bare);
+
+            return $bare[1];
+        };
+        $flush = static function (?array $block) use (&$directories, &$exclusions, $resolve): void {
+            if ($block === null || $block['resource'] === null) {
+                return;
+            }
+            $invoked = false;
+            foreach ($block['tags'] as $tag) {
+                $invoked = $invoked || preg_match(self::INVOKING_TAG, $tag) === 1;
+            }
+            $directory = $invoked ? $resolve(rtrim(preg_replace('/[*{].*$/', '', $block['resource']) ?? '', '/')) : null;
+            if ($directory === null) {
+                return;
+            }
+            $directories[$directory] = true;
+            foreach ($block['exclude'] as $pattern) {
+                $excluded = $resolve($pattern);
+                if ($excluded !== null) {
+                    $exclusions[$excluded] = true;
+                }
+            }
+        };
+        $block = null;
+        foreach (explode("\n", $contents) as $line) {
+            $line = preg_replace('/(?:^|\s)#.*$/', '', $line) ?? $line;
+            if (trim($line) === '') {
+                continue;
+            }
+            $indent = strlen($line) - strlen(ltrim($line));
+            if ($block !== null && $indent <= $block['indent']) {
+                $flush($block);
+                $block = null;
+            }
+            if (preg_match('/^\s*[\'"]?[A-Za-z_][A-Za-z0-9_\\\\]*\\\\[\'"]?\s*:\s*$/', $line) === 1) {
+                $block = ['indent' => $indent, 'resource' => null, 'exclude' => [], 'tags' => [], 'list' => null, 'listIndent' => 0];
+                continue;
+            }
+            // The inline form: `App\\Listener\\: { resource: '...', tags: [...] }`.
+            if (preg_match('/^\s*[\'"]?[A-Za-z_][A-Za-z0-9_\\\\]*\\\\[\'"]?\s*:\s*\{(.*)\}\s*$/', $line, $inline) === 1) {
+                $exclude = preg_match('/\bexclude\s*:\s*(\[[^\]]*\]|[\'"][^\'"]*[\'"])/', $inline[1], $excluded) === 1 ? $values($excluded[1]) : [];
+                $tags = preg_match('/\btags\s*:\s*(\[.*\])/', $inline[1], $tagged) === 1 ? $tagNames($tagged[1]) : [];
+                $flush([
+                    'resource' => preg_match('/\bresource\s*:\s*[\'"]?([^\'"\s,}]+)/', $inline[1], $resource) === 1 ? $resource[1] : null,
+                    'exclude' => $exclude,
+                    'tags' => $tags,
+                ]);
+                continue;
+            }
+            if ($block === null) {
+                continue;
+            }
+            if ($block['list'] !== null && $indent > $block['listIndent']) {
+                if ($block['list'] === 'exclude') {
+                    $block['exclude'][] = trim(ltrim(trim($line), '- '), "'\"");
+                } else {
+                    array_push($block['tags'], ...$tagNames(ltrim(trim($line), '- ')));
+                }
+                continue;
+            }
+            $block['list'] = null;
+            if (preg_match('/^\s*resource\s*:\s*[\'"]?([^\'"\s]+)/', $line, $resource) === 1) {
+                $block['resource'] = $resource[1];
+            } elseif (preg_match('/^\s*(exclude|tags)\s*:\s*(.*)$/', $line, $key) === 1) {
+                if (trim($key[2]) === '') {
+                    $block['list'] = $key[1];
+                    $block['listIndent'] = $indent;
+                } elseif ($key[1] === 'exclude') {
+                    array_push($block['exclude'], ...$values($key[2]));
+                } else {
+                    array_push($block['tags'], ...$tagNames($key[2]));
+                }
+            }
+        }
+        $flush($block);
+
+        return ['directories' => array_keys($directories), 'exclusions' => array_keys($exclusions)];
+    }
+
+    /**
+     * The directories a YAML file loads every class from, and what it excludes.
+     *
+     * @return array{loaded_directories: list<string>, loaded_exclusions: list<string>}
+     */
+    private static function loadedDirectories(string $contents, string $configPath): array
+    {
+        $tagged = self::taggedResourceDirectories($contents, $configPath);
+
+        return [
+            'loaded_directories' => [...self::doctrineMigrationDirectories($contents), ...$tagged['directories']],
+            'loaded_exclusions' => $tagged['exclusions'],
+        ];
+    }
+
+    /**
+     * Add, to each YAML unit, the PHP files below the directories it loads
+     * every class from: Doctrine migration paths and tagged service resources.
      *
      * @param list<ProjectUnit> $units
      * @param list<DiscoveredFile> $files
      * @return list<ProjectUnit>
      */
-    private static function withMigrationEntryPoints(array $units, array $files): array
+    private static function withLoadedDirectoryEntryPoints(array $units, array $files): array
     {
         return array_map(static function (ProjectUnit $unit) use ($files): ProjectUnit {
-            $directories = $unit->metadata['migration_directories'] ?? [];
+            $directories = $unit->metadata['loaded_directories'] ?? [];
             if ($unit->kind !== 'yaml' || !is_array($directories) || $directories === []) {
                 return $unit;
             }
+            $exclusions = array_values(array_filter($unit->metadata['loaded_exclusions'] ?? [], is_string(...)));
             $paths = array_fill_keys($unit->metadata['entry_points'] ?? [], true);
             foreach ($files as $file) {
+                if (!str_ends_with($file->relativePath, '.php') || self::excludedResource($file->relativePath, $exclusions)) {
+                    continue;
+                }
                 foreach ($directories as $directory) {
-                    if (is_string($directory) && str_starts_with($file->relativePath, $directory . '/') && str_ends_with($file->relativePath, '.php')) {
+                    if (is_string($directory) && str_starts_with($file->relativePath, $directory . '/')) {
                         $paths[$file->relativePath] = true;
                     }
                 }
@@ -1717,6 +2012,23 @@ final readonly class ProjectDiscoverer
                 'entry_points' => $paths,
             ]);
         }, $units);
+    }
+
+    /**
+     * Whether a path falls under a resource `exclude:`: the path itself, a
+     * directory above it, or a glob matching it.
+     *
+     * @param list<string> $exclusions
+     */
+    private static function excludedResource(string $path, array $exclusions): bool
+    {
+        foreach ($exclusions as $exclusion) {
+            if ($path === $exclusion || str_starts_with($path, rtrim($exclusion, '/') . '/') || fnmatch($exclusion, $path, FNM_PATHNAME)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -2169,6 +2481,10 @@ final readonly class ProjectDiscoverer
         $basename = strtolower(basename($relativePath));
         if ($basename === '.gitignore') {
             return 'gitignore';
+        }
+        // A README writes down the command that runs a one-off script.
+        if (preg_match('/^readme(?:\.[a-z]+)?\.md$/', $basename) === 1) {
+            return 'readme';
         }
         // A shell script starts the programs it runs, which nothing imports.
         if (str_ends_with($basename, '.sh') || str_ends_with($basename, '.bash')) {

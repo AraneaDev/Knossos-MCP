@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query\Drift;
 
+use Knossos\Discovery\IgnoreMatcher;
 use Knossos\Query\Drift\ScannedPaths;
 use Knossos\Query\Drift\WalkDriftOracle;
 use Knossos\Scan\ProjectScanService;
@@ -25,6 +26,29 @@ use PHPUnit\Framework\Attributes\Group;
  */
 final class ScannedPathsTest extends KnossosTestCase
 {
+    /**
+     * Discovery skips JavaScript compiled beside its TypeScript source, so a
+     * new one is no drift: a rescan would skip it again.
+     */
+    #[Group('query')]
+    public function testJavaScriptCompiledBesideItsSourceIsNotTracked(): void
+    {
+        $root = sys_get_temp_dir() . '/knossos-stale-compiled-' . bin2hex(random_bytes(6));
+        mkdir($root . '/shared', 0o777, true);
+        try {
+            file_put_contents($root . '/shared/errors.ts', "export class E {}\n");
+            file_put_contents($root . '/shared/errors.js', "export class E {}\n//# sourceMappingURL=errors.js.map\n");
+            file_put_contents($root . '/shared/plain.js', "export const a = 1;\n");
+            $paths = new ScannedPaths(new IgnoreMatcher([]));
+
+            self::assertFalse($paths->tracks('shared/errors.js', $root . '/shared/errors.js'));
+            self::assertTrue($paths->tracks('shared/errors.ts', $root . '/shared/errors.ts'));
+            self::assertTrue($paths->tracks('shared/plain.js', $root . '/shared/plain.js'));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /**
      * The ignores a scan ran with are stored with it and used by the probe, so
      * a path discovery skipped is not counted as drift against the graph it

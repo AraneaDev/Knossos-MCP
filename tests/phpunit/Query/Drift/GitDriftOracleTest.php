@@ -86,18 +86,19 @@ final class GitDriftOracleTest extends KnossosTestCase
     }
 
     /**
-     * Git follows files the scanner never looks at. A README, a lockfile or an
+     * Git follows files the scanner never looks at. Notes, a lockfile or an
      * image changing is drift the graph cannot have, and a rescan would not
-     * clear it, so reporting it strands the caller on a permanent warning.
+     * clear it, so reporting it strands the caller on a permanent warning. (A
+     * README is read, for the scripts it runs, so it is not one of them.)
      */
     #[Group('git')]
     public function testAChangedFileTheGraphDoesNotTrackIsNotDrift(): void
     {
         [$pdo, $projectId, $root, $scanId] = $this->seedWithHead(self::HEAD);
         try {
-            file_put_contents($root . '/README.md', "# read me\n");
+            file_put_contents($root . '/NOTES.md', "# notes\n");
 
-            $drift = $this->drift($pdo, $projectId, $scanId, $root, ['README.md'], [], ['src/a.php', 'README.md']);
+            $drift = $this->drift($pdo, $projectId, $scanId, $root, ['NOTES.md'], [], ['src/a.php', 'NOTES.md']);
 
             self::assertNotNull($drift);
             self::assertSame(0, $drift->total(), 'A file discovery would never have tracked is not a change to the graph.');

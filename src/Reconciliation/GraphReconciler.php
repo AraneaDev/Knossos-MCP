@@ -428,6 +428,15 @@ final readonly class GraphReconciler
                     }
                     continue;
                 }
+                if (str_contains($edge->targetReference, ':class_prefix:')) {
+                    // A class name built from a namespace prefix at runtime:
+                    // one edge per class directly in that namespace.
+                    foreach (self::classPrefixTargets($edge->targetReference, $nodeMap) as $targetId) {
+                        $record = $this->edgeWithEvidence($projectId, $edge, $sourceId, $targetId, $contribution->ownerKey, $fileIds);
+                        $edges[$record['id']] = $record;
+                    }
+                    continue;
+                }
                 $returned = str_contains($edge->targetReference, ':method_of_return:');
                 // A scanner marks an edge speculative when it knows the
                 // receiver's type but not whether that type declares the member
@@ -551,6 +560,38 @@ final readonly class GraphReconciler
         $id = StableId::edge($projectId, $edge->kind, $sourceId, $targetId, $evidenceKey);
 
         return $this->edgeRecord($id, $edge, $sourceId, $targetId, $ownerKey, $fileIds);
+    }
+
+    /**
+     * The classes directly in the namespace a runtime-built class name starts
+     * with: `new ('App\\Cards\\' . $command)`, named by the scanner as
+     * `<language>:class_prefix:App\\Cards`. A class in a nested namespace is
+     * not one the prefix can name unless the reference ends `\\**`, and an
+     * empty prefix names nothing.
+     *
+     * @param array<string, string> $nodeMap
+     * @return list<string>
+     */
+    private static function classPrefixTargets(string $reference, array $nodeMap): array
+    {
+        [$language, , $namespace] = array_pad(explode(':', $reference, 3), 3, '');
+        // A trailing `\\**` reaches the namespaces below the prefix.
+        $nested = str_ends_with($namespace, '\\**');
+        $namespace = trim($nested ? substr($namespace, 0, -3) : $namespace, '\\');
+        if ($namespace === '') {
+            return [];
+        }
+        $prefix = $language . ':class:' . $namespace . '\\';
+        $targets = [];
+        foreach ($nodeMap as $candidate => $nodeId) {
+            // Direct children only, or, for `\\**`, only classes in a
+            // namespace below: the expression puts a segment after the prefix.
+            if (str_starts_with($candidate, $prefix) && str_contains(substr($candidate, strlen($prefix)), '\\') === $nested) {
+                $targets[] = $nodeId;
+            }
+        }
+
+        return $targets;
     }
 
     /**

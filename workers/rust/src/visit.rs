@@ -11,7 +11,7 @@ use syn::visit::Visit;
 use syn::{ImplItem, Item, TraitItem, Type};
 
 use crate::facts::{reference, Facts};
-use crate::resolve::{flatten_use, parent_module, rebase, Aliases};
+use crate::resolve::{flatten_use, glob_prefixes, parent_module, rebase, Aliases};
 
 /// Canonical name of every top-level and inline-module declaration in the
 /// request, mapped to how many files declared it. The scan-wide view that lets
@@ -60,6 +60,19 @@ struct Walk<'a> {
     module: String,
     /// Names this file brought into scope.
     aliases: Aliases,
+    /// The modules this file's glob imports (`use a::b::*;`) bring every
+    /// public name of into scope, each with the module that declares it, in
+    /// the order they were written.
+    globs: Vec<(String, String)>,
+    /// Glob imports as written, with their module, whether the path is
+    /// absolute (`::dep::*`), and span, until every `use` in the file is
+    /// known: a glob's path may start with an alias declared later in the
+    /// same module.
+    pending_globs: Vec<(String, String, bool, proc_macro2::Span)>,
+    /// Each module's own imported names, for a glob's leading alias: a `use`
+    /// is scoped to the module that declares it, so sibling modules may bind
+    /// one alias to different paths. `None` marks a name bound twice.
+    module_aliases: BTreeMap<(String, String), Option<String>>,
     /// Target type of the current impl block, for resolving `Self`.
     current_impl_target: Option<String>,
     /// Frameworks the scan request asked this worker to enrich, by short name
@@ -97,6 +110,9 @@ pub fn walk(
         facts,
         module: module.to_owned(),
         aliases: Aliases::default(),
+        globs: Vec::new(),
+        pending_globs: Vec::new(),
+        module_aliases: BTreeMap::new(),
         current_impl_target: None,
         frameworks,
         declarations,
@@ -105,6 +121,7 @@ pub fn walk(
         struct_fields: BTreeMap::new(),
     };
     walker.collect_uses(module, &file.items);
+    walker.resolve_globs();
     walker.collect_struct_fields(module, &file.items);
     walker.walk_items(module, "module", &file.items);
     walker.finish_walk();
@@ -237,7 +254,33 @@ impl Walk<'_> {
                             "certain",
                             item.span(),
                         );
+                        let key = (container.to_owned(), leaf.alias.clone());
+                        match self.module_aliases.get(&key) {
+                            Some(Some(existing)) if existing != &full => {
+                                self.module_aliases.insert(key, None);
+                            }
+                            Some(_) => {}
+                            None => {
+                                self.module_aliases.insert(key, Some(full.clone()));
+                            }
+                        }
                         self.aliases.insert(leaf.alias, full);
+                    }
+                    let mut globs = Vec::new();
+                    glob_prefixes(&node.tree, "", &mut globs);
+                    for glob in globs {
+                        let head = glob.split("::").next().unwrap_or_default();
+                        let written = if node.leading_colon.is_none() && children.contains(head) {
+                            format!("{container}::{glob}")
+                        } else {
+                            glob
+                        };
+                        self.pending_globs.push((
+                            container.to_owned(),
+                            written,
+                            node.leading_colon.is_some(),
+                            item.span(),
+                        ));
                     }
                 }
                 Item::Mod(node) => {
@@ -705,6 +748,45 @@ impl Walk<'_> {
         Some((format!("{container}::{rendered}"), true))
     }
 
+    /// Resolve the glob imports [`Walk::collect_uses`] set aside, now that
+    /// every alias in the file is known: `use parts::*;` beside
+    /// `use crate::left as parts;` imports from `crate::left`, whichever line
+    /// comes first.
+    fn resolve_globs(&mut self) {
+        let source = reference("module", &self.module);
+        for (container, written, absolute, span) in std::mem::take(&mut self.pending_globs) {
+            // `::dep::*` names the external crate whatever the file calls
+            // `dep`; otherwise a leading alias is one this module declares.
+            let expanded = if absolute {
+                written
+            } else {
+                let (head, rest) = written.split_once("::").unwrap_or((written.as_str(), ""));
+                match self
+                    .module_aliases
+                    .get(&(container.clone(), head.to_owned()))
+                {
+                    Some(Some(full)) if rest.is_empty() => full.clone(),
+                    Some(Some(full)) => format!("{full}::{rest}"),
+                    _ => written.clone(),
+                }
+            };
+            let Some(full) = rebase(&container, &self.anchor_crate(&expanded)) else {
+                continue;
+            };
+            self.facts.edge(
+                "imports",
+                &source,
+                &reference("module", &full),
+                "certain",
+                span,
+            );
+            let glob = (container, full);
+            if !self.globs.contains(&glob) {
+                self.globs.push(glob);
+            }
+        }
+    }
+
     /// The name this file's crate root has in the graph: `crate` for the
     /// package at the project root, the crate's own name for a workspace
     /// member (see `module_path_in_crate`).
@@ -725,17 +807,28 @@ impl Walk<'_> {
     }
 
     /// The paths an unqualified `rendered` path could name, in scoping order.
+    ///
+    /// A name declared in the enclosing module shadows one a glob import
+    /// brings in, so the globs come right after it; only a glob that module
+    /// itself declares brings anything in.
     fn index_candidates(&self, container: &str, rendered: &str) -> Vec<String> {
-        let mut candidates = Vec::with_capacity(3);
-        for candidate in [
-            format!("{container}::{rendered}"),
-            if container == self.crate_root() {
-                String::new()
-            } else {
-                format!("{}::{rendered}", self.crate_root())
-            },
-            rendered.to_owned(),
-        ] {
+        let mut candidates = Vec::with_capacity(3 + self.globs.len());
+        let globbed = self
+            .globs
+            .iter()
+            .filter(|(declared_in, _)| declared_in == container)
+            .map(|(_, glob)| format!("{glob}::{rendered}"));
+        for candidate in std::iter::once(format!("{container}::{rendered}"))
+            .chain(globbed)
+            .chain([
+                if container == self.crate_root() {
+                    String::new()
+                } else {
+                    format!("{}::{rendered}", self.crate_root())
+                },
+                rendered.to_owned(),
+            ])
+        {
             if !candidate.is_empty() && !candidates.contains(&candidate) {
                 candidates.push(candidate);
             }
@@ -2081,6 +2174,124 @@ mod tests {
                 .iter()
                 .map(|edge| format!("{} -> {}", edge.kind, edge.target))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    /// `use crate::components::*;` brings every public name of that module into
+    /// scope, so `Camera::perspective(..)` there names the components' Camera.
+    /// A glob names no symbol of its own, and ignoring it left every call
+    /// through one unresolved.
+    #[test]
+    fn a_name_a_glob_import_brings_in_resolves_through_the_index() {
+        let components: syn::File = syn::parse_str(
+            "pub struct Camera;\nimpl Camera {\n    pub fn perspective() -> Self { Camera }\n}",
+        )
+        .expect("parses");
+        let engine: syn::File = syn::parse_str(
+            "use crate::components::*;\nfn create() { let _ = Camera::perspective(); }",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        collect_declarations("crate::components", &components.items, &mut declarations);
+        collect_declarations("crate::engine", &engine.items, &mut declarations);
+        let mut facts = Facts::new("src/engine.rs");
+
+        walk(
+            &mut facts,
+            "crate::engine",
+            &engine,
+            &[],
+            &declarations,
+            &TestModules::new(),
+        );
+
+        let contribution = facts.finish();
+        let edges: Vec<String> = contribution
+            .edges
+            .iter()
+            .map(|edge| format!("{} -> {}", edge.kind, edge.target))
+            .collect();
+        assert!(
+            edges.contains(
+                &"calls -> rust:method:crate::components::Camera::perspective".to_owned()
+            ),
+            "edges were {edges:?}"
+        );
+    }
+
+    /// A glob brings names into the module that declares it and no other, and
+    /// its path may start with a module alias the file declares anywhere.
+    #[test]
+    fn a_glob_is_scoped_to_its_module_and_expands_an_alias() {
+        let left: syn::File =
+            syn::parse_str("pub struct Device;\nimpl Device { pub fn open() -> Self { Device } }")
+                .expect("parses");
+        let right = left.clone();
+        let engine: syn::File = syn::parse_str(
+            "use parts::*;\nuse crate::left as parts;\nuse crate::left as dep;\nfn top() { let _ = Device::open(); }\nmod a {\n    use crate::right::*;\n    fn go() { let _ = Device::open(); }\n}\nmod b {\n    fn go() { let _ = Device::open(); }\n}\nmod c {\n    use crate::left as kit;\n    use kit::*;\n    fn go() { let _ = Device::open(); }\n}\nmod d {\n    use crate::right as kit;\n    use kit::*;\n    fn go() { let _ = Device::open(); }\n}\nmod e {\n    use ::dep::*;\n    fn go() { let _ = Device::open(); }\n}",
+        )
+        .expect("parses");
+        let mut declarations = Declarations::new();
+        collect_declarations("crate::left", &left.items, &mut declarations);
+        collect_declarations("crate::right", &right.items, &mut declarations);
+        let mut facts = Facts::new("src/engine.rs");
+
+        walk(
+            &mut facts,
+            "crate::engine",
+            &engine,
+            &[],
+            &declarations,
+            &TestModules::new(),
+        );
+
+        let contribution = facts.finish();
+        let calls: Vec<String> = contribution
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == "calls")
+            .map(|edge| format!("{} -> {}", edge.source, edge.target))
+            .collect();
+        assert!(
+            calls.contains(
+                &"rust:function:crate::engine::top -> rust:method:crate::left::Device::open"
+                    .to_owned()
+            ),
+            "calls were {calls:?}"
+        );
+        assert!(
+            calls.contains(
+                &"rust:function:crate::engine::a::go -> rust:method:crate::right::Device::open"
+                    .to_owned()
+            ),
+            "calls were {calls:?}"
+        );
+        // Sibling modules binding the same alias to different modules.
+        assert!(
+            calls.contains(
+                &"rust:function:crate::engine::c::go -> rust:method:crate::left::Device::open"
+                    .to_owned()
+            ),
+            "calls were {calls:?}"
+        );
+        assert!(
+            calls.contains(
+                &"rust:function:crate::engine::d::go -> rust:method:crate::right::Device::open"
+                    .to_owned()
+            ),
+            "calls were {calls:?}"
+        );
+        // `::dep` is the external crate, not the file's `dep` alias.
+        assert!(
+            !calls.iter().any(|call| call
+                .starts_with("rust:function:crate::engine::e::go -> rust:method:crate::left")),
+            "calls were {calls:?}"
+        );
+        // `b` imports nothing, so the top-level glob does not reach it.
+        assert!(
+            !calls.iter().any(|call| call
+                .starts_with("rust:function:crate::engine::b::go -> rust:method:crate::left")),
+            "calls were {calls:?}"
         );
     }
 

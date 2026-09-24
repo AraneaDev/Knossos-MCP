@@ -243,6 +243,93 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * A method declared to return `self` or `static` returns its own class, so
+     * `$instance = self::getInstance(); $instance->record()` calls that
+     * class's method, not one of a class named `self`.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerTypesAReceiverAMethodReturningSelfProduces(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/Singleton.php'],
+        ]), false);
+        $client->shutdown();
+        $calls = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'calls' && $edge->sourceReference === 'php:method:Fixture\\Singleton::capture') {
+                $calls[] = $edge->targetReference;
+            }
+        }
+        sort($calls);
+
+        self::assertContains('php:method:Fixture\\Singleton::record', $calls);
+        self::assertContains('php:method:Fixture\\Singleton::flush', $calls);
+        self::assertSame([], array_values(array_filter($calls, static fn(string $call): bool => str_contains(strtolower($call), ':self::') || str_contains(strtolower($call), ':static::'))));
+    }
+
+    /**
+     * JMS Serializer calls a `@VirtualProperty` method by reflection when it
+     * serializes the object; no code names it.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerMarksAVirtualPropertyAsRuntimeInvoked(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/Serialized.php'],
+        ]), false);
+        $client->shutdown();
+        $invoked = [];
+        foreach ($contributions[0]->nodes as $node) {
+            if ($node->kind === 'method') {
+                $invoked[$node->displayName] = $node->attributes['runtime_invoked'] ?? false;
+            }
+        }
+        ksort($invoked);
+
+        assertSame(['label' => true, 'plain' => false, 'provider' => true], $invoked);
+    }
+
+    /**
+     * A class name built from a namespace literal, `new ($prefix . $name)`,
+     * may be any class in that namespace; the scanner names the namespace for
+     * the reconciler to expand. A variable reassigned since, rebound by a
+     * `foreach`, or shadowed by a closure's parameter names nothing.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerNamesTheNamespaceARuntimeClassNameIsBuiltIn(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/CardFactory.php'],
+        ]), false);
+        $client->shutdown();
+        $prefixes = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if (str_contains($edge->targetReference, ':class_prefix:')) {
+                $prefixes[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+            }
+        }
+        $prefixes = array_values(array_unique($prefixes));
+        sort($prefixes);
+
+        assertSame([
+            // A literal segment before the runtime part narrows the namespace.
+            // An arrow function, and a closure's `use`, capture the variable.
+            'php:method:Fixture\\CardFactory::captured -> php:class_prefix:App\\Gadgets',
+            'php:method:Fixture\\CardFactory::fixedSegment -> php:class_prefix:App\\Cards\\Parts',
+            'php:method:Fixture\\CardFactory::fromVariable -> php:class_prefix:App\\Cards',
+            'php:method:Fixture\\CardFactory::inline -> php:class_prefix:App\\Widgets',
+            // A separator after a runtime segment reaches into nested namespaces.
+            'php:method:Fixture\\CardFactory::nested -> php:class_prefix:App\\Cards\\**',
+        ], $prefixes);
+    }
+
+    /**
      * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
      * produced no call edge at all — on either a variable or a property
      * receiver — however precisely the receiver was typed.

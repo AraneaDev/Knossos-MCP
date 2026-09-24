@@ -59,9 +59,14 @@ class, which is why such a method is not excluded outright.
 
 An object literal passed as an argument, returned, or nested in an array or another literal
 (`filters: [{ name: 'all', func() {} }]` handed to a component prop) is called by whatever
-receives it. When the TypeScript scanner finds a type for it in the project, that type is its
+receives it, and so is one a `const` binding holds once the binding is handed on the same way.
+When the TypeScript scanner finds a type for it in the project, that type is its
 contract and its methods are judged against it; when it finds none, its methods drop to
 `possible`. A literal typed only by a library counts as extending an external ancestor.
+
+A PHP class name built at runtime from a namespace literal, `new ('App\Cards\' . $command)`
+or the same string held in a variable first, references every class directly in that
+namespace: any of them may be the one built.
 
 The `reason` field names the specific ground, so a caller never has to infer why
 a candidate was demoted.
@@ -158,12 +163,15 @@ matches anything. Files that do match are classified `application.entry_point`
 (rule `core.manifest.entrypoints.v1`).
 
 Discovery also reads every `.html` file for its `<script src>` attributes,
-every `.yml`/`.yaml` and `.neon` file, Dockerfile and shell script (`.sh`, `.bash`) for
+every `README` for the paths it hands to an interpreter (`node scripts/x.mjs`,
+`python3 tools/y.py`), every `.yml`/`.yaml` and `.neon` file, Dockerfile and shell script (`.sh`, `.bash`) for
 tokens shaped like a source path, and every tool config module for the keys
 naming files the tool loads. A shell script's path is also read from the
 directory a `cd` before it on the same line names, or a `cd` on a line of its
 own until its `case` branch or block ends, so `cd server && npx tsx src/reset.ts`
-names `server/src/reset.ts`. A single-page
+names `server/src/reset.ts`. In a Dockerfile, a path a `COPY` put in the image
+(`python3 /tmp/probe/check.py` after `COPY scripts/probe /tmp/probe`) is read as
+the file it was copied from. A single-page
 application is entered through its HTML shell, a Compose file mounts a config
 by path, and Vitest loads `setupFiles` before every test; none of those is an
 import, so each named file carried an in-degree of zero while being the reason

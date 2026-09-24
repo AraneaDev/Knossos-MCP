@@ -1155,13 +1155,65 @@ class TypeScriptLanguageFactCollector {
                 },
             );
         const source = this.currentSource();
-        const target = this.symbolReference(
-            this.checker.getSymbolAtLocation(node.expression),
-            "class",
-            true,
-        );
+        const target =
+            this.symbolReference(
+                this.checker.getSymbolAtLocation(node.expression),
+                "class",
+                true,
+            ) ?? this.constructedClass(node.expression);
         if (source !== null && target !== null)
             this.addEdge("constructs", source, target, node);
+    }
+
+    /**
+     * The class a binding holds when `new` names the binding rather than the
+     * class. A binding assigned a class (`const B: typeof A = Actual`, or a
+     * class expression) holds that class, whatever its annotation says. A
+     * binding with no initializer to read (`const { Backend } =
+     * require('./local') as typeof import('./local')`) holds what its type
+     * says: the constructor type's symbol is the class. An annotated binding
+     * assigned anything else proves nothing.
+     */
+    constructedClass(expression) {
+        const binding = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(expression),
+        )?.valueDeclaration;
+        if (
+            binding !== undefined &&
+            ts.isVariableDeclaration(binding) &&
+            binding.initializer !== undefined
+        ) {
+            const value = unwrapExpression(binding.initializer);
+            const assigned =
+                value !== undefined &&
+                (ts.isClassExpression(value) || ts.isIdentifier(value))
+                    ? this.classSymbolReference(
+                          ts.isClassExpression(value)
+                              ? this.checker
+                                    .getTypeAtLocation(value)
+                                    .getSymbol()
+                              : unalias(
+                                    this.checker,
+                                    this.checker.getSymbolAtLocation(value),
+                                ),
+                      )
+                    : null;
+            if (assigned !== null || binding.type !== undefined)
+                return assigned;
+        }
+        return this.classSymbolReference(
+            this.checker.getTypeAtLocation(expression).getSymbol(),
+        );
+    }
+
+    /** The node a class symbol names, declared or a class expression, or null. */
+    classSymbolReference(symbol) {
+        return symbol?.declarations?.some(
+            (item) => ts.isClassDeclaration(item) || ts.isClassExpression(item),
+        )
+            ? this.symbolReference(symbol, "class", true)
+            : null;
     }
 
     callExpression(node) {
@@ -1652,6 +1704,7 @@ class TypeScriptLanguageFactCollector {
      * in-degree signal that hub and hotspot ranking depends on.
      */
     valueReference(node) {
+        if (this.enumMemberRead(node)) return;
         if (!valueReferencePosition(node)) return;
 
         // A shorthand `{ discover }` names the object's property; the value it
@@ -1675,6 +1728,31 @@ class TypeScriptLanguageFactCollector {
         const source = this.currentSource();
         if (source !== null && target !== null && source !== target)
             this.addEdge("references", source, target, node);
+    }
+
+    /**
+     * `TokenType.And`: an enum read through its members, which are not nodes
+     * of their own, so the read is a reference to the enum.
+     */
+    enumMemberRead(node) {
+        const parent = node.parent;
+        if (
+            parent === undefined ||
+            !ts.isPropertyAccessExpression(parent) ||
+            parent.expression !== node
+        )
+            return false;
+        const symbol = unalias(
+            this.checker,
+            this.checker.getSymbolAtLocation(node),
+        );
+        if (!symbol?.declarations?.some((item) => ts.isEnumDeclaration(item)))
+            return false;
+        const source = this.currentSource();
+        const target = this.symbolReference(symbol, "enum", true);
+        if (source !== null && target !== null && source !== target)
+            this.addEdge("references", source, target, node);
+        return true;
     }
 
     typeNodeReference(node) {
@@ -3682,6 +3760,9 @@ function referenceableDeclaration(node) {
     return (
         ts.isFunctionDeclaration(node) ||
         ts.isMethodDeclaration(node) ||
+        // An interface's method, read off a receiver typed by the interface
+        // and handed on: `{ tick: board.tick }`.
+        ts.isMethodSignature(node) ||
         ts.isClassDeclaration(node) ||
         ts.isInterfaceDeclaration(node) ||
         ts.isEnumDeclaration(node) ||

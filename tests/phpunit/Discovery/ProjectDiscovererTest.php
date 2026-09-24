@@ -1804,7 +1804,15 @@ TOML);
     public function testDiscoverReadsEntryPointsFromDockerfilesAndCommandLines(): void
     {
         mkdir($this->root . '/docker', 0700, true);
-        file_put_contents($this->root . '/Dockerfile', "FROM node:22\nCOPY . .\nCMD [\"node\", \"server/index.mjs\"]\n");
+        file_put_contents($this->root . '/Dockerfile', implode("\n", [
+            'FROM node:22',
+            'COPY . .',
+            'COPY scripts/probe /tmp/probe',
+            'COPY --chown=app tools/lint.mjs /usr/local/bin/lint.mjs',
+            'RUN semgrep scan /tmp/probe/tree | python3 /tmp/probe/check.py && node /usr/local/bin/lint.mjs',
+            'CMD ["node", "server/index.mjs"]',
+            '',
+        ]));
         file_put_contents($this->root . '/docker/worker.Dockerfile', "FROM python:3.12\nENTRYPOINT python3 jobs/run.py --once\n");
         file_put_contents($this->root . '/playwright.config.ts', "export default { webServer: { command: 'node server/preview.mjs --port 4173' } };\n");
 
@@ -1817,8 +1825,47 @@ TOML);
             }
         }
         assertSame('Dockerfile', $entryPoints['server/index.mjs'] ?? null);
+        // Run from where a COPY put it: the path in the image names the copied file.
+        assertSame('Dockerfile', $entryPoints['scripts/probe/check.py'] ?? null);
+        assertSame('Dockerfile', $entryPoints['tools/lint.mjs'] ?? null);
         assertSame('docker/worker.Dockerfile', $entryPoints['jobs/run.py'] ?? null);
         assertSame('playwright.config.ts', $entryPoints['server/preview.mjs'] ?? null);
+    }
+
+    /**
+     * A README is where a one-off script's command is written down:
+     * `node scripts/screenshot.mjs`. Only a path a runner is given counts; a
+     * path the prose merely mentions says nothing about use.
+     */
+    public function testDiscoverReadsTheScriptsAReadmeRuns(): void
+    {
+        mkdir($this->root . '/docs', 0700, true);
+        file_put_contents($this->root . '/README.md', implode("\n", [
+            '# App',
+            '',
+            'The engine lives in `src/engine.ts`.',
+            '',
+            '```bash',
+            'node scripts/screenshot.mjs --out shots',
+            'npx tsx src/scripts/seed-demo.ts',
+            'python3 tools/report.py',
+            '```',
+            '',
+        ]));
+        file_put_contents($this->root . '/docs/guide.md', "Run `node scripts/other.mjs`.\n");
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('scripts/screenshot.mjs', $entryPoints);
+        self::assertContains('src/scripts/seed-demo.ts', $entryPoints);
+        self::assertContains('tools/report.py', $entryPoints);
+        self::assertNotContains('src/engine.ts', $entryPoints);
+        // Only a README is read.
+        self::assertNotContains('scripts/other.mjs', $entryPoints);
     }
 
     /**
@@ -1869,6 +1916,35 @@ TOML);
     }
 
     /**
+     * `tsc` without an `outDir` writes `errors.js` beside `errors.ts`, and
+     * imports resolve to the `.ts`: the `.js` is build output that read as an
+     * unreferenced module. The source map comment it ends with says what it
+     * is; a hand-written `.js` beside nothing, or with no map, stays.
+     */
+    public function testDiscoverSkipsJavaScriptCompiledBesideItsTypeScriptSource(): void
+    {
+        mkdir($this->root . '/shared', 0700, true);
+        $files = [
+            'shared/errors.ts' => "export class RateLimitError extends Error {}\n",
+            'shared/errors.js' => "export class RateLimitError extends Error {\n}\n//# sourceMappingURL=errors.js.map\n",
+            'shared/plain.ts' => "export const a = 1;\n",
+            'shared/plain.js' => "export const a = 1;\n",
+            'shared/lone.js' => "export const b = 1;\n//# sourceMappingURL=lone.js.map\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($this->root . '/' . $relative, $contents);
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $paths = array_map(static fn($file): string => $file->relativePath, $result->files);
+        self::assertNotContains('shared/errors.js', $paths);
+        self::assertContains('shared/errors.ts', $paths);
+        self::assertContains('shared/plain.js', $paths);
+        self::assertContains('shared/lone.js', $paths);
+    }
+
+    /**
      * A published build output stands for the source compiled to it: the
      * tsconfig's `rootDir` when it declares one, and `src/` only when no
      * tsconfig lays the build out.
@@ -1892,6 +1968,58 @@ TOML);
         self::assertContains('declared/lib/index.ts', $published['declared/package.json']);
         self::assertNotContains('declared/src/index.ts', $published['declared/package.json']);
         self::assertContains('undeclared/src/esm.ts', $published['undeclared/package.json']);
+    }
+
+    /**
+     * A tagged `resource:` block registers every class in its directory and
+     * the tag says who calls them: a message bus, an event dispatcher. An
+     * untagged block only autowires, so it proves nothing about use.
+     */
+    public function testDiscoverReadsTaggedServiceResourcesAsEntryPoints(): void
+    {
+        mkdir($this->root . '/config', 0700, true);
+        mkdir($this->root . '/src/Handler', 0700, true);
+        mkdir($this->root . '/src/Service', 0700, true);
+        mkdir($this->root . '/src/Listener', 0700, true);
+        mkdir($this->root . '/src/Command', 0700, true);
+        mkdir($this->root . '/src/Preload', 0700, true);
+        file_put_contents($this->root . '/config/services.yaml', implode("\n", [
+            'services:',
+            '    App\\:',
+            "        resource: '../src/'",
+            '    App\\Handler\\:',
+            "        resource: '../src/Handler' # synchronous",
+            '        public: true',
+            '        tags:',
+            '            - { name: command_handler }',
+            "    App\\Listener\\: { resource: '../src/Listener', exclude: '../src/Listener/Unused.php', tags: ['kernel.event_listener'] }",
+            // A tag with no runtime consumer, and an empty tag list, prove nothing.
+            "    App\\Preload\\: { resource: '../src/Preload', tags: ['container.no_preload'] }",
+            '    App\\Service\\:',
+            "        resource: '../src/Service'",
+            '        tags: []',
+            '    App\\Command\\:',
+            "        resource: '%kernel.project_dir%/src/Command'",
+            '        tags: [console.command]',
+            '',
+        ]));
+        foreach (['src/Handler/CombineHandler.php', 'src/Service/Mailer.php', 'src/Listener/OnLogin.php', 'src/Listener/Unused.php', 'src/Command/Sync.php', 'src/Preload/Warm.php'] as $file) {
+            file_put_contents($this->root . '/' . $file, "<?php\nfinal class C {}\n");
+        }
+
+        $result = (new ProjectDiscoverer(new DiscoveryConfig([$this->root])))->discover($this->root);
+
+        $entryPoints = [];
+        foreach ($result->units as $unit) {
+            $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
+        }
+        self::assertContains('src/Handler/CombineHandler.php', $entryPoints);
+        // The inline form, and a path from the project directory.
+        self::assertContains('src/Listener/OnLogin.php', $entryPoints);
+        self::assertContains('src/Command/Sync.php', $entryPoints);
+        self::assertNotContains('src/Listener/Unused.php', $entryPoints);
+        self::assertNotContains('src/Preload/Warm.php', $entryPoints);
+        self::assertNotContains('src/Service/Mailer.php', $entryPoints);
     }
 
     /**
@@ -1964,6 +2092,21 @@ TOML);
         self::assertContains('src/Migrations/Version1.php', $entryPoints);
         self::assertContains('src/Migrations/Archive/Version0.php', $entryPoints);
         self::assertNotContains('src/Legacy/Version9.php', $entryPoints);
+    }
+
+    /**
+     * A file copied into a directory (`COPY tools/report.mjs /opt/bin/`) keeps
+     * its name there, so `/opt/bin/report.mjs` is that file; a directory
+     * copied to a directory maps its contents.
+     */
+    public function testACopiedFileIsReadUnderItsNameInADirectoryDestination(): void
+    {
+        $rewrite = new \ReflectionMethod(ProjectDiscoverer::class, 'withCopySources');
+
+        assertSame(
+            "COPY tools/report.mjs /opt/bin/\nCOPY scripts/probe /tmp/probe/\nRUN node tools/report.mjs && python3 scripts/probe/check.py",
+            $rewrite->invoke(null, "COPY tools/report.mjs /opt/bin/\nCOPY scripts/probe /tmp/probe/\nRUN node /opt/bin/report.mjs && python3 /tmp/probe/check.py"),
+        );
     }
 
     /**

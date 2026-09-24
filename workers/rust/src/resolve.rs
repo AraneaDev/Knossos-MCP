@@ -307,9 +307,49 @@ pub fn flatten_use(tree: &syn::UseTree, prefix: &str, out: &mut Vec<UseLeaf>) {
     }
 }
 
+/// The module paths a `use` tree's glob leaves import from.
+///
+/// `use crate::components::*;` brings every public name of
+/// `crate::components` into scope without naming one, so [`flatten_use`]
+/// records no alias for it; the prefix is what a name is then looked up
+/// under. `use a::{b::*, c};` yields `a::b`. A bare `use *;` names nothing.
+pub fn glob_prefixes(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            let ident = path.ident.to_string();
+            let joined = if prefix.is_empty() {
+                ident
+            } else {
+                format!("{prefix}::{ident}")
+            };
+            glob_prefixes(&path.tree, &joined, out);
+        }
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                glob_prefixes(item, prefix, out);
+            }
+        }
+        syn::UseTree::Glob(_) if !prefix.is_empty() => out.push(prefix.to_owned()),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::module_path;
+
+    #[test]
+    fn glob_leaves_yield_the_modules_they_import_from() {
+        let tree: syn::UseTree = syn::parse_str("a::{b::*, c, d::e::*}").expect("parses");
+        let mut out = Vec::new();
+        super::glob_prefixes(&tree, "", &mut out);
+        assert_eq!(vec!["a::b".to_owned(), "a::d::e".to_owned()], out);
+
+        let bare: syn::UseTree = syn::parse_str("*").expect("parses");
+        let mut none = Vec::new();
+        super::glob_prefixes(&bare, "", &mut none);
+        assert!(none.is_empty());
+    }
 
     #[test]
     fn lib_and_main_collapse_to_the_crate_root() {
