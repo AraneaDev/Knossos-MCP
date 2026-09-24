@@ -517,10 +517,8 @@ final readonly class GraphReconciler
      */
     private static function recordUnconfirmedCalls(array &$nodes, array $unconfirmed): void
     {
+        // Every source id came from the node map, so its node is here.
         foreach ($unconfirmed as $sourceId => $members) {
-            if (!isset($nodes[$sourceId])) {
-                continue;
-            }
             $existing = $nodes[$sourceId]['attributes']['unresolved_member_calls'] ?? [];
             $names = [...(is_array($existing) ? array_values(array_filter($existing, 'is_string')) : []), ...array_map('strval', array_keys($members))];
             $names = array_values(array_unique($names));

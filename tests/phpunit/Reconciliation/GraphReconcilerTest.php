@@ -1918,7 +1918,8 @@ final class GraphReconcilerTest extends TestCase
         $caller = $this->minimalNode('rust:function:crate::go', 'crate::go');
         $declared = $this->minimalNode('rust:method:crate::Policy::evaluate', 'crate::Policy::evaluate');
         $edges = [];
-        foreach (['rust:method:crate::Policy::evaluate', 'rust:method:crate::Wrong::key_up', 'rust:method_of_return:crate::make::render'] as $index => $target) {
+        // A guessed free function names no member a receiver could hold.
+        foreach (['rust:method:crate::Policy::evaluate', 'rust:method:crate::Wrong::key_up', 'rust:method_of_return:crate::make::render', 'rust:function:crate::gone'] as $index => $target) {
             $edges[] = new EdgeFact(
                 kind: 'calls',
                 sourceReference: $caller->localId,
@@ -1937,7 +1938,7 @@ final class GraphReconcilerTest extends TestCase
             targetReference: 'rust:method:crate::Wrong::label',
             origin: Origin::Ast,
             confidence: Confidence::Probable,
-            evidence: new Evidence('src/Foo.php', 4, 4),
+            evidence: new Evidence('src/Foo.php', 5, 5),
             attributes: ['speculative' => true],
         );
         $request = $this->buildRequest([
