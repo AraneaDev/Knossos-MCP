@@ -827,7 +827,11 @@ final class FactCollector extends NodeVisitorAbstract
     }
 
     /** Record an edge fact, defaulting to `certain` because most edges here are proven by syntax. */
-    /** @param array<string, mixed> $attributes */
+    /**
+     * Record an edge fact with its evidence location.
+     *
+     * @param array<string, mixed> $attributes
+     */
     private function addEdge(string $kind, string $source, string $target, Node $evidence, string $confidence = 'certain', array $attributes = []): void
     {
         $this->edges[] = [
