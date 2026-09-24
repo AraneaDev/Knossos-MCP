@@ -1776,6 +1776,11 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 return self.parameter_types[-1].get(value.id)
         return None
 
+    def declares_class(self, held: str) -> bool:
+        """Whether a project module declares ``held`` as a top-level class."""
+        module, _, name = held.rpartition(".")
+        return bool(module) and self.index.module_declarations(module).get(name) == ref("class", held)
+
     def is_local_name(self, name: str) -> bool:
         """Whether the function being walked binds ``name`` itself."""
         return bool(self.bound_names) and name in self.bound_names[-1]
@@ -1878,6 +1883,10 @@ class PythonAstFactCollector(ast.NodeVisitor):
             # `Repo().count()`: the class just instantiated types the receiver.
             # Any other call's result has no type this worker follows.
             held = self.held_class(node.func.value)
+            if held is not None and not self.declares_class(held):
+                # `requests.get(url)`: a name off a module outside the
+                # project reads as a class only because nothing says otherwise.
+                held = None
             if held is None:
                 self.untyped_calls.add(node.func.attr)
             else:

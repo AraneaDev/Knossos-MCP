@@ -1382,6 +1382,7 @@ PYTHON);
             'app/__init__.py' => '',
             'app/repo.py' => "class Repo:\n    def count(self):\n        return 1\n",
             'app/service.py' => implode("\n", [
+                'import requests',
                 'from .repo import Repo',
                 '',
                 'def run():',
@@ -1389,6 +1390,9 @@ PYTHON);
                 '',
                 'def chained(make):',
                 '    return make().render()',
+                '',
+                'def fetch(url):',
+                '    return requests.get(url).json()',
                 '',
             ]),
         ];
@@ -1424,7 +1428,9 @@ PYTHON);
         }
 
         self::assertContains('py:function:app.service.run -> py:method:app.repo.Repo::count', $calls);
-        self::assertSame(['render'], $untyped);
+        // A function of a module outside the project is no class to type by.
+        self::assertSame([], array_values(array_filter($calls, static fn(string $call): bool => str_contains($call, 'requests.get::'))));
+        self::assertSame(['json', 'render'], $untyped);
     }
 
     #[Group('python-scanner')]
