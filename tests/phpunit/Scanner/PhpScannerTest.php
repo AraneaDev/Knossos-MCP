@@ -441,6 +441,34 @@ final class PhpScannerTest extends KnossosTestCase
         ], $routes);
     }
 
+    /**
+     * An `only` the scanner cannot read keeps every action, and says so; an
+     * `except` it cannot read removes none. A literal empty `only` still
+     * registers nothing.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerKeepsResourceActionsItsModifiersCannotNarrowStatically(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/laravel-resource',
+            'files' => ['routes/dynamic.php'],
+            'frameworks' => ['laravel'],
+        ]));
+        $client->shutdown();
+        $counts = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'routes_to') {
+                $resource = preg_match('# /([^/ ]+)#', $edge->sourceReference, $match) === 1 ? $match[1] : '';
+                $counts[$resource] = ($counts[$resource] ?? 0) + 1;
+            }
+        }
+        ksort($counts);
+
+        assertSame(['labels' => 7, 'tags' => 7], $counts);
+        assertSame(['LARAVEL_DYNAMIC_ROUTE'], array_values(array_unique(array_map(fn($d) => $d->code, $contributions[0]->diagnostics))));
+    }
+
     #[Group('php-scanner')]
     public function testPhpWorkerExtractsLaravelContainerAndProviderFacts(): void
     {

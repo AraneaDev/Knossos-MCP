@@ -115,12 +115,15 @@ final class LaravelRouteFactCollector
      * conventional action, narrowed by `->only()` and `->except()`.
      *
      * @param list<Node\Arg> $args
-     * @param array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>} $modifiers
+     * @param array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>, dynamic: bool} $modifiers
      */
     private function resourceRoutes(bool $api, array $args, array $modifiers, Node $evidence): void
     {
         $name = LaravelFactStore::string($args[0]->value ?? null);
         $class = LaravelFactStore::classArgument($args[1]->value ?? null);
+        if ($modifiers['dynamic']) {
+            $this->facts->addDiagnostic('LARAVEL_DYNAMIC_ROUTE', 'Dynamic resource route actions were kept unnarrowed.', $evidence);
+        }
         if ($name === null || $class === null) {
             $this->facts->addDiagnostic('LARAVEL_DYNAMIC_ROUTE', 'Dynamic resource route declaration was skipped.', $evidence);
             return;
@@ -145,6 +148,24 @@ final class LaravelRouteFactCollector
         }
     }
 
+    /** Whether a modifier argument is a literal action name or a literal list of them. */
+    private static function isLiteralActionList(Node $value): bool
+    {
+        if ($value instanceof Node\Scalar\String_) {
+            return true;
+        }
+        if (!$value instanceof Expr\Array_) {
+            return false;
+        }
+        foreach ($value->items as $item) {
+            if (!$item?->value instanceof Node\Scalar\String_) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     /** Laravel's singular for a resource segment, for the common English plurals. */
     private static function singular(string $word): string
     {
@@ -160,7 +181,7 @@ final class LaravelRouteFactCollector
      *
      * @param list<string> $methods
      * @param array{reference?: string, label?: string} $action
-     * @param array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>} $modifiers
+     * @param array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>, dynamic: bool} $modifiers
      */
     private function addRoute(array $methods, string $uri, array $action, array $modifiers, Node $evidence): void
     {
@@ -198,11 +219,11 @@ final class LaravelRouteFactCollector
     /**
      * The HTTP methods and URI a Route facade call declares.
      *
-     * @return array{0: string, 1: list<Node\Arg>, 2: array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>}, 3: Node}|null
+     * @return array{0: string, 1: list<Node\Arg>, 2: array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>, dynamic: bool}, 3: Node}|null
      */
     private function routeDescriptor(Expr\MethodCall|Expr\StaticCall $node): ?array
     {
-        $modifiers = ['middleware' => [], 'name' => '', 'only' => null, 'except' => []];
+        $modifiers = ['middleware' => [], 'name' => '', 'only' => null, 'except' => [], 'dynamic' => false];
         $cursor = $node;
         while ($cursor instanceof Expr\MethodCall) {
             $name = $cursor->name instanceof Identifier ? strtolower($cursor->name->toString()) : '';
@@ -211,14 +232,21 @@ final class LaravelRouteFactCollector
             } elseif ($name === 'name') {
                 $modifiers['name'] = LaravelFactStore::string($cursor->args[0]->value ?? null) ?? $modifiers['name'];
             } elseif ($name === 'only' || $name === 'except') {
-                // `->only(['index', 'show'])` or `->only('index', 'show')`.
+                // `->only(['index', 'show'])` or `->only('index', 'show')`. An
+                // argument that is not a literal narrows nothing that can be
+                // read: an `only` keeps every action and an `except` removes
+                // none, and the route says so.
                 $actions = [];
+                $literal = true;
                 foreach ($cursor->args as $argument) {
-                    if ($argument instanceof Node\Arg) {
-                        $actions = [...$actions, ...LaravelFactStore::strings($argument->value)];
+                    if (!$argument instanceof Node\Arg || !self::isLiteralActionList($argument->value)) {
+                        $literal = false;
+                        continue;
                     }
+                    $actions = [...$actions, ...LaravelFactStore::strings($argument->value)];
                 }
-                $modifiers[$name] = $actions;
+                $modifiers[$name] = $literal ? $actions : ($name === 'only' ? null : []);
+                $modifiers['dynamic'] = $modifiers['dynamic'] || !$literal;
             }
             $cursor = $cursor->var;
         }
