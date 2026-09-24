@@ -60,6 +60,13 @@ inputs, configuration hashes, and limits. A worker streams zero or more
 `scan/contribution` notifications, and zero or more `scan/input_hashes`
 notifications (below), followed by a final result containing counts.
 
+The request's time limit is an inactivity limit: every notification the worker
+sends restarts it, up to a hard cap per request (the maximum worker timeout,
+120 seconds). A worker busy for longer than the limit with nothing to report
+yet, such as while building a large program, sends `scan/heartbeat`
+notifications (method `scan/heartbeat`, no params) to say so. A worker that
+sends only heartbeats is still ended at the cap.
+
 **One language's files arrive over several `scan` requests on the same
 session.** The line, total-output, and time limits are enforced per request, so
 the core splits a language's work into batches bounded by both a file count and

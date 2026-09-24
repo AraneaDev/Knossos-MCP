@@ -33,6 +33,10 @@ final class NdjsonRpcChannel implements RpcChannelInterface
     /** Bytes of every other complete frame this request, charged to the output budget. */
     private int $outputBytes = 0;
     private int $deadline = 0;
+    /** When the current request must end however busy its worker says it is. */
+    private int $hardDeadline = 0;
+    /** The inactivity deadline the last notification renewed, 0 before one arrives. */
+    private int $renewedDeadline = 0;
 
     /**
      * Maximum size of an outbound request frame. Kept independent of the
@@ -73,7 +77,11 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         $this->inputHashesBytes = 0;
         $this->outputBytes = 0;
 
-        return $this->deadline = hrtime(true) + ($this->limits->requestTimeoutMs * 1_000_000);
+        $now = hrtime(true);
+        $this->hardDeadline = $now + (max($this->limits->requestTimeoutMs, $this->limits->maxRequestMs) * 1_000_000);
+        $this->renewedDeadline = 0;
+
+        return $this->deadline = $now + ($this->limits->requestTimeoutMs * 1_000_000);
     }
 
     /**
@@ -193,6 +201,15 @@ final class NdjsonRpcChannel implements RpcChannelInterface
             }
             $message = $this->extractMessage();
             if ($message !== null) {
+                // A notification is the worker saying it is alive and busy:
+                // the request's timeout is an inactivity timeout, restarted
+                // by each one, up to the request's hard deadline. A program
+                // that takes long to build before its first fact no longer
+                // fails the language, and a worker that only ever says it is
+                // busy still ends at the cap.
+                if (!array_key_exists('id', $message)) {
+                    $this->renewedDeadline = min(hrtime(true) + ($this->limits->requestTimeoutMs * 1_000_000), $this->hardDeadline);
+                }
                 return $message;
             }
             $pending = strlen($this->stdoutBuffer) - $this->stdoutOffset;
@@ -202,7 +219,9 @@ final class NdjsonRpcChannel implements RpcChannelInterface
                 throw new WorkerException('WORKER_FRAME_TOO_LARGE', 'Worker frame exceeds the line limit.');
             }
 
-            $remaining = $deadline - hrtime(true);
+            // Only the request's own deadline is renewed: a caller's shorter
+            // one (draining an abandoned scan) stays as it was asked for.
+            $remaining = ($deadline === $this->deadline ? max($deadline, $this->renewedDeadline) : $deadline) - hrtime(true);
             if ($remaining <= 0) {
                 throw new WorkerException('WORKER_TIMEOUT', $this->withStderr('Scanner worker request timed out.'));
             }

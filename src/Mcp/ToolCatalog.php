@@ -125,7 +125,7 @@ final readonly class ToolCatalog
                         'mode' => ['type' => 'string', 'enum' => ['auto', 'full', 'incremental'], 'default' => 'auto'],
                         'max_files' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000],
                         'max_file_bytes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 100000000],
-                        'worker_timeout_ms' => ['type' => 'integer', 'minimum' => 1000, 'maximum' => 120000, 'description' => 'Per-file worker timeout. Omit to use the project\'s knossos.json setting, or the built-in default (30000) when it is unset.'],
+                        'worker_timeout_ms' => ['type' => 'integer', 'minimum' => 1000, 'maximum' => 120000, 'description' => 'How long a language worker may stay silent during one request, in milliseconds; every file it reports and every heartbeat restarts the wait, up to 120000 per request. Omit to use the project\'s knossos.json setting, or the built-in default (30000) when it is unset.'],
                         'snapshot_retention' => ['type' => 'integer', 'minimum' => 0, 'maximum' => 20, 'description' => 'How many historical snapshots to keep. Omit to use the project\'s knossos.json setting, or the built-in default (5) when it is unset.'],
                         'boundaries' => [
                             'type' => 'array', 'maxItems' => 50,

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { clearInterval, setInterval } from "node:timers";
 import { writeSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { URL } from "node:url";
@@ -7,6 +8,11 @@ import { Worker } from "node:worker_threads";
 
 import { scanThreadFailure } from "../src/scan-thread-exit.js";
 import { scanThreadResourceLimits } from "../src/scan-thread-limits.js";
+
+// How often a busy scan says so. Well inside the core's default request
+// timeout (30 s), which each heartbeat restarts; tests set it lower.
+const HEARTBEAT_MS =
+    Number.parseInt(process.env.KNOSSOS_WORKER_HEARTBEAT_MS ?? "", 10) || 5_000;
 
 // The scanner runs in a thread with a larger stack than the main thread gets:
 // the TypeScript compiler recurses once per import while it builds a program,
@@ -128,7 +134,17 @@ async function handle(request) {
 function scan(params) {
     const worker = scanThread();
     return new Promise((resolve, reject) => {
-        pending = { resolve, reject };
+        // Building a program is silent until its first fact, and the core
+        // times a request out on silence: say the scan is busy meanwhile.
+        const heartbeat = setInterval(
+            () => write({ jsonrpc: "2.0", method: "scan/heartbeat" }),
+            HEARTBEAT_MS,
+        );
+        const settled = (settle) => (value) => {
+            clearInterval(heartbeat);
+            settle(value);
+        };
+        pending = { resolve: settled(resolve), reject: settled(reject) };
         // Held only while a scan is in flight: stdin closing mid-scan must not
         // let the process exit before the answer is written.
         worker.ref();

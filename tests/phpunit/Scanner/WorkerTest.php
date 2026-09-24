@@ -133,6 +133,22 @@ final class WorkerTest extends KnossosTestCase
     }
 
     #[Group('worker')]
+    public function testAWorkerThatSaysItIsBusyIsGivenTimeUpToTheHardCap(): void
+    {
+        // Six heartbeats 150 ms apart: 900 ms in all, each gap inside 400 ms.
+        $busy = $this->fakeWorkerClient('heartbeat_scan', new WorkerLimits(requestTimeoutMs: 400));
+        iterator_to_array($busy->scan([]));
+        assertSame(true, $busy->lastScanResult() !== []);
+
+        // Heartbeats alone never finish a scan: the hard cap still ends it.
+        $endless = $this->fakeWorkerClient('heartbeat_forever', new WorkerLimits(requestTimeoutMs: 400, maxRequestMs: 1_200));
+        $started = hrtime(true);
+        $error = captureThrows(fn() => iterator_to_array($endless->scan([])), WorkerException::class);
+        assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
+        assertSame(true, (hrtime(true) - $started) / 1_000_000 < 3_000);
+    }
+
+    #[Group('worker')]
     public function testWorkerSupervisorEnforcesTimeoutAndStreamLimits(): void
     {
         $timeout = $this->fakeWorkerClient('slow', new WorkerLimits(requestTimeoutMs: 30));
