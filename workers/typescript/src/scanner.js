@@ -1407,9 +1407,8 @@ class TypeScriptLanguageFactCollector {
      * The program's file a relative `require('./local')` names.
      *
      * The compiler binds a `require` argument to its module only in a
-     * JavaScript file; in TypeScript it is a string. Looked up among the
-     * files the program already holds, the way the compiler would try them,
-     * so the lookup reads nothing the program did not.
+     * JavaScript file; in TypeScript it is a string. Looked up the way the
+     * compiler would try it, among the files the program holds first.
      */
     requiredSourceFile(location) {
         const sourceFileAt = this.project.sourceFileAt;
@@ -1426,6 +1425,17 @@ class TypeScriptLanguageFactCollector {
         for (const suffix of REQUIRE_SUFFIXES) {
             const file = sourceFileAt(normalize(base + suffix));
             if (file !== undefined) return file;
+        }
+        // A file the program leaves out (a tsconfig `exclude`) is still the
+        // module the call loads. Only its existence is asked, as the
+        // compiler host asks it, so nothing is read.
+        for (const suffix of REQUIRE_SUFFIXES) {
+            const fileName = normalize(base + suffix);
+            if (
+                allowedCompilerPath(this.root, fileName) &&
+                ts.sys.fileExists(fileName)
+            )
+                return { fileName };
         }
         return undefined;
     }

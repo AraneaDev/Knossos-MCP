@@ -21,7 +21,7 @@ final class TypescriptRequireTest extends KnossosTestCase
         try {
             $contributions = iterator_to_array($client->scan([
                 'root' => self::repositoryRoot() . '/tests/Fixtures/ts-require',
-                'files' => ['src/local.ts', 'src/storage.ts'],
+                'files' => ['src/storage.ts'],
                 'config_files' => ['tsconfig.json'],
             ]), false);
         } finally {
@@ -37,6 +37,10 @@ final class TypescriptRequireTest extends KnossosTestCase
         }
 
         // A module the project does not hold is no import.
-        self::assertSame(['ts:function:src/storage.ts#createBackend -> ts:module:src/local.ts'], $imports);
+        sort($imports);
+        self::assertSame([
+            'ts:function:src/storage.ts#createBackend -> ts:module:src/local.ts',
+            'ts:function:src/storage.ts#loadServer -> ts:module:src/lazy/server.ts',
+        ], $imports);
     }
 }
