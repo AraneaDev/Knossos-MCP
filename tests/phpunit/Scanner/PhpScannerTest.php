@@ -270,6 +270,30 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * JMS Serializer calls a `@VirtualProperty` method by reflection when it
+     * serializes the object; no code names it.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerMarksAVirtualPropertyAsRuntimeInvoked(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/Serialized.php'],
+        ]), false);
+        $client->shutdown();
+        $invoked = [];
+        foreach ($contributions[0]->nodes as $node) {
+            if ($node->kind === 'method') {
+                $invoked[$node->displayName] = $node->attributes['runtime_invoked'] ?? false;
+            }
+        }
+        ksort($invoked);
+
+        assertSame(['label' => true, 'plain' => false, 'provider' => true], $invoked);
+    }
+
+    /**
      * `$x?->m()` is a distinct parser node from `$x->m()`, so nullsafe calls
      * produced no call edge at all — on either a variable or a property
      * receiver — however precisely the receiver was typed.

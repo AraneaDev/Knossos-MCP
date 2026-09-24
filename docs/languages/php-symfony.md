@@ -17,6 +17,7 @@ container, or booting the kernel.
 | Services    | `#[AsAlias]`, `#[Autoconfigure]`, typed constructors, `#[Autowire(service: ...)]` | service roles, `binds`, and `injects` edges       |
 | Validation  | Doctrine annotations such as `@AdminEmail`, a `Constraint`'s `<Name>Validator`    | `references` edges                                |
 | Migrations  | the directories Doctrine Migrations' `migrations_paths` names in YAML             | entry points                                      |
+| Serializer  | JMS Serializer `@VirtualProperty` and `#[VirtualProperty]` methods                | `runtime_invoked`                                 |
 
 Attribute values must be statically representable strings, string arrays, or
 class constants. Dynamic route paths, command names, and event targets produce

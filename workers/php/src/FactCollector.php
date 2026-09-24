@@ -332,17 +332,38 @@ final class FactCollector extends NodeVisitorAbstract
 
         $name = $class['name'] . '::' . $node->name->toString();
         $id = self::reference('method', $name);
+        $attributes = $this->attributeNames($node->attrGroups);
         $this->addNode($id, 'method', $name, $node->name->toString(), $node, [
             'visibility' => $node->isPublic() ? 'public' : ($node->isProtected() ? 'protected' : 'private'),
             'static' => $node->isStatic(),
             'abstract' => $node->isAbstract(),
-            'php_attributes' => $this->attributeNames($node->attrGroups),
+            'php_attributes' => $attributes,
+            ...(self::isVirtualProperty($node, $attributes) ? ['runtime_invoked' => true] : []),
         ]);
         $this->addEdge('contains', $class['id'], $id, $node);
         $this->callables[] = ['id' => $id, 'variables' => []];
 
         $constructor = strtolower($node->name->toString()) === '__construct';
         $this->parametersAndReturn($node->params, $node->returnType, $constructor ? $class['id'] : $id, $constructor);
+    }
+
+    /**
+     * Whether JMS Serializer reads this method as a property: `@VirtualProperty`
+     * in its docblock or `#[VirtualProperty]`. The serializer calls it by
+     * reflection, and no code names it.
+     *
+     * @param list<string> $attributes
+     */
+    private static function isVirtualProperty(Stmt\ClassMethod $node, array $attributes): bool
+    {
+        foreach ($attributes as $attribute) {
+            if (str_ends_with('\\' . $attribute, '\\VirtualProperty')) {
+                return true;
+            }
+        }
+        $comment = $node->getDocComment()?->getText() ?? '';
+
+        return preg_match('/(?:^|[\s*])@(?:[A-Za-z_\\\\]+\\\\)?VirtualProperty\b/m', $comment) === 1;
     }
 
     /**
