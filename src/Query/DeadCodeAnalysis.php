@@ -546,23 +546,59 @@ final readonly class DeadCodeAnalysis extends AbstractArchitectureQueryService
     }
 
     /**
-     * The bindings among `$bindingIds` something reads as a value.
+     * The bindings among `$bindingIds` something outside them reads as a value.
+     *
+     * A method reading its own binding (`const r = { m() { return r; } }`)
+     * hands the object to nobody, so a read from the binding or from a member
+     * it contains does not count.
      *
      * @param list<string> $bindingIds
      * @return array<string, true>
      */
     private function referencedBindings(string $projectId, array $bindingIds): array
     {
-        $referenced = [];
+        $reads = [];
         foreach (array_chunk($bindingIds, 500) as $chunk) {
             $placeholders = implode(',', array_fill(0, count($chunk), '?'));
             $statement = $this->pdo->prepare(
-                "SELECT DISTINCT target_id FROM edges WHERE project_id = ? AND kind = 'references' " .
+                "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'references' " .
                 sprintf('AND target_id IN (%s)', $placeholders),
             );
             $statement->execute([$projectId, ...$chunk]);
-            foreach ($statement->fetchAll(\PDO::FETCH_COLUMN) as $id) {
-                $referenced[(string) $id] = true;
+            foreach ($statement->fetchAll() as $row) {
+                $reads[] = [(string) $row['source_id'], (string) $row['target_id']];
+            }
+        }
+        // Each reader's enclosing declarations, up the `contains` chain.
+        $parentOf = [];
+        $frontier = array_values(array_unique(array_column($reads, 0)));
+        for ($depth = 0; $depth < 20 && $frontier !== []; ++$depth) {
+            $found = [];
+            foreach (array_chunk($frontier, 500) as $chunk) {
+                $placeholders = implode(',', array_fill(0, count($chunk), '?'));
+                $statement = $this->pdo->prepare(
+                    "SELECT source_id, target_id FROM edges WHERE project_id = ? AND kind = 'contains' " .
+                    sprintf('AND target_id IN (%s)', $placeholders),
+                );
+                $statement->execute([$projectId, ...$chunk]);
+                foreach ($statement->fetchAll() as $row) {
+                    $parentOf[(string) $row['target_id']] = (string) $row['source_id'];
+                    $found[] = (string) $row['source_id'];
+                }
+            }
+            $frontier = array_values(array_diff(array_unique($found), array_keys($parentOf)));
+        }
+        $referenced = [];
+        foreach ($reads as [$source, $binding]) {
+            $inside = false;
+            for ($id = $source, $steps = 0; $id !== null && $steps <= 20; $id = $parentOf[$id] ?? null, ++$steps) {
+                if ($id === $binding) {
+                    $inside = true;
+                    break;
+                }
+            }
+            if (!$inside) {
+                $referenced[$binding] = true;
             }
         }
 
