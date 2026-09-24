@@ -375,6 +375,43 @@ final class PhpScannerTest extends KnossosTestCase
         $client->shutdown();
     }
 
+    /**
+     * `Route::apiResource('users', UserController::class)` registers five
+     * actions by convention, and none of them is named anywhere in the code.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerExpandsLaravelResourceRoutesToTheirActions(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/laravel-resource',
+            'files' => ['routes/api.php'],
+            'frameworks' => ['laravel'],
+        ]));
+        $client->shutdown();
+        $routes = [];
+        foreach ($contributions[0]->edges as $edge) {
+            if ($edge->kind === 'routes_to') {
+                $routes[] = substr($edge->sourceReference, strlen('php:route:'));
+            }
+        }
+        sort($routes);
+
+        assertSame([
+            'DELETE /v1/users/{user} => App\\Http\\Controllers\\UserController::destroy',
+            'GET /v1/photo-tags => App\\Http\\Controllers\\PhotoController::index',
+            'GET /v1/photo-tags/{photo_tag} => App\\Http\\Controllers\\PhotoController::show',
+            'GET /v1/photos => App\\Http\\Controllers\\PhotoController::index',
+            'GET /v1/photos/{photo} => App\\Http\\Controllers\\PhotoController::show',
+            'GET /v1/photos/{photo}/edit => App\\Http\\Controllers\\PhotoController::edit',
+            'GET /v1/users => App\\Http\\Controllers\\UserController::index',
+            'GET /v1/users/{user} => App\\Http\\Controllers\\UserController::show',
+            'POST /v1/photo-tags => App\\Http\\Controllers\\PhotoController::store',
+            'POST /v1/users => App\\Http\\Controllers\\UserController::store',
+            'PUT|PATCH /v1/users/{user} => App\\Http\\Controllers\\UserController::update',
+        ], $routes);
+    }
+
     #[Group('php-scanner')]
     public function testPhpWorkerExtractsLaravelContainerAndProviderFacts(): void
     {

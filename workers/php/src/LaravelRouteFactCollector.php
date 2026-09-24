@@ -18,12 +18,38 @@ use PhpParser\Node\Name;
  */
 final class LaravelRouteFactCollector
 {
-    private const ROUTE_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'view', 'redirect'];
+    private const ROUTE_METHODS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'view', 'redirect', 'resource', 'apiresource'];
+
+    /**
+     * The actions a resource route registers, in Laravel's order: the verbs,
+     * whether the URI names one item, and the suffix after it. `create` and
+     * `edit` serve forms, which `apiResource` leaves out.
+     */
+    private const RESOURCE_ACTIONS = [
+        'index' => [['GET'], false, ''],
+        'create' => [['GET'], false, '/create'],
+        'store' => [['POST'], false, ''],
+        'show' => [['GET'], true, ''],
+        'edit' => [['GET'], true, '/edit'],
+        'update' => [['PUT', 'PATCH'], true, ''],
+        'destroy' => [['DELETE'], true, ''],
+    ];
 
     /** @var list<array{prefix: string, middleware: list<string>, name: string}> */
     private array $groups = [];
     /** @var array<int, true> */
     private array $groupNodes = [];
+    /**
+     * Facade calls already recorded through the chain around them.
+     *
+     * The traversal reaches `Route::resource(...)->only([...])` before the
+     * calls inside it, and the bare `Route::resource(...)` on its own would
+     * register every action the chain narrowed away. The outermost call sees
+     * every modifier, so it alone records the route.
+     *
+     * @var array<int, true>
+     */
+    private array $chainedCalls = [];
 
     public function __construct(private readonly LaravelFactStore $facts) {}
     /** Track route group nesting and record any route registered at this node. */
@@ -56,6 +82,14 @@ final class LaravelRouteFactCollector
             return;
         }
         [$method, $args, $modifiers, $evidence] = $descriptor;
+        if (isset($this->chainedCalls[spl_object_id($evidence)])) {
+            return;
+        }
+        $this->chainedCalls[spl_object_id($evidence)] = true;
+        if ($method === 'resource' || $method === 'apiresource') {
+            $this->resourceRoutes($method === 'apiresource', $args, $modifiers, $evidence);
+            return;
+        }
         $uriIndex = $method === 'match' ? 1 : 0;
         $actionIndex = $method === 'match' ? 2 : 1;
         $uri = LaravelFactStore::string($args[$uriIndex]->value ?? null);
@@ -73,9 +107,65 @@ final class LaravelRouteFactCollector
             $this->facts->addDiagnostic('LARAVEL_DYNAMIC_ROUTE', 'Dynamic route declaration was skipped.', $evidence);
             return;
         }
+        $this->addRoute($methods, $uri, $this->action($args[$actionIndex]->value ?? null), $modifiers, $evidence);
+    }
+
+    /**
+     * `Route::resource('photos', PhotoController::class)`: one route per
+     * conventional action, narrowed by `->only()` and `->except()`.
+     *
+     * @param list<Node\Arg> $args
+     * @param array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>} $modifiers
+     */
+    private function resourceRoutes(bool $api, array $args, array $modifiers, Node $evidence): void
+    {
+        $name = LaravelFactStore::string($args[0]->value ?? null);
+        $class = LaravelFactStore::classArgument($args[1]->value ?? null);
+        if ($name === null || $class === null) {
+            $this->facts->addDiagnostic('LARAVEL_DYNAMIC_ROUTE', 'Dynamic resource route declaration was skipped.', $evidence);
+            return;
+        }
+        // `photos.comments` nests: /photos/{photo}/comments/{comment}.
+        $segments = explode('.', $name);
+        $base = '';
+        $parameter = '';
+        foreach ($segments as $index => $segment) {
+            $parameter = '{' . str_replace('-', '_', self::singular($segment)) . '}';
+            $base .= '/' . $segment . ($index < count($segments) - 1 ? '/' . $parameter : '');
+        }
+        foreach (self::RESOURCE_ACTIONS as $action => [$methods, $item, $suffix]) {
+            if (($api && ($action === 'create' || $action === 'edit'))
+                || ($modifiers['only'] !== null && !in_array($action, $modifiers['only'], true))
+                || in_array($action, $modifiers['except'], true)) {
+                continue;
+            }
+            $uri = $base . ($item ? '/' . $parameter : '') . $suffix;
+            $target = ['reference' => 'php:method:' . $class . '::' . $action, 'label' => $class . '::' . $action];
+            $this->addRoute($methods, $uri, $target, $modifiers, $evidence);
+        }
+    }
+
+    /** Laravel's singular for a resource segment, for the common English plurals. */
+    private static function singular(string $word): string
+    {
+        return match (true) {
+            str_ends_with($word, 'ies') => substr($word, 0, -3) . 'y',
+            str_ends_with($word, 's') && !str_ends_with($word, 'ss') => substr($word, 0, -1),
+            default => $word,
+        };
+    }
+
+    /**
+     * Record one route node, its action edge and its middleware.
+     *
+     * @param list<string> $methods
+     * @param array{reference?: string, label?: string} $action
+     * @param array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>} $modifiers
+     */
+    private function addRoute(array $methods, string $uri, array $action, array $modifiers, Node $evidence): void
+    {
         $group = $this->combinedGroup();
         $uri = $this->joinUri($group['prefix'], $uri);
-        $action = $this->action($args[$actionIndex]->value ?? null);
         $canonical = implode('|', $methods) . ' ' . $uri . ' => ' . ($action['label'] ?? 'closure');
         $id = 'php:route:' . $canonical;
         $middleware = array_values(array_unique([...$group['middleware'], ...$modifiers['middleware']]));
@@ -108,11 +198,11 @@ final class LaravelRouteFactCollector
     /**
      * The HTTP methods and URI a Route facade call declares.
      *
-     * @return array{0: string, 1: list<Node\Arg>, 2: array{middleware: list<string>, name: string}, 3: Node}|null
+     * @return array{0: string, 1: list<Node\Arg>, 2: array{middleware: list<string>, name: string, only: ?list<string>, except: list<string>}, 3: Node}|null
      */
     private function routeDescriptor(Expr\MethodCall|Expr\StaticCall $node): ?array
     {
-        $modifiers = ['middleware' => [], 'name' => ''];
+        $modifiers = ['middleware' => [], 'name' => '', 'only' => null, 'except' => []];
         $cursor = $node;
         while ($cursor instanceof Expr\MethodCall) {
             $name = $cursor->name instanceof Identifier ? strtolower($cursor->name->toString()) : '';
@@ -120,6 +210,15 @@ final class LaravelRouteFactCollector
                 $modifiers['middleware'] = [...LaravelFactStore::strings($cursor->args[0]->value ?? null), ...$modifiers['middleware']];
             } elseif ($name === 'name') {
                 $modifiers['name'] = LaravelFactStore::string($cursor->args[0]->value ?? null) ?? $modifiers['name'];
+            } elseif ($name === 'only' || $name === 'except') {
+                // `->only(['index', 'show'])` or `->only('index', 'show')`.
+                $actions = [];
+                foreach ($cursor->args as $argument) {
+                    if ($argument instanceof Node\Arg) {
+                        $actions = [...$actions, ...LaravelFactStore::strings($argument->value)];
+                    }
+                }
+                $modifiers[$name] = $actions;
             }
             $cursor = $cursor->var;
         }
