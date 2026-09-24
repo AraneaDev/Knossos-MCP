@@ -1,5 +1,5 @@
 import { CanActivate, Catch, ExceptionFilter, Injectable, NestInterceptor, NestMiddleware, PipeTransform } from '@nestjs/common';
-import { WebSocketGateway } from '@nestjs/websockets';
+import { OnGatewayConnection, WebSocketGateway } from '@nestjs/websockets';
 
 // A provider that is none of the roles below keeps only the lifecycle hooks.
 @Injectable()
@@ -60,4 +60,11 @@ export class TokenCheck implements CanActivate {
 @Injectable()
 export class Timing implements NestInterceptor {
     intercept(): void {}
+}
+
+// Nest connects only a class registered with `@WebSocketGateway()`; the
+// interface alone leaves this provider's hook uncalled.
+@Injectable()
+export class Presence implements OnGatewayConnection {
+    handleConnection(): void {}
 }

@@ -12,4 +12,5 @@ declare module '@nestjs/passport' {
 }
 declare module '@nestjs/websockets' {
     export function WebSocketGateway(): ClassDecorator;
+    export interface OnGatewayConnection { handleConnection(): void; }
 }

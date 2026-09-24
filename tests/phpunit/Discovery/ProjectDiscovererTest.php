@@ -2150,9 +2150,15 @@ TOML);
         mkdir($this->root . '/desktop/src', 0700, true);
         mkdir($this->root . '/nobuild/src', 0700, true);
         mkdir($this->root . '/plain/src', 0700, true);
+        mkdir($this->root . '/typed/src', 0700, true);
         $files = [
             'front/package.json' => '{"name":"front","private":true,"dependencies":{"react":"^17.0.0","react-scripts":"4.0.3"}}',
             'front/src/index.js' => "export {};\n",
+            // react-scripts builds the first extension it finds, `.js` before
+            // `.tsx`; the other file is not built.
+            'front/src/index.tsx' => "export {};\n",
+            'typed/package.json' => '{"name":"typed","private":true,"dependencies":{"react-scripts":"5.0.1"}}',
+            'typed/src/index.tsx' => "export {};\n",
             'plain/package.json' => '{"name":"plain","private":true,"dependencies":{"react":"^17.0.0"}}',
             'plain/src/index.js' => "export {};\n",
             'desktop/Cargo.toml' => "[package]\nname = \"desktop\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
@@ -2173,6 +2179,9 @@ TOML);
             $entryPoints = [...$entryPoints, ...($unit->metadata['entry_points'] ?? [])];
         }
         self::assertContains('front/src/index.js', $entryPoints);
+        self::assertNotContains('front/src/index.tsx', $entryPoints);
+        self::assertContains('typed/src/index.tsx', $entryPoints);
+        self::assertNotContains('typed/src/index.js', $entryPoints);
         self::assertNotContains('plain/src/index.js', $entryPoints);
         self::assertContains('desktop/build.rs', $entryPoints);
         self::assertNotContains('nobuild/build.rs', $entryPoints);
@@ -2186,7 +2195,7 @@ TOML);
      */
     public function testDiscoverReadsTheFilesToolConfigsLoad(): void
     {
-        foreach (['backend/src/migrations', 'backend/src/subscribers/audit', 'resources/js', 'front/cypress/cypress/plugins', 'front/cypress/cypress/support', 'e2e/cypress/plugins', 'e2e/cypress/support', 'e2e/tools'] as $directory) {
+        foreach (['bomb/src', 'backend/src/migrations', 'backend/src/subscribers/audit', 'resources/js', 'front/cypress/cypress/plugins', 'front/cypress/cypress/support', 'e2e/cypress/plugins', 'e2e/cypress/support', 'e2e/tools'] as $directory) {
             mkdir($this->root . '/' . $directory, 0700, true);
         }
         $files = [
@@ -2194,6 +2203,10 @@ TOML);
             'backend/src/subscribers/audit/AuditSubscriber.ts' => "export class AuditSubscriber {}\n",
             'backend/src/migrations/1700000000001-Init.ts' => "export class Init1700000000001 {}\n",
             'backend/src/other.ts' => "export const other = 1;\n",
+            // Twelve brace pairs name 4,096 globs: past the budget, so the
+            // glob is dropped rather than expanded.
+            'bomb/typeorm.config.ts' => "export default { entities: ['src/*" . str_repeat('{a,b}', 12) . ".ts'] };\n",
+            'bomb/src/' . str_repeat('a', 12) . '.ts' => "export {};\n",
             'webpack.mix.js' => "const mix = require('laravel-mix');\nmix.js('resources/js/app.js', 'public/js').sass('resources/sass/app.scss', 'public/css');\n",
             'vite.config.ts' => "export default { plugins: [laravel({ input: ['resources/js/main.ts'], ssr: 'resources/js/ssr.ts' })] };\n",
             'resources/js/app.js' => "export {};\n",
@@ -2228,6 +2241,7 @@ TOML);
         self::assertContains('e2e/tools/plugins.js', $entryPoints);
         self::assertNotContains('e2e/cypress/plugins/index.js', $entryPoints);
         self::assertNotContains('e2e/cypress/support/index.js', $entryPoints);
+        self::assertNotContains('bomb/src/' . str_repeat('a', 12) . '.ts', $entryPoints);
     }
 
     /**

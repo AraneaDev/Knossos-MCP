@@ -1780,7 +1780,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
             return
         called = dotted(value.func) or ""
         resolved = self.aliases.get(called) or self.resolve_name(called, "class") or ""
-        if resolved.removeprefix("py:class:").removeprefix("py:function:").endswith(self.SERVED_APPS):
+        # `py:<kind>:<name>`: the name alone, whichever kind the import resolved to.
+        if resolved.split(":", 2)[-1] in self.SERVED_APPS:
             self.serves_app = True
 
     def visit_Assign(self, node: ast.Assign) -> None:

@@ -269,13 +269,10 @@ const NEST_ROLES = [
         decorator: "Catch",
     },
     { methods: ["use"], interfaces: ["NestMiddleware"], suffix: "Middleware" },
+    // Nest connects only a class registered as a gateway, whatever it implements.
     {
         methods: ["handleConnection", "handleDisconnect", "afterInit"],
-        interfaces: [
-            "OnGatewayConnection",
-            "OnGatewayDisconnect",
-            "OnGatewayInit",
-        ],
+        interfaces: [],
         decorator: "WebSocketGateway",
     },
 ];

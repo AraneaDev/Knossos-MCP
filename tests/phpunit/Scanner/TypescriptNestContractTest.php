@@ -62,6 +62,7 @@ final class TypescriptNestContractTest extends KnossosTestCase
             'src/roles.ts#LoggingInterceptor::intercept' => true,
             'src/roles.ts#LoggingInterceptor::transform' => false,
             'src/roles.ts#ParsePipe::transform' => true,
+            'src/roles.ts#Presence::handleConnection' => false,
             'src/roles.ts#RolesGuard::canActivate' => true,
             'src/roles.ts#Timing::intercept' => true,
             'src/roles.ts#TokenCheck::canActivate' => true,

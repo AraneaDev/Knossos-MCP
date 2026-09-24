@@ -419,7 +419,7 @@ final readonly class ProjectDiscoverer
                 'vue' => self::dependsOn($decoded, 'vue'),
                 'entry_points' => [
                     ...self::manifestEntryPoints($decoded, $relative, ['bin', 'main', 'module']),
-                    ...self::createReactAppEntryPoints($decoded, $relative),
+                    ...self::createReactAppEntryPoints($decoded, $relative, dirname($absolute)),
                 ],
                 'public_entry_points' => self::publicEntryPoints($decoded, $relative),
             ],
@@ -1003,6 +1003,12 @@ final readonly class ProjectDiscoverer
      * turns out to be dead — suppressing it would hide the finding this
      * analysis exists to produce.
      */
+    /** The globs one brace pattern may name before it is dropped as hostile. */
+    private const BRACE_EXPANSION_LIMIT = 256;
+
+    /** The order react-scripts resolves `src/index` in; the first that exists is built. */
+    private const CREATE_REACT_APP_EXTENSIONS = ['web.mjs', 'mjs', 'web.js', 'js', 'web.ts', 'ts', 'web.tsx', 'tsx', 'web.jsx', 'jsx'];
+
     private const CONFIG_REFERENCE_KEYS = [
         'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
         // Vite's server-side entry, and Cypress's plugins and support files.
@@ -1075,23 +1081,25 @@ final readonly class ProjectDiscoverer
 
     /**
      * The entry a Create React App package is built from: `react-scripts`
-     * builds `src/index.js` (or `.jsx`, `.ts`, `.tsx`), which its own config
-     * names and nothing in the project imports.
+     * builds the first `src/index` file it finds, in its own extension order,
+     * which its config names and nothing in the project imports.
      *
      * @param array<string, mixed> $manifest
      * @return list<string>
      */
-    private static function createReactAppEntryPoints(array $manifest, string $configPath): array
+    private static function createReactAppEntryPoints(array $manifest, string $configPath, string $absoluteDirectory): array
     {
         if (!self::dependsOn($manifest, 'react-scripts')) {
             return [];
         }
         $directory = self::manifestDirectory($configPath);
+        foreach (self::CREATE_REACT_APP_EXTENSIONS as $extension) {
+            if (is_file($absoluteDirectory . '/src/index.' . $extension)) {
+                return [($directory === '' ? '' : $directory . '/') . 'src/index.' . $extension];
+            }
+        }
 
-        return array_map(
-            static fn(string $extension): string => ($directory === '' ? '' : $directory . '/') . 'src/index.' . $extension,
-            ['js', 'jsx', 'ts', 'tsx'],
-        );
+        return [];
     }
 
     /**
@@ -1569,20 +1577,34 @@ final readonly class ProjectDiscoverer
 
     /**
      * A glob's brace alternatives spelled out: `*{.js,.ts}` is `*.js` and
-     * `*.ts`, the form TypeORM documents for its file lists.
+     * `*.ts`, the form TypeORM documents for its file lists. None at all when
+     * they would pass {@see self::BRACE_EXPANSION_LIMIT}.
      *
      * @return list<string>
      */
     private static function expandBraces(string $glob): array
     {
-        if (preg_match('/\{([^{}]*)\}/', $glob, $brace, PREG_OFFSET_CAPTURE) !== 1) {
-            return [$glob];
-        }
-        $expanded = [];
-        foreach (explode(',', $brace[1][0]) as $option) {
-            $replaced = substr_replace($glob, $option, $brace[0][1], strlen($brace[0][0]));
-            array_push($expanded, ...self::expandBraces($replaced));
-        }
+        $expanded = [$glob];
+        do {
+            $next = [];
+            $open = false;
+            foreach ($expanded as $pattern) {
+                if (preg_match('/\{([^{}]*)\}/', $pattern, $brace, PREG_OFFSET_CAPTURE) !== 1) {
+                    $next[] = $pattern;
+                    continue;
+                }
+                $open = true;
+                foreach (explode(',', $brace[1][0]) as $option) {
+                    // Each pair of alternatives doubles the count: a glob
+                    // past the budget is dropped rather than expanded.
+                    if (count($next) >= self::BRACE_EXPANSION_LIMIT) {
+                        return [];
+                    }
+                    $next[] = substr_replace($pattern, $option, $brace[0][1], strlen($brace[0][0]));
+                }
+            }
+            $expanded = $next;
+        } while ($open);
 
         return $expanded;
     }

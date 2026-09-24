@@ -1824,6 +1824,8 @@ PYTHON);
             'app/main.py' => "from fastapi import FastAPI\n\napp = FastAPI(title='x')\n",
             'app/wsgi.py' => "import flask\n\napplication: flask.Flask = flask.Flask(__name__)\n",
             'app/routes.py' => "from fastapi import APIRouter\n\nrouter = APIRouter()\n",
+            // A class that only shares the name is not the framework's app.
+            'app/lookalike.py' => "from myfastapi import FastAPI\n\napp = FastAPI()\n",
         ];
         foreach ($files as $relative => $contents) {
             file_put_contents($root . '/' . $relative, $contents);
@@ -1831,7 +1833,7 @@ PYTHON);
 
         try {
             $client = $this->pythonWorkerClient();
-            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/main.py', 'app/routes.py', 'app/wsgi.py']]), false);
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/lookalike.py', 'app/main.py', 'app/routes.py', 'app/wsgi.py']]), false);
             $client->shutdown();
         } finally {
             foreach (array_reverse(array_keys($files)) as $relative) {
@@ -1851,7 +1853,7 @@ PYTHON);
         }
         ksort($executable);
 
-        self::assertSame(['app.main' => true, 'app.routes' => false, 'app.wsgi' => true], $executable);
+        self::assertSame(['app.lookalike' => false, 'app.main' => true, 'app.routes' => false, 'app.wsgi' => true], $executable);
     }
 
     #[Group('python-scanner')]
