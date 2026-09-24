@@ -1158,13 +1158,14 @@ final readonly class ProjectDiscoverer
     /**
      * Config keys under which a YAML value names files to EXCLUDE rather than
      * load: `ignore:` in codecov.yml, `exclude:` in a pre-commit config,
-     * `paths-ignore:` in a GitHub Actions workflow trigger. A path appearing
+     * `paths-ignore:` in a GitHub Actions workflow trigger, PHPStan's
+     * `excludePaths:` with its `analyse:` and `analyseAndScan:` lists. A path appearing
      * only under one of these is not read as an entry point — the same
      * reasoning {@see self::CONFIG_REFERENCE_KEYS} applies to a tool's own
      * config module, restated here as a deny-list because YAML's exclusion
      * keys, unlike a tool config's load keys, are not enumerable in advance.
      */
-    private const YAML_EXCLUSION_KEYS = ['exclude', 'ignore', 'paths-ignore', 'skip', 'exclude_paths', 'excludes'];
+    private const YAML_EXCLUSION_KEYS = ['exclude', 'ignore', 'paths-ignore', 'skip', 'exclude_paths', 'excludes', 'excludePaths', 'analyse', 'analyseAndScan'];
 
     /**
      * Every token in a YAML file shaped like a path to a source file.

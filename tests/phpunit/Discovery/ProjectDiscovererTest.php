@@ -1904,6 +1904,12 @@ TOML);
         mkdir($this->root . '/app/Support/PHPStan', 0700, true);
         file_put_contents($this->root . '/composer.json', '{"autoload":{"psr-4":{"App\\\\":"app/"}}}');
         file_put_contents($this->root . '/phpstan.neon', implode("\n", [
+            'parameters:',
+            '    excludePaths:',
+            '        - app/Legacy/Old.php',
+            '    excludePaths:',
+            '        analyse:',
+            '            - app/Legacy/Older.php',
             'rules:',
             '    - App\\Support\\PHPStan\\NoRawHttpRule',
             'services:',
@@ -1924,6 +1930,9 @@ TOML);
         self::assertContains('app/Support/PHPStan/NoRawHttpRule.php', $entryPoints);
         self::assertContains('app/Support/PHPStan/ReturnTypeExtension.php', $entryPoints);
         self::assertNotContains('app/Support/PHPStan/UnregisteredRule.php', $entryPoints);
+        // A path PHPStan is told to skip is no path it loads.
+        self::assertNotContains('app/Legacy/Old.php', $entryPoints);
+        self::assertNotContains('app/Legacy/Older.php', $entryPoints);
     }
 
     /**
