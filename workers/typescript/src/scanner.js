@@ -550,6 +550,7 @@ export class TypeScriptScanner {
             try {
                 const collector = new FactCollector(root, sourceFile, checker, {
                     options: program.getCompilerOptions(),
+                    sourceFileAt: (fileName) => program.getSourceFile(fileName),
                 });
                 collector.collect();
                 contribution = {
@@ -1402,6 +1403,33 @@ class TypeScriptLanguageFactCollector {
     }
 
     /**
+     * The program's file a relative `require('./local')` names.
+     *
+     * The compiler binds a `require` argument to its module only in a
+     * JavaScript file; in TypeScript it is a string. Looked up among the
+     * files the program already holds, the way the compiler would try them,
+     * so the lookup reads nothing the program did not.
+     */
+    requiredSourceFile(location) {
+        const sourceFileAt = this.project.sourceFileAt;
+        if (
+            sourceFileAt === undefined ||
+            !ts.isStringLiteralLike(location) ||
+            !/^\.\.?(\/|$)/.test(location.text)
+        )
+            return undefined;
+        const base = path.resolve(
+            path.dirname(this.sourceFile.fileName),
+            location.text,
+        );
+        for (const suffix of REQUIRE_SUFFIXES) {
+            const file = sourceFileAt(normalize(base + suffix));
+            if (file !== undefined) return file;
+        }
+        return undefined;
+    }
+
+    /**
      * `import.meta.glob('./Pages/**\/*.vue')`: Vite bundles every file the
      * pattern matches. Each positive pattern becomes the same unexpanded edge
      * `require.context` makes, the directory before the first wildcard and
@@ -1669,9 +1697,9 @@ class TypeScriptLanguageFactCollector {
             this.checker,
             this.checker.getSymbolAtLocation(location),
         );
-        const declaration = symbol?.declarations?.find((item) =>
-            ts.isSourceFile(item),
-        );
+        const declaration =
+            symbol?.declarations?.find((item) => ts.isSourceFile(item)) ??
+            this.requiredSourceFile(location);
         if (!declaration) return null;
         const relative = relativeInside(this.root, declaration.fileName);
         if (relative === null || belowNodeModules(relative)) return null;
@@ -2695,6 +2723,15 @@ function storeMemberNames(node) {
     }
     return names.filter((text) => text !== "");
 }
+
+/** What a `require` specifier may leave off, in the order Node tries it. */
+const REQUIRE_SUFFIXES = [
+    "",
+    ...[".ts", ".tsx", ".d.ts", ".js", ".jsx", ".cts", ".cjs", ".mts", ".mjs"],
+    ...["ts", "tsx", "d.ts", "js", "jsx"].map(
+        (extension) => `/index.${extension}`,
+    ),
+];
 
 /** `import.meta.glob(<literal or array>, …)`, Vite's glob import. */
 function isImportMetaGlob(node) {
