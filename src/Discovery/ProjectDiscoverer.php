@@ -1297,6 +1297,10 @@ final readonly class ProjectDiscoverer
             }
             $source = trim(str_starts_with($copy[2], './') ? substr($copy[2], 2) : $copy[2], '/');
             $destination = rtrim($copy[3], '/');
+            // A file copied into a directory keeps its name there.
+            if (str_ends_with($copy[3], '/') && str_contains(basename($source), '.')) {
+                $destination .= '/' . basename($source);
+            }
             if ($source !== '' && $source !== '.' && $destination !== '') {
                 $mappings[$destination] = $source;
             }

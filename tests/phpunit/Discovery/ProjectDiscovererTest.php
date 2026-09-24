@@ -2078,6 +2078,21 @@ TOML);
     }
 
     /**
+     * A file copied into a directory (`COPY tools/report.mjs /opt/bin/`) keeps
+     * its name there, so `/opt/bin/report.mjs` is that file; a directory
+     * copied to a directory maps its contents.
+     */
+    public function testACopiedFileIsReadUnderItsNameInADirectoryDestination(): void
+    {
+        $rewrite = new \ReflectionMethod(ProjectDiscoverer::class, 'withCopySources');
+
+        assertSame(
+            "COPY tools/report.mjs /opt/bin/\nCOPY scripts/probe /tmp/probe/\nRUN node tools/report.mjs && python3 scripts/probe/check.py",
+            $rewrite->invoke(null, "COPY tools/report.mjs /opt/bin/\nCOPY scripts/probe /tmp/probe/\nRUN node /opt/bin/report.mjs && python3 /tmp/probe/check.py"),
+        );
+    }
+
+    /**
      * The reason this reader is key-scoped rather than tokenising the whole
      * file the way the YAML one does. A config names files to EXCLUDE as well
      * as files to load, and an excluded path is exactly the kind of file that
