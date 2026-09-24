@@ -353,10 +353,7 @@ final readonly class ProjectDiscoverer
             return new ProjectUnit($kind, $relative, $contentHash, [
                 'entry_points' => self::yamlPathEntryPoints($contents, $relative),
                 'class_names' => self::yamlClassNames($contents),
-                'loaded_directories' => [
-                    ...self::doctrineMigrationDirectories($contents),
-                    ...self::taggedResourceDirectories($contents, $relative),
-                ],
+                ...self::loadedDirectories($contents, $relative),
             ]);
         }
         if ($kind === 'dockerfile') {
@@ -1829,49 +1826,87 @@ final readonly class ProjectDiscoverer
     }
 
     /**
-     * The directories a tagged Symfony `resource:` block registers every class in.
+     * Tags whose owner calls every service carrying them: a message bus, the
+     * event dispatcher, the console, the router, Twig, the validator, forms,
+     * security. A tag like `container.no_preload` only configures the
+     * container and proves nothing about use.
+     */
+    private const INVOKING_TAG = '/(?:handler|listener|subscriber|command|controller|voter|extension|constraint_validator|form\.type|scheduler\.task)(?:$|[._])/i';
+
+    /**
+     * The directories a tagged Symfony `resource:` block registers every class
+     * in, and the paths its `exclude:` leaves out.
      *
      * `App\\Handler\\: { resource: '../src/Handler', tags: [...] }`, inline or as a
-     * block, makes each
-     * class there a service the tag's owner (a message bus, an event
-     * dispatcher, the console) calls, and nothing in PHP names them. A block
-     * without `tags:` only autowires, which says nothing about use, so it is
-     * not read. The directory is relative to the config file; one outside the
-     * project names nothing.
+     * block, makes each class there a service the tag's owner (a message bus,
+     * an event dispatcher, the console) calls, and nothing in PHP names them.
+     * Only a tag whose owner invokes what carries it counts
+     * ({@see self::INVOKING_TAG}); a block without one only autowires, which
+     * says nothing about use. Paths are relative to the config file, or to
+     * the project under `%kernel.project_dir%`; one outside the project names
+     * nothing.
      *
-     * @return list<string>
+     * @return array{directories: list<string>, exclusions: list<string>}
      */
     private static function taggedResourceDirectories(string $contents, string $configPath): array
     {
         $directories = [];
-        $block = null;
-        $flush = static function (?array $block) use (&$directories, $configPath): void {
-            if ($block === null || $block['resource'] === null || !$block['tagged']) {
-                return;
+        $exclusions = [];
+        $base = self::manifestDirectory($configPath);
+        $resolve = static function (string $path) use ($base): ?string {
+            $path = trim($path, "'\" ");
+            $prefix = $base;
+            if (str_starts_with($path, '%kernel.project_dir%/')) {
+                $path = substr($path, strlen('%kernel.project_dir%/'));
+                $prefix = '';
             }
             $segments = [];
-            // `%kernel.project_dir%` is the project root; anything else is
-            // relative to the config file.
-            $resource = $block['resource'];
-            $base = self::manifestDirectory($configPath);
-            if (str_starts_with($resource, '%kernel.project_dir%/')) {
-                $resource = substr($resource, strlen('%kernel.project_dir%/'));
-                $base = '';
-            }
-            foreach (explode('/', ($base === '' ? '' : $base . '/') . $resource) as $segment) {
+            foreach (explode('/', ($prefix === '' ? '' : $prefix . '/') . $path) as $segment) {
                 if ($segment === '..') {
                     if ($segments === []) {
-                        return;
+                        return null;
                     }
                     array_pop($segments);
                 } elseif ($segment !== '' && $segment !== '.') {
                     $segments[] = $segment;
                 }
             }
-            if ($segments !== []) {
-                $directories[implode('/', $segments)] = true;
+
+            return $segments === [] ? null : implode('/', $segments);
+        };
+        $values = static fn(string $text): array => array_values(array_filter(array_map(
+            static fn(string $item): string => trim($item, " '\"{}"),
+            preg_split('/,/', trim($text, ' []')) ?: [],
+        ), static fn(string $item): bool => $item !== ''));
+        $tagNames = static function (string $text): array {
+            if (preg_match_all('/\bname\s*:\s*[\'"]?([\w.\-]+)/', $text, $named) > 0) {
+                return $named[1];
+            }
+            preg_match_all('/[\'"]?([A-Za-z_][\w.\-]*)[\'"]?/', trim($text, ' []-'), $bare);
+
+            return $bare[1];
+        };
+        $flush = static function (?array $block) use (&$directories, &$exclusions, $resolve): void {
+            if ($block === null || $block['resource'] === null) {
+                return;
+            }
+            $invoked = false;
+            foreach ($block['tags'] as $tag) {
+                $invoked = $invoked || preg_match(self::INVOKING_TAG, $tag) === 1;
+            }
+            $directory = $invoked ? $resolve(rtrim(preg_replace('/[*{].*$/', '', $block['resource']) ?? '', '/')) : null;
+            if ($directory === null) {
+                return;
+            }
+            $directories[$directory] = true;
+            foreach ($block['exclude'] as $pattern) {
+                $excluded = $resolve($pattern);
+                if ($excluded !== null) {
+                    $exclusions[$excluded] = true;
+                }
             }
         };
+        $block = null;
         foreach (explode("\n", $contents) as $line) {
             $line = preg_replace('/(?:^|\s)#.*$/', '', $line) ?? $line;
             if (trim($line) === '') {
@@ -1883,30 +1918,63 @@ final readonly class ProjectDiscoverer
                 $block = null;
             }
             if (preg_match('/^\s*[\'"]?[A-Za-z_][A-Za-z0-9_\\\\]*\\\\[\'"]?\s*:\s*$/', $line) === 1) {
-                $block = ['indent' => $indent, 'resource' => null, 'tagged' => false];
+                $block = ['indent' => $indent, 'resource' => null, 'exclude' => [], 'tags' => [], 'list' => null, 'listIndent' => 0];
                 continue;
             }
             // The inline form: `App\\Listener\\: { resource: '...', tags: [...] }`.
             if (preg_match('/^\s*[\'"]?[A-Za-z_][A-Za-z0-9_\\\\]*\\\\[\'"]?\s*:\s*\{(.*)\}\s*$/', $line, $inline) === 1) {
+                $exclude = preg_match('/\bexclude\s*:\s*(\[[^\]]*\]|[\'"][^\'"]*[\'"])/', $inline[1], $excluded) === 1 ? $values($excluded[1]) : [];
+                $tags = preg_match('/\btags\s*:\s*(\[.*\])/', $inline[1], $tagged) === 1 ? $tagNames($tagged[1]) : [];
                 $flush([
-                    'indent' => $indent,
-                    'resource' => preg_match('/\bresource\s*:\s*[\'"]?([^\'"\s*{,}]+)/', $inline[1], $resource) === 1 ? rtrim($resource[1], '/') : null,
-                    'tagged' => preg_match('/\btags\s*:/', $inline[1]) === 1,
+                    'resource' => preg_match('/\bresource\s*:\s*[\'"]?([^\'"\s,}]+)/', $inline[1], $resource) === 1 ? $resource[1] : null,
+                    'exclude' => $exclude,
+                    'tags' => $tags,
                 ]);
                 continue;
             }
             if ($block === null) {
                 continue;
             }
-            if (preg_match('/^\s*resource\s*:\s*[\'"]?([^\'"\s*{]+)/', $line, $resource) === 1) {
-                $block['resource'] = rtrim($resource[1], '/');
-            } elseif (preg_match('/^\s*tags\s*:/', $line) === 1) {
-                $block['tagged'] = true;
+            if ($block['list'] !== null && $indent > $block['listIndent']) {
+                if ($block['list'] === 'exclude') {
+                    $block['exclude'][] = trim(ltrim(trim($line), '- '), "'\"");
+                } else {
+                    array_push($block['tags'], ...$tagNames(ltrim(trim($line), '- ')));
+                }
+                continue;
+            }
+            $block['list'] = null;
+            if (preg_match('/^\s*resource\s*:\s*[\'"]?([^\'"\s]+)/', $line, $resource) === 1) {
+                $block['resource'] = $resource[1];
+            } elseif (preg_match('/^\s*(exclude|tags)\s*:\s*(.*)$/', $line, $key) === 1) {
+                if (trim($key[2]) === '') {
+                    $block['list'] = $key[1];
+                    $block['listIndent'] = $indent;
+                } elseif ($key[1] === 'exclude') {
+                    array_push($block['exclude'], ...$values($key[2]));
+                } else {
+                    array_push($block['tags'], ...$tagNames($key[2]));
+                }
             }
         }
         $flush($block);
 
-        return array_keys($directories);
+        return ['directories' => array_keys($directories), 'exclusions' => array_keys($exclusions)];
+    }
+
+    /**
+     * The directories a YAML file loads every class from, and what it excludes.
+     *
+     * @return array{loaded_directories: list<string>, loaded_exclusions: list<string>}
+     */
+    private static function loadedDirectories(string $contents, string $configPath): array
+    {
+        $tagged = self::taggedResourceDirectories($contents, $configPath);
+
+        return [
+            'loaded_directories' => [...self::doctrineMigrationDirectories($contents), ...$tagged['directories']],
+            'loaded_exclusions' => $tagged['exclusions'],
+        ];
     }
 
     /**
@@ -1924,10 +1992,14 @@ final readonly class ProjectDiscoverer
             if ($unit->kind !== 'yaml' || !is_array($directories) || $directories === []) {
                 return $unit;
             }
+            $exclusions = array_values(array_filter($unit->metadata['loaded_exclusions'] ?? [], is_string(...)));
             $paths = array_fill_keys($unit->metadata['entry_points'] ?? [], true);
             foreach ($files as $file) {
+                if (!str_ends_with($file->relativePath, '.php') || self::excludedResource($file->relativePath, $exclusions)) {
+                    continue;
+                }
                 foreach ($directories as $directory) {
-                    if (is_string($directory) && str_starts_with($file->relativePath, $directory . '/') && str_ends_with($file->relativePath, '.php')) {
+                    if (is_string($directory) && str_starts_with($file->relativePath, $directory . '/')) {
                         $paths[$file->relativePath] = true;
                     }
                 }
@@ -1940,6 +2012,23 @@ final readonly class ProjectDiscoverer
                 'entry_points' => $paths,
             ]);
         }, $units);
+    }
+
+    /**
+     * Whether a path falls under a resource `exclude:`: the path itself, a
+     * directory above it, or a glob matching it.
+     *
+     * @param list<string> $exclusions
+     */
+    private static function excludedResource(string $path, array $exclusions): bool
+    {
+        foreach ($exclusions as $exclusion) {
+            if ($path === $exclusion || str_starts_with($path, rtrim($exclusion, '/') . '/') || fnmatch($exclusion, $path, FNM_PATHNAME)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

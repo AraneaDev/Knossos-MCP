@@ -1982,6 +1982,7 @@ TOML);
         mkdir($this->root . '/src/Service', 0700, true);
         mkdir($this->root . '/src/Listener', 0700, true);
         mkdir($this->root . '/src/Command', 0700, true);
+        mkdir($this->root . '/src/Preload', 0700, true);
         file_put_contents($this->root . '/config/services.yaml', implode("\n", [
             'services:',
             '    App\\:',
@@ -1991,13 +1992,18 @@ TOML);
             '        public: true',
             '        tags:',
             '            - { name: command_handler }',
-            "    App\\Listener\\: { resource: '../src/Listener', tags: ['kernel.event_listener'] }",
+            "    App\\Listener\\: { resource: '../src/Listener', exclude: '../src/Listener/Unused.php', tags: ['kernel.event_listener'] }",
+            // A tag with no runtime consumer, and an empty tag list, prove nothing.
+            "    App\\Preload\\: { resource: '../src/Preload', tags: ['container.no_preload'] }",
+            '    App\\Service\\:',
+            "        resource: '../src/Service'",
+            '        tags: []',
             '    App\\Command\\:',
             "        resource: '%kernel.project_dir%/src/Command'",
             '        tags: [console.command]',
             '',
         ]));
-        foreach (['src/Handler/CombineHandler.php', 'src/Service/Mailer.php', 'src/Listener/OnLogin.php', 'src/Command/Sync.php'] as $file) {
+        foreach (['src/Handler/CombineHandler.php', 'src/Service/Mailer.php', 'src/Listener/OnLogin.php', 'src/Listener/Unused.php', 'src/Command/Sync.php', 'src/Preload/Warm.php'] as $file) {
             file_put_contents($this->root . '/' . $file, "<?php\nfinal class C {}\n");
         }
 
@@ -2011,6 +2017,8 @@ TOML);
         // The inline form, and a path from the project directory.
         self::assertContains('src/Listener/OnLogin.php', $entryPoints);
         self::assertContains('src/Command/Sync.php', $entryPoints);
+        self::assertNotContains('src/Listener/Unused.php', $entryPoints);
+        self::assertNotContains('src/Preload/Warm.php', $entryPoints);
         self::assertNotContains('src/Service/Mailer.php', $entryPoints);
     }
 
