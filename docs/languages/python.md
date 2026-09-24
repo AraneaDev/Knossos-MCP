@@ -31,7 +31,10 @@ The worker emits evidence-backed modules, packages, classes, functions,
 methods, containment, imports, inheritance, and statically resolvable calls.
 Async status and decorator names are retained as node attributes. A module with
 a shebang or an `if __name__ == "__main__":` guard is marked `executable`, which
-keeps a script run by a shell or `python -m` off the dead-code report.
+keeps a script run by a shell or `python -m` off the dead-code report. So is a module that
+builds a served app at module level (`app = FastAPI()`, `Flask(__name__)`, Starlette, Quart,
+Litestar, or Django's WSGI and ASGI applications), which a server such as uvicorn loads by
+name.
 
 A few calls nothing names are recognised as runtime-invoked: a function a
 decorator hands to an object (`@queue.register("scan")`, `@bus.on`), and a

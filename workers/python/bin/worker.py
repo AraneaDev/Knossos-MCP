@@ -1440,6 +1440,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         # Structural protocols this file declares: a call through one may
         # reach any class with the member, declared or not.
         self.protocols: set[str] = set()
+        self.serves_app = False
         self.module_id = ref("module", self.module)
         self.facts = PythonFactAccumulator(relative)
         self.roles = PythonFrameworkRoleEnricher()
@@ -1474,6 +1475,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 self.tree,
             )
         self.visit(self.tree)
+        if self.serves_app:
+            self.facts.nodes[self.module_id]["attributes"]["executable"] = True
         if self.untyped_calls:
             # A method by one of these names may be what such a call reaches,
             # so the core reports it as only possibly dead.
@@ -1707,7 +1710,31 @@ class PythonAstFactCollector(ast.NodeVisitor):
             if target is not None and target != self.current():
                 self.facts.add_edge("references", self.current(), target, item)
 
+    SERVED_APPS = (
+        "fastapi.FastAPI",
+        "flask.Flask",
+        "starlette.applications.Starlette",
+        "quart.Quart",
+        "litestar.Litestar",
+        "django.core.wsgi.get_wsgi_application",
+        "django.core.asgi.get_asgi_application",
+    )
+
+    def note_served_app(self, value: ast.AST | None) -> None:
+        """Mark the module executable when it builds an app a server serves.
+
+        ``app = FastAPI()`` at module level is what ``uvicorn main:app`` or a
+        WSGI server loads by name; nothing imports the module for it.
+        """
+        if self.containers or not isinstance(value, ast.Call):
+            return
+        called = dotted(value.func) or ""
+        resolved = self.aliases.get(called) or self.resolve_name(called, "class") or ""
+        if resolved.removeprefix("py:class:").removeprefix("py:function:").endswith(self.SERVED_APPS):
+            self.serves_app = True
+
     def visit_Assign(self, node: ast.Assign) -> None:
+        self.note_served_app(node.value)
         self.emit_value_references(node.value)
         if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             variable = node.targets[0].id
@@ -1722,6 +1749,7 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        self.note_served_app(node.value)
         self.emit_value_references(node.value)
         attribute = self.self_attribute(node.target)
         if attribute is not None:

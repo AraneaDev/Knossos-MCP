@@ -1793,4 +1793,46 @@ PYTHON);
         self::assertContains('py:function:app.endpoints.create.<locals>.root -> py:class:app.endpoints.Message', $calls);
         self::assertSame(['read_some'], $untyped);
     }
+
+    #[Group('python-scanner')]
+    public function testAModuleThatBuildsAServedAppIsExecutable(): void
+    {
+        // `app = FastAPI()` is what `uvicorn main:app` serves; nothing imports
+        // the module. A router is mounted by an app, not served.
+        $root = sys_get_temp_dir() . '/knossos-py-served-app-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/main.py' => "from fastapi import FastAPI\n\napp = FastAPI(title='x')\n",
+            'app/wsgi.py' => "import flask\n\napplication: flask.Flask = flask.Flask(__name__)\n",
+            'app/routes.py' => "from fastapi import APIRouter\n\nrouter = APIRouter()\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/main.py', 'app/routes.py', 'app/wsgi.py']]), false);
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $executable = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $executable[$node->canonicalName] = $node->attributes['executable'] ?? null;
+                }
+            }
+        }
+        ksort($executable);
+
+        self::assertSame(['app.main' => true, 'app.routes' => false, 'app.wsgi' => true], $executable);
+    }
 }
