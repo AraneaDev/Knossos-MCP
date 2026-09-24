@@ -1888,12 +1888,25 @@ fn macro_piece(
     })
 }
 
-/// Whether an attribute is `#[wasm_bindgen]`, however its path is spelled.
+/// Whether an attribute is `#[wasm_bindgen]`, however its path is spelled,
+/// or a `cfg_attr` that applies it.
 fn is_wasm_bindgen(attr: &syn::Attribute) -> bool {
-    attr.path()
-        .segments
-        .last()
-        .is_some_and(|segment| segment.ident == "wasm_bindgen")
+    let named = |path: &syn::Path| {
+        path.segments
+            .last()
+            .is_some_and(|segment| segment.ident == "wasm_bindgen")
+    };
+    if named(attr.path()) {
+        return true;
+    }
+    // `#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]`: the build the
+    // bindings exist for applies it, so the item is exported all the same.
+    attr.path().is_ident("cfg_attr")
+        && attr
+            .parse_args_with(
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            )
+            .is_ok_and(|metas| metas.iter().skip(1).any(|meta| named(meta.path())))
 }
 
 /// Whether a function is exported to a caller outside Rust: `#[no_mangle]`
@@ -2129,7 +2142,7 @@ mod tests {
     #[test]
     fn a_wasm_bindgen_impl_marks_its_public_methods_as_runtime_invoked() {
         let file: syn::File = syn::parse_str(
-            "#[wasm_bindgen]\npub struct Engine;\n#[wasm_bindgen]\nimpl Engine {\n    #[wasm_bindgen(constructor)]\n    pub fn new() -> Engine { Engine }\n    pub fn key_up(&mut self, key: &str) {}\n    fn helper(&self) {}\n}\nimpl Engine {\n    pub fn internal(&self) {}\n}",
+            "#[wasm_bindgen]\npub struct Engine;\n#[wasm_bindgen]\nimpl Engine {\n    #[wasm_bindgen(constructor)]\n    pub fn new() -> Engine { Engine }\n    pub fn key_up(&mut self, key: &str) {}\n    fn helper(&self) {}\n}\nimpl Engine {\n    pub fn internal(&self) {}\n}\npub struct Widget;\n#[cfg_attr(target_arch = \"wasm32\", wasm_bindgen)]\nimpl Widget {\n    pub fn draw(&self) {}\n}\n#[cfg_attr(test, derive(Debug))]\nimpl Widget {\n    pub fn measure(&self) {}\n}",
         )
         .expect("parses");
         let mut facts = Facts::new("src/lib.rs");
@@ -2157,6 +2170,10 @@ mod tests {
         // A private helper is not exported, nor is an impl without the attribute.
         assert!(!marked("crate::Engine::helper"));
         assert!(!marked("crate::Engine::internal"));
+        // The wasm build applies a conditional `wasm_bindgen`, and exports
+        // the same way; another conditional attribute exports nothing.
+        assert!(marked("crate::Widget::draw"));
+        assert!(!marked("crate::Widget::measure"));
     }
 
     #[test]
