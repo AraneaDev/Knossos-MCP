@@ -1346,6 +1346,7 @@ PYTHON);
         return $byPath;
     }
 
+    #[Group('python-scanner')]
     public function testAFunctionAPackageReExportsIsCalledThroughThePackage(): void
     {
         // `from app import config; config.staging_dir()`: the package
