@@ -1929,6 +1929,17 @@ final class GraphReconcilerTest extends TestCase
                 attributes: ['speculative' => true],
             );
         }
+        // A member read as a value may be a data attribute rather than a
+        // method, so a read that did not pay off says nothing about calls.
+        $edges[] = new EdgeFact(
+            kind: 'references',
+            sourceReference: $caller->localId,
+            targetReference: 'rust:method:crate::Wrong::label',
+            origin: Origin::Ast,
+            confidence: Confidence::Probable,
+            evidence: new Evidence('src/Foo.php', 4, 4),
+            attributes: ['speculative' => true],
+        );
         $request = $this->buildRequest([
             'discovery' => $this->minimalDiscovery([$this->minimalDiscoveredFile('src/Foo.php')]),
             'contributions' => [$this->minimalContribution([$caller, $declared], $edges)],

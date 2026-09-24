@@ -9,7 +9,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, NamedTuple
 
@@ -534,7 +534,7 @@ class ProjectModuleIndex:
         declarations are cached before this runs, so modules importing each
         other resolve without recursing.
         """
-        for child in tree.body:
+        for child in module_statements(tree):
             if not isinstance(child, ast.ImportFrom):
                 continue
             source = absolute_import(module, child.level, child.module, is_package)
@@ -563,7 +563,7 @@ class ProjectModuleIndex:
         resolve without recursing.
         """
         imported: dict[str, str] = {}
-        for child in tree.body:
+        for child in module_statements(tree):
             if not isinstance(child, ast.ImportFrom):
                 continue
             source = absolute_import(module, child.level, child.module, is_package)
@@ -575,7 +575,7 @@ class ProjectModuleIndex:
                 target = self.module_declarations(source).get(alias.name)
                 if target is not None and target.startswith("py:class:"):
                     imported[alias.asname or alias.name] = target
-        for child in tree.body:
+        for child in module_statements(tree):
             name, constructor = None, None
             if isinstance(child, ast.Assign) and len(child.targets) == 1 and isinstance(child.targets[0], ast.Name):
                 name, constructor = child.targets[0].id, child.value
@@ -825,11 +825,30 @@ def walk_keys(root: Path, walked: PathWalk) -> tuple[str | None, list[str]]:
     return final, linked
 
 
+def module_statements(tree: ast.Module) -> Iterator[ast.stmt]:
+    """The statements run at module level, including those under a guard.
+
+    A class declared under ``if TYPE_CHECKING:`` and an import inside
+    ``try: ... except ImportError:`` still bind module-level names.
+    """
+    pending: list[ast.stmt] = list(reversed(tree.body))
+    while pending:
+        child = pending.pop()
+        yield child
+        nested: list[ast.stmt] = []
+        if isinstance(child, ast.If):
+            nested = [*child.body, *child.orelse]
+        elif isinstance(child, (ast.Try, ast.TryStar)):
+            handled = [item for handler in child.handlers for item in handler.body]
+            nested = [*child.body, *handled, *child.orelse, *child.finalbody]
+        pending.extend(reversed(nested))
+
+
 def top_level_declarations(tree: ast.Module, module: str) -> dict[str, str]:
     """Map each top-level class and function name in ``tree`` to its symbol reference."""
 
     declarations: dict[str, str] = {}
-    for child in tree.body:
+    for child in module_statements(tree):
         if isinstance(child, ast.ClassDef):
             declarations[child.name] = ref("class", f"{module}.{child.name}")
         elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1388,6 +1407,9 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.relative = relative
         self.has_shebang = has_shebang
         self.executable = has_shebang or names_main_guard(tree)
+        # `029_seed.py` names no module an import statement can reach, so a
+        # loader reads it by path and calls the public names it exposes.
+        self.loaded_by_path = not PurePosixPath(relative).stem.isidentifier()
         self.index = index
         self.module = index.module_for(relative)
         self.is_package = PurePosixPath(relative).stem == "__init__"
@@ -1434,7 +1456,8 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 "executable": self.executable,
                 # Run by the import system whenever a module inside the package is imported.
                 "package_init": self.is_package,
-            },
+            }
+            | ({"runtime_invoked": True} if self.loaded_by_path else {}),
         )
         if self.is_package:
             package = self.module
@@ -1564,18 +1587,16 @@ class PythonAstFactCollector(ast.NodeVisitor):
         fastapi_routes = self.fastapi.route_decorators(node)
         flask_routes = self.flask.route_decorators(node)
         roles = self.roles.function_roles(decorators, bool(fastapi_routes), bool(flask_routes))
-        self.facts.add_node(
-            local_id,
-            kind,
-            canonical,
-            node.name,
-            node,
-            {
-                "async": async_function,
-                "decorators": decorators,
-                "python_framework_roles": roles,
-            },
-        )
+        attributes: dict[str, Any] = {
+            "async": async_function,
+            "decorators": decorators,
+            "python_framework_roles": roles,
+        }
+        if self.registered_by_object(decorators) or (
+            self.loaded_by_path and not self.containers and not node.name.startswith("_")
+        ):
+            attributes["runtime_invoked"] = True
+        self.facts.add_node(local_id, kind, canonical, node.name, node, attributes)
         self.facts.add_edge("contains", parent_id, local_id, node)
         self.fastapi.enrich_function(node, local_id, canonical, fastapi_routes)
         self.flask.enrich_function(node, local_id, canonical, flask_routes)
@@ -1592,6 +1613,20 @@ class PythonAstFactCollector(ast.NodeVisitor):
         self.local_variable_types.pop()
         self.local_function_scopes.pop()
         self.containers.pop()
+
+    def registered_by_object(self, decorators: list[str]) -> bool:
+        """Whether a decorator hands the function to an object that calls it.
+
+        ``@tq.register("scan")`` and ``@bus.on`` register the function with a
+        queue or a bus, which calls it at runtime, so no call names it. A
+        decorator reached through an imported module, ``@functools.cache``,
+        wraps the function without registering it anywhere.
+        """
+        for name in decorators:
+            head, _, member = name.partition(".")
+            if member and not (self.aliases.get(head) or "").startswith("py:module:"):
+                return True
+        return False
 
     def annotated_parameters(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, str]:
         """The class each annotated parameter declares it holds."""
@@ -1803,6 +1838,14 @@ class PythonAstFactCollector(ast.NodeVisitor):
                 target = ref("method", f"{class_container[1]}::{node.attr}")
                 if target != self.current():
                     self.facts.add_edge("references", self.current(), target, node)
+        elif isinstance(node.ctx, ast.Load) and id(node) not in self.called_attributes:
+            # `client.prune_cache` read off a receiver whose class is known: a
+            # bound method handed on, or a data attribute. Only the class can
+            # tell, so the reconciler keeps the edge when the member resolves.
+            receiver = dotted(node.value)
+            member = self.receiver_member(receiver, node.attr) if receiver else None
+            if member is not None:
+                self.facts.add_edge("references", self.current(), member, node, {"speculative": True})
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:

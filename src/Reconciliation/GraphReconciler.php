@@ -448,8 +448,9 @@ final readonly class GraphReconciler
                     // graph, rather than inventing an external symbol for a
                     // member that may not exist. The call still reached some
                     // method of that name, so the name is kept as a call on a
-                    // receiver nobody could type.
-                    $member = self::calledMemberName($edge->targetReference);
+                    // receiver nobody could type. A member read as a value may
+                    // be a data attribute, so only a call counts.
+                    $member = $edge->kind === 'calls' ? self::calledMemberName($edge->targetReference) : null;
                     if ($member !== null) {
                         $unconfirmed[$sourceId][$member] = true;
                     }

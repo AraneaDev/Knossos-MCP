@@ -1425,4 +1425,180 @@ PYTHON);
         self::assertContains('py:function:app.service.run -> py:method:app.repo.Repo::count', $calls);
         self::assertSame(['render'], $untyped);
     }
+
+    #[Group('python-scanner')]
+    public function testAFunctionAnObjectRegistersThroughADecoratorIsRuntimeInvoked(): void
+    {
+        // `@tq.register("x")` hands the function to an object that calls it
+        // later, so nothing in the code calls it by name. A decorator taken
+        // from a module, `@functools.cache`, wraps the function and registers
+        // it nowhere.
+        $root = sys_get_temp_dir() . '/knossos-py-registered-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/handlers.py' => implode("\n", [
+                'import functools',
+                '',
+                'bus = object()',
+                '',
+                'def register(tq):',
+                '    @tq.register("scan")',
+                '    def _handle(payload):',
+                '        return payload',
+                '',
+                '@bus.on',
+                'def on_event(event):',
+                '    return event',
+                '',
+                '@functools.cache',
+                'def cached():',
+                '    return 1',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/handlers.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $invoked = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'function') {
+                    $invoked[$node->canonicalName] = $node->attributes['runtime_invoked'] ?? false;
+                }
+            }
+        }
+
+        self::assertSame([
+            'app.handlers.cached' => false,
+            'app.handlers.on_event' => true,
+            'app.handlers.register' => false,
+            'app.handlers.register.<locals>._handle' => true,
+        ], (static function (array $map): array {
+            ksort($map);
+
+            return $map;
+        })($invoked));
+    }
+
+    #[Group('python-scanner')]
+    public function testAMethodReadOffATypedReceiverAndAClassDeclaredUnderAGuardAreReferenced(): void
+    {
+        // `{"cache": client.prune_cache}` hands a bound method to a dispatch
+        // table, and a class declared under `if TYPE_CHECKING:` is still a
+        // module-level name an annotation refers to.
+        $root = sys_get_temp_dir() . '/knossos-py-bound-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/client.py' => "class Client:\n    def prune_cache(self):\n        return 1\n\nclient = Client()\n",
+            'app/service.py' => implode("\n", [
+                'from typing import TYPE_CHECKING, Protocol',
+                '',
+                'if TYPE_CHECKING:',
+                '    class QueueLike(Protocol):',
+                '        def depth(self) -> int: ...',
+                '',
+                'def prune(mode, queue: QueueLike | None):',
+                '    from app.client import client as _c',
+                '    dispatch = {"cache": _c.prune_cache, "size": _c.size}',
+                '    return dispatch[mode]()',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/service.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[$edge->targetReference] = ($edge->attributes['speculative'] ?? false) === true;
+                }
+            }
+        }
+        ksort($references);
+
+        // The read is kept only if the class declares the member, which the
+        // reconciler decides, so both reads are speculative.
+        self::assertSame([
+            'py:class:app.service.QueueLike' => false,
+            'py:method:app.client.Client::prune_cache' => true,
+            'py:method:app.client.Client::size' => true,
+        ], $references);
+    }
+
+    #[Group('python-scanner')]
+    public function testAModuleNoImportCanNameIsLoadedByPathAndItsPublicNamesAreItsInterface(): void
+    {
+        // `029_seed.py` cannot be the target of an import statement, so a
+        // runner loads it by path and calls what it exposes. Its private
+        // helpers are still judged by their callers.
+        $root = sys_get_temp_dir() . '/knossos-py-by-path-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app/migrations', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/migrations/__init__.py' => '',
+            'app/migrations/029_seed.py' => "def _rows():\n    return []\n\ndef apply(conn):\n    return _rows()\n",
+            'app/migrations/helpers.py' => "def apply(conn):\n    return conn\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/migrations/029_seed.py', 'app/migrations/helpers.py']]), false);
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app/migrations');
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $invoked = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->nodes as $node) {
+                $invoked[$node->kind . ' ' . $node->canonicalName] = $node->attributes['runtime_invoked'] ?? false;
+            }
+        }
+        ksort($invoked);
+
+        self::assertSame([
+            'function app.migrations.029_seed._rows' => false,
+            'function app.migrations.029_seed.apply' => true,
+            'function app.migrations.helpers.apply' => false,
+            'module app.migrations.029_seed' => true,
+            'module app.migrations.helpers' => false,
+        ], $invoked);
+    }
 }
