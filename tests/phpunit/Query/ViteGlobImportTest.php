@@ -25,7 +25,7 @@ final class ViteGlobImportTest extends KnossosTestCase
         mkdir($root . '/js/Icons', 0o777, true);
         $page = "<template><div/></template>\n<script setup lang=\"ts\">\nconst title = 'x';\n</script>\n";
         $files = [
-            'package.json' => '{"name":"app","private":true,"type":"module","dependencies":{"vue":"^3.4.0","vite":"^5.0.0"}}',
+            'package.json' => '{"name":"app","private":true,"type":"module","dependencies":{"vue":"^3.4.0","vite":"^7.0.0"}}',
             'js/app.ts' => implode("\n", [
                 "const pages = import.meta.glob<object>('./Pages/**/*.vue');",
                 "const layouts = import.meta.glob(['./Layouts/{Main,Admin}.vue', '!./Layouts/Admin.vue'], { eager: true });",
