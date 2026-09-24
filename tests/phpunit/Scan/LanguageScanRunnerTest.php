@@ -1126,7 +1126,7 @@ final class LanguageScanRunnerTest extends TestCase
                 // Each manifest's declared TypeScript major, keyed by its
                 // directory; a range naming no version tells the worker nothing.
                 // And the directories whose manifest depends on Vue.
-                [...$limits, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web']],
+                [...$limits, 'config_files' => ['web/tsconfig.json'], 'typescript_versions' => ['' => 5, 'web' => 6], 'vue_projects' => ['web'], 'package_directories' => ['', 'docs', 'tools', 'web']],
                 [...$limits, 'frameworks' => ['django']],
                 [...$limits, 'frameworks' => ['axum'], 'config_files' => ['rs/Cargo.toml']],
             ],
