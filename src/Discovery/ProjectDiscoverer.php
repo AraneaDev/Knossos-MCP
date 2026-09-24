@@ -265,6 +265,7 @@ final readonly class ProjectDiscoverer
         $units = self::withBuildOutputSources($units);
         $units = self::withClassNameEntryPoints($units);
         $units = self::withLoadedDirectoryEntryPoints($units, $files);
+        $units = self::withGlobEntryPoints($units, $files);
 
         $inputParts = array_map(
             static fn(DiscoveredFile $file): string => $file->relativePath . '=' . $file->contentHash,
@@ -387,9 +388,7 @@ final readonly class ProjectDiscoverer
             ]);
         }
         if ($kind === 'tool_config') {
-            return new ProjectUnit($kind, $relative, $contentHash, [
-                'entry_points' => self::toolConfigEntryPoints($contents, $relative),
-            ]);
+            return new ProjectUnit($kind, $relative, $contentHash, self::toolConfigEntryPoints($contents, $relative));
         }
 
         try {
@@ -981,6 +980,10 @@ final readonly class ProjectDiscoverer
      */
     private const CONFIG_REFERENCE_KEYS = [
         'setupFiles', 'setupFilesAfterEnv', 'globalSetup', 'globalTeardown', 'entry', 'input',
+        // Vite's server-side entry, and Cypress's plugins and support files.
+        'ssr', 'pluginsFile', 'supportFile',
+        // TypeORM loads what these name, usually by glob.
+        'migrations', 'entities', 'subscribers',
         // Bundlers and desktop shells (esbuild, Bun, Electrobun).
         'entrypoint', 'entrypoints', 'entryPoints',
         // A process a tool starts, such as Playwright's `webServer.command`.
@@ -1460,39 +1463,72 @@ final readonly class ProjectDiscoverer
      * captures either shape and the quoted tokens are pulled out of whichever
      * it turned out to be.
      *
-     * @return list<string>
+     * @return array{entry_points: list<string>, entry_globs: list<string>}
      */
     private static function toolConfigEntryPoints(string $contents, string $configPath): array
     {
         $directory = self::manifestDirectory($configPath);
         $keys = implode('|', array_map(preg_quote(...), self::CONFIG_REFERENCE_KEYS));
+        // A JSON config quotes its keys; a module config usually does not.
         $matched = preg_match_all(
-            sprintf('/\b(?:%s)\s*:\s*(\[[^\]]*\]|[\'"`][^\'"`]*[\'"`])/', $keys),
+            sprintf('/\b(?:%s)[\'"]?\s*:\s*(\[[^\]]*\]|[\'"`][^\'"`]*[\'"`])/', $keys),
             $contents,
             $matches,
             PREG_SET_ORDER,
         );
-        if ($matched === false) {
-            return [];
+        $values = [];
+        foreach ($matched === false ? [] : $matches as $match) {
+            if (preg_match_all('/[\'"`]([^\'"`]+)[\'"`]/', $match[1], $tokens) !== false) {
+                array_push($values, ...$tokens[1]);
+            }
+        }
+        // Laravel Mix names its entries as the first argument of a call:
+        // `mix.js('resources/js/app.js', 'public/js')`.
+        if (basename($configPath) === 'webpack.mix.js'
+            && preg_match_all('/\.(?:js|ts|typeScript|react|preact|vue)\(\s*[\'"`]([^\'"`]+)[\'"`]/', $contents, $calls) > 0) {
+            array_push($values, ...$calls[1]);
+        }
+        // Cypress loads these unless its config names others.
+        if (basename($configPath) === 'cypress.json') {
+            array_push($values, 'cypress/plugins/index.js', 'cypress/plugins/index.ts', 'cypress/support/index.js', 'cypress/support/index.ts');
         }
         $paths = [];
-        foreach ($matches as $match) {
-            if (preg_match_all('/[\'"`]([^\'"`]+)[\'"`]/', $match[1], $tokens) === false) {
-                continue;
-            }
-            foreach ($tokens[1] as $token) {
-                // A `command` is a shell line; any other value is one path,
-                // which a split on whitespace leaves whole.
-                foreach (preg_split('/\s+/', trim($token)) ?: [] as $word) {
-                    $path = self::entryPointPath($word, $directory);
-                    if ($path !== null) {
-                        $paths[$path] = true;
+        $globs = [];
+        foreach ($values as $token) {
+            // A `command` is a shell line; any other value is one path,
+            // which a split on whitespace leaves whole.
+            foreach (preg_split('/\s+/', trim($token)) ?: [] as $word) {
+                if (str_contains($word, '*')) {
+                    $glob = self::entryGlob($word, $directory);
+                    if ($glob !== null) {
+                        $globs[$glob] = true;
                     }
+                    continue;
+                }
+                $path = self::entryPointPath($word, $directory);
+                if ($path !== null) {
+                    $paths[$path] = true;
                 }
             }
         }
 
-        return array_keys($paths);
+        return ['entry_points' => array_keys($paths), 'entry_globs' => array_keys($globs)];
+    }
+
+    /**
+     * A glob a config names (`src/migrations/*.ts`) as a project-relative
+     * pattern, or null when it leaves the config's directory or names no
+     * source file.
+     */
+    private static function entryGlob(string $glob, string $directory): ?string
+    {
+        $glob = str_starts_with($glob, './') ? substr($glob, 2) : $glob;
+        if ($glob === '' || str_starts_with($glob, '/') || str_contains($glob, '..')
+            || !in_array(strtolower(pathinfo($glob, PATHINFO_EXTENSION)), self::ENTRY_POINT_EXTENSIONS, true)) {
+            return null;
+        }
+
+        return $directory === '' ? $glob : $directory . '/' . $glob;
     }
 
     /**
@@ -2001,6 +2037,63 @@ final readonly class ProjectDiscoverer
                 foreach ($directories as $directory) {
                     if (is_string($directory) && str_starts_with($file->relativePath, $directory . '/')) {
                         $paths[$file->relativePath] = true;
+                    }
+                }
+            }
+            $paths = array_map(strval(...), array_keys($paths));
+            sort($paths, SORT_STRING);
+
+            return new ProjectUnit($unit->kind, $unit->configPath, $unit->contentHash, [
+                ...$unit->metadata,
+                'entry_points' => $paths,
+            ]);
+        }, $units);
+    }
+
+    /**
+     * Add, to each unit, the discovered files its entry globs match.
+     *
+     * `migrations: ['src/migrations/*.ts']` names every migration without
+     * naming one; the walk's file list is what the pattern is matched against.
+     * `**` spans directories, `*` and `?` stay within one.
+     *
+     * @param list<ProjectUnit> $units
+     * @param list<DiscoveredFile> $files
+     * @return list<ProjectUnit>
+     */
+    private static function withGlobEntryPoints(array $units, array $files): array
+    {
+        return array_map(static function (ProjectUnit $unit) use ($files): ProjectUnit {
+            $globs = array_values(array_filter($unit->metadata['entry_globs'] ?? [], is_string(...)));
+            if ($globs === []) {
+                return $unit;
+            }
+            $patterns = array_map(static function (string $glob): string {
+                $regex = '';
+                for ($at = 0, $length = strlen($glob); $at < $length; ++$at) {
+                    if (substr($glob, $at, 3) === '**/') {
+                        $regex .= '(?:.*/)?';
+                        $at += 2;
+                    } elseif (substr($glob, $at, 2) === '**') {
+                        $regex .= '.*';
+                        ++$at;
+                    } elseif ($glob[$at] === '*') {
+                        $regex .= '[^/]*';
+                    } elseif ($glob[$at] === '?') {
+                        $regex .= '[^/]';
+                    } else {
+                        $regex .= preg_quote($glob[$at], '#');
+                    }
+                }
+
+                return '#^' . $regex . '$#';
+            }, $globs);
+            $paths = array_fill_keys($unit->metadata['entry_points'] ?? [], true);
+            foreach ($files as $file) {
+                foreach ($patterns as $pattern) {
+                    if (preg_match($pattern, $file->relativePath) === 1) {
+                        $paths[$file->relativePath] = true;
+                        break;
                     }
                 }
             }
@@ -2561,7 +2654,7 @@ final readonly class ProjectDiscoverer
         // language worker, and as a unit here for the files it tells its tool
         // to load. The two `if` blocks in discover() are independent, so one
         // file may be both — which is why this needs no scanner change.
-        if (ToolConfigModuleRule::isToolConfigPath($relativePath)) {
+        if (ToolConfigModuleRule::isToolConfigPath($relativePath) || $basename === 'cypress.json') {
             return 'tool_config';
         }
 

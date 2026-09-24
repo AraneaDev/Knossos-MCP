@@ -181,7 +181,10 @@ as text rather than parsed. Both are loose on purpose and safe for the same
 reason the Composer script tokenising is: a token that names no file any
 scanner emitted matches nothing. A tool config is the exception and is read
 key by key, because it names files to exclude as well as files to load, and an
-excluded path is exactly the kind that turns out to be dead.
+excluded path is exactly the kind that turns out to be dead. Its keys include Vite's
+`ssr`, Cypress's `pluginsFile` and `supportFile` (and their defaults, from `cypress.json`),
+and TypeORM's `migrations`, `entities` and `subscribers`, whose globs are matched against the
+discovered files; `webpack.mix.js` names its entries as `mix.js('resources/js/app.js', ...)`.
 
 `function.json` earns its place for a second reason. A handler directory
 holding both `index.js` and a stale `index.ts` resolves the wrong way: asked
