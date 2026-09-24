@@ -139,10 +139,28 @@ export class NestJsFactEnricher {
             )
         )
             return true;
+        if (!ts.isIdentifier(node.name)) return false;
+        if (
+            NEST_CONTRACT_METHODS.includes(node.name.text) &&
+            this.managedByNest(node.parent)
+        )
+            return true;
         return (
-            ts.isIdentifier(node.name) &&
             node.name.text === "validate" &&
             this.extendsPassportStrategy(node.parent)
+        );
+    }
+
+    /**
+     * Whether Nest instantiates a class and so calls its contract methods:
+     * it carries a Nest class decorator, such as `@Injectable()` on a guard,
+     * interceptor or pipe, or `@Catch()` on a filter.
+     */
+    managedByNest(node) {
+        return (
+            node !== undefined &&
+            (ts.isClassDeclaration(node) || ts.isClassExpression(node)) &&
+            NEST_CLASS_DECORATORS.some((name) => this.decorator(node, name))
         );
     }
 
@@ -183,6 +201,33 @@ export class NestJsFactEnricher {
         return null;
     }
 }
+
+// Methods Nest calls on a class it manages: a guard, an interceptor, a pipe,
+// a filter, a middleware, a gateway, and every provider's lifecycle hooks.
+const NEST_CONTRACT_METHODS = [
+    "canActivate",
+    "intercept",
+    "transform",
+    "catch",
+    "use",
+    "handleConnection",
+    "handleDisconnect",
+    "afterInit",
+    "onModuleInit",
+    "onModuleDestroy",
+    "onApplicationBootstrap",
+    "beforeApplicationShutdown",
+    "onApplicationShutdown",
+];
+
+// Class decorators that hand a class to Nest to instantiate.
+const NEST_CLASS_DECORATORS = [
+    "Injectable",
+    "Catch",
+    "Controller",
+    "Module",
+    "WebSocketGateway",
+];
 
 // Method decorators whose method the framework itself invokes.
 const FRAMEWORK_METHOD_DECORATORS = [
