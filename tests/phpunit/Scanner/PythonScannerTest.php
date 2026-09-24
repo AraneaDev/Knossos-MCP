@@ -1601,4 +1601,45 @@ PYTHON);
             'module app.migrations.helpers' => false,
         ], $invoked);
     }
+
+    #[Group('python-scanner')]
+    public function testAFunctionReadOffItsModuleAsAValueIsReferenced(): void
+    {
+        // `run_in_threadpool(tasks.snapshot)` hands the function on without
+        // calling it here. A module's data, or a name read off a module outside
+        // the project, is no declaration.
+        $root = sys_get_temp_dir() . '/knossos-py-module-value-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/tasks.py' => "LIMIT = 3\n\ndef snapshot():\n    return 1\n",
+            'app/router.py' => "import os\nfrom app import tasks\n\ndef handle(run):\n    return run(tasks.snapshot), os.environ, tasks.LIMIT\n",
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/router.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $references = [];
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+        }
+
+        self::assertSame(['py:function:app.router.handle -> py:function:app.tasks.snapshot'], $references);
+    }
 }

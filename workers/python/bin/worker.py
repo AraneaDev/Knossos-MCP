@@ -1846,6 +1846,14 @@ class PythonAstFactCollector(ast.NodeVisitor):
             member = self.receiver_member(receiver, node.attr) if receiver else None
             if member is not None:
                 self.facts.add_edge("references", self.current(), member, node, {"speculative": True})
+            elif receiver and (self.aliases.get(receiver) or "").startswith("py:module:"):
+                # `tasks.snapshot` read off an imported project module: the
+                # function it declares, handed on as a value. Only a name the
+                # module declares counts; `os.environ` names nothing here.
+                module = self.aliases[receiver].removeprefix("py:module:")
+                named = self.index.module_declarations(module).get(node.attr)
+                if named is not None and named.startswith(("py:function:", "py:class:")) and named != self.current():
+                    self.facts.add_edge("references", self.current(), named, node)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
