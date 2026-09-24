@@ -195,7 +195,8 @@ and, like test modules, are not reported. Recognition is by filename convention
 only (`<tool>.config.<ext>`, `<tool>.conf.<ext>`, an `rc` dotfile, `gulpfile`,
 `gruntfile`, or `conftest.py`) and deliberately narrow: a module that merely
 reads configuration, such as `src/utils/config-loader.ts`, is ordinary source
-and stays reportable.
+and stays reportable. A PHP class implementing a `PHPStan\` interface, a rule or
+extension PHPStan loads from `phpstan.neon` by name, gets the same role.
 
 ### Why a published library's API is excluded
 

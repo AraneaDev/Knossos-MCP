@@ -144,6 +144,32 @@ final class ToolConfigModuleRuleTest extends TestCase
         assertSame(false, ToolConfigModuleRule::isToolConfigPath('frontend/staticwebapp.config.json'));
     }
 
+    /**
+     * PHPStan loads a rule or an extension from `phpstan.neon` by class name,
+     * which no PHP code does. The class is the tool's the way its config is;
+     * what else it implements says nothing.
+     */
+    public function testClassifyTagsAPhpStanExtension(): void
+    {
+        $class = static fn(array $implements): NodeFact => new NodeFact(
+            'php:class:App\\Support\\PHPStan\\NoRawHttpRule',
+            'class',
+            'App\\Support\\PHPStan\\NoRawHttpRule',
+            'NoRawHttpRule',
+            Origin::Ast,
+            Confidence::Certain,
+            new Evidence('app/Support/PHPStan/NoRawHttpRule.php', 1, 10),
+            ['implements' => $implements],
+        );
+        $rule = new ToolConfigModuleRule();
+
+        $facts = $rule->classify($class(['PHPStan\\Rules\\Rule']));
+        assertSame(['tooling.config'], array_map(static fn($fact): string => $fact->role, $facts));
+        assertSame('PHPStan\\Rules\\Rule', $facts[0]->attributes['implements']);
+        assertSame(1, count($rule->classify($class(['Countable', 'PHPStan\\Type\\DynamicMethodReturnTypeExtension']))));
+        assertSame([], $rule->classify($class(['App\\Contracts\\Rule', 'Countable'])));
+    }
+
     private function makeNode(string $relativePath): NodeFact
     {
         return new NodeFact(

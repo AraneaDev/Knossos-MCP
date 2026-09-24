@@ -56,6 +56,20 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
         // Evidence rejects a non-normalized path at construction, so the
         // separator here is always `/`.
         $path = $node->evidence->relativePath;
+        $extended = self::toolInterface($node);
+        if ($extended !== null) {
+            return [
+                new ClassificationFact(
+                    $node->localId,
+                    self::ROLE,
+                    $this->id(),
+                    Origin::Derived,
+                    Confidence::Probable,
+                    $node->evidence,
+                    ['implements' => $extended],
+                ),
+            ];
+        }
         if (!self::isToolConfigPath($path)) {
             return [];
         }
@@ -72,6 +86,26 @@ final readonly class ToolConfigModuleRule implements ClassificationRule
             ),
         ];
     }
+    /**
+     * The tool interface a class implements, when a tool loads it from config.
+     *
+     * PHPStan reads its rules and extensions from `phpstan.neon` by class
+     * name, which no PHP code does.
+     */
+    private static function toolInterface(NodeFact $node): ?string
+    {
+        if ($node->kind !== 'class' || !is_array($node->attributes['implements'] ?? null)) {
+            return null;
+        }
+        foreach ($node->attributes['implements'] as $interface) {
+            if (is_string($interface) && str_starts_with(ltrim($interface, '\\'), 'PHPStan\\')) {
+                return $interface;
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Whether a path is tooling configuration rather than application code.
      *
