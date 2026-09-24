@@ -1649,4 +1649,61 @@ PYTHON);
 
         self::assertSame(['py:function:app.router.handle -> py:function:app.tasks.snapshot'], $references);
     }
+
+    #[Group('python-scanner')]
+    public function testAMethodNamedToGetattrOrReadOffAFreshInstanceIsUsed(): void
+    {
+        // `getattr(editor, "narrowed", None)` looks a method up by name, which
+        // counts as a call on a receiver nothing types. `partial(Repo().rows, 1)`
+        // hands that class's method on as a value.
+        $root = sys_get_temp_dir() . '/knossos-py-getattr-' . bin2hex(random_bytes(6));
+        mkdir($root . '/app', 0o755, true);
+        $files = [
+            'app/__init__.py' => '',
+            'app/repo.py' => "class Repo:\n    def rows(self, n):\n        return n\n",
+            'app/service.py' => implode("\n", [
+                'import functools',
+                'from .repo import Repo',
+                '',
+                'def run(editor, name):',
+                '    narrowed = getattr(editor, "narrowed", None)',
+                '    dynamic = getattr(editor, name)',
+                '    return functools.partial(Repo().rows, 1), narrowed, dynamic',
+                '',
+            ]),
+        ];
+        foreach ($files as $relative => $contents) {
+            file_put_contents($root . '/' . $relative, $contents);
+        }
+
+        try {
+            $client = $this->pythonWorkerClient();
+            $contributions = iterator_to_array($client->scan(['root' => $root, 'files' => ['app/service.py']]));
+            $client->shutdown();
+        } finally {
+            foreach (array_reverse(array_keys($files)) as $relative) {
+                @unlink($root . '/' . $relative);
+            }
+            @rmdir($root . '/app');
+            @rmdir($root);
+        }
+
+        $references = [];
+        $untyped = null;
+        foreach ($contributions as $contribution) {
+            foreach ($contribution->edges as $edge) {
+                if ($edge->kind === 'references') {
+                    $references[] = $edge->sourceReference . ' -> ' . $edge->targetReference;
+                }
+            }
+            foreach ($contribution->nodes as $node) {
+                if ($node->kind === 'module') {
+                    $untyped = $node->attributes['unresolved_member_calls'] ?? null;
+                }
+            }
+        }
+
+        self::assertContains('py:function:app.service.run -> py:method:app.repo.Repo::rows', $references);
+        self::assertSame(['narrowed'], $untyped);
+    }
 }
