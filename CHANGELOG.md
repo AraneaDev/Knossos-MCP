@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.5](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.4...v0.17.5) (2026-09-24)
+
+
+### Fixes
+
+* false positives from the full dogfood findings report ([#131](https://github.com/AraneaDev/Knossos-MCP/issues/131)) ([7e52886](https://github.com/AraneaDev/Knossos-MCP/commit/7e52886b568ac63ac05bab9cf146ee4d706d295e))
+
 ## [0.17.4](https://github.com/AraneaDev/Knossos-MCP/compare/v0.17.3...v0.17.4) (2026-09-24)
 
 
