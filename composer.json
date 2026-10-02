@@ -44,7 +44,8 @@
     ],
     "test": [
       "phpunit",
-      "sh tests/shell/session-brief-hook.sh"
+      "sh tests/shell/session-brief-hook.sh",
+      "sh tests/shell/knossos-run-hook.sh"
     ],
     "check:quick": [
       "@composer validate --strict",
