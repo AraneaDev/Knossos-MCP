@@ -15,6 +15,25 @@ use PHPUnit\Framework\Attributes\Group;
 
 final class PluginCommandTest extends KnossosTestCase
 {
+    /** Everything a host install writes, relative to the plugin directory, sorted. */
+    private const INSTALLED = [
+        '.claude-plugin/marketplace.json',
+        '.claude-plugin/plugin.json',
+        'hooks/hooks.json',
+        'hooks/lib/band.ts',
+        'hooks/lib/envelopes.ts',
+        'hooks/lib/notes.ts',
+        'hooks/lib/paths.ts',
+        'hooks/lib/scheduler.ts',
+        'hooks/lib/sparkline.ts',
+        'hooks/register.tsx',
+        'hooks/scripts/knossos-run.sh',
+        'hooks/scripts/lib.sh',
+        'hooks/scripts/session-brief.sh',
+        'skills/knossos/SKILL.md',
+        'types/index.d.ts',
+    ];
+
     private function context(): CliCommandContext
     {
         return $this->contextFor(self::repositoryRoot());
@@ -148,7 +167,10 @@ final class PluginCommandTest extends KnossosTestCase
         assertSame(false, $decoded['existed']);
         assertSame('/srv/knossos-data', $decoded['data']);
         assertSame(true, in_array('hooks/scripts/session-brief.sh', $decoded['files'], true));
+        assertSame(true, in_array('hooks/scripts/knossos-run.sh', $decoded['files'], true));
         assertSame(true, in_array('skills/knossos/SKILL.md', $decoded['files'], true));
+        // The container scripts are standalone, so no shared library is shipped for them.
+        assertSame(false, in_array('hooks/scripts/lib.sh', $decoded['files'], true));
         // Every listed file is really there, so the list cannot drift from what
         // emit() writes without this failing.
         foreach ($decoded['files'] as $relative) {
@@ -219,9 +241,20 @@ final class PluginCommandTest extends KnossosTestCase
             '/.claude-plugin/plugin.json',
             '/hooks/hooks.json',
             '/hooks/scripts/session-brief-container.sh',
+            '/hooks/scripts/knossos-run-container.sh',
+            '/hooks/register.tsx',
+            '/hooks/lib/band.ts',
+            '/hooks/lib/envelopes.ts',
+            '/hooks/lib/notes.ts',
+            '/hooks/lib/paths.ts',
+            '/hooks/lib/scheduler.ts',
+            '/hooks/lib/sparkline.ts',
+            '/types/index.d.ts',
             '/skills/knossos/SKILL.md',
         ] as $relative) {
-            mkdir(dirname($root . $relative), 0o755, true);
+            if (!is_dir(dirname($root . $relative))) {
+                mkdir(dirname($root . $relative), 0o755, true);
+            }
             copy(self::repositoryRoot() . $relative, $root . $relative);
         }
         assertSame(false, file_exists($root . '/.claude-plugin/marketplace.json'));
@@ -354,6 +387,201 @@ final class PluginCommandTest extends KnossosTestCase
         exec('rm -rf ' . escapeshellarg($out));
     }
 
+    #[Group('cli')]
+    public function testSpecFilesNeverReachAnInstalledPlugin(): void
+    {
+        $root = $this->sourceRoot();
+        // A spec sitting beside the sources it tests must stay behind.
+        file_put_contents($root . '/hooks/lib/band.spec.ts', '// spec');
+        file_put_contents($root . '/hooks/lib/band.test.ts', '// test');
+        file_put_contents($root . '/hooks/tsconfig.json', '{}');
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+
+        foreach ($this->treeOf($root . '/.plugin') as $file) {
+            assertSame(false, str_contains($file, '.spec.') || str_contains($file, '.test.') || str_contains($file, 'tsconfig'));
+        }
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
+    #[Group('cli')]
+    public function testContainerEmitWritesTheRunWrapperWithImageAndDataSubstituted(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-run');
+
+        ob_start();
+        try {
+            (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['ghcr.io/me/knossos:9']],
+                $this->context(),
+            );
+        } finally {
+            ob_get_clean();
+        }
+
+        $wrapper = (string) file_get_contents($out . '/hooks/scripts/knossos-run.sh');
+        assertSame(true, str_contains($wrapper, 'docker run'));
+        assertSame(true, str_contains($wrapper, 'ghcr.io/me/knossos:9'));
+        assertSame(true, str_contains($wrapper, '/srv/knossos-data'));
+        assertSame(false, str_contains($wrapper, '__KNOSSOS_'));
+        assertSame(false, file_exists($out . '/hooks/scripts/lib.sh'));
+
+        exec('rm -rf ' . escapeshellarg($out));
+    }
+
+    #[Group('cli')]
+    public function testInstalledScriptsAreExecutableAndTheLibraryIsNot(): void
+    {
+        $root = $this->sourceRoot();
+        $out = $this->temporaryPath('knossos-plugin-modes');
+
+        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+        ob_start();
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/d']], $this->contextFor($root));
+        } finally {
+            ob_get_clean();
+        }
+
+        foreach ([$root . '/.plugin', $out] as $directory) {
+            foreach (['session-brief.sh', 'knossos-run.sh'] as $script) {
+                assertSame('0755', substr(sprintf('%o', fileperms($directory . '/hooks/scripts/' . $script)), -4));
+            }
+        }
+        assertSame('0644', substr(sprintf('%o', fileperms($root . '/.plugin/hooks/scripts/lib.sh')), -4));
+
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out));
+    }
+
+    /**
+     * Install, then run an installed script against a stub binary.
+     *
+     * The stub prints the data location it was handed and its arguments, so
+     * what a person's hook would really read is what is asserted. The
+     * variable is removed from the child's environment so the baked value is
+     * the only source.
+     *
+     * @param array<string, list<string>> $options
+     * @return string the stub's first line
+     */
+    private function runInstalledScript(string $script, array $options, ?string $installerEnv): string
+    {
+        $root = $this->sourceRoot();
+        $previous = getenv('KNOSSOS_DATA_DIR');
+        putenv($installerEnv === null ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $installerEnv);
+        try {
+            $this->runWithStubbedClaude($root, ['execute' => ['true']] + $options);
+        } finally {
+            putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+        }
+        $stub = $root . '/stub-knossos';
+        file_put_contents($stub, <<<'SH'
+            #!/bin/sh
+            printf 'DATA=%s ARGS=%s\n' "${KNOSSOS_DATA_DIR-}" "$*"
+            SH . "\n");
+        chmod($stub, 0o755);
+        $command = sprintf(
+            'cd %1$s && env -u KNOSSOS_DATA_DIR -u KNOSSOS_ROOTS_FILE KNOSSOS_BIN=%2$s CLAUDE_PROJECT_DIR=%1$s sh %3$s %4$s 2>&1',
+            escapeshellarg($root),
+            escapeshellarg($stub),
+            escapeshellarg($root . '/.plugin/hooks/scripts/' . $script),
+            $script === 'knossos-run.sh' ? 'turn-brief ' . escapeshellarg($root) : '',
+        );
+        $output = (string) shell_exec($command);
+        exec('rm -rf ' . escapeshellarg($root));
+
+        return trim($output);
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefReadsTheDataDirectoryGivenOnTheCommandLine(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', ['data-dir' => ['/x y/data']], null);
+
+        assertSame(true, str_starts_with($line, 'DATA=/x y/data ARGS=session-brief '));
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefSurvivesASingleQuoteInTheDataDirectory(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', ['data-dir' => ["/it's/data"]], null);
+
+        assertSame(true, str_starts_with($line, "DATA=/it's/data ARGS=session-brief "));
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefTakesTheInstallersEnvironmentWhenNoOptionIsGiven(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', [], '/from/env');
+
+        assertSame(true, str_starts_with($line, 'DATA=/from/env ARGS=session-brief '));
+    }
+
+    #[Group('cli')]
+    public function testInstalledSessionBriefLeavesTheDataDirectoryEmptyWithoutAnySource(): void
+    {
+        $line = $this->runInstalledScript('session-brief.sh', [], null);
+
+        assertSame(true, str_starts_with($line, 'DATA= ARGS=session-brief '));
+    }
+
+    #[Group('cli')]
+    public function testInstalledRunWrapperReadsTheBakedDataDirectory(): void
+    {
+        $line = $this->runInstalledScript('knossos-run.sh', ['data-dir' => ["/it's/data"]], null);
+
+        assertSame(true, str_starts_with($line, "DATA=/it's/data ARGS=turn-brief "));
+    }
+
+    #[Group('cli')]
+    public function testTheDataDirectoryIsReportedInTheJsonOutput(): void
+    {
+        $root = $this->sourceRoot();
+        $bin = $this->temporaryPath('knossos-plugin-bin');
+        mkdir($bin, 0o755, true);
+        file_put_contents($bin . '/claude', "#!/bin/sh\nexit 0\n");
+        chmod($bin . '/claude', 0o755);
+        $path = (string) getenv('PATH');
+        putenv('PATH=' . $bin . ':' . $path);
+        ob_start();
+        try {
+            (new PluginCommand())->run(
+                'install-agent-plugin',
+                [],
+                ['execute' => ['true'], 'json' => ['true'], 'data-dir' => ['/srv/graph']],
+                $this->contextFor($root),
+            );
+        } finally {
+            $output = (string) ob_get_clean();
+            putenv('PATH=' . $path);
+        }
+        $lines = array_values(array_filter(explode("\n", trim($output))));
+        $decoded = json_decode((string) end($lines), true, 8, JSON_THROW_ON_ERROR);
+
+        assertSame('/srv/graph', $decoded['data_dir']);
+
+        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($bin));
+    }
+
+    #[Group('cli')]
+    public function testADataDirectoryWithANewlineIsRejected(): void
+    {
+        $root = $this->sourceRoot();
+
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true'], 'data-dir' => ["/a\nb"]], $this->contextFor($root));
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $error) {
+            assertSame(true, str_contains($error->getMessage(), 'data-dir'));
+        }
+        assertSame(false, file_exists($root . '/.plugin'));
+
+        exec('rm -rf ' . escapeshellarg($root));
+    }
+
     /**
      * A stand-in installation root carrying every file an install reads.
      *
@@ -369,6 +597,17 @@ final class PluginCommandTest extends KnossosTestCase
             '/hooks/hooks.json',
             '/hooks/scripts/session-brief.sh',
             '/hooks/scripts/session-brief-container.sh',
+            '/hooks/scripts/knossos-run.sh',
+            '/hooks/scripts/knossos-run-container.sh',
+            '/hooks/scripts/lib.sh',
+            '/hooks/register.tsx',
+            '/hooks/lib/band.ts',
+            '/hooks/lib/envelopes.ts',
+            '/hooks/lib/notes.ts',
+            '/hooks/lib/paths.ts',
+            '/hooks/lib/scheduler.ts',
+            '/hooks/lib/sparkline.ts',
+            '/types/index.d.ts',
             '/skills/knossos/SKILL.md',
         ] as $relative) {
             $directory = dirname($root . $relative);
@@ -498,13 +737,10 @@ final class PluginCommandTest extends KnossosTestCase
 
         $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
-        assertSame([
-            '/.claude-plugin/marketplace.json',
-            '/.claude-plugin/plugin.json',
-            '/hooks/hooks.json',
-            '/hooks/scripts/session-brief.sh',
-            '/skills/knossos/SKILL.md',
-        ], $this->treeOf($root . '/.plugin'));
+        assertSame(
+            array_map(static fn (string $file): string => '/' . $file, self::INSTALLED),
+            $this->treeOf($root . '/.plugin'),
+        );
         // The descriptor belongs to the materialised directory now. Writing one
         // at the root is what made `marketplace add <root>` resolve at all.
         assertSame(false, file_exists($root . '/.claude-plugin/marketplace.json'));
@@ -605,7 +841,7 @@ final class PluginCommandTest extends KnossosTestCase
         $decoded = json_decode(trim($run['output']), true, 8, JSON_THROW_ON_ERROR);
         assertSame(true, $decoded['executed']);
         assertSame($root . '/.plugin', $decoded['plugin_directory']);
-        assertSame(5, count($decoded['files']));
+        assertSame(self::INSTALLED, $decoded['files']);
 
         exec('rm -rf ' . escapeshellarg($root));
     }

@@ -7,5 +7,32 @@
   "homepage": "https://github.com/AraneaDev/Knossos-MCP",
   "repository": "https://github.com/AraneaDev/Knossos-MCP",
   "license": "MIT",
-  "keywords": ["architecture", "mcp", "orientation", "hooks", "context"]
+  "keywords": ["architecture", "mcp", "orientation", "hooks", "context"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Show the Knossos band and notes.",
+      "default": true
+    },
+    "fanInThreshold": {
+      "type": "number",
+      "title": "Fan-in threshold",
+      "description": "Dependent files at which an edit gets a note.",
+      "default": 20
+    },
+    "enforcePolicies": {
+      "type": "boolean",
+      "title": "Enforce policies",
+      "description": "Tell the model about boundary-policy violations after a turn.",
+      "default": true
+    },
+    "openPaneOnStart": {
+      "type": "boolean",
+      "title": "Open pane on start",
+      "description": "Open the architecture pane when a session starts.",
+      "default": false
+    }
+  }
 }

@@ -1,6 +1,6 @@
-import type { TurnBrief } from './envelopes'
+import type { JobState, TurnBrief } from '../../types'
 
-export type JobState = { phase: 'idle' | 'scanning' | 'failed'; lastAttemptAt: number | null }
+export type { JobState }
 export type BandModel = { tone: 'normal' | 'warn' | 'alert'; text: string; showDetails: boolean } | null
 
 /** 12s, 14m, 3h. */

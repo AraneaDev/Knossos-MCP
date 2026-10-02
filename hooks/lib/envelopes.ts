@@ -1,50 +1,8 @@
-export type FanIn = { path: string; dependent_files: number; boundaries: string[]; top_dependents?: string[] }
-export type BoundaryRef = { id: string; name: string; source: string }
-export type Violation = {
-  policy_id: string
-  source: string
-  target: string
-  source_boundaries: BoundaryRef[]
-  target_boundaries: BoundaryRef[]
-}
-export type TurnBrief = {
-  status: 'ok' | 'not-allowed' | 'missing' | 'unscanned' | 'scan-failed' | 'error'
-  project_root: string | null
-  project_id: string | null
-  snapshot_id: string | null
-  scanned_at: number | null
-  scan_ms: number | null
-  reason: string | null
-  roots_file: string | null
-  path: string
-  changed_files: string[]
-  added_files: string[]
-  deleted_files: string[]
-  impact: Record<string, FanIn>
-  tests: { path: string; distance: number }[]
-  policy: { status: string; total: number; violations: Violation[] }
-}
-export type Dashboard = {
-  status: 'ok' | 'unscanned' | 'error'
-  path: string
-  project_root: string | null
-  project_id: string | null
-  snapshot_id: string | null
-  freshness: { state: string; age_seconds: number | null; drift_files: number }
-  hubs: { name: string; kind: string; in_degree: number; out_degree: number; cross_boundary_degree: number }[]
-  hotspots: { name: string; kind: string; score: number }[]
-  dead_code_candidates: number
-  dead_code_truncated: boolean
-  cycles: {
-    count: number
-    truncated: boolean
-    truncation_reasons: string[]
-    largest: { size: number; members: string[] }[]
-  }
-  trend: { snapshot_id: string; cycles: number; max_degree: number }[]
-  fan_in: FanIn[]
-  fan_in_truncated: boolean
-}
+import type { BoundaryRef, Dashboard, FanIn, TurnBrief, Violation } from '../../types'
+
+// The envelope shapes are written once, in the plugin's contract, and re-exported
+// here so the rest of the mod keeps importing them from this module.
+export type { BoundaryRef, Dashboard, FanIn, TurnBrief, Violation }
 
 const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error'])
 const DASH = new Set(['ok', 'unscanned', 'error'])

@@ -116,7 +116,7 @@ Usage:
   knossos turn-brief [path] [--files=PATH]... [--policies=FILE] [--no-policies]
                      [--db=FILE] [--json]
   knossos dashboard [path] [--fan-in-threshold=N] [--db=FILE] [--json]
-  knossos install-agent-plugin [--scope=user] [--execute]
+  knossos install-agent-plugin [--scope=user] [--data-dir=DIR] [--execute]
   knossos install-agent-plugin --out=DIR --data=HOSTPATH [--image=NAME]
   knossos list-boundaries <project-id> [--source=explicit|inferred] [--limit=N]
   knossos search-architecture <project-id> <query> [--kind=KIND] [--role=ROLE]

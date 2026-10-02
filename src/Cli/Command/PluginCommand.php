@@ -49,22 +49,48 @@ final class PluginCommand implements CliCommand
     private const PLUGIN_DIRECTORY = '/.plugin';
 
     /** The directories a materialised plugin needs, in creation order. */
-    private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/scripts', '/skills', '/skills/knossos'];
+    private const DIRECTORIES = ['/.claude-plugin', '/hooks', '/hooks/lib', '/hooks/scripts', '/skills', '/skills/knossos', '/types'];
 
-    /** Copied verbatim from the installation root into a materialised plugin. */
-    private const COPIES = ['/hooks/hooks.json', '/skills/knossos/SKILL.md'];
+    /**
+     * Copied verbatim from the installation root into a materialised plugin.
+     *
+     * The mod's library files are named one by one, never globbed, so a spec
+     * or a tsconfig sitting beside them can never reach an installed plugin.
+     */
+    private const COPIES = [
+        '/hooks/hooks.json',
+        '/hooks/register.tsx',
+        '/hooks/lib/band.ts',
+        '/hooks/lib/envelopes.ts',
+        '/hooks/lib/notes.ts',
+        '/hooks/lib/paths.ts',
+        '/hooks/lib/scheduler.ts',
+        '/hooks/lib/sparkline.ts',
+        '/skills/knossos/SKILL.md',
+        '/types/index.d.ts',
+    ];
 
     /** The manifest, read from the installation root and rewritten with this CLI's version. */
     private const MANIFEST = '/.claude-plugin/plugin.json';
 
-    /** Everything a materialised plugin directory contains, for reporting. */
-    private const FILES = [
+    /** The files a materialised plugin has besides its scripts, for reporting. */
+    private const STATIC_FILES = [
         '.claude-plugin/plugin.json',
         '.claude-plugin/marketplace.json',
         'hooks/hooks.json',
-        'hooks/scripts/session-brief.sh',
+        'hooks/register.tsx',
+        'hooks/lib/band.ts',
+        'hooks/lib/envelopes.ts',
+        'hooks/lib/notes.ts',
+        'hooks/lib/paths.ts',
+        'hooks/lib/scheduler.ts',
+        'hooks/lib/sparkline.ts',
         'skills/knossos/SKILL.md',
+        'types/index.d.ts',
     ];
+
+    /** The one script that is sourced rather than executed, so it is not made executable. */
+    private const LIBRARY_SCRIPT = 'hooks/scripts/lib.sh';
 
     /**
      * The marketplace descriptor, byte for byte as an install needs it.
@@ -100,7 +126,7 @@ final class PluginCommand implements CliCommand
     /** {@inheritDoc} */
     public function allowedOptions(string $command): array
     {
-        return ['db', 'json', 'scope', 'execute', 'out', 'data', 'image'];
+        return ['db', 'json', 'scope', 'execute', 'out', 'data', 'image', 'data-dir'];
     }
 
     /** {@inheritDoc} */
@@ -116,6 +142,7 @@ final class PluginCommand implements CliCommand
         if (!in_array($scope, self::SCOPES, true)) {
             throw new InvalidArgumentException('scope must be one of: ' . implode(', ', self::SCOPES) . '.');
         }
+        $dataDir = $this->dataDirectory($context->options->single($options, 'data-dir'));
         $pluginDirectory = $root . self::PLUGIN_DIRECTORY;
         $commands = [
             sprintf('claude plugin marketplace add %s --scope %s', escapeshellarg($pluginDirectory), $scope),
@@ -132,12 +159,14 @@ final class PluginCommand implements CliCommand
                 [
                     'scope' => $scope,
                     'plugin_directory' => $pluginDirectory,
+                    'data_dir' => $dataDir,
                     'commands' => $commands,
                     'executed' => false,
                     'preview' => true,
                 ],
                 $json,
                 implode(PHP_EOL, $commands) . PHP_EOL
+                . $this->dataDirectoryLine($dataDir) . PHP_EOL
                 . sprintf('The first command needs %s, which --execute writes before running it.', $pluginDirectory) . PHP_EOL
                 . 'Preview only. Re-run with --execute to apply.',
             );
@@ -148,7 +177,18 @@ final class PluginCommand implements CliCommand
         // because it is derived from the installation rather than committed to
         // it; this is the one place that knows the root is an installation
         // which already runs the server.
-        $this->materialise($root, $pluginDirectory, $this->read($root . '/hooks/scripts/session-brief.sh'));
+        $scripts = [];
+        foreach (['session-brief.sh', 'knossos-run.sh'] as $script) {
+            $scripts['hooks/scripts/' . $script] = $this->read($root . '/hooks/scripts/' . $script);
+        }
+        // Sourced by both scripts above, so it ships with them. The data
+        // location is baked in here, once, because a hook cannot ask the MCP
+        // server which directory it was started with.
+        $scripts[self::LIBRARY_SCRIPT] = strtr(
+            $this->read($root . '/' . self::LIBRARY_SCRIPT),
+            ['__KNOSSOS_DATA_DIR__' => str_replace("'", "'\\''", $dataDir)],
+        );
+        $this->materialise($root, $pluginDirectory, $scripts);
         foreach ($commands as $line) {
             $status = 0;
             passthru($line, $status);
@@ -166,12 +206,13 @@ final class PluginCommand implements CliCommand
             [
                 'scope' => $scope,
                 'plugin_directory' => $pluginDirectory,
-                'files' => self::FILES,
+                'data_dir' => $dataDir,
+                'files' => $this->pluginFiles($scripts),
                 'commands' => $commands,
                 'executed' => true,
             ],
             $json,
-            sprintf('Installed the plugin from %s.', $pluginDirectory),
+            sprintf('Installed the plugin from %s.', $pluginDirectory) . PHP_EOL . $this->dataDirectoryLine($dataDir),
         );
         return 0;
     }
@@ -197,12 +238,16 @@ final class PluginCommand implements CliCommand
             );
         }
         $image = $context->options->single($options, 'image') ?? self::DEFAULT_IMAGE;
-        $template = $this->read($root . '/hooks/scripts/session-brief-container.sh');
-        $existed = $this->materialise(
-            $root,
-            $out,
-            strtr($template, ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data]),
-        );
+        $scripts = [];
+        // The container templates are standalone, so they ship under the host
+        // names without the shared library the host scripts source.
+        foreach (['session-brief' => 'session-brief', 'knossos-run' => 'knossos-run'] as $name => $installed) {
+            $scripts['hooks/scripts/' . $installed . '.sh'] = strtr(
+                $this->read($root . '/hooks/scripts/' . $name . '-container.sh'),
+                ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data],
+            );
+        }
+        $existed = $this->materialise($root, $out, $scripts);
 
         $message = sprintf('Wrote a container plugin to %s.', $out);
         if ($existed) {
@@ -224,7 +269,7 @@ final class PluginCommand implements CliCommand
                 'existed' => $existed,
                 'image' => $image,
                 'data' => $data,
-                'files' => self::FILES,
+                'files' => $this->pluginFiles($scripts),
             ],
             $context->options->flag($options, 'json'),
             $message,
@@ -232,13 +277,14 @@ final class PluginCommand implements CliCommand
     }
 
     /**
-     * Write a self-contained plugin directory at $out, with $hook as its
-     * session-start script.
+     * Write a self-contained plugin directory at $out, with $scripts as its
+     * shell scripts.
      *
-     * The one place either mode writes a plugin. The two differ only in that
-     * script: an install from a checkout ships the hook that finds a binary on
-     * the host, a containerised emit ships the one that runs `docker run`.
-     * Everything else, the descriptor included, is the same five files.
+     * The one place either mode writes a plugin. The two differ only in those
+     * scripts: an install from a checkout ships the ones that find a binary on
+     * the host, a containerised emit ships the ones that run `docker run`.
+     * Everything else, the descriptor and the mod's files included, is the
+     * same in both.
      *
      * All-or-nothing: anything created before a mid-way failure is removed
      * before the exception propagates, so a failure never leaves a directory
@@ -246,9 +292,10 @@ final class PluginCommand implements CliCommand
      * already on disk before this call, whether that is $out itself or files
      * inside it, is left exactly as it was found.
      *
+     * @param array<string, string> $scripts installed relative path => content
      * @return bool whether $out already existed before this call
      */
-    private function materialise(string $root, string $out, string $hook): bool
+    private function materialise(string $root, string $out, array $scripts): bool
     {
         $existed = file_exists($out);
         $createdDirectories = [];
@@ -313,17 +360,19 @@ final class PluginCommand implements CliCommand
             if ($this->writeDescriptor($descriptor, true)) {
                 $createdFiles[] = $descriptor;
             }
-            $hookPath = $out . '/hooks/scripts/session-brief.sh';
-            $hookIsNew = !file_exists($hookPath);
-            $keepOriginal($hookPath);
-            if (@file_put_contents($hookPath, $hook) === false) {
-                throw new InvalidArgumentException(sprintf('Unable to write %s.', $hookPath));
-            }
-            if ($hookIsNew) {
-                $createdFiles[] = $hookPath;
-            }
-            if (!@chmod($hookPath, 0o755)) {
-                throw new InvalidArgumentException(sprintf('Unable to make %s executable.', $hookPath));
+            foreach ($scripts as $relative => $content) {
+                $scriptPath = $out . '/' . $relative;
+                $scriptIsNew = !file_exists($scriptPath);
+                $keepOriginal($scriptPath);
+                if (@file_put_contents($scriptPath, $content) === false) {
+                    throw new InvalidArgumentException(sprintf('Unable to write %s.', $scriptPath));
+                }
+                if ($scriptIsNew) {
+                    $createdFiles[] = $scriptPath;
+                }
+                if (!@chmod($scriptPath, $relative === self::LIBRARY_SCRIPT ? 0o644 : 0o755)) {
+                    throw new InvalidArgumentException(sprintf('Unable to set the mode of %s.', $scriptPath));
+                }
             }
         } catch (Throwable $error) {
             $this->rollbackEmit($out, $existed, $createdDirectories, $createdFiles, $replacedFiles);
@@ -331,6 +380,50 @@ final class PluginCommand implements CliCommand
         }
 
         return $existed;
+    }
+
+    /**
+     * Every file a materialised plugin holds, sorted, for reporting.
+     *
+     * @param array<string, string> $scripts installed relative path => content
+     * @return list<string>
+     */
+    private function pluginFiles(array $scripts): array
+    {
+        $files = [...self::STATIC_FILES, ...array_keys($scripts)];
+        sort($files);
+
+        return $files;
+    }
+
+    /**
+     * The data directory the installed hooks will read, as a value to bake in.
+     *
+     * The option wins, then the installer's own `KNOSSOS_DATA_DIR`, then the
+     * empty string, which keeps the hooks deriving the graph from the project
+     * path. A newline or NUL is rejected because the value ends up inside a
+     * single-quoted shell assignment, where either would break the script.
+     */
+    private function dataDirectory(?string $option): string
+    {
+        $value = $option;
+        if ($value === null || $value === '') {
+            $fromEnvironment = getenv('KNOSSOS_DATA_DIR');
+            $value = is_string($fromEnvironment) ? $fromEnvironment : '';
+        }
+        if (str_contains($value, "\n") || str_contains($value, "\r") || str_contains($value, "\0")) {
+            throw new InvalidArgumentException('data-dir must not contain a newline or NUL.');
+        }
+
+        return $value;
+    }
+
+    /** The sentence that tells a person which graph the installed hooks read. */
+    private function dataDirectoryLine(string $dataDir): string
+    {
+        return $dataDir === ''
+            ? 'Data directory: not set, the hooks derive the graph from the project path.'
+            : sprintf('Data directory: %s (the hooks read the graph there).', $dataDir);
     }
 
     /**
