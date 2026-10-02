@@ -54,5 +54,14 @@ expect_silent_success "no timeout binary available" \
     env KNOSSOS_BIN="$tmp/knossos" PATH=/nonexistent CLAUDE_PROJECT_DIR=/tmp "$SH_BIN" "$HOOK"
 
 rm -rf "$tmp"
+# A hook installed without its library must still be silent.
+NOLIB=$(mktemp -d)
+cp "$HOOK" "$NOLIB/session-brief.sh"
+printf '#!/bin/sh\necho brief\n' > "$NOLIB/knossos"
+chmod +x "$NOLIB/knossos"
+expect_silent_success "missing lib.sh" \
+    env KNOSSOS_BIN="$NOLIB/knossos" CLAUDE_PROJECT_DIR=/tmp sh "$NOLIB/session-brief.sh"
+rm -rf "$NOLIB"
+
 [ "$failures" -eq 0 ] || exit 1
 printf 'all hook failure modes silent\n'
