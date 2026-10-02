@@ -43,3 +43,6 @@ docs/audits/
 # marketplace add AraneaDev/Knossos-MCP` resolve and install a clone that has
 # no vendor/.
 /.plugin/
+
+# The engine lays the Claude Code API types here whenever it loads the plugin from this checkout.
+/.claude-plugin/types/
