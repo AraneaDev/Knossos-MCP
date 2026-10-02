@@ -35,18 +35,30 @@ const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
  * `lastAttemptAt` are the mod clock in milliseconds.
  */
 export function bandModel(brief: TurnBrief | null, job: JobState, now: number): BandModel {
-  if (brief === null) return job.phase === 'scanning' ? { tone: 'normal', text: 'knossos · scanning…', showDetails: false } : null
+  if (brief === null) {
+    if (job.phase === 'scanning') return { tone: 'normal', text: 'knossos · scanning…', showDetails: false }
+    if (job.phase === 'failed') return { tone: 'warn', text: 'knossos · scan failed', showDetails: false }
+    return null
+  }
   if (brief.status === 'not-allowed') {
     return { tone: 'warn', text: `knossos · not an allowed root: knossos allow-root ${quote(brief.path)} --execute`, showDetails: false }
+  }
+  if (brief.status === 'scan-failed') {
+    const why = brief.reason ? `: ${brief.reason}` : ''
+    return { tone: 'warn', text: `knossos · scan failed${why}`, showDetails: false }
   }
   if (brief.status !== 'ok') return null
   const body = figures(brief)
   const tone = brief.policy.total > 0 ? 'alert' : 'normal'
-  const age = formatAge(now - (brief.scanned_at ?? 0) * 1000)
-  if (job.phase === 'scanning') return { tone, text: `knossos · scanning…${body ? ` · last: ${body}` : ''}`, showDetails: true }
+  const age = brief.scanned_at === null ? null : formatAge(now - brief.scanned_at * 1000)
+  if (job.phase === 'scanning') {
+    const last = body ? ` · last: ${body}${age === null ? '' : ` · as of ${age} ago`}` : ''
+    return { tone, text: `knossos · scanning…${last}`, showDetails: true }
+  }
   if (job.phase === 'failed') {
-    return { tone: 'warn', text: `knossos · scan failed, figures from ${age} ago${body ? ` · ${body}` : ''}`, showDetails: true }
+    const from = age === null ? '' : `, figures from ${age} ago`
+    return { tone: 'warn', text: `knossos · scan failed${from}${body ? ` · ${body}` : ''}`, showDetails: true }
   }
   if (body === null) return null
-  return { tone, text: `knossos · ${body} · as of ${age} ago`, showDetails: true }
+  return { tone, text: `knossos · ${body}${age === null ? '' : ` · as of ${age} ago`}`, showDetails: true }
 }

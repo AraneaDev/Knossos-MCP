@@ -33,7 +33,7 @@ describe('bandModel', () => {
   })
   it('says scanning and keeps the old figures', () => {
     const m = bandModel(ok(), { phase: 'scanning', lastAttemptAt: 1_000_000 }, 1_005_000)
-    expect(m?.text).toMatch(/^knossos · scanning… · last: 1 file → 37 dependents/)
+    expect(m?.text).toBe('knossos · scanning… · last: 1 file → 37 dependents · Core, Http · 1 test · as of 5s ago')
   })
   it('says the scan failed and how old the figures are', () => {
     const m = bandModel(ok(), { phase: 'failed', lastAttemptAt: 1_000_000 + 14 * 60_000 }, 1_000_000 + 14 * 60_000)
@@ -48,6 +48,14 @@ describe('bandModel', () => {
     const m = bandModel(ok({ status: 'not-allowed', path: '/r x' }), idle, 1_000_000)
     expect(m?.text).toBe("knossos · not an allowed root: knossos allow-root '/r x' --execute")
   })
+  it('says the first scan failed', () =>
+    expect(bandModel(null, { phase: 'failed', lastAttemptAt: 1 }, 2)).toEqual({ tone: 'warn', text: 'knossos · scan failed', showDetails: false }))
+  it('shows a scan-failed brief with its reason', () =>
+    expect(bandModel(ok({ status: 'scan-failed', reason: 'boom' }), idle, 1_000_000)).toEqual({ tone: 'warn', text: 'knossos · scan failed: boom', showDetails: false }))
+  it('shows a scan-failed brief without a reason', () =>
+    expect(bandModel(ok({ status: 'scan-failed', reason: null }), idle, 1_000_000)?.text).toBe('knossos · scan failed'))
+  it('omits the age when the scan time is unknown', () =>
+    expect(bandModel(ok({ scanned_at: null }), idle, 1_000_000)?.text).toBe('knossos · 1 file → 37 dependents · Core, Http · 1 test'))
   it('draws nothing before the first brief', () => expect(bandModel(null, idle, 0)).toBeNull())
   it('draws nothing after a turn that changed nothing', () =>
     expect(bandModel(ok({ changed_files: [], impact: {}, tests: [] }), idle, 1_000_000)).toBeNull())
