@@ -1,10 +1,15 @@
 import js from "@eslint/js";
+import tseslint from "typescript-eslint";
 
 export default [
     {
         ignores: ["node_modules/**", "workers/**/node_modules/**", "vendor/**"],
     },
     js.configs.recommended,
+    ...tseslint.configs.recommended.map((config) => ({
+        ...config,
+        files: ["hooks/**/*.{ts,tsx}"],
+    })),
     {
         files: ["workers/typescript/**/*.js"],
         languageOptions: {
