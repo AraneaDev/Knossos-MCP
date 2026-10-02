@@ -27,6 +27,10 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
     /**
      * Fan-in for the given paths; a path nobody depends on reports zero.
      *
+     * Every path is a bound SQLite variable alongside the edge kinds, so a list
+     * beyond the build's variable limit (32766 by default) fails; callers pass
+     * the handful of files an edit touched.
+     *
      * @param list<string> $paths
      * @return array<string, array{path: string, dependent_files: int, boundaries: list<string>, top_dependents: list<string>}>
      */
@@ -64,6 +68,7 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
                           JOIN boundary_memberships bm ON bm.node_id = s2.id
                           JOIN boundaries b ON b.id = bm.boundary_id
                          WHERE t2.file_id = tf.id AND s2.file_id <> tf.id AND e2.project_id = tf.project_id
+                           AND e2.kind IN ($kinds)
                          ORDER BY b.name)) AS boundary_names
               FROM edges e
               JOIN nodes tn ON tn.id = e.target_id
@@ -78,7 +83,7 @@ final readonly class FileFanInQuery extends AbstractArchitectureQueryService
              LIMIT ?
             SQL;
         $statement = $this->pdo->prepare($sql);
-        $this->bindAll($statement, [$projectId, ...self::IMPACT_EDGE_KINDS, ...($paths ?? []), $threshold, $cap]);
+        $this->bindAll($statement, [...self::IMPACT_EDGE_KINDS, $projectId, ...self::IMPACT_EDGE_KINDS, ...($paths ?? []), $threshold, $cap]);
         $statement->execute();
         $rows = [];
         foreach ($statement->fetchAll(\PDO::FETCH_ASSOC) as $row) {

@@ -70,6 +70,16 @@ final class FileFanInQueryTest extends KnossosTestCase
         assertSame([], $query->forPaths($projectId, []));
     }
 
+    /** A boundary reached only through a non-impact edge is not reported, matching the dependent count. */
+    #[Group('query')]
+    public function testBoundariesComeFromImpactEdgesOnly(): void
+    {
+        [$pdo, $projectId] = $this->fanInGraph();
+        $row = (new FileFanInQuery($pdo))->forPaths($projectId, ['a.php'])['a.php'];
+        assertSame(['Core'], $row['boundaries']);
+        assertSame(['b.php', 'c.php'], $row['top_dependents']);
+    }
+
     /** The documented defaults: 500 files in a listing, 5 dependents per file. */
     #[Group('query')]
     public function testTheDocumentedDefaults(): void
@@ -90,8 +100,8 @@ final class FileFanInQueryTest extends KnossosTestCase
     }
 
     /**
-     * Files a, b, c; nodes A and A2 in a, B in b, C in c. Edges B calls A,
-     * C imports A, A2 calls A (same file), C calls B. Boundary Core holds B.
+     * Files a, b, c, d; nodes A and A2 in a, B in b, C in c, D in d. Edges B calls A,
+     * C imports A, A2 calls A (same file), C calls B, D contains A (not an impact edge). Boundary Core holds B, Other holds D.
      *
      * @return array{0: PDO, 1: string} [pdo, projectId]
      */
@@ -103,22 +113,25 @@ final class FileFanInQueryTest extends KnossosTestCase
         $scanId = StableId::scan($projectId, 'scan-1');
         $repository->saveProject($projectId, 'Fan In Fixture', '/tmp/knossos-fan-in');
         $repository->createScan($scanId, $projectId, 'full', hash('sha256', 'fan-in'));
-        $nodeFiles = ['A' => 'a.php', 'A2' => 'a.php', 'B' => 'b.php', 'C' => 'c.php'];
+        $nodeFiles = ['A' => 'a.php', 'A2' => 'a.php', 'B' => 'b.php', 'C' => 'c.php', 'D' => 'd.php'];
         $fileIds = [];
-        foreach (['a.php', 'b.php', 'c.php'] as $path) {
+        foreach (['a.php', 'b.php', 'c.php', 'd.php'] as $path) {
             $fileIds[$path] = StableId::file($projectId, $path);
             $repository->saveFile($fileIds[$path], $projectId, $path, hash('sha256', $path), 1, 1, 'php', '0.1.0', $scanId);
         }
         foreach ($nodeFiles as $name => $path) {
             $repository->saveNode($name, $projectId, 'php', 'class', $name, $name, null, $fileIds[$path], 1, 2, 'scanner', 'certain', [], 'php', $scanId);
         }
-        $edges = [['B', 'A', 'calls'], ['C', 'A', 'imports'], ['A2', 'A', 'calls'], ['C', 'B', 'calls']];
+        $edges = [['B', 'A', 'calls'], ['C', 'A', 'imports'], ['A2', 'A', 'calls'], ['C', 'B', 'calls'], ['D', 'A', 'contains']];
         foreach ($edges as [$source, $target, $kind]) {
             $repository->saveEdge("{$source}-{$kind}-{$target}", $projectId, $kind, $source, $target, null, null, null, 'scanner', 'certain', [], 'php', $scanId);
         }
         $boundaryId = StableId::boundary($projectId, 'Core', 'explicit');
         $repository->saveBoundary($boundaryId, $projectId, 'Core', [], 'explicit', $scanId);
         $repository->saveBoundaryMembership($boundaryId, $projectId, 'B', $scanId);
+        $otherId = StableId::boundary($projectId, 'Other', 'explicit');
+        $repository->saveBoundary($otherId, $projectId, 'Other', [], 'explicit', $scanId);
+        $repository->saveBoundaryMembership($otherId, $projectId, 'D', $scanId);
         $repository->completeScan($projectId, $scanId);
 
         return [$pdo, $projectId];
