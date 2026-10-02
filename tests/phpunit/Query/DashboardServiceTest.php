@@ -80,7 +80,9 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame([], $d['hubs']);
             assertSame([], $d['hotspots']);
             assertSame(0, $d['dead_code_candidates']);
-            assertSame(['count' => 0, 'largest' => []], $d['cycles']);
+            assertSame(['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []], $d['cycles']);
+            assertSame(false, $d['dead_code_truncated']);
+            assertSame(false, $d['fan_in_truncated']);
             assertSame([], $d['trend']);
             assertSame([], $d['fan_in']);
         } finally {
@@ -243,6 +245,98 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(['snapshot_id', 'cycles', 'max_degree'], array_keys($d['trend'][0]));
             assertIsInt($d['trend'][0]['cycles']);
             assertIsInt($d['trend'][0]['max_degree']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testAProjectWithoutAnActiveScanIsUnscanned(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $pdo->prepare('UPDATE projects SET active_scan_id = NULL WHERE id = :id')->execute(['id' => $projectId]);
+            $d = (new DashboardService($pdo))->dashboard($root);
+            assertSame('unscanned', $d['status']);
+            assertSame(null, $d['snapshot_id']);
+            assertSame(null, $d['project_id']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testCleanSectionsAreNotReportedTruncated(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->writeCycle($root, 'Aa', 2);
+            $this->rescan($pdo, $root);
+            $d = (new DashboardService($pdo))->dashboard($root, 1);
+            assertSame(1, $d['cycles']['count']);
+            assertSame(false, $d['cycles']['truncated']);
+            assertSame([], $d['cycles']['truncation_reasons']);
+            assertSame(false, $d['dead_code_truncated']);
+            assertSame(false, $d['fan_in_truncated']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testMoreCyclesThanTheSearchLimitAreReportedTruncated(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->writeCycle($root, 'Aa', 2);
+            $this->writeCycle($root, 'Bb', 2);
+            $this->writeCycle($root, 'Cc', 2);
+            $this->rescan($pdo, $root);
+            $d = (new DashboardService($pdo, cycleLimit: 2))->dashboard($root);
+            assertSame(2, $d['cycles']['count']);
+            assertSame(true, $d['cycles']['truncated']);
+            assertSame(['result_limit'], $d['cycles']['truncation_reasons']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testAFanInMapPastTheCapIsTrimmedAndReportedTruncated(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->writeCycle($root, 'Aa', 3);
+            $this->rescan($pdo, $root);
+            $all = (new DashboardService($pdo))->dashboard($root, 1);
+            assertGreaterThan(1, count($all['fan_in']));
+            assertSame(false, $all['fan_in_truncated']);
+            $capped = (new DashboardService($pdo, fanInCap: 1))->dashboard($root, 1);
+            assertCount(1, $capped['fan_in']);
+            assertSame($all['fan_in'][0], $capped['fan_in'][0]);
+            assertSame(true, $capped['fan_in_truncated']);
+            $exact = (new DashboardService($pdo, fanInCap: count($all['fan_in'])))->dashboard($root, 1);
+            assertSame(false, $exact['fan_in_truncated']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testAnExhaustedTimeBudgetIsReportedOnCyclesAndDeadCode(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->writeCycle($root, 'Aa', 2);
+            $this->rescan($pdo, $root);
+            $ticks = 0;
+            $clock = static function () use (&$ticks): int {
+                return $ticks += 10_000_000_000;
+            };
+            $d = (new DashboardService($pdo, clock: $clock))->dashboard($root);
+            assertSame(true, $d['cycles']['truncated']);
+            assertSame(true, in_array('time_limit', $d['cycles']['truncation_reasons'], true));
+            assertSame(true, $d['dead_code_truncated']);
         } finally {
             $this->removeTempTree($root);
         }

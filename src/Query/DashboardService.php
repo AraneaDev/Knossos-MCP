@@ -4,24 +4,39 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Closure;
 use PDO;
 
 /**
  * The project-wide picture the architecture pane draws.
  *
- * Read-only: it never scans. Every list is bounded so a large graph
- * cannot make the pane slow to refresh.
+ * Read-only: it never scans. Every section is bounded so a large graph
+ * cannot make the pane slow to refresh: hubs and hotspots to the top 10, the
+ * largest cycles to 3 out of a search that stops at 50 cycles (or at its time
+ * and edge limits), the trend to 20 snapshots and the fan-in map to 500 files.
+ * A bound never reads as an exact figure: `cycles.truncated` with its
+ * `truncation_reasons`, `dead_code_truncated` (the candidate search ran out of
+ * time, so the total is a floor) and `fan_in_truncated` say when a number or
+ * list was cut short.
  */
 final readonly class DashboardService
 {
     private const TOP = 10;
     private const LARGEST_CYCLES = 3;
-    private const CYCLE_SCAN_LIMIT = 50;
     private const TREND_POINTS = 20;
-    private const FAN_IN_CAP = 500;
 
-    /** @param PDO $pdo an existing, migrated graph database */
-    public function __construct(private PDO $pdo) {}
+    /**
+     * @param PDO $pdo an existing, migrated graph database
+     * @param int $cycleLimit how many cycles the search returns before it reports truncation
+     * @param int $fanInCap how many fan-in entries are returned before truncation is reported
+     * @param Closure|null $clock nanosecond clock handed to the query services, so time limits are testable
+     */
+    public function __construct(
+        private PDO $pdo,
+        private int $cycleLimit = 50,
+        private int $fanInCap = 500,
+        private ?Closure $clock = null,
+    ) {}
 
     /**
      * The dashboard for the project that owns `$path`, or an all-empty
@@ -33,15 +48,18 @@ final readonly class DashboardService
     {
         $absolute = realpath($path) ?: $path;
         $project = (new ProjectPathResolver($this->pdo))->resolve($absolute);
-        if ($project === null) {
+        // A project row without an active scan has no graph to draw.
+        if ($project === null || !is_string($project['active_scan_id']) || $project['active_scan_id'] === '') {
             return self::unscanned($absolute);
         }
         $id = (string) $project['id'];
-        $queries = new ArchitectureQueryService($this->pdo);
+        $queries = new ArchitectureQueryService($this->pdo, $this->clock);
         $probe = (new StalenessProbe($this->pdo))->probe($id) ?? [];
         $health = $queries->architectureHealth($id, limit: self::TOP)->data;
         // Already ordered largest first by the cycle search.
-        $cycles = $queries->dependencyCycles($id, limit: self::CYCLE_SCAN_LIMIT)->data['cycles'];
+        $cycleSearch = $queries->dependencyCycles($id, limit: $this->cycleLimit);
+        $cycles = $cycleSearch->data['cycles'];
+        $fanIn = (new FileFanInQuery($this->pdo))->aboveThreshold($id, $fanInThreshold, $this->fanInCap + 1);
         $series = $queries->architectureTrends($id, self::TREND_POINTS)->data['series'];
 
         return [
@@ -72,8 +90,11 @@ final readonly class DashboardService
             // The listed candidates are paged by the health limit, so the
             // total is the honest count; the list length would read as ten.
             'dead_code_candidates' => $health['bounds']['candidates_total'],
+            'dead_code_truncated' => in_array('time_limit', $health['bounds']['candidate_truncation_reasons'], true),
             'cycles' => [
                 'count' => count($cycles),
+                'truncated' => $cycleSearch->truncated,
+                'truncation_reasons' => $cycleSearch->data['bounds']['truncation_reasons'],
                 'largest' => array_map(static fn(array $c): array => [
                     'size' => $c['size'],
                     'members' => array_map(
@@ -83,7 +104,8 @@ final readonly class DashboardService
                 ], array_slice($cycles, 0, self::LARGEST_CYCLES)),
             ],
             'trend' => self::trend($series),
-            'fan_in' => (new FileFanInQuery($this->pdo))->aboveThreshold($id, $fanInThreshold, self::FAN_IN_CAP),
+            'fan_in' => array_slice($fanIn, 0, $this->fanInCap),
+            'fan_in_truncated' => count($fanIn) > $this->fanInCap,
         ];
     }
 
@@ -122,8 +144,9 @@ final readonly class DashboardService
         return [
             'status' => 'unscanned', 'path' => $path, 'project_root' => null, 'project_id' => null,
             'snapshot_id' => null, 'freshness' => ['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0],
-            'hubs' => [], 'hotspots' => [], 'dead_code_candidates' => 0,
-            'cycles' => ['count' => 0, 'largest' => []], 'trend' => [], 'fan_in' => [],
+            'hubs' => [], 'hotspots' => [], 'dead_code_candidates' => 0, 'dead_code_truncated' => false,
+            'cycles' => ['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []],
+            'trend' => [], 'fan_in' => [], 'fan_in_truncated' => false,
         ];
     }
 }
