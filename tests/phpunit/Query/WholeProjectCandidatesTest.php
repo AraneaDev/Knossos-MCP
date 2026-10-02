@@ -8,6 +8,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Store\StableId;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 
 /**
  * Dead-code candidates are decided over the whole project. The hub ranking
@@ -261,7 +262,13 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
      * asks whether a member is reached from outside it. The store has no
      * planner statistics, as a freshly scanned one does not, so the queries
      * must choose their indexes without them.
+     *
+     * In a process of its own: the 128 MB limit counts everything the process
+     * holds, so in a shared one it measured what earlier tests left behind.
+     * Late in a coverage run the suite already held more than 128 MB, and the
+     * limit either could not be set or left the query too little to run in.
      */
+    #[RunInSeparateProcess]
     public function testTwentyFiveThousandContainersWithMembersFitTheDefaultBudget(): void
     {
         [$pdo, $repository, $ids] = $this->storeFixture();
@@ -281,6 +288,7 @@ final class WholeProjectCandidatesTest extends KnossosTestCase
         // Inside PHP's default 128 MB, as the server runs in its image: holding
         // every candidate at once exhausted it, so only the page is kept.
         $limit = ini_set('memory_limit', '128M');
+        self::assertNotFalse($limit, 'The 128 MB limit could not be set.');
         try {
             $started = hrtime(true);
             $data = (new ArchitectureQueryService($pdo))->architectureHealth($project, limit: 10)->data;
