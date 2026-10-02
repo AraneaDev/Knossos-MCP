@@ -57,12 +57,12 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  * answers (a queue per subcommand, the last answer repeating), and every
  * engine call the mod makes, recorded.
  */
-function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[]; inspect?: Answer[] } = {}) {
+function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[] } = {}) {
   const clock = mock.clock(on)
   const queues = {
     dashboard: answers.dashboard ?? [{ stdout: dashboard }],
     brief: answers.brief ?? [{ stdout: brief() }],
-    inspect: answers.inspect ?? [{ stdout: '' }],
+    detail: answers.detail ?? [{ stdout: '' }],
   }
   const calls: string[][] = []
   const toasts: string[] = []
@@ -99,7 +99,7 @@ function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[]; inspec
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
     const sub = e.argv[2]
-    const queue = sub === 'dashboard' ? queues.dashboard : sub === 'inspect' ? queues.inspect : queues.brief
+    const queue = sub === 'dashboard' ? queues.dashboard : sub === 'component-detail' ? queues.detail : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -110,8 +110,8 @@ function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[]; inspec
   on('ui.render', () => ({ type: 'Box', props: { key: 'engine' }, children: [] }))
   on('tool.call', (_$, e) => ({ result: {} as never, text: `ran ${e.tool}` }))
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
-  const inspectRuns = () => calls.filter(c => c[2] === 'inspect')
-  return { clock, calls, briefRuns, inspectRuns, toasts, logs, opened, closed }
+  const detailRuns = () => calls.filter(c => c[2] === 'component-detail')
+  return { clock, calls, briefRuns, detailRuns, toasts, logs, opened, closed }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -136,23 +136,24 @@ const paneDashboard = (over: Record<string, unknown> = {}) =>
     ...over,
   })
 
-/** What `inspect-component --json` prints for a component that exists. */
-const inspected = (name: string) =>
+/** What `component-detail --json` prints for a component that exists. */
+const detailOf = (name: string) =>
   JSON.stringify({
+    status: 'ok',
+    path: ROOT,
+    name,
     project_id: 'p1',
     snapshot_id: 's1',
-    summary: `Inspected App\\${name}.`,
-    data: {
-      component: {
-        kind: 'class',
-        canonical_name: `App\\${name}`,
-        boundaries: [],
-        incoming: [{ kind: 'calls', component: { canonical_name: 'App\\Kernel', display_name: 'Kernel' } }],
-        outgoing: [],
-      },
-      limits: { truncation_reasons: [] },
+    component: {
+      name: `App\\${name}`,
+      kind: 'class',
+      path: `src/${name}.php`,
+      line: 3,
+      boundaries: [],
+      used_by: { count: 1, truncated: false, names: ['Kernel'] },
+      uses: { count: 0, truncated: false, names: [] },
     },
-    evidence: [{ path: `src/${name}.php`, start_line: 3 }],
+    candidates: [],
   })
 
 const PANE_PROPS = {
@@ -635,16 +636,17 @@ describe('knossos mod', () => {
   })
 
   test('pressing a hub shows its detail and back returns', async ($, on) => {
-    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], inspect: [{ stdout: inspected('Router') }] })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Router') }] })
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
     await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
     const detail = (await ui.find({ key: 'detail' }))?.text
-    expect(detail).toContain('Router')
+    expect(detail).toContain('class App\\Router')
     expect(detail).toContain('used by 1: Kernel')
-    expect(w.inspectRuns()).toEqual([
-      ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'inspect', ROOT, 'p1', 'Router'],
+    expect(w.detailRuns()).toEqual([
+      ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'component-detail', ROOT, 'Router'],
     ])
     await ui.press({ key: 'back' })
     expect(await ui.find({ key: 'detail' })).toBeUndefined()
@@ -653,80 +655,158 @@ describe('knossos mod', () => {
   })
 
   test('pressing a hotspot shows its detail', async ($, on) => {
-    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], inspect: [{ stdout: inspected('Kernel') }] })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Kernel') }] })
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
     await ui.press({ key: 'hot-0' })
-    expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspected App\\Kernel.')
-    expect(w.inspectRuns()[0]?.slice(4)).toEqual(['p1', 'Kernel'])
+    await w.clock.settle()
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Kernel')
+    expect(w.detailRuns()[0]?.slice(4)).toEqual(['Kernel'])
     await ui.unmount()
   })
 
-  test('a component is inspected once per snapshot', async ($, on) => {
-    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], inspect: [{ stdout: inspected('Router') }] })
+  test('a press shows the loading line before knossos answers', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Router'), hold: 1000 }] })
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
     await ui.press({ key: 'hub-0' })
-    await ui.press({ key: 'back' })
-    await ui.press({ key: 'hub-0' })
-    expect((await ui.find({ key: 'detail' }))?.text).toContain('Router')
-    expect(w.inspectRuns()).toHaveLength(1)
+    // Drawn from state alone: no process has run inside the render.
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspecting Router…')
+    await w.clock.settle()
+    expect(w.detailRuns()).toHaveLength(1)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspecting Router…')
+    await w.clock.advance(1000)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Router')
     await ui.unmount()
   })
 
-  test('a new snapshot inspects the component again', async ($, on) => {
+  test('two presses during the wait run one lookup', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Router'), hold: 1000 }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    await w.clock.advance(1000)
+    expect(w.detailRuns()).toHaveLength(1)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Router')
+    await ui.unmount()
+  })
+
+  test('a late answer for a component left behind never shows', async ($, on) => {
+    const w = world(on, {
+      dashboard: [{ stdout: paneDashboard() }],
+      detail: [{ stdout: detailOf('Router'), hold: 1000 }, { stdout: detailOf('Kernel'), hold: 5000 }],
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'hot-0' })
+    await w.clock.settle()
+    // Router's answer arrives while Kernel is on screen.
+    await w.clock.advance(1000)
+    const text = (await ui.find({ key: 'detail' }))?.text
+    expect(text).toContain('Inspecting Kernel…')
+    expect(text).not.toContain('App\\Router')
+    await w.clock.advance(4000)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Kernel')
+    await ui.unmount()
+  })
+
+  test('a component is looked up once per snapshot', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Router')
+    expect(w.detailRuns()).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('a new snapshot looks the component up again', async ($, on) => {
     const w = world(on, {
       dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard({ snapshot_id: 's2' }) }],
-      inspect: [{ stdout: inspected('Router') }],
+      detail: [{ stdout: detailOf('Router') }],
     })
     await $.session.start(START)
     await w.clock.settle()
     await slash($, 'inspect Router')
-    let ui = await mountPane($)
-    expect((await ui.find({ key: 'detail' }))?.text).toContain('Router')
-    await ui.unmount()
+    await w.clock.settle()
+    expect(w.detailRuns()).toHaveLength(1)
     // A scan after an edit refreshes the dashboard onto snapshot s2.
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
-    ui = await mountPane($)
-    expect((await ui.find({ key: 'detail' }))?.text).toContain('Router')
-    expect(w.inspectRuns()).toHaveLength(2)
+    expect(w.detailRuns()).toHaveLength(2)
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Router')
     await ui.unmount()
   })
 
   test('an unknown component shows what knossos said', async ($, on) => {
-    const none = JSON.stringify({ summary: 'No component matched "Nope".', data: { component: null } })
-    const w = world(on, { inspect: [{ stdout: none }] })
+    const none = JSON.stringify({ ...(JSON.parse(detailOf('Nope')) as object), status: 'not-found', component: null })
+    const w = world(on, { detail: [{ stdout: none }] })
     await $.session.start(START)
     await w.clock.settle()
     await slash($, 'inspect Nope')
+    await w.clock.settle()
     const ui = await mountPane($)
     expect((await ui.find({ key: 'detail' }))?.text).toContain('No component matched "Nope".')
     await ui.unmount()
   })
 
-  test('a silent inspect says there is nothing to show', async ($, on) => {
-    const w = world(on)
+  test('a silent lookup says there is nothing to show, and a later press asks again', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
     await $.session.start(START)
     await w.clock.settle()
-    await slash($, 'inspect Router')
     const ui = await mountPane($)
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('No details for Router')
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    expect(w.detailRuns()).toHaveLength(2)
     await ui.unmount()
   })
 
   test('/knossos inspect opens the pane on that component', async ($, on) => {
-    const w = world(on, { inspect: [{ stdout: inspected('My Router') }] })
+    const w = world(on, { detail: [{ stdout: detailOf('My Router') }] })
     await $.session.start(START)
     await w.clock.settle()
     expect((await slash($, 'inspect  My Router ')).text).toBe('Knossos pane opened.')
     expect(w.opened).toEqual(['knossos'])
+    await w.clock.settle()
     const ui = await mountPane($)
     expect((await ui.find({ key: 'detail' }))?.text).toContain('My Router')
-    expect(w.inspectRuns()[0]?.slice(4)).toEqual(['p1', 'My Router'])
+    expect(w.detailRuns()[0]?.slice(4)).toEqual(['My Router'])
+    await ui.unmount()
+  })
+
+  test('a bare /knossos opens the pane on the overview', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect Router')
+    await w.clock.settle()
+    await slash($, '')
+    await slash($, '')
+    const ui = await mountPane($)
+    expect(await ui.find({ key: 'detail' })).toBeUndefined()
+    expect(await ui.find({ key: 'hubs' })).toBeDefined()
     await ui.unmount()
   })
 })

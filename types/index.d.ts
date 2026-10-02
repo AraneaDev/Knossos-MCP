@@ -46,6 +46,29 @@ export type Dashboard = {
   fan_in_truncated: boolean
 }
 
+/** One direction of a component's relationships: distinct names, `truncated` when the count is a floor. */
+export type Related = { count: number; truncated: boolean; names: string[] }
+export type ComponentDetail = {
+  status: 'ok' | 'unscanned' | 'not-found' | 'ambiguous' | 'error'
+  path: string
+  name: string
+  project_id: string | null
+  snapshot_id: string | null
+  component: {
+    name: string
+    kind: string
+    path: string | null
+    line: number | null
+    boundaries: string[]
+    used_by: Related
+    uses: Related
+  } | null
+  candidates: string[]
+}
+
+/** The pane's detail for one component: loading, or done with its lines (null when knossos said nothing). */
+export type DetailState = { snapshot_id: string | null; name: string; lines: string[] | null; phase: 'loading' | 'done' }
+
 export type JobState = { phase: 'idle' | 'scanning' | 'failed'; lastAttemptAt: number | null }
 
 export type KnossosView = { inspect: string | null; isBandHidden: boolean }
@@ -57,6 +80,7 @@ declare module 'claude-code' {
       dashboard: Dashboard | null
       job: JobState
       view: KnossosView
+      detail: DetailState | null
     }
   }
 }

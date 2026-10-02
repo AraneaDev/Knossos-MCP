@@ -2,7 +2,7 @@
 # Brief commands for the Claude Code mod, against a containerised Knossos installation.
 #
 # Usage: knossos-run-container.sh <turn-brief|dashboard> <project-dir> [options...]
-#        knossos-run-container.sh inspect <project-dir> <project-id> <component>
+#        knossos-run-container.sh component-detail <project-dir> <name>
 #
 # Emitted by `knossos install-agent-plugin --out`, with __KNOSSOS_IMAGE__ and
 # __KNOSSOS_DATA__ substituted at emit time. Not used in place.
@@ -25,9 +25,16 @@ DATA='__KNOSSOS_DATA__'
 # The same bounds as the local wrapper, so a stuck daemon never stalls the mod.
 case "$SUBCOMMAND" in
     turn-brief) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60} ;;
-    dashboard | inspect) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    dashboard | component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
+
+# component-detail takes exactly one component name, which may not read as an
+# option: `--db=...` would point the read at another graph.
+if [ "$SUBCOMMAND" = component-detail ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in -*) exit 0 ;; esac
+fi
 
 # The working directory and the argument must name the same place. `docker run`
 # gives the container its image's own working directory rather than this one,
@@ -36,21 +43,6 @@ esac
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 
 command -v docker >/dev/null 2>&1 || exit 0
-
-if [ "$SUBCOMMAND" = inspect ]; then
-    # Exactly a project id and a component name, neither of which may read as
-    # an option (`--db=...` would point the read at another graph).
-    [ "$#" -eq 2 ] || exit 0
-    case "$1" in -*) exit 0 ;; esac
-    case "$2" in -*) exit 0 ;; esac
-    # inspect-component is addressed by project id and opens its database
-    # whether or not it exists; the volume's database is the only graph here,
-    # so name it, and say nothing before there is one.
-    [ -f "$DATA/knossos.sqlite" ] || exit 0
-    set -- inspect-component "$1" "$2" --db=/data/knossos.sqlite
-else
-    set -- "$SUBCOMMAND" "$PROJECT_DIR" "$@"
-fi
 
 # `timeout` is GNU coreutils. A plain macOS ships none of it, and Homebrew's
 # coreutils installs the same tool as `gtimeout` so it never shadows a BSD
@@ -71,13 +63,13 @@ if TIMEOUT_BIN="$(find_timeout)"; then
     OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" docker run --rm \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
-        "$IMAGE" "$@" --json 2>/dev/null)" || exit 0
+        "$IMAGE" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
     OUTPUT="$(docker run --rm \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
-        "$IMAGE" "$@" --json 2>/dev/null)" || exit 0
+        "$IMAGE" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 fi
 
 [ -n "$OUTPUT" ] || exit 0

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { componentDetail, countLabel, parseDashboard, parseTurnBrief } from './envelopes'
+import { countLabel, detailLines, parseComponentDetail, parseDashboard, parseTurnBrief } from './envelopes'
 
 describe('envelopes', () => {
   it('empty stdout is no data', () => expect(parseTurnBrief('')).toBeNull())
@@ -19,49 +19,62 @@ describe('countLabel', () => {
   it('leaves an exact count alone', () => expect(countLabel(50, false)).toBe('50'))
 })
 
-describe('componentDetail', () => {
-  const edge = (name: string) => ({ kind: 'calls', component: { canonical_name: `App\\${name}`, display_name: name } })
-  const found = (over: Record<string, unknown> = {}) =>
-    JSON.stringify({
-      summary: 'Inspected App\\Router.',
-      data: {
-        component: {
-          kind: 'class',
-          canonical_name: 'App\\Router',
-          boundaries: [{ id: 'b1', name: 'Http', source: 'inferred' }],
-          incoming: [edge('Kernel'), edge('Kernel'), edge('Console')],
-          outgoing: [edge('Route')],
-          ...over,
-        },
-        limits: { truncation_reasons: [] },
-      },
-      evidence: [{ path: 'src/Router.php', start_line: 12 }],
-    })
+describe('component detail', () => {
+  const related = (names: string[], truncated = false) => ({ count: names.length, truncated, names: names.slice(0, 5) })
+  const envelope = (over: Record<string, unknown> = {}) => ({
+    status: 'ok',
+    path: '/r',
+    name: 'Router',
+    project_id: 'p1',
+    snapshot_id: 's1',
+    component: {
+      name: 'App\\Router',
+      kind: 'class',
+      path: 'src/Router.php',
+      line: 12,
+      boundaries: ['Http'],
+      used_by: related(['Kernel', 'Console']),
+      uses: related(['Route']),
+    },
+    candidates: [],
+    ...over,
+  })
+  const parsed = (over: Record<string, unknown> = {}) => parseComponentDetail(JSON.stringify(envelope(over)))
 
-  it('silence is no detail', () => expect(componentDetail('')).toBeNull())
-  it('an envelope without a summary is no detail', () => expect(componentDetail('{"data":{}}')).toBeNull())
-  it('an unmatched component is its summary alone', () =>
-    expect(componentDetail('{"summary":"No component matched \\"X\\".","data":{"component":null}}')).toEqual([
-      'No component matched "X".',
-    ]))
-  it('a found component lists where it is and who it touches', () =>
-    expect(componentDetail(found())).toEqual([
-      'Inspected App\\Router.',
-      'class · src/Router.php:12',
+  it('silence is no detail', () => expect(parseComponentDetail('')).toBeNull())
+  it('an unknown status is no detail', () => expect(parseComponentDetail('{"status":"missing"}')).toBeNull())
+  it('an ok detail without its component is no detail', () => expect(parsed({ component: null })).toBeNull())
+  it('an ok detail without candidates is no detail', () => expect(parsed({ candidates: null })).toBeNull())
+  it('an error envelope parses', () => expect(parseComponentDetail('{"status":"error"}')?.status).toBe('error'))
+
+  it('a found component lists where it is and who it touches', () => {
+    const d = parsed()
+    expect(d === null ? null : detailLines(d, 'Router')).toEqual([
+      'class App\\Router',
+      'at src/Router.php:12',
       'boundaries: Http',
       'used by 2: Kernel, Console',
       'uses 1: Route',
+    ])
+  })
+  it('a cut list reads as a floor and a long one ends in an ellipsis', () => {
+    const many = { count: 6, truncated: true, names: ['A', 'B', 'C', 'D', 'E'] }
+    const component = { ...envelope().component, path: null, line: null, boundaries: [], used_by: many, uses: related([]) }
+    const d = parsed({ component })
+    expect(d === null ? null : detailLines(d, 'Router')).toEqual(['class App\\Router', 'used by 6+: A, B, C, D, E …', 'uses 0'])
+  })
+  it('an unmatched name says so', () => {
+    const d = parsed({ status: 'not-found', component: null })
+    expect(d === null ? null : detailLines(d, 'Nope')).toEqual(['No component matched "Nope".'])
+  })
+  it('an ambiguous name lists the candidates', () => {
+    const d = parsed({ status: 'ambiguous', component: null, candidates: ['App\\One\\Dup', 'App\\Two\\Dup'] })
+    expect(d === null ? null : detailLines(d, 'Dup')).toEqual(['"Dup" names more than one component: App\\One\\Dup, App\\Two\\Dup'])
+  })
+  it('an unscanned project says how to get data', () =>
+    expect(detailLines({ status: 'unscanned' } as never, 'Router')).toEqual([
+      'No Knossos data for this project. Scan it with knossos scan.',
     ]))
-  it('a cut relationship list says so', () =>
-    expect(
-      componentDetail(
-        JSON.stringify({
-          summary: 's',
-          data: { component: { kind: 'class', incoming: [edge('A')], outgoing: [] }, limits: { truncation_reasons: ['incoming_relationship_limit'] } },
-          evidence: [],
-        }),
-      ),
-    ).toEqual(['s', 'class', 'used by 1+: A', 'uses 0']))
-  it('a long list ends in an ellipsis', () =>
-    expect(componentDetail(found({ incoming: ['A', 'B', 'C', 'D', 'E', 'F'].map(edge) }))).toContain('used by 6: A, B, C, D, E …'))
+  it('an error says knossos could not read it', () =>
+    expect(detailLines({ status: 'error' } as never, 'Router')).toEqual(['knossos could not read Router.']))
 })

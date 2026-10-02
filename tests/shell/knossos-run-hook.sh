@@ -73,49 +73,37 @@ mkdir -p "$STUBS/nolib"
 cp "$RUN" "$STUBS/nolib/knossos-run.sh"
 expect_silent_success 'missing lib.sh' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$STUBS/nolib/knossos-run.sh" dashboard /tmp
 
-# inspect: addressed by project id, so the wrapper names the database the
-# dashboard read (KNOSSOS_DATA_DIR, else the nearest .knossos above the project
-# directory) and never lets the binary fall back to one it would create.
-printf '#!/bin/sh\nprintf "%%s\\n" "{\\"summary\\":\\"No component matched \\\\\\"X\\\\\\".\\"}"\n' > "$STUBS/unmatched"; chmod +x "$STUBS/unmatched"
-mkdir -p "$STUBS/data" "$STUBS/proj/.knossos" "$STUBS/proj/src" "$STUBS/bare"
-: > "$STUBS/data/knossos.sqlite"
-: > "$STUBS/proj/.knossos/knossos.sqlite"
-REAL_STUBS=$(CDPATH='' cd -- "$STUBS" && pwd -P)
+# component-detail: one component name after the project directory, passed
+# through intact; anything that could read as an option is refused.
+printf '#!/bin/sh\nprintf "%%s\\n" "{\\"status\\":\\"not-found\\"}"\n' > "$STUBS/unmatched"; chmod +x "$STUBS/unmatched"
 
-expect_output 'inspect passes the id and name intact' "inspect-component|p1|App\\My Router|--db=$STUBS/data/knossos.sqlite|--json|" \
-    env KNOSSOS_DATA_DIR="$STUBS/data" KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect /tmp p1 'App\My Router'
-expect_output 'inspect reads the database above the project directory' "inspect-component|p1|Router|--db=$REAL_STUBS/proj/.knossos/knossos.sqlite|--json|" \
-    env -u KNOSSOS_DATA_DIR KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect "$STUBS/proj/src" p1 Router
-expect_output 'inspect passes an unmatched component through' '{"summary":"No component matched \"X\"."}' \
-    env KNOSSOS_DATA_DIR="$STUBS/data" KNOSSOS_BIN="$STUBS/unmatched" /bin/sh "$RUN" inspect /tmp p1 X
-expect_silent_success 'inspect without a database' \
-    env -u KNOSSOS_DATA_DIR KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect "$STUBS/bare" p1 Router
-if [ -e "$STUBS/bare/.knossos" ]; then
-    printf 'FAIL inspect without a database created one\n'; failures=$((failures + 1))
-else
-    printf 'ok   inspect without a database creates none\n'
-fi
-expect_silent_success 'inspect with an empty data directory' \
-    env KNOSSOS_DATA_DIR="$STUBS/bare" KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect /tmp p1 Router
-expect_silent_success 'inspect with a missing binary' \
-    env KNOSSOS_DATA_DIR="$STUBS/data" KNOSSOS_BIN=/nonexistent/knossos PATH=/nonexistent HOME=/nonexistent /bin/sh "$RUN" inspect /tmp p1 Router
-expect_silent_success 'inspect without a component' \
-    env KNOSSOS_DATA_DIR="$STUBS/data" KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect /tmp p1
-expect_silent_success 'inspect with a name that reads as an option' \
-    env KNOSSOS_DATA_DIR="$STUBS/data" KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect /tmp p1 --db=/elsewhere
+expect_output 'component-detail passes the name intact' 'component-detail|/tmp|App\My Router|--json|' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" component-detail /tmp 'App\My Router'
+expect_output 'component-detail passes an unmatched component through' '{"status":"not-found"}' \
+    env KNOSSOS_BIN="$STUBS/unmatched" /bin/sh "$RUN" component-detail /tmp Nope
+expect_silent_success 'component-detail with a missing binary' \
+    env KNOSSOS_BIN=/nonexistent/knossos PATH=/nonexistent HOME=/nonexistent /bin/sh "$RUN" component-detail /tmp Router
+expect_silent_success 'component-detail without a name' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" component-detail /tmp
+expect_silent_success 'component-detail with two names' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" component-detail /tmp A B
+expect_silent_success 'component-detail with a name that reads as an option' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" component-detail /tmp --db=/elsewhere
+expect_silent_success 'the old inspect subcommand is gone' \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" inspect /tmp p1 Router
 
 # The container variant, emitted with its placeholders filled, against a docker stand-in.
 mkdir -p "$STUBS/container" "$STUBS/dockerbin"
-sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|$STUBS/data|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run.sh"
-sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|$STUBS/bare|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run-bare.sh"
+sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run.sh"
+# Drops `run --rm -v <project> -v <data>` and prints the rest: the image and its argv.
 printf '#!/bin/sh\nshift 6\nprintf "%%s|" "$@"\n' > "$STUBS/dockerbin/docker"; chmod +x "$STUBS/dockerbin/docker"
-expect_output 'container inspect passes the id and name intact' 'img:1|inspect-component|p1|My Router|--db=/data/knossos.sqlite|--json|' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" inspect /tmp p1 'My Router'
+expect_output 'container component-detail passes the name intact' 'img:1|component-detail|/tmp|My Router|--json|' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp 'My Router'
 expect_output 'container dashboard keeps its arguments' 'img:1|dashboard|/tmp|--fan-in-threshold=20|--json|' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp --fan-in-threshold=20
-expect_silent_success 'container inspect without a database' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run-bare.sh" inspect /tmp p1 Router
-expect_silent_success 'container inspect with a name that reads as an option' \
-    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" inspect /tmp p1 -x
+expect_silent_success 'container component-detail with a name that reads as an option' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp -x
+expect_silent_success 'container component-detail without a name' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp
 
 [ "$failures" -eq 0 ] || exit 1

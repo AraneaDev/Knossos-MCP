@@ -1,8 +1,8 @@
-import type { BoundaryRef, Dashboard, FanIn, TurnBrief, Violation } from '../../types'
+import type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Related, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
-export type { BoundaryRef, Dashboard, FanIn, TurnBrief, Violation }
+export type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Related, TurnBrief, Violation }
 
 const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error'])
 const DASH = new Set(['ok', 'unscanned', 'error'])
@@ -11,6 +11,9 @@ const BRIEF_ARRAYS = ['changed_files', 'added_files', 'deleted_files', 'tests']
 const BRIEF_OBJECTS = ['policy']
 const DASH_ARRAYS = ['hubs', 'hotspots', 'trend', 'fan_in']
 const DASH_OBJECTS = ['cycles', 'freshness']
+const DETAIL = new Set(['ok', 'unscanned', 'not-found', 'ambiguous', 'error'])
+const DETAIL_ARRAYS = ['candidates']
+const DETAIL_OBJECTS = ['component']
 
 const isObject = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -50,52 +53,32 @@ export function countLabel(n: number, truncated: boolean): string {
   return truncated ? `${n}+` : `${n}`
 }
 
-/** How many related components a detail line names before it stops at an ellipsis. */
-const NAMED = 5
-
-type Related = { component?: { canonical_name?: unknown; display_name?: unknown } }
-
-/** "used by 2: Kernel, Console": one direction of a component's relationships, each name once. */
-function relatedLine(label: string, edges: unknown, truncated: boolean): string {
-  const list = Array.isArray(edges) ? (edges as Related[]) : []
-  const names = [
-    ...new Set(
-      list.map(e => e?.component?.display_name ?? e?.component?.canonical_name).filter((n): n is string => typeof n === 'string'),
-    ),
-  ]
-  const head = `${label} ${countLabel(names.length, truncated)}`
-  if (names.length === 0) return head
-  return `${head}: ${names.slice(0, NAMED).join(', ')}${names.length > NAMED ? ' …' : ''}`
+/** "used by 2: Kernel, Console": one direction of a component's relationships. */
+function relatedLine(label: string, related: Related): string {
+  const head = `${label} ${countLabel(related.count, related.truncated)}`
+  if (related.names.length === 0) return head
+  return `${head}: ${related.names.join(', ')}${related.count > related.names.length ? ' …' : ''}`
 }
 
-/**
- * What the pane shows for one component, from `inspect-component --json`:
- * the envelope's summary, then where the component is and who it touches.
- * Null for silence or anything without a summary; an unmatched or ambiguous
- * name is its summary alone, which already says so.
- */
-export function componentDetail(stdout: string): string[] | null {
-  let value: unknown
-  try {
-    value = JSON.parse(stdout)
-  } catch {
-    return null
+/** A component detail from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseComponentDetail(stdout: string): ComponentDetail | null {
+  return parse(stdout, DETAIL, DETAIL_ARRAYS, DETAIL_OBJECTS) as ComponentDetail | null
+}
+
+/** What the pane shows for one component, by the detail's status; `name` is what was asked for. */
+export function detailLines(detail: ComponentDetail, name: string): string[] {
+  const c = detail.component
+  if (detail.status === 'ok' && c !== null) {
+    return [
+      `${c.kind} ${c.name}`,
+      ...(c.path === null ? [] : [`at ${c.path}${c.line === null ? '' : `:${c.line}`}`]),
+      ...(c.boundaries.length === 0 ? [] : [`boundaries: ${c.boundaries.join(', ')}`]),
+      relatedLine('used by', c.used_by),
+      relatedLine('uses', c.uses),
+    ]
   }
-  if (!isObject(value)) return null
-  const { summary, data, evidence } = value as { summary?: unknown; data?: unknown; evidence?: unknown }
-  if (typeof summary !== 'string') return null
-  const { component, limits } = (isObject(data) ? data : {}) as { component?: unknown; limits?: { truncation_reasons?: unknown } }
-  if (!isObject(component)) return [summary]
-  const c = component as { kind?: unknown; boundaries?: unknown; incoming?: unknown; outgoing?: unknown }
-  const reasons = Array.isArray(limits?.truncation_reasons) ? (limits.truncation_reasons as unknown[]) : []
-  const place = Array.isArray(evidence) && isObject(evidence[0]) ? (evidence[0] as { path?: unknown; start_line?: unknown }) : null
-  const where = typeof place?.path === 'string' ? ` · ${place.path}${typeof place.start_line === 'number' ? `:${place.start_line}` : ''}` : ''
-  const lines = [summary, `${typeof c.kind === 'string' ? c.kind : 'component'}${where}`]
-  const boundaries = Array.isArray(c.boundaries)
-    ? (c.boundaries as { name?: unknown }[]).map(b => b?.name).filter((n): n is string => typeof n === 'string')
-    : []
-  if (boundaries.length > 0) lines.push(`boundaries: ${boundaries.join(', ')}`)
-  lines.push(relatedLine('used by', c.incoming, reasons.includes('incoming_relationship_limit')))
-  lines.push(relatedLine('uses', c.outgoing, reasons.includes('outgoing_relationship_limit')))
-  return lines
+  if (detail.status === 'not-found') return [`No component matched "${name}".`]
+  if (detail.status === 'ambiguous') return [`"${name}" names more than one component: ${detail.candidates.join(', ')}`]
+  if (detail.status === 'unscanned') return ['No Knossos data for this project. Scan it with knossos scan.']
+  return [`knossos could not read ${name}.`]
 }

@@ -2,7 +2,7 @@
 # Runs one Knossos brief command for the Claude Code mod.
 #
 # Usage: knossos-run.sh <turn-brief|dashboard> <project-dir> [options...]
-#        knossos-run.sh inspect <project-dir> <project-id> <component>
+#        knossos-run.sh component-detail <project-dir> <name>
 #
 # Same contract as session-brief.sh: every failure exits 0 with nothing on
 # stdout. The mod reads silence as "no data" and keeps its last figures
@@ -20,9 +20,16 @@ LIB="$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)/lib.sh"
 
 case "$SUBCOMMAND" in
     turn-brief) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60} ;;
-    dashboard | inspect) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    dashboard | component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
+
+# component-detail takes exactly one component name, which may not read as an
+# option: `--db=...` would point the read at another graph.
+if [ "$SUBCOMMAND" = component-detail ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in -*) exit 0 ;; esac
+fi
 
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 
@@ -35,26 +42,11 @@ CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 
 BIN="$(find_knossos)" || exit 0
 
-if [ "$SUBCOMMAND" = inspect ]; then
-    # Exactly a project id and a component name, neither of which may read as
-    # an option (`--db=...` would point the read at another graph).
-    [ "$#" -eq 2 ] || exit 0
-    case "$1" in -*) exit 0 ;; esac
-    case "$2" in -*) exit 0 ;; esac
-    # inspect-component is addressed by project id, not by path, so it would
-    # read <cwd>/.knossos and create it when missing. Name the graph the
-    # dashboard read instead, and say nothing when there is none.
-    DB="$(find_database)" || exit 0
-    set -- inspect-component "$1" "$2" "--db=$DB"
-else
-    set -- "$SUBCOMMAND" "$PROJECT_DIR" "$@"
-fi
-
 if TIMEOUT_BIN="$(find_timeout)"; then
-    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$@" --json 2>/dev/null)" || exit 0
+    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
-    OUTPUT="$("$BIN" "$@" --json 2>/dev/null)" || exit 0
+    OUTPUT="$("$BIN" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 fi
 
 [ -n "$OUTPUT" ] || exit 0

@@ -3,13 +3,13 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { componentDetail, countLabel, parseDashboard, parseTurnBrief } from './lib/envelopes'
-import type { Dashboard, TurnBrief } from './lib/envelopes'
+import { countLabel, detailLines, parseComponentDetail, parseDashboard, parseTurnBrief } from './lib/envelopes'
+import type { TurnBrief } from './lib/envelopes'
 import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
 import { SingleFlight } from './lib/scheduler'
 import { sparkline } from './lib/sparkline'
-import type { KnossosView } from '../types'
+import type { DetailState, KnossosView } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -22,7 +22,7 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const
 /** The wrapper's own limits (60 s and 15 s) plus room for it to exit on its own. */
 const BRIEF_TIMEOUT_MS = 70_000
 const DASHBOARD_TIMEOUT_MS = 20_000
-const INSPECT_TIMEOUT_MS = 20_000
+const DETAIL_TIMEOUT_MS = 20_000
 const USAGE = 'Usage: /knossos to toggle the architecture pane; /knossos inspect <component> to open it on one component.'
 /** How many members of a cycle the pane names before it stops at an ellipsis. */
 const CYCLE_MEMBERS = 4
@@ -34,6 +34,7 @@ const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
 const job = atom({ plugin: 'knossos', key: 'job' } as const, { phase: 'idle', lastAttemptAt: null } as JobState)
 const view = atom({ plugin: 'knossos', key: 'view' } as const, { inspect: null, isBandHidden: false } as KnossosView)
+const detail = atom({ plugin: 'knossos', key: 'detail' } as const, null as DetailState | null)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -63,11 +64,11 @@ const mod = {
   /** Keeps the band's age current while the mod is on. */
   ticker: null as Timer | null,
   /**
-   * The pane's component details, keyed by snapshot and name: a component is
-   * inspected once per snapshot, and a new scan asks again. Lost on reload,
-   * which only costs one more inspect.
+   * Component lookups in flight, by snapshot and name: a press while one runs
+   * starts no second. Checked and set with no await between, so two presses
+   * in the same tick cannot both start one.
    */
-  details: new Map<string, string[]>(),
+  fetching: new Set<string>(),
 }
 
 /** The fan-in threshold from the options: a positive finite number, else the default. */
@@ -105,6 +106,9 @@ async function refreshDashboard($: EngineInterface): Promise<boolean> {
   const parsed = parseDashboard(stdout)
   if (parsed === null) return false
   await update($, dashboard, () => parsed)
+  // The pane open on a component follows the graph: a new snapshot looks it up again.
+  const shown = (await read($, view)).inspect
+  if (shown !== null) await requestDetail($, shown)
   return true
 }
 
@@ -122,17 +126,44 @@ async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> 
   if (openOnStart) await openPane($)
 }
 
-/** The pane's lines for one component; a silent wrapper is said, not hidden. */
-async function inspect($: EngineInterface, d: Dashboard, name: string): Promise<string[]> {
-  const key = `${d.snapshot_id ?? ''}\u0000${name}`
-  const cached = mod.details.get(key)
-  if (cached !== undefined) return cached
-  const stdout = d.project_id === null ? '' : await wrapper($, 'inspect', [d.project_id, name], INSPECT_TIMEOUT_MS)
-  const lines = componentDetail(stdout)
-  // Silence is not cached: the binary may come back, or the scan may still be running.
-  if (lines === null) return [`No details for ${name}: knossos said nothing.`]
-  mod.details.set(key, lines)
-  return lines
+/**
+ * Shows one component on the pane and starts its lookup. The lookup runs on
+ * a timer, never inside a render: the pane draws "Inspecting <name>…" from
+ * state until the answer is stored.
+ */
+async function showComponent($: EngineInterface, name: string): Promise<void> {
+  await update($, view, v => ({ ...v, inspect: name }))
+  await requestDetail($, name)
+}
+
+/** Starts a lookup of `name` unless one is running or done for this snapshot; silence is asked again. */
+async function requestDetail($: EngineInterface, name: string): Promise<void> {
+  const snapshot = (await read($, dashboard))?.snapshot_id ?? null
+  const key = `${snapshot ?? ''}\u0000${name}`
+  if (mod.fetching.has(key)) return
+  mod.fetching.add(key)
+  const current = await read($, detail)
+  if (current?.name === name && current.snapshot_id === snapshot && current.phase === 'done' && current.lines !== null) {
+    mod.fetching.delete(key)
+    return
+  }
+  await update($, detail, (): DetailState => ({ snapshot_id: snapshot, name, lines: null, phase: 'loading' }))
+  $.clock.after(0, () => void loadDetail($, snapshot, name, key))
+}
+
+/** One lookup; its answer is stored only while the detail still asks for that component and snapshot. */
+async function loadDetail($: EngineInterface, snapshot: string | null, name: string, key: string): Promise<void> {
+  try {
+    const parsed = parseComponentDetail(await wrapper($, 'component-detail', [name], DETAIL_TIMEOUT_MS))
+    const lines = parsed === null ? null : detailLines(parsed, name)
+    await update($, detail, (current): DetailState | null =>
+      current?.name === name && current.snapshot_id === snapshot ? { ...current, lines, phase: 'done' } : current,
+    )
+  } catch {
+    // A lost write leaves the loading line; the next press asks again.
+  } finally {
+    mod.fetching.delete(key)
+  }
 }
 
 /** Opens the pane; a refused or unplaced pane is the person's layout, not a failure of the mod. */
@@ -146,8 +177,9 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
   if (verb === 'inspect') {
     const name = args.trim().slice('inspect'.length).trim()
     if (name === '') return USAGE
-    await update($, view, v => ({ ...v, inspect: name }))
+    // The snapshot first, so the lookup is keyed to the graph it reads.
     if ((await read($, dashboard)) === null) await refreshDashboard($)
+    await showComponent($, name)
     await openPane($)
     return 'Knossos pane opened.'
   }
@@ -156,6 +188,7 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
     await $.ui.close({ id: PANE }).catch(() => undefined)
     return 'Knossos pane closed.'
   }
+  await update($, view, v => ({ ...v, inspect: null }))
   await refreshDashboard($)
   await openPane($)
   return 'Knossos pane opened.'
@@ -258,7 +291,7 @@ export const register: Register = (on, options) => {
   mod.bandText = null
   mod.ticker?.cancel()
   mod.ticker = null
-  mod.details = new Map()
+  mod.fetching = new Set()
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -335,9 +368,14 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    const show = (name: string) => update($, view, x => ({ ...x, inspect: name }))
+    const show = (name: string) => showComponent($, name)
     if (v.inspect !== null) {
-      const lines = await inspect($, d, v.inspect)
+      // State only: a detail for another component (an answer that came late) is not this one's.
+      const shown = await read($, detail)
+      const lines =
+        shown === null || shown.name !== v.inspect || shown.phase === 'loading'
+          ? [`Inspecting ${v.inspect}…`]
+          : (shown.lines ?? [`No details for ${v.inspect}: knossos said nothing.`])
       return (
         <Box key="detail" flexDirection="column">
           <Text bold>{v.inspect}</Text>
