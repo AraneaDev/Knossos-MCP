@@ -54,19 +54,22 @@ final readonly class TurnBriefService
         $absolute = realpath($path) ?: $path;
         $envelope = self::empty($absolute);
         $allowed = new AllowedRoots(AllowedRoots::fromEnvironment(), $this->rootsFile());
-        try {
-            (new RootGuard($allowed))->resolve($absolute);
-        } catch (RootNotFoundException) {
-            return ['status' => 'missing'] + $envelope;
-        } catch (DiscoveryException) {
-            return ['status' => 'not-allowed', 'roots_file' => $this->rootsFile()] + $envelope;
+        $refusal = self::refusal($allowed, $absolute, $this->rootsFile());
+        if ($refusal !== null) {
+            return $refusal + $envelope;
         }
         $project = (new ProjectPathResolver($this->pdo))->resolve($absolute);
         if ($project === null) {
             return ['status' => 'unscanned'] + $envelope;
         }
         $root = (string) $project['root_realpath'];
-        $before = $this->hashes((string) $project['id']);
+        // The resolver may have walked up to an ancestor project: that root is what gets scanned, so it is what must be allowed.
+        $refusal = self::refusal($allowed, $root, $this->rootsFile());
+        if ($refusal !== null) {
+            return $refusal + $envelope;
+        }
+        $projectId = (string) $project['id'];
+        $before = $this->hashes($projectId);
         $started = hrtime(true);
         try {
             $scan = (new ProjectScanService($this->pdo, $this->installationRoot, $allowed))
@@ -74,7 +77,8 @@ final readonly class TurnBriefService
         } catch (Throwable $failure) {
             return ['status' => 'scan-failed', 'reason' => $failure->getMessage(), 'project_root' => $root] + $envelope;
         }
-        $after = $this->hashes($scan->projectId);
+        // Same id as the baseline, so a recomputed id cannot make every file look added.
+        $after = $this->hashes($projectId);
         [$changed, $added, $deleted] = self::diff($before, $after, self::relative($root, $extraFiles));
         $live = array_merge($changed, $added);
         $queries = new ArchitectureQueryService($this->pdo, gitWorkingTree: new ProcessGitWorkingTreeProvider());
@@ -92,6 +96,23 @@ final readonly class TurnBriefService
             'tests' => $live === [] ? [] : $this->tests($queries, $scan->projectId, $live),
             'policy' => $this->policy($queries, $scan->projectId, $live, $policies, $enforcePolicies),
         ] + $envelope;
+    }
+
+    /**
+     * The status fields for a path the allow-list refuses, or null when it is allowed.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function refusal(AllowedRoots $allowed, string $path, string $rootsFile): ?array
+    {
+        try {
+            (new RootGuard($allowed))->resolve($path);
+        } catch (RootNotFoundException) {
+            return ['status' => 'missing'];
+        } catch (DiscoveryException) {
+            return ['status' => 'not-allowed', 'roots_file' => $rootsFile];
+        }
+        return null;
     }
 
     /** `roots.json` beside the database, or the override the environment names. */
@@ -152,7 +173,7 @@ final readonly class TurnBriefService
         $prefix = rtrim($root, '/') . '/';
         return array_map(
             // Only a literal "./" prefix goes: ltrim() with a character list would also eat the dot of ".github/".
-            static fn (string $p): string => str_starts_with($p, $prefix)
+            static fn(string $p): string => str_starts_with($p, $prefix)
                 ? substr($p, strlen($prefix))
                 : (str_starts_with($p, './') ? substr($p, 2) : $p),
             $paths,
@@ -169,7 +190,7 @@ final readonly class TurnBriefService
     {
         $data = $queries->testImpact($projectId, $live, limit: self::MAX_TESTS)->data;
         return array_map(
-            static fn (array $t): array => ['path' => (string) $t['path'], 'distance' => (int) $t['distance']],
+            static fn(array $t): array => ['path' => (string) $t['path'], 'distance' => (int) $t['distance']],
             $data['test_files'] ?? [],
         );
     }
@@ -193,7 +214,7 @@ final readonly class TurnBriefService
         if (($check['status'] ?? '') !== 'evaluated') {
             return ['status' => 'not_evaluated', 'total' => 0, 'violations' => []];
         }
-        $violations = array_map(static fn (array $v): array => [
+        $violations = array_map(static fn(array $v): array => [
             'policy_id' => $v['policy_id'],
             'source' => $v['source']['canonical_name'],
             'target' => $v['target']['canonical_name'],

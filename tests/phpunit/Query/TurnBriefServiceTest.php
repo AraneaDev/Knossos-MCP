@@ -206,6 +206,28 @@ final class TurnBriefServiceTest extends KnossosTestCase
         }
     }
 
+    /** The resolver walks up to the owning project; that project's root has to be allowed too. */
+    #[Group('query')]
+    public function testAnAncestorProjectRootOutsideTheAllowedRootsIsRefused(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        $data = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
+        mkdir($data);
+        try {
+            $real = (string) realpath($root);
+            putenv('KNOSSOS_ALLOWED_ROOTS=' . $real . '/src');
+            $scans = $this->rows($pdo, 'scans');
+            $brief = $this->service($pdo, $data . '/knossos.sqlite')->brief($real . '/src/Core');
+            assertSame('not-allowed', $brief['status']);
+            assertSame($data . '/roots.json', $brief['roots_file']);
+            assertSame(null, $brief['project_id']);
+            assertSame($scans, $this->rows($pdo, 'scans'));
+        } finally {
+            $this->removeTempTree($root);
+            $this->removeTempTree($data);
+        }
+    }
+
     #[Group('query')]
     public function testAMissingPathIsReported(): void
     {
