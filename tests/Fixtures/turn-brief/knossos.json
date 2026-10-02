@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "boundaries": [
+    {"name": "Core", "path_prefix": "src/Core/"},
+    {"name": "Edge", "path_prefix": "src/Edge/"}
+  ]
+}
