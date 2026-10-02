@@ -52,6 +52,12 @@ jobs:
       #
       # Tagged by commit, so a lane can only ever run the image built for the
       # commit it is testing.
+      # Today's date, so the runtime stage's `apt-get upgrade` layer is rebuilt
+      # once a day instead of being served from the cache indefinitely. See the
+      # APT_REFRESH comment in the Dockerfile.
+      - name: Date the package upgrade layer
+        id: apt-refresh
+        run: echo "date=$(date -u +%F)" >> "$GITHUB_OUTPUT"
       - name: Build and push the pinned quality image
         uses: docker/build-push-action@v6
         with:
@@ -60,6 +66,7 @@ jobs:
           tags: ${{ env.QUALITY_IMAGE }}
           cache-from: type=gha,scope=quality-image
           cache-to: type=gha,mode=max,scope=quality-image
+          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
           push: true
       # The release lane builds this target too, from inside the quality
       # container against the host daemon, where buildx's cache does not
@@ -73,6 +80,7 @@ jobs:
           tags: ${{ env.RUNTIME_IMAGE }}
           cache-from: type=gha,scope=runtime-image
           cache-to: type=gha,mode=max,scope=runtime-image
+          build-args: APT_REFRESH=${{ steps.apt-refresh.outputs.date }}
           push: true
 
   lane:
