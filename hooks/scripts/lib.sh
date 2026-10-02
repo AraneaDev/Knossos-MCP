@@ -50,3 +50,27 @@ find_timeout() {
     fi
     return 1
 }
+
+# The database a path-addressed brief command reads for the current directory,
+# found the way the binary's own locator finds it: KNOSSOS_DATA_DIR first, then
+# the nearest .knossos/knossos.sqlite at or above it. For commands addressed by
+# project id, which would otherwise open <cwd>/.knossos and create it when
+# missing. Prints nothing and fails when there is no database to name.
+find_database() {
+    if [ -n "${KNOSSOS_DATA_DIR:-}" ]; then
+        knossos_db="${KNOSSOS_DATA_DIR%/}/knossos.sqlite"
+        [ -f "$knossos_db" ] || return 1
+        printf '%s' "$knossos_db"
+        return 0
+    fi
+    knossos_dir=$(pwd -P) || return 1
+    while :; do
+        knossos_db="${knossos_dir%/}/.knossos/knossos.sqlite"
+        if [ -f "$knossos_db" ]; then
+            printf '%s' "$knossos_db"
+            return 0
+        fi
+        [ "$knossos_dir" = / ] && return 1
+        knossos_dir=$(dirname -- "$knossos_dir")
+    done
+}

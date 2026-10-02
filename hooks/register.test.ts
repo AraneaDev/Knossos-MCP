@@ -57,13 +57,20 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  * answers (a queue per subcommand, the last answer repeating), and every
  * engine call the mod makes, recorded.
  */
-function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[] } = {}) {
+function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[]; inspect?: Answer[] } = {}) {
   const clock = mock.clock(on)
-  const queues = { dashboard: answers.dashboard ?? [{ stdout: dashboard }], brief: answers.brief ?? [{ stdout: brief() }] }
+  const queues = {
+    dashboard: answers.dashboard ?? [{ stdout: dashboard }],
+    brief: answers.brief ?? [{ stdout: brief() }],
+    inspect: answers.inspect ?? [{ stdout: '' }],
+  }
   const calls: string[][] = []
   const toasts: string[] = []
   const logs: { text: string; to: string }[] = []
   const opened: string[] = []
+  const closed: string[] = []
+  /** The panes the engine holds open, as `ui.panes` lists them. */
+  const panes = new Set<string>()
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: ROOT }))
   on('turn.complete', (_$, e) => ({ text: e.answer }))
@@ -78,11 +85,21 @@ function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[] } = {})
   })
   on('ui.open', (_$, e) => {
     opened.push(e.id)
+    panes.add(e.id)
     return { value: { isPlaced: true } }
   })
+  on('ui.close', (_$, e) => {
+    closed.push(e.id)
+    panes.delete(e.id)
+    return { value: undefined }
+  })
+  on('ui.panes', () => ({
+    value: [...panes].map(id => ({ id, title: 'Knossos', isShown: true, isFocused: false, isPlaced: true })),
+  }))
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
-    const queue = e.argv[2] === 'dashboard' ? queues.dashboard : queues.brief
+    const sub = e.argv[2]
+    const queue = sub === 'dashboard' ? queues.dashboard : sub === 'inspect' ? queues.inspect : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -93,7 +110,8 @@ function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[] } = {})
   on('ui.render', () => ({ type: 'Box', props: { key: 'engine' }, children: [] }))
   on('tool.call', (_$, e) => ({ result: {} as never, text: `ran ${e.tool}` }))
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
-  return { clock, calls, briefRuns, toasts, logs, opened }
+  const inspectRuns = () => calls.filter(c => c[2] === 'inspect')
+  return { clock, calls, briefRuns, inspectRuns, toasts, logs, opened, closed }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -101,6 +119,63 @@ const TURN = { answer: '', durationMs: 1, isAborted: false, turnId: 't', reason:
 
 async function edit($: Engine, path: string) {
   return $.tool.call({ tool: 'Edit', file_path: path, old_string: 'a', new_string: 'b' })
+}
+
+/** A dashboard with something on the pane: one hub, one hotspot, a cycle and two snapshots of trend. */
+const paneDashboard = (over: Record<string, unknown> = {}) =>
+  JSON.stringify({
+    ...(JSON.parse(dashboard) as object),
+    hubs: [{ name: 'Router', kind: 'class', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 }],
+    hotspots: [{ name: 'Kernel', kind: 'class', score: 7.25 }],
+    dead_code_candidates: 4,
+    cycles: { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 2, members: ['A', 'B'] }] },
+    trend: [
+      { snapshot_id: 's0', cycles: 1, max_degree: 10 },
+      { snapshot_id: 's1', cycles: 3, max_degree: 12 },
+    ],
+    ...over,
+  })
+
+/** What `inspect-component --json` prints for a component that exists. */
+const inspected = (name: string) =>
+  JSON.stringify({
+    project_id: 'p1',
+    snapshot_id: 's1',
+    summary: `Inspected App\\${name}.`,
+    data: {
+      component: {
+        kind: 'class',
+        canonical_name: `App\\${name}`,
+        boundaries: [],
+        incoming: [{ kind: 'calls', component: { canonical_name: 'App\\Kernel', display_name: 'Kernel' } }],
+        outgoing: [],
+      },
+      limits: { truncation_reasons: [] },
+    },
+    evidence: [{ path: `src/${name}.php`, start_line: 3 }],
+  })
+
+const PANE_PROPS = {
+  title: 'Knossos',
+  isFocused: false,
+  bodyColumns: 60,
+  placement: 'dock',
+  scroll: { offset: 0, bodyRows: 30 },
+  view: {},
+} as RenderPropsOf['Pane']
+
+async function mountPane($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
+  return $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: PANE_PROPS })
+}
+
+/** The person typing `/knossos <args>`. */
+async function slash($: Engine, args: string) {
+  return $.command.run({
+    command: 'knossos',
+    args,
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 120 },
+  })
 }
 
 async function bandText($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
@@ -482,5 +557,176 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     expect(w.calls).toHaveLength(0)
+  })
+
+  test('/knossos opens the pane and a second /knossos closes it', async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    const before = w.calls.filter(c => c[2] === 'dashboard').length
+    expect((await slash($, '')).text).toBe('Knossos pane opened.')
+    // Opening reads the dashboard afresh; closing reads nothing.
+    expect(w.calls.filter(c => c[2] === 'dashboard').length).toBe(before + 1)
+    expect((await slash($, '  ')).text).toBe('Knossos pane closed.')
+    expect(w.calls.filter(c => c[2] === 'dashboard').length).toBe(before + 1)
+    expect(w.opened).toEqual(['knossos'])
+    expect(w.closed).toEqual(['knossos'])
+  })
+
+  test('/knossos with anything else says how to use it', async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const args of ['foo', 'inspect', 'inspect   ']) {
+      expect((await slash($, args)).text).toContain('Usage: /knossos')
+    }
+    expect(w.opened).toEqual([])
+  })
+
+  test('the pane lists hubs, hotspots, cycles and a trend on both surfaces', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      expect((await ui.find({ key: 'hubs' }))?.text).toContain('Router (class) in 41')
+      expect((await ui.find({ key: 'hotspots' }))?.text).toContain('Kernel (class) 7.3')
+      expect((await ui.find({ key: 'cycles' }))?.text).toContain('Cycles: 1')
+      expect((await ui.find({ key: 'cycles' }))?.text).toContain('2: A → B')
+      expect((await ui.find({ key: 'dead-code' }))?.text).toContain('Dead-code candidates: 4')
+      expect(await ui.find({ key: 'trend' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
+  test('truncated counts read as lower bounds', async ($, on) => {
+    const cycles = { count: 50, truncated: true, truncation_reasons: ['cycle_limit'], largest: [] }
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ cycles, dead_code_candidates: 100, dead_code_truncated: true }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'cycles' }))?.text).toContain('Cycles: 50+')
+    expect((await ui.find({ key: 'dead-code' }))?.text).toContain('Dead-code candidates: 100+')
+    await ui.unmount()
+  })
+
+  test('the trend rows are labelled per snapshot and end on the newest value', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    const trend = (await ui.find({ key: 'trend' }))?.text
+    expect(trend).toContain('cycles per snapshot')
+    expect(trend).toContain('▁█ 3')
+    expect(trend).toContain('max degree per snapshot')
+    expect(trend).toContain('▁█ 12')
+    await ui.unmount()
+  })
+
+  test('the pane without data says how to get some', async ($, on) => {
+    const unscanned = JSON.stringify({ ...(JSON.parse(dashboard) as object), status: 'unscanned' })
+    const w = world(on, { dashboard: [{ stdout: unscanned }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'empty' }))?.text).toContain('knossos scan')
+    expect(await ui.find({ key: 'hubs' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('pressing a hub shows its detail and back returns', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], inspect: [{ stdout: inspected('Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'hub-0' })
+    const detail = (await ui.find({ key: 'detail' }))?.text
+    expect(detail).toContain('Router')
+    expect(detail).toContain('used by 1: Kernel')
+    expect(w.inspectRuns()).toEqual([
+      ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'inspect', ROOT, 'p1', 'Router'],
+    ])
+    await ui.press({ key: 'back' })
+    expect(await ui.find({ key: 'detail' })).toBeUndefined()
+    expect(await ui.find({ key: 'hubs' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('pressing a hotspot shows its detail', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], inspect: [{ stdout: inspected('Kernel') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'hot-0' })
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspected App\\Kernel.')
+    expect(w.inspectRuns()[0]?.slice(4)).toEqual(['p1', 'Kernel'])
+    await ui.unmount()
+  })
+
+  test('a component is inspected once per snapshot', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], inspect: [{ stdout: inspected('Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'hub-0' })
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Router')
+    expect(w.inspectRuns()).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('a new snapshot inspects the component again', async ($, on) => {
+    const w = world(on, {
+      dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard({ snapshot_id: 's2' }) }],
+      inspect: [{ stdout: inspected('Router') }],
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect Router')
+    let ui = await mountPane($)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Router')
+    await ui.unmount()
+    // A scan after an edit refreshes the dashboard onto snapshot s2.
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    ui = await mountPane($)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Router')
+    expect(w.inspectRuns()).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test('an unknown component shows what knossos said', async ($, on) => {
+    const none = JSON.stringify({ summary: 'No component matched "Nope".', data: { component: null } })
+    const w = world(on, { inspect: [{ stdout: none }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect Nope')
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('No component matched "Nope".')
+    await ui.unmount()
+  })
+
+  test('a silent inspect says there is nothing to show', async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect Router')
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('No details for Router')
+    await ui.unmount()
+  })
+
+  test('/knossos inspect opens the pane on that component', async ($, on) => {
+    const w = world(on, { inspect: [{ stdout: inspected('My Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect((await slash($, 'inspect  My Router ')).text).toBe('Knossos pane opened.')
+    expect(w.opened).toEqual(['knossos'])
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('My Router')
+    expect(w.inspectRuns()[0]?.slice(4)).toEqual(['p1', 'My Router'])
+    await ui.unmount()
   })
 })

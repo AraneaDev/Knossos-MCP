@@ -49,3 +49,53 @@ export function parseDashboard(stdout: string): Dashboard | null {
 export function countLabel(n: number, truncated: boolean): string {
   return truncated ? `${n}+` : `${n}`
 }
+
+/** How many related components a detail line names before it stops at an ellipsis. */
+const NAMED = 5
+
+type Related = { component?: { canonical_name?: unknown; display_name?: unknown } }
+
+/** "used by 2: Kernel, Console": one direction of a component's relationships, each name once. */
+function relatedLine(label: string, edges: unknown, truncated: boolean): string {
+  const list = Array.isArray(edges) ? (edges as Related[]) : []
+  const names = [
+    ...new Set(
+      list.map(e => e?.component?.display_name ?? e?.component?.canonical_name).filter((n): n is string => typeof n === 'string'),
+    ),
+  ]
+  const head = `${label} ${countLabel(names.length, truncated)}`
+  if (names.length === 0) return head
+  return `${head}: ${names.slice(0, NAMED).join(', ')}${names.length > NAMED ? ' …' : ''}`
+}
+
+/**
+ * What the pane shows for one component, from `inspect-component --json`:
+ * the envelope's summary, then where the component is and who it touches.
+ * Null for silence or anything without a summary; an unmatched or ambiguous
+ * name is its summary alone, which already says so.
+ */
+export function componentDetail(stdout: string): string[] | null {
+  let value: unknown
+  try {
+    value = JSON.parse(stdout)
+  } catch {
+    return null
+  }
+  if (!isObject(value)) return null
+  const { summary, data, evidence } = value as { summary?: unknown; data?: unknown; evidence?: unknown }
+  if (typeof summary !== 'string') return null
+  const { component, limits } = (isObject(data) ? data : {}) as { component?: unknown; limits?: { truncation_reasons?: unknown } }
+  if (!isObject(component)) return [summary]
+  const c = component as { kind?: unknown; boundaries?: unknown; incoming?: unknown; outgoing?: unknown }
+  const reasons = Array.isArray(limits?.truncation_reasons) ? (limits.truncation_reasons as unknown[]) : []
+  const place = Array.isArray(evidence) && isObject(evidence[0]) ? (evidence[0] as { path?: unknown; start_line?: unknown }) : null
+  const where = typeof place?.path === 'string' ? ` · ${place.path}${typeof place.start_line === 'number' ? `:${place.start_line}` : ''}` : ''
+  const lines = [summary, `${typeof c.kind === 'string' ? c.kind : 'component'}${where}`]
+  const boundaries = Array.isArray(c.boundaries)
+    ? (c.boundaries as { name?: unknown }[]).map(b => b?.name).filter((n): n is string => typeof n === 'string')
+    : []
+  if (boundaries.length > 0) lines.push(`boundaries: ${boundaries.join(', ')}`)
+  lines.push(relatedLine('used by', c.incoming, reasons.includes('incoming_relationship_limit')))
+  lines.push(relatedLine('uses', c.outgoing, reasons.includes('outgoing_relationship_limit')))
+  return lines
+}

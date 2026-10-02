@@ -3,11 +3,12 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { parseDashboard, parseTurnBrief } from './lib/envelopes'
-import type { TurnBrief } from './lib/envelopes'
+import { componentDetail, countLabel, parseDashboard, parseTurnBrief } from './lib/envelopes'
+import type { Dashboard, TurnBrief } from './lib/envelopes'
 import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
 import { SingleFlight } from './lib/scheduler'
+import { sparkline } from './lib/sparkline'
 import type { KnossosView } from '../types'
 
 const PANE = 'knossos'
@@ -21,6 +22,10 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const
 /** The wrapper's own limits (60 s and 15 s) plus room for it to exit on its own. */
 const BRIEF_TIMEOUT_MS = 70_000
 const DASHBOARD_TIMEOUT_MS = 20_000
+const INSPECT_TIMEOUT_MS = 20_000
+const USAGE = 'Usage: /knossos to toggle the architecture pane; /knossos inspect <component> to open it on one component.'
+/** How many members of a cycle the pane names before it stops at an ellipsis. */
+const CYCLE_MEMBERS = 4
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
 const AGE_TICK_MS = 1_000
 const DEFAULT_THRESHOLD = 20
@@ -57,6 +62,12 @@ const mod = {
   bandText: null as string | null,
   /** Keeps the band's age current while the mod is on. */
   ticker: null as Timer | null,
+  /**
+   * The pane's component details, keyed by snapshot and name: a component is
+   * inspected once per snapshot, and a new scan asks again. Lost on reload,
+   * which only costs one more inspect.
+   */
+  details: new Map<string, string[]>(),
 }
 
 /** The fan-in threshold from the options: a positive finite number, else the default. */
@@ -98,7 +109,7 @@ async function refreshDashboard($: EngineInterface): Promise<boolean> {
 }
 
 /** The first dashboard, retried once; two silences turn the mod off for the session. */
-async function startUp($: EngineInterface, openPane: boolean): Promise<void> {
+async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> {
   if (!(await refreshDashboard($)) && !(await refreshDashboard($))) {
     mod.disabled = true
     mod.ticker?.cancel()
@@ -108,7 +119,52 @@ async function startUp($: EngineInterface, openPane: boolean): Promise<void> {
   }
   mod.ticker ??= $.clock.every(AGE_TICK_MS, () => void tickAge($).catch(() => undefined))
   // A refused or unplaced pane is the person's layout, not a failure of the mod.
-  if (openPane) await $.ui.open({ id: PANE, title: 'Knossos' }).catch(() => undefined)
+  if (openOnStart) await openPane($)
+}
+
+/** The pane's lines for one component; a silent wrapper is said, not hidden. */
+async function inspect($: EngineInterface, d: Dashboard, name: string): Promise<string[]> {
+  const key = `${d.snapshot_id ?? ''}\u0000${name}`
+  const cached = mod.details.get(key)
+  if (cached !== undefined) return cached
+  const stdout = d.project_id === null ? '' : await wrapper($, 'inspect', [d.project_id, name], INSPECT_TIMEOUT_MS)
+  const lines = componentDetail(stdout)
+  // Silence is not cached: the binary may come back, or the scan may still be running.
+  if (lines === null) return [`No details for ${name}: knossos said nothing.`]
+  mod.details.set(key, lines)
+  return lines
+}
+
+/** Opens the pane; a refused or unplaced pane is the person's layout, not a failure of the mod. */
+async function openPane($: EngineInterface): Promise<void> {
+  await $.ui.open({ id: PANE, title: 'Knossos' }).catch(() => undefined)
+}
+
+/** `/knossos` toggles the pane, `/knossos inspect <component>` opens it on one component. */
+async function runCommand($: EngineInterface, args: string): Promise<string> {
+  const verb = args.trim().split(/\s+/)[0] ?? ''
+  if (verb === 'inspect') {
+    const name = args.trim().slice('inspect'.length).trim()
+    if (name === '') return USAGE
+    await update($, view, v => ({ ...v, inspect: name }))
+    if ((await read($, dashboard)) === null) await refreshDashboard($)
+    await openPane($)
+    return 'Knossos pane opened.'
+  }
+  if (verb !== '') return USAGE
+  if ((await $.ui.panes()).some(pane => pane.id === PANE)) {
+    await $.ui.close({ id: PANE }).catch(() => undefined)
+    return 'Knossos pane closed.'
+  }
+  await refreshDashboard($)
+  await openPane($)
+  return 'Knossos pane opened.'
+}
+
+/** One trend row: its label, the glyphs oldest to newest, and the newest value. */
+function trendRow(label: string, values: number[]): string {
+  const newest = values.at(-1)
+  return newest === undefined ? `${label}  no snapshots yet` : `${label}  ${sparkline(values)} ${newest}`
 }
 
 /** Stores what a turn brief says, by its status; resolves true when it is a fresh `ok`. */
@@ -202,14 +258,15 @@ export const register: Register = (on, options) => {
   mod.bandText = null
   mod.ticker?.cancel()
   mod.ticker = null
-  const openPane = options.openPaneOnStart === true
+  mod.details = new Map()
+  const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'knossos',
       description: 'Toggle the Knossos architecture pane; /knossos inspect <component> to drill in',
     })
-    $.clock.after(0, () => void startUp($, openPane))
+    $.clock.after(0, () => void startUp($, openOnStart))
     return next(e)
   })
 
@@ -258,9 +315,76 @@ export const register: Register = (on, options) => {
           {model.text}{' '}
         </Text>
         {model.showDetails && (
-          <Button key="details" label="details" onPress={() => void $.ui.open({ id: PANE, title: 'Knossos' }).catch(() => undefined)} />
+          <Button key="details" label="details" onPress={() => openPane($)} />
         )}
         <Button key="hide" label="hide" onPress={() => update($, view, v => ({ ...v, isBandHidden: true }))} />
+      </Box>
+    )
+  })
+
+  on('command.run', { command: 'knossos' }, async ($, e) => ({ text: await runCommand($, e.args) }))
+
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const d = await read($, dashboard)
+    const v = await read($, view)
+    if (d === null || d.status !== 'ok') {
+      return (
+        <Box key="empty">
+          <Text dimColor>No Knossos data for this project. Scan it with knossos scan.</Text>
+        </Box>
+      )
+    }
+    const show = (name: string) => update($, view, x => ({ ...x, inspect: name }))
+    if (v.inspect !== null) {
+      const lines = await inspect($, d, v.inspect)
+      return (
+        <Box key="detail" flexDirection="column">
+          <Text bold>{v.inspect}</Text>
+          {lines.map((line, i) => (
+            <Text key={`line-${i}`}>{line}</Text>
+          ))}
+          <Button key="back" label="back" onPress={() => update($, view, x => ({ ...x, inspect: null }))} />
+        </Box>
+      )
+    }
+    // No loop variable may be called `h`: JSX compiles to h(...), and a
+    // parameter of that name shadows the element factory inside its callback.
+    return (
+      <Box flexDirection="column">
+        <Text dimColor>
+          snapshot {d.freshness.state} · {d.freshness.drift_files} files drifted
+        </Text>
+        <Text bold>Hubs</Text>
+        <Box key="hubs" flexDirection="column">
+          {d.hubs.length === 0 && <Text dimColor>none</Text>}
+          {d.hubs.map((hub, i) => (
+            <Button key={`hub-${i}`} plain label={`${hub.name} (${hub.kind}) in ${hub.in_degree}`} onPress={() => show(hub.name)} />
+          ))}
+        </Box>
+        <Text bold>Hotspots</Text>
+        <Box key="hotspots" flexDirection="column">
+          {d.hotspots.length === 0 && <Text dimColor>none</Text>}
+          {d.hotspots.map((spot, i) => (
+            <Button key={`hot-${i}`} plain label={`${spot.name} (${spot.kind}) ${spot.score.toFixed(1)}`} onPress={() => show(spot.name)} />
+          ))}
+        </Box>
+        <Box key="cycles" flexDirection="column">
+          <Text bold>Cycles: {countLabel(d.cycles.count, d.cycles.truncated)}</Text>
+          {d.cycles.largest.map((c, i) => (
+            <Text key={`cycle-${i}`} dimColor>
+              {c.size}: {c.members.slice(0, CYCLE_MEMBERS).join(' → ')}
+              {c.members.length > CYCLE_MEMBERS ? ' …' : ''}
+            </Text>
+          ))}
+        </Box>
+        <Box key="dead-code">
+          <Text>Dead-code candidates: {countLabel(d.dead_code_candidates, d.dead_code_truncated)}</Text>
+        </Box>
+        <Box key="trend" flexDirection="column">
+          <Text>{trendRow('cycles per snapshot    ', d.trend.map(t => t.cycles))}</Text>
+          <Text>{trendRow('max degree per snapshot', d.trend.map(t => t.max_degree))}</Text>
+        </Box>
       </Box>
     )
   })
