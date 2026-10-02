@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
@@ -21,6 +21,9 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const
 /** The wrapper's own limits (60 s and 15 s) plus room for it to exit on its own. */
 const BRIEF_TIMEOUT_MS = 70_000
 const DASHBOARD_TIMEOUT_MS = 20_000
+/** formatAge's finest step is a second; the tick redraws only when the text would change. */
+const AGE_TICK_MS = 1_000
+const DEFAULT_THRESHOLD = 20
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -50,6 +53,27 @@ const mod = {
   /** Two silent dashboards at start: no usable binary, so the mod stays out of the way. */
   disabled: false,
   flight: null as SingleFlight | null,
+  /** What the band last drew, or null when it drew nothing: the age tick compares against it. */
+  bandText: null as string | null,
+  /** Keeps the band's age current while the mod is on. */
+  ticker: null as Timer | null,
+}
+
+/** The fan-in threshold from the options: a positive finite number, else the default. */
+function thresholdOf(value: unknown): number {
+  const n = Number(value)
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_THRESHOLD
+}
+
+/**
+ * Redraws the band when the text it would draw now differs from what it drew:
+ * a render answer is reused until state changes, so without this an age such
+ * as "as of 12s ago" would stand still while the figures grow old.
+ */
+async function tickAge($: EngineInterface): Promise<void> {
+  if (mod.bandText === null) return
+  const model = bandModel(await read($, brief), await read($, job), await $.clock.now())
+  if ((model?.text ?? null) !== mod.bandText) $.ui.invalidate('ui.render')
 }
 
 /** Runs the wrapper; its stdout, or '' for any failure (the wrapper's contract is silence). */
@@ -77,9 +101,12 @@ async function refreshDashboard($: EngineInterface): Promise<boolean> {
 async function startUp($: EngineInterface, openPane: boolean): Promise<void> {
   if (!(await refreshDashboard($)) && !(await refreshDashboard($))) {
     mod.disabled = true
+    mod.ticker?.cancel()
+    mod.ticker = null
     $.ui.log('knossos: no data from the knossos binary; the band is off for this session.')
     return
   }
+  mod.ticker ??= $.clock.every(AGE_TICK_MS, () => void tickAge($).catch(() => undefined))
   // A refused or unplaced pane is the person's layout, not a failure of the mod.
   if (openPane) await $.ui.open({ id: PANE, title: 'Knossos' }).catch(() => undefined)
 }
@@ -137,7 +164,10 @@ async function scanSafely($: EngineInterface): Promise<void> {
   try {
     await scan($)
   } catch {
-    await update($, job, (j): JobState => ({ ...j, phase: 'failed' })).catch(() => undefined)
+    const now = await $.clock.now().catch(() => null)
+    await update($, job, (j): JobState => ({ phase: 'failed', lastAttemptAt: now ?? j.lastAttemptAt })).catch(
+      () => undefined,
+    )
   }
 }
 
@@ -163,12 +193,15 @@ async function noteEdit($: EngineInterface, path: string): Promise<string | null
 
 export const register: Register = (on, options) => {
   if (options.enabled === false) return
-  mod.threshold = Number(options.fanInThreshold ?? 20)
+  mod.threshold = thresholdOf(options.fanInThreshold)
   mod.enforce = options.enforcePolicies !== false
   mod.dirty = false
   mod.edited = new Set()
   mod.disabled = false
   mod.flight = null
+  mod.bandText = null
+  mod.ticker?.cancel()
+  mod.ticker = null
   const openPane = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -210,8 +243,12 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (mod.disabled || e.props.hasSurvey || (await read($, view)).isBandHidden) return next(e)
+    if (mod.disabled || e.props.hasSurvey || (await read($, view)).isBandHidden) {
+      mod.bandText = null
+      return next(e)
+    }
     const model = bandModel(await read($, brief), await read($, job), await $.clock.now())
+    mod.bandText = model?.text ?? null
     if (model === null) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const color = model.tone === 'alert' ? 'red' : model.tone === 'warn' ? 'yellow' : undefined

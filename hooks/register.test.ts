@@ -243,7 +243,7 @@ describe('knossos mod', () => {
     expect(w.briefRuns()[0]).toContain(`--files=${ROOT}/src/New.php`)
   })
 
-  test('violations reach the model as a user-role note', async ($, on) => {
+  test('an undelivered violation note leaves a debug trace', async ($, on) => {
     const violation = {
       policy_id: 'no-http-in-domain',
       source: 'src/Domain/A.php',
@@ -257,6 +257,7 @@ describe('knossos mod', () => {
     await edit($, `${ROOT}/src/Domain/A.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
+    // Delivery of the user row itself is checked in the live-session task.
     // The 2.1.287 kit runs no hook for a plugin's own $.session.append (not
     // the test's, not another plugin's at any tier): the call always rejects
     // with "no implementation". The mod's fallback for an undelivered note is
@@ -346,7 +347,7 @@ describe('knossos mod', () => {
   })
 
   test('a not-allowed brief shows the allow-root hint', async ($, on) => {
-    const w = world(on, { brief: [{ stdout: brief(), hold: 0 }, { stdout: brief({ status: 'not-allowed' }) }] })
+    const w = world(on, { brief: [{ stdout: brief() }, { stdout: brief({ status: 'not-allowed' }) }] })
     await $.session.start(START)
     await w.clock.settle()
     for (let i = 0; i < 2; i++) {
@@ -367,6 +368,46 @@ describe('knossos mod', () => {
       await w.clock.settle()
     }
     expect(await bandText($)).toBeUndefined()
+  })
+
+  test('a missing brief replaces the figures and draws nothing', async ($, on) => {
+    const w = world(on, { brief: [{ stdout: brief() }, { stdout: brief({ status: 'missing' }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (let i = 0; i < 2; i++) {
+      await edit($, `${ROOT}/src/Router.php`)
+      await $.turn.complete(TURN)
+      await w.clock.settle()
+    }
+    // The kit's $ has no state noun: the band is the observable. Stored, the
+    // missing brief replaces the ok figures, so nothing is drawn; were it
+    // dropped with the job failed, the band would read "scan failed" with them.
+    expect(await bandText($)).toBeUndefined()
+  })
+
+  test("the band's age keeps up with the clock", async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    expect((await ui.find({ key: 'band' }))?.text).toContain('as of 0s ago')
+    await w.clock.advance(5_000)
+    expect((await ui.find({ key: 'band' }))?.text).toContain('as of 5s ago')
+    await w.clock.advance(61_000)
+    expect((await ui.find({ key: 'band' }))?.text).toContain('as of 1m ago')
+    await ui.unmount()
+  })
+
+  test('a threshold that is not a positive number falls back to 20', { options: { fanInThreshold: 0 } }, async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.calls[0]).toContain('--fan-in-threshold=20')
+    const ran = await edit($, `${ROOT}/src/Router.php`)
+    expect(ran.context?.join('\n')).toContain('src/Router.php has 41 dependent files')
   })
 
   test('the band draws on terminal and desktop', async ($, on) => {
@@ -422,6 +463,8 @@ describe('knossos mod', () => {
     await w.clock.settle()
     expect(w.briefRuns()).toHaveLength(0)
     expect(w.toasts).toHaveLength(0)
+    expect(w.logs).toHaveLength(1)
+    expect(w.logs[0]?.text).toContain('no data from the knossos binary')
   })
 
   test('the pane opens on start when asked', { options: { openPaneOnStart: true } }, async ($, on) => {
