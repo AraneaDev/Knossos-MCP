@@ -123,9 +123,11 @@ final class BriefCommandTest extends KnossosTestCase
 
         assertSame(true, $command->supports('turn-brief'));
         assertSame(true, $command->supports('dashboard'));
+        assertSame(true, $command->supports('component-detail'));
         assertSame(false, $command->supports('session-brief'));
         assertSame(['db', 'json', 'files', 'policies', 'no-policies'], $command->allowedOptions('turn-brief'));
         assertSame(['db', 'json', 'fan-in-threshold'], $command->allowedOptions('dashboard'));
+        assertSame(['db', 'json'], $command->allowedOptions('component-detail'));
     }
 
     #[Group('cli')]
@@ -279,5 +281,64 @@ final class BriefCommandTest extends KnossosTestCase
 
         assertStringContainsString('knossos turn-brief [path]', $help);
         assertStringContainsString('knossos dashboard [path]', $help);
+        assertStringContainsString('knossos component-detail [path] <name>', $help);
+    }
+
+    #[Group('cli')]
+    public function testComponentDetailPrintsTheEnvelopeAsJson(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            [$status, $out] = $this->runJson('component-detail', [$root . '/src', 'Greeter'], []);
+            assertSame(0, $status);
+            assertSame('ok', $out['status']);
+            assertSame('App\Greeter', $out['component']['name']);
+            [, $missing] = $this->runJson('component-detail', [$root, 'Nope'], []);
+            assertSame('not-found', $missing['status']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('cli')]
+    public function testComponentDetailWithOneArgumentReadsTheWorkingDirectory(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        $previous = (string) getcwd();
+        try {
+            chdir($root);
+            [$status, $out] = $this->runJson('component-detail', ['Greeter'], []);
+            assertSame(0, $status);
+            assertSame('ok', $out['status']);
+        } finally {
+            chdir($previous);
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('cli')]
+    public function testComponentDetailNeverCreatesADatabase(): void
+    {
+        $directory = $this->temporaryDirectory();
+        try {
+            [$status, $out] = $this->runJson('component-detail', [$directory, 'Greeter'], []);
+            assertSame(0, $status);
+            assertSame('unscanned', $out['status']);
+            assertFalse(is_dir($directory . '/.knossos'));
+        } finally {
+            $this->removeTempTree($directory);
+        }
+    }
+
+    #[Group('cli')]
+    public function testComponentDetailWithoutANameIsAnErrorStatus(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            assertSame(['status' => 'error'], $this->runJson('component-detail', [], [])[1]);
+            assertSame(['status' => 'error'], $this->runJson('component-detail', [$root, '  '], [])[1]);
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 }

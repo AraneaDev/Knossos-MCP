@@ -9,8 +9,8 @@ namespace Knossos\Cli;
  *
  * `--db` first, `KNOSSOS_DATA_DIR` second, then the nearest
  * `.knossos/knossos.sqlite` at or above the target. Shared by
- * `session-brief`, `turn-brief` and `dashboard` so the three cannot
- * answer one directory out of different databases.
+ * `session-brief`, `turn-brief`, `dashboard` and `component-detail` so
+ * they cannot answer one directory out of different databases.
  */
 final readonly class ProjectDatabaseLocator
 {
