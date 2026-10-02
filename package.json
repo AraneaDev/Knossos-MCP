@@ -14,13 +14,11 @@
     "@eslint/js": "latest",
     "c8": "11.0.0",
     "eslint": "latest",
-    "markdownlint-cli2": "0.23.0",
+    "markdownlint-cli2": "0.23.3",
     "prettier": "latest"
   },
   "overrides": {
-    "js-yaml": "5.2.2",
-    "brace-expansion": "5.0.9",
-    "smol-toml": "1.7.1"
+    "brace-expansion": "5.0.12"
   },
   "engines": {
     "node": ">=24"

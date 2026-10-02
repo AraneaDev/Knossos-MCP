@@ -38,6 +38,14 @@ LABEL org.opencontainers.image.title="Knossos MCP" \
 # pins, no longer implements that rule -- a bare `RUN apt-get update && apt-get upgrade -y`
 # reports only DL3009 under it. A suppression here would suppress nothing and would read
 # as if the linter still objected.
+#
+# The upgrade only helps when this layer is actually rebuilt. Its text never changes, so
+# a layer cache serves the first build's result indefinitely: CI's buildx cache kept a
+# 2026-09-13 layer into October, past an openssl and a pcre2 fix, and the gate failed on
+# both. CI passes the date here, so the first build each day runs the upgrade again and
+# the rest of that day still hit the cache. Every RUN after an ARG sees it, so a changed
+# value is a cache miss from here on.
+ARG APT_REFRESH=unset
 RUN apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && apt-get install --no-install-recommends -y git libatomic1 libsqlite3-dev python3 unzip \
