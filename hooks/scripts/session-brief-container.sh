@@ -10,8 +10,8 @@
 set -u
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$PWD}"
-IMAGE="__KNOSSOS_IMAGE__"
-DATA="__KNOSSOS_DATA__"
+IMAGE='__KNOSSOS_IMAGE__'
+DATA='__KNOSSOS_DATA__'
 
 # Same reason as the local hook: the working directory and the argument must
 # name the same place. `docker run` gives the container its image's own working

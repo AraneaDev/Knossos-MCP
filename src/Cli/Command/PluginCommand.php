@@ -186,7 +186,7 @@ final class PluginCommand implements CliCommand
         // server which directory it was started with.
         $scripts[self::LIBRARY_SCRIPT] = strtr(
             $this->read($root . '/' . self::LIBRARY_SCRIPT),
-            ['__KNOSSOS_DATA_DIR__' => str_replace("'", "'\\''", $dataDir)],
+            ['__KNOSSOS_DATA_DIR__' => $this->singleQuoted($dataDir, 'data-dir')],
         );
         $this->materialise($root, $pluginDirectory, $scripts);
         foreach ($commands as $line) {
@@ -244,7 +244,10 @@ final class PluginCommand implements CliCommand
         foreach (['session-brief' => 'session-brief', 'knossos-run' => 'knossos-run'] as $name => $installed) {
             $scripts['hooks/scripts/' . $installed . '.sh'] = strtr(
                 $this->read($root . '/hooks/scripts/' . $name . '-container.sh'),
-                ['__KNOSSOS_IMAGE__' => $image, '__KNOSSOS_DATA__' => $data],
+                [
+                    '__KNOSSOS_IMAGE__' => $this->singleQuoted($image, 'image'),
+                    '__KNOSSOS_DATA__' => $this->singleQuoted($data, 'data'),
+                ],
             );
         }
         $existed = $this->materialise($root, $out, $scripts);
@@ -255,6 +258,9 @@ final class PluginCommand implements CliCommand
         }
         if ($context->options->flag($options, 'execute')) {
             $message .= PHP_EOL . '--out writes directly; --execute is not needed here and was ignored.';
+        }
+        if ($context->options->single($options, 'data-dir') !== null) {
+            $message .= PHP_EOL . '--data-dir only applies to a host install; the container scripts read --data and was ignored.';
         }
         $message .= PHP_EOL . sprintf('Install it with: claude plugin marketplace add %s --scope user', escapeshellarg($out));
         // The directory and what is now in it, relative to that directory: a
@@ -411,11 +417,32 @@ final class PluginCommand implements CliCommand
             $fromEnvironment = getenv('KNOSSOS_DATA_DIR');
             $value = is_string($fromEnvironment) ? $fromEnvironment : '';
         }
-        if (str_contains($value, "\n") || str_contains($value, "\r") || str_contains($value, "\0")) {
-            throw new InvalidArgumentException('data-dir must not contain a newline or NUL.');
+        if ($value !== '' && !str_starts_with($value, '/')) {
+            // A relative path would be resolved against each project's
+            // directory by the hooks, which is a different graph from the one
+            // the server reads.
+            throw new InvalidArgumentException(sprintf('data-dir must be an absolute path, got "%s".', $value));
         }
+        $this->singleQuoted($value, 'data-dir');
 
         return $value;
+    }
+
+    /**
+     * $value made safe to sit between the single quotes of a shell assignment.
+     *
+     * A single quote is closed, escaped and reopened, so no character inside
+     * can expand or end the string. A newline, carriage return or NUL is
+     * rejected outright: none belongs in a path or an image name, and each
+     * breaks a line-oriented script.
+     */
+    private function singleQuoted(string $value, string $name): string
+    {
+        if (str_contains($value, "\n") || str_contains($value, "\r") || str_contains($value, "\0")) {
+            throw new InvalidArgumentException(sprintf('%s must not contain a newline or NUL.', $name));
+        }
+
+        return str_replace("'", "'\\''", $value);
     }
 
     /** The sentence that tells a person which graph the installed hooks read. */

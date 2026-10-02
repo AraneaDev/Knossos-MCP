@@ -391,45 +391,48 @@ final class PluginCommandTest extends KnossosTestCase
     public function testSpecFilesNeverReachAnInstalledPlugin(): void
     {
         $root = $this->sourceRoot();
-        // A spec sitting beside the sources it tests must stay behind.
-        file_put_contents($root . '/hooks/lib/band.spec.ts', '// spec');
-        file_put_contents($root . '/hooks/lib/band.test.ts', '// test');
-        file_put_contents($root . '/hooks/tsconfig.json', '{}');
+        try {
+            // A spec sitting beside the sources it tests must stay behind.
+            file_put_contents($root . '/hooks/lib/band.spec.ts', '// spec');
+            file_put_contents($root . '/hooks/lib/band.test.ts', '// test');
+            file_put_contents($root . '/hooks/tsconfig.json', '{}');
 
-        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+            $this->runWithStubbedClaude($root, ['execute' => ['true']]);
 
-        foreach ($this->treeOf($root . '/.plugin') as $file) {
-            assertSame(false, str_contains($file, '.spec.') || str_contains($file, '.test.') || str_contains($file, 'tsconfig'));
+            foreach ($this->treeOf($root . '/.plugin') as $file) {
+                assertSame(false, str_contains($file, '.spec.') || str_contains($file, '.test.') || str_contains($file, 'tsconfig'));
+            }
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
         }
-
-        exec('rm -rf ' . escapeshellarg($root));
     }
 
     #[Group('cli')]
     public function testContainerEmitWritesTheRunWrapperWithImageAndDataSubstituted(): void
     {
         $out = $this->temporaryPath('knossos-plugin-run');
-
-        ob_start();
         try {
-            (new PluginCommand())->run(
-                'install-agent-plugin',
-                [],
-                ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['ghcr.io/me/knossos:9']],
-                $this->context(),
-            );
+            ob_start();
+            try {
+                (new PluginCommand())->run(
+                    'install-agent-plugin',
+                    [],
+                    ['out' => [$out], 'data' => ['/srv/knossos-data'], 'image' => ['ghcr.io/me/knossos:9']],
+                    $this->context(),
+                );
+            } finally {
+                ob_get_clean();
+            }
+
+            $wrapper = (string) file_get_contents($out . '/hooks/scripts/knossos-run.sh');
+            assertSame(true, str_contains($wrapper, 'docker run'));
+            assertSame(true, str_contains($wrapper, 'ghcr.io/me/knossos:9'));
+            assertSame(true, str_contains($wrapper, '/srv/knossos-data'));
+            assertSame(false, str_contains($wrapper, '__KNOSSOS_'));
+            assertSame(false, file_exists($out . '/hooks/scripts/lib.sh'));
         } finally {
-            ob_get_clean();
+            exec('rm -rf ' . escapeshellarg($out));
         }
-
-        $wrapper = (string) file_get_contents($out . '/hooks/scripts/knossos-run.sh');
-        assertSame(true, str_contains($wrapper, 'docker run'));
-        assertSame(true, str_contains($wrapper, 'ghcr.io/me/knossos:9'));
-        assertSame(true, str_contains($wrapper, '/srv/knossos-data'));
-        assertSame(false, str_contains($wrapper, '__KNOSSOS_'));
-        assertSame(false, file_exists($out . '/hooks/scripts/lib.sh'));
-
-        exec('rm -rf ' . escapeshellarg($out));
     }
 
     #[Group('cli')]
@@ -437,23 +440,25 @@ final class PluginCommandTest extends KnossosTestCase
     {
         $root = $this->sourceRoot();
         $out = $this->temporaryPath('knossos-plugin-modes');
-
-        $this->runWithStubbedClaude($root, ['execute' => ['true']]);
-        ob_start();
         try {
-            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/d']], $this->contextFor($root));
-        } finally {
-            ob_get_clean();
-        }
 
-        foreach ([$root . '/.plugin', $out] as $directory) {
-            foreach (['session-brief.sh', 'knossos-run.sh'] as $script) {
-                assertSame('0755', substr(sprintf('%o', fileperms($directory . '/hooks/scripts/' . $script)), -4));
+            $this->runWithStubbedClaude($root, ['execute' => ['true']]);
+            ob_start();
+            try {
+                (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['/srv/d']], $this->contextFor($root));
+            } finally {
+                ob_get_clean();
             }
-        }
-        assertSame('0644', substr(sprintf('%o', fileperms($root . '/.plugin/hooks/scripts/lib.sh')), -4));
 
-        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out));
+            foreach ([$root . '/.plugin', $out] as $directory) {
+                foreach (['session-brief.sh', 'knossos-run.sh'] as $script) {
+                    assertSame('0755', substr(sprintf('%o', fileperms($directory . '/hooks/scripts/' . $script)), -4));
+                }
+            }
+            assertSame('0644', substr(sprintf('%o', fileperms($root . '/.plugin/hooks/scripts/lib.sh')), -4));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out));
+        }
     }
 
     /**
@@ -470,13 +475,23 @@ final class PluginCommandTest extends KnossosTestCase
     private function runInstalledScript(string $script, array $options, ?string $installerEnv): string
     {
         $root = $this->sourceRoot();
-        $previous = getenv('KNOSSOS_DATA_DIR');
-        putenv($installerEnv === null ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $installerEnv);
         try {
-            $this->runWithStubbedClaude($root, ['execute' => ['true']] + $options);
+            $previous = getenv('KNOSSOS_DATA_DIR');
+            putenv($installerEnv === null ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $installerEnv);
+            try {
+                $this->runWithStubbedClaude($root, ['execute' => ['true']] + $options);
+            } finally {
+                putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+            }
+            return $this->runStubbed($root, $script);
         } finally {
-            putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+            exec('rm -rf ' . escapeshellarg($root));
         }
+    }
+
+    /** Run an installed script from $root against a stub binary and return its trimmed output. */
+    private function runStubbed(string $root, string $script): string
+    {
         $stub = $root . '/stub-knossos';
         file_put_contents($stub, <<<'SH'
             #!/bin/sh
@@ -490,10 +505,8 @@ final class PluginCommandTest extends KnossosTestCase
             escapeshellarg($root . '/.plugin/hooks/scripts/' . $script),
             $script === 'knossos-run.sh' ? 'turn-brief ' . escapeshellarg($root) : '',
         );
-        $output = (string) shell_exec($command);
-        exec('rm -rf ' . escapeshellarg($root));
 
-        return trim($output);
+        return trim((string) shell_exec($command));
     }
 
     #[Group('cli')]
@@ -541,45 +554,157 @@ final class PluginCommandTest extends KnossosTestCase
     {
         $root = $this->sourceRoot();
         $bin = $this->temporaryPath('knossos-plugin-bin');
-        mkdir($bin, 0o755, true);
-        file_put_contents($bin . '/claude', "#!/bin/sh\nexit 0\n");
-        chmod($bin . '/claude', 0o755);
-        $path = (string) getenv('PATH');
-        putenv('PATH=' . $bin . ':' . $path);
-        ob_start();
         try {
-            (new PluginCommand())->run(
-                'install-agent-plugin',
-                [],
-                ['execute' => ['true'], 'json' => ['true'], 'data-dir' => ['/srv/graph']],
-                $this->contextFor($root),
-            );
+            mkdir($bin, 0o755, true);
+            file_put_contents($bin . '/claude', "#!/bin/sh\nexit 0\n");
+            chmod($bin . '/claude', 0o755);
+            $path = (string) getenv('PATH');
+            putenv('PATH=' . $bin . ':' . $path);
+            ob_start();
+            try {
+                (new PluginCommand())->run(
+                    'install-agent-plugin',
+                    [],
+                    ['execute' => ['true'], 'json' => ['true'], 'data-dir' => ['/srv/graph']],
+                    $this->contextFor($root),
+                );
+            } finally {
+                $output = (string) ob_get_clean();
+                putenv('PATH=' . $path);
+            }
+            $lines = array_values(array_filter(explode("\n", trim($output))));
+            $decoded = json_decode((string) end($lines), true, 8, JSON_THROW_ON_ERROR);
+
+            assertSame('/srv/graph', $decoded['data_dir']);
         } finally {
-            $output = (string) ob_get_clean();
-            putenv('PATH=' . $path);
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($bin));
         }
-        $lines = array_values(array_filter(explode("\n", trim($output))));
-        $decoded = json_decode((string) end($lines), true, 8, JSON_THROW_ON_ERROR);
-
-        assertSame('/srv/graph', $decoded['data_dir']);
-
-        exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($bin));
     }
 
     #[Group('cli')]
     public function testADataDirectoryWithANewlineIsRejected(): void
     {
         $root = $this->sourceRoot();
-
         try {
-            (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true'], 'data-dir' => ["/a\nb"]], $this->contextFor($root));
-            self::fail('Expected an InvalidArgumentException.');
-        } catch (InvalidArgumentException $error) {
-            assertSame(true, str_contains($error->getMessage(), 'data-dir'));
-        }
-        assertSame(false, file_exists($root . '/.plugin'));
 
-        exec('rm -rf ' . escapeshellarg($root));
+            try {
+                (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true'], 'data-dir' => ["/a\nb"]], $this->contextFor($root));
+                self::fail('Expected an InvalidArgumentException.');
+            } catch (InvalidArgumentException $error) {
+                assertSame(true, str_contains($error->getMessage(), 'data-dir'));
+            }
+            assertSame(false, file_exists($root . '/.plugin'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
+    /**
+     * Emit a container plugin with a hostile --data and run its installed
+     * script with a stub `docker` first on PATH that prints its arguments.
+     *
+     * @return array{output: string, marker: bool}
+     */
+    private function runHostileContainerScript(string $script, string $subcommandArguments): array
+    {
+        $root = $this->sourceRoot();
+        $out = $this->temporaryPath('knossos-plugin-hostile');
+        $bin = $this->temporaryPath('knossos-plugin-bin');
+        $marker = $this->temporaryPath('knossos-marker');
+        $hostile = '/a/$(touch ' . $marker . ')"q`touch ' . $marker . '`\\z';
+        try {
+            ob_start();
+            try {
+                (new PluginCommand())->run(
+                    'install-agent-plugin',
+                    [],
+                    ['out' => [$out], 'data' => [$hostile], 'image' => ['img/$(touch ' . $marker . '):1']],
+                    $this->contextFor($root),
+                );
+            } finally {
+                ob_get_clean();
+            }
+            mkdir($bin, 0o755, true);
+            file_put_contents($bin . '/docker', <<<'SH'
+                #!/bin/sh
+                for a in "$@"; do printf 'ARG=%s\n' "$a"; done
+                SH . "\n");
+            chmod($bin . '/docker', 0o755);
+            $command = sprintf(
+                'cd %1$s && PATH=%2$s:$PATH CLAUDE_PROJECT_DIR=%1$s sh %3$s %4$s 2>&1',
+                escapeshellarg($root),
+                escapeshellarg($bin),
+                escapeshellarg($out . '/hooks/scripts/' . $script),
+                $subcommandArguments,
+            );
+            $output = (string) shell_exec($command);
+
+            return ['output' => $output . "\nHOSTILE=" . $hostile, 'marker' => file_exists($marker)];
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root) . ' ' . escapeshellarg($out) . ' ' . escapeshellarg($bin) . ' ' . escapeshellarg($marker));
+        }
+    }
+
+    #[Group('cli')]
+    public function testHostileValuesReachTheContainerSessionBriefVerbatim(): void
+    {
+        $result = $this->runHostileContainerScript('session-brief.sh', '');
+
+        $hostile = substr(strstr($result['output'], 'HOSTILE=') ?: '', 8);
+        assertSame(true, $hostile !== '');
+        assertSame(true, str_contains($result['output'], 'ARG=' . $hostile . ':/data'));
+        assertSame(true, str_contains($result['output'], 'ARG=img/$(touch '));
+        assertSame(false, $result['marker']);
+    }
+
+    #[Group('cli')]
+    public function testHostileValuesReachTheContainerRunWrapperVerbatim(): void
+    {
+        $root = sys_get_temp_dir();
+        $result = $this->runHostileContainerScript('knossos-run.sh', 'turn-brief ' . escapeshellarg($root));
+
+        $hostile = substr(strstr($result['output'], 'HOSTILE=') ?: '', 8);
+        assertSame(true, $hostile !== '');
+        assertSame(true, str_contains($result['output'], 'ARG=' . $hostile . ':/data'));
+        assertSame(false, $result['marker']);
+    }
+
+    #[Group('cli')]
+    public function testARelativeDataDirectoryIsRejected(): void
+    {
+        $root = $this->sourceRoot();
+        try {
+            foreach ([['data-dir' => ['rel/data']], []] as $options) {
+                $previous = getenv('KNOSSOS_DATA_DIR');
+                putenv('KNOSSOS_DATA_DIR=' . ($options === [] ? 'also/relative' : ''));
+                try {
+                    (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true']] + $options, $this->contextFor($root));
+                    self::fail('Expected an InvalidArgumentException.');
+                } catch (InvalidArgumentException $error) {
+                    assertSame(true, str_contains($error->getMessage(), 'absolute'));
+                    assertSame(true, str_contains($error->getMessage(), $options === [] ? 'also/relative' : 'rel/data'));
+                } finally {
+                    putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+                }
+            }
+            assertSame(false, file_exists($root . '/.plugin'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($root));
+        }
+    }
+
+    #[Group('cli')]
+    public function testDataDirIsReportedAsIgnoredOnTheContainerRoute(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-ignored');
+        try {
+            $prose = $this->emitProse($out, ['data-dir' => ['/srv/graph']]);
+
+            assertSame(true, str_contains($prose, '--data-dir only applies to a host install'));
+            assertSame(false, str_contains($this->emitProse($out, []), '--data-dir'));
+        } finally {
+            exec('rm -rf ' . escapeshellarg($out));
+        }
     }
 
     /**

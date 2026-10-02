@@ -18,8 +18,8 @@ SUBCOMMAND=$1
 PROJECT_DIR=$2
 shift 2
 
-IMAGE="__KNOSSOS_IMAGE__"
-DATA="__KNOSSOS_DATA__"
+IMAGE='__KNOSSOS_IMAGE__'
+DATA='__KNOSSOS_DATA__'
 
 # The same bounds as the local wrapper, so a stuck daemon never stalls the mod.
 case "$SUBCOMMAND" in
