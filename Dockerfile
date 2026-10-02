@@ -104,6 +104,7 @@ COPY schemas ./schemas
 COPY .claude-plugin ./.claude-plugin
 COPY hooks ./hooks
 COPY skills ./skills
+COPY types ./types
 RUN chmod 0755 \
     /opt/knossos/bin/knossos \
     /opt/knossos/workers/php/bin/worker \
@@ -208,6 +209,17 @@ RUN npm ci --ignore-scripts --no-audit --no-fund
 # with dev dependencies so the vitest suite can run in this stage.
 RUN npm --prefix workers/typescript ci --ignore-scripts --no-audit --no-fund
 COPY workers/typescript/vitest.config.js ./workers/typescript/
+# The mod's vitest suite (`npm run test:mod`) reads this at the root.
+COPY vitest.config.mjs ./
+
+# The Claude Code CLI runs `claude plugin validate` and `claude plugin test` for
+# the mod in tools/quality's tests lane. It needs no authentication for either.
+# The version is pinned, and the pin moves together with the mod's API types
+# (types/index.d.ts and the engine declarations the type-check reads), on
+# purpose: an unpinned install would let a CLI release change what the gate
+# checks without any commit here saying so. Its postinstall fetches the native
+# binary, so this one install does not use --ignore-scripts.
+RUN npm install --global @anthropic-ai/claude-code@2.1.287 --no-audit --no-fund
 
 # The quality profile runs cargo fmt, clippy, the crate's tests, and llvm-cov, so
 # this stage needs the toolchain the runtime stage deliberately does not ship.
