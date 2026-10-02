@@ -217,9 +217,13 @@ COPY vitest.config.mjs ./
 # The version is pinned, and the pin moves together with the mod's API types
 # (types/index.d.ts and the engine declarations the type-check reads), on
 # purpose: an unpinned install would let a CLI release change what the gate
-# checks without any commit here saying so. Its postinstall fetches the native
-# binary, so this one install does not use --ignore-scripts.
-RUN npm install --global @anthropic-ai/claude-code@2.1.287 --no-audit --no-fund
+# checks without any commit here saying so. The package ships a stub and puts
+# the native binary in place from its postinstall script, which this stage's
+# npm 12 does not run for a dependency on its own, so it is run explicitly.
+# Without it `claude` exits with "native binary not installed".
+RUN npm install --global @anthropic-ai/claude-code@2.1.287 --no-audit --no-fund \
+    && node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs \
+    && claude --version
 
 # The quality profile runs cargo fmt, clippy, the crate's tests, and llvm-cov, so
 # this stage needs the toolchain the runtime stage deliberately does not ship.
