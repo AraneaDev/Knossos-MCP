@@ -80,10 +80,29 @@ function world(
     watch?: object[][]
     /** How long each Bash call runs on the mocked clock (a command that takes a while). */
     bashMs?: number
+    /** The session's id, and what the plugin's store holds at the start (an earlier process's baselines). */
+    sessionId?: string
+    store?: Record<string, unknown>
   } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[]; garbled?: string[] } = {},
 ) {
   const clock = mock.clock(on)
+  // The plugin's own store, in memory, readable by the test: what an earlier process left, and what this one keeps.
+  const store = new Map<string, unknown>(Object.entries(answers.store ?? {}))
+  on('store.get', (_$, e) => ({ value: structuredClone(store.get(e.key)) }))
+  on('store.set', (_$, e) => {
+    store.set(e.key, structuredClone(e.value))
+    return { value: undefined }
+  })
+  on('store.delete', (_$, e) => {
+    store.delete(e.key)
+    return { value: undefined }
+  })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  let sessionId = answers.sessionId ?? 'session-1'
+  on('session.id', () => ({ value: sessionId }))
+  /** The process going on under another session id, as after a /clear or a resume. */
+  const switchSession = (id: string) => (sessionId = id)
   const links = disk.links ?? {}
   const gone = new Set(disk.gone ?? [])
   const queues = {
@@ -256,7 +275,7 @@ function world(
   const ledgerRuns = () => calls.filter(c => c[2] === 'session-changes')
   const headRuns = () => calls.filter(c => c[2] === 'session-head')
   const diffRuns = () => calls.filter(c => c[2] === 'session-diff')
-  return { headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  return { store, switchSession, headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -3181,6 +3200,39 @@ describe('the live watcher', () => {
     })
   }
 
+  test('a session continued in a new process keeps the commit and the snapshot it began at; a new one starts fresh', async ($, on) => {
+    const OLD = 'fedcba9876543210fedcba9876543210fedcba98'
+    const kept = { sessionBaselines: { 'session-1': { rev: { status: 'ok', rev: OLD }, snapshot: 's0', startedAt: 5 } } }
+    const since = LEDGER.replace('"since":"s1"', '"since":"s0"')
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: since }], head: [{ stdout: HEAD }], diff: [{ stdout: ROUTER_DIFF }], store: kept })
+    await $.session.start(START)
+    await w.clock.settle()
+    // Its commit is known: none is read, and its changes are read since the snapshot it first saw.
+    expect(w.headRuns()).toEqual([])
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    expect(w.ledgerRuns().at(-1)).toContain('--since=s0')
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    expect(w.diffRuns().at(-1)).toContain(`--rev=${OLD}`)
+    await ui.unmount()
+    // Its first start is kept as it was.
+    expect(w.store.get('sessionBaselines')).toEqual(kept.sessionBaselines)
+  })
+
+  test('a new session records where it began under its own id, and a /clear starts another', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], head: [{ stdout: HEAD }], sessionId: 'session-2', store: { sessionBaselines: { 'session-1': { rev: null, snapshot: 's9', startedAt: 1 } } } })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.headRuns()).toHaveLength(1)
+    const stored = w.store.get('sessionBaselines') as Record<string, { rev: unknown; snapshot: unknown }>
+    expect(stored['session-2']).toMatchObject({ rev: { status: 'ok', rev: REV }, snapshot: 's1' })
+    // The other session's is left alone.
+    expect(stored['session-1']).toMatchObject({ snapshot: 's9' })
+  })
+
   test('a file opened anywhere but the session changes shows no diff and reads none', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], head: [{ stdout: HEAD }], diff: [{ stdout: ROUTER_DIFF }] })
     await $.session.start(START)
@@ -3241,7 +3293,14 @@ describe('the live watcher', () => {
     const w = world(on, { watch: [[READY], [READY]], head: [{ stdout: HEAD }] })
     await $.session.start(START)
     await w.clock.settle()
-    await $.session.end({ reason: 'clear', sessionId: 'x', resume: { id: 'x' } } as never)
+    await $.session.end({ reason: 'clear', sessionId: 'session-1', resume: { id: 'session-1' } } as never)
+    w.switchSession('session-2')
+    await w.clock.settle()
+    expect(w.headRuns()).toHaveLength(2)
+    expect(Object.keys(w.store.get('sessionBaselines') as object).sort()).toEqual(['session-1', 'session-2'])
+    // Resuming the first session in this process reads its own baseline back: no head is read for it.
+    await $.session.end({ reason: 'resume', sessionId: 'session-2', resume: { id: 'session-1' } } as never)
+    w.switchSession('session-1')
     await w.clock.settle()
     expect(w.headRuns()).toHaveLength(2)
   })

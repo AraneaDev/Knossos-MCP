@@ -4,6 +4,8 @@ import type { Elements, EngineInterface, Register, RenderSurface, Timer } from '
 import { activeBetween, begin, counts, finish, FOLLOWED_SCAN_MS, lookbackMs, noActivity, scanWindow } from './lib/activity'
 import type { Activity } from './lib/activity'
 import { bandModel } from './lib/band'
+import { BASELINES_KEY, baselinesOf, remember } from './lib/baseline'
+import type { Baseline } from './lib/baseline'
 import type { JobState } from './lib/band'
 import { diffView } from './lib/diff'
 import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseSessionDiff, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
@@ -157,6 +159,15 @@ function editedPath(e: object): string | null {
  */
 const mod = {
   threshold: 20,
+  /**
+   * The session id whose baseline is in state, once it was read back or
+   * recorded (see `lib/baseline.ts`); null until then, and after a session
+   * ends. The ending session's id, while the process may still answer it.
+   */
+  baselineOf: null as string | null,
+  endedSession: null as string | null,
+  /** Whether this session's commit was asked for: a silent answer is not asked again. */
+  headAsked: false,
   enforce: true,
   /** Set by an edit inside the project, cleared when a turn's scan is scheduled. */
   dirty: false,
@@ -335,6 +346,8 @@ function thresholdOf(value: unknown): number {
  * as "as of 12s ago" would stand still while the figures grow old.
  */
 async function tickAge($: EngineInterface): Promise<void> {
+  // After a /clear or a resume the process may name the new session only later: its baseline is settled once it does.
+  if (mod.baselineOf === null && !mod.disabled && (await currentSession($)) !== null) await settleBaseline($)
   // The watcher is kept running from here, never from what its own events start: no call loops back on itself.
   await ensureWatcher($)
   await retryEmpty($)
@@ -441,8 +454,11 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   await update($, refresh, (): RefreshState => ({ fetchedAt: now, failed: false }))
   mod.dashboardStored = true
   if (parsed.status === 'ok') mod.snapshot = parsed.snapshot_id ?? mod.snapshot
-  // The session's changes are read since the first snapshot it saw.
-  if (parsed.status === 'ok' && parsed.snapshot_id !== null && (await read($, sessionStart)) === null) await update($, sessionStart, () => parsed.snapshot_id)
+  // The session's changes are read since the first snapshot it saw, kept for when it is continued in another process.
+  if (parsed.status === 'ok' && parsed.snapshot_id !== null && (await read($, sessionStart)) === null) {
+    await update($, sessionStart, () => parsed.snapshot_id)
+    await saveBaseline($)
+  }
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown)
@@ -501,8 +517,8 @@ async function readTheme($: EngineInterface): Promise<void> {
  * turn asks again. Only the wrapper's `no-binary` turns the mod off.
  */
 async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> {
-  // First: the commit the session begins at, before anything of it can be committed.
-  await recordHead($)
+  // First: where the session began, read back for a session continued here, else the commit it begins at, before anything of it can be committed.
+  await settleBaseline($)
   await readTheme($)
   const root = await $.session.root().then(r => placed($, r)).catch(() => null)
   await update($, sessionRoot, () => root)
@@ -552,6 +568,51 @@ async function requestDetail($: EngineInterface, shown: Inspected): Promise<void
   }
   await update($, detail, loading)
   $.clock.after(0, () => void loadDetail($, snapshot, shown, key))
+}
+
+/** The session's id, or null when the engine does not say, or still names the session that ended. */
+async function currentSession($: EngineInterface): Promise<string | null> {
+  const id = await $.session.id().catch(() => null)
+  return typeof id === 'string' && id !== '' && id !== mod.endedSession ? id : null
+}
+
+/** The baselines kept in the plugin's store, by session id; none when it cannot be read. */
+async function storedBaselines($: EngineInterface): Promise<Record<string, Baseline>> {
+  return baselinesOf(await $.store.get(BASELINES_KEY).catch(() => undefined))
+}
+
+/**
+ * Where the session began. A session this mod has seen before (continued
+ * or resumed, in this process or another) gets its commit and its first
+ * snapshot back from the store, so its Changes and diffs keep their
+ * baseline; any other session records the commit it begins at. Either way
+ * the baseline is stored under the session's id.
+ */
+async function settleBaseline($: EngineInterface): Promise<void> {
+  const id = await currentSession($)
+  const kept = id === null ? undefined : (await storedBaselines($))[id]
+  if (id !== null && kept !== undefined) {
+    if (kept.rev !== null) await update($, sessionRev, () => kept.rev)
+    if (kept.snapshot !== null) await update($, sessionStart, () => kept.snapshot)
+    mod.baselineOf = id
+    return
+  }
+  // Asked once per session: a head read later would name a commit made during it.
+  if (!mod.headAsked) {
+    mod.headAsked = true
+    await recordHead($)
+  }
+  await saveBaseline($)
+}
+
+/** Stores the session's baseline as it stands, under its id; a store that refuses is no failure. */
+async function saveBaseline($: EngineInterface): Promise<void> {
+  const id = await currentSession($)
+  if (id === null || mod.disabled) return
+  const all = await storedBaselines($)
+  const baseline: Baseline = { rev: await read($, sessionRev), snapshot: await read($, sessionStart), startedAt: await $.clock.now() }
+  await $.store.set(BASELINES_KEY, remember(all, id, baseline)).catch(() => undefined)
+  mod.baselineOf = id
 }
 
 /**
@@ -1431,6 +1492,9 @@ export const register: Register = (on, options) => {
   mod.dirty = false
   mod.edited = new Set()
   mod.disabled = false
+  mod.baselineOf = null
+  mod.endedSession = null
+  mod.headAsked = false
   mod.flight = null
   mod.rescanFlight = null
   mod.rescanQueued = false
@@ -1507,7 +1571,11 @@ export const register: Register = (on, options) => {
       // Its diffs are taken against the commit it begins at.
       await update($, sessionRev, () => null)
       await update($, fileDiff, () => null)
-      $.clock.after(0, () => void recordHead($).catch(() => undefined))
+      // The session that ended keeps its baseline; the one that follows reads its own back (a resume) or records one.
+      mod.endedSession = e.sessionId
+      mod.baselineOf = null
+      mod.headAsked = false
+      $.clock.after(0, () => void settleBaseline($).catch(() => undefined))
       await update($, sessionLedger, () => null)
       await update($, changes, () => NO_CHANGES)
     }
