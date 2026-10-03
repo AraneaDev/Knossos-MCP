@@ -582,16 +582,18 @@ final class PluginCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
-    public function testADataDirectoryWithANewlineIsRejected(): void
+    public function testADataDirectoryWithALineBreakOrNulIsRejected(): void
     {
         $root = $this->sourceRoot();
         try {
 
-            try {
-                (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true'], 'data-dir' => ["/a\nb"]], $this->contextFor($root));
-                self::fail('Expected an InvalidArgumentException.');
-            } catch (InvalidArgumentException $error) {
-                assertSame(true, str_contains($error->getMessage(), 'data-dir'));
+            foreach (["\n", "\r", "\0"] as $character) {
+                try {
+                    (new PluginCommand())->run('install-agent-plugin', [], ['execute' => ['true'], 'data-dir' => ['/a' . $character . 'b']], $this->contextFor($root));
+                    self::fail('Expected an InvalidArgumentException.');
+                } catch (InvalidArgumentException $error) {
+                    assertSame(true, str_contains($error->getMessage(), 'data-dir'));
+                }
             }
             assertSame(false, file_exists($root . '/.plugin'));
         } finally {
@@ -611,14 +613,14 @@ final class PluginCommandTest extends KnossosTestCase
         $out = $this->temporaryPath('knossos-plugin-hostile');
         $bin = $this->temporaryPath('knossos-plugin-bin');
         $marker = $this->temporaryPath('knossos-marker');
-        $hostile = '/a/$(touch ' . $marker . ')"q`touch ' . $marker . '`\\z';
+        $hostile = '/a/$(touch ' . $marker . ')"q\'s`touch ' . $marker . '`\\z';
         try {
             ob_start();
             try {
                 (new PluginCommand())->run(
                     'install-agent-plugin',
                     [],
-                    ['out' => [$out], 'data' => [$hostile], 'image' => ['img/$(touch ' . $marker . '):1']],
+                    ['out' => [$out], 'data' => [$hostile], 'image' => ["img/it's/$(touch " . $marker . '):1']],
                     $this->contextFor($root),
                 );
             } finally {
@@ -653,7 +655,7 @@ final class PluginCommandTest extends KnossosTestCase
         $hostile = substr(strstr($result['output'], 'HOSTILE=') ?: '', 8);
         assertSame(true, $hostile !== '');
         assertSame(true, str_contains($result['output'], 'ARG=' . $hostile . ':/data'));
-        assertSame(true, str_contains($result['output'], 'ARG=img/$(touch '));
+        assertSame(true, str_contains($result['output'], "ARG=img/it's/$(touch "));
         assertSame(false, $result['marker']);
     }
 
@@ -666,6 +668,7 @@ final class PluginCommandTest extends KnossosTestCase
         $hostile = substr(strstr($result['output'], 'HOSTILE=') ?: '', 8);
         assertSame(true, $hostile !== '');
         assertSame(true, str_contains($result['output'], 'ARG=' . $hostile . ':/data'));
+        assertSame(true, str_contains($result['output'], "ARG=img/it's/$(touch "));
         assertSame(false, $result['marker']);
     }
 
@@ -700,7 +703,7 @@ final class PluginCommandTest extends KnossosTestCase
         try {
             $prose = $this->emitProse($out, ['data-dir' => ['/srv/graph']]);
 
-            assertSame(true, str_contains($prose, '--data-dir only applies to a host install'));
+            assertSame(true, str_contains($prose, '--data-dir only applies to a host install and was ignored; the container scripts read --data.'));
             assertSame(false, str_contains($this->emitProse($out, []), '--data-dir'));
         } finally {
             exec('rm -rf ' . escapeshellarg($out));
@@ -1036,7 +1039,7 @@ final class PluginCommandTest extends KnossosTestCase
 
         $second = $this->emitProse($out, ['execute' => ['true']]);
         assertSame(true, str_contains($second, 'The target directory already existed; its files were replaced.'));
-        assertSame(true, str_contains($second, '--execute writes directly; --execute is not needed here and was ignored.') || str_contains($second, '--execute is not needed here and was ignored.'));
+        assertSame(true, str_contains($second, '--out writes directly; --execute is not needed here and was ignored.'));
 
         exec('rm -rf ' . escapeshellarg($out));
     }
@@ -1180,5 +1183,68 @@ final class PluginCommandTest extends KnossosTestCase
         }
 
         return $output;
+    }
+
+    /** The container values sit inside single quotes in a line-oriented script: a line break or NUL is refused. */
+    #[Group('cli')]
+    public function testContainerDataAndImageWithALineBreakOrNulAreRejected(): void
+    {
+        foreach (['data', 'image'] as $option) {
+            foreach (["\n", "\r", "\0"] as $character) {
+                $out = $this->temporaryPath('knossos-plugin-break');
+                $options = ['out' => [$out], 'data' => ['/srv/data']];
+                $options[$option] = [($option === 'data' ? '/srv/' : 'img') . $character . 'x'];
+                try {
+                    (new PluginCommand())->run('install-agent-plugin', [], $options, $this->context());
+                    self::fail('Expected an InvalidArgumentException for ' . $option);
+                } catch (InvalidArgumentException $error) {
+                    assertSame(true, str_contains($error->getMessage(), $option . ' must not contain'));
+                }
+                assertSame(false, file_exists($out));
+            }
+        }
+    }
+
+    /** A relative --data would reach `docker run -v` as a named volume, not the data directory. */
+    #[Group('cli')]
+    public function testARelativeContainerDataPathIsRejected(): void
+    {
+        $out = $this->temporaryPath('knossos-plugin-relative');
+        try {
+            (new PluginCommand())->run('install-agent-plugin', [], ['out' => [$out], 'data' => ['srv/data']], $this->context());
+            self::fail('Expected an InvalidArgumentException.');
+        } catch (InvalidArgumentException $error) {
+            assertSame(true, str_contains($error->getMessage(), 'absolute'));
+            assertSame(true, str_contains($error->getMessage(), 'srv/data'));
+        }
+        assertSame(false, file_exists($out));
+    }
+
+    /** The preview names the graph the hooks will read, as data and as a sentence. */
+    #[Group('cli')]
+    public function testThePreviewNamesTheDataDirectory(): void
+    {
+        $previous = getenv('KNOSSOS_DATA_DIR');
+        putenv('KNOSSOS_DATA_DIR');
+        try {
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], ['json' => ['true'], 'data-dir' => ['/srv/graph']], $this->context());
+            $decoded = json_decode(trim((string) ob_get_clean()), true, 8, JSON_THROW_ON_ERROR);
+            assertSame('/srv/graph', $decoded['data_dir']);
+
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], ['data-dir' => ['/srv/graph']], $this->context());
+            assertSame(true, str_contains((string) ob_get_clean(), "\nData directory: /srv/graph (the hooks read the graph there).\n"));
+
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], ['json' => ['true']], $this->context());
+            assertSame('', json_decode(trim((string) ob_get_clean()), true, 8, JSON_THROW_ON_ERROR)['data_dir']);
+
+            ob_start();
+            (new PluginCommand())->run('install-agent-plugin', [], [], $this->context());
+            assertSame(true, str_contains((string) ob_get_clean(), "\nData directory: not set, the hooks derive the graph from the project path.\n"));
+        } finally {
+            putenv($previous === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $previous);
+        }
     }
 }

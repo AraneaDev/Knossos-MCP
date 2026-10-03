@@ -237,6 +237,11 @@ final class PluginCommand implements CliCommand
                 'A process inside the container cannot discover it.',
             );
         }
+        if (!str_starts_with($data, '/')) {
+            // `docker run -v` reads a relative source as a named volume, not a
+            // directory, so the hooks would mount an empty graph.
+            throw new InvalidArgumentException(sprintf('data must be an absolute host path, got "%s".', $data));
+        }
         $image = $context->options->single($options, 'image') ?? self::DEFAULT_IMAGE;
         $scripts = [];
         // The container templates are standalone, so they ship under the host
@@ -260,7 +265,7 @@ final class PluginCommand implements CliCommand
             $message .= PHP_EOL . '--out writes directly; --execute is not needed here and was ignored.';
         }
         if ($context->options->single($options, 'data-dir') !== null) {
-            $message .= PHP_EOL . '--data-dir only applies to a host install; the container scripts read --data and was ignored.';
+            $message .= PHP_EOL . '--data-dir only applies to a host install and was ignored; the container scripts read --data.';
         }
         $message .= PHP_EOL . sprintf('Install it with: claude plugin marketplace add %s --scope user', escapeshellarg($out));
         // The directory and what is now in it, relative to that directory: a
@@ -407,7 +412,7 @@ final class PluginCommand implements CliCommand
      *
      * The option wins, then the installer's own `KNOSSOS_DATA_DIR`, then the
      * empty string, which keeps the hooks deriving the graph from the project
-     * path. A newline or NUL is rejected because the value ends up inside a
+     * path. A newline, carriage return or NUL is rejected because the value ends up inside a
      * single-quoted shell assignment, where either would break the script.
      */
     private function dataDirectory(?string $option): string
@@ -439,7 +444,7 @@ final class PluginCommand implements CliCommand
     private function singleQuoted(string $value, string $name): string
     {
         if (str_contains($value, "\n") || str_contains($value, "\r") || str_contains($value, "\0")) {
-            throw new InvalidArgumentException(sprintf('%s must not contain a newline or NUL.', $name));
+            throw new InvalidArgumentException(sprintf('%s must not contain a newline, carriage return or NUL.', $name));
         }
 
         return str_replace("'", "'\\''", $value);
