@@ -1,7 +1,12 @@
 {
   "$schema": "./schemas/project-config-v1.schema.json",
   "version": 1,
-  "ignores": ["tests/Fixtures"],
+  "ignores": [
+    "tests/Fixtures",
+    "hooks/register.tsx",
+    "hooks/register.test.ts",
+    "hooks/lib/*.spec.ts"
+  ],
   "boundaries": [
     { "name": "core", "path_prefix": "src" },
     { "name": "php-worker", "path_prefix": "workers/php" },
