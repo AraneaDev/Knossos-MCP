@@ -41,7 +41,11 @@ export type Cell = { glyph: string; fg?: string; bg?: string }
  * A run of text in one style. `color` is a Claude Code theme key (see
  * `palette.ts`); `dim` marks secondary text, drawn in the theme's `inactive`.
  */
-export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field; cell?: Cell; link?: Loc }
+/**
+ * A run of text in one style. `hidden` marks a pressable with no text that is
+ * drawn out of sight: it exists only so its `press.hotkey` keeps working.
+ */
+export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field; cell?: Cell; link?: Loc; hidden?: true }
 /**
  * One line of the pane. Consecutive rows with the same `raster` key form a
  * grid the terminal may draw as one `Raster`; every surface can draw their

@@ -83,6 +83,7 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
       status: settle(before?.status, status),
       dependents: impact?.dependent_files ?? before?.dependents ?? 0,
       boundaries: impact?.boundaries ?? before?.boundaries ?? [],
+      boundary: impact === undefined ? (before?.boundary ?? null) : (impact.boundary ?? null),
     }
   }
   for (const test of brief.tests) {
@@ -131,12 +132,6 @@ export function testCommand(tests: string[]): string | null {
   return commands.length === 0 ? null : commands.join(' && ')
 }
 
-/** The boundary a file is labelled with among several: the one ranking first in `hues` (declared before inferred), else its first. */
-export function pickBoundary(boundaries: string[], hues: Hues = NO_HUES): string | null {
-  const rank = rankIn(hues)
-  return [...boundaries].sort((a, b) => rank(a) - rank(b))[0] ?? null
-}
-
 /** A boundary's place in `hues` (the project's colour order), past the end for one it does not hold. */
 function rankIn(hues: Hues): (boundary: string) => number {
   const order = [...hues.keys()]
@@ -163,7 +158,8 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     .map(([path, f]) => ({
       path,
       status: f.status,
-      boundary: pickBoundary(f.boundaries, hues),
+      // The file's own boundary; its dependents' are where the change reaches, not where it is.
+      boundary: f.boundary ?? null,
       dependents: f.dependents,
       loc: f.status === 'deleted' ? null : locIn(root, path),
     }))
@@ -240,7 +236,7 @@ function statusMark(status: TouchStatus): Segment {
 
 /**
  * The Changes tab: every file this session touched, most dependents first,
- * with the boundary its dependents are in; the tests that reach the changes,
+ * with the boundary it sits in; the tests that reach the changes,
  * nearest first; and the command that runs them, which `c` copies.
  */
 export function changesRows(input: ChangesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] {

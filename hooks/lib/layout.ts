@@ -11,7 +11,7 @@ import type { AllowState, Dashboard, HubSort, KnossosView, PaneTab, Ranked, Refr
 import { formatAge } from './band'
 import { boundariesInput, boundaryRows } from './boundaries'
 import type { BoundariesInput } from './boundaries'
-import { changesInput, changesList, changesRows, lookAtOf, lookAtRows, NO_CHANGES, pickBoundary } from './changes'
+import { changesInput, changesList, changesRows, lookAtOf, lookAtRows, NO_CHANGES } from './changes'
 import type { ChangesInput, LookAt } from './changes'
 import { countLabel } from './envelopes'
 import { ACCENT, boundaryLabel, FAINT, huesOf, STATUS_COLOURS } from './palette'
@@ -130,13 +130,13 @@ export type PaneInput = {
 export type AllowInput = { root: string; rootsFile: string | null; phase: AllowState['phase']; reason: string | null }
 
 /** The tabs in hotkey order; Changes came last, so the older tabs keep their digits. */
-export const TABS: { id: PaneTab; full: string; short: string; tiny: string; hotkey: string }[] = [
-  { id: 'overview', full: 'Overview', short: 'Over', tiny: 'O', hotkey: '1' },
-  { id: 'hubs', full: 'Hubs', short: 'Hubs', tiny: 'H', hotkey: '2' },
-  { id: 'boundaries', full: 'Boundaries', short: 'Bound', tiny: 'B', hotkey: '3' },
-  { id: 'cycles', full: 'Cycles', short: 'Cyc', tiny: 'C', hotkey: '4' },
-  { id: 'issues', full: 'Issues', short: 'Iss', tiny: 'I', hotkey: '5' },
-  { id: 'changes', full: 'Changes', short: 'Chg', tiny: 'Ch', hotkey: '6' },
+export const TABS: { id: PaneTab; full: string; hotkey: string }[] = [
+  { id: 'overview', full: 'Overview', hotkey: '1' },
+  { id: 'hubs', full: 'Hubs', hotkey: '2' },
+  { id: 'boundaries', full: 'Boundaries', hotkey: '3' },
+  { id: 'cycles', full: 'Cycles', hotkey: '4' },
+  { id: 'issues', full: 'Issues', hotkey: '5' },
+  { id: 'changes', full: 'Changes', hotkey: '6' },
 ]
 
 export const SORTS: HubSort[] = ['in', 'out', 'cross']
@@ -216,15 +216,15 @@ export function needsRescan(d: Dashboard): boolean {
 
 /**
  * The last turn's impact from a fresh brief, or null when there is none to
- * show. A file in several boundaries is labelled with the one that ranks
- * first among `hues` (declared before inferred), else its first. `root`
- * places the files on disk, so their names open them.
+ * show. Each file is labelled with its own boundary (none when it sits in
+ * none), never with its dependents'. `root` places the files on disk, so
+ * their names open them.
  */
-export function lastTurnOf(brief: TurnBrief | null, hues: Hues = new Map(), root: string | null = null): LastTurn | null {
+export function lastTurnOf(brief: TurnBrief | null, root: string | null = null): LastTurn | null {
   if (brief === null || brief.status !== 'ok') return null
   const impact = Object.values(brief.impact)
     .sort((a, b) => b.dependent_files - a.dependent_files || a.path.localeCompare(b.path))
-    .map(f => ({ name: baseName(f.path), boundary: pickBoundary(f.boundaries, hues), dependents: f.dependent_files, loc: locIn(root, f.path) }))
+    .map(f => ({ name: baseName(f.path), boundary: f.boundary ?? null, dependents: f.dependent_files, loc: locIn(root, f.path) }))
   const files = brief.changed_files.length + brief.added_files.length
   if (files === 0 && impact.length === 0) return null
   return { files, dependents: impact.reduce((n, f) => n + f.dependents, 0), tests: brief.tests.length, impact }
@@ -293,7 +293,7 @@ export function paneInput(
     terminal,
     items,
     partial: d.hubs_truncated,
-    lastTurn: lastTurnOf(brief, hues, d.project_root),
+    lastTurn: lastTurnOf(brief, d.project_root),
     health: {
       cycles: countLabel(d.cycles.count, d.cycles.truncated),
       maxDegree: d.trend.at(-1)?.max_degree ?? null,
@@ -416,22 +416,33 @@ function headerRows(input: PaneInput, columns: number): Row[] {
 }
 
 /**
- * The tab strip and the rule under it. Labels shorten, then the gaps close,
- * then only the digits stay; a tab's badge (the Issues count) stays with its
- * label. On the terminal the rule marks the active tab; elsewhere tabs are
- * native buttons whose widths the pane cannot know.
+ * The tab strip and the rule under it. Every tab by its full name when all
+ * fit; else the active tab by its full name and the others by their digit
+ * (each with its badge, the Issues and Changes counts), then with the gaps
+ * closed, then digits alone. Never an abbreviation. On the terminal the rule
+ * marks the active tab; elsewhere tabs are native buttons whose widths the
+ * pane cannot know.
+ *
+ * A Button with a hotkey always draws `N: label`, so a tab drawn as its digit
+ * alone is a Button without one, and its hotkey rides on a hidden twin
+ * (`tabkey:<id>`, no text) placed just before it: the digit keys still switch
+ * every tab. The pane's focus hook moves a ring landing on a twin onto its
+ * visible tab.
  */
 export function tabRows(active: PaneTab, columns: number, terminal: boolean, badges: Partial<Record<PaneTab, string>> = {}): Row[] {
-  const badged = (t: (typeof TABS)[number], label: string, sep: string) => (badges[t.id] ? `${label}${sep}${badges[t.id]}` : label)
-  const variants: [(t: (typeof TABS)[number]) => string, number][] = [
-    [t => badged(t, t.full, ' '), 2],
-    [t => badged(t, t.short, ' '), 2],
-    [t => badged(t, t.short, ''), 1],
-    [t => badged(t, t.tiny, ''), 1],
+  type Tab = (typeof TABS)[number]
+  const full = (t: Tab) => (badges[t.id] ? `${t.full} ${badges[t.id]}` : t.full)
+  const digit = (t: Tab) => `${t.hotkey}${badges[t.id] ?? ''}`
+  // Each variant: whether a tab shows its name, and the gap between tabs.
+  const variants: [(t: Tab) => boolean, number][] = [
+    [() => true, 2],
+    [t => t.id === active, 2],
+    [t => t.id === active, 1],
+    [() => false, 1],
   ]
-  const width = (label: (t: (typeof TABS)[number]) => string, gap: number) =>
-    TABS.reduce((n, t) => n + cells(`${t.hotkey}: ${label(t)}`), 0) + gap * (TABS.length - 1)
-  const [label, gap] = variants.find(([l, g]) => width(l, g) <= columns) ?? variants[variants.length - 1]!
+  const width = (named: (t: Tab) => boolean, gap: number) =>
+    TABS.reduce((n, t) => n + cells(named(t) ? `${t.hotkey}: ${full(t)}` : digit(t)), 0) + gap * (TABS.length - 1)
+  const [named, gap] = variants.find(([l, g]) => width(l, g) <= columns) ?? variants[variants.length - 1]!
   const segments: Segment[] = []
   let rule = ''
   TABS.forEach((t, i) => {
@@ -440,9 +451,13 @@ export function tabRows(active: PaneTab, columns: number, terminal: boolean, bad
       rule += '─'.repeat(gap)
     }
     const on = t.id === active
-    const seg = button(`tab:${t.id}`, label(t), t.hotkey, on ? {} : { dim: true })
-    segments.push(seg)
-    rule += (on ? '━' : '─').repeat(cells(seg.text))
+    const style = on ? {} : { dim: true }
+    if (named(t)) {
+      segments.push(button(`tab:${t.id}`, full(t), t.hotkey, style))
+    } else {
+      segments.push({ text: '', hidden: true, press: { id: `tabkey:${t.id}`, label: t.full, hotkey: t.hotkey } }, button(`tab:${t.id}`, digit(t), undefined, style))
+    }
+    rule += (on ? '━' : '─').repeat(cells(segments[segments.length - 1]!.text))
   })
   const strip = { key: 'tabs', segments: clip(segments, columns) }
   if (!terminal) return [strip]

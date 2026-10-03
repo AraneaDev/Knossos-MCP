@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, TurnBrief } from '../../types'
-import { accumulate, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, pickBoundary, testCommand } from './changes'
+import { accumulate, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, testCommand } from './changes'
 import { editTarget, paneInput, paneRows } from './layout'
 import { fileHref, linkMarkdown, locOf, plainText, rowWidth } from './rows'
 import type { Row } from './rows'
@@ -22,7 +22,7 @@ const brief = (over: Partial<TurnBrief> = {}): TurnBrief => ({
   changed_files: ['src/Router.php'],
   added_files: [],
   deleted_files: [],
-  impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http', 'Core'] } },
+  impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http', 'Core'], boundary: 'Http' } },
   tests: [{ path: 'tests/Http/RouterTest.php', distance: 2 }],
   policy: { status: 'evaluated', total: 0, violations: [], truncated: false },
   ...over,
@@ -41,8 +41,8 @@ function session(): SessionChanges {
       added_files: ['src/Core/Kernel.php'],
       deleted_files: ['src/Helper.php'],
       impact: {
-        'src/Router.php': { path: 'src/Router.php', dependent_files: 42, boundaries: ['Http'] },
-        'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 3, boundaries: ['Core'] },
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 42, boundaries: ['Http'], boundary: 'Http' },
+        'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 3, boundaries: ['Core'], boundary: 'Core' },
       },
       tests: [
         { path: 'tests/Http/RouterTest.php', distance: 1 },
@@ -63,9 +63,9 @@ describe('accumulate', () => {
     const s = session()
     expect(s.turns).toBe(2)
     expect(s.files).toEqual({
-      'src/Router.php': { status: 'changed', dependents: 42, boundaries: ['Http'] },
-      'src/Core/Kernel.php': { status: 'added', dependents: 3, boundaries: ['Core'] },
-      'src/Helper.php': { status: 'deleted', dependents: 0, boundaries: [] },
+      'src/Router.php': { status: 'changed', dependents: 42, boundaries: ['Http'], boundary: 'Http' },
+      'src/Core/Kernel.php': { status: 'added', dependents: 3, boundaries: ['Core'], boundary: 'Core' },
+      'src/Helper.php': { status: 'deleted', dependents: 0, boundaries: [], boundary: null },
     })
     expect(s.tests).toEqual({ 'tests/Http/RouterTest.php': 1, 'tests/Core/KernelTest.php': 3 })
     expect(s.violations).toEqual(['App\\Core\\Kernel → App\\Http\\Router'])
@@ -119,15 +119,35 @@ describe('testCommand', () => {
   })
 })
 
-describe('pickBoundary', () => {
-  it('labels a file with the boundary ranking first in the project, else its first', () => {
-    const hues = new Map([
-      ['Core', 'blue'],
-      ['Http', 'purple'],
+describe('own boundary', () => {
+  it("labels each file with the boundary it sits in, never its dependents'", () => {
+    const c = changesInput(
+      accumulate(
+        NO_CHANGES,
+        brief({
+          changed_files: ['bin/router.php', 'src/Core/Kernel.php'],
+          impact: {
+            'bin/router.php': { path: 'bin/router.php', dependent_files: 9, boundaries: ['tests', 'Core'], boundary: null },
+            'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 3, boundaries: ['tests'], boundary: 'Core' },
+          },
+        }),
+      ),
+      ROOT,
+      new Map([['tests', 'blue'], ['Core', 'purple']]),
+    )
+    expect(c.files.map(f => [f.path, f.boundary])).toEqual([
+      ['bin/router.php', null],
+      ['src/Core/Kernel.php', 'Core'],
     ])
-    expect(pickBoundary(['Http', 'Core'], hues)).toBe('Core')
-    expect(pickBoundary(['zeta', 'alpha'])).toBe('zeta')
-    expect(pickBoundary([])).toBeNull()
+    // Where the changes reach is still the dependents' boundaries.
+    expect(c.boundaries).toEqual(['tests', 'Core'])
+    const rows = changesRows(c, 0, 90)
+    expect(plainText(row(rows, 'change-0')!)).not.toContain('tests')
+    expect(plainText(row(rows, 'change-1')!)).toMatch(/src\/Core\/Kernel\.php +Core/)
+  })
+  it('reads an older knossos without the field as unassigned', () => {
+    const old = accumulate(NO_CHANGES, brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 4, boundaries: ['Http'] } } }))
+    expect(changesInput(old, ROOT).files[0]?.boundary).toBeNull()
   })
 })
 

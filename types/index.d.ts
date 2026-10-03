@@ -1,4 +1,10 @@
-export type FanIn = { path: string; dependent_files: number; boundaries: string[]; top_dependents?: string[] }
+/**
+ * One file's fan-in: how many files depend on it and the boundaries those
+ * dependents sit in (`boundaries`, where a change reaches), and the file's
+ * own boundary label (`boundary`, where it sits; null when none of its
+ * components is in a boundary, absent from a knossos older than the mod).
+ */
+export type FanIn = { path: string; dependent_files: number; boundaries: string[]; boundary?: string | null; top_dependents?: string[] }
 export type BoundaryRef = { id: string; name: string; source: string }
 export type Violation = {
   policy_id: string
@@ -182,7 +188,8 @@ export type TouchStatus = 'changed' | 'added' | 'deleted'
  */
 export type SessionChanges = {
   turns: number
-  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[] }>
+  /** `boundaries` are the dependents' (where a change reaches), `boundary` the file's own label. */
+  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null }>
   tests: Record<string, number>
   violations: string[]
   truncated: boolean

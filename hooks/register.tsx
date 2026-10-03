@@ -142,6 +142,8 @@ const mod = {
    * `y` in the same tick, before the state says running, starts nothing.
    */
   allowing: false,
+  /** The pane element the focus ring last landed on: a tab's hidden twin is walked past by where it came from. */
+  focused: null as string | null,
 }
 
 /** The fan-in threshold from the options: an integer the dashboard command accepts (1 to 100000), else the default. */
@@ -676,10 +678,25 @@ async function runAllow($: EngineInterface, root: string): Promise<void> {
   void (mod.flight ??= new SingleFlight(() => scanSafely($))).request()
 }
 
+/**
+ * Where a focus ring headed for a tab's hidden hotkey twin (`tabkey:<id>`)
+ * goes instead: onto its visible tab, or, when it comes from that tab (a
+ * backward walk, as the twin sits just before it), onto the tab before; null
+ * keeps it where it is (backward past the first tab). Undefined for any
+ * other element.
+ */
+function twinTarget(element: string): string | null | undefined {
+  if (!element.startsWith('tabkey:')) return undefined
+  const id = element.slice('tabkey:'.length)
+  if (mod.focused !== `tab:${id}`) return `tab:${id}`
+  const before = TABS[TABS.findIndex(t => t.id === id) - 1]
+  return before === undefined ? null : `tab:${before.id}`
+}
+
 /** What a press on the pane does, by the pressed element's id; `surface` is where the press came from. */
 async function pressPane($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
-  if (id.startsWith('tab:')) {
-    const tab = id.slice(4) as PaneTab
+  if (id.startsWith('tab:') || id.startsWith('tabkey:')) {
+    const tab = id.slice(id.indexOf(':') + 1) as PaneTab
     if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false }))
     return
   }
@@ -727,6 +744,11 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
             onInput={(value: string) => void typeFilter($, value).catch(() => undefined)}
             onSubmit={(value: string) => void submitFilter($, value).catch(() => undefined)}
           />
+        ) : s.press && s.hidden ? (
+          // Out of sight, there only for its hotkey (a tab drawn as its digit alone).
+          <Box key={s.press.id} display="none">
+            <Button key={s.press.id} plain label={s.press.label} {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })} onPress={pressed => press(s.press!.id, pressed.surface)} />
+          </Box>
         ) : s.press ? (
           <Button
             key={s.press.id}
@@ -796,6 +818,7 @@ export const register: Register = (on, options) => {
   mod.ticker = null
   mod.fetching = new Set()
   mod.allowing = false
+  mod.focused = null
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -872,9 +895,15 @@ export const register: Register = (on, options) => {
 
   // The arrows, Tab or a click moving the focus onto a listed row move the marker with it.
   on('ui.focus', { requestId: PANE }, async ($, e, next) => {
-    const moved = await next(e)
     // A person's move names the element; a `$.ui.focus` call may arrive as its own arguments, naming it `key`.
-    const element = e.element ?? (e as { key?: unknown }).key
+    const asked = e.element ?? (e as { key?: unknown }).key
+    const twin = typeof asked === 'string' ? twinTarget(asked) : undefined
+    if (twin === null) return {}
+    const element = twin ?? asked
+    mod.focused = typeof element === 'string' ? element : null
+    // Redirected in the field the move named: a person's move its `element`, a `$.ui.focus` call its `key`.
+    const redirected = e.element === undefined ? ({ ...e, key: twin } as typeof e) : { ...e, element: twin }
+    const moved = await next(twin === undefined ? e : redirected)
     const index = typeof element === 'string' && element.startsWith('row:') ? Number(element.slice(4)) : Number.NaN
     if (moved.deny === undefined && Number.isInteger(index)) await update($, view, v => ({ ...v, selected: index }))
     return moved

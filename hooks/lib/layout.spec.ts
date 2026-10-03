@@ -88,8 +88,8 @@ const brief = (over: Partial<TurnBrief> = {}): TurnBrief => ({
   added_files: [],
   deleted_files: [],
   impact: {
-    'hooks/register.tsx': { path: 'hooks/register.tsx', dependent_files: 6, boundaries: ['module:hooks'] },
-    'src/Query/TurnBriefService.php': { path: 'src/Query/TurnBriefService.php', dependent_files: 21, boundaries: ['core'] },
+    'hooks/register.tsx': { path: 'hooks/register.tsx', dependent_files: 6, boundaries: ['module:hooks'], boundary: 'module:hooks' },
+    'src/Query/TurnBriefService.php': { path: 'src/Query/TurnBriefService.php', dependent_files: 21, boundaries: ['tests', 'core'], boundary: 'core' },
   },
   tests: [{ path: 'tests/a.php', distance: 1 }],
   policy: { status: 'evaluated', total: 0, violations: [], truncated: false },
@@ -309,6 +309,15 @@ describe('paneRows', () => {
     expect(seg?.color).toBe('error')
   })
 
+  it("labels a last-turn file with its own boundary, never its dependents'", () => {
+    const own = brief({ impact: { 'bin/router.php': { path: 'bin/router.php', dependent_files: 30, boundaries: ['tests'], boundary: null } } })
+    expect(lastTurnOf(own)?.impact.map(f => f.boundary)).toEqual([null])
+    expect(lastTurnOf(brief())?.impact.map(f => [f.name, f.boundary])).toEqual([
+      ['TurnBriefService.php', 'core'],
+      ['register.tsx', 'module:hooks'],
+    ])
+  })
+
   it('leaves the last turn out when there is no fresh brief', () => {
     expect(textOf(paneRows(input({}, dash(), null), 60))).not.toContain('Last turn')
     expect(lastTurnOf(brief({ status: 'scan-failed' }))).toBeNull()
@@ -332,17 +341,35 @@ describe('tabRows', () => {
     expect(rule!.segments.find(s => s.text.includes('━'))?.text).toBe('━━━━━━━')
     expect(rowWidth(rule!)).toBe(80)
   })
-  it('shortens labels, then gaps, then keeps the initials', () => {
-    expect(plainText(tabRows('overview', 60, true)[0]!)).toBe('1: Over  2: Hubs  3: Bound  4: Cyc  5: Iss  6: Chg')
-    expect(plainText(tabRows('overview', 49, true)[0]!)).toBe('1: Over 2: Hubs 3: Bound 4: Cyc 5: Iss 6: Chg')
-    expect(plainText(tabRows('overview', 40, true)[0]!)).toBe('1: O 2: H 3: B 4: C 5: I 6: Ch')
+  it('names the active tab in full and the others by their digit when all six names do not fit', () => {
+    expect(plainText(tabRows('overview', 60, true)[0]!)).toBe('1: Overview  2  3  4  5  6')
+    expect(plainText(tabRows('boundaries', 60, true, { issues: '⁴', changes: '⁸' })[0]!)).toBe('1  2  3: Boundaries  4  5⁴  6⁸')
+    expect(plainText(tabRows('changes', 40, true, { changes: '¹²' })[0]!)).toBe('1  2  3  4  5  6: Changes ¹²')
+    // Never an abbreviation: a pane too narrow even for that keeps the digits alone.
+    expect(plainText(tabRows('boundaries', 20, true)[0]!)).toBe('1 2 3 4 5 6')
+    for (const columns of [20, 40, 60, 72]) expect(plainText(tabRows('issues', columns, true)[0]!)).not.toMatch(/\b(Over|Bound|Cyc|Iss|Chg)\b/)
+    const rule = tabRows('boundaries', 60, true)[1]!
+    expect(rule.segments.find(s => s.text.includes('━'))?.text).toBe('━━━━━━━━━━━━━')
+  })
+  it('keeps every digit a hotkey: a digit-only tab carries it on a hidden twin that draws nothing', () => {
+    const segments = tabRows('overview', 60, true)[0]!.segments
+    const twin = segments.find(s => s.press?.id === 'tabkey:hubs')
+    expect(twin).toMatchObject({ text: '', hidden: true, press: { hotkey: '2' } })
+    // The twin comes before the digit it stands for, so a forward walk lands on the visible one.
+    expect(segments.indexOf(twin!)).toBeLessThan(segments.findIndex(s => s.press?.id === 'tab:hubs'))
+    expect(segments.find(s => s.press?.id === 'tab:hubs')).toMatchObject({ text: '2', dim: true, press: { label: '2' } })
+    expect(segments.find(s => s.press?.id === 'tab:hubs')?.press?.hotkey).toBeUndefined()
+    // Where all six fit, nothing hides.
+    expect(tabRows('overview', 80, true)[0]!.segments.some(s => s.hidden)).toBe(false)
   })
   it('draws no rule where tabs are native buttons', () => {
     expect(tabRows('overview', 60, false)).toHaveLength(1)
   })
   it('gives every tab its digit as hotkey', () => {
-    const presses = tabRows('overview', 60, true)[0]!.segments.flatMap(s => (s.press ? [s.press] : []))
-    expect(presses.map(p => `${p.hotkey}:${p.id}`)).toEqual(['1:tab:overview', '2:tab:hubs', '3:tab:boundaries', '4:tab:cycles', '5:tab:issues', '6:tab:changes'])
+    for (const columns of [60, 80]) {
+      const presses = tabRows('overview', columns, true)[0]!.segments.flatMap(s => (s.press?.hotkey ? [s.press] : []))
+      expect(presses.map(p => `${p.hotkey}:${p.id.replace('tabkey:', 'tab:')}`)).toEqual(['1:tab:overview', '2:tab:hubs', '3:tab:boundaries', '4:tab:cycles', '5:tab:issues', '6:tab:changes'])
+    }
   })
 })
 
@@ -580,7 +607,7 @@ describe('the issues tab', () => {
     expect(superscript(9)).toBe('⁹')
     expect(superscript(12, true)).toBe('¹²⁺')
     expect(plainText(row(paneRows(fullInput(), 90), 'tabs')!)).toContain('5: Issues ⁹')
-    expect(plainText(row(paneRows(fullInput(), 40), 'tabs')!)).toContain('5: I⁹')
+    expect(plainText(row(paneRows(fullInput(), 40), 'tabs')!)).toContain('5⁹')
     // Nothing to act on: no badge.
     expect(plainText(row(paneRows(input(), 90), 'tabs')!)).toMatch(/5: Issues {2}6: Changes$/)
   })

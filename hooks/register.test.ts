@@ -40,7 +40,7 @@ const brief = (over: Record<string, unknown> = {}) =>
     changed_files: ['src/Router.php'],
     added_files: [],
     deleted_files: [],
-    impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'] } },
+    impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'Http' } },
     tests: [],
     policy: { status: 'evaluated', total: 0, violations: [], truncated: false },
     ...over,
@@ -128,8 +128,14 @@ function world(
     copies.push({ text: e.text, surface: e.surface })
     return { value: { isCopied: true } }
   })
+  /** Where the focus ring landed, by element (or `key` for a `$.ui.focus` call). */
+  const focuses: string[] = []
   // The focus ring lands where it was asked to.
-  on('ui.focus', () => ({}))
+  on('ui.focus', (_$, e) => {
+    const element = e.element ?? (e as { key?: unknown }).key
+    if (typeof element === 'string') focuses.push(element)
+    return {}
+  })
   on('ui.panes', () => ({
     value: [...panes].map(id => ({ id, title: 'Knossos', isShown: true, isFocused: false, isPlaced: true })),
   }))
@@ -166,7 +172,7 @@ function world(
   const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
   const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
   const editorRuns = () => calls.filter(c => c[0] === 'code')
-  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies }
+  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -973,15 +979,22 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       const tabs = await ui.findAll({ type: 'Button' })
-      // Six tabs at 60 columns: the labels shorten.
-      expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(t => `${String(t.props.hotkey)} ${t.text}`)).toEqual([
-        '1 Over',
-        '2 Hubs',
-        '3 Bound',
-        '4 Cyc',
-        '5 Iss',
-        '6 Chg',
+      // Six tabs at 60 columns: the active one by name, the others by digit.
+      const labelled = (t: (typeof tabs)[number]) => (t.props.hotkey === undefined ? String(t.text) : `${String(t.props.hotkey)}: ${t.text}`)
+      expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(labelled)).toEqual(['1: Overview', '2', '3', '4', '5', '6'])
+      // Each digit-only tab keeps its hotkey on a hidden twin.
+      expect(tabs.filter(t => String(t.key).startsWith('tabkey:')).map(t => `${String(t.props.hotkey)} ${String(t.key)}`)).toEqual([
+        '2 tabkey:hubs',
+        '3 tabkey:boundaries',
+        '4 tabkey:cycles',
+        '5 tabkey:issues',
+        '6 tabkey:changes',
       ])
+      await ui.press({ key: 'tabkey:cycles' })
+      expect((await ui.find({ key: 'tab:cycles' }))?.text).toBe('Cycles')
+      expect((await ui.find({ key: 'tab:cycles' }))?.props.hotkey).toBe('4')
+      expect((await ui.find({ key: 'tab:overview' }))?.text).toBe('1')
+      await ui.press({ key: 'tabkey:overview' })
       // The active tab is drawn at full strength, the others dim.
       expect((await ui.find({ key: 'tab:overview' }))?.props.dimColor).toBeUndefined()
       expect((await ui.find({ key: 'tab:hubs' }))?.props.dimColor).toBe(true)
@@ -1036,6 +1049,20 @@ describe('knossos mod', () => {
     expect((await ui.find({ key: 'detail' }))?.text).toContain('App\\Kernel')
     await ui.press({ key: 'back' })
     expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    await ui.unmount()
+  })
+
+  test('a focus ring landing on a hidden tab twin moves onto its visible tab, and back past it', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    // Forward: from Overview onto Hubs' twin lands on Hubs.
+    await $.ui.focus({ requestId: 'knossos', key: 'tab:overview' })
+    await $.ui.focus({ requestId: 'knossos', key: 'tabkey:hubs' })
+    // Backward from Hubs, its twin comes first: the ring goes on to Overview.
+    await $.ui.focus({ requestId: 'knossos', key: 'tabkey:hubs' })
+    expect(w.focuses).toEqual(['tab:overview', 'tab:hubs', 'tab:overview'])
     await ui.unmount()
   })
 
@@ -1171,10 +1198,13 @@ describe('knossos mod', () => {
         for (const step of ['tab:overview', 'tab:hubs', 'filter', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0']) {
           await ui.press({ key: step })
           await w.clock.settle()
-          const rows = (await ui.findAll({ type: 'Box' })).filter(b => b.key !== 'pane' && b.key !== 'detail')
+          const boxes = await ui.findAll({ type: 'Box' })
+          // A hidden tab twin draws nothing: its label is out of the strip's width.
+          const hidden = boxes.filter(b => b.props.display === 'none').reduce((n, b) => n + [...b.text].length, 0)
+          const rows = boxes.filter(b => b.key !== 'pane' && b.key !== 'detail' && b.props.display !== 'none')
           expect(rows.length).toBeGreaterThan(5)
           for (const row of rows) {
-            const width = [...drawn(row.text)].length + hotkeyPrefixes(row)
+            const width = [...drawn(row.text)].length + hotkeyPrefixes(row) - (row.key === 'tabs' ? hidden : 0)
             expect(width, `${surface} ${bodyColumns} ${step} ${String(row.key)}: ${row.text}`).toBeLessThanOrEqual(bodyColumns)
           }
           for (const grid of await ui.findAll({ type: 'Raster' })) {
@@ -1459,7 +1489,7 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       // Two violations and one error: the label counts them.
-      expect((await ui.find({ key: 'tab:issues' }))?.text).toBe('Iss ³')
+      expect((await ui.find({ key: 'tab:issues' }))?.text).toBe('5³')
       await ui.press({ key: 'tab:issues' })
       const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
       expect(text).toMatch(/Policy violations *▲ 2/)
@@ -1899,15 +1929,15 @@ describe('knossos mod', () => {
   test('the changes tab adds up every turn: files, dependents, boundaries, tests and their command', async ($, on) => {
     const first = brief({
       changed_files: ['src/Router.php'],
-      impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'] } },
+      impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'Http' } },
       tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }],
     })
     const second = brief({
       changed_files: ['src/Router.php'],
       added_files: ['src/Kernel.php'],
       impact: {
-        'src/Router.php': { path: 'src/Router.php', dependent_files: 42, boundaries: ['Http'] },
-        'src/Kernel.php': { path: 'src/Kernel.php', dependent_files: 3, boundaries: ['Core'] },
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 42, boundaries: ['Http'], boundary: 'Http' },
+        'src/Kernel.php': { path: 'src/Kernel.php', dependent_files: 3, boundaries: ['Core'], boundary: 'Core' },
       },
       tests: [
         { path: 'tests/Http/RouterTest.php', distance: 2 },
@@ -1924,7 +1954,7 @@ describe('knossos mod', () => {
     }
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
-      expect((await ui.find({ key: 'tab:changes' }))?.text).toBe('Chg ²')
+      expect((await ui.find({ key: 'tab:changes' }))?.text).toBe('6²')
       await ui.press({ key: 'tab:changes' })
       const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
       expect(text).toMatch(/Changes this session +2 turns/)
