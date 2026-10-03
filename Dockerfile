@@ -99,8 +99,10 @@ COPY schemas ./schemas
 # run from, reading the manifest, the hook scripts and the skill as templates,
 # so an image without them ships a command that cannot do its job. The quality
 # stage shellchecks the hook scripts as well, and cannot see a file the image
-# does not carry. Keep this list in step with PluginCommand's MANIFEST and
-# COPIES, and with the scripts it reads by name.
+# does not carry. `types` is the mod's API declaration, which the plugin
+# materialises and the quality stage's type-check reads. Keep this list in step
+# with PluginCommand's DIRECTORIES, MANIFEST and COPIES, and with the scripts it
+# reads by name.
 COPY .claude-plugin ./.claude-plugin
 COPY hooks ./hooks
 COPY skills ./skills
