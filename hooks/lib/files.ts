@@ -9,31 +9,27 @@
  */
 import type { Dashboard, DetailState, Drifted, FileDetail, Inspected } from '../../types'
 import { rankIn, reachRows, statusMark } from './changes'
-import { diffRows } from './diff'
+import { diffBlock } from './diff'
+import { moreRows, noteOf, windowOf } from './cards'
+import type { Arrangement, Block, Section } from './cards'
 import { fileDetailLines } from './envelopes'
 import { boundaryLabel, NO_HUES } from './palette'
 import type { Hues } from './palette'
 import {
   baseName,
-  blank,
   boundaryStyle,
   cells,
   dimRow,
   displayName,
-  fit,
   fitStart,
   linked,
   numberWidth,
   plural,
-  sectionRow,
-  sectionWidth,
-  specWidth,
-  spread,
   tableRow,
   tableSpec,
   wrapWords,
 } from './rows'
-import type { Loc, Row, Segment, TableSpec } from './rows'
+import type { Loc, Row, Segment, TableSpec, Tier } from './rows'
 import { locIn } from './views'
 import type { DetailInput, FileView, Openable } from './views'
 
@@ -89,72 +85,97 @@ export function fileDetailList(file: FileView): Openable[] {
 }
 
 /** A table of one number per row, its bar dropped when every row has the same number: such bars compare nothing. */
-function countedSpec(columns: number, names: string[], boundaries: string[], values: number[]): TableSpec {
-  const spec = tableSpec(columns, names, boundaries, [numberWidth('', values)], PATH_MAX)
+function countedSpec(columns: number, names: string[], boundaries: string[], values: number[], tier: Tier): TableSpec {
+  const spec = tableSpec(columns, names, boundaries, [numberWidth('', values)], PATH_MAX, { tier })
   return values.length > 1 && values.every(v => v === values[0]) ? { ...spec, bar: 0 } : spec
 }
 
-/** The `+N more` under a list that holds fewer than its count. */
-const moreRow = (key: string, count: number, shown: number, columns: number): Row[] => (count > shown ? [dimRow(key, `   +${count - shown} more`, columns)] : [])
+/** The `+N not listed` under a list that holds fewer than its count. */
+const moreRow = (key: string, count: number, shown: number, columns: number): Row[] => (count > shown ? [dimRow(key, `   +${count - shown} not listed`, columns)] : [])
+
+/** The fewest dependents and components the file detail lists, however short the pane. */
+const LIST_MIN = 5
 
 /**
- * One file's detail: its name and own boundary, its path (a link to it) with
- * its language and size, then the files that depend on it with how many
- * relationships run from each and the boundaries a change here reaches, then
- * the components it declares, the most used first.
+ * One file's detail: a card naming it and its own boundary, its path (a
+ * link to it) with its language and size; the files that depend on it with
+ * how many relationships run from each and the boundaries a change here
+ * reaches; then the components it declares, the most used first. Its change
+ * since the session began, when it was opened as one, follows the
+ * dependents (below both lists when wide, where they stand side by side).
  */
-export function fileDetailRows(detail: DetailInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
+export function fileDetailArrangement(detail: DetailInput, tier: Tier, hues: Hues = NO_HUES, selected = -1): Arrangement {
   const f = detail.file ?? null
+  const diff = detail.diff ? [diffBlock(detail.diff)] : []
   if (f === null) {
     const lines = detail.loading ? [`Reading what depends on ${detail.label}…`] : (detail.messages ?? [])
-    return [
-      blank('gap-detail'),
-      { key: 'detail-name', segments: [{ text: fitStart(detail.label, columns), bold: true, color: 'text' }] },
-      ...lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
-      // A deleted file is in no graph, yet its change is all there is to see.
-      ...(detail.diff ? diffRows(detail.diff, columns) : []),
-    ]
+    const head: Block = {
+      key: 'detail',
+      make: columns => ({
+        key: 'detail',
+        title: fitStart(detail.label, Math.max(1, columns - 4)),
+        body: lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
+      }),
+    }
+    // A deleted file is in no graph, yet its change is all there is to see.
+    return { left: [head, ...diff] }
   }
   const own: Segment[] = f.boundary === null ? [] : [{ text: boundaryLabel(f.boundary, hues), ...boundaryStyle(f.boundary, hues) }]
   const facts = [f.language.toUpperCase(), ...(f.lines === null ? [] : [plural(f.lines, 'line', 'lines')])].filter(s => s !== '').join(' · ')
   const tail = facts === '' ? '' : ` · ${facts}`
-  const rows: Row[] = [
-    blank('gap-detail'),
-    spread('detail-name', [{ text: fit(baseName(f.path), columns), bold: true, color: 'text' }], own, columns),
-    { key: 'detail-place', segments: [linked(fitStart(f.path, Math.max(1, columns - cells(tail))), f.loc, { dim: true }), { text: tail, dim: true }].filter(s => s.text !== '') },
-    blank('gap-dependents'),
-  ]
+  const head: Block = {
+    key: 'detail',
+    make: columns => ({
+      key: 'detail',
+      title: baseName(f.path),
+      note: own,
+      body: [{ key: 'detail-place', segments: [linked(fitStart(f.path, Math.max(1, columns - cells(tail))), f.loc, { dim: true }), { text: tail, dim: true }].filter(s => s.text !== '') }],
+    }),
+  }
 
   // Who depends on it: what a change here reaches.
   const deps = f.dependents
-  const depSpec = countedSpec(columns, deps.items.map(d => d.path), deps.items.map(d => boundaryLabel(d.boundary, hues)), deps.items.map(d => d.edges))
-  const depTitle = `Depended on by ${plural(deps.count, 'file', 'files')}`
-  const depNote = deps.items.length > 0 ? 'edges' : ''
-  rows.push(sectionRow('deps-head', depTitle, depNote, sectionWidth(specWidth(depSpec), depTitle, depNote, columns)))
-  if (deps.boundaries.length > 0) rows.push(...reachRows('deps-reach', '', deps.boundaries, columns, hues))
-  if (deps.items.length === 0) rows.push(dimRow('deps-none', '   none: no other file depends on it', columns))
-  const depMax = Math.max(0, ...deps.items.map(d => d.edges))
-  deps.items.forEach((d, i) =>
-    rows.push(tableRow(`dep-${i}`, { name: d.path, boundary: d.boundary, values: [d.edges], max: depMax, selected: i === selected, cutStart: true, press: `row:${i}` }, depSpec, hues)),
-  )
-  rows.push(...moreRow('deps-more', deps.count, deps.items.length, columns))
-  // What changed in it this session, right under what that change reaches.
-  if (detail.diff) rows.push(...diffRows(detail.diff, columns))
+  const depBlock: Block = {
+    key: 'deps',
+    grow: { length: deps.items.length, min: LIST_MIN },
+    make: (columns, limit) => {
+      const spec = countedSpec(columns, deps.items.map(d => d.path), deps.items.map(d => boundaryLabel(d.boundary, hues)), deps.items.map(d => d.edges), tier)
+      const rows: Row[] = []
+      if (deps.boundaries.length > 0) rows.push(...reachRows('deps-reach', '', deps.boundaries, columns, hues))
+      if (deps.items.length === 0) rows.push(dimRow('deps-none', '   none: no other file depends on it', columns))
+      const max = Math.max(0, ...deps.items.map(d => d.edges))
+      const window = windowOf(deps.items.length, limit, selected < deps.items.length ? selected : -1)
+      deps.items
+        .slice(window.start, window.end)
+        .forEach((d, n) =>
+          rows.push(tableRow(`dep-${window.start + n}`, { name: d.path, boundary: d.boundary, values: [d.edges], max, selected: window.start + n === selected, cutStart: true, press: `row:${window.start + n}` }, spec, hues)),
+        )
+      rows.push(...moreRows('deps-window', window, deps.items.length, columns), ...moreRow('deps-more', deps.count, deps.items.length, columns))
+      return { key: 'deps', title: 'Depended on by', subtitle: plural(deps.count, 'file', 'files'), note: noteOf(deps.items.length > 0 ? 'edges' : ''), body: rows }
+    },
+  }
 
   // What it declares, the most used first; they share the file's boundary, so no column for it.
   const comps = f.components
   const offset = deps.items.length
-  const compSpec = countedSpec(columns, comps.items.map(c => c.name), [], comps.items.map(c => c.usedBy))
-  const compTitle = `Declares ${plural(comps.count, 'component', 'components')}`
-  const compNote = comps.items.length > 0 ? 'used by' : ''
-  rows.push(blank('gap-components'), sectionRow('comps-head', compTitle, compNote, sectionWidth(specWidth(compSpec), compTitle, compNote, columns)))
-  if (comps.items.length === 0) rows.push(dimRow('comps-none', '   none', columns))
-  const compMax = Math.max(0, ...comps.items.map(c => c.usedBy))
-  comps.items.forEach((c, i) =>
-    rows.push(tableRow(`comp-${i}`, { name: c.name, boundary: null, values: [c.usedBy], max: compMax, selected: offset + i === selected, press: `row:${offset + i}` }, compSpec, hues)),
-  )
-  rows.push(...moreRow('comps-more', comps.count, comps.items.length, columns))
-  return rows
+  const compBlock: Block = {
+    key: 'comps',
+    grow: { length: comps.items.length, min: LIST_MIN },
+    make: (columns, limit) => {
+      const spec = countedSpec(columns, comps.items.map(c => c.name), [], comps.items.map(c => c.usedBy), tier)
+      const rows: Row[] = []
+      if (comps.items.length === 0) rows.push(dimRow('comps-none', '   none', columns))
+      const max = Math.max(0, ...comps.items.map(c => c.usedBy))
+      const window = windowOf(comps.items.length, limit, selected >= offset ? selected - offset : -1)
+      comps.items.slice(window.start, window.end).forEach((c, n) => {
+        const i = offset + window.start + n
+        rows.push(tableRow(`comp-${window.start + n}`, { name: c.name, boundary: null, values: [c.usedBy], max, selected: i === selected, press: `row:${i}` }, spec, hues))
+      })
+      rows.push(...moreRows('comps-window', window, comps.items.length, columns), ...moreRow('comps-more', comps.count, comps.items.length, columns))
+      return { key: 'comps', title: 'Declares', subtitle: plural(comps.count, 'component', 'components'), note: noteOf(comps.items.length > 0 ? 'used by' : ''), body: rows }
+    },
+  }
+  return { top: [head], left: [depBlock], right: [compBlock], bottom: diff, order: [head, depBlock, ...diff, compBlock] }
 }
 
 /** The files drifted since the snapshot, from a dashboard that names them; null when it names none. */
@@ -174,15 +195,18 @@ export const driftList = (drift: DriftInput): Openable[] => drift.items.map(i =>
 /**
  * The files drifted since the snapshot, under the header where their count
  * stands: each marked as Changes marks a file (`+` added, `−` deleted), with
- * its own boundary, then how many more there are.
+ * its own boundary, `limit` of them around the marker, then how many more
+ * there are.
  */
-export function driftRows(drift: DriftInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
+export function driftSection(drift: DriftInput, columns: number, limit: number, hues: Hues = NO_HUES, selected = -1): Section {
   const spec = { ...tableSpec(columns, drift.items.map(i => i.path), drift.items.map(i => boundaryLabel(i.boundary)), [], PATH_MAX), bar: 0 }
-  const title = 'Drifted since the snapshot'
   const note = drift.truncated && drift.count <= drift.items.length ? `${drift.count}+` : String(drift.count)
-  const rows: Row[] = [blank('gap-drift'), sectionRow('drift-head', title, note, sectionWidth(specWidth(spec), title, note, columns))]
-  drift.items.forEach((i, n) =>
-    rows.push(tableRow(`drift-${n}`, { name: i.path, boundary: i.boundary, values: [], max: 0, selected: n === selected, mark: statusMark(i.change), cutStart: true, press: `row:${n}` }, spec, hues)),
-  )
-  return [...rows, ...moreRow('drift-more', drift.count, drift.items.length, columns)]
+  const window = windowOf(drift.items.length, limit, selected)
+  const rows: Row[] = drift.items
+    .slice(window.start, window.end)
+    .map((i, n) =>
+      tableRow(`drift-${window.start + n}`, { name: i.path, boundary: i.boundary, values: [], max: 0, selected: window.start + n === selected, mark: statusMark(i.change), cutStart: true, press: `row:${window.start + n}` }, spec, hues),
+    )
+  rows.push(...moreRows('drift-window', window, drift.items.length, columns), ...moreRow('drift-more', drift.count, drift.items.length, columns))
+  return { key: 'drift', title: 'Drifted since the snapshot', note: noteOf(note), body: rows }
 }

@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { DiffState, Inspected, SessionDiff } from '../../types'
-import { diffRows, diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
+import { diffView, folded, HUNK_LINES, hunkSource, HUNKS_SHOWN, LINE_MAX, parseHunks } from './diff'
 import type { DiffView } from './diff'
 import { parseSessionDiff, parseSessionRev } from './envelopes'
-import { fileDetailRows } from './files'
+import { diffRows, fileDetailRows } from './__tests__/tabs'
+import { plainText } from './__tests__/plain-text'
 import { rowWidth } from './rows'
 import type { Row } from './rows'
 
-const WIDTHS = [40, 60, 90, 120]
+const WIDTHS = [40, 60, 80, 100, 130, 140, 200]
 const REV = '0123456789abcdef0123456789abcdef01234567'
 const SHOWN: Inspected = { name: 'src/Router.php', label: 'src/Router.php', file: true, changed: true }
-const text = (row: Row): string => row.segments.map(s => s.text).join('')
+const text = (row: Row): string => plainText(row)
 const answer = (over: Partial<SessionDiff> = {}): SessionDiff => ({
   status: 'ok',
   file: 'src/Router.php',

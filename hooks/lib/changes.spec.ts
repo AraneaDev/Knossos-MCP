@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, SessionLedger, TurnBrief } from '../../types'
-import { accumulate, cdFor, changesInput, changesList, changesRows, FILE_CAP, fromLedger, lookAtOf, lookAtRows, NO_CHANGES, testCommand, testsRan } from './changes'
+import { accumulate, cdFor, changesInput, changesList, FILE_CAP, fromLedger, lookAtOf, NO_CHANGES, testCommand, testsRan } from './changes'
+import { changesRows, lookAtRows } from './__tests__/tabs'
 import { editTarget, paneInput, paneRows } from './layout'
-import { plainText } from './__tests__/plain-text'
+import { findRow, plainText } from './__tests__/plain-text'
 import { fileHref, linkMarkdown, locOf, rowWidth } from './rows'
 import type { Row } from './rows'
 
-const WIDTHS = [40, 60, 90, 120] as const
+const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
 const ROOT = '/work/app'
 
 const brief = (over: Partial<TurnBrief> = {}): TurnBrief => ({
@@ -30,7 +31,7 @@ const brief = (over: Partial<TurnBrief> = {}): TurnBrief => ({
 })
 
 const textOf = (rows: Row[]) => rows.map(plainText).join('\n')
-const row = (rows: Row[], key: string) => rows.find(r => r.key === key)
+const row = findRow
 
 /** Two turns: the router edited twice, a kernel added, a helper deleted. */
 function session(): SessionChanges {
@@ -211,7 +212,7 @@ describe('changesRows', () => {
     // A file opens as its detail, by the same index the marker walks; `e` opens it in the editor.
     expect(row(rows, 'change-0')!.segments.find(s => s.press)?.press).toEqual({ id: 'row:0', label: 'src/Router.php' })
     expect(row(rows, 'change-2')!.segments.find(s => s.press)?.press?.id).toBe('row:2')
-    expect(text).toMatch(/Tests that reach these changes · 2 +hops/)
+    expect(text).toMatch(/Tests that reach these changes · 2 +nearest first/)
     expect(text).toContain("$ vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
   })
   it('names fewer boundaries on a narrow pane rather than leave the count on a line of its own', () => {
@@ -270,8 +271,9 @@ describe('look at now', () => {
     expect(editTarget(pane)).toEqual({ path: '/work/app/src/Router.php', line: null })
     for (const columns of WIDTHS) {
       const rows = paneRows(pane, columns)
-      const keys = rows.map(r => r.key)
-      expect(keys.indexOf('look-head')).toBeLessThan(keys.indexOf('health-head'))
+      const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
+      expect(at('look-head')).toBeGreaterThanOrEqual(0)
+      expect(at('look-head')).toBeLessThan(at('health-head'))
       for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
     }
     // The tab carries how many files were touched.
@@ -383,7 +385,8 @@ describe('the changes since the session began, from the scan ledger', () => {
       const rows = changesRows(changesInput(changes, ROOT), 0, columns)
       for (const r of rows) expect(rowWidth(r), `${columns}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
       const text = textOf(rows)
-      expect(text).toContain('since it began')
+      // The narrowest top edge has no room for the note.
+      if (columns >= 60) expect(text).toContain('since it began')
       for (const key of ['change-0', 'change-1', 'change-2']) expect(plainText(row(rows, key)!)).toMatch(/(this session|outside) *$/)
       expect(plainText(row(rows, 'change-0')!)).toMatch(/this session *$/)
     }

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, DetailState, FileDetail, KnossosView, SessionChanges, TurnBrief } from '../../types'
 import { accumulate, editTarget, fileDetailInput, listFor, NO_CHANGES, paneInput, paneRows, rowWidth, subjectOf } from './layout'
-import { plainText } from './__tests__/plain-text'
+import { findRow, plainText } from './__tests__/plain-text'
 import type { PaneInput, Row } from './layout'
 import { huesOf } from './palette'
 
-const WIDTHS = [40, 60, 90, 120] as const
+const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
 const ROOT = '/work/app'
 
 const dash = (over: Partial<Dashboard> = {}): Dashboard => ({
@@ -105,7 +105,7 @@ const pane = (over: { view?: Partial<KnossosView>; d?: Dashboard; turn?: TurnBri
 }
 
 const textOf = (rows: Row[]) => rows.map(plainText).join('\n')
-const row = (rows: Row[], key: string) => rows.find(r => r.key === key)
+const row = findRow
 const keysOf = (rows: Row[]) => rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.filter(s => s.press).map(s => s.press!.hotkey ?? s.press!.id))
 
 describe('a file detail', () => {
@@ -114,18 +114,18 @@ describe('a file detail', () => {
   it('names who depends on the file, with counts and boundaries, and what it declares', () => {
     const rows = paneRows(shown, 90)
     const text = textOf(rows)
-    expect(plainText(row(rows, 'detail-name')!)).toMatch(/^Router\.php +Http$/)
+    expect(plainText(row(rows, 'detail-head')!)).toMatch(/^Router\.php +Http$/)
     expect(plainText(row(rows, 'detail-place')!)).toBe('src/Http/Router.php · PHP · 240 lines')
-    expect(row(rows, 'detail-place')!.segments[0]!.link).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
-    expect(text).toMatch(/Depended on by 14 files +edges/)
+    expect(row(rows, 'detail-place')!.segments.find(s => s.link)!.link).toEqual({ path: `${ROOT}/src/Http/Router.php`, line: null })
+    expect(text).toMatch(/Depended on by · 14 files +edges/)
     // The dependents' boundaries in the project's colour order: declared ones first.
     expect(plainText(row(rows, 'deps-reach')!)).toBe('   reaching Http Core tests')
     expect(plainText(row(rows, 'dep-0')!)).toMatch(/^› {2}src\/Core\/Kernel\.php +Core +━+ +6$/)
     expect(plainText(row(rows, 'dep-1')!)).toMatch(/^ {3}tests\/Http\/RouterTest\.php +tests +━+·* +3$/)
-    expect(plainText(row(rows, 'deps-more')!)).toBe('   +12 more')
-    expect(text).toMatch(/Declares 3 components +used by/)
+    expect(plainText(row(rows, 'deps-more')!)).toBe('   +12 not listed')
+    expect(text).toMatch(/Declares · 3 components +used by/)
     expect(plainText(row(rows, 'comp-1')!)).toMatch(/^ {3}Router::dispatch +━+·* +4$/)
-    expect(plainText(row(rows, 'comps-more')!)).toBe('   +1 more')
+    expect(plainText(row(rows, 'comps-more')!)).toBe('   +1 not listed')
   })
 
   it('walks the dependents (each a file) then the components, by the indexes their presses carry', () => {
@@ -163,7 +163,7 @@ describe('a file detail', () => {
   it('says when nothing else depends on the file', () => {
     const alone = answer({ dependents: { count: 0, truncated: false, boundaries: [], items: [] } })
     const text = textOf(paneRows(pane({ view: { inspect: SHOWN }, state: done(alone) }), 60))
-    expect(text).toContain('Depended on by 0 files')
+    expect(text).toContain('Depended on by · 0 files')
     expect(text).toContain('none: no other file depends on it')
   })
 
@@ -198,7 +198,7 @@ describe('the drifted files', () => {
     expect(plainText(row(rows, 'drift-0')!)).toMatch(/^› {2}src\/Http\/Router\.php +Http$/)
     expect(plainText(row(rows, 'drift-1')!)).toMatch(/^ \+ src\/Http\/New\.php/)
     expect(plainText(row(rows, 'drift-2')!)).toMatch(/^ − src\/Core\/Gone\.php +Core$/)
-    expect(plainText(row(rows, 'drift-more')!)).toBe('   +20 more')
+    expect(plainText(row(rows, 'drift-more')!)).toBe('   +20 not listed')
     expect(rows.findIndex(r => r.key === 'drift-head')).toBeLessThan(rows.findIndex(r => r.key === 'tabs'))
     // The marker is theirs while they are listed: the tab below draws none.
     expect(rows.filter(r => plainText(r).startsWith('›'))).toHaveLength(1)

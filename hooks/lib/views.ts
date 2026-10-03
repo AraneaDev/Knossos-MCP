@@ -7,10 +7,13 @@
  * are pressable by an index into the view's walkable list, so the marker,
  * `o` and a click all address the same component.
  */
+import { diffBlock } from './diff'
 import type { DiffView } from './diff'
+import { moreRows, noteOf, windowOf } from './cards'
+import type { Arrangement, Block, Section } from './cards'
 import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected } from '../../types'
 import { countLabel, detailLines } from './envelopes'
-import { ACCENT, boundaryColour, boundaryLabel, NO_HUES, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, FAINT, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
   absolute,
@@ -29,18 +32,14 @@ import {
   padEnd,
   placeOf,
   plural,
-  sectionRow,
-  sectionWidth,
   shortName,
   spaces,
-  specWidth,
-  spread,
   tableRow,
   tableSpec,
   wrapGroups,
   wrapWords,
 } from './rows'
-import type { Loc, Row, Segment } from './rows'
+import type { Loc, Row, Segment, Tier } from './rows'
 
 /**
  * A row the marker can walk to: `name` to show, `canonical` to look it up by,
@@ -111,8 +110,6 @@ export type FileView = {
   components: { count: number; truncated: boolean; items: { name: string; canonical: string; kind: string; boundary: string | null; usedBy: number; loc: Loc | null }[] }
 }
 
-/** Below this many columns the detail stacks "used by" over "uses"; at or above it they sit side by side. */
-export const SIDE_BY_SIDE = 72
 /** The share of a row a place (`file:line`) may take before it is cut from the front. */
 const PLACE_SHARE = 0.35
 /** The narrowest the main text of an issue row is allowed before the boundary, then the place, give way. */
@@ -282,9 +279,6 @@ function entrySpec(columns: number, entries: Entry[], hues: Hues = NO_HUES): Ent
   return attempt(boundaryNeed, placeNeed) ?? attempt(0, placeNeed) ?? attempt(0, 0) ?? { main: Math.max(1, columns - MARK), boundary: 0, place: 0 }
 }
 
-/** How many columns issue rows laid out by `spec` take. */
-const entryWidth = (spec: EntrySpec): number => MARK + spec.main + (spec.boundary > 0 ? spec.boundary + 1 : 0) + (spec.place > 0 ? spec.place + 1 : 0)
-
 function entryRow(key: string, e: Entry, spec: EntrySpec, hues: Hues): Row {
   const main = e.main(spec.main)
   const used = main.reduce((n, s) => n + cells(s.text), 0)
@@ -312,8 +306,15 @@ function pair(a: string, b: string, width: number): [string, string] {
 
 const none = (key: string): Row => ({ key, segments: [{ text: '   none', dim: true }] })
 
-/** The Issues tab: policy violations, diagnostics, dead code and the largest files, each a short list. */
-export function issueRows(issues: IssuesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] {
+/** The fewest rows each list on the Issues tab shows, however short the pane. */
+const ISSUES_MIN = 3
+
+/**
+ * The Issues tab's cards: policy violations, diagnostics, dead code and the
+ * largest files, each list as long as the pane allows. Wide, the violations
+ * and diagnostics stand left, dead code and the largest files right.
+ */
+export function issuesArrangement(issues: IssuesInput, selected: number, tier: Tier, hues: Hues = NO_HUES): Arrangement {
   const policy = issues.policy
   const violations = policy?.items ?? []
   const violationEntries: Entry[] = violations.map((v, i) => ({
@@ -347,50 +348,69 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
     need: cells(c.name),
     main: width => [button(`row:${offset + i}`, fit(c.name, width))],
   }))
-  const vSpec = entrySpec(columns, violationEntries, hues)
-  const dSpec = entrySpec(columns, diagEntries, hues)
-  const deadSpec = entrySpec(columns, deadEntries, hues)
-  const spec = tableSpec(columns, issues.largest.map(f => f.path), [], [numberWidth('lines', issues.largest.map(f => f.lines))], 56)
-  // Every header of the tab spreads over the widest of its lists, so the notes stand over the places and numbers.
-  const listed = [violationEntries.length > 0 ? entryWidth(vSpec) : 0, diagEntries.length > 0 ? entryWidth(dSpec) : 0, deadEntries.length > 0 ? entryWidth(deadSpec) : 0]
-  const tab = (title: string, note: string) => sectionWidth(Math.max(...listed, issues.largest.length > 0 ? specWidth(spec) : 0), title, note, columns)
+  /** A list of entries `limit` long around the marker (`local`: its index in this list), with what is above and below. */
+  const listed = (key: string, entries: Entry[], columns: number, limit: number, local: number): Row[] => {
+    const spec = entrySpec(columns, entries, hues)
+    const window = windowOf(entries.length, limit, local)
+    return [...entries.slice(window.start, window.end).map((e, n) => entryRow(`${key}-${window.start + n}`, e, spec, hues)), ...moreRows(`${key}-window`, window, entries.length, columns)]
+  }
 
-  // Policy violations.
-  const verdict: Segment[] =
-    policy === null
-      ? [{ text: 'not reported', dim: true }]
-      : !policy.evaluated
-        ? [{ text: 'no policies declared', dim: true }]
-        : policy.count === 0
-          ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }]
-          : [{ text: `▲ ${policy.total}`, color: STATUS_COLOURS.alert }]
-  const policyWidth = tab('Policy violations', verdict.map(v => v.text).join(''))
-  const rows: Row[] = [blank('gap-policy'), spread('policy-head', [{ text: fit('Policy violations', columns), bold: true, color: 'text' }], verdict, policyWidth)]
-  violationEntries.forEach((e, i) => rows.push(entryRow(`pol-${i}`, e, vSpec, hues)))
-  if (policy !== null && policy.evaluated && policy.count > violations.length) rows.push(dimRow('pol-more', `   +${policy.count - violations.length} more`, columns))
-
-  // Diagnostics.
-  const counts =
-    d === null
-      ? 'not reported'
-      : [plural(d.errors, 'error', 'errors'), plural(d.warnings, 'warning', 'warnings'), ...(d.infos > 0 ? [plural(d.infos, 'note', 'notes')] : [])].join(' · ')
-  rows.push(blank('gap-diag'), sectionRow('diag-head', 'Diagnostics', counts, tab('Diagnostics', counts)))
-  diagEntries.forEach((e, i) => rows.push(entryRow(`diag-${i}`, e, dSpec, hues)))
-  if (d !== null && d.items.length === 0 && d.errors + d.warnings === 0) rows.push(none('diag-none'))
-
-  // Dead code.
-  const deadNote = dead.items.length > 0 && dead.total !== String(dead.items.length) ? `${dead.total} · first ${dead.items.length}` : dead.total
-  rows.push(blank('gap-dead'), sectionRow('dead-head', 'Dead code', deadNote, tab('Dead code', deadNote)))
-  deadEntries.forEach((e, i) => rows.push(entryRow(`dead-${i}`, e, deadSpec, hues)))
-  if (dead.items.length === 0) rows.push(none('dead-none'))
-
-  // Largest files.
-  const linesNote = issues.largest.length > 0 ? 'lines' : ''
-  rows.push(blank('gap-large'), sectionRow('large-head', 'Largest files', linesNote, tab('Largest files', linesNote)))
-  if (issues.largest.length === 0) rows.push(none('large-none'))
-  const max = Math.max(0, ...issues.largest.map(f => f.lines))
-  issues.largest.forEach((f, i) => rows.push(tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true, link: f.loc }, spec, hues)))
-  return rows
+  const policyBlock: Block = {
+    key: 'policy',
+    grow: { length: violationEntries.length, min: ISSUES_MIN },
+    make: (columns, limit) => {
+      const verdict: Segment[] =
+        policy === null
+          ? [{ text: 'not reported', dim: true }]
+          : !policy.evaluated
+            ? [{ text: 'no policies declared', dim: true }]
+            : policy.count === 0
+              ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }]
+              : [{ text: `▲ ${policy.total}`, color: STATUS_COLOURS.alert }]
+      const body = listed('pol', violationEntries, columns, limit, selected < offset ? selected : -1)
+      if (policy !== null && policy.evaluated && policy.count > violations.length) body.push(dimRow('pol-more', `   +${policy.count - violations.length} not listed`, columns))
+      if (body.length === 0) body.push(none('pol-none'))
+      return { key: 'policy', title: 'Policy violations', note: verdict, body }
+    },
+  }
+  const diagBlock: Block = {
+    key: 'diag',
+    grow: { length: diagEntries.length, min: ISSUES_MIN },
+    make: (columns, limit) => {
+      const counts =
+        d === null
+          ? 'not reported'
+          : [plural(d.errors, 'error', 'errors'), plural(d.warnings, 'warning', 'warnings'), ...(d.infos > 0 ? [plural(d.infos, 'note', 'notes')] : [])].join(' · ')
+      const body = listed('diag', diagEntries, columns, limit, -1)
+      if (body.length === 0) body.push(none('diag-none'))
+      return { key: 'diag', title: 'Diagnostics', note: noteOf(counts), body }
+    },
+  }
+  const deadBlock: Block = {
+    key: 'dead',
+    grow: { length: deadEntries.length, min: ISSUES_MIN },
+    make: (columns, limit) => {
+      const deadNote = dead.items.length > 0 && dead.total !== String(dead.items.length) ? `${dead.total} · first ${dead.items.length}` : dead.total
+      const body = listed('dead', deadEntries, columns, limit, selected >= offset ? selected - offset : -1)
+      if (body.length === 0) body.push(none('dead-none'))
+      return { key: 'dead', title: 'Dead code', note: noteOf(deadNote), body }
+    },
+  }
+  const largeBlock: Block = {
+    key: 'large',
+    grow: { length: issues.largest.length, min: ISSUES_MIN },
+    make: (columns, limit) => {
+      const window = windowOf(issues.largest.length, limit)
+      const shown = issues.largest.slice(0, window.end)
+      const spec = tableSpec(columns, shown.map(f => f.path), [], [numberWidth('lines', shown.map(f => f.lines))], 56, { tier })
+      const max = Math.max(0, ...issues.largest.map(f => f.lines))
+      const body: Row[] = shown.map((f, i) => tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true, link: f.loc }, spec, hues))
+      body.push(...moreRows('large-window', window, issues.largest.length, columns))
+      if (body.length === 0) body.push(none('large-none'))
+      return { key: 'large', title: 'Largest files', note: noteOf(issues.largest.length > 0 ? 'lines' : ''), body }
+    },
+  }
+  return { left: [policyBlock, diagBlock], right: [deadBlock, largeBlock] }
 }
 
 /** The boundary most of a cycle's members are in (the first such, on a tie), or null when none has one. */
@@ -402,24 +422,47 @@ function homeBoundary(cycle: CycleLine): string | null {
   return home
 }
 
+/** The fewest cycles the Cycles tab lists, however short the pane. */
+const CYCLES_MIN = 2
+
 /**
  * The Cycles tab: each cycle, largest first, as a chain of names wrapped to
- * width, under a line naming the boundary most of its members are in. Members
- * outside that boundary are drawn in their own boundary's colour.
+ * width, under a line naming the boundary most of its members are in.
+ * Members outside that boundary are drawn in their own boundary's colour.
+ * Wide, the marked cycle is spelled out beside the list, a member a row.
  */
-export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
+export function cyclesArrangement(input: CyclesInput, hues: Hues = NO_HUES, selected = -1): Arrangement {
   const shown = input.cycles.length
-  const note = shown === 0 ? 'none' : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
-  const rows: Row[] = [blank('gap-cycles'), sectionRow('cycles-head', 'Cycles', note, columns)]
-  if (shown === 0) return [...rows, { key: 'cycles-none', segments: [{ text: '   No dependency cycles.', dim: true }] }]
+  const list: Block = {
+    key: 'cycles',
+    grow: { length: shown, min: CYCLES_MIN },
+    make: (columns, limit) => {
+      const note = shown === 0 ? 'none' : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
+      const section = (body: Row[]): Section => ({ key: 'cycles', title: 'Cycles', note: noteOf(note), body })
+      if (shown === 0) return section([{ key: 'cycles-none', segments: [{ text: '   No dependency cycles.', dim: true }] }])
+      return section(cycleListRows(input, columns, hues, selected, windowOf(shown, limit, selected)))
+    },
+  }
+  const marked = input.cycles[Math.min(Math.max(0, selected), shown - 1)]
+  if (marked === undefined) return { left: [list] }
+  const index = input.cycles.indexOf(marked)
+  const members: Block = { key: 'cycle-members', make: columns => memberSection(marked, index, columns, hues) }
+  return { left: [list], right: [members], order: [list] }
+}
+
+/** The cycles in `window` as rows: a legend for the colours, then each cycle's line and its chain. */
+function cycleListRows(input: CyclesInput, columns: number, hues: Hues, selected: number, window: { start: number; end: number }): Row[] {
+  const rows: Row[] = []
+  const visible = input.cycles.slice(window.start, window.end)
   // A legend for the members drawn in colour (those outside their cycle's own boundary), in the order they first appear.
   const seen = new Map<string, Segment[]>()
-  for (const node of input.cycles.flatMap(c => c.nodes.filter(n => n.boundary !== homeBoundary(c)))) {
+  for (const node of visible.flatMap(c => c.nodes.filter(n => n.boundary !== homeBoundary(c)))) {
     if (node.boundary === null || seen.has(node.boundary)) continue
     seen.set(node.boundary, [{ text: `■ ${boundaryLabel(node.boundary, hues)}`, color: boundaryColour(node.boundary, hues) }])
   }
   if (seen.size > 0) rows.push(...wrapGroups('cycles-legend', [...seen.values()], columns, 2, MARK))
-  input.cycles.forEach((cycle, i) => {
+  visible.forEach((cycle, n) => {
+    const i = window.start + n
     // The boundary most members share is named once, in its colour; only members outside it are coloured: they are where the cycle crosses.
     const home = homeBoundary(cycle)
     const head: Segment[] = [
@@ -429,7 +472,8 @@ export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_H
       { text: ` · ${plural(cycle.size, 'member', 'members')}`, dim: true },
     ]
     if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home, hues), ...boundaryStyle(home, hues) })
-    rows.push(blank(`gap-cycle-${i}`), { key: `cycle-${i}`, segments: clip(head, columns) })
+    if (n > 0 || seen.size > 0) rows.push(blank(`gap-cycle-${i}`))
+    rows.push({ key: `cycle-${i}`, segments: clip(head, columns) })
     const room = Math.max(1, columns - MARK - 2)
     const groups: Segment[][] = cycle.nodes.map((node, j) => {
       const last = j === cycle.nodes.length - 1
@@ -440,72 +484,101 @@ export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_H
     if (cycle.more > 0) groups.push([{ text: `… +${cycle.more} more`, dim: true }])
     rows.push(...wrapGroups(`chain-${i}`, groups, columns, 1, MARK))
   })
-  return rows
+  return [...rows, ...moreRows('cycles-window', window, input.cycles.length, columns)]
 }
 
-/** One side of the detail ("used by" or "uses") as a small table in `width` columns. */
-function sideRows(prefix: string, side: Side, offset: number, width: number, hues: Hues, selected = -1): Row[] {
+/** The widest a member's boundary label is drawn beside it. */
+const MEMBER_BOUNDARY_MAX = 20
+
+/** The marked cycle spelled out: one member a row, its boundary beside it, the last closing the loop. */
+function memberSection(cycle: CycleLine, index: number, columns: number, hues: Hues): Section {
+  const home = homeBoundary(cycle)
+  // No numbers and no bar: the names take what they need, the boundary what is left.
+  const boundary = Math.min(MEMBER_BOUNDARY_MAX, Math.max(0, ...cycle.nodes.map(n => cells(boundaryLabel(n.boundary, hues)))))
+  const name = Math.max(1, Math.min(Math.max(1, ...cycle.nodes.map(n => cells(n.name))), columns - MARK - (boundary > 0 ? boundary + 1 : 0)))
+  const spec = { name, boundary: columns - MARK - name - 1 >= Math.min(boundary, 6) && boundary > 0 ? Math.min(boundary, columns - MARK - name - 1) : 0, bar: 0, numbers: [] }
+  const body: Row[] = cycle.nodes.map((node, j) =>
+    tableRow(`member-${j}`, { name: node.name, boundary: node.boundary, values: [], max: 0, mark: { text: j === 0 ? '┌' : '│', color: FAINT }, repeat: node.boundary === home && j > 0 }, spec, hues),
+  )
+  body.push({ key: 'member-close', segments: [{ text: ' ' }, { text: cycle.more > 0 ? '┆' : '└', color: FAINT }, { text: cycle.more > 0 ? ` … +${cycle.more} more` : ` ↺ back to ${fit(cycle.nodes[0]?.name ?? '', Math.max(1, columns - 12))}`, dim: true }] })
+  return { key: 'cycle-members', title: `Cycle ${index + 1}`, note: noteOf(plural(cycle.size, 'member', 'members')), body }
+}
+
+/** The fewest counterparts each side of the detail lists, however short the pane. */
+const SIDE_MIN = 5
+
+/** One side of the detail ("used by" or "uses") as a card: a small table `limit` rows long around the marker. */
+function sideSection(prefix: string, side: Side, offset: number, columns: number, limit: number, tier: Tier, hues: Hues, selected = -1): Section {
   const counted = side.items.some(i => i.edges > 0)
   // Bars that are all one length compare nothing: the counts say it alone.
   const flat = side.items.length > 1 && side.items.every(i => i.edges === side.items[0]!.edges)
   const boundaries = side.items.map(i => boundaryLabel(i.boundary, hues))
   const spec = counted
-    ? { ...tableSpec(width, side.items.map(i => i.name), boundaries, [numberWidth('', side.items.map(i => i.edges))]), ...(flat ? { bar: 0 } : {}) }
-    : { ...tableSpec(width, side.items.map(i => i.name), boundaries, []), bar: 0 }
-  const title = `${side.title} ${side.count}`
-  const note = counted ? 'edges' : ''
-  const rows: Row[] = [sectionRow(`${prefix}-head`, title, note, side.items.length === 0 ? width : sectionWidth(specWidth(spec), title, note, width))]
-  if (side.items.length === 0) return [...rows, none(`${prefix}-none`)]
+    ? { ...tableSpec(columns, side.items.map(i => i.name), boundaries, [numberWidth('', side.items.map(i => i.edges))], undefined, { tier }), ...(flat ? { bar: 0 } : {}) }
+    : { ...tableSpec(columns, side.items.map(i => i.name), boundaries, []), bar: 0 }
+  const section = (body: Row[]): Section => ({ key: prefix, title: side.title, subtitle: side.count, note: noteOf(counted ? 'edges' : ''), body })
+  if (side.items.length === 0) return section([none(`${prefix}-none`)])
   const max = Math.max(0, ...side.items.map(i => i.edges))
-  side.items.forEach((item, i) =>
-    rows.push(tableRow(`${prefix}-${i}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + i}`, selected: offset + i === selected }, spec, hues)),
-  )
+  const local = selected - offset
+  const window = windowOf(side.items.length, limit, local >= 0 && local < side.items.length ? local : -1)
+  const rows = side.items
+    .slice(window.start, window.end)
+    .map((item, n) =>
+      tableRow(`${prefix}-${window.start + n}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + window.start + n}`, selected: offset + window.start + n === selected }, spec, hues),
+    )
+  rows.push(...moreRows(`${prefix}-window`, window, side.items.length, columns))
   const count = Number.parseInt(side.count, 10)
-  if (count > side.items.length) rows.push(dimRow(`${prefix}-more`, `   +${count - side.items.length} more`, width))
-  return rows
+  if (count > side.items.length) rows.push(dimRow(`${prefix}-more`, `   +${count - side.items.length} not listed`, columns))
+  return section(rows)
 }
 
-/** Rows placed side by side: the left padded to its width, a gap, the right. */
-function besideRows(left: Row[], right: Row[], leftWidth: number, gap: number): Row[] {
-  const out: Row[] = []
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const l = left[i]?.segments ?? []
-    const used = l.reduce((n, s) => n + cells(s.text), 0)
-    out.push({ key: `side-${i}`, segments: [...l, { text: spaces(leftWidth - used + gap) }, ...(right[i]?.segments ?? [])] })
-  }
-  return out
-}
-
-/** The detail of one component: what it is, where, who uses it and what it uses, and its annotations. */
-export function detailRows(detail: DetailInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
+/**
+ * The detail of one component: a card naming it (kind, boundary, place),
+ * who uses it and what it uses (side by side when wide), its annotations,
+ * and below them its change, when it was opened as one.
+ */
+export function detailArrangement(detail: DetailInput, tier: Tier, hues: Hues = NO_HUES, selected = -1): Arrangement {
   const c = detail.component
+  const diff = detail.diff ? [diffBlock(detail.diff)] : []
   if (c === null) {
     const lines = detail.loading ? [`Inspecting ${detail.label}…`] : (detail.messages ?? [])
-    return [
-      blank('gap-detail'),
-      { key: 'detail-name', segments: [{ text: fit(detail.label, columns), bold: true, color: 'text' }] },
-      ...lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
-    ]
+    const head: Block = {
+      key: 'detail',
+      make: columns => ({ key: 'detail', title: detail.label, body: lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))) }),
+    }
+    return { left: [head, ...diff] }
   }
   const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, { text: boundaryLabel(c.boundary, hues), ...boundaryStyle(c.boundary, hues) }])]
-  const rows: Row[] = [blank('gap-detail'), spread('detail-name', [{ text: fit(c.name, columns), bold: true, color: 'text' }], label, columns)]
-  if (c.place !== null) rows.push({ key: 'detail-place', segments: [linked(fitStart(c.place, columns), c.loc, { dim: true })] })
-  if (c.canonical !== c.name) rows.push(dimRow('detail-canonical', c.canonical, columns))
-  rows.push(blank('gap-sides'))
-  const usedBy = c.usedBy
-  if (columns >= SIDE_BY_SIDE) {
-    const half = Math.floor((columns - 2) / 2)
-    rows.push(...besideRows(sideRows('used', usedBy, 0, half, hues, selected), sideRows('uses', c.uses, usedBy.items.length, columns - half - 2, hues, selected), half, 2))
-  } else {
-    rows.push(...sideRows('used', usedBy, 0, columns, hues, selected), blank('gap-uses'), ...sideRows('uses', c.uses, usedBy.items.length, columns, hues, selected))
+  const head: Block = {
+    key: 'detail',
+    make: columns => {
+      const body: Row[] = []
+      if (c.place !== null) body.push({ key: 'detail-place', segments: [linked(fitStart(c.place, columns), c.loc, { dim: true })] })
+      if (c.canonical !== c.name) body.push(dimRow('detail-canonical', c.canonical, columns))
+      if (body.length === 0) body.push(dimRow('detail-place', 'declared nowhere the graph knows', columns))
+      return { key: 'detail', title: c.name, note: label, body }
+    },
   }
-  if (c.annotations.length > 0) {
-    rows.push(blank('gap-notes'), sectionRow('notes-head', 'Annotations', '', columns))
-    c.annotations.forEach((a, i) =>
-      wrapWords(`${a.kind.replace(/_/g, ' ')}: ${a.value}`, Math.max(1, columns - MARK)).forEach((line, j) =>
-        rows.push({ key: `note-${i}-${j}`, segments: [{ text: spaces(MARK) }, { text: line }] }),
-      ),
-    )
+  const used: Block = { key: 'used', grow: { length: c.usedBy.items.length, min: SIDE_MIN }, make: (columns, limit) => sideSection('used', c.usedBy, 0, columns, limit, tier, hues, selected) }
+  const uses: Block = {
+    key: 'uses',
+    grow: { length: c.uses.items.length, min: SIDE_MIN },
+    make: (columns, limit) => sideSection('uses', c.uses, c.usedBy.items.length, columns, limit, tier, hues, selected),
   }
-  return rows
+  const notes: Block[] =
+    c.annotations.length === 0
+      ? []
+      : [
+          {
+            key: 'notes',
+            make: columns => ({
+              key: 'notes',
+              title: 'Annotations',
+              body: c.annotations.flatMap((a, i) =>
+                wrapWords(`${a.kind.replace(/_/g, ' ')}: ${a.value}`, Math.max(1, columns - MARK)).map((line, j) => ({ key: `note-${i}-${j}`, segments: [{ text: spaces(MARK) }, { text: line }] })),
+              ),
+            }),
+          },
+        ]
+  return { top: [head], left: [used], right: [uses], bottom: [...notes, ...diff] }
 }

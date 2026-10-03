@@ -11,12 +11,14 @@
  * column of them reads as a set of gauges rather than a block of colour.
  *
  * A table is packed to the left: names take what the longest needs (up to a
- * cap), the boundary follows them, then the bar (up to {@link BAR_MAX}) and
- * the numbers. Width a table does not need stays at the right edge, never
- * between a name and its boundary. As the width shrinks it gives way in a
- * fixed order: its bars shorten to a minimum, then names are cut with an
- * ellipsis, then the boundary column goes, then the bars go. The numbers
- * always stay.
+ * cap), the boundary follows them, then the bar, the numbers and, where the
+ * table has one, the file each row is declared in. The bar takes the width
+ * left after the names and numbers, within a minimum and a maximum share of
+ * the table that depend on the pane's {@link Tier}; width past that stays
+ * at the right edge, never between a name and its boundary. As the width
+ * shrinks it gives way in a fixed order: the file column goes, the bars
+ * shorten to their minimum, then names are cut with an ellipsis, then the
+ * boundary column goes, then the bars go. The numbers always stay.
  */
 import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, NO_HUES, SECONDARY } from './palette'
 import type { Hues } from './palette'
@@ -55,18 +57,47 @@ export type Row = {
   key: string
   segments: Segment[]
   raster?: string
+  /** In a row of the wide grid, the index of the first segment of the right card's row: everything before it is the left card's and the gap. */
+  split?: number
   /** Drawn as the engine's diff element instead of its segments: unified-diff hunks, and the file they are of (its language). */
   code?: { source: string; path: string }
 }
 
 export const BAR_MIN = 4
-/** The widest a bar column grows: past it the names take the room, so bars, boundary and numbers stay together on the right. */
-export const BAR_MAX = 24
+
+/**
+ * The pane's three layouts, by the columns its body has: `narrow` (below 80)
+ * one column with light cards, `medium` (80 to 130) one column of framed
+ * cards whose tables add columns, `wide` (above 130) a two-column grid.
+ */
+export type Tier = 'narrow' | 'medium' | 'wide'
+/** The first width of the medium tier, and the last. */
+export const MEDIUM_MIN = 80
+export const MEDIUM_MAX = 130
+export const tierOf = (columns: number): Tier => (columns < MEDIUM_MIN ? 'narrow' : columns <= MEDIUM_MAX ? 'medium' : 'wide')
+
+/**
+ * The share of a table's width its bars take at least and at most, per tier:
+ * a wide pane draws longer gauges, never a bar that dwarfs its name.
+ */
+export const BAR_SHARE: Record<Tier, { min: number; max: number }> = {
+  narrow: { min: 0.08, max: 0.3 },
+  medium: { min: 0.12, max: 0.36 },
+  wide: { min: 0.15, max: 0.42 },
+}
+/** How many cells a bar may take in a table `columns` wide at `tier`. */
+export function barRange(columns: number, tier: Tier): { min: number; max: number } {
+  const share = BAR_SHARE[tier]
+  const max = Math.max(BAR_MIN, Math.floor(columns * share.max))
+  return { min: Math.min(max, Math.max(BAR_MIN, Math.floor(columns * share.min))), max }
+}
 /** The glyph a bar's empty part (its track) is drawn with, faint. */
 export const TRACK = '·'
 export const NAME_MIN = 8
 const NAME_MAX = 32
 const BOUNDARY_MAX = 12
+/** The widest a file column grows. */
+const PLACE_MAX = 36
 /** The selection marker, the hotspot mark and a space. */
 export const MARK = 3
 
@@ -297,69 +328,61 @@ export function wrapGroups(key: string, groups: Segment[][], columns: number, ga
   return rows
 }
 
-/**
- * A section header: its title in bold, then its `subtitle` dim beside it (what
- * the list is sorted by), and a note against the right edge when it fits.
- */
-export function sectionRow(key: string, title: string, note: string, columns: number, subtitle = ''): Row {
-  const head: Segment[] = [{ text: fit(title, columns), bold: true, color: HEADING }]
-  // The subtitle gives way to the note: the note says something the rows do not (`partial`, `all in core`).
-  const noteRoom = note === '' ? 0 : cells(note) + 2
-  if (subtitle !== '' && cells(title) + 3 + cells(subtitle) + noteRoom <= columns) head.push({ text: ` · ${subtitle}`, dim: true })
-  return spread(key, head, note === '' ? [] : [{ text: note, dim: true }], columns)
-}
-
 export const blank = (key: string): Row => ({ key, segments: [{ text: ' ' }] })
 export const dimRow = (key: string, text: string, columns: number): Row => ({ key, segments: [{ text: fit(text, columns), dim: true }] })
 
-/** How a table of names, boundaries, a bar and numbers fits `columns`. */
-export type TableSpec = { name: number; boundary: number; bar: number; numbers: number[] }
+/** How a table of names, boundaries, a bar, numbers and (optionally) files fits `columns`. */
+export type TableSpec = { name: number; boundary: number; bar: number; numbers: number[]; place?: number }
+
+/** What a table may add beyond names and numbers: the pane's tier (its bar shares), and each row's file. */
+export type TableOptions = { tier?: Tier; places?: string[] }
 
 /**
  * Fits a table to `columns` (see the module docblock for the order things
  * give way in). `numbers` holds each number column's widest cell, title
- * included; the first number column is the one the bar draws. `nameMax`
- * caps how wide names grow before the bar takes the rest: paths want more.
+ * included; the first number column is the one the bar draws. On a narrow
+ * pane `nameMax` caps how wide names grow before the bar takes the rest
+ * (paths want more); from the medium tier on names grow whole while the bar
+ * keeps its minimum share.
+ * With `places` the table ends in a file column while it fits beside a bar
+ * at its minimum and names uncut.
  */
-export function tableSpec(columns: number, names: string[], boundaries: string[], numbers: number[], nameMax = NAME_MAX): TableSpec {
-  const fixed = MARK + numbers.reduce((n, w) => n + 1 + w, 0)
-  const nameNeed = Math.min(nameMax, Math.max(1, ...names.map(cells)))
+export function tableSpec(columns: number, names: string[], boundaries: string[], numbers: number[], nameMax = NAME_MAX, options: TableOptions = {}): TableSpec {
+  const range = barRange(columns, options.tier ?? 'narrow')
+  const longest = Math.max(1, ...names.map(cells))
+  // From the medium tier on a whole name wins over a longer gauge; narrow, names stop at their cap so the bars still compare.
+  const nameNeed = (options.tier ?? 'narrow') === 'narrow' ? Math.min(nameMax, longest) : longest
   const boundaryNeed = Math.min(BOUNDARY_MAX, Math.max(0, ...boundaries.map(cells)))
-  const attempt = (withBoundary: boolean, withBar: boolean): TableSpec | null => {
+  const placeNeed = Math.min(PLACE_MAX, Math.max(0, ...(options.places ?? []).map(cells)))
+  const attempt = (withBoundary: boolean, withBar: boolean, place: number): TableSpec | null => {
     const boundary = withBoundary && boundaryNeed > 0 ? boundaryNeed : 0
+    const fixed = MARK + numbers.reduce((n, w) => n + 1 + w, 0) + (place > 0 ? place + 1 : 0)
     const avail = columns - fixed - (boundary > 0 ? boundary + 1 : 0)
-    if (!withBar) return avail >= Math.min(NAME_MIN, nameNeed) ? { name: Math.min(avail, nameNeed), boundary, bar: 0, numbers } : null
-    const barWidth = Math.min(BAR_MAX, Math.max(BAR_MIN, avail - 1 - nameNeed))
-    const name = Math.min(nameNeed, avail - 1 - barWidth)
-    return name >= Math.min(NAME_MIN, nameNeed) ? { name, boundary, bar: barWidth, numbers } : null
+    const placed = place > 0 ? { place } : {}
+    if (!withBar) return avail >= Math.min(NAME_MIN, nameNeed) ? { name: Math.min(avail, nameNeed), boundary, bar: 0, numbers, ...placed } : null
+    const barWidth = Math.min(range.max, Math.max(range.min, avail - 1 - nameNeed))
+    // Room the bar may not take goes to a name past its cap: a whole name says more than a longer gauge.
+    const name = Math.min(Math.max(nameNeed, Math.min(longest, avail - 1 - barWidth)), avail - 1 - barWidth)
+    // A file column only beside whole names: the name is what the row is about.
+    if (place > 0 && name < nameNeed) return null
+    return name >= Math.min(NAME_MIN, nameNeed) ? { name, boundary, bar: barWidth, numbers, ...placed } : null
   }
   return (
-    attempt(true, true) ??
-    attempt(false, true) ??
-    attempt(false, false) ?? { name: Math.max(1, columns - fixed), boundary: 0, bar: 0, numbers }
+    (placeNeed > 0 ? attempt(true, true, placeNeed) : null) ??
+    attempt(true, true, 0) ??
+    attempt(false, true, 0) ??
+    attempt(false, false, 0) ?? { name: Math.max(1, columns - MARK - numbers.reduce((n, w) => n + 1 + w, 0)), boundary: 0, bar: 0, numbers }
   )
 }
 
-/** How many columns a table laid out by `spec` takes. */
-export const specWidth = (spec: TableSpec): number =>
-  MARK + spec.name + (spec.boundary > 0 ? spec.boundary + 1 : 0) + (spec.bar > 0 ? spec.bar + 1 : 0) + spec.numbers.reduce((n, w) => n + 1 + w, 0)
-
-/**
- * The width a section's header spreads over: its table's, so a note such as
- * `in` stands over the numbers, but never less than the header needs, nor
- * more than `columns`.
- */
-export function sectionWidth(tableWidth: number, title: string, note: string, columns: number): number {
-  return Math.min(columns, Math.max(tableWidth, cells(title) + (note === '' ? 0 : cells(note) + 2)))
-}
-
 /** A column-title row for a table, dim. */
-export function tableHead(key: string, spec: TableSpec, titles: { name: string; boundary: string; numbers: string[] }): Row {
+export function tableHead(key: string, spec: TableSpec, titles: { name: string; boundary: string; numbers: string[]; place?: string }): Row {
   let text = spaces(MARK) + padEnd(fit(titles.name, spec.name), spec.name)
   // A title that would be cut says nothing: the column's colours say what it is.
   if (spec.boundary > 0) text += ` ${padEnd(cells(titles.boundary) <= spec.boundary ? titles.boundary : '', spec.boundary)}`
   if (spec.bar > 0) text += ` ${spaces(spec.bar)}`
   spec.numbers.forEach((w, i) => (text += ` ${padStart(titles.numbers[i] ?? '', w)}`))
+  if ((spec.place ?? 0) > 0) text += ` ${fit(titles.place ?? 'file', spec.place ?? 0)}`
   return { key, segments: [{ text, dim: true }] }
 }
 
@@ -383,6 +406,9 @@ export type TableLine = {
   sorted?: number
   /** The same boundary as the row above: its label is drawn dim, so the column reads by where it changes. */
   repeat?: boolean
+  /** The file (and line) the row is declared in, for a table with a file column: a link to it. */
+  place?: string
+  placeLoc?: Loc | null
 }
 
 /** One table row: marker, name (pressable when it has an id), boundary, bar and numbers. */
@@ -408,6 +434,8 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hu
     const text = ` ${padStart(grouped(line.values[i] ?? 0), w)}`
     segments.push(line.sorted === undefined || line.sorted === i ? { text, color: HEADING } : { text, dim: true })
   })
+  // Files are left-aligned and cut from the front: a column of them reads down the file names.
+  if ((spec.place ?? 0) > 0 && (line.place ?? '') !== '') segments.push({ text: ' ' }, linked(fitStart(line.place ?? '', spec.place ?? 0), line.placeLoc ?? null, { dim: true }))
   return { key, segments: segments.filter(s => s.text !== '') }
 }
 

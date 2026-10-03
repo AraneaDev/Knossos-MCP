@@ -23,16 +23,15 @@ import {
   numberWidth,
   padEnd,
   plural,
-  sectionRow,
-  sectionWidth,
-  specWidth,
   tableHead,
   tableRow,
   tableSpec,
   wrapGroups,
   wrapWords,
 } from './rows'
-import type { Loc, Row, Segment } from './rows'
+import type { Loc, Row, Segment, Tier } from './rows'
+import { moreRows, noteOf, windowOf } from './cards'
+import type { Arrangement, Block, Section } from './cards'
 import { locIn } from './views'
 import type { Openable } from './views'
 
@@ -40,8 +39,6 @@ import type { Openable } from './views'
 export const FILE_CAP = 500
 export const TEST_CAP = 500
 export const VIOLATION_CAP = 200
-/** How many tests the Changes tab lists before `+N more`. */
-const TESTS_SHOWN = 8
 /** How many boundaries the Changes tab names on its summary line. */
 const REACH_SHOWN = 3
 /** Paths longer than this are cut from the front in a table. */
@@ -319,14 +316,14 @@ export const lookAtList = (look: LookAt | null): Openable[] =>
   look?.file ? [{ name: look.file.path, canonical: look.file.path, loc: look.file.loc, file: true, changed: true }] : []
 
 /**
- * The Overview's "Look at now", scoped to this session in its header: the
+ * The Overview's "Look at now", scoped to this session in its note: the
  * riskiest file it touched, the first row the marker walks (so `o` shows who
  * depends on it and `e` opens it, as on any file row), and the tests that
  * reach these changes, a key (`t`) away from a copied command; a warning
  * when no test reaches them.
  */
-export function lookAtRows(look: LookAt, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
-  const rows: Row[] = [sectionRow('look-head', 'Look at now', 'this session', columns)]
+export function lookAtSection(look: LookAt, columns: number, hues: Hues = NO_HUES, selected = -1): Section {
+  const rows: Row[] = []
   if (look.file !== null) {
     const f = look.file
     const segments: Segment[] = [
@@ -338,13 +335,14 @@ export function lookAtRows(look: LookAt, columns: number, hues: Hues = NO_HUES, 
     ]
     rows.push({ key: 'look-file', segments: clip(segments.filter(s => s.text !== ''), columns) })
   }
+  const section = (body: Row[]): Section => ({ key: 'look', title: 'Look at now', note: noteOf('this session'), body })
   if (look.tests === 0) {
     rows.push({ key: 'look-tests', segments: clip([{ text: '   ' }, { text: '▲ no test reaches these changes', color: STATUS_COLOURS.warn }], columns) })
-    return rows
+    return section(rows)
   }
   const said = `${floor(look.tests, look.plus)} ${look.tests === 1 && !look.plus ? 'test reaches' : 'tests reach'} these changes`
   const groups: Segment[][] = [...(look.command === null ? [] : [[button('tests', 'copy test command', 't')]]), [{ text: said, dim: true }]]
-  return [...rows, ...wrapGroups('look-tests', groups, columns, 3, 3)]
+  return section([...rows, ...wrapGroups('look-tests', groups, columns, 3, 3)])
 }
 
 /**
@@ -371,16 +369,30 @@ export function statusMark(status: TouchStatus): Segment {
   return status === 'deleted' ? { text: '−', color: STATUS_COLOURS.alert } : { text: ' ' }
 }
 
+/** The fewest changed files and tests the Changes tab lists, however short the pane. */
+const FILES_MIN = 5
+const TESTS_MIN = 3
+
 /**
- * The Changes tab: every file this session touched, most dependents first,
- * with the boundary it sits in; the tests that reach the changes,
- * nearest first; and the command that runs them, which `c` copies.
+ * The Changes tab's cards: every file this session touched, most dependents
+ * first, with the boundary it sits in and, since the session began, where
+ * each change came from; then the tests that reach the changes, nearest
+ * first, and the command that runs them. Wide, the tests stand beside the
+ * files.
  */
-export function changesRows(input: ChangesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] {
-  const rows: Row[] = [blank('gap-changes')]
+export function changesArrangement(input: ChangesInput, selected: number, tier: Tier, hues: Hues = NO_HUES): Arrangement {
+  const files: Block = { key: 'changes', grow: { length: input.files.length, min: FILES_MIN }, make: (columns, limit) => filesSection(input, selected, columns, limit, tier, hues) }
+  if (input.files.length === 0) return { left: [files] }
+  const tests: Block = { key: 'tests', grow: { length: input.tests.length, min: TESTS_MIN }, make: (columns, limit) => testsSection(input, columns, limit, hues) }
+  return { left: [files], right: [tests] }
+}
+
+/** The changed files' card, its list `limit` rows long around the marker. */
+function filesSection(input: ChangesInput, selected: number, columns: number, limit: number, tier: Tier, hues: Hues): Section {
+  const rows: Row[] = []
   const said = (key: string, text: string) => wrapWords(text, Math.max(1, columns - 3)).forEach((line, i) => rows.push(dimRow(`${key}-${i}`, `   ${line}`, columns)))
+  const title = 'Changes this session'
   if (input.files.length === 0) {
-    rows.push(sectionRow('changes-head', 'Changes this session', '', columns))
     if (input.fallback !== null) said('changes-fallback', input.fallback)
     said(
       'changes-none',
@@ -388,15 +400,14 @@ export function changesRows(input: ChangesInput, selected: number, columns: numb
         ? 'Nothing changed in this project since this session began.'
         : "Nothing yet. The files Claude edits show here after each turn's scan, with what depends on them and the tests that reach them.",
     )
-    return rows
+    return { key: 'changes', title, body: rows }
   }
   const deps = input.files.reduce((n, f) => n + f.dependents, 0)
   // Every change since the session began says where it came from, in a column of its own at the end.
   const origin = input.sinceStart && columns > ORIGIN_WIDTH + 20 ? ORIGIN_WIDTH + 1 : 0
-  const spec = tableSpec(columns - origin, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents))], PATH_MAX)
+  const spec = tableSpec(columns - origin, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents))], PATH_MAX, { tier })
   const max = Math.max(0, ...input.files.map(f => f.dependents))
   const note = `${input.sinceStart ? 'since it began' : plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
-  rows.push(sectionRow('changes-head', 'Changes this session', note, sectionWidth(specWidth(spec) + origin, 'Changes this session', note, columns)))
   if (input.fallback !== null) said('changes-fallback', input.fallback)
   // What the changes reach: the dependents, and every boundary they are in, each in its colour.
   rows.push(...reachRows('changes-reach', `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, input.boundaries, columns, hues))
@@ -405,36 +416,36 @@ export function changesRows(input: ChangesInput, selected: number, columns: numb
   }
   const head = tableHead('changes-cols', spec, { name: 'file', boundary: 'boundary', numbers: ['deps'] })
   rows.push(origin === 0 ? head : { ...head, segments: [...head.segments, { text: ` ${padEnd('from', ORIGIN_WIDTH)}`, dim: true }] })
-  input.files.forEach((f, i) => {
+  const window = windowOf(input.files.length, limit, selected)
+  input.files.slice(window.start, window.end).forEach((f, n) => {
+    const i = window.start + n
     const line = tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), cutStart: true, press: `row:${i}` }, spec, hues)
     if (origin === 0 || f.origin === undefined) return rows.push(line)
     const label: Segment = f.origin === 'session' ? { text: padEnd(ORIGIN_LABELS.session, ORIGIN_WIDTH), color: ACCENT } : { text: padEnd(ORIGIN_LABELS.outside, ORIGIN_WIDTH), dim: true }
     return rows.push({ ...line, segments: [...line.segments, { text: ' ' }, label] })
   })
-  rows.push(blank('gap-tests'), ...testRows(input, columns, hues))
-  return rows
+  rows.push(...moreRows('changes-more', window, input.files.length, columns))
+  return { key: 'changes', title, note: noteOf(note), body: rows }
 }
 
-/** The tests that reach the changes, nearest first, and the command that runs them. */
-function testRows(input: ChangesInput, columns: number, hues: Hues): Row[] {
+/** The tests that reach the changes, nearest first, `limit` of them, and the command that runs them all. */
+function testsSection(input: ChangesInput, columns: number, limit: number, hues: Hues): Section {
   const count = `${grouped(input.tests.length)}${input.truncated ? '+' : ''}`
-  if (input.tests.length === 0) {
-    return [
-      sectionRow('tests-head', 'Tests that reach these changes', '', columns),
-      { key: 'tests-none', segments: [{ text: '   ' }, { text: '▲ no test reaches these changes', color: STATUS_COLOURS.warn }] },
-    ]
-  }
-  const shown = input.tests.slice(0, TESTS_SHOWN)
-  const spec = { ...tableSpec(columns, shown.map(t => t.path), [], [numberWidth('hops', shown.map(t => t.distance))], PATH_MAX), bar: 0 }
   const title = 'Tests that reach these changes'
-  const rows: Row[] = [sectionRow('tests-head', title, 'hops', sectionWidth(specWidth(spec), `${title} · ${count}`, 'hops', columns), count)]
+  if (input.tests.length === 0) {
+    return { key: 'tests', title, body: [{ key: 'tests-none', segments: [{ text: '   ' }, { text: '▲ no test reaches these changes', color: STATUS_COLOURS.warn }] }] }
+  }
+  const window = windowOf(input.tests.length, limit)
+  const shown = input.tests.slice(0, window.end)
+  const spec = { ...tableSpec(columns, shown.map(t => t.path), [], [numberWidth('hops', shown.map(t => t.distance))], PATH_MAX), bar: 0 }
+  const rows: Row[] = [tableHead('tests-cols', spec, { name: 'test', boundary: '', numbers: ['hops'] })]
   shown.forEach((t, i) => rows.push(tableRow(`test-${i}`, { name: t.path, boundary: null, values: [t.distance], max: 0, cutStart: true, link: t.loc }, spec, hues)))
-  if (input.tests.length > shown.length) rows.push(dimRow('tests-more', `   +${input.tests.length - shown.length} more`, columns))
+  rows.push(...moreRows('tests-more', window, input.tests.length, columns))
   if (input.command !== null) {
     rows.push(blank('gap-command'))
     wrapWords(input.command, Math.max(1, columns - 5)).forEach((line, i) =>
       rows.push({ key: `command-${i}`, segments: [{ text: i === 0 ? '   $ ' : '     ', dim: true }, { text: line, color: HEADING }] }),
     )
   }
-  return rows
+  return { key: 'tests', title, subtitle: count, note: noteOf('nearest first'), body: rows }
 }

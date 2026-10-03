@@ -500,6 +500,11 @@ function drawn(text: string): string {
   return text.replace(/\[((?:\\.|[^\]\\])*)\]\(file:[^)]*\)/g, (_, label: string) => label.replace(/\\(.)/g, '$1'))
 }
 
+/** A card's text without its frame: the rule's dashes, corners and sides as single spaces. */
+function titled(text: string | undefined): string {
+  return (text ?? '').replace(/[╭╮╰╯│]/g, ' ').replace(/─+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
 const PANE_PROPS = {
   title: 'Knossos',
   isFocused: false,
@@ -1708,7 +1713,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const detail = (await ui.find({ key: 'detail' }))?.text
     expect(detail).toContain('App\\Router')
-    expect(detail).toMatch(/Used by 1 *› *Kernel/)
+    expect(titled(detail)).toMatch(/Used by · 1 *› *Kernel/)
     expect(w.detailRuns()).toEqual([
       ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'component-detail', ROOT, 'App\\Router'],
     ])
@@ -1783,6 +1788,66 @@ describe('knossos mod', () => {
     expect(text).not.toContain('App\\Router')
     await w.clock.advance(4000)
     expect((await ui.find({ key: 'detail' }))?.text).toContain('App\\Kernel')
+    await ui.unmount()
+  })
+
+  test('lays the pane out by its width: one column to 130, a two-column grid past it, every row within the width, on terminal and desktop', async ($, on) => {
+    const hubs = Array.from({ length: 30 }, (_, i) => ({ name: `Hub${i}`, canonical_name: `App\\Hub${i}`, kind: 'class', in_degree: 300 - i, out_degree: i, cross_boundary_degree: i % 3, boundary: i % 2 === 0 ? 'Http' : 'Core' }))
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ hubs }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const bodyColumns of [60, 100, 130, 140, 200]) {
+        const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns, scroll: { offset: 0, bodyRows: 40 } } })
+        for (const tab of ['tab:overview', 'tab:hubs', 'tab:issues', 'tab:changes', 'tab:cycles', 'tab:boundaries']) {
+          await ui.press({ key: tab })
+          const boxes = await ui.findAll({ type: 'Box' })
+          const hidden = boxes.filter(b => b.props.display === 'none').reduce((n, b) => n + [...b.text].length, 0)
+          const rows = boxes.filter(b => b.key !== 'pane' && b.key !== 'detail' && b.props.display !== 'none')
+          for (const row of rows) {
+            const width = [...drawn(row.text)].length + hotkeyPrefixes(row) - (row.key === 'tabs' ? hidden : 0)
+            expect(width, `${surface} ${bodyColumns} ${tab} ${String(row.key)}`).toBeLessThanOrEqual(bodyColumns)
+          }
+        }
+        await ui.press({ key: 'tab:overview' })
+        const grid = (await ui.findAll({ type: 'Box' })).some(b => typeof b.key === 'string' && b.key.includes('|'))
+        expect(grid, `${surface} ${bodyColumns}`).toBe(bodyColumns > 130)
+        // Framed from 80 columns on, a light top rule below.
+        const head = (await ui.find({ key: bodyColumns > 130 ? 'health-head|top-head' : 'top-head' }))?.text ?? ''
+        expect(head.startsWith(bodyColumns >= 80 ? '╭─ ' : '── '), `${surface} ${bodyColumns}: ${head}`).toBe(true)
+        await ui.unmount()
+      }
+    }
+  })
+
+  test("sizes the pane's lists to the rows its body has, says how many more there are, and scrolls to the marker", async ($, on) => {
+    const hubs = Array.from({ length: 30 }, (_, i) => ({ name: `Hub${i}`, canonical_name: `App\\Hub${i}`, kind: 'class', in_degree: 300 - i, out_degree: i, cross_boundary_degree: 0 }))
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ hubs }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const listed = async (bodyRows: number) => {
+        const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows } } })
+        await ui.press({ key: 'tab:hubs' })
+        const rows = (await ui.findAll({ type: 'Box' })).filter(b => typeof b.key === 'string' && /^hub-\d+$/.test(b.key))
+        const more = (await ui.findAll({ type: 'Box' })).find(b => b.key === 'hub-window')?.text ?? ''
+        await ui.unmount()
+        return { count: rows.length, more }
+      }
+      const short = await listed(20)
+      const tall = await listed(45)
+      expect(short.count).toBeGreaterThanOrEqual(5)
+      expect(tall.count).toBeGreaterThan(short.count)
+      expect(short.more).toMatch(/\d+ more ↓/)
+      // Every hub and the one hotspot that is not a hub.
+      expect((await listed(200)).count).toBe(31)
+    }
+    // The marker past the window brings the window along.
+    const ui = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 20 } } })
+    await ui.press({ key: 'tab:hubs' })
+    for (let i = 0; i < 25; i++) await ui.press({ key: 'down' })
+    expect((await ui.find({ key: 'hub-25' }))?.text).toMatch(/›/)
+    expect((await ui.find({ key: 'hub-window' }))?.text).toMatch(/\d+ above ↑/)
     await ui.unmount()
   })
 
@@ -1963,12 +2028,12 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'tab:issues' }))?.text).toBe('5³')
       await ui.press({ key: 'tab:issues' })
       const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
-      expect(text).toMatch(/Policy violations *▲ 2/)
+      expect(titled(text)).toMatch(/Policy violations *▲ 2/)
       expect(text).toContain('Kernel::boot')
       expect(text).toContain('Kernel.php:12')
-      expect(text).toMatch(/Diagnostics *1 error · 0 warnings/)
+      expect(titled(text)).toMatch(/Diagnostics *1 error · 0 warnings/)
       expect(text).toContain('PHP001 Syntax error')
-      expect(text).toMatch(/Dead code *4 · first 1/)
+      expect(titled(text)).toMatch(/Dead code *4 · first 1/)
       expect(text).toContain('Router::unused')
       expect(text).toContain('src/Http/Router.php')
       expect((await ui.find({ key: 'pol-0' }))?.text).toMatch(/^›/)
@@ -1982,7 +2047,7 @@ describe('knossos mod', () => {
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect(w.detailRuns()[0]?.slice(4)).toEqual(['App\\Core\\Kernel::boot'])
-    expect((await ui.find({ key: 'detail' }))?.text).toContain('Used by 2')
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Used by · 2')
     await ui.unmount()
   })
 
@@ -1993,7 +2058,7 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       await ui.press({ key: 'tab:cycles' })
-      expect((await ui.find({ key: 'cycles-head' }))?.text).toMatch(/^Cycles +1 · largest first$/)
+      expect(titled((await ui.find({ key: 'cycles-head' }))?.text)).toMatch(/^Cycles +1 · largest first$/)
       expect((await ui.find({ key: 'cycle-0' }))?.text).toContain('cycle 1 · 3 members')
       expect((await ui.find({ key: 'chain-0' }))?.text).toBe('   Kernel::boot → Router::route → Router::dispatch ↺')
       const boot = await ui.find({ type: 'Text', text: 'Kernel::boot' })
@@ -2038,16 +2103,16 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const ui = await mountPane($)
     await ui.press({ key: 'tab:boundaries' })
-    expect((await ui.find({ key: 'focus-head' }))?.text).toBe('A Http')
+    expect(titled((await ui.find({ key: 'focus-head' }))?.text)).toMatch(/^A Http \d+ components$/)
     expect((await ui.find({ key: 'focus-out' }))?.text).toMatch(/depends on +Core 14/)
     expect(await ui.find({ key: 'open' })).toBeUndefined()
     await ui.press({ key: 'down' })
-    expect((await ui.find({ key: 'focus-head' }))?.text).toBe('B Core')
+    expect(titled((await ui.find({ key: 'focus-head' }))?.text)).toMatch(/^B Core \d+ components$/)
     expect((await ui.find({ key: 'focus-out' }))?.text).toMatch(/depends on +Http 3/)
     expect((await ui.find({ key: 'focus-forbidden' }))?.text).toMatch(/may not use +× Http +× cli/)
     await ui.press({ key: 'row:2' })
     await w.clock.settle()
-    expect((await ui.find({ key: 'focus-head' }))?.text).toBe('C cli')
+    expect(titled((await ui.find({ key: 'focus-head' }))?.text)).toMatch(/^C cli \d+ components?$/)
     expect(w.detailRuns()).toHaveLength(0)
     await ui.press({ key: 'copy' })
     await w.clock.settle()
@@ -2065,21 +2130,22 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
-      const wide = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100 } })
+      const wide = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 140 } })
       await wide.press({ key: 'row:0' })
       await w.clock.settle()
-      expect((await wide.find({ key: 'detail-name' }))?.text).toMatch(/^Router +class · Http$/)
-      expect(drawn((await wide.find({ key: 'detail-place' }))?.text ?? '')).toBe('src/Http/Router.php:3')
-      expect((await wide.find({ key: 'side-0' }))?.text).toMatch(/^Used by 2 +edges +Uses 1 +edges$/)
-      expect((await wide.find({ key: 'side-1' }))?.text).toMatch(/Kernel +Core +[━╸]+·* +4 +Request +Http +[━╸]+·* +2$/)
+      expect(titled((await wide.find({ key: 'detail-head' }))?.text)).toMatch(/^Router +class · Http$/)
+      expect(titled(drawn((await wide.find({ key: 'detail-place' }))?.text ?? ''))).toBe('src/Http/Router.php:3')
+      // Wide: one row holds both cards' top edges, then a counterpart of each.
+      expect(titled((await wide.find({ key: 'used-head|uses-head' }))?.text)).toMatch(/^Used by · 2 +edges +Uses · 1 +edges$/)
+      expect(titled((await wide.find({ key: 'used-0|uses-0' }))?.text)).toMatch(/Kernel +Core +[━╸]+·* +4 +Request +Http +[━╸]+·* +2$/)
       expect((await wide.find({ key: 'detail' }))?.text).toContain('note: The one way in.')
       // The tab strip gives way to the detail; back is a key and a click.
       expect(await wide.find({ key: 'tab:hubs' })).toBeUndefined()
       expect((await wide.find({ key: 'back' }))?.props.hotkey).toBe('b')
       await wide.unmount()
       const narrow = await mountPane($, surface)
-      expect(await narrow.find({ key: 'side-0' })).toBeUndefined()
-      expect((await narrow.find({ key: 'used-head' }))?.text).toMatch(/^Used by 2 +edges$/)
+      expect(await narrow.find({ key: 'used-0|uses-0' })).toBeUndefined()
+      expect(titled((await narrow.find({ key: 'used-head' }))?.text)).toMatch(/^Used by · 2 +edges$/)
       expect((await narrow.find({ key: 'uses-0' }))?.text).toMatch(/Request +Http +[━╸]+·* +2$/)
       await narrow.press({ key: 'back' })
       expect(await narrow.find({ key: 'detail' })).toBeUndefined()
@@ -2092,7 +2158,7 @@ describe('knossos mod', () => {
     await ui.press({ key: 'rel:2' })
     await w.clock.settle()
     expect(w.detailRuns().at(-1)?.slice(4)).toEqual(['App\\Http\\Request'])
-    expect((await ui.find({ key: 'detail-name' }))?.text).toMatch(/^Request /)
+    expect(titled((await ui.find({ key: 'detail-head' }))?.text)).toMatch(/^Request /)
     await ui.unmount()
   })
 
@@ -2162,7 +2228,7 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'sort' }))?.text).toBe('sort: in')
       await ui.press({ key: 'sort' })
       expect((await ui.find({ key: 'sort' }))?.text).toBe('sort: out')
-      expect((await ui.find({ key: 'hubs-head' }))?.text).toMatch(/by out$/)
+      expect(titled((await ui.find({ key: 'hubs-head' }))?.text)).toMatch(/by out$/)
       expect(await order()).toEqual(['Kernel', 'Request', 'Router'])
       await ui.press({ key: 'sort' })
       expect(await order()).toEqual(['Kernel', 'Router', 'Request'])
@@ -2199,7 +2265,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const term = await mountPane($, 'terminal')
     await term.press({ key: 'tab:boundaries' })
-    expect((await term.find({ key: 'bounds-head' }))?.text).toMatch(/^Boundaries +3 · 232 deps$/)
+    expect(titled((await term.find({ key: 'bounds-head' }))?.text)).toMatch(/^Boundaries +3 · 232 deps$/)
     const grid = await term.find({ type: 'Raster' })
     expect(grid?.key).toBe('raster-heat')
     // The axis letters, one row per boundary and the legend's two rows, as wide as the widest of them.
@@ -2482,12 +2548,12 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'tab:changes' }))?.text).toBe('6²')
       await ui.press({ key: 'tab:changes' })
       const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
-      expect(text).toMatch(/Changes this session +2 turns/)
+      expect(titled(text)).toMatch(/Changes this session +2 turns/)
       expect(text).toMatch(/2 files → 45 dependents reaching Http Core/)
       expect(drawn((await ui.find({ key: 'change-0' }))?.text ?? '')).toMatch(/^› +src\/Router\.php +Http .*42$/)
       expect(drawn((await ui.find({ key: 'change-1' }))?.text ?? '')).toMatch(/^ \+ src\/Kernel\.php +Core .*3$/)
       // Each test once, at its nearest distance.
-      expect(text).toMatch(/Tests that reach these changes · 2 +hops/)
+      expect(titled(text)).toMatch(/Tests that reach these changes · 2 +nearest first/)
       expect(drawn((await ui.find({ key: 'test-0' }))?.text ?? '')).toMatch(/tests\/Core\/KernelTest\.php +1$/)
       expect(drawn((await ui.find({ key: 'test-1' }))?.text ?? '')).toMatch(/tests\/Http\/RouterTest\.php +1$/)
       expect(text).toContain("$ vendor/bin/phpunit --filter '(KernelTest|RouterTest)'")
@@ -2526,10 +2592,10 @@ describe('knossos mod', () => {
         await ui.press({ key })
         await w.clock.settle()
         const text = drawn((await ui.find({ key: 'detail' }))?.text ?? '')
-        expect(text, `${tab} ${key}`).toMatch(/Router\.php +Http/)
-        expect(text).toMatch(/Depended on by 14 files +edges/)
+        expect(titled(text), `${tab} ${key}`).toMatch(/Router\.php +Http/)
+        expect(titled(text)).toMatch(/Depended on by · 14 files +edges/)
         expect(drawn((await ui.find({ key: 'dep-0' }))?.text ?? '')).toMatch(/^› +src\/Core\/Kernel\.php +Core .*6$/)
-        expect(text).toMatch(/Declares 2 components/)
+        expect(titled(text)).toMatch(/Declares · 2 components/)
         await ui.press({ key: 'back' })
         // Back on the tab, the marker stands where the detail was opened from.
         expect((await ui.find({ key: key === 'row:1' ? 'turn-0' : tab === 'tab:changes' ? 'change-0' : 'look-file' }))?.text).toMatch(/^›/)
@@ -2587,7 +2653,7 @@ describe('knossos mod', () => {
       expect(w.editorRuns().at(-1)).toEqual(['code', '-g', '/repo/src/Router.php'])
       await ui.press({ key: 'open' })
       await w.clock.settle()
-      expect(drawn((await ui.find({ key: 'detail' }))?.text ?? '')).toMatch(/Depended on by 14 files/)
+      expect(titled(drawn((await ui.find({ key: 'detail' }))?.text ?? ''))).toMatch(/Depended on by · 14 files/)
       await ui.press({ key: 'back' })
       // `d` hides them again; a tab switch does too.
       await ui.press({ key: 'drift' })
@@ -2610,7 +2676,7 @@ describe('knossos mod', () => {
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
-    expect((await ui.find({ key: 'look-head' }))?.text).toMatch(/Look at now +this session/)
+    expect(titled((await ui.find({ key: 'look-head' }))?.text)).toMatch(/Look at now +this session/)
     expect((await ui.find({ key: 'look-file' }))?.text).toMatch(/^› +Router\.php Http · 41 dependents/)
     expect((await ui.find({ key: 'look-tests' }))?.text).toContain('1 test reaches these changes')
     await ui.press({ key: 'edit' })

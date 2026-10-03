@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { BoundaryMatrix, Dashboard } from '../../types'
-import { axisCode, boundariesInput, boundariesList, boundaryRows, heatRows, heatSpec, shade, SHADES } from './boundaries'
+import { axisCode, boundariesInput, boundariesList, heatRows, heatSpec, shade, SHADES } from './boundaries'
 import { ACCENT, boundaryColour, NO_HUES } from './palette'
 import { HEAT_KEYS } from './raster'
-import { plainText } from './__tests__/plain-text'
+import { findRow, plainText } from './__tests__/plain-text'
+import { boundaryRows } from './__tests__/tabs'
 import { rowWidth } from './rows'
 import type { Row } from './rows'
 
-const WIDTHS = [40, 60, 90, 120] as const
+const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
 
 const matrix = (over: Partial<BoundaryMatrix> = {}): BoundaryMatrix => ({
   boundaries: ['tests', 'core', 'typescript-worker', 'module:hooks (+typescript:hooks/tsconfig.json)'],
@@ -50,7 +51,7 @@ const dash = (m: BoundaryMatrix | null = matrix()): Dashboard => ({
 })
 
 const textOf = (rows: Row[]) => rows.map(plainText).join('\n')
-const row = (rows: Row[], key: string) => rows.find(r => r.key === key)
+const row = findRow
 
 describe('boundariesInput', () => {
   it('letters the axes, labels each boundary and sums its dependencies across', () => {
@@ -167,11 +168,13 @@ describe('the marked boundary', () => {
       expect(counts.length).toBeGreaterThan(0)
     }
   })
-  it('stands each section note over its own table', () => {
+  it('draws each section as a card whose edges span the pane, the map beside the table when wide', () => {
     const rows = boundaryRows(boundariesInput(dash()), 100)
-    const head = plainText(row(rows, 'bounds-head')!)
-    expect(head.length).toBeLessThan(100)
-    expect(plainText(row(rows, 'bounds-list')!).length).toBeLessThan(100)
+    expect(rowWidth(row(rows, 'bounds-head')!)).toBe(100)
+    expect(rowWidth(row(rows, 'bounds-list-head')!)).toBe(100)
+    const wide = boundaryRows(boundariesInput(dash()), 140)
+    expect(wide.find(r => r.key === 'bounds-head|bounds-list-head')).toBeDefined()
+    for (const r of wide) expect(rowWidth(r)).toBeLessThanOrEqual(140)
   })
 })
 

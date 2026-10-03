@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ComponentDetail, Dashboard, DetailState, KnossosView, PaneTab, TurnBrief } from '../../types'
 import {
-  CONTENT_MAX,
-  SIDE_BY_SIDE,
   allowInput,
   allowRows,
   askPrompt,
@@ -28,11 +26,12 @@ import {
   wrapWords,
 } from './layout'
 import type { PaneInput, Row } from './layout'
-import { plainText } from './__tests__/plain-text'
-import { fitStart, shortName, specWidth, wrapGroups } from './rows'
-import { cycleRows, cyclesInput, issueCount, issuesInput, issuesList, superscript } from './views'
+import { findRow, plainText, rawText } from './__tests__/plain-text'
+import { cycleRows } from './__tests__/tabs'
+import { fitStart, shortName, wrapGroups } from './rows'
+import { cyclesInput, issueCount, issuesInput, issuesList, superscript } from './views'
 
-const WIDTHS = [40, 60, 90, 120] as const
+const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
 const TABS: PaneTab[] = ['overview', 'hubs', 'boundaries', 'cycles', 'issues', 'changes']
 
 const hub = (name: string, canonical: string, kind: string, boundary: string | null, inDegree: number, out = 1, cross = 0) => ({
@@ -118,7 +117,7 @@ const input = (over: Partial<PaneInput> = {}, d = dash(), b: TurnBrief | null = 
 })
 
 const textOf = (rows: Row[]) => rows.map(plainText).join('\n')
-const row = (rows: Row[], key: string) => rows.find(r => r.key === key)
+const row = findRow
 
 describe('fit and bar', () => {
   it('cuts with an ellipsis only when it has to', () => {
@@ -173,11 +172,10 @@ describe('tableSpec', () => {
   it('gives way in order: bars shrink, names truncate, the boundary goes, then the bars', () => {
     const at = (columns: number) => tableSpec(columns, names, boundaries, numbers)
     const full = at(120)
-    // Names take what the longest needs, bars stop at BAR_MAX, and the rest stays at the right edge.
-    expect(full.bar).toBe(24)
+    // Names take what the longest needs, bars stop at their share of the width, and the rest stays at the right edge.
+    expect(full.bar).toBe(36)
     expect(full.name).toBe(24)
     expect(full.boundary).toBe(12)
-    expect(specWidth(full)).toBeLessThan(120)
     const shrinking = at(70)
     expect(shrinking.name).toBe(24)
     expect(shrinking.bar).toBeLessThan(full.bar)
@@ -209,7 +207,7 @@ describe('paneRows', () => {
         for (const showKeys of [false, true]) {
           for (const terminal of [true, false]) {
             const rows = paneRows(input({ tab, showKeys, terminal }), columns)
-            for (const r of rows) expect(rowWidth(r), `${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(Math.min(columns, CONTENT_MAX))
+            for (const r of rows) expect(rowWidth(r), `${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
           }
         }
       })
@@ -224,8 +222,8 @@ describe('paneRows', () => {
     }
   })
 
-  it('keeps every row of a wide pane to the content width', () => {
-    expect(Math.max(...paneRows(input(), 120).map(rowWidth))).toBe(CONTENT_MAX)
+  it('spans the whole width: no cap, whatever the pane has', () => {
+    for (const columns of [120, 200]) expect(Math.max(...paneRows(input(), columns).map(rowWidth))).toBe(columns)
   })
 
   it('degrades the hubs table as the pane narrows', () => {
@@ -262,7 +260,8 @@ describe('paneRows', () => {
     expect(plainText(row(rows, 'top-0')!)).toMatch(/^ {3}StableId/)
     expect(plainText(row(paneRows(input({ selected: 1 }), 60), 'turn-1')!)).toMatch(/^› {2}register\.tsx/)
     const past = paneRows(input({ selected: 99 }), 60)
-    expect(plainText(row(past, 'top-4')!).startsWith('›')).toBe(true)
+    const last = input().items.length - 1
+    expect(plainText(row(past, `top-${last}`)!).startsWith('›')).toBe(true)
   })
 
   it('makes each listed name pressable by its row', () => {
@@ -286,10 +285,10 @@ describe('paneRows', () => {
     expect(numbers.map(s => (s.dim === true ? 'dim' : s.color))).toEqual(['text', 'dim', 'dim'])
     const byCross = row(paneRows(input({ tab: 'hubs', sort: 'cross' }), 90), 'hub-0')!.segments.filter(s => /^ +[\d,]+$/.test(s.text))
     expect(byCross.map(s => (s.dim === true ? 'dim' : s.color))).toEqual(['dim', 'dim', 'text'])
-    expect(row(rows, 'hub-0')!.segments[0]).toMatchObject({ text: '›', color: 'suggestion' })
+    expect(row(rows, 'hub-0')!.segments.find(s => s.text === '›')).toMatchObject({ color: 'suggestion' })
   })
 
-  it('shows the last turn, health and the top five on the overview', () => {
+  it('shows the last turn, health and the most depended on on the overview', () => {
     const text = textOf(paneRows(input(), 60))
     expect(text).toContain('Last turn')
     expect(text).toMatch(/2 files → 27 dependents · 1 test/)
@@ -300,7 +299,8 @@ describe('paneRows', () => {
     expect(text).toContain('Most depended on')
     // The last turn's files are walked first, each a file row that opens as its detail.
     const list = listFor(input())
-    expect(list).toHaveLength(7)
+    // Every component, not a top five: the card shows as many as the height allows and the marker scrolls it.
+    expect(list).toHaveLength(2 + input().items.length)
     expect(list.slice(0, 2).map(o => [o.canonical, o.file])).toEqual([
       ['src/Query/TurnBriefService.php', true],
       ['hooks/register.tsx', true],
@@ -567,7 +567,7 @@ const detailPane = (answer: ComponentDetail | null = detailAnswer(), state: Deta
   paneInput(full(), brief(), FETCHED, IDLE, view({ inspect: shown }), 0, true, detailInput(shown, state))
 
 const widthsFit = (rows: Row[], columns: number) => {
-  for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(Math.min(columns, CONTENT_MAX))
+  for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
 }
 
 describe('the header summary', () => {
@@ -601,7 +601,7 @@ describe('the issues tab', () => {
     const text = textOf(paneRows(fullInput({ tab: 'issues' }), 100))
     expect(text).toMatch(/Policy violations +▲ 7/)
     expect(text).toMatch(/ArchitectureQueryService::fileMetrics → FactCollector +core +ArchitectureQueryService\.php:191/)
-    expect(text).toContain('+6 more')
+    expect(text).toContain('+6 not listed')
     expect(text).toMatch(/Diagnostics +1 error · 1 warning · 1 note/)
     expect(text).toMatch(/✖ TS2307 Cannot find module/)
     expect(text).toMatch(/scanner\.ts:14$/m)
@@ -671,12 +671,13 @@ describe('the cycles tab', () => {
     const coloured = (name: string) => chain.find(s => s.text === name)?.color
     // Most members are python-worker: the cycle's line names it, in its colour, and its members stay neutral.
     expect(plainText(row(rows, 'cycle-0')!)).toBe('›  cycle 1 · 5 members · python-worker')
-    expect(row(rows, 'cycle-0')!.segments.at(-1)?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
+    const home = row(rows, 'cycle-0')!.segments.find(s => s.text === 'python-worker')
+    expect(home?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
     expect(coloured('Index::_add_instances')).toBeUndefined()
     expect(coloured('Index::read_bounded')).toBeUndefined()
     // The one member in core is where the cycle crosses: drawn in core's colour.
     expect(coloured('Index::safe_file')).toMatch(/_FOR_SUBAGENTS_ONLY$/)
-    expect(coloured('Index::safe_file')).not.toBe(row(rows, 'cycle-0')!.segments.at(-1)?.color)
+    expect(coloured('Index::safe_file')).not.toBe(home?.color)
     // The legend names only the colours drawn on members.
     expect(plainText(row(rows, 'cycles-legend')!)).toBe('   ■ core')
   })
@@ -726,21 +727,22 @@ describe('the detail view', () => {
     })
   }
   it('heads with name, kind, boundary and place, then used by and uses side by side when wide', () => {
-    const rows = paneRows(detailPane(), 100)
-    expect(plainText(row(rows, 'detail-name')!)).toMatch(/^DashboardService +class · core$/)
+    const rows = paneRows(detailPane(), 140)
+    expect(plainText(row(rows, 'detail-head')!)).toMatch(/^DashboardService +class · core$/)
     expect(plainText(row(rows, 'detail-place')!)).toBe('src/Query/DashboardService.php:28')
     expect(plainText(row(rows, 'detail-canonical')!)).toBe('Knossos\\Query\\DashboardService')
-    expect(plainText(row(rows, 'side-0')!)).toMatch(/^Used by 19 +edges +Uses 2 +edges$/)
-    expect(plainText(row(rows, 'side-1')!)).toMatch(/DashboardServiceTest::testDrift +tests +[━╸]+·* +3 +BoundaryLabels +core +[━╸]+·* +4$/)
-    expect(textOf(rows)).toContain('+17 more')
+    // One row holds both cards' top edges, and then a counterpart of each.
+    expect(rows.find(r => r.key === 'used-head|uses-head')).toBeDefined()
+    const pair = rows.find(r => r.key === 'used-0|uses-0')!
+    expect(rawText(pair)).toMatch(/DashboardServiceTest::testDrift +tests +[━╸]+·* +3 +│ +│ +BoundaryLabels +core +[━╸]+·* +4 +│$/)
+    expect(textOf(rows)).toContain('+17 not listed')
     expect(textOf(rows)).toMatch(/Annotations\n {3}note: Read-only: it never scans\./)
-    expect(100).toBeGreaterThanOrEqual(SIDE_BY_SIDE)
   })
-  it('stacks uses under used by when narrow', () => {
-    const rows = paneRows(detailPane(), 60)
-    expect(row(rows, 'side-0')).toBeUndefined()
+  it('stacks uses under used by below the wide tier', () => {
+    const rows = paneRows(detailPane(), 100)
+    expect(rows.some(r => r.key.includes('|'))).toBe(false)
     const text = textOf(rows)
-    expect(text.indexOf('Used by 19')).toBeLessThan(text.indexOf('Uses 2'))
+    expect(text.indexOf('Used by · 19')).toBeLessThan(text.indexOf('Uses · 2'))
     expect(plainText(row(rows, 'uses-0')!)).toMatch(/BoundaryLabels +core +[━╸]+·* +4$/)
   })
   it('makes every counterpart pressable, used by first, marks the one j and k reach, and offers back beside the list keys', () => {
@@ -766,7 +768,7 @@ describe('the detail view', () => {
   it('lists names without counts or bars from an older knossos', () => {
     const old = detailAnswer({ used_by: { count: 1, truncated: false, names: ['Kernel'] }, uses: { count: 0, truncated: false, names: [] } })
     const text = textOf(paneRows(detailPane(old), 60))
-    expect(text).toMatch(/Used by 1\n› {2}Kernel/)
+    expect(text).toMatch(/Used by · 1\n› {2}Kernel/)
     expect(text).not.toMatch(/█/)
   })
 })
@@ -786,14 +788,13 @@ describe('tables packed to the left', () => {
       if (columns >= 90) expect(plainText(row(issues, 'dead-0')!), `dead ${columns}`).toMatch(/FactCollector::beforeTraverse php-worker +FactCollector\.php:108$/)
       for (const r of [...hubs, ...top, ...issues]) expect(rowWidth(r)).toBeLessThanOrEqual(columns)
     }
-    // At 120 the tables end well short of the edge rather than stretching.
-    expect(rowWidth(row(paneRows(fullInput({ tab: 'hubs' }), 120), 'hub-1')!)).toBeLessThan(90)
   })
-  it('stands a header note over its own table, and names the sort beside the title', () => {
+  it("sets the title, the sort and the note into the card's top edge, which spans the card like its rows", () => {
     const rows = paneRows(fullInput({ tab: 'hubs' }), 100)
     const head = row(rows, 'hubs-head')!
     expect(plainText(head)).toMatch(/^Hubs and hotspots · sorted by in +◆ hotspot only$/)
-    expect(rowWidth(head)).toBe(rowWidth(row(rows, 'hub-0')!))
+    expect(rowWidth(head)).toBe(100)
+    expect(rowWidth(row(rows, 'hub-0')!)).toBe(100)
     const top = paneRows(fullInput({ tab: 'overview' }), 100)
     expect(rowWidth(row(top, 'top-head')!)).toBe(rowWidth(row(top, 'top-0')!))
   })
@@ -801,6 +802,63 @@ describe('tables packed to the left', () => {
     const rows = paneRows(fullInput({ tab: 'issues' }), 90)
     expect(row(rows, 'dead-0')!.segments.find(seg => seg.link)?.link).toEqual({ path: '/work/Knossos-MCP/workers/php/src/FactCollector.php', line: 108 })
     expect(row(rows, 'large-0')!.segments.find(seg => seg.link)?.link?.line).toBeNull()
+  })
+})
+
+describe('the pane at every width and height', () => {
+  const many = dash({ hubs: Array.from({ length: 40 }, (_, i) => hub(`Hub${i}`, `App\\Hub${i}`, 'class', i % 3 === 0 ? 'core' : 'tests', 400 - i * 5, i, i % 4)), hotspots: [] })
+  const shown = (rows: Row[], prefix: string) => rows.filter(r => r.key.split('|').some(k => new RegExp(`^${prefix}-\\d+$`).test(k))).length
+
+  for (const columns of WIDTHS) {
+    it(`lays out every tab at ${columns} columns, short and tall, within the width, its edges filling it`, () => {
+      for (const height of [24, 60]) {
+        for (const tab of TABS) {
+          const rows = paneRows(input({ tab }, many), columns, height)
+          for (const r of rows) expect(rowWidth(r), `${tab} ${height} ${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+          // Every card edge spans its column: the whole pane, or its half of the wide grid.
+          for (const r of rows.filter(r => /-head$/.test(r.key) && /^(╭|──)/.test(plainText(r) === '' ? '' : r.segments[0]!.text))) expect(rowWidth(r)).toBe(columns)
+        }
+      }
+    })
+  }
+
+  it('lists as many hubs as the height allows, then how many more', () => {
+    const short = paneRows(input({ tab: 'hubs' }, many), 100, 24)
+    const tall = paneRows(input({ tab: 'hubs' }, many), 100, 40)
+    expect(short.length).toBeLessThanOrEqual(24)
+    expect(shown(short, 'hub')).toBeGreaterThanOrEqual(5)
+    expect(shown(tall, 'hub')).toBeGreaterThan(shown(short, 'hub'))
+    // Too short for even the minimum: five still show, and the pane scrolls.
+    expect(shown(paneRows(input({ tab: 'hubs' }, many), 100, 8), 'hub')).toBe(5)
+    expect(tall.length).toBeLessThanOrEqual(40)
+    expect(textOf(tall)).toMatch(new RegExp(`${40 - shown(tall, 'hub')} more ↓`))
+    expect(shown(paneRows(input({ tab: 'hubs' }, many), 100, 200), 'hub')).toBe(40)
+  })
+
+  it('scrolls a list to the marker: the marked hub is drawn, with how many are above it', () => {
+    const rows = paneRows(input({ tab: 'hubs', selected: 30 }, many), 100, 24)
+    expect(plainText(row(rows, 'hub-30')!)).toMatch(/^›/)
+    expect(textOf(rows)).toMatch(/\d+ above ↑ · \d+ more ↓/)
+  })
+
+  it('switches layout at the tier thresholds: one column to 130, two from 131', () => {
+    const grid = (columns: number) => paneRows(input({ tab: 'overview' }, many), columns, 40).some(r => r.key.includes('|'))
+    expect([60, 79, 80, 130].map(grid)).toEqual([false, false, false, false])
+    expect([131, 140, 200].map(grid)).toEqual([true, true, true])
+    // Medium tables add out, cross and the file to the in-degree a narrow pane shows.
+    expect(plainText(row(paneRows(input({}, many), 100), 'top-head')!)).not.toContain(' in')
+    expect(textOf(paneRows(input({}, many), 100))).toMatch(/in +out +cross/)
+    expect(textOf(paneRows(input({}, many), 60))).not.toMatch(/in +out +cross/)
+  })
+
+  it('puts the most depended on and a boundary map in the right half of a wide Overview', () => {
+    const matrix = { boundaries: ['core', 'tests'], members: [10, 5], boundaries_truncated: false, cells: [[4, 0], [3, 2]], forbidden: [], edges: 9, truncated: false, truncation_reasons: [] }
+    const rows = paneRows(input({ tab: 'overview' }, dash({ boundary_matrix: matrix })), 140, 60)
+    const [left] = [Math.floor((140 - 2) / 2)]
+    const head = rows.find(r => r.key.endsWith('|top-head'))!
+    expect(plainText({ key: 'x', segments: head.segments.slice(head.split) })).toMatch(/^Most depended on/)
+    expect(rows.some(r => r.key.endsWith('|map-head'))).toBe(true)
+    expect(rowWidth({ key: 'x', segments: head.segments.slice(0, head.split) })).toBe(left + 2)
   })
 })
 
@@ -867,7 +925,7 @@ describe('the overview health line', () => {
     expect(plainText(row(rows, 'health-dead')!)).toMatch(/^ {3}dead code +55$/)
     expect(plainText(row(rows, 'health-policy')!)).toMatch(/^ {3}policy +▲ 7$/)
     expect(plainText(row(rows, 'health-diagnostics')!)).toMatch(/^ {3}diagnostics +▲ 2$/)
-    expect(row(rows, 'health-diagnostics')!.segments.at(-1)?.color).toBe('warning')
+    expect(row(rows, 'health-diagnostics')!.segments.find(s => s.text.trim() === '▲ 2')?.color).toBe('warning')
     // One column: every figure ends where the others end.
     const ends = ['health-cycles', 'health-degree', 'health-dead', 'health-policy', 'health-diagnostics'].map(k => plainText(row(rows, k)!).trimEnd().length)
     expect(new Set(ends).size).toBe(1)
@@ -979,7 +1037,8 @@ describe('a boundary column that one boundary dominates', () => {
       expect(plainText(row(rows, 'hubs-head')!)).toContain('all in core')
       expect(plainText(row(rows, 'hub-1')!)).not.toContain('core')
       const top = paneRows(input({}, allCore), columns)
-      expect(plainText(row(top, 'top-head')!)).toContain('all in core')
+      // The narrowest top edge has no room for the note: the title stays whole.
+      if (columns >= 60) expect(plainText(row(top, 'top-head')!)).toContain('all in core')
     }
   })
   it('draws a repeat dim, so the column reads by where the boundary changes', () => {

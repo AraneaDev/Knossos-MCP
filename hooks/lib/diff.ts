@@ -12,9 +12,9 @@
  * cut to the columns it has.
  */
 import type { DiffState, Inspected, SessionDiff, SessionRev } from '../../types'
-import { HEADING } from './palette'
-import { blank, cells, dimRow, fit, fitStart, plural, sectionRow, spread, wrapWords } from './rows'
+import { dimRow, fitStart, plural, wrapWords } from './rows'
 import type { Row, Segment } from './rows'
+import type { Block, Section } from './cards'
 
 /** Lines of one hunk shown; past them the rest is folded into "N more lines". */
 export const HUNK_LINES = 40
@@ -121,20 +121,16 @@ function viewOf(path: string, answer: SessionDiff | null): DiffView {
 }
 
 /**
- * The change's rows: a heading with the lines added and removed, a rename
- * when it was one, then each hunk as a diff element (long ones folded with
- * how many lines are left out), how many hunks are not shown, and a note
- * when the diff was cut. The text rows fit `columns`.
+ * The change's card: the lines added and removed in its note, a rename when
+ * it was one, then each hunk as a diff element (long ones folded with how
+ * many lines are left out), how many hunks are not shown, and a note when
+ * the diff was cut. The text rows fit `columns`.
  */
-export function diffRows(view: DiffView, columns: number): Row[] {
+export function diffSection(view: DiffView, columns: number): Section {
   const title = 'Changed since the session began'
   if (view.phase !== 'diff') {
     const text = view.phase === 'loading' ? 'Reading the change…' : view.text
-    return [
-      blank('gap-diff'),
-      sectionRow('diff-head', title, '', columns),
-      ...wrapWords(text, Math.max(1, columns - 3)).map((part, i) => dimRow(`diff-line-${i}`, `   ${part}`, columns)),
-    ]
+    return { key: 'diff', title, body: wrapWords(text, Math.max(1, columns - 3)).map((part, i) => dimRow(`diff-line-${i}`, `   ${part}`, columns)) }
   }
   // Only the sides that moved: an added file is all `+`, a deleted one all `−`.
   const counts: Segment[] = [
@@ -142,8 +138,7 @@ export function diffRows(view: DiffView, columns: number): Row[] {
     ...(view.added > 0 && view.removed > 0 ? [{ text: ' ' }] : []),
     ...(view.removed > 0 ? [{ text: `−${view.removed}`, color: 'diffRemovedWord' }] : []),
   ]
-  const room = Math.max(1, columns - cells(counts.map(c => c.text).join('')) - 1)
-  const rows: Row[] = [blank('gap-diff'), spread('diff-head', [{ text: fit(title, room), bold: true, color: HEADING }], counts, columns)]
+  const rows: Row[] = []
   if (view.renamed !== null) rows.push(dimRow('diff-renamed', `   ${fitStart(view.renamed, Math.max(1, columns - 3))}`, columns))
   view.hunks.slice(0, HUNKS_SHOWN).forEach((hunk, i) => {
     const { shown, more } = folded(hunk)
@@ -153,5 +148,8 @@ export function diffRows(view: DiffView, columns: number): Row[] {
   const hidden = view.hunks.length - HUNKS_SHOWN
   if (hidden > 0) rows.push(dimRow('diff-hunks-more', `   ${plural(hidden, 'more change', 'more changes')} further down the file`, columns))
   if (view.truncated) rows.push(dimRow('diff-cut', '   The diff is cut here: open the file to see the rest.', columns))
-  return rows
+  return { key: 'diff', title, note: counts, body: rows }
 }
+
+/** The change as a card the detail places: across the pane, below its lists. */
+export const diffBlock = (view: DiffView): Block => ({ key: 'diff', make: columns => diffSection(view, columns) })

@@ -14,7 +14,6 @@ import {
   allowInput,
   askPrompt,
   cdFor,
-  CONTENT_MAX,
   detailInput,
   editTarget,
   emptyRows,
@@ -26,6 +25,7 @@ import {
   locText,
   NO_CHANGES,
   noGraphOf,
+  paneHeight,
   paneInput,
   paneRows,
   paneStatus,
@@ -1657,7 +1657,7 @@ export const register: Register = (on, options) => {
     if (mod.disabled) return <Box key="off" />
     const d = await read($, dashboard)
     const v = await read($, view)
-    const columns = Math.max(1, Math.min(CONTENT_MAX, e.props.bodyColumns))
+    const columns = Math.max(1, e.props.bodyColumns)
     const press = (id: string, surface?: RenderSurface) => void pressPane($, id, surface).catch(() => undefined)
     if (d === null || d.status !== 'ok') {
       const offer = allowInput(await read($, brief), await read($, rescan), await read($, allow))
@@ -1676,7 +1676,7 @@ export const register: Register = (on, options) => {
     // A press that outlives the session (a teardown under it) fails quietly.
     return (
       <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-        {drawRows($, ui, e.surface === 'terminal', e.surface !== 'mobile', await read($, theme), paneRows(input, columns), press)}
+        {drawRows($, ui, e.surface === 'terminal', e.surface !== 'mobile', await read($, theme), paneRows(input, columns, paneHeight(e.props.scroll)), press)}
       </Box>
     )
   })

@@ -18,8 +18,10 @@ import type { Dashboard } from '../../types'
 import { ACCENT, boundaryLabel, FAINT, huesOf, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import { HEAT_KEYS } from './raster'
-import { blank, boundaryStyle, cells, dimRow, fit, grouped, numberWidth, padEnd, rowWidth, sectionRow, sectionWidth, spaces, specWidth, tableHead, tableRow, tableSpec, wrapGroups } from './rows'
-import type { Row, Segment, TableSpec } from './rows'
+import { boundaryStyle, cells, dimRow, fit, grouped, numberWidth, padEnd, spaces, tableHead, tableRow, tableSpec, wrapGroups } from './rows'
+import type { Row, Segment, TableSpec, Tier } from './rows'
+import { moreRows, noteOf, windowOf } from './cards'
+import type { Arrangement, Block, Section } from './cards'
 import type { Openable } from './views'
 
 export type BoundaryLine = {
@@ -182,24 +184,28 @@ function legendRows(input: BoundariesInput, columns: number): Row[] {
 }
 
 /** How the per-boundary table fits `columns`, and the names it lists. */
-function perBoundarySpec(input: BoundariesInput, columns: number): { spec: TableSpec; names: string[] } {
+function perBoundarySpec(input: BoundariesInput, columns: number, tier: Tier): { spec: TableSpec; names: string[] } {
   const widths = PER_TITLES.map((t, i) => numberWidth(t, input.boundaries.map(b => perValues(b)[i] ?? 0)))
   const names = input.boundaries.map(b => `${b.code} ${b.label}`)
-  return { spec: tableSpec(columns, names, [], widths), names }
+  return { spec: tableSpec(columns, names, [], widths, undefined, { tier }), names }
 }
 
 const PER_TITLES = ['comps', 'in', 'out']
 const perValues = (b: BoundaryLine) => [b.members, b.in, b.out]
 
-/** Each boundary on its own row, pressable: its letter and name, a bar of its components, then components, in and out. */
-function perBoundaryRows(input: BoundariesInput, selected: number, columns: number, hues: Hues): Row[] {
-  const { spec, names } = perBoundarySpec(input, columns)
+/** Each boundary on its own row, pressable: its letter and name, a bar of its components, then components, in and out; `limit` of them around the marked one. */
+function perBoundaryRows(input: BoundariesInput, selected: number, columns: number, limit: number, tier: Tier, hues: Hues): Row[] {
+  const { spec, names } = perBoundarySpec(input, columns, tier)
   const max = Math.max(0, ...input.boundaries.map(b => b.members))
+  const window = windowOf(input.boundaries.length, limit, selected)
   return [
     tableHead('bounds-cols', spec, { name: 'boundary', boundary: '', numbers: PER_TITLES }),
-    ...input.boundaries.map((b, i) =>
-      tableRow(`bounds-${i}`, { name: names[i]!, boundary: b.name, values: perValues(b), max, selected: i === selected, press: `row:${i}` }, spec, hues),
-    ),
+    ...input.boundaries
+      .slice(window.start, window.end)
+      .map((b, n) =>
+        tableRow(`bounds-${window.start + n}`, { name: names[window.start + n]!, boundary: b.name, values: perValues(b), max, selected: window.start + n === selected, press: `row:${window.start + n}` }, spec, hues),
+      ),
+    ...moreRows('bounds-window', window, input.boundaries.length, columns),
   ]
 }
 
@@ -234,9 +240,9 @@ function linksOf(input: BoundariesInput, index: number, way: 'in' | 'out'): { li
  * it, each other boundary in its colour with its count, and the boundaries a
  * policy forbids it to depend on. A crossed forbidden pair is in `error`.
  */
-function focusRows(input: BoundariesInput, index: number, columns: number, hues: Hues): Row[] {
+function focusSection(input: BoundariesInput, index: number, columns: number, hues: Hues): Section | null {
   const b = input.boundaries[index]
-  if (b === undefined) return []
+  if (b === undefined) return null
   const label = (text: string): Segment[] => [{ text: padEnd(text, FOCUS_LABEL), dim: true }]
   const linked = (way: 'in' | 'out'): Segment[][] => {
     const links = linksOf(input, index, way)
@@ -248,39 +254,47 @@ function focusRows(input: BoundariesInput, index: number, columns: number, hues:
   }
   const forbidden = input.boundaries.filter((_, to) => to !== index && (input.forbidden[index]?.[to] ?? false))
   const line = (key: string, title: string, groups: Segment[][]): Row[] => wrapGroups(key, [label(title), ...groups], columns, 2, INDENT)
-  return [
-    blank('gap-focus'),
-    { key: 'focus-head', segments: [{ text: b.code, ...boundaryStyle(b.name, hues), bold: true }, { text: ' ' }, { text: fit(b.label, Math.max(1, columns - 2)), bold: true, color: 'text' }] },
-    ...line('focus-out', 'depends on', linked('out')),
-    ...line('focus-in', 'used by', linked('in')),
-    ...(forbidden.length === 0 ? [] : line('focus-forbidden', 'may not use', forbidden.map(f => [{ text: '× ', color: STATUS_COLOURS.alert }, { text: f.label, dim: true }]))),
-  ]
+  return {
+    key: 'focus',
+    title: `${b.code} ${b.label}`,
+    note: [{ text: `${grouped(b.members)} ${b.members === 1 ? 'component' : 'components'}`, ...boundaryStyle(b.name, hues) }],
+    body: [
+      ...line('focus-out', 'depends on', linked('out')),
+      ...line('focus-in', 'used by', linked('in')),
+      ...(forbidden.length === 0 ? [] : line('focus-forbidden', 'may not use', forbidden.map(f => [{ text: '× ', color: STATUS_COLOURS.alert }, { text: f.label, dim: true }]))),
+    ],
+  }
 }
 
 /** The width of the label before what the marked boundary depends on. */
 const FOCUS_LABEL = 'may not use'.length
 
-/** The whole Boundaries tab at `columns`; `selected` marks a boundary and spells it out under the table. */
-export function boundaryRows(input: BoundariesInput | null, columns: number, hues: Hues = NO_HUES, selected = 0): Row[] {
-  const rows: Row[] = [blank('gap-bounds')]
-  if (input === null) {
-    return [...rows, sectionRow('bounds-head', 'Boundaries', '', columns), dimRow('bounds-old', '   This knossos sends no boundary map; update it.', columns)]
-  }
+/** The fewest boundaries the per-boundary table lists, however short the pane. */
+const PER_MIN = 5
+
+/** The heat map as a card: the map, and its key when `legend`; null without a map to draw. */
+export function heatSection(input: BoundariesInput | null, columns: number, hues: Hues = NO_HUES, legend = true): Section | null {
+  if (input === null || input.boundaries.length === 0) return null
   const note = [`${input.boundaries.length}${input.more ? '+' : ''}`, `${input.edges} deps`].join(' · ')
-  if (input.boundaries.length === 0) return [...rows, sectionRow('bounds-head', 'Boundaries', '', columns), dimRow('bounds-none', '   no boundary labels a component', columns)]
-  // Each note stands over its own table, not at the far edge of a wide pane.
-  const heat = heatRows(input, columns, hues)
-  const heatWidth = Math.max(...heat.map(rowWidth))
-  const per = perBoundarySpec(input, columns).spec
+  return { key: legend ? 'bounds' : 'map', title: legend ? 'Boundaries' : 'Boundary map', note: noteOf(note), body: [...heatRows(input, columns, hues), ...(legend ? legendRows(input, columns) : [])] }
+}
+
+/**
+ * The Boundaries tab: the heat map with its key, the per-boundary table and
+ * the marked boundary spelled out. Wide, the map stands left and the table
+ * with the marked boundary right.
+ */
+export function boundariesArrangement(input: BoundariesInput | null, tier: Tier, hues: Hues = NO_HUES, selected = 0): Arrangement {
+  const said = (text: string): Block => ({ key: 'bounds', make: columns => ({ key: 'bounds', title: 'Boundaries', body: [dimRow('bounds-none', `   ${text}`, columns)] }) })
+  if (input === null) return { left: [said('This knossos sends no boundary map; update it.')] }
+  if (input.boundaries.length === 0) return { left: [said('no boundary labels a component')] }
   const marked = Math.min(Math.max(0, selected), input.boundaries.length - 1)
-  return [
-    ...rows,
-    sectionRow('bounds-head', 'Boundaries', note, sectionWidth(heatWidth, 'Boundaries', note, columns)),
-    ...heat,
-    ...legendRows(input, columns),
-    blank('gap-per-boundary'),
-    sectionRow('bounds-list', 'Per boundary', 'deps across', sectionWidth(specWidth(per), 'Per boundary', 'deps across', columns)),
-    ...perBoundaryRows(input, marked, columns, hues),
-    ...focusRows(input, marked, columns, hues),
-  ]
+  const heat: Block = { key: 'bounds', make: columns => heatSection(input, columns, hues) }
+  const per: Block = {
+    key: 'bounds-list',
+    grow: { length: input.boundaries.length, min: PER_MIN },
+    make: (columns, limit) => ({ key: 'bounds-list', title: 'Per boundary', note: noteOf('deps across'), body: perBoundaryRows(input, marked, columns, limit, tier, hues) }),
+  }
+  const focus: Block = { key: 'focus', make: columns => focusSection(input, marked, columns, hues) }
+  return { left: [heat], right: [per, focus] }
 }

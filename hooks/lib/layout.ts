@@ -9,12 +9,12 @@
  */
 import type { AllowState, Dashboard, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
-import { boundariesInput, boundariesList, boundaryRows } from './boundaries'
+import { boundariesArrangement, boundariesInput, boundariesList, heatSection } from './boundaries'
 import type { BoundariesInput } from './boundaries'
-import { changesInput, changesList, changesRows, lookAtList, lookAtOf, lookAtRows, NO_CHANGES } from './changes'
+import { changesArrangement, changesInput, changesList, lookAtList, lookAtOf, lookAtSection, NO_CHANGES } from './changes'
 import type { ChangesInput, LookAt } from './changes'
 import { countLabel } from './envelopes'
-import { driftInput, driftList, driftRows, fileDetailList, fileDetailRows } from './files'
+import { driftInput, driftList, driftSection, fileDetailArrangement, fileDetailList } from './files'
 import type { DriftInput } from './files'
 import { ACCENT, boundaryLabel, declaredOf, FAINT, HEADING, huesOf, STATUS_COLOURS } from './palette'
 import type { Hues, Tone } from './palette'
@@ -32,33 +32,35 @@ import {
   numberWidth,
   padEnd,
   padStart,
+  placeOf,
   plural,
   rowWidth,
-  sectionRow,
-  sectionWidth,
   spaces,
-  specWidth,
   spread,
   tableHead,
   tableRow,
   tableSpec,
+  tierOf,
   wrapGroups,
   wrapWords,
 } from './rows'
-import type { Loc, Row, Segment, TableSpec } from './rows'
+import type { Loc, Row, Segment, TableSpec, Tier } from './rows'
 import { sparkline } from './sparkline'
 import { LIVE_OFF } from './live'
-import { cycleRows, cyclesInput, cyclesList, detailList, detailRows, issueCount, issueRows, issuesInput, issuesList, locIn, superscript } from './views'
+import { cyclesArrangement, cyclesInput, cyclesList, detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
+import { arrange, DEFAULT_ROWS, fitBlocks, moreRows, noteOf, windowOf } from './cards'
+import type { Arrangement, Block, Section } from './cards'
 import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
 
 // Everything the specs and the render hook draw with, from one module.
-export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, rowWidth, tableSpec, wrapWords } from './rows'
-export type { Field, Loc, Press, Row, Segment, TableSpec } from './rows'
+export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, rowWidth, tableSpec, tierOf, wrapWords } from './rows'
+export type { Field, Loc, Press, Row, Segment, TableSpec, Tier } from './rows'
+export { DEFAULT_ROWS, paneHeight } from './cards'
 export type { DetailInput, FileView, Openable } from './views'
 export type { BoundariesInput } from './boundaries'
 export { accumulate, cdFor, NO_CHANGES } from './changes'
 export type { ChangesInput, LookAt } from './changes'
-export { detailInput, SIDE_BY_SIDE } from './views'
+export { detailInput } from './views'
 export { driftInput, fileDetailInput } from './files'
 export type { DriftInput } from './files'
 
@@ -152,19 +154,17 @@ export const TABS: { id: PaneTab; full: string; hotkey: string }[] = [
 
 export const SORTS: HubSort[] = ['in', 'out', 'cross']
 
-/** How many components the overview lists. */
-export const OVERVIEW_TOP = 5
-/** How many of the last turn's files the overview lists. */
-const TURN_SHOWN = 4
-/** The narrowest the overview's sections spread, so health and its trend never crowd together. */
-const HEALTH_MIN = 48
+/** The fewest components and last-turn files the overview lists, however short the pane. */
+const TOP_MIN = 3
+const TURN_MIN = 3
+/** The fewest hubs the Hubs tab lists, however short the pane. */
+const HUBS_MIN = 5
+/** The widest Health spreads a figure and its trend, so they never drift apart on a wide card. */
+const HEALTH_MAX = 48
 /** A trend is drawn only with this many snapshots, and only when it moves. */
 const TREND_MIN_POINTS = 5
 const TREND_MAX_POINTS = 24
-/**
- * The widest the pane lays itself out: past this, rows would only stretch the
- * gap between a name and its numbers. An inline pane spans the terminal.
- */
+/** The widest the empty pane's prose runs: a line of text past it is hard to read. */
 export const CONTENT_MAX = 100
 
 /**
@@ -215,8 +215,8 @@ const fileRow = (path: string, loc: Loc | null): Openable => ({ name: path, cano
  * now" points at, the last turn's files, then the most depended on.
  */
 export function overviewList(input: Pick<PaneInput, 'items' | 'lookAt' | 'lastTurn'>): Openable[] {
-  const turn = (input.lastTurn?.impact ?? []).slice(0, TURN_SHOWN).map(f => fileRow(f.path, f.loc))
-  return [...lookAtList(input.lookAt), ...turn, ...input.items.slice(0, OVERVIEW_TOP)]
+  const turn = (input.lastTurn?.impact ?? []).map(f => fileRow(f.path, f.loc))
+  return [...lookAtList(input.lookAt), ...turn, ...input.items]
 }
 
 /** The rows the selection walks: the detail's counterparts, else the drifted files when listed, else the tab's list. */
@@ -569,11 +569,19 @@ export function sharedBoundary(rows: { boundary: string | null }[]): string | nu
 const degreesOf = (item: Item, withDegrees: boolean): number[] => (withDegrees ? [item.in, item.out, item.cross] : [item.in])
 const degreeTitles = (withDegrees: boolean): string[] => (withDegrees ? ['in', 'out', 'cross'] : ['in'])
 
-/** How a table of components fits `columns`: without the boundary column when every row shares one. */
-function componentSpec(items: Item[], columns: number, withDegrees: boolean, hues: Hues): TableSpec {
+/** Where a component is declared, as a table's file column shows it: its file's name and the line. */
+const placeIn = (item: Item): string => (item.loc === null ? '' : placeOf(item.loc.path, item.loc.line))
+
+/**
+ * How a table of components fits `columns`: without the boundary column when
+ * every row shares one, and from the medium tier on with the file each is
+ * declared in.
+ */
+function componentSpec(items: Item[], columns: number, withDegrees: boolean, hues: Hues, tier: Tier): TableSpec {
   const widths = degreeTitles(withDegrees).map((t, i) => numberWidth(t, items.map(item => degreesOf(item, withDegrees)[i] ?? 0)))
   const labels = sharedBoundary(items) === null ? items.map(i => boundaryLabel(i.boundary, hues)) : []
-  return tableSpec(columns, items.map(i => i.name), labels, widths)
+  const places = tier === 'narrow' ? [] : items.map(placeIn)
+  return tableSpec(columns, items.map(i => i.name), labels, widths, undefined, { tier, places })
 }
 
 /** A section's note with the boundary every row shares said once, in front: `all in core · in`. */
@@ -582,52 +590,54 @@ function sharedNote(items: Item[], note: string, hues: Hues): string {
   return shared === null ? note : [`all in ${boundaryLabel(shared, hues)}`, note].filter(s => s !== '').join(' · ')
 }
 
-/** The listed components as table rows laid out by `spec`, with the selection marker on `selected`; the bar draws `sort`. */
-function componentRows(prefix: string, items: Item[], selected: number, spec: TableSpec, withDegrees: boolean, hues: Hues, sort: HubSort = 'in', offset = 0): Row[] {
+/**
+ * The listed components in `window` as table rows laid out by `spec`, with
+ * the selection marker on `selected` (an index into the walkable list, the
+ * first item being `offset`); the bar draws `sort`.
+ */
+function componentRows(prefix: string, items: Item[], selected: number, spec: TableSpec, withDegrees: boolean, hues: Hues, sort: HubSort, offset: number, window: { start: number; end: number }): Row[] {
   const titles = degreeTitles(withDegrees)
-  const columnsOf = (item: Item) => degreesOf(item, withDegrees)
   const max = Math.max(0, ...items.map(i => i[sort]))
   return [
     ...(withDegrees ? [tableHead(`${prefix}-head`, spec, { name: 'name', boundary: 'boundary', numbers: titles })] : []),
-    ...items.map((item, i) =>
-      tableRow(`${prefix}-${i}`, {
-        name: item.name,
-        boundary: item.boundary,
-        values: columnsOf(item),
-        barValue: item[sort],
-        max,
-        selected: offset + i === selected,
-        hotspotOnly: item.hotspotOnly,
-        press: `row:${offset + i}`,
-        repeat: i > 0 && item.boundary !== null && item.boundary === items[i - 1]!.boundary,
-        ...(withDegrees ? { sorted: SORTS.indexOf(sort) } : {}),
-      }, spec, hues),
-    ),
-  ]
-}
-
-/** How the last turn's table fits `columns`. */
-function lastTurnSpec(turn: LastTurn, columns: number, hues: Hues): TableSpec {
-  const shown = turn.impact.slice(0, TURN_SHOWN)
-  return tableSpec(columns, shown.map(f => f.name), shown.map(f => boundaryLabel(f.boundary, hues)), [numberWidth('', shown.map(f => f.dependents))])
-}
-
-/** The last turn: what it touched and how much depends on it, each file a row the marker walks from `offset`. */
-function lastTurnRows(turn: LastTurn, spec: TableSpec, columns: number, hues: Hues, selected = -1, offset = 0): Row[] {
-  const note = `${plural(turn.files, 'file', 'files')} → ${grouped(turn.dependents)} dependents · ${plural(turn.tests, 'test', 'tests')}`
-  const shown = turn.impact.slice(0, TURN_SHOWN)
-  const max = Math.max(0, ...shown.map(f => f.dependents))
-  return [
-    sectionRow('turn-head', 'Last turn', note, sectionWidth(specWidth(spec), 'Last turn', note, columns)),
-    ...shown.map((f, i) =>
-      tableRow(
-        `turn-${i}`,
-        { name: f.name, boundary: f.boundary, values: [f.dependents], max, selected: offset + i === selected, press: `row:${offset + i}`, repeat: i > 0 && f.boundary !== null && f.boundary === shown[i - 1]!.boundary },
+    ...items.slice(window.start, window.end).map((item, n) => {
+      const i = window.start + n
+      return tableRow(
+        `${prefix}-${i}`,
+        {
+          name: item.name,
+          boundary: item.boundary,
+          values: degreesOf(item, withDegrees),
+          barValue: item[sort],
+          max,
+          selected: offset + i === selected,
+          hotspotOnly: item.hotspotOnly,
+          press: `row:${offset + i}`,
+          repeat: i > window.start && item.boundary !== null && item.boundary === items[i - 1]!.boundary,
+          place: placeIn(item),
+          placeLoc: item.loc,
+          ...(withDegrees ? { sorted: SORTS.indexOf(sort) } : {}),
+        },
         spec,
         hues,
-      ),
-    ),
+      )
+    }),
   ]
+}
+
+/** The last turn: what it touched and how much depends on it, `limit` files around the marker, each a row it walks from `offset`. */
+function lastTurnSection(turn: LastTurn, columns: number, limit: number, tier: Tier, hues: Hues, selected = -1, offset = 0): Section {
+  const note = `${plural(turn.files, 'file', 'files')} → ${grouped(turn.dependents)} dependents · ${plural(turn.tests, 'test', 'tests')}`
+  const local = selected - offset
+  const window = windowOf(turn.impact.length, limit, local >= 0 && local < turn.impact.length ? local : -1)
+  const spec = tableSpec(columns, turn.impact.map(f => f.name), turn.impact.map(f => boundaryLabel(f.boundary, hues)), [numberWidth('', turn.impact.map(f => f.dependents))], undefined, { tier })
+  const max = Math.max(0, ...turn.impact.map(f => f.dependents))
+  const body = turn.impact.slice(window.start, window.end).map((f, n) => {
+    const i = window.start + n
+    const repeat = i > window.start && f.boundary !== null && f.boundary === turn.impact[i - 1]!.boundary
+    return tableRow(`turn-${i}`, { name: f.name, boundary: f.boundary, values: [f.dependents], max, selected: offset + i === selected, press: `row:${offset + i}`, repeat }, spec, hues)
+  })
+  return { key: 'turn', title: 'Last turn', note: noteOf(note), body: [...body, ...moreRows('turn-window', window, turn.impact.length, columns)] }
 }
 
 /** Glyphs for a trend that is long enough and moves; otherwise nothing, since a flat line says nothing. */
@@ -646,7 +656,7 @@ function verdict(value: string, tone: Tone): Segment {
  * dead code as plain numbers (each with its trend, when it moves), then the
  * policy violations and diagnostics as verdicts, green at zero.
  */
-function healthRows(h: Health, columns: number): Row[] {
+function healthSection(h: Health, columns: number): Section {
   const cyclesTrend = trendGlyphs(h.cyclesTrend)
   const degreeTrend = trendGlyphs(h.degreeTrend)
   const note = cyclesTrend !== '' || degreeTrend !== '' ? `trend (${Math.max(h.cyclesTrend.length, h.degreeTrend.length)} scans)` : ''
@@ -656,19 +666,24 @@ function healthRows(h: Health, columns: number): Row[] {
   ]
   const values = [h.cycles, h.maxDegree === null ? '' : String(h.maxDegree), h.deadCode, ...verdicts.map(([, , v, tone]) => verdict(v, tone).text)]
   const valueWidth = Math.max(...values.map(cells))
+  const spreadTo = Math.min(columns, HEALTH_MAX)
   const label = (text: string): Segment => ({ text: `   ${padEnd(text, HEALTH_LABEL)}`, dim: true })
   const metric = (key: string, name: string, value: string, trend: string): Row =>
-    spread(key, [label(name), { text: padStart(value, valueWidth), bold: true, color: 'text' }], trend === '' ? [] : [{ text: trend, dim: true }], columns)
-  return [
-    sectionRow('health-head', 'Health', note, columns),
-    metric('health-cycles', 'cycles', h.cycles, cyclesTrend),
-    ...(h.maxDegree === null ? [] : [metric('health-degree', 'max degree', String(h.maxDegree), degreeTrend)]),
-    metric('health-dead', 'dead code', h.deadCode, ''),
-    ...verdicts.map(([key, name, value, tone]): Row => {
-      const v = verdict(value, tone)
-      return { key, segments: [label(name), { ...v, text: padStart(v.text, valueWidth) }] }
-    }),
-  ]
+    spread(key, [label(name), { text: padStart(value, valueWidth), bold: true, color: 'text' }], trend === '' ? [] : [{ text: trend, dim: true }], spreadTo)
+  return {
+    key: 'health',
+    title: 'Health',
+    note: noteOf(note),
+    body: [
+      metric('health-cycles', 'cycles', h.cycles, cyclesTrend),
+      ...(h.maxDegree === null ? [] : [metric('health-degree', 'max degree', String(h.maxDegree), degreeTrend)]),
+      metric('health-dead', 'dead code', h.deadCode, ''),
+      ...verdicts.map(([key, name, value, tone]): Row => {
+        const v = verdict(value, tone)
+        return { key, segments: [label(name), { ...v, text: padStart(v.text, valueWidth) }] }
+      }),
+    ],
+  }
 }
 
 /** The width of Health's labels: its longest, and a space. */
@@ -723,25 +738,27 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
   return rows
 }
 
-/** The hubs tab: its section header, the filter field or line, and the filtered, sorted table. */
-function hubRows(input: PaneInput, list: Item[], selected: number, columns: number): Row[] {
+/** The hubs tab: one card with the filter field or line, and the filtered, sorted table, as long as the pane allows. */
+function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier): Block {
   const hotspots = input.items.some(i => i.hotspotOnly) ? '◆ hotspot only' : ''
   const note = sharedNote(list, [hotspots, input.partial ? 'partial' : ''].filter(s => s !== '').join(' · '), input.hues)
-  const spec = componentSpec(list, columns, true, input.hues)
-  const title = 'Hubs and hotspots'
-  const subtitle = `sorted by ${input.sort}`
-  const head = sectionWidth(specWidth(spec), `${title} · ${subtitle}`, note, columns)
-  const rows: Row[] = [blank('gap-hubs'), sectionRow('hubs-head', title, note, head, subtitle)]
-  if (input.filtering) {
-    rows.push({ key: 'filter-row', segments: [{ text: '   filter: ', dim: true }, { text: input.filter, field: { id: 'filter', value: input.filter, placeholder: 'part of a name' } }] })
-  } else if (input.filter !== '') {
-    rows.push(dimRow('filter-row', `   filter "${input.filter}" · ${list.length} of ${input.items.length}`, columns))
+  return {
+    key: 'hubs',
+    grow: { length: list.length, min: HUBS_MIN },
+    make: (columns, limit) => {
+      const rows: Row[] = []
+      if (input.filtering) {
+        rows.push({ key: 'filter-row', segments: [{ text: '   filter: ', dim: true }, { text: input.filter, field: { id: 'filter', value: input.filter, placeholder: 'part of a name' } }] })
+      } else if (input.filter !== '') {
+        rows.push(dimRow('filter-row', `   filter "${input.filter}" · ${list.length} of ${input.items.length}`, columns))
+      }
+      const section = (body: Row[]): Section => ({ key: 'hubs', title: 'Hubs and hotspots', subtitle: `sorted by ${input.sort}`, note: noteOf(note), body })
+      if (list.length === 0) return section([...rows, dimRow('hubs-none', input.filter === '' ? '   none' : `   no hub matches "${input.filter}"`, columns)])
+      const spec = componentSpec(list, columns, true, input.hues, tier)
+      const window = windowOf(list.length, limit, selected)
+      return section([...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort, 0, window), ...moreRows('hub-window', window, list.length, columns)])
+    },
   }
-  if (list.length === 0) {
-    const empty = input.filter === '' ? '   none' : `   no hub matches "${input.filter}"`
-    return [...rows, dimRow('hubs-none', empty, columns)]
-  }
-  return [...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort)]
 }
 
 /** What "ask Claude to scan it" asks: the model scans through the Knossos server, into the graph the pane reads. */
@@ -789,39 +806,64 @@ export function emptyRows(state: NoGraph, allow: AllowInput | null, columns: num
 
 /**
  * The Overview: what to look at now (once this session changed something),
- * the last turn, health and the most depended on. Its sections share one
- * width, the widest of its tables, so their notes stand in one column.
+ * the last turn, health and the most depended on; wide, the last stands
+ * right, with a small boundary map under it. One marker walks the lists in
+ * the order they are drawn on a narrow pane.
  */
-function overviewRows(input: PaneInput, selected: number, columns: number): Row[] {
-  const top = input.items.slice(0, OVERVIEW_TOP)
-  const topSpec = componentSpec(top, columns, false, input.hues)
-  const turnSpec = input.lastTurn === null ? null : lastTurnSpec(input.lastTurn, columns, input.hues)
-  const width = Math.min(columns, Math.max(HEALTH_MIN, top.length > 0 ? specWidth(topSpec) : 0, turnSpec === null ? 0 : specWidth(turnSpec)))
-  // One marker over the three lists, in the order they are drawn.
+function overviewArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
   const looked = lookAtList(input.lookAt).length
-  const turned = Math.min(TURN_SHOWN, input.lastTurn?.impact.length ?? 0)
-  const rows: Row[] = []
-  if (input.lookAt !== null) rows.push(blank('gap-look'), ...lookAtRows(input.lookAt, columns, input.hues, selected))
-  if (input.lastTurn !== null && turnSpec !== null) rows.push(blank('gap-turn'), ...lastTurnRows(input.lastTurn, turnSpec, columns, input.hues, selected, looked))
-  rows.push(blank('gap-health'), ...healthRows(input.health, width))
-  const note = sharedNote(top, input.partial ? 'partial · in' : 'in', input.hues)
-  rows.push(blank('gap-top'), sectionRow('top-head', 'Most depended on', note, sectionWidth(specWidth(topSpec), 'Most depended on', note, columns)))
-  rows.push(...(top.length === 0 ? [dimRow('top-none', '   none', columns)] : componentRows('top', top, selected, topSpec, false, input.hues, 'in', looked + turned)))
-  return rows
+  const turned = input.lastTurn?.impact.length ?? 0
+  const left: Block[] = []
+  const look = input.lookAt
+  if (look !== null) left.push({ key: 'look', make: columns => lookAtSection(look, columns, input.hues, selected) })
+  const turn = input.lastTurn
+  if (turn !== null) left.push({ key: 'turn', grow: { length: turned, min: TURN_MIN }, make: (columns, limit) => lastTurnSection(turn, columns, limit, tier, input.hues, selected, looked) })
+  left.push({ key: 'health', make: columns => healthSection(input.health, columns) })
+  const offset = looked + turned
+  // Narrow, the in-degree alone; from medium on, out and cross and the file beside it.
+  const withDegrees = tier !== 'narrow'
+  const top: Block = {
+    key: 'top',
+    grow: { length: input.items.length, min: TOP_MIN },
+    make: (columns, limit) => {
+      const said = withDegrees ? (input.partial ? 'partial' : '') : input.partial ? 'partial · in' : 'in'
+      const section = (body: Row[]): Section => ({ key: 'top', title: 'Most depended on', note: noteOf(sharedNote(input.items, said, input.hues)), body })
+      if (input.items.length === 0) return section([dimRow('top-none', '   none', columns)])
+      const local = selected - offset
+      const window = windowOf(input.items.length, limit, local >= 0 ? local : -1)
+      const spec = componentSpec(input.items, columns, withDegrees, input.hues, tier)
+      return section([...componentRows('top', input.items, selected, spec, withDegrees, input.hues, 'in', offset, window), ...moreRows('top-window', window, input.items.length, columns)])
+    },
+  }
+  const map: Block[] = tier === 'wide' ? [{ key: 'map', make: columns => heatSection(input.boundaries, columns, input.hues, false) }] : []
+  return { left, right: [top, ...map], order: [...left, top] }
 }
 
-/** Every row of the pane for `input`, none wider than `columns` (nor {@link CONTENT_MAX}). */
-export function paneRows(input: PaneInput, columns: number): Row[] {
-  const width = Math.max(1, Math.min(CONTENT_MAX, columns))
+/**
+ * Every row of the pane for `input`, none wider than `columns`: the header,
+ * then the tab (or the detail) laid out for the width's tier, its lists as
+ * long as `height` rows allow once the header and the keys are drawn.
+ */
+export function paneRows(input: PaneInput, columns: number, height: number = DEFAULT_ROWS): Row[] {
+  const width = Math.max(1, columns)
+  const tier = tierOf(width)
   const list = listFor(input)
   const selected = Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))
   const rows: Row[] = [...headerRows(input, width)]
   if (input.allow !== null) rows.push(...allowRows(input.allow, width), blank('gap-allow'))
+  const footer = [blank('gap-keys'), ...footerRows(input, width, list.length > 0)]
+  const room = () => height - rows.length - footer.length
   if (input.detail !== null) {
-    rows.push(...(input.detail.file === undefined ? detailRows(input.detail, width, input.hues, selected) : fileDetailRows(input.detail, width, input.hues, selected)))
+    const detail = input.detail
+    rows.push(...arrange(detail.file === undefined ? detailArrangement(detail, tier, input.hues, selected) : fileDetailArrangement(detail, tier, input.hues, selected), width, room()))
   } else {
-    // Listed under the header, the drifted files hold the marker; the tab below shows none.
-    if (input.driftOpen && input.drift !== null) rows.push(...driftRows(input.drift, width, input.hues, selected))
+    // Listed under the header, the drifted files hold the marker; the tab below shows none. They take a third of the room.
+    const drift = input.drift
+    if (input.driftOpen && drift !== null) {
+      const min = Math.max(3, Math.floor(room() / 3))
+      rows.push(...fitBlocks([{ key: 'drift', grow: { length: drift.items.length, min }, make: (inner, limit) => driftSection(drift, inner, limit, input.hues, selected) }], width, tier, 0))
+      rows.push(blank('gap-drift-end'))
+    }
     const tabSelected = input.driftOpen ? -1 : selected
     const count = issueCount(input.issues)
     const touched = input.changes.files.length
@@ -830,20 +872,18 @@ export function paneRows(input: PaneInput, columns: number): Row[] {
       ...(touched > 0 ? { changes: superscript(touched, input.changes.truncated) } : {}),
     }
     rows.push(...tabRows(input.tab, width, input.terminal, badges))
-    if (input.tab === 'overview') {
-      rows.push(...overviewRows(input, tabSelected, width))
-    } else if (input.tab === 'changes') {
-      rows.push(...changesRows(input.changes, tabSelected, width, input.hues))
-    } else if (input.tab === 'hubs') {
-      rows.push(...hubRows(input, hubList(input.items, input.filter, input.sort), tabSelected, width))
-    } else if (input.tab === 'issues') {
-      rows.push(...issueRows(input.issues, tabSelected, width, input.hues))
-    } else if (input.tab === 'cycles') {
-      rows.push(...cycleRows(input.cycles, width, input.hues, tabSelected))
-    } else {
-      rows.push(...boundaryRows(input.boundaries, width, input.hues, tabSelected))
-    }
+    rows.push(...arrange(tabArrangement(input, tabSelected, tier), width, room()))
   }
-  rows.push(blank('gap-keys'), ...footerRows(input, width, list.length > 0))
-  return rows.map(row => (rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
+  rows.push(...footer)
+  return rows.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
+}
+
+/** The open tab's cards. */
+function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
+  if (input.tab === 'overview') return overviewArrangement(input, selected, tier)
+  if (input.tab === 'changes') return changesArrangement(input.changes, selected, tier, input.hues)
+  if (input.tab === 'hubs') return { left: [hubsBlock(input, hubList(input.items, input.filter, input.sort), selected, tier)] }
+  if (input.tab === 'issues') return issuesArrangement(input.issues, selected, tier, input.hues)
+  if (input.tab === 'cycles') return cyclesArrangement(input.cycles, input.hues, selected)
+  return boundariesArrangement(input.boundaries, tier, input.hues, selected)
 }
