@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Cli;
 
 use Knossos\Scan\ProjectScanService;
 use Knossos\Cli\CliCommandContext;
+use Knossos\Cli\CliCommandRouter;
 use Knossos\Cli\CliHelpRenderer;
 use Knossos\Cli\CliInputLoader;
 use Knossos\Cli\CliOptionParser;
@@ -101,6 +102,13 @@ final class BriefCommandTest extends KnossosTestCase
         return $root;
     }
 
+    /** Scans the on-disk fixture again, as `knossos scan` would. */
+    private function rescanOnDisk(string $root): void
+    {
+        $pdo = SqliteConnection::open($root . '/.knossos/knossos.sqlite');
+        (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root);
+    }
+
     /** A temp directory named so removeTempTree() will accept it. */
     private function temporaryDirectory(): string
     {
@@ -110,14 +118,8 @@ final class BriefCommandTest extends KnossosTestCase
         return $directory;
     }
 
-    private function touchFile(string $root, string $relative): void
-    {
-        $file = $root . '/' . $relative;
-        file_put_contents($file, file_get_contents($file) . "\n// touched\n");
-    }
-
     #[Group('cli')]
-    public function testCommandIsRoutedAndAcceptsOnlyItsOwnOptions(): void
+    public function testCommandIsRoutedAndChecksItsOwnOptions(): void
     {
         $command = new BriefCommand();
 
@@ -125,9 +127,75 @@ final class BriefCommandTest extends KnossosTestCase
         assertSame(true, $command->supports('dashboard'));
         assertSame(true, $command->supports('component-detail'));
         assertSame(false, $command->supports('session-brief'));
-        assertSame(['db', 'json', 'files', 'policies', 'no-policies'], $command->allowedOptions('turn-brief'));
-        assertSame(['db', 'json', 'fan-in-threshold'], $command->allowedOptions('dashboard'));
-        assertSame(['db', 'json'], $command->allowedOptions('component-detail'));
+        foreach (['turn-brief', 'dashboard', 'component-detail'] as $name) {
+            assertSame([CliOptionParser::ANY], $command->allowedOptions($name));
+        }
+    }
+
+    /** Through the router, as the binary runs it: an unknown option is an error status, never a non-zero exit. */
+    #[Group('cli')]
+    public function testAnUnknownOptionIsAnErrorStatusNotAFailure(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        $router = new CliCommandRouter(self::repositoryRoot(), new CliOptionParser(), new CliHelpRenderer(), 'test');
+        try {
+            $known = [
+                'turn-brief' => ['files', 'policies', 'no-policies'],
+                'dashboard' => ['fan-in-threshold'],
+                'component-detail' => [],
+            ];
+            foreach ($known as $command => $own) {
+                $positionals = $command === 'component-detail' ? [$root, 'Greeter'] : [$root];
+                ob_start();
+                $status = $router->route($command, $positionals, ['bogus' => ['1'], 'json' => ['true']]);
+                assertSame(['status' => 'error'], json_decode((string) ob_get_clean(), true), $command);
+                assertSame(0, $status, $command);
+                // Another command's option is as unknown as a typo.
+                $foreign = array_values(array_diff(['files', 'fan-in-threshold'], $own))[0];
+                assertSame(['status' => 'error'], $this->runJson($command, $positionals, [$foreign => ['1']])[1], $command);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('cli')]
+    public function testAStrayArgumentIsAnErrorStatus(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            assertSame(['status' => 'error'], $this->runJson('turn-brief', [$root, 'extra'], [])[1]);
+            assertSame(['status' => 'error'], $this->runJson('dashboard', [$root, 'extra'], [])[1]);
+            assertSame(['status' => 'error'], $this->runJson('component-detail', [$root, 'Greeter', 'extra'], [])[1]);
+            assertSame('ok', $this->runJson('dashboard', [$root], [])[1]['status']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** With no threshold given, a file needs 20 dependent files to enter the fan-in map. */
+    #[Group('cli')]
+    public function testTheFanInThresholdDefaultsToTwenty(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            $greeter = static fn(array $out): ?int => array_column($out['fan_in'], 'dependent_files', 'path')[self::TARGET] ?? null;
+            $existing = (int) $greeter($this->runJson('dashboard', [$root], ['fan-in-threshold' => ['1']])[1]);
+            assertSame(true, $existing > 0 && $existing < 20);
+            foreach (range(1, 20 - $existing) as $n) {
+                file_put_contents($root . '/src/Edge/Extra' . $n . '.php', sprintf(
+                    "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Extra%d\n{\n    public function run(): string\n    {\n        return (new \\App\\Greeter())->greet('x');\n    }\n}\n",
+                    $n,
+                ));
+            }
+            $this->rescanOnDisk($root);
+            assertSame(20, $greeter($this->runJson('dashboard', [$root], [])[1]));
+            unlink($root . '/src/Edge/Extra1.php');
+            $this->rescanOnDisk($root);
+            assertSame(null, $greeter($this->runJson('dashboard', [$root], [])[1]));
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 
     #[Group('cli')]

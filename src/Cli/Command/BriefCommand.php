@@ -7,6 +7,7 @@ namespace Knossos\Cli\Command;
 use InvalidArgumentException;
 use Knossos\Cli\CliCommand;
 use Knossos\Cli\CliCommandContext;
+use Knossos\Cli\CliOptionParser;
 use Knossos\Cli\ProjectDatabaseLocator;
 use Knossos\Query\ComponentDetailService;
 use Knossos\Query\DashboardService;
@@ -19,8 +20,10 @@ use Throwable;
  * mod makes.
  *
  * Addressed by path like `session-brief`, through the same database
- * resolution. All always exit 0: the caller is a hook that must never
- * break a session, so failure is a status in the JSON, not an exit code.
+ * resolution. All always exit 0, even on an unknown option or a stray
+ * argument, which they check themselves rather than leave to the router:
+ * the caller is a hook that must never break a session, so failure is a
+ * status in the JSON, not an exit code.
  * None creates a database; only `turn-brief` writes, by scanning a
  * project that already exists in an allowed root.
  */
@@ -32,8 +35,23 @@ final class BriefCommand implements CliCommand
         return in_array($command, ['turn-brief', 'dashboard', 'component-detail'], true);
     }
 
-    /** {@inheritDoc} */
+    /**
+     * {@inheritDoc}
+     *
+     * Any: the router's rejection would exit non-zero, so run() checks them
+     * against {@see self::knownOptions()} and reports an error status instead.
+     */
     public function allowedOptions(string $command): array
+    {
+        return [CliOptionParser::ANY];
+    }
+
+    /**
+     * The options each command takes.
+     *
+     * @return list<string>
+     */
+    private function knownOptions(string $command): array
     {
         return match ($command) {
             'turn-brief' => ['db', 'json', 'files', 'policies', 'no-policies'],
@@ -52,6 +70,7 @@ final class BriefCommand implements CliCommand
     {
         $json = $context->options->flag($options, 'json');
         try {
+            $context->options->validate($options, $this->knownOptions($command));
             [$path, $name] = $this->target($command, $positionals);
             $databasePath = (new ProjectDatabaseLocator())->locate($path, $options, $context);
             $result = is_file($databasePath)
@@ -69,12 +88,16 @@ final class BriefCommand implements CliCommand
     /**
      * The path a command reads and, for `component-detail`, the component name:
      * `component-detail [path] <name>`, so a single positional is the name.
+     * One positional more than that is refused, not ignored.
      *
      * @param list<string> $positionals
      * @return array{0: string, 1: string}
      */
     private function target(string $command, array $positionals): array
     {
+        if (count($positionals) > ($command === 'component-detail' ? 2 : 1)) {
+            throw new InvalidArgumentException('Too many arguments.');
+        }
         if ($command !== 'component-detail') {
             return [(string) ($positionals[0] ?? getcwd()), ''];
         }
