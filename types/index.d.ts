@@ -44,6 +44,8 @@ export type Listed = { name: string; canonical_name: string; kind: string }
  * Optional: a knossos older than the mod sends hotspots without them.
  */
 export type Ranked = Listed & {
+  /** How many other files reference it; absent from a knossos older than the pane's wide tables. */
+  dependent_files?: number
   boundary?: string | null
   /** Where it is declared, relative to the project root; absent from a knossos older than the mod's live watcher. */
   path?: string | null

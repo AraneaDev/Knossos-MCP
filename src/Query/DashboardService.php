@@ -12,7 +12,7 @@ use PDO;
  * The project-wide picture the architecture pane draws.
  *
  * Read-only: it never scans. Every section is bounded so a large graph
- * cannot make the pane slow to refresh: hubs and hotspots to the top 10, the
+ * cannot make the pane slow to refresh: hubs and hotspots to the top 50, the
  * largest cycles to 3 out of a search that stops at 50 cycles (or at its time
  * and edge limits), the trend to 20 snapshots and the fan-in map to 500 files.
  * A bound never reads as an exact figure: `cycles.truncated` with its
@@ -23,19 +23,22 @@ use PDO;
  * `freshness.drifted_truncated` (the drift oracle names only the first 20
  * drifted files) say when a number or list was cut short.
  *
- * Hubs and hotspots are always the top 10; that page is the design, not a
- * truncation, so it never sets `hubs_truncated`. Each carries its degrees
- * and the one boundary the pane labels it with (see {@see BoundaryLabels}).
- * The same holds for the other pages: the 10 largest cycles (each listing at
- * most 40 members as `nodes`, `nodes_truncated` when it has more), the first
- * 10 dead-code candidates with their file and line, and the counts and short
+ * Hubs and hotspots are always the top 50, enough to fill a tall pane; that
+ * page is the design, not a truncation, so it never sets `hubs_truncated`.
+ * Each carries its degrees, how many other files depend on it
+ * (`dependent_files`) and the one boundary the pane labels it with (see
+ * {@see BoundaryLabels}). The same holds for the other pages: the 10 largest
+ * cycles (each listing at most 40 members as `nodes`, `nodes_truncated` when
+ * it has more), the first 50 dead-code candidates with their file and line,
+ * and the counts and short
  * lists of {@see ProjectFindings} (summary, boundaries, diagnostics, largest
  * files and policy violations), whose own flags say when a figure is a floor,
  * and the {@see BoundaryMatrix} over the boundaries that label components.
  */
 final readonly class DashboardService
 {
-    private const TOP = 10;
+    /** Hubs, hotspots and dead-code candidates listed: as many as a tall pane shows. */
+    private const TOP = 50;
     private const LARGEST_CYCLES = 10;
     /** Members listed per cycle as `nodes`; `members` keeps every name the cycle search returned. */
     private const CYCLE_NODES = 40;
@@ -88,7 +91,9 @@ final readonly class DashboardService
         $series = $queries->architectureTrends($id, self::TREND_POINTS)->data['series'];
         $labels = BoundaryLabels::load($this->pdo, $id);
         $findings = new ProjectFindings($this->pdo, $this->clock);
-        $places = $this->places([...array_column($health['hubs'], 'component'), ...array_column($health['static_hotspots'], 'component')]);
+        $ranked = [...array_column($health['hubs'], 'component'), ...array_column($health['static_hotspots'], 'component')];
+        $places = $this->places($ranked);
+        $dependents = $this->dependentFiles($ranked);
 
         return [
             'status' => 'ok',
@@ -103,15 +108,15 @@ final readonly class DashboardService
                     + (int) ($probe['added_files_since'] ?? 0)
                     + (int) ($probe['deleted_files_since'] ?? 0),
             ] + self::drifted($staleness->drift, $labels, $id),
-            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels, $places), $health['hubs']),
+            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels, $places, $dependents), $health['hubs']),
             'hubs_truncated' => $hubLimits !== [],
             'hubs_truncation_reasons' => $hubLimits,
             'hotspots' => array_map(
-                static fn(array $h): array => self::listed($h['component'], $h['factors'], $labels, $places) + ['score' => $h['score']],
+                static fn(array $h): array => self::listed($h['component'], $h['factors'], $labels, $places, $dependents) + ['score' => $h['score']],
                 $health['static_hotspots'],
             ),
             // The listed candidates are paged by the health limit, so the
-            // total is the honest count; the list length would read as ten.
+            // total is the honest count; the list length would read as the page.
             'dead_code_candidates' => $health['bounds']['candidates_total'],
             'dead_code_truncated' => in_array('time_limit', $health['bounds']['candidate_truncation_reasons'], true),
             'dead_code' => self::deadCode($health['dead_code_candidates'], $healthResult->evidence, $labels),
@@ -155,6 +160,44 @@ final readonly class DashboardService
     }
 
     /**
+     * The ids of `$components`, each once, without the empty ones.
+     *
+     * @param list<array<string, mixed>> $components
+     * @return list<string>
+     */
+    private static function idsOf(array $components): array
+    {
+        return array_values(array_unique(array_filter(array_map(static fn(array $c): string => (string) ($c['id'] ?? ''), $components), static fn(string $id): bool => $id !== '')));
+    }
+
+    /**
+     * How many files other than its own reference each component, by id: one
+     * indexed count per page of ranked components (at most {@see self::TOP}
+     * twice over), so it stays cheap on a large graph. A component nothing
+     * outside its own file references is absent, read as zero.
+     *
+     * @param list<array<string, mixed>> $components
+     * @return array<string, int>
+     */
+    private function dependentFiles(array $components): array
+    {
+        $ids = self::idsOf($components);
+        if ($ids === []) {
+            return [];
+        }
+        $statement = $this->pdo->prepare(
+            'SELECT e.target_id, COUNT(DISTINCT e.file_id) AS files FROM edges e JOIN nodes n ON n.id = e.target_id ' .
+            'WHERE e.file_id IS NOT NULL AND e.file_id IS NOT n.file_id AND e.target_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') GROUP BY e.target_id',
+        );
+        $statement->execute($ids);
+        $counts = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $counts[(string) $row['target_id']] = (int) $row['files'];
+        }
+        return $counts;
+    }
+
+    /**
      * Where each component is declared, by id: its file relative to the
      * project root and its first line. A stand-in for something outside the
      * project (`external_*`) is filed under the first file that names it,
@@ -165,7 +208,7 @@ final readonly class DashboardService
      */
     private function places(array $components): array
     {
-        $ids = array_values(array_unique(array_filter(array_map(static fn(array $c): string => (string) ($c['id'] ?? ''), $components), static fn(string $id): bool => $id !== '')));
+        $ids = self::idsOf($components);
         if ($ids === []) {
             return [];
         }
@@ -182,18 +225,21 @@ final readonly class DashboardService
     }
 
     /**
-     * One ranked component as the pane lists it: names, kind, degrees,
-     * boundary, and where it is declared (`path` and `line`, null when the
-     * graph places it nowhere), so the pane can open its file.
+     * One ranked component as the pane lists it: names, kind, degrees, how
+     * many other files depend on it, boundary, and where it is declared
+     * (`path` and `line`, null when the graph places it nowhere), so the pane
+     * can open its file.
      *
      * @param array<string, mixed> $component
      * @param array<string, mixed> $metrics the degree walk's in, out and cross-boundary degrees
      * @param array<string, array{path: string, line: int|null}> $places
+     * @param array<string, int> $dependents files referencing each component, by id
      * @return array<string, mixed>
      */
-    private static function listed(array $component, array $metrics, BoundaryLabels $labels, array $places = []): array
+    private static function listed(array $component, array $metrics, BoundaryLabels $labels, array $places = [], array $dependents = []): array
     {
-        $place = $places[(string) ($component['id'] ?? '')] ?? null;
+        $id = (string) ($component['id'] ?? '');
+        $place = $places[$id] ?? null;
         return [
             'name' => $component['display_name'],
             'canonical_name' => $component['canonical_name'],
@@ -202,6 +248,7 @@ final readonly class DashboardService
             'in_degree' => $metrics['in_degree'],
             'out_degree' => $metrics['out_degree'],
             'cross_boundary_degree' => $metrics['cross_boundary_degree'],
+            'dependent_files' => $dependents[$id] ?? 0,
             'path' => $place['path'] ?? null,
             'line' => $place['line'] ?? null,
         ];

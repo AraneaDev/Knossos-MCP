@@ -27,13 +27,13 @@ final readonly class ProjectFindings
     private const CATEGORIES = 8;
 
     /** Errors and warnings listed. */
-    private const DIAGNOSTICS = 5;
+    private const DIAGNOSTICS = 20;
 
-    /** Files listed by size. */
-    private const LARGEST_FILES = 5;
+    /** Files listed by size: as many as a tall pane shows. */
+    private const LARGEST_FILES = 50;
 
     /** Policy violations listed; the total counts them all. */
-    private const VIOLATIONS = 5;
+    private const VIOLATIONS = 20;
 
     /** A diagnostic's message is cut to this many characters: the pane shows one line of it. */
     private const MESSAGE = 160;

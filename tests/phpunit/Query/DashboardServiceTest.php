@@ -251,13 +251,16 @@ final class DashboardServiceTest extends KnossosTestCase
             $this->writeCycle($root, 'Bb', 4);
             $this->rescan($pdo, $root);
             $d = (new DashboardService($pdo))->dashboard($root);
-            assertCount(10, $d['hubs']);
-            assertCount(10, $d['hotspots']);
-            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 10)->data;
+            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 50)->data;
+            // The page is fifty, enough for a tall pane: the fixture's every ranked component fits in it.
+            assertGreaterThan(10, count($d['hubs']));
+            assertLessThanOrEqual(50, count($d['hubs']));
+            assertCount(count($health['hubs']), $d['hubs']);
+            assertCount(count($health['static_hotspots']), $d['hotspots']);
             assertSame($health['hubs'][0]['component']['display_name'], $d['hubs'][0]['name']);
             assertSame($health['hubs'][0]['component']['kind'], $d['hubs'][0]['kind']);
             assertSame(
-                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'path', 'line'],
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'dependent_files', 'path', 'line'],
                 array_keys($d['hubs'][0]),
             );
             // The pane shows the display name and looks the component up by the canonical one.
@@ -267,13 +270,13 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['metrics']['out_degree'], $d['hubs'][0]['out_degree']);
             assertSame($health['hubs'][0]['metrics']['cross_boundary_degree'], $d['hubs'][0]['cross_boundary_degree']);
             assertSame(
-                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'path', 'line', 'score'],
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'dependent_files', 'path', 'line', 'score'],
                 array_keys($d['hotspots'][0]),
             );
             // A hotspot carries the same degrees the health walk measured for it.
             assertSame($health['static_hotspots'][0]['factors']['in_degree'], $d['hotspots'][0]['in_degree']);
             assertSame($health['static_hotspots'][0]['factors']['cross_boundary_degree'], $d['hotspots'][0]['cross_boundary_degree']);
-            // Ten of many is the page, not a cut.
+            // The page is the design, not a cut.
             assertSame(false, $d['hubs_truncated']);
             assertSame([], $d['hubs_truncation_reasons']);
             assertSame($health['static_hotspots'][0]['score'], $d['hotspots'][0]['score']);
@@ -281,6 +284,34 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['static_hotspots'][0]['component']['kind'], $d['hotspots'][0]['kind']);
             assertSame($health['bounds']['candidates_total'], $d['dead_code_candidates']);
             assertGreaterThan(0, $d['dead_code_candidates']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A ranked component counts the other files that reference it: never its own, each file once. */
+    #[Group('query')]
+    public function testRankedComponentsCountTheOtherFilesThatDependOnThem(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $d = (new DashboardService($pdo))->dashboard($root);
+            $count = $pdo->prepare(
+                'SELECT COUNT(DISTINCT e.file_id) FROM edges e JOIN nodes n ON n.id = e.target_id '
+                . 'WHERE n.project_id = :p AND n.canonical_name = :c AND e.file_id IS NOT NULL AND e.file_id IS NOT n.file_id',
+            );
+            $seen = 0;
+            foreach ([...$d['hubs'], ...$d['hotspots']] as $ranked) {
+                $count->execute(['p' => $projectId, 'c' => $ranked['canonical_name']]);
+                assertSame((int) $count->fetchColumn(), $ranked['dependent_files'], $ranked['canonical_name']);
+                $seen += $ranked['dependent_files'] > 0 ? 1 : 0;
+            }
+            // The fixture's hubs are used across files: a count that is always zero would pass the loop.
+            assertGreaterThan(0, $seen);
+            // No component is counted as depending on itself: a file's own references stay out.
+            foreach ($d['hubs'] as $hub) {
+                assertLessThanOrEqual($hub['in_degree'], $hub['dependent_files']);
+            }
         } finally {
             $this->removeTempTree($root);
         }
@@ -593,14 +624,14 @@ final class DashboardServiceTest extends KnossosTestCase
             file_put_contents($root . '/src/Edge/Long.php', "<?php\n" . str_repeat("// line\n", 300));
             $this->rescan($pdo, $root);
             $files = (new DashboardService($pdo))->dashboard($root)['largest_files'];
-            assertLessThanOrEqual(5, count($files));
+            assertLessThanOrEqual(50, count($files));
             assertSame(['path' => 'src/Edge/Long.php', 'language' => 'php', 'lines' => 301], $files[0]);
             $lines = array_column($files, 'lines');
             $sorted = $lines;
             rsort($sorted);
             assertSame($sorted, $lines);
             $total = (int) $pdo->query("SELECT COUNT(*) FROM files WHERE project_id = '{$projectId}'")->fetchColumn();
-            assertCount(min(5, $total), $files);
+            assertCount(min(50, $total), $files);
         } finally {
             $this->removeTempTree($root);
         }
@@ -616,13 +647,13 @@ final class DashboardServiceTest extends KnossosTestCase
             $this->rescan($pdo, $root);
             $d = (new DashboardService($pdo))->dashboard($root);
             assertGreaterThan(0, count($d['dead_code']));
-            assertLessThanOrEqual(10, count($d['dead_code']));
+            assertLessThanOrEqual(50, count($d['dead_code']));
             assertLessThanOrEqual($d['dead_code_candidates'], count($d['dead_code']));
             assertSame(
                 ['name', 'canonical_name', 'kind', 'boundary', 'reachability', 'confidence', 'path', 'line'],
                 array_keys($d['dead_code'][0]),
             );
-            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 10)->data;
+            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 50)->data;
             assertSame(
                 array_map(static fn(array $c): string => $c['component']['canonical_name'], $health['dead_code_candidates']),
                 array_column($d['dead_code'], 'canonical_name'),
@@ -663,7 +694,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertGreaterThanOrEqual(1, $policy['total']);
             assertSame(false, $policy['truncated']);
             assertSame([], $policy['truncation_reasons']);
-            assertSame(min(5, $policy['total']), count($policy['items']));
+            assertSame(min(20, $policy['total']), count($policy['items']));
             $first = $policy['items'][0];
             assertSame(
                 ['policy_id', 'source', 'source_kind', 'source_boundary', 'target', 'target_kind', 'target_boundary', 'path', 'line'],
