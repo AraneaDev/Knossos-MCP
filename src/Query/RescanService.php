@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
-use Knossos\Scan\ProjectScanService;
 use PDO;
 use Throwable;
 
@@ -54,8 +53,8 @@ final readonly class RescanService
         $root = (string) $project['root_realpath'];
         $started = hrtime(true);
         try {
-            $scan = (new ProjectScanService($this->pdo, $this->installationRoot, $allowed))
-                ->scan($root, mode: 'incremental');
+            // Recorded in the ledger, so a turn brief whose edits this scan took in can still report them.
+            $scan = LedgeredScanner::local($this->pdo, $this->installationRoot, $allowed)->scan($root, 'incremental');
         } catch (Throwable $failure) {
             return ['status' => 'scan-failed', 'reason' => $failure->getMessage(), 'project_root' => $root] + $envelope;
         }

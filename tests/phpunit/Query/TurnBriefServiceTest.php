@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace Knossos\Tests\Phpunit\Query;
 
+use Knossos\Discovery\AllowedRoots;
+use Knossos\Query\LedgeredScanner;
+use Knossos\Query\ScanLedger;
 use Knossos\Query\TurnBriefService;
+use Knossos\Scan\ProjectScanService;
 use Knossos\Tests\Phpunit\KnossosTestCase;
 use PDO;
 use PHPUnit\Framework\Attributes\Group;
@@ -527,6 +531,94 @@ final class TurnBriefServiceTest extends KnossosTestCase
             assertSame([self::TARGET], $brief['changed_files']);
         } finally {
             $this->removeTempTree($links);
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The live watcher's scanner: records each scan, with the policies' baseline, in the ledger. */
+    private function watcherScan(PDO $pdo, string $root): void
+    {
+        $roots = AllowedRoots::of([(string) realpath($root)]);
+        LedgeredScanner::local($pdo, self::repositoryRoot(), $roots, self::POLICIES)->scan($root, 'incremental');
+    }
+
+    /** Another writer scanned the turn's edit first: the ledger still makes it, and its violations, the turn's. */
+    #[Group('query')]
+    public function testATurnScannedByAnotherWriterIsStillReportedWithItsViolations(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $since = (new ScanLedger($pdo))->activeSnapshot($projectId);
+            $this->addCall($root, 'again');
+            $this->watcherScan($pdo, $root);
+            $brief = $this->service($pdo)->brief($root, [self::CALLER], self::POLICIES, true, $since, true);
+            assertSame(false, $brief['scanned']);
+            assertSame([self::CALLER], $brief['changed_files']);
+            assertSame('evaluated', $brief['policy']['status']);
+            assertSame(2, $brief['policy']['total']);
+            // Without the snapshot the turn began at, the graph already holds the edit: nothing reads as new.
+            $blind = $this->service($pdo)->brief($root, [self::CALLER], self::POLICIES, true, null, true);
+            assertSame([self::CALLER], $blind['changed_files']);
+            assertSame(0, $blind['policy']['total']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A scan the ledger never recorded: the files are still the turn's, but the policy's baseline is gone. */
+    #[Group('query')]
+    public function testAnUnrecordedScanSinceTheTurnBeganLeavesThePolicyUnevaluated(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $since = (new ScanLedger($pdo))->activeSnapshot($projectId);
+            $this->addCall($root, 'again');
+            (new ProjectScanService($pdo, self::repositoryRoot(), [$root]))->scan($root, mode: 'incremental');
+            $brief = $this->service($pdo)->brief($root, [self::CALLER], self::POLICIES, true, $since, true);
+            assertSame([self::CALLER], $brief['changed_files']);
+            assertSame('not_evaluated', $brief['policy']['status']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A file the turn added and one it deleted keep their kind when another writer scanned them first. */
+    #[Group('query')]
+    public function testAddedAndDeletedFilesScannedByAnotherWriterKeepTheirKind(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $since = (new ScanLedger($pdo))->activeSnapshot($projectId);
+            file_put_contents($root . '/src/Core/Added.php', "<?php\nnamespace App;\nfinal class Added {}\n");
+            unlink($root . '/' . self::TARGET);
+            $this->watcherScan($pdo, $root);
+            $brief = $this->service($pdo)->brief($root, ['src/Core/Added.php', self::TARGET], null, true, $since, true);
+            assertSame(false, $brief['scanned']);
+            assertSame(['src/Core/Added.php'], $brief['added_files']);
+            assertSame([self::TARGET], $brief['deleted_files']);
+            assertSame([], $brief['changed_files']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Asked to reuse a scan the graph does not have, the brief scans the edit itself. */
+    #[Group('query')]
+    public function testReuseScanStillScansAnEditTheGraphDoesNotHold(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $since = (new ScanLedger($pdo))->activeSnapshot($projectId);
+            $this->addCall($root, 'again');
+            $brief = $this->service($pdo)->brief($root, [self::CALLER], self::POLICIES, true, $since, true);
+            assertSame(true, $brief['scanned']);
+            assertSame(2, $brief['policy']['total']);
+            // Its own scan is recorded: a second session that began at the same snapshot reads the same verdict.
+            $again = $this->service($pdo)->brief($root, [self::CALLER], self::POLICIES, true, $since, true);
+            assertSame(false, $again['scanned']);
+            assertSame([self::CALLER], $again['changed_files']);
+            assertSame(2, $again['policy']['total']);
+        } finally {
             $this->removeTempTree($root);
         }
     }

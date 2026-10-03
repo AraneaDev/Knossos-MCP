@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Discovery\FileFingerprint;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Scan\ProjectScanService;
+use Knossos\Scan\ScanBusyException;
 use PDO;
 use Throwable;
 
@@ -26,6 +28,11 @@ final readonly class TurnBriefService
 {
     /** Dependents listed per changed file. */
     private const TOP_DEPENDENTS = 5;
+
+    /** How often a scan another writer holds the project for is tried, and how long to wait between tries. */
+    private const BUSY_ATTEMPTS = 5;
+
+    private const BUSY_WAIT_MS = 1000;
 
     /** Tests listed in the brief, enforced by testImpact()'s own limit. */
     private const MAX_TESTS = 20;
@@ -49,11 +56,22 @@ final readonly class TurnBriefService
     /**
      * Scan $path's project incrementally and brief the change.
      *
+     * `$since` is the snapshot the turn started from. When another writer
+     * scanned since (the live watcher, a rescan, another session), the graph
+     * before this brief's scan already holds some of the turn's edits; the
+     * {@see ScanLedger} then says what each file held before the first scan
+     * that changed it, so the diff and the policy baseline are still the
+     * turn's. When the ledger cannot account for every scan since, the files
+     * are still reported but the policy is not evaluated: its baseline is gone.
+     *
+     * With `$reuseScan`, a brief whose reported files the graph already holds
+     * as they are on disk does not scan again: another writer just did.
+     *
      * @param list<string> $extraFiles paths the caller saw edited, relative or absolute; merged into the diff
      * @param list<array<string, mixed>>|null $policies null reads knossos.json
      * @return array<string, mixed>
      */
-    public function brief(string $path, array $extraFiles = [], ?array $policies = null, bool $enforcePolicies = true): array
+    public function brief(string $path, array $extraFiles = [], ?array $policies = null, bool $enforcePolicies = true, ?string $since = null, bool $reuseScan = false): array
     {
         $absolute = realpath($path) ?: $path;
         $envelope = self::empty($absolute);
@@ -66,18 +84,25 @@ final readonly class TurnBriefService
         $reported = self::relative($root, $extraFiles);
         $violations = new FileViolationQuery($this->pdo, $this->policyTimeoutMs, $this->policyMaxEdges);
         $policies = $enforcePolicies ? FileViolationQuery::policies($root, $policies) : [];
+        $ledger = new ScanLedger($this->pdo);
+        $from = $ledger->activeSnapshot($projectId);
+        $current = $ledger->hashes($projectId);
+        $absorbed = $since === null ? ['before' => [], 'baselines' => []] : $ledger->since($projectId, $since);
         // Taken before the scan rewrites the graph: what the reported files already broke is not this turn's doing.
-        $baseline = $violations->inFiles($projectId, $policies, $reported);
-        $before = $this->hashes($projectId);
+        [$baseline, $perFile] = $this->baseline($violations, $projectId, $policies, $reported, $absorbed);
+        $before = self::rewound($current, $absorbed['before'] ?? []);
         $started = hrtime(true);
+        $reuse = $reuseScan && self::onDisk($root, $reported, $current);
         try {
-            $scan = (new ProjectScanService($this->pdo, $this->installationRoot, $allowed))
-                ->scan($root, mode: 'incremental');
+            $scan = $reuse ? null : $this->scan($root, $allowed);
         } catch (Throwable $failure) {
             return ['status' => 'scan-failed', 'reason' => $failure->getMessage(), 'project_root' => $root] + $envelope;
         }
         // Same id as the baseline, so a recomputed id cannot make every file look added.
-        $after = $this->hashes($projectId);
+        $after = $ledger->hashes($projectId);
+        if ($scan !== null) {
+            $ledger->record($projectId, $from, $scan->snapshotId, $current, $after, $perFile);
+        }
         [$changed, $added, $deleted] = self::diff($before, $after, $reported);
         $live = array_merge($changed, $added);
         // Policy looks only at what the turn itself edited: a checkout, a formatter or a shell command
@@ -87,29 +112,118 @@ final readonly class TurnBriefService
         return [
             'status' => 'ok',
             'project_root' => $root,
-            'project_id' => $scan->projectId,
-            'snapshot_id' => $scan->snapshotId,
+            'project_id' => $projectId,
+            'snapshot_id' => $scan === null ? $from : $scan->snapshotId,
             'scanned_at' => time(),
             'scan_ms' => intdiv(hrtime(true) - $started, 1_000_000),
+            'scanned' => $scan !== null,
             'changed_files' => $changed,
             'added_files' => $added,
             'deleted_files' => $deleted,
-            'impact' => (new FileFanInQuery($this->pdo))->forPaths($scan->projectId, $live, self::TOP_DEPENDENTS),
-            'tests' => $live === [] ? [] : JsTestRunner::annotate($root, $this->tests($queries, $scan->projectId, $live)),
-            'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($scan->projectId, $policies, $edited)),
+            'impact' => (new FileFanInQuery($this->pdo))->forPaths($projectId, $live, self::TOP_DEPENDENTS),
+            'tests' => $live === [] ? [] : JsTestRunner::annotate($root, $this->tests($queries, $projectId, $live)),
+            'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($projectId, $policies, $edited)),
         ] + $envelope;
     }
 
     /**
-     * Every tracked file's content hash, the baseline a diff is taken against.
-     *
-     * @return array<string, string> relative path => content hash
+     * An incremental scan; a scan another writer holds the project for is
+     * waited out a few times before it counts as a failure.
      */
-    private function hashes(string $projectId): array
+    private function scan(string $root, \Knossos\Discovery\AllowedRoots $allowed): \Knossos\Query\ResultEnvelope
     {
-        $statement = $this->pdo->prepare('SELECT relative_path, content_hash FROM files WHERE project_id = ?');
-        $statement->execute([$projectId]);
-        return array_map('strval', $statement->fetchAll(PDO::FETCH_KEY_PAIR));
+        for ($attempt = 1; ; ++$attempt) {
+            try {
+                return (new ProjectScanService($this->pdo, $this->installationRoot, $allowed))->scan($root, mode: 'incremental');
+            } catch (ScanBusyException $busy) {
+                if ($attempt >= self::BUSY_ATTEMPTS) {
+                    throw $busy;
+                }
+                usleep(self::BUSY_WAIT_MS * 1000);
+            }
+        }
+    }
+
+    /**
+     * The violations the reported files held before the turn, combined, and
+     * the same file by file (for the ledger), or null for either when they
+     * cannot be told: no policies, a scan since the turn began that the
+     * ledger cannot account for, or one that recorded no baseline for a
+     * reported file it changed.
+     *
+     * @param list<array<string, mixed>> $policies
+     * @param list<string> $reported
+     * @param array{before: array<string, string|null>, baselines: array<string, mixed>}|null $absorbed
+     * @return array{0: array{violations: array<string, array<string, mixed>>, truncated: bool}|null, 1: array<string, array{violations: array<string, array<string, mixed>>, truncated: bool}>|null}
+     */
+    private function baseline(FileViolationQuery $violations, string $projectId, array $policies, array $reported, ?array $absorbed): array
+    {
+        if ($policies === [] || $absorbed === null) {
+            return [null, null];
+        }
+        $combined = ['violations' => [], 'truncated' => false];
+        $perFile = [];
+        $fresh = array_values(array_filter($reported, static fn(string $f): bool => !array_key_exists($f, $absorbed['before'])));
+        foreach ($reported as $file) {
+            if (array_key_exists($file, $absorbed['before'])) {
+                $found = $absorbed['baselines'][$file] ?? null;
+                if ($found === null) {
+                    return [null, null];
+                }
+            } elseif (count($fresh) <= LedgeredScanner::MAX_CHECKED) {
+                $found = $violations->inFiles($projectId, $policies, [$file]);
+                $perFile[$file] = $found;
+            } else {
+                continue;
+            }
+            $combined = ['violations' => $combined['violations'] + $found['violations'], 'truncated' => $combined['truncated'] || $found['truncated']];
+        }
+        if (count($fresh) > LedgeredScanner::MAX_CHECKED) {
+            $all = $violations->inFiles($projectId, $policies, $fresh);
+            $combined = ['violations' => $combined['violations'] + $all['violations'], 'truncated' => $combined['truncated'] || $all['truncated']];
+            $perFile = null;
+        }
+        return [$combined, $perFile];
+    }
+
+    /**
+     * The hashes the graph held when the turn began: today's, with each file
+     * a scan since then changed put back as it was (gone, when it added it).
+     *
+     * @param array<string, string> $current
+     * @param array<string, string|null> $absorbed
+     * @return array<string, string>
+     */
+    private static function rewound(array $current, array $absorbed): array
+    {
+        foreach ($absorbed as $path => $hash) {
+            if ($hash === null) {
+                unset($current[$path]);
+            } else {
+                $current[$path] = $hash;
+            }
+        }
+        return $current;
+    }
+
+    /**
+     * Whether the graph already holds every reported file as it is on disk
+     * (a deleted one as gone): then a scan would find nothing of the turn's.
+     * False with nothing reported, which says nothing either way.
+     *
+     * @param list<string> $reported
+     * @param array<string, string> $graph
+     */
+    private static function onDisk(string $root, array $reported, array $graph): bool
+    {
+        foreach ($reported as $file) {
+            $absolute = rtrim($root, '/') . '/' . $file;
+            $disk = is_file($absolute) ? FileFingerprint::contentHashOf($absolute) : null;
+            if ($disk !== ($graph[$file] ?? null)) {
+                return false;
+            }
+        }
+        return $reported !== [];
     }
 
     /**

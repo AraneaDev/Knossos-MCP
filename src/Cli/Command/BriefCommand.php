@@ -52,7 +52,7 @@ final class BriefCommand implements CliCommand
     private function knownOptions(string $command): array
     {
         return match ($command) {
-            'turn-brief' => ['db', 'json', 'files', 'policies', 'no-policies'],
+            'turn-brief' => ['db', 'json', 'files', 'policies', 'no-policies', 'since', 'reuse-scan'],
             'rescan', 'component-detail', 'file-detail' => ['db', 'json'],
             default => ['db', 'json', 'fan-in-threshold'],
         };
@@ -140,6 +140,8 @@ final class BriefCommand implements CliCommand
             $options['files'] ?? [],
             $policiesFile === null ? null : $context->input->policies($policiesFile),
             !$context->options->flag($options, 'no-policies'),
+            $context->options->single($options, 'since'),
+            $context->options->flag($options, 'reuse-scan'),
         );
     }
 }

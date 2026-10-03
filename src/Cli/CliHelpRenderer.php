@@ -61,7 +61,7 @@ Usage:
                       [--worker-memory-mb=N]
                       [--db=PATH] [--json]
   knossos watch <path> [--poll-ms=N] [--debounce-ms=N] [--max-queue=N]
-                       [--db=PATH] [--json]
+                       [--shared] [--db=PATH] [--json]
   knossos export-bundle <project-id> --output=FILE
                         [--redaction=none|paths|strict] [--db=PATH] [--json]
   knossos import-bundle <file> [--name=NAME] [--db=PATH] [--json]
@@ -114,7 +114,7 @@ Usage:
   knossos export-agent-brief <project-id> [--max-chars=N] [--out=FILE] [--json]
   knossos session-brief [path] [--db=FILE] [--json]
   knossos turn-brief [path] [--files=PATH]... [--policies=FILE] [--no-policies]
-                     [--db=FILE] [--json]
+                     [--since=SNAPSHOT] [--reuse-scan] [--db=FILE] [--json]
   knossos rescan [path] [--db=FILE] [--json]
   knossos dashboard [path] [--fan-in-threshold=N] [--db=FILE] [--json]
   knossos component-detail [path] <name> [--db=FILE] [--json]
