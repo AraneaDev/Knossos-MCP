@@ -698,6 +698,36 @@ final class DashboardServiceTest extends KnossosTestCase
         }
     }
 
+    /**
+     * A rule binds the files of the boundary its policy names, by id: an
+     * inferred boundary that shares a declared one's name binds nothing.
+     */
+    #[Group('query')]
+    public function testARuleBindsItsOwnBoundaryNotOneSharingItsName(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $edgeId = (string) $pdo->query("SELECT id FROM boundaries WHERE name = 'Edge'")->fetchColumn();
+            $coreId = (string) $pdo->query("SELECT id FROM boundaries WHERE name = 'Core'")->fetchColumn();
+            // An inferred twin of Edge that holds Core's members.
+            $twin = $pdo->prepare(
+                "INSERT INTO boundaries (id, project_id, name, matcher_json, source, last_scan_id) "
+                . "SELECT 'inferred-edge', project_id, 'Edge', :matcher, 'inferred', last_scan_id FROM boundaries WHERE id = :core",
+            );
+            $twin->execute(['matcher' => json_encode(['type' => 'namespace_prefix', 'value' => 'App\\']), 'core' => $coreId]);
+            $members = $pdo->prepare(
+                "INSERT INTO boundary_memberships (boundary_id, project_id, node_id, last_scan_id) "
+                . "SELECT 'inferred-edge', project_id, node_id, last_scan_id FROM boundary_memberships WHERE boundary_id = :core",
+            );
+            $members->execute(['core' => $coreId]);
+            $policies = [['id' => 'edge-stays-out-of-core', 'from_boundary' => $edgeId, 'deny_targets' => [$coreId]]];
+            $scope = (new PolicyScope($pdo))->build($projectId, $policies, BoundaryLabels::load($pdo, $projectId));
+            assertSame(['src/Edge/Caller.php' => ['Edge']], $scope['files']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** A policy check that runs out of time says its total is a floor. */
     #[Group('query')]
     public function testAPolicyCheckOutOfTimeIsReportedTruncated(): void

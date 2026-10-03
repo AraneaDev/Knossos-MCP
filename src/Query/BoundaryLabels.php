@@ -177,6 +177,21 @@ final readonly class BoundaryLabels
     }
 
     /**
+     * The id a policy's boundary reference resolves to, the way the policy
+     * check resolves it: an id, else the one boundary of that name. Null when
+     * it names none, or more than one (the check refuses such a reference).
+     */
+    public function idOf(string $reference): ?string
+    {
+        if (isset($this->ranks[$reference])) {
+            return $reference;
+        }
+        $ids = array_keys(array_filter($this->ranks, static fn(array $rank): bool => $rank[3] === $reference));
+
+        return count($ids) === 1 ? (string) $ids[0] : null;
+    }
+
+    /**
      * The project's boundaries as the pane lists them, with their member
      * counts: declared first, a repository-wide one last, then the largest.
      * `truncated` when more boundaries exist than are listed.

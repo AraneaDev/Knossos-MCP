@@ -39,13 +39,16 @@ final readonly class PolicyScope
     public function build(string $projectId, array $policies, BoundaryLabels $labels): array
     {
         $rules = [];
+        $from = [];
         foreach ($policies as $policy) {
             $rule = self::rule($policy, $labels);
-            if ($rule !== null) {
+            $id = $rule === null ? null : $labels->idOf((string) $policy['from_boundary']);
+            if ($rule !== null && $id !== null) {
                 $rules[] = $rule;
+                $from[$id] = true;
             }
         }
-        [$files, $truncated] = $this->boundFiles($projectId, array_values(array_unique(array_column($rules, 'from'))));
+        [$files, $truncated] = $this->boundFiles($projectId, array_map('strval', array_keys($from)));
 
         return ['rules' => $rules, 'files' => $files, 'files_truncated' => $truncated];
     }
@@ -85,8 +88,10 @@ final readonly class PolicyScope
     /**
      * Each file with a component in one of `$boundaries`, with the boundaries
      * of those it sits in, paths in order; and whether the cap cut the list.
+     * Boundaries are matched by id, so another boundary that only shares a
+     * policed one's name (an inferred one beside a declared one) binds nothing.
      *
-     * @param list<string> $boundaries boundary names
+     * @param list<string> $boundaries boundary ids
      * @return array{0: array<string, list<string>>, 1: bool}
      */
     private function boundFiles(string $projectId, array $boundaries): array
@@ -97,7 +102,7 @@ final readonly class PolicyScope
         $statement = $this->pdo->prepare(
             'SELECT DISTINCT f.relative_path, b.name FROM boundaries b JOIN boundary_memberships bm ON bm.boundary_id = b.id '
             . 'JOIN nodes n ON n.id = bm.node_id JOIN files f ON f.id = n.file_id '
-            . 'WHERE b.project_id = ? AND b.name IN (' . implode(',', array_fill(0, count($boundaries), '?')) . ') '
+            . 'WHERE b.project_id = ? AND b.id IN (' . implode(',', array_fill(0, count($boundaries), '?')) . ') '
             . 'ORDER BY f.relative_path, b.name',
         );
         $statement->execute([$projectId, ...$boundaries]);
