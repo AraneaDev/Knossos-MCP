@@ -266,7 +266,9 @@ Drifted since the snapshot                                 3
 snapshot>`, read again after each scan the watcher sees, one read at a
   time), and each file says where its change came from: `this session` when
   the session's own Edit, Write or NotebookEdit calls (main loop or subagent)
-  wrote it, `outside` otherwise. The header then reads `since it began`. With
+  wrote it, or when a scan that changed it took in changes made while one of
+  the session's tool calls ran; `outside` otherwise. The header then reads
+  `since it began`. With
   no watcher (switched off, or a container install) the tab falls back to
   what the session's turn briefs reported, added up, and says so; it does the
   same when the ledger cannot account for every scan since the session began.
@@ -287,6 +289,30 @@ snapshot>`, read again after each scan the watcher sees, one read at a
   The tab label counts the files.
   The list lives for the session and keeps at most 500 files and 500 tests
   (`partial` past that).
+
+    Whose a change was is told by when it was made, since a shell command
+    (`sed -i`, a heredoc, `git mv`, a formatter's `--write`) edits files as
+    surely as the edit tools do. The mod keeps when each of the session's tool
+    calls ran, in the main loop and in every subagent alike (their calls reach
+    the mod's hooks with the subagent's id), by any tool but the ones that only
+    wait: Agent, AskUserQuestion, TaskOutput, TaskStop, Monitor, SendMessage
+    and the plan-mode tools. A call to one of those runs while the session
+    waits on someone, so a change made meanwhile is yours. A scan is the
+    session's when a call ran at some moment from the watcher's poll, its
+    debounce and 1.5 seconds before the scan began, up to when it landed;
+    when the scan before ended inside that window it reaches back to where
+    that one began, since a change made while a scan runs is noticed after it.
+    While following another session's watcher, the leader's scans are timed by
+    its lock, which the follower reports as `leader_scanning`; an unannounced
+    move of the graph (another writer's scan) is given ten seconds of scan
+    before the poll that saw it. A turn brief that scanned itself took in the
+    turn's own edits, so its scan is the session's too. `session-changes`
+    names, for each file, the snapshots of the scans that changed it (the
+    newest 20), which is what the label is read from. A change you make in
+    your editor while one of the session's calls runs is counted as the
+    session's; a command started in the background is counted only while the
+    call that started it runs.
+
 - **Boundaries:** a heat map of how much each boundary depends on each
   other one. Rows are where a dependency starts, columns where it lands; the
   axes are lettered (`A`, `B`, ...) and the row labels spell the letters out.
@@ -380,6 +406,27 @@ the stand-ins for symbols declared outside the project (`sprintf`, a vendor
 class), which knossos files under the first file that names them, and the
 module node that stands for the file itself; the fan-in figures in the band,
 the notes and Changes leave out the same stand-ins.
+
+A file opened from Changes (or from "Look at now") also shows, below the
+files that depend on it, how it changed since the session began: `git diff`
+against the commit the project was at when the session started (read once,
+by `knossos session-head`, before anything else; again after a `/clear`),
+so it covers the commits made during the session and the working tree
+alike. An added file shows whole as added (an untracked one read from
+disk), a deleted one whole as removed, and a file git moved as the rename,
+with the other path named. The hunks are drawn with Claude Code's own diff
+element, line numbers, markers and colours as its own diffs have them,
+under `Changed since the session began` and the lines added and removed.
+A hunk longer than 40 lines is folded with how many lines are left out;
+past twelve hunks the rest are counted; `session-diff` returns at most
+2,000 lines and 200 KB, and a cut diff says so. Lines longer than 200
+characters are cut, and control characters other than a tab show as `�`.
+The diff is read by `knossos session-diff --rev=<commit> --file=<path>` on
+a timer, never while the pane draws, once per file and snapshot (a new scan
+reads it again). With no git repository, no commit yet, a commit that is
+gone, a binary file or no answer, the detail says which instead of a diff.
+A container install answers neither command, so its details say the
+commit was not recorded.
 
 ```text
 Assertions.php                                                tests
@@ -640,8 +687,9 @@ one log line and turns the band and pane off for the session.
 
 The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
-whole graph), 15 for `component-detail`, `file-detail`, `session-changes`
-and `allow-root`.
+whole graph), 15 for `component-detail`, `file-detail`, `session-changes`,
+`session-head`, `session-diff` and `allow-root`. `session-diff` takes only a
+hex commit id and a file inside the project directory.
 `watch` is not bounded: the wrapper replaces itself with the watcher, so
 stopping the process the session started stops the watcher. It runs
 `allow-root` only with a roots file the installation (or the environment)
