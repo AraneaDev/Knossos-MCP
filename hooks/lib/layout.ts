@@ -52,7 +52,7 @@ import { cycleRows, cyclesInput, cyclesList, detailList, detailRows, issueCount,
 import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
 
 // Everything the specs and the render hook draw with, from one module.
-export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, plainText, rowWidth, tableSpec, wrapWords } from './rows'
+export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, rowWidth, tableSpec, wrapWords } from './rows'
 export type { Field, Loc, Press, Row, Segment, TableSpec } from './rows'
 export type { DetailInput, Openable } from './views'
 export type { BoundariesInput } from './boundaries'
@@ -417,9 +417,6 @@ export function subjectOf(input: ListInput & Pick<PaneInput, 'selected'>): Opena
 export function editTarget(input: ListInput & Pick<PaneInput, 'selected'>): Loc | null {
   return subjectOf(input)?.loc ?? null
 }
-
-/** The test command `t` copies (on Overview and Changes), or null when no test reaches the changes. */
-export const testCommandOf = (input: Pick<PaneInput, 'changes'>): string | null => input.changes.command
 
 /** The prompt "Ask Claude" submits for a component. */
 export const askPrompt = (canonical: string): string =>

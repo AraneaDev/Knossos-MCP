@@ -21,7 +21,6 @@ import {
   paneInput,
   paneRows,
   paneStatus,
-  plainText,
   rowWidth,
   tabRows,
   summaryParts,
@@ -29,6 +28,7 @@ import {
   wrapWords,
 } from './layout'
 import type { PaneInput, Row } from './layout'
+import { plainText } from './__tests__/plain-text'
 import { fitStart, shortName, specWidth, wrapGroups } from './rows'
 import { cycleRows, cyclesInput, issueCount, issuesInput, issuesList, superscript } from './views'
 

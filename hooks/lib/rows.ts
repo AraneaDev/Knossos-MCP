@@ -66,8 +66,6 @@ export const MARK = 3
 
 export const cells = (text: string): number => [...text].length
 export const rowWidth = (row: Row): number => row.segments.reduce((n, s) => n + cells(s.text), 0)
-/** The row as the terminal shows it, colours aside. */
-export const plainText = (row: Row): string => row.segments.map(s => s.text).join('')
 export const segmentsWidth = (segments: Segment[]): number => segments.reduce((n, s) => n + cells(s.text), 0)
 
 /** `text` cut to `width` cells, the last one an ellipsis when anything was cut. */

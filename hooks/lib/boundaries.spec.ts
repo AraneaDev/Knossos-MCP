@@ -3,7 +3,8 @@ import type { BoundaryMatrix, Dashboard } from '../../types'
 import { axisCode, boundariesInput, boundariesList, boundaryRows, heatRows, heatSpec, shade, SHADES } from './boundaries'
 import { ACCENT, boundaryColour, NO_HUES } from './palette'
 import { HEAT_KEYS } from './raster'
-import { plainText, rowWidth } from './rows'
+import { plainText } from './__tests__/plain-text'
+import { rowWidth } from './rows'
 import type { Row } from './rows'
 
 const WIDTHS = [40, 60, 90, 120] as const

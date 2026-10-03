@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, SessionLedger, TurnBrief } from '../../types'
 import { accumulate, cdFor, changesInput, changesList, changesRows, FILE_CAP, fromLedger, lookAtOf, lookAtRows, NO_CHANGES, testCommand, testsRan } from './changes'
 import { editTarget, paneInput, paneRows } from './layout'
-import { fileHref, linkMarkdown, locOf, plainText, rowWidth } from './rows'
+import { plainText } from './__tests__/plain-text'
+import { fileHref, linkMarkdown, locOf, rowWidth } from './rows'
 import type { Row } from './rows'
 
 const WIDTHS = [40, 60, 90, 120] as const
