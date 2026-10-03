@@ -7,6 +7,7 @@
  * are pressable by an index into the view's walkable list, so the marker,
  * `o` and a click all address the same component.
  */
+import type { DiffView } from './diff'
 import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected } from '../../types'
 import { countLabel, detailLines } from './envelopes'
 import { ACCENT, boundaryColour, boundaryLabel, NO_HUES, STATUS_COLOURS } from './palette'
@@ -57,6 +58,8 @@ export type Openable = {
   copy?: string
   /** What "Ask Claude" asks instead of what depends on it (a cycle, a boundary). */
   ask?: string
+  /** A file the session's changes list: its detail shows the change since the session began. */
+  changed?: true
 }
 
 export type ViolationLine = { source: Openable & { boundary: string | null }; target: string; targetBoundary: string | null; place: string }
@@ -93,6 +96,8 @@ export type DetailInput = {
   } | null
   /** Present (null until it is read) when the detail is a file's, not a component's. */
   file?: FileView | null
+  /** A changed file's change since the session began, shown below its dependents; absent when it was not opened as a change. */
+  diff?: DiffView | null
 }
 
 /** One file's detail as the pane draws it; `loc` places each file (and component) on disk. */

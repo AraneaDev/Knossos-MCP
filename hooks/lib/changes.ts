@@ -298,7 +298,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
 
 /** The files the Changes tab walks: each opens as a file's detail (who depends on it), and `e` opens it in the editor. */
 export function changesList(input: ChangesInput): Openable[] {
-  return input.files.map(f => ({ name: f.path, canonical: f.path, loc: f.loc, file: true }))
+  return input.files.map(f => ({ name: f.path, canonical: f.path, loc: f.loc, file: true, changed: true }))
 }
 
 /** What the Overview points at: the touched file with the most dependents, and how many tests reach the changes. */
@@ -316,7 +316,7 @@ const floor = (n: number, plus: boolean) => `${grouped(n)}${plus ? '+' : ''}`
 
 /** The Overview list rows "Look at now" adds before the last turn's: its file, when there is one. */
 export const lookAtList = (look: LookAt | null): Openable[] =>
-  look?.file ? [{ name: look.file.path, canonical: look.file.path, loc: look.file.loc, file: true }] : []
+  look?.file ? [{ name: look.file.path, canonical: look.file.path, loc: look.file.loc, file: true, changed: true }] : []
 
 /**
  * The Overview's "Look at now", scoped to this session in its header: the

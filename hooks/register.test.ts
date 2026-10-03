@@ -71,6 +71,9 @@ function world(
     allow?: Answer[]
     /** What `session-changes` answers: the scan ledger's changes since the session began. */
     ledger?: Answer[]
+    /** What `session-head` answers (the commit the session begins at), and `session-diff` (a file's change since it). */
+    head?: Answer[]
+    diff?: Answer[]
     editor?: 'opens' | 'missing'
     refuseRegister?: () => boolean | Promise<boolean>
     /** Per watcher start, the event lines it writes at once; none left: the start writes nothing and ends (no watcher offered). */
@@ -91,6 +94,8 @@ function world(
     scan: answers.scan ?? [{ stdout: '{"status":"ok"}' }],
     allow: answers.allow ?? [{ stdout: '{"path":"/repo","roots_file":"/data/roots.json","added":true}' }],
     ledger: answers.ledger ?? [{ stdout: '' }],
+    head: answers.head ?? [{ stdout: '' }],
+    diff: answers.diff ?? [{ stdout: '' }],
   }
   /** Every prompt submitted, and every copy with the surface it was for. */
   const prompts: string[] = []
@@ -223,7 +228,11 @@ function world(
                 ? queues.allow
                 : sub === 'session-changes'
                   ? queues.ledger
-                  : queues.brief
+                  : sub === 'session-head'
+                    ? queues.head
+                    : sub === 'session-diff'
+                      ? queues.diff
+                      : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -245,7 +254,9 @@ function world(
   const editorRuns = () => calls.filter(c => c[0] === 'code')
   const kills = () => calls.filter(c => c[0] === 'kill')
   const ledgerRuns = () => calls.filter(c => c[2] === 'session-changes')
-  return { ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  const headRuns = () => calls.filter(c => c[2] === 'session-head')
+  const diffRuns = () => calls.filter(c => c[2] === 'session-diff')
+  return { headRuns, diffRuns, ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -626,7 +637,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const ran = await edit($, `${ROOT}/src/Router.php`)
     expect(ran.context ?? []).toHaveLength(0)
-    expect(w.calls[0]).toContain('--fan-in-threshold=50')
+    expect(w.dashboardRuns()[0]).toContain('--fan-in-threshold=50')
   })
 
   test('a turn without edits starts no scan', async ($, on) => {
@@ -896,7 +907,7 @@ describe('knossos mod', () => {
     const w = world(on)
     await $.session.start(START)
     await w.clock.settle()
-    expect(w.calls[0]).toContain('--fan-in-threshold=20')
+    expect(w.dashboardRuns()[0]).toContain('--fan-in-threshold=20')
     const ran = await edit($, `${ROOT}/src/Router.php`)
     expect(ran.context?.join('\n')).toContain('src/Router.php has 41 dependent files')
   })
@@ -1081,14 +1092,14 @@ describe('knossos mod', () => {
     const w = world(on)
     await $.session.start(START)
     await w.clock.settle()
-    expect(w.calls[0]).toContain('--fan-in-threshold=20')
+    expect(w.dashboardRuns()[0]).toContain('--fan-in-threshold=20')
   })
 
   test('a threshold above the command limit falls back to 20', { options: { fanInThreshold: 100_001 } }, async ($, on) => {
     const w = world(on)
     await $.session.start(START)
     await w.clock.settle()
-    expect(w.calls[0]).toContain('--fan-in-threshold=20')
+    expect(w.dashboardRuns()[0]).toContain('--fan-in-threshold=20')
   })
 
   test('the allow-root hint names the roots file and the refused root', async ($, on) => {
@@ -3048,5 +3059,124 @@ describe('the live watcher', () => {
     // app.php was changed by the brief's own scan, not by an edit tool.
     const [, app] = await changeRows($)
     expect(app).toMatch(/app\.php.*this session/)
+  })
+
+  const REV = '0123456789abcdef0123456789abcdef01234567'
+  const HEAD = JSON.stringify({ status: 'ok', path: ROOT, rev: REV })
+  const ROUTER_DIFF = JSON.stringify({
+    status: 'ok',
+    path: ROOT,
+    rev: REV,
+    file: 'src/Router.php',
+    kind: 'changed',
+    from: null,
+    to: null,
+    binary: false,
+    diff: '@@ -3,3 +3,4 @@ final class Router\n {\n-    // old\n+    // new\n+    // more\n }\n',
+    lines: 6,
+    truncated: false,
+    unreadable: false,
+  })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`a changed file opened from Changes shows its change since the session began as the engine's own diff (${surface})`, async ($, on) => {
+      const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: HEAD }], diff: [{ stdout: ROUTER_DIFF }] })
+      await $.session.start(START)
+      await w.clock.settle()
+      // The commit is read once, at the start, before anything else.
+      expect(w.headRuns()).toEqual([['sh', expect.stringMatching(/knossos-run\.sh$/), 'session-head', ROOT]])
+      expect(w.calls[0]?.[2]).toBe('session-head')
+      w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+      await w.clock.advance(100)
+      const ui = await mountPane($, surface)
+      await ui.press({ key: 'tab:changes' })
+      await ui.press({ key: 'open' })
+      // Loading first: the read runs on a timer, never in the render.
+      expect(w.diffRuns()).toEqual([])
+      expect((await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')).toContain('Reading the change')
+      await w.clock.settle()
+      expect(w.diffRuns()).toEqual([['sh', expect.stringMatching(/knossos-run\.sh$/), 'session-diff', ROOT, `--rev=${REV}`, '--file=src/Router.php']])
+      const code = await ui.find({ type: 'Code' })
+      expect(code?.props).toMatchObject({ format: 'diff', path: 'src/Router.php', wrap: 'truncate-end' })
+      expect(code?.props.source).toBe('@@ -3,3 +3,4 @@ final class Router\n {\n-    // old\n+    // new\n+    // more\n }')
+      const text = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+      expect(text).toContain('Changed since the session began')
+      expect(text).toMatch(/\+2[\s\S]*−1/)
+      // Below the files that depend on it.
+      const keys = (await ui.findAll({})).map(e => e.key).filter((k): k is string => k !== undefined)
+      expect(keys.indexOf('diff-head')).toBeGreaterThan(keys.indexOf('deps-head'))
+      // Read once for this graph: going back and opening it again reads nothing new.
+      await ui.press({ key: 'back' })
+      await ui.press({ key: 'row:0' })
+      await w.clock.settle()
+      expect(w.diffRuns()).toHaveLength(1)
+      expect(await ui.find({ type: 'Code' })).toBeDefined()
+      await ui.unmount()
+    })
+  }
+
+  test('a file opened anywhere but the session changes shows no diff and reads none', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], head: [{ stdout: HEAD }], diff: [{ stdout: ROUTER_DIFF }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, 'inspect src/Router.php')
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect(await ui.find({ key: 'diff-head' })).toBeUndefined()
+    expect(w.diffRuns()).toEqual([])
+    await ui.unmount()
+  })
+
+  for (const [head, says] of [
+    [JSON.stringify({ status: 'no-git', path: ROOT, rev: null }), 'not in a git repository'],
+    ['', 'was not recorded'],
+  ] as const) {
+    test(`without the session's commit the detail says why instead of a diff (${says})`, async ($, on) => {
+      const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: head }], diff: [{ stdout: ROUTER_DIFF }] })
+      await $.session.start(START)
+      await w.clock.settle()
+      w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+      await w.clock.advance(100)
+      const ui = await mountPane($)
+      await ui.press({ key: 'tab:changes' })
+      await ui.press({ key: 'open' })
+      await w.clock.settle()
+      expect((await ui.findAll({ type: 'Text' })).map(t => t.text.trim()).join(' ')).toContain(says)
+      expect(await ui.find({ type: 'Code' })).toBeUndefined()
+      expect(w.diffRuns()).toEqual([])
+      // A later read would name a commit made during the session: the start's silence stands.
+      expect(w.headRuns()).toHaveLength(1)
+      await ui.unmount()
+    })
+  }
+
+  test("a deleted file's detail still shows its change, whole as removed, and a new snapshot reads it again", async ($, on) => {
+    const gone = JSON.stringify({ ...(JSON.parse(ROUTER_DIFF) as object), kind: 'deleted', diff: '@@ -1,2 +0,0 @@\n-<?php\n-final class Router {}\n' })
+    const notFound = JSON.stringify({ status: 'not-found', path: `${ROOT}/src/Router.php`, file: null })
+    const later = paneDashboard({ snapshot_id: 's3' })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard({ snapshot_id: 's2' }) }, { stdout: later }], watch: [[READY]], ledger: [{ stdout: LEDGER }], head: [{ stdout: HEAD }], diff: [{ stdout: gone }], file: [{ stdout: notFound }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    expect((await ui.find({ type: 'Code' }))?.props.source).toBe('@@ -1,2 +0,0 @@\n-<?php\n-final class Router {}')
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's3', parsed_files: 1 })
+    await w.clock.advance(100)
+    await w.clock.settle()
+    expect(w.diffRuns()).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test('after a /clear the commit the new session begins at is read again', async ($, on) => {
+    const w = world(on, { watch: [[READY], [READY]], head: [{ stdout: HEAD }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await $.session.end({ reason: 'clear', sessionId: 'x', resume: { id: 'x' } } as never)
+    await w.clock.settle()
+    expect(w.headRuns()).toHaveLength(2)
   })
 })

@@ -5,7 +5,8 @@ import { activeBetween, begin, counts, finish, FOLLOWED_SCAN_MS, lookbackMs, noA
 import type { Activity } from './lib/activity'
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseSessionLedger, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { diffView } from './lib/diff'
+import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseSessionDiff, parseSessionLedger, parseSessionRev, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { SessionLedger, TurnBrief } from './lib/envelopes'
 import { fromLedger } from './lib/changes'
 import {
@@ -43,7 +44,7 @@ import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, ComponentDetail, DetailState, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
+import type { AllowState, ComponentDetail, DetailState, DiffState, SessionRev, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -92,8 +93,10 @@ const FINAL_ENDS: readonly string[] = ['prompt_input_exit', 'logout', 'other']
 const KILL_TIMEOUT_MS = 5_000
 /** How often the pane with no figures, after a load that failed, asks for the dashboard again. */
 const EMPTY_RETRY_MS = 15_000
-/** The wrapper bounds session-changes at 15 s. */
+/** The wrapper bounds session-changes, session-head and session-diff at 15 s. */
 const LEDGER_TIMEOUT_MS = 20_000
+const HEAD_TIMEOUT_MS = 20_000
+const DIFF_TIMEOUT_MS = 20_000
 /** The most paths kept as the session's own edits, and the most snapshots kept as its own scans. */
 const EDITS_KEPT = 1_000
 const SCANS_KEPT = 1_000
@@ -134,6 +137,10 @@ const sessionStart = atom({ plugin: 'knossos', key: 'sessionStart' } as const, n
 const sessionEdits = atom({ plugin: 'knossos', key: 'sessionEdits' } as const, [] as string[])
 /** The snapshots of the scans that took in changes made while the session's tools ran (see `lib/activity.ts`). */
 const sessionScans = atom({ plugin: 'knossos', key: 'sessionScans' } as const, [] as string[])
+/** The commit the project was at when the session began: what a changed file's diff is taken against. */
+const sessionRev = atom({ plugin: 'knossos', key: 'sessionRev' } as const, null as SessionRev | null)
+/** The change since the session began of the file the detail shows, as last read. */
+const fileDiff = atom({ plugin: 'knossos', key: 'fileDiff' } as const, null as DiffState | null)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -494,6 +501,8 @@ async function readTheme($: EngineInterface): Promise<void> {
  * turn asks again. Only the wrapper's `no-binary` turns the mod off.
  */
 async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> {
+  // First: the commit the session begins at, before anything of it can be committed.
+  await recordHead($)
   await readTheme($)
   const root = await $.session.root().then(r => placed($, r)).catch(() => null)
   await update($, sessionRoot, () => root)
@@ -522,6 +531,7 @@ const sameDetail = (state: DetailState | null, shown: Inspected, snapshot: strin
 
 /** Starts a lookup of what `shown` names unless one is running or done for this snapshot; silence is asked again. */
 async function requestDetail($: EngineInterface, shown: Inspected): Promise<void> {
+  await requestDiff($, shown)
   const snapshot = (await read($, dashboard))?.snapshot_id ?? null
   const { name } = shown
   const file = shown.file === true
@@ -542,6 +552,48 @@ async function requestDetail($: EngineInterface, shown: Inspected): Promise<void
   }
   await update($, detail, loading)
   $.clock.after(0, () => void loadDetail($, snapshot, shown, key))
+}
+
+/**
+ * Records the commit the project is at as the one the session began at,
+ * unless one is recorded. Silence leaves none: a later read would name a
+ * commit made during the session, and the diff would leave its changes out.
+ */
+async function recordHead($: EngineInterface): Promise<void> {
+  if (mod.disabled || (await read($, sessionRev)) !== null) return
+  const stdout = await wrapper($, 'session-head', [], HEAD_TIMEOUT_MS)
+  if (parseSessionDiff(stdout)?.status === 'no-binary') return disable($)
+  const rev = parseSessionRev(stdout)
+  if (rev !== null) await update($, sessionRev, () => rev)
+}
+
+/**
+ * Starts reading how a changed file (one opened from the session's changes)
+ * changed since the session began, unless that read is done or running for
+ * this graph: a new snapshot (the file changed again) reads it again. Runs
+ * on a timer, never in a render; without the session's commit there is
+ * nothing to read, and the detail says why.
+ */
+async function requestDiff($: EngineInterface, shown: Inspected): Promise<void> {
+  if (shown.file !== true || shown.changed !== true || mod.disabled) return
+  const rev = await read($, sessionRev)
+  if (rev?.status !== 'ok') return
+  const d = await read($, dashboard)
+  const snapshot = d?.snapshot_id ?? null
+  const current = await read($, fileDiff)
+  if (current !== null && current.name === shown.name && current.rev === rev.rev && current.snapshot === snapshot) return
+  await update($, fileDiff, (): DiffState => ({ name: shown.name, rev: rev.rev, snapshot, phase: 'loading', diff: null }))
+  const root = d?.status === 'ok' ? (d.project_root ?? undefined) : undefined
+  $.clock.after(0, () => void loadDiff($, shown.name, rev.rev, snapshot, root).catch(() => undefined))
+}
+
+/** One read of a file's change; stored only while the detail still asks for that file, commit and graph. */
+async function loadDiff($: EngineInterface, name: string, rev: string, snapshot: string | null, root: string | undefined): Promise<void> {
+  const stdout = await wrapper($, 'session-diff', [`--rev=${rev}`, `--file=${name}`], DIFF_TIMEOUT_MS, root)
+  const parsed = parseSessionDiff(stdout)
+  if (parsed?.status === 'no-binary') return disable($)
+  const now = await read($, fileDiff)
+  if (now !== null && now.name === name && now.rev === rev && now.snapshot === snapshot) await update($, fileDiff, (): DiffState => ({ ...now, phase: 'done', diff: parsed }))
 }
 
 /**
@@ -1049,6 +1101,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const v = await read($, view)
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
+  if (shown !== null && v.inspect !== null) shown.diff = diffView(v.inspect, await read($, fileDiff), await read($, sessionRev))
   return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live))
 }
 
@@ -1072,7 +1125,7 @@ async function openRow($: EngineInterface, index?: number): Promise<void> {
   await update($, view, v => ({ ...v, selected: at }))
   // A boundary opens nothing: marking it is what spells it out.
   if (item.inert === true) return
-  await showComponent($, { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}) })
+  await showComponent($, { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}), ...(item.changed === true ? { changed: true } : {}) })
 }
 
 /**
@@ -1292,7 +1345,15 @@ async function pressPane($: EngineInterface, id: string, surface?: RenderSurface
  * reply would, and a plain click (`onLinkPress`) opens it in the editor.
  */
 function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void, links = false) {
-  const { Box, Button, Markdown, Text } = ui
+  const { Box, Button, Code, Markdown, Text } = ui
+  // A change's hunks: the engine's own diff, gutters, markers and colours as Claude Code draws them.
+  if (row.code !== undefined) {
+    return (
+      <Box key={row.key} flexDirection="column">
+        <Code key={`${row.key}-code`} source={row.code.source} path={row.code.path} format="diff" wrap="truncate-end" />
+      </Box>
+    )
+  }
   // Every surface but mobile has a text field; there the filter is shown as text.
   const Input = 'Input' in ui ? ui.Input : undefined
   return (
@@ -1443,6 +1504,10 @@ export const register: Register = (on, options) => {
       await update($, sessionStart, () => mod.snapshot)
       await update($, sessionEdits, () => [])
       await update($, sessionScans, () => [])
+      // Its diffs are taken against the commit it begins at.
+      await update($, sessionRev, () => null)
+      await update($, fileDiff, () => null)
+      $.clock.after(0, () => void recordHead($).catch(() => undefined))
       await update($, sessionLedger, () => null)
       await update($, changes, () => NO_CHANGES)
     }

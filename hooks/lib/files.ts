@@ -9,6 +9,7 @@
  */
 import type { Dashboard, DetailState, Drifted, FileDetail, Inspected } from '../../types'
 import { rankIn, reachRows, statusMark } from './changes'
+import { diffRows } from './diff'
 import { fileDetailLines } from './envelopes'
 import { boundaryLabel, NO_HUES } from './palette'
 import type { Hues } from './palette'
@@ -110,6 +111,8 @@ export function fileDetailRows(detail: DetailInput, columns: number, hues: Hues 
       blank('gap-detail'),
       { key: 'detail-name', segments: [{ text: fitStart(detail.label, columns), bold: true, color: 'text' }] },
       ...lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
+      // A deleted file is in no graph, yet its change is all there is to see.
+      ...(detail.diff ? diffRows(detail.diff, columns) : []),
     ]
   }
   const own: Segment[] = f.boundary === null ? [] : [{ text: boundaryLabel(f.boundary, hues), ...boundaryStyle(f.boundary, hues) }]
@@ -135,6 +138,8 @@ export function fileDetailRows(detail: DetailInput, columns: number, hues: Hues 
     rows.push(tableRow(`dep-${i}`, { name: d.path, boundary: d.boundary, values: [d.edges], max: depMax, selected: i === selected, cutStart: true, press: `row:${i}` }, depSpec, hues)),
   )
   rows.push(...moreRow('deps-more', deps.count, deps.items.length, columns))
+  // What changed in it this session, right under what that change reaches.
+  if (detail.diff) rows.push(...diffRows(detail.diff, columns))
 
   // What it declares, the most used first; they share the file's boundary, so no column for it.
   const comps = f.components

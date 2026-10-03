@@ -51,7 +51,13 @@ export type Segment = { text: string; color?: string; dim?: boolean; bold?: bool
  * grid the terminal may draw as one `Raster`; every surface can draw their
  * segments as text instead.
  */
-export type Row = { key: string; segments: Segment[]; raster?: string }
+export type Row = {
+  key: string
+  segments: Segment[]
+  raster?: string
+  /** Drawn as the engine's diff element instead of its segments: unified-diff hunks, and the file they are of (its language). */
+  code?: { source: string; path: string }
+}
 
 export const BAR_MIN = 4
 /** The widest a bar column grows: past it the names take the room, so bars, boundary and numbers stay together on the right. */

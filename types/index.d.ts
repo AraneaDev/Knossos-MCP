@@ -248,7 +248,40 @@ export type JobState = { phase: 'idle' | 'scanning' | 'failed'; lastAttemptAt: n
 export type RefreshState = { fetchedAt: number | null; failed: boolean }
 
 /** The component (or, with `file`, the file) the pane shows: `name` is what it is looked up by, `label` what the pane prints. */
-export type Inspected = { name: string; label: string; file?: true }
+export type Inspected = {
+  name: string
+  label: string
+  file?: true
+  /** Opened from the session's changes: the detail shows the file's change since the session began, below its dependents. */
+  changed?: true
+}
+
+/**
+ * The `session-diff` subcommand's answer: how one file changed since the
+ * commit the session began at. `diff` holds unified-diff hunks only (no
+ * headers), at most 2,000 lines; `lines` is how many the whole diff had.
+ * `kind` is `renamed` with `from` and `to` for a file git moved, `absent`
+ * for one git never had, `unchanged` for one put back as it was.
+ */
+export type SessionDiff = {
+  status: 'ok' | 'no-git' | 'unknown-rev' | 'error' | 'no-binary'
+  file?: string
+  kind?: 'changed' | 'added' | 'deleted' | 'renamed' | 'unchanged' | 'absent' | null
+  from?: string | null
+  to?: string | null
+  binary?: boolean
+  diff?: string
+  lines?: number
+  truncated?: boolean
+  /** Git would not print the diff within its bounds, or failed. */
+  unreadable?: boolean
+}
+
+/** The commit the session began at, from `session-head`: its id, or that the project has no git history. */
+export type SessionRev = { status: 'ok'; rev: string } | { status: 'no-git' }
+
+/** The diff the file detail shows: of `name` against `rev` at `snapshot`, loading until it lands (null: nothing answered). */
+export type DiffState = { name: string; rev: string; snapshot: string | null; phase: 'loading' | 'done'; diff: SessionDiff | null }
 
 /** The pane's tabs, in their hotkey order (1 to 6). */
 export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes'
@@ -398,6 +431,10 @@ declare module 'claude-code' {
       sessionEdits: string[]
       /** The snapshots of the scans that took in changes made while the session's tools ran: whose a ledgered change was. */
       sessionScans: string[]
+      /** The commit the project was at when the session began; null when it was not (yet) read. */
+      sessionRev: SessionRev | null
+      /** The change since the session began of the file the detail shows. */
+      fileDiff: DiffState | null
     }
   }
 }

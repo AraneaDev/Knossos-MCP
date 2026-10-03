@@ -1,4 +1,4 @@
-import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, SessionLedger, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, SessionDiff, SessionLedger, SessionRev, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
@@ -114,6 +114,25 @@ export function fileDetailLines(detail: FileDetail, path: string): string[] {
 /** A rescan's answer from the wrapper's stdout; null for silence or anything unexpected. */
 export function parseRescan(stdout: string): Rescan | null {
   return parse(stdout, RESCAN, [], []) as Rescan | null
+}
+
+const DIFF = new Set(['ok', 'no-git', 'unknown-rev', 'error', 'no-binary'])
+
+/** A file's change since the session began from the wrapper's stdout; null for silence, or an `ok` whose diff is not text. */
+export function parseSessionDiff(stdout: string): SessionDiff | null {
+  const parsed = parse(stdout, DIFF, [], []) as SessionDiff | null
+  return parsed?.status === 'ok' && typeof parsed.diff !== 'string' ? null : parsed
+}
+
+/**
+ * The commit the session began at from `session-head`'s stdout: its id, or
+ * that there is no git history (`no-git`); null for silence or anything else.
+ * `no-binary` is left to the caller.
+ */
+export function parseSessionRev(stdout: string): SessionRev | null {
+  const parsed = parse(stdout, new Set(['ok', 'no-git']), [], []) as { status: string; rev?: unknown } | null
+  if (parsed?.status === 'no-git') return { status: 'no-git' }
+  return parsed?.status === 'ok' && typeof parsed.rev === 'string' && /^[0-9a-f]{7,64}$/.test(parsed.rev) ? { status: 'ok', rev: parsed.rev } : null
 }
 
 /** Why a rescan did not land, in a few words for the pane's header. */
