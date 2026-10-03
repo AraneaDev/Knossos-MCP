@@ -41,6 +41,8 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(realpath($root), $d['project_root']);
             assertSame('fresh', $d['freshness']['state']);
             assertSame(0, $d['freshness']['drift_files']);
+            assertSame([], $d['freshness']['drifted']);
+            assertSame(false, $d['freshness']['drifted_truncated']);
             assertGreaterThanOrEqual(0, $d['freshness']['age_seconds']);
             assertNotSame([], $d['hubs']);
             assertNotSame([], $d['fan_in']);
@@ -79,7 +81,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(null, $d['project_root']);
             assertSame(null, $d['project_id']);
             assertSame(null, $d['snapshot_id']);
-            assertSame(['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0], $d['freshness']);
+            assertSame(['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0, 'drifted' => [], 'drifted_truncated' => false], $d['freshness']);
             assertSame([], $d['hubs']);
             assertSame([], $d['hotspots']);
             assertSame(0, $d['dead_code_candidates']);
@@ -294,6 +296,13 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame('stale', $stale['state']);
             assertSame(3, $stale['drift_files']);
             assertIsInt($stale['age_seconds']);
+            // Named by path, with how each drifted and the file's own boundary (none for a file the graph lacks).
+            assertSame(
+                [['src/Edge/Added.php', 'added'], ['src/Edge/Caller.php', 'changed'], ['tests/GreeterTest.php', 'deleted']],
+                array_map(static fn(array $f): array => [$f['path'], $f['change']], $stale['drifted']),
+            );
+            assertSame(null, $stale['drifted'][0]['boundary']);
+            assertSame(false, $stale['drifted_truncated']);
         } finally {
             $this->removeTempTree($root);
         }

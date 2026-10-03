@@ -307,16 +307,19 @@ final readonly class GitDriftOracle implements DriftOracle
         $added = 0;
         $deleted = 0;
         $scanned = null;
+        $named = [];
         foreach ($candidates as $path) {
             $absolute = $root . '/' . $path;
             if (array_key_exists($path, $hashes)) {
                 $hash = @hash_file('sha256', $absolute);
                 if ($hash === false) {
                     ++$deleted;
+                    $named = DriftCounts::name($named, (string) $path, 'deleted');
                     continue;
                 }
                 if ($hash !== $hashes[$path]) {
                     ++$changed;
+                    $named = DriftCounts::name($named, (string) $path, 'changed');
                 }
                 continue;
             }
@@ -328,10 +331,11 @@ final readonly class GitDriftOracle implements DriftOracle
             $scanned ??= ScannedPaths::forProject($this->pdo, $projectId);
             if ($scanned->tracks($path, $absolute)) {
                 ++$added;
+                $named = DriftCounts::name($named, (string) $path, 'added');
             }
         }
 
-        return new DriftCounts($changed, $added, $deleted);
+        return new DriftCounts($changed, $added, $deleted, paths: $named);
     }
 
     /**

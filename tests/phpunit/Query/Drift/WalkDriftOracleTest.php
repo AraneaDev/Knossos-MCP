@@ -43,6 +43,34 @@ final class WalkDriftOracleTest extends KnossosTestCase
             $this->assertSame(1, $drift->deleted);
             $this->assertSame(0, $drift->added);
             $this->assertSame(2, $drift->total());
+            $this->assertEqualsCanonicalizing(
+                [['path' => 'src/a.php', 'change' => 'changed'], ['path' => 'src/b.php', 'change' => 'deleted']],
+                $drift->paths,
+                'Each drifted path is named with how it drifted.',
+            );
+        } finally {
+            if (is_dir($root)) {
+                $this->removeTempTree($root);
+            }
+        }
+    }
+
+    /** Past twenty drifted files the counts go on but the names stop: the list is the first few, never all of a large drift. */
+    #[Group('query')]
+    public function testOnlyTheFirstDriftedPathsAreNamed(): void
+    {
+        $files = array_map(static fn(int $i): string => sprintf('src/f%02d.php', $i), range(1, DriftCounts::NAMED + 3));
+        [$pdo, $projectId, $root] = $this->seedProjectWithFiles($files);
+        try {
+            foreach ($files as $file) {
+                unlink($root . '/' . $file);
+            }
+
+            $drift = self::drift($pdo, $projectId, $root);
+
+            $this->assertNotNull($drift);
+            $this->assertSame(DriftCounts::NAMED + 3, $drift->deleted);
+            $this->assertCount(DriftCounts::NAMED, $drift->paths);
         } finally {
             if (is_dir($root)) {
                 $this->removeTempTree($root);

@@ -149,6 +149,11 @@ final class GitDriftOracleTest extends KnossosTestCase
             self::assertSame(1, $drift->added, 'The new path has no files row but is trackable.');
             self::assertSame(1, $drift->deleted, 'The old path has a files row and no file on disk.');
             self::assertSame(0, $drift->changed, 'Neither half of a rename is a content change.');
+            self::assertSame(
+                [['path' => 'src/a.php', 'change' => 'deleted'], ['path' => 'src/renamed.php', 'change' => 'added']],
+                $drift->paths,
+                'Each drifted path is named with how it drifted, so the reader learns which files, not only how many.',
+            );
         } finally {
             $this->removeTempTree($root);
         }

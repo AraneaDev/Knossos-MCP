@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
+use Knossos\Query\Drift\DriftCounts;
+
 /**
  * A staleness probe result together with the project it describes.
  *
@@ -36,6 +38,8 @@ final readonly class StalenessSnapshot
      *        with no graph. Null matches no envelope's snapshot id, so those
      *        verdicts are re-probed rather than reused, which is the right way
      *        round for a case that has nothing to compare.
+     * @param ?DriftCounts $drift what the drift oracle answered, with the
+     *        first drifted paths by name; null when it could not answer
      */
-    public function __construct(public string $projectId, public ?array $staleness, public ?string $activeScanId = null) {}
+    public function __construct(public string $projectId, public ?array $staleness, public ?string $activeScanId = null, public ?DriftCounts $drift = null) {}
 }

@@ -106,7 +106,7 @@ final readonly class StalenessProbe
             $result['guidance'] = 'Change detection was skipped (project root unavailable or too many files); freshness is unconfirmed. Rescan with scan_project to be certain.';
         }
 
-        return new StalenessSnapshot($projectId, $result, $activeScanId);
+        return new StalenessSnapshot($projectId, $result, $activeScanId, $drift);
     }
 
     /**

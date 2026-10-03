@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Query;
 
 use Closure;
+use Knossos\Query\Drift\DriftCounts;
 use PDO;
 
 /**
@@ -18,8 +19,9 @@ use PDO;
  * `truncation_reasons`, `hubs_truncated` with `hubs_truncation_reasons` (the
  * degree walk stopped at its node, edge or time limit, so hubs and hotspots
  * rank only what it reached), `dead_code_truncated` (the candidate search ran
- * out of time, so the total is a floor) and `fan_in_truncated` say when a
- * number or list was cut short.
+ * out of time, so the total is a floor), `fan_in_truncated` and
+ * `freshness.drifted_truncated` (the drift oracle names only the first 20
+ * drifted files) say when a number or list was cut short.
  *
  * Hubs and hotspots are always the top 10; that page is the design, not a
  * truncation, so it never sets `hubs_truncated`. Each carries its degrees
@@ -74,7 +76,8 @@ final readonly class DashboardService
         $id = (string) $project['id'];
         $root = (string) $project['root_realpath'];
         $queries = new ArchitectureQueryService($this->pdo, $this->clock);
-        $probe = (new StalenessProbe($this->pdo))->probe($id) ?? [];
+        $staleness = (new StalenessProbe($this->pdo))->snapshot($id);
+        $probe = $staleness->staleness ?? [];
         $healthResult = $queries->architectureHealth($id, limit: self::TOP, timeoutMs: $this->healthTimeoutMs);
         $health = $healthResult->data;
         $hubLimits = array_values(array_diff($health['bounds']['truncation_reasons'], ['result_limit']));
@@ -98,7 +101,7 @@ final readonly class DashboardService
                 'drift_files' => (int) ($probe['changed_files_since'] ?? 0)
                     + (int) ($probe['added_files_since'] ?? 0)
                     + (int) ($probe['deleted_files_since'] ?? 0),
-            ],
+            ] + self::drifted($staleness->drift, $labels, $id),
             'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels), $health['hubs']),
             'hubs_truncated' => $hubLimits !== [],
             'hubs_truncation_reasons' => $hubLimits,
@@ -126,6 +129,27 @@ final readonly class DashboardService
             'diagnostics' => $findings->diagnostics($id),
             'largest_files' => $findings->largestFiles($id),
             'policy' => $findings->policy($id, $root, $labels),
+        ];
+    }
+
+    /**
+     * Which files drifted since the snapshot: `drifted` the first few the
+     * drift oracle named, by path, each with how it drifted and its own
+     * boundary label (null for a file the graph does not hold yet), and
+     * `drifted_truncated` when the oracle counted more than it named or
+     * stopped counting additions, so the list is not all of them.
+     *
+     * @return array{drifted: list<array{path: string, change: string, boundary: string|null}>, drifted_truncated: bool}
+     */
+    private static function drifted(?DriftCounts $drift, BoundaryLabels $labels, string $projectId): array
+    {
+        $named = $drift === null ? [] : $drift->paths;
+        usort($named, static fn(array $a, array $b): int => $a['path'] <=> $b['path']);
+        $boundaries = $named === [] ? [] : $labels->forFiles($projectId, array_column($named, 'path'));
+
+        return [
+            'drifted' => array_map(static fn(array $p): array => $p + ['boundary' => $boundaries[$p['path']] ?? null], $named),
+            'drifted_truncated' => $drift !== null && ($drift->additionsTruncated || $drift->total() > count($named)),
         ];
     }
 
@@ -241,7 +265,7 @@ final readonly class DashboardService
     {
         return [
             'status' => 'unscanned', 'path' => $path, 'project_root' => null, 'project_id' => null,
-            'snapshot_id' => null, 'freshness' => ['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0],
+            'snapshot_id' => null, 'freshness' => ['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0, 'drifted' => [], 'drifted_truncated' => false],
             'hubs' => [], 'hubs_truncated' => false, 'hubs_truncation_reasons' => [], 'hotspots' => [], 'dead_code_candidates' => 0, 'dead_code_truncated' => false,
             'cycles' => ['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []],
             'trend' => [], 'fan_in' => [], 'fan_in_truncated' => false, 'dead_code' => [],
