@@ -64,7 +64,9 @@ component's own, and an import of `./Card.vue` resolves through relative paths, 
   `default` from `await import('./X.vue')` is not reported as an error.
 - A file no tsconfig `include` covers (a package's tests, a nested tools package) is read with
   its package's paths, aliases and project references, under the TypeScript and installed types
-  of the package it sits in, and with a bundler's resolution as its test runner uses.
+  of the package it sits in, and with a bundler's resolution as its test runner uses. The
+  package's declaration files are in its program too, so an ambient `declare module 'x'` there
+  satisfies the import however the scan batched the files.
 - A template name that resolves to nothing (an Options API method reached through the
   component instance) is listed in the module's `unresolved_member_calls`, so a method by that
   name is only possibly dead.

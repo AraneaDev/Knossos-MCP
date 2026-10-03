@@ -52,6 +52,32 @@ final class TypescriptFallbackProgramTest extends KnossosTestCase
         self::assertSame([], $codes);
     }
 
+    /**
+     * An ambient `declare module` in a project declaration file satisfies an
+     * import only from inside the importer's program. A file no tsconfig
+     * includes is read in a program of the files requested with it, so an
+     * incremental scan of the importer alone reported the import as a missing
+     * module; the request's declaration files are offered to that program.
+     */
+    public function testAnAmbientModuleResolvesWhenOnlyItsImporterIsScanned(): void
+    {
+        $client = $this->typescriptWorkerClient();
+        try {
+            $contributions = iterator_to_array($client->scan([
+                'root' => self::repositoryRoot() . '/tests/Fixtures/fallback-ambient',
+                'files' => ['hooks/register.tsx'],
+                'config_files' => ['hooks/tsconfig.json'],
+                'declaration_files' => ['hooks/host.d.ts'],
+            ]), false);
+        } finally {
+            $client->shutdown();
+        }
+
+        self::assertCount(1, $contributions);
+        self::assertSame('knossos.typescript:file:hooks/register.tsx', $contributions[0]->ownerKey);
+        self::assertSame([], $contributions[0]->diagnostics);
+    }
+
     public function testAnImportOfAnotherConfigsBuildOutputReachesItsSources(): void
     {
         // `extends` does not carry `references`, so the test config reaches

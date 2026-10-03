@@ -175,6 +175,10 @@ final readonly class LanguageScanRunner
             if ($packages !== []) {
                 $request['package_directories'] = $packages;
             }
+            $declarations = self::declarationFiles($files);
+            if ($declarations !== []) {
+                $request['declaration_files'] = $declarations;
+            }
         } elseif ($descriptor->key === 'python') {
             $request['frameworks'] = $plan->preparation->pythonFrameworks;
         } elseif ($descriptor->key === 'rust') {
@@ -435,6 +439,33 @@ final readonly class LanguageScanRunner
         sort($directories, SORT_STRING);
 
         return $directories;
+    }
+
+    /**
+     * Every declaration file (`.d.ts`, `.d.mts`, `.d.cts`) among the
+     * language's files, sorted, whether or not this scan reads it again.
+     *
+     * An ambient `declare module 'x'` satisfies `import … from 'x'` only when
+     * its file is in the importer's program. A tsconfig's program lists its
+     * own declarations, but a file no tsconfig includes is read in a program of
+     * the files requested with it, and an incremental scan of the importer
+     * alone, or a batch that split the two, left the declaration out.
+     *
+     * @param list<object> $files
+     * @return list<string>
+     */
+    private static function declarationFiles(array $files): array
+    {
+        $declarations = [];
+        foreach ($files as $file) {
+            $path = (string) $file->relativePath;
+            if (preg_match('/\.d\.[cm]?ts$/', $path) === 1) {
+                $declarations[] = $path;
+            }
+        }
+        sort($declarations, SORT_STRING);
+
+        return array_values(array_unique($declarations));
     }
 
     /**

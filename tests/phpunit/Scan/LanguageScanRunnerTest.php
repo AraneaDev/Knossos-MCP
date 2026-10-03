@@ -1138,6 +1138,43 @@ final class LanguageScanRunnerTest extends TestCase
     }
 
     /**
+     * Every TypeScript request names all of the project's declaration files,
+     * whichever batch it is and whichever files it scans.
+     *
+     * An ambient `declare module` in a `.d.ts` satisfies an import only when
+     * that file is in the importer's program. A batch of one file, or an
+     * incremental scan of the importer alone, left the declaration out, and the
+     * compiler reported the import as a missing module.
+     */
+    public function testEveryTypescriptRequestNamesTheProjectsDeclarationFiles(): void
+    {
+        $this->allocateRecordPath();
+        $runner = $this->runnerWithClients(
+            ['typescript' => $this->workerClient('per_file_request')],
+            [$this->descriptorFor('typescript', batchFiles: 1)],
+        );
+
+        $runner->run(
+            $this->planForFiles([
+                'hooks/register.tsx' => 'typescript',
+                'hooks/engine.d.ts' => 'typescript',
+                'src/types.d.mts' => 'typescript',
+                'src/a.ts' => 'typescript',
+            ]),
+            new CancellationToken(),
+        );
+
+        $requests = array_map(
+            static fn(string $line): mixed => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
+            array_values(array_filter(explode("\n", (string) file_get_contents($this->recordPath . '.request')))),
+        );
+        assertSame(4, count($requests));
+        foreach ($requests as $request) {
+            assertSame(['hooks/engine.d.ts', 'src/types.d.mts'], $request['declaration_files']);
+        }
+    }
+
+    /**
      * A batch closes exactly when the next file would take it past the byte
      * budget, and a file with no size adds nothing to the total.
      *

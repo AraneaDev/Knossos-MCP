@@ -214,7 +214,7 @@ export class TypeScriptScanner {
     /**
      * Stream deterministic owned contributions for the requested source files.
      *
-     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown}} params
+     * @param {{root: unknown, files: unknown, config_files?: unknown, limits?: unknown, typescript_versions?: unknown, declaration_files?: unknown}} params
      * @param {(contribution: object) => void} emit
      * @returns {{files_scanned: number, programs: number, programs_reused: number, input_hashes: Record<string, string|null>}}
      */
@@ -259,6 +259,7 @@ export class TypeScriptScanner {
             vueProjects: Array.isArray(params.vue_projects)
                 ? params.vue_projects
                 : [],
+            declarationFiles: declarationFilesFrom(params.declaration_files),
             packageDirectories: Array.isArray(params.package_directories)
                 ? params.package_directories.filter(
                       (directory) => typeof directory === "string",
@@ -343,24 +344,35 @@ export class TypeScriptScanner {
     #scanFallback(root, remaining, parsedConfigs, request, tally) {
         request.owner = undefined;
         request.owners = new Map();
+        // The project's declaration files, grouped as the files are: an
+        // ambient `declare module` satisfies an import only from inside the
+        // importer's program, and the files requested with it are whatever
+        // this batch or this incremental scan happened to hold.
+        const declarations = fallbackGroups(
+            root,
+            request.declarationFiles,
+            parsedConfigs,
+            request.packageDirectories,
+        );
         for (const [directory, group] of fallbackGroups(
             root,
             remaining,
             parsedConfigs,
             request.packageDirectories,
         )) {
+            const files = [
+                ...new Set([
+                    ...group.files,
+                    ...(declarations.get(directory)?.files ?? []),
+                ]),
+            ];
             tally(
                 this.#scanProgram(
                     `${directory}\0<fallback>`,
                     programConfig(
                         request,
                         directory,
-                        fallbackConfig(
-                            root,
-                            group.files,
-                            group.parsed,
-                            directory,
-                        ),
+                        fallbackConfig(root, files, group.parsed, directory),
                     ),
                     request,
                 ),
@@ -4795,6 +4807,23 @@ function assertScannablePath(relative) {
         )
     )
         throw new Error("Project-relative path is invalid.");
+}
+
+/**
+ * The project's declaration files the core listed, keeping only well-formed
+ * project-relative `.d.ts`, `.d.mts` and `.d.cts` names. They are only offered
+ * to a program; the compiler host still decides whether each may be read.
+ */
+function declarationFilesFrom(input) {
+    if (!Array.isArray(input)) return [];
+    return input.filter((relative) => {
+        try {
+            assertScannablePath(relative);
+        } catch {
+            return false;
+        }
+        return /\.d\.[cm]?ts$/.test(relative);
+    });
 }
 
 function validatedInside(root, relative) {
