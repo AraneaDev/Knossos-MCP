@@ -63,6 +63,7 @@ final class PluginCommand implements CliCommand
     private const COPIES = [
         '/hooks/hooks.json',
         '/hooks/register.tsx',
+        '/hooks/lib/activity.ts',
         '/hooks/lib/band.ts',
         '/hooks/lib/boundaries.ts',
         '/hooks/lib/changes.ts',
@@ -91,6 +92,7 @@ final class PluginCommand implements CliCommand
         '.claude-plugin/marketplace.json',
         'hooks/hooks.json',
         'hooks/register.tsx',
+        'hooks/lib/activity.ts',
         'hooks/lib/band.ts',
         'hooks/lib/boundaries.ts',
         'hooks/lib/changes.ts',

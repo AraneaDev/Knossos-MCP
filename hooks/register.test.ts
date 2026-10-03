@@ -75,6 +75,8 @@ function world(
     refuseRegister?: () => boolean | Promise<boolean>
     /** Per watcher start, the event lines it writes at once; none left: the start writes nothing and ends (no watcher offered). */
     watch?: object[][]
+    /** How long each Bash call runs on the mocked clock (a command that takes a while). */
+    bashMs?: number
   } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[]; garbled?: string[] } = {},
 ) {
@@ -230,7 +232,10 @@ function world(
   })
   // The engine's own band: an empty row, which no hook of the mod's draws.
   on('ui.render', () => ({ type: 'Box', props: { key: 'engine' }, children: [] }))
-  on('tool.call', (_$, e) => ({ result: {} as never, text: `ran ${e.tool}` }))
+  on('tool.call', async (_$, e) => {
+    if (e.tool === 'Bash' && answers.bashMs !== undefined) await clock.sleep(answers.bashMs)
+    return { result: {} as never, text: `ran ${e.tool}` }
+  })
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
   const detailRuns = () => calls.filter(c => c[2] === 'component-detail')
   const fileRuns = () => calls.filter(c => c[2] === 'file-detail')
@@ -2925,5 +2930,123 @@ describe('the live watcher', () => {
     expect(rows).not.toContain('outside')
     expect(w.ledgerRuns()).toEqual([])
     await ui.unmount()
+  })
+
+  /** The ledger since s1: Router changed by the scan that made s2, app.php by the one that made s3. */
+  const SCANNED = (over: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      ...(JSON.parse(LEDGER) as object),
+      snapshot_id: 's3',
+      files: {
+        'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http', scans: ['s2'] },
+        'src/Config/app.php': { status: 'added', dependents: 0, boundaries: [], boundary: null, scans: ['s3'] },
+      },
+      ...over,
+    })
+
+  /** The watcher noticing changes and scanning them into `snapshot`, `ms` apart. */
+  async function watcherScans(w: ReturnType<typeof world>, snapshot: string, ms = 100) {
+    w.watchSend({ event: 'changes', count: 1 })
+    w.watchSend({ event: 'scan_started', mode: 'incremental', changes: 1 })
+    await w.clock.advance(ms)
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: snapshot, parsed_files: 1 })
+    await w.clock.advance(100)
+  }
+
+  /** The Changes tab's row for each file, as drawn. */
+  async function changeRows($: Engine) {
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    const rows = [(await ui.find({ key: 'change-0' }))?.text ?? '', (await ui.find({ key: 'change-1' }))?.text ?? '']
+    await ui.unmount()
+    return rows
+  }
+
+  test("a subagent's shell edit the watcher scans while the command runs is this session's, and one scanned while it is idle is outside", async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: SCANNED() }], bashMs: 3_000 })
+    await $.session.start(START)
+    await w.clock.settle()
+    // A subagent rewrites a file with sed: no edit tool, so only the activity says whose it was.
+    const call = $.tool.call({ tool: 'Bash', command: "sed -i 's/a/b/' src/Router.php", agentId: 'sub-1' } as never)
+    await w.clock.advance(1_000)
+    await watcherScans(w, 's2')
+    await w.clock.advance(2_000)
+    await call
+    // Later, nothing of the session's running: the person's editor.
+    await w.clock.advance(20_000)
+    await watcherScans(w, 's3')
+    const [router, app] = await changeRows($)
+    expect(router).toMatch(/Router\.php.*this session/)
+    expect(app).toMatch(/app\.php.*outside/)
+  })
+
+  test("a change the watcher notices just after the session's command ended is still the session's; one seconds later is not", async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: SCANNED() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    // The main loop's formatter writes the file and ends; the watcher's poll and debounce come after.
+    await bash($, 'npx prettier --write src/Router.php')
+    await w.clock.advance(1_200)
+    await watcherScans(w, 's2')
+    // Five seconds after anything of the session's ran.
+    await w.clock.advance(5_000)
+    await watcherScans(w, 's3')
+    const [router, app] = await changeRows($)
+    expect(router).toMatch(/this session/)
+    expect(app).toMatch(/outside/)
+  })
+
+  test('a call that only waits (a subagent running, a question to the person) does not make what changes meanwhile the session\'s', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: SCANNED() }] })
+    on('tool.call', { tool: 'AskUserQuestion' }, async () => {
+      await w.clock.sleep(30_000)
+      return { result: {} as never }
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    const asking = $.tool.call({ tool: 'AskUserQuestion', questions: [] } as never)
+    await w.clock.advance(10_000)
+    // The person edits in their editor while the question waits.
+    await watcherScans(w, 's2')
+    await w.clock.advance(20_000)
+    await asking
+    const [router] = await changeRows($)
+    expect(router).toMatch(/outside/)
+  })
+
+  test("while following another session's watcher, a scan its leader began during the session's command is the session's", async ($, on) => {
+    const FOLLOWING = { event: 'following', owner_pid: 7, stale: false, same_process: false, snapshot_id: 's1' }
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[FOLLOWING]], ledger: [{ stdout: SCANNED() }], bashMs: 500 })
+    await $.session.start(START)
+    await w.clock.settle()
+    const call = bash($, "sed -i 's/a/b/' src/Router.php")
+    await w.clock.advance(1_000)
+    await call
+    // The leader's scan, seen in its lock within a poll, lands a few seconds later.
+    w.watchSend({ event: 'leader_scanning' })
+    await w.clock.advance(4_000)
+    w.watchSend({ event: 'snapshot', snapshot_id: 's2' })
+    await w.clock.advance(100)
+    // Later, with the session idle, another writer's scan lands unannounced.
+    await w.clock.advance(20_000)
+    w.watchSend({ event: 'snapshot', snapshot_id: 's3' })
+    await w.clock.advance(100)
+    const [router, app] = await changeRows($)
+    expect(router).toMatch(/this session/)
+    expect(app).toMatch(/outside/)
+  })
+
+  test("a turn brief that scanned the turn's edits itself makes its scan the session's", async ($, on) => {
+    const scanned = brief({ snapshot_id: 's3', scanned: true })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: SCANNED() }], brief: [{ stdout: scanned }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.advance(25_000)
+    expect(w.briefRuns()).toHaveLength(1)
+    // app.php was changed by the brief's own scan, not by an edit tool.
+    const [, app] = await changeRows($)
+    expect(app).toMatch(/app\.php.*this session/)
   })
 })

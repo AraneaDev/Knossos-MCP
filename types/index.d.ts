@@ -21,6 +21,8 @@ export type TurnBrief = {
   snapshot_id: string | null
   scanned_at: number | null
   scan_ms: number | null
+  /** Whether the brief scanned itself (absent from an older knossos): false when a watcher's scan already held its files. */
+  scanned?: boolean
   reason: string | null
   roots_file: string | null
   /** With `not-allowed`: the root to allow, the path itself or the ancestor project root that would be scanned. */
@@ -292,7 +294,8 @@ export type SessionLedger = {
   since?: string
   snapshot_id?: string | null
   complete: boolean
-  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null }>
+  /** `scans`: the snapshots the recorded scans that changed the file produced, the newest last (absent from an older knossos). */
+  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null; scans?: string[] }>
   files_truncated: boolean
   tests: { path: string; distance: number; js_runner?: JsRunner | null }[]
   tests_truncated: boolean
@@ -349,7 +352,8 @@ export type LiveState = { phase: 'off' | 'starting' | 'live' | 'scanning' | 'fol
 
 /** One event of the live watcher, one JSON object per line on its stdout; `no-binary` comes from the wrapper. */
 export type WatchEvent = {
-  event?: 'ready' | 'refused' | 'following' | 'leading' | 'changes' | 'scan_started' | 'scan_completed' | 'absorbed' | 'snapshot' | 'overflow' | 'error' | 'stopped'
+  /** `leader_scanning`: while following, the leading session's watcher began a scan. */
+  event?: 'ready' | 'refused' | 'following' | 'leading' | 'changes' | 'scan_started' | 'scan_completed' | 'absorbed' | 'snapshot' | 'leader_scanning' | 'overflow' | 'error' | 'stopped'
   status?: string
   snapshot_id?: string | null
   retryable?: boolean
@@ -392,6 +396,8 @@ declare module 'claude-code' {
       sessionStart: string | null
       /** The paths the session's own edit tools wrote (project-relative, or absolute before the root was known). */
       sessionEdits: string[]
+      /** The snapshots of the scans that took in changes made while the session's tools ran: whose a ledgered change was. */
+      sessionScans: string[]
     }
   }
 }

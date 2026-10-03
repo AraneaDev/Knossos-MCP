@@ -117,13 +117,15 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
 /**
  * The session's changes as the scan ledger has them: every file changed in
  * the project since the session began, whoever changed it, each labelled by
- * where its change came from (`edited`: the project-relative paths the
- * session's own edit tools wrote, in the main loop or a subagent), and the
- * tests that reach them. The turn count and the violations introduced stay
- * the turn briefs': they are the model's own, and only its own edits are
- * judged.
+ * where its change came from, and the tests that reach them. A file is the
+ * session's when its own edit tools wrote it (`edited`: project-relative
+ * paths, main loop or subagent) or when a scan that changed it took in
+ * changes noticed while the session's tools ran (`scans`: the snapshots
+ * those scans produced, see `activity.ts`); otherwise it is outside. The
+ * turn count and the violations introduced stay the turn briefs': they are
+ * the model's own, and only its own edits are judged.
  */
-export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited: ReadonlySet<string>): SessionChanges {
+export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited: ReadonlySet<string>, scans: ReadonlySet<string> = new Set()): SessionChanges {
   const tests: Record<string, number> = {}
   const runners: Record<string, JsRunner | null> = {}
   for (const t of ledger.tests) {
@@ -131,7 +133,7 @@ export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited:
     if (t.js_runner !== undefined) runners[t.path] = t.js_runner
   }
   const origins: Record<string, 'session' | 'outside'> = {}
-  for (const path of Object.keys(ledger.files)) origins[path] = edited.has(path) ? 'session' : 'outside'
+  for (const [path, file] of Object.entries(ledger.files)) origins[path] = edited.has(path) || (file.scans ?? []).some(s => scans.has(s)) ? 'session' : 'outside'
   return { turns: turns.turns, files: ledger.files, tests, js_runners: runners, violations: turns.violations, truncated: ledger.files_truncated || ledger.tests_truncated, origins }
 }
 

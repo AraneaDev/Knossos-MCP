@@ -1,6 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderSurface, Timer } from 'claude-code'
 
+import { activeBetween, begin, counts, finish, FOLLOWED_SCAN_MS, lookbackMs, noActivity, scanWindow } from './lib/activity'
+import type { Activity } from './lib/activity'
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
 import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseSessionLedger, parseTurnBrief, rescanReason } from './lib/envelopes'
@@ -92,8 +94,9 @@ const KILL_TIMEOUT_MS = 5_000
 const EMPTY_RETRY_MS = 15_000
 /** The wrapper bounds session-changes at 15 s. */
 const LEDGER_TIMEOUT_MS = 20_000
-/** The most paths kept as the session's own edits. */
+/** The most paths kept as the session's own edits, and the most snapshots kept as its own scans. */
 const EDITS_KEPT = 1_000
+const SCANS_KEPT = 1_000
 /** Why the Changes tab lists only the turn briefs' files. */
 const NO_WATCHER = "No live watcher, so only what this session's turns reported is listed."
 const LEDGER_SHORT = "The scan record does not reach back to this session's start, so only what its turns reported is listed."
@@ -129,6 +132,8 @@ const sessionLedger = atom({ plugin: 'knossos', key: 'sessionLedger' } as const,
 const sessionStart = atom({ plugin: 'knossos', key: 'sessionStart' } as const, null as string | null)
 /** The paths the session's own edit tools wrote, main loop and subagents alike: the Changes tab's "this session". */
 const sessionEdits = atom({ plugin: 'knossos', key: 'sessionEdits' } as const, [] as string[])
+/** The snapshots of the scans that took in changes made while the session's tools ran (see `lib/activity.ts`). */
+const sessionScans = atom({ plugin: 'knossos', key: 'sessionScans' } as const, [] as string[])
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -258,6 +263,14 @@ const mod = {
   turnBase: null as string | null,
   /** When the last edit was seen (mod clock, ms): the watcher needs a moment to notice it. */
   lastEditAt: 0,
+  /** When the session's tool calls ran, every loop's: whose a scanned change was. */
+  activity: noActivity() as Activity,
+  /** Numbers each call the activity keeps, so two calls never share an id. */
+  callSeq: 0,
+  /** When the scan on its way began (the watcher's `scan_started`, or the leader's while following); null when none is. */
+  scanStartedAt: null as number | null,
+  /** When the last scan the mod heard of began and landed: a change made while it ran is noticed only after it. */
+  lastScan: null as { start: number; end: number } | null,
 }
 
 /** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
@@ -464,7 +477,7 @@ async function shownChanges($: EngineInterface, root: string | null): Promise<Se
   if (ledger === null || ledger.since !== (await read($, sessionStart))) return turns
   if (!ledger.complete) return { ...turns, fallback: LEDGER_SHORT }
   const edits = (await read($, sessionEdits)).map(p => (p.startsWith('/') && root !== null ? (relativise(root, p) ?? p) : p))
-  return fromLedger(ledger, turns, new Set(edits))
+  return fromLedger(ledger, turns, new Set(edits), new Set(await read($, sessionScans)))
 }
 
 /**
@@ -639,6 +652,8 @@ async function scan($: EngineInterface): Promise<void> {
     }
   }
   if (parsed?.status === 'ok') mod.snapshot = parsed.snapshot_id ?? mod.snapshot
+  // A brief that scanned took in the turn's own edits: its scan is the session's.
+  if (parsed?.status === 'ok' && parsed.scanned === true && parsed.snapshot_id !== null) await keepScan($, parsed.snapshot_id)
   if (!(await settleBrief($, parsed, await $.clock.now())) || parsed === null) return
   const note = turnEndNote(parsed, cdFor(parsed.project_root, await read($, sessionRoot)))
   if (note !== null) await deliverNote($, note)
@@ -703,6 +718,22 @@ async function scanSafely($: EngineInterface): Promise<void> {
 /** Keeps a path the session's own edit tools wrote, for the Changes tab's "this session". */
 async function keepEdit($: EngineInterface, path: string): Promise<void> {
   await update($, sessionEdits, edits => (edits.includes(path) || edits.length >= EDITS_KEPT ? edits : [...edits, path]))
+}
+
+/** Keeps a snapshot as one the session's own work produced: every file its scan changed is this session's. */
+async function keepScan($: EngineInterface, snapshot: string): Promise<void> {
+  await update($, sessionScans, scans => (scans.includes(snapshot) ? scans : [...scans, snapshot].slice(-SCANS_KEPT)))
+}
+
+/**
+ * Whether the scan that produced `snapshot`, begun at `started` and landed
+ * at `ended`, took in changes made while the session's tools ran; keeps it
+ * as the session's when it did. Remembered as the last scan either way.
+ */
+async function attributeScan($: EngineInterface, snapshot: string, started: number, ended: number): Promise<void> {
+  const { from, to } = scanWindow(started, ended, lookbackMs(mod.watchPollMs, WATCH_DEBOUNCE_MS), mod.lastScan)
+  mod.lastScan = { start: started, end: ended }
+  if (activeBetween(mod.activity, from, to)) await keepScan($, snapshot)
 }
 
 /**
@@ -823,7 +854,9 @@ async function rescanSafely($: EngineInterface): Promise<void> {
 async function runRescan($: EngineInterface): Promise<void> {
   if (mod.disabled) return
   await update($, rescan, (): RescanState => ({ phase: 'scanning', reason: null }))
+  const started = await $.clock.now()
   const parsed = parseRescan(await exclusively(() => wrapper($, 'scan', [], RESCAN_TIMEOUT_MS)))
+  if (parsed?.status === 'ok' && typeof parsed.snapshot_id === 'string') await attributeScan($, parsed.snapshot_id, started, await $.clock.now())
   if (parsed?.status === 'no-binary') {
     await update($, rescan, (): RescanState => ({ phase: 'idle', reason: null }))
     await disable($)
@@ -959,6 +992,7 @@ async function onWatchEvent($: EngineInterface, event: WatchEvent): Promise<void
   if (after.phase !== before.phase || after.stale !== before.stale) await update($, live, () => after)
   const snapshot = snapshotOf(event)
   const moved = snapshot !== null && snapshot !== mod.snapshot
+  await attributeEvent($, event, snapshot, moved)
   if (moved) {
     mod.snapshot = snapshot
     // Coalesced with any load in flight: the last to land is the newest.
@@ -966,6 +1000,26 @@ async function onWatchEvent($: EngineInterface, event: WatchEvent): Promise<void
   }
   // What changed since the session began: read once the watcher is up, and again after each scan it saw.
   if (moved || event.event === 'ready' || event.event === 'leading' || event.event === 'following') requestLedger($)
+}
+
+/**
+ * Whose changes a watcher event's scan took in. `scan_started` (or, while
+ * following, `leader_scanning`) marks when a scan began; the watcher's own
+ * `scan_completed` lands it, and a `snapshot` or `absorbed` that moves the
+ * graph lands another writer's, begun at the mark or, unseen, a scan's time
+ * before the poll that saw it.
+ */
+async function attributeEvent($: EngineInterface, event: WatchEvent, snapshot: string | null, moved: boolean): Promise<void> {
+  const now = await $.clock.now()
+  if (event.event === 'scan_started' || event.event === 'leader_scanning') {
+    mod.scanStartedAt = now
+    return
+  }
+  const landed = event.event === 'scan_completed' || (moved && (event.event === 'snapshot' || event.event === 'absorbed'))
+  if (!landed || snapshot === null) return
+  const started = mod.scanStartedAt ?? (event.event === 'scan_completed' ? now : now - mod.watchPollMs - FOLLOWED_SCAN_MS)
+  mod.scanStartedAt = null
+  await attributeScan($, snapshot, started, now)
 }
 
 /** Resolves after `ms` on the mod's clock. */
@@ -1358,6 +1412,10 @@ export const register: Register = (on, options) => {
   mod.snapshot = null
   mod.turnBase = null
   mod.lastEditAt = 0
+  mod.activity = noActivity()
+  mod.callSeq = 0
+  mod.scanStartedAt = null
+  mod.lastScan = null
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -1384,10 +1442,25 @@ export const register: Register = (on, options) => {
       // A new session in the same process: its changes start now, at the graph as it stands.
       await update($, sessionStart, () => mod.snapshot)
       await update($, sessionEdits, () => [])
+      await update($, sessionScans, () => [])
       await update($, sessionLedger, () => null)
       await update($, changes, () => NO_CHANGES)
     }
     return next(e)
+  })
+
+  // Every call of the session's, in every loop, by any tool that does work rather than wait: while one runs
+  // (and a moment after), what the watcher scans is the session's own, whatever route the change took.
+  on('tool.call', async ($, e, next) => {
+    if (mod.disabled || !counts(e.tool)) return next(e)
+    const id = `${++mod.callSeq}`
+    begin(mod.activity, id, await $.clock.now())
+    try {
+      return await next(e)
+    } finally {
+      // A clock torn down under the call (the session ending) ends it where it began.
+      finish(mod.activity, id, await $.clock.now().catch(() => mod.activity.running.get(id) ?? 0))
+    }
   })
 
   on('tool.call', { tool: EDIT_TOOLS }, async ($, e, next) => {

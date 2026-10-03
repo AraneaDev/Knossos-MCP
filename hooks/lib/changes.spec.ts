@@ -364,6 +364,20 @@ describe('the changes since the session began, from the scan ledger', () => {
     expect(fromLedger({ ...ledger, files_truncated: true }, NO_CHANGES, new Set()).truncated).toBe(true)
   })
 
+  it("calls a file the session's when any scan that changed it took in the session's work, whatever wrote it", () => {
+    const scanned: SessionLedger = {
+      ...ledger,
+      files: {
+        'src/Router.php': { ...ledger.files['src/Router.php']!, scans: ['s1', 's4'] },
+        'src/Config/app.php': { ...ledger.files['src/Config/app.php']!, scans: ['s2'] },
+        'src/Old.php': { ...ledger.files['src/Old.php']! },
+      },
+    }
+    expect(fromLedger(scanned, NO_CHANGES, new Set(), new Set(['s4'])).origins).toEqual({ 'src/Router.php': 'session', 'src/Config/app.php': 'outside', 'src/Old.php': 'outside' })
+    // An older knossos names no scans: only the edit tools decide.
+    expect(fromLedger(scanned, NO_CHANGES, new Set(['src/Old.php']), new Set(['s2'])).origins).toEqual({ 'src/Router.php': 'outside', 'src/Config/app.php': 'session', 'src/Old.php': 'session' })
+  })
+
   it('draws the origin of every file at every width, within the width', () => {
     for (const columns of WIDTHS) {
       const rows = changesRows(changesInput(changes, ROOT), 0, columns)
