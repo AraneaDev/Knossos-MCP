@@ -145,12 +145,16 @@ final readonly class ProjectFindings
      * file and line of the offending reference. `not_evaluated` when the
      * project declares no policy or its policies cannot be compiled.
      *
+     * Beside them, the rules themselves and the files they bind
+     * ({@see PolicyScope}): what an agent reads before it edits such a file,
+     * so it can keep to a rule instead of being told it broke one.
+     *
      * @param string $root the project root, where `knossos.json` is read
-     * @return array{status: string, total: int, truncated: bool, truncation_reasons: list<string>, items: list<array<string, mixed>>}
+     * @return array<string, mixed>
      */
     public function policy(string $projectId, string $root, BoundaryLabels $labels): array
     {
-        $none = ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => []];
+        $none = ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'files' => [], 'files_truncated' => false];
         $policies = FileViolationQuery::policies($root, null);
         if ($policies === []) {
             return $none;
@@ -188,7 +192,7 @@ final readonly class ProjectFindings
                     'line' => isset($place['start_line']) ? (int) $place['start_line'] : null,
                 ];
             }, $check->data['violations']),
-        ];
+        ] + (new PolicyScope($this->pdo))->build($projectId, $policies, $labels);
     }
 
     /**
@@ -203,7 +207,7 @@ final readonly class ProjectFindings
             'boundaries' => ['items' => [], 'truncated' => false],
             'diagnostics' => ['total' => 0, 'errors' => 0, 'warnings' => 0, 'infos' => 0, 'items' => []],
             'largest_files' => [],
-            'policy' => ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => []],
+            'policy' => ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'files' => [], 'files_truncated' => false],
         ];
     }
 

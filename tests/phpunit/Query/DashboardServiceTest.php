@@ -8,6 +8,7 @@ use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\BoundaryLabels;
 use Knossos\Query\BoundaryMatrix;
 use Knossos\Query\DashboardService;
+use Knossos\Query\PolicyScope;
 use Knossos\Scan\ProjectScanService;
 use PDO;
 use Knossos\Tests\Phpunit\KnossosTestCase;
@@ -625,7 +626,7 @@ final class DashboardServiceTest extends KnossosTestCase
         [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
         try {
             $policy = (new DashboardService($pdo))->dashboard($root)['policy'];
-            assertSame(['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => []], $policy);
+            assertSame(['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'files' => [], 'files_truncated' => false], $policy);
         } finally {
             $this->removeTempTree($root);
         }
@@ -655,6 +656,43 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame('Core', $first['target_boundary']);
             assertSame('src/Edge/Caller.php', $first['path']);
             assertIsInt($first['line']);
+            // The rule itself, and the files it binds: those with a component in Edge.
+            assertSame([['id' => 'edge-stays-out-of-core', 'from' => 'Edge', 'deny' => ['Core'], 'allow' => [], 'edge_kinds' => []]], $policy['rules']);
+            assertSame(['src/Edge/Caller.php' => ['Edge']], $policy['files']);
+            assertSame(false, $policy['files_truncated']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /**
+     * Allow lists, edge kinds and `@unassigned` reach the rules as declared;
+     * a boundary named by its id reads as its name; the file cap says when it cut.
+     */
+    #[Group('query')]
+    public function testPolicyRulesNameTheirBoundariesAndCapTheBoundFiles(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $labels = BoundaryLabels::load($pdo, $projectId);
+            $coreId = (string) $pdo->query("SELECT id FROM boundaries WHERE name = 'Core'")->fetchColumn();
+            $policies = [
+                ['id' => 'edge-only-core', 'from_boundary' => 'Edge', 'allow_targets' => [$coreId, '@unassigned'], 'edge_kinds' => ['calls']],
+                ['id' => 'core-alone', 'from_boundary' => $coreId, 'deny_targets' => ['Edge']],
+            ];
+            $scope = (new PolicyScope($pdo))->build($projectId, $policies, $labels);
+            assertSame(
+                [
+                    ['id' => 'edge-only-core', 'from' => 'Edge', 'deny' => [], 'allow' => ['Core', '@unassigned'], 'edge_kinds' => ['calls']],
+                    ['id' => 'core-alone', 'from' => 'Core', 'deny' => ['Edge'], 'allow' => [], 'edge_kinds' => []],
+                ],
+                $scope['rules'],
+            );
+            assertSame(['src/Core/Greeter.php' => ['Core'], 'src/Edge/Caller.php' => ['Edge']], $scope['files']);
+            $capped = (new PolicyScope($pdo, 1))->build($projectId, $policies, $labels);
+            assertSame(['src/Core/Greeter.php' => ['Core']], $capped['files']);
+            assertSame(true, $capped['files_truncated']);
+            assertSame(2000, PolicyScope::FILE_CAP);
         } finally {
             $this->removeTempTree($root);
         }
