@@ -85,7 +85,7 @@ and red when a refresh or rescan failed.
 
 ```text
 Knossos-MCP                         ● stale · 11h  r: rescan
-10 hubs · 2 cycles · 55 dead code · 46 drifted
+7,878 components · 7 boundaries · 46 drifted · PHP JS RS
 1: Overview  2: Hubs  3: Boundaries  4: Cycles  5: Issues
 ━━━━━━━━━━━─────────────────────────────────────────────────
 
@@ -96,29 +96,62 @@ LAST TURN                         2 files → 27 deps · 4 tests
 HEALTH
    cycles       2
    max degree 161
-   dead code   55   policy ✓ 0
+   dead code   55   policy ✓ 0   diagnostics ✓ 0
 
 MOST DEPENDED ON                                          in
 ›  StableId                 core  ██████████████████████ 525
    ArchitectureQueryService core  ███████████            262
 ```
 
+The line under the project counts its components, its declared boundaries
+(every boundary when none is declared), the files drifted since the snapshot
+and its languages. A narrow pane drops the languages first.
+
 - **Overview:** the project, the snapshot's state and age, the last turn's
   impact (files, dependents, tests), health (cycles, maximum degree, dead-code
-  candidates, the last turn's policy verdict) and the five most depended-on
-  components. A trend line appears beside a figure only once there are five
-  snapshots and the figure moved; a flat line says nothing.
+  candidates, the project's policy violations and its diagnostic errors and
+  warnings) and the five most depended-on components. A trend line appears
+  beside a figure only once there are five snapshots and the figure moved; a
+  flat line says nothing.
 - **Hubs:** hubs and hotspots as one list, one row per component, with its
   boundary and its in, out and cross-boundary degree. `◆` marks a hotspot
-  that is not also a hub. Methods read `Class::method`.
-- **Boundaries, Cycles, Issues:** coming in the next builds.
+  that is not also a hub. Methods read `Class::method`. `f` opens a filter
+  field: the list narrows as you type to the components whose name holds the
+  text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
+  cross-boundary degree in turn; the bar follows the sort.
+- **Cycles:** each dependency cycle, the largest first, as a chain of its
+  members in their boundaries' colours (`a → b → c ↺`), wrapped to the
+  pane's width, with a legend of the colours. The ten largest are listed.
+- **Issues:** the declared policy violations (each with the offending file
+  and line), the scan's errors and warnings, the first ten dead-code
+  candidates (`◇` marks one only tests reach) and the five largest files.
+  The tab label carries the count of violations, errors and warnings, as in
+  `Issues ³`.
+- **Boundaries:** coming in the next build.
 
 Every action is a button, so a click works as well as its key: `1` to `5`
 switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
 Tab or the arrows onto a row), `o` or Enter opens the marked component, `b`
-goes back, `h` shows the keys. Opening a component shows its kind, location,
-boundaries and who uses it; the pane looks it up by its canonical name.
+goes back, `h` shows the keys. A component opens from the Overview, Hubs and
+Issues tabs; the pane looks it up by its canonical name.
 `/knossos-pane inspect <component>` opens the pane on one component directly.
+
+```text
+StalenessProbe                                                class · core
+src/Query/StalenessProbe.php:21
+
+USED BY 91                       edges  USES 13                      edges
+   RefreshIfStaleTest::test… tests ██ 2     DriftOracle         core ███ 1
+   McpServerAssembly::__con… core  █▌ 1     StalenessProbe::age core ███ 1
+```
+
+The detail heads with the component's name, kind, boundary, file and line.
+Below it, what uses it and what it uses, each the eight most connected with
+their boundary and how many relationships run to each, side by side from 72
+columns and one above the other below that. Every name there opens in turn.
+Annotations recorded on the component follow. Escape cannot be caught by a
+pane (it hands the keyboard back), so `b` is the way back, and the filter
+clears with `x` or an empty Enter.
 
 A count that hit a search limit reads `50+`, never `50`. When the walk that
 ranks hubs and hotspots stops at its limit (five seconds on a cold, large
