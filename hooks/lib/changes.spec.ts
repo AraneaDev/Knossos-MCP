@@ -83,6 +83,13 @@ describe('accumulate', () => {
     const again = accumulate(s, brief({ policy: { status: 'evaluated', total: 1, truncated: false, violations: [{ policy_id: 'p', source: 'App\\Core\\Kernel', target: 'App\\Http\\Router', source_boundaries: [], target_boundaries: [] }] } }))
     expect(again.violations).toHaveLength(1)
   })
+  it("keeps each script's runner from its brief, so the Changes tab runs a Jest project with Jest", () => {
+    const jest = accumulate(NO_CHANGES, brief({ tests: [{ path: 'src/a.test.js', distance: 1, js_runner: 'jest' }, { path: 'src/b.test.js', distance: 2, js_runner: null }] }))
+    expect(jest.js_runners).toEqual({ 'src/a.test.js': 'jest', 'src/b.test.js': null })
+    expect(changesInput(jest, ROOT).command).toBe('npx jest src/a.test.js')
+    // A later brief that no longer names the runner keeps the one it had.
+    expect(accumulate(jest, brief({ tests: [{ path: 'src/a.test.js', distance: 1 }] })).js_runners?.['src/a.test.js']).toBe('jest')
+  })
   it('ignores a brief that is not ok', () => {
     expect(accumulate(NO_CHANGES, brief({ status: 'scan-failed' }))).toBe(NO_CHANGES)
   })
@@ -104,14 +111,21 @@ describe('testCommand', () => {
     expect(testCommand(['tests/Support/Assertions.php'])).toBeNull()
   })
   it('picks the runner from each path and joins several', () => {
-    expect(testCommand(['hooks/lib/band.spec.ts', 'web/app.test.tsx'])).toBe('npx vitest run hooks/lib/band.spec.ts web/app.test.tsx')
+    expect(testCommand(['hooks/lib/band.spec.ts', 'web/app.test.tsx'], { 'hooks/lib/band.spec.ts': 'vitest', 'web/app.test.tsx': 'vitest' })).toBe(
+      'npx vitest run hooks/lib/band.spec.ts web/app.test.tsx',
+    )
     expect(testCommand(['tests/test_scan.py', 'pkg/walk_test.py'])).toBe('python -m pytest tests/test_scan.py pkg/walk_test.py')
     expect(testCommand(['internal/scan/walk_test.go', 'internal/scan/read_test.go', 'main_test.go'])).toBe('go test ./internal/scan .')
     expect(testCommand(['workers/rust/tests/scan.rs'])).toBe('cargo test')
-    expect(testCommand(['tests/ATest.php', 'a.spec.ts'])).toBe('vendor/bin/phpunit tests/ATest.php && npx vitest run a.spec.ts')
+    expect(testCommand(['tests/ATest.php', 'a.spec.ts'], { 'a.spec.ts': 'vitest' })).toBe('vendor/bin/phpunit tests/ATest.php && npx vitest run a.spec.ts')
+  })
+  it("runs a script with the runner the project's package.json names, and leaves out one whose runner is unknown", () => {
+    expect(testCommand(['src/a.test.js', 'web/b.spec.ts'], { 'src/a.test.js': 'jest', 'web/b.spec.ts': 'vitest' })).toBe('npx vitest run web/b.spec.ts && npx jest src/a.test.js')
+    expect(testCommand(['src/a.test.js'])).toBeNull()
+    expect(testCommand(['src/a.test.js', 'tests/ATest.php'], { 'src/a.test.js': null })).toBe('vendor/bin/phpunit tests/ATest.php')
   })
   it('quotes a path a shell would split', () => {
-    expect(testCommand(["tests/it's here/a.spec.ts"])).toBe(`npx vitest run 'tests/it'\\''s here/a.spec.ts'`)
+    expect(testCommand(["tests/it's here/a.spec.ts"], { "tests/it's here/a.spec.ts": 'vitest' })).toBe(`npx vitest run 'tests/it'\\''s here/a.spec.ts'`)
   })
   it('is null when no path names a runner', () => {
     expect(testCommand([])).toBeNull()

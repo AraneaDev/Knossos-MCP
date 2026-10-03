@@ -1,5 +1,5 @@
 import type { PolicyRule } from '../../types'
-import { runnerOf, testCommand, testsRan } from './changes'
+import { namedByCommand, runnerOf, testCommand, testsRan } from './changes'
 import type { Dashboard, FanIn, TurnBrief, Violation } from './envelopes'
 
 /**
@@ -109,8 +109,6 @@ export function readNote(
 
 /** How many tests a tests note names before `and N more`. */
 const TESTS_NAMED = 5
-/** Runners whose command names each test (its file, or its class in a filter): the command is the list. */
-const SELF_NAMING = new Set(['phpunit', 'vitest', 'pytest'])
 
 /**
  * The turn-end note on the tests that reach the turn's changes: the runnable
@@ -119,20 +117,23 @@ const SELF_NAMING = new Set(['phpunit', 'vitest', 'pytest'])
  * first, and the command that runs them all. Null when none is left.
  *
  * Tests the command already names are not listed again; those it runs by
- * package (`go test`, `cargo test`) are, at most five.
+ * package (`go test`, `cargo test`) are, at most five, and so is a script
+ * whose runner the project does not make plain: it is listed with no
+ * command, since a guessed runner may not be the project's.
  */
 export function testsNote(tests: TurnBrief['tests'], ran: string[], named: ReadonlySet<string>): { text: string; tests: string[] } | null {
   const left = [...tests]
     .filter(t => runnerOf(t.path) !== null && !named.has(t.path) && !testsRan(t.path, ran))
     .sort((a, b) => a.distance - b.distance || a.path.localeCompare(b.path))
     .map(t => t.path)
-  const command = testCommand(left)
-  if (left.length === 0 || command === null) return null
-  const listed = left.filter(t => !SELF_NAMING.has(runnerOf(t) ?? ''))
+  if (left.length === 0) return null
+  const js = Object.fromEntries(tests.filter(t => t.js_runner !== undefined).map(t => [t.path, t.js_runner ?? null]))
+  const command = testCommand(left, js)
+  const listed = left.filter(t => command === null || !namedByCommand(t, js))
   const more = listed.length > TESTS_NAMED ? ` and ${listed.length - TESTS_NAMED} more` : ''
   const names = listed.length === 0 ? '' : `: ${listed.slice(0, TESTS_NAMED).join(', ')}${more}`
   const count = left.length === 1 ? '1 test reaches' : `${left.length} tests reach`
-  return { text: `knossos: ${count} this turn's changes${names}. Run: ${command}`, tests: left }
+  return { text: `knossos: ${count} this turn's changes${names}.${command === null ? '' : ` Run: ${command}`}`, tests: left }
 }
 
 /** A violation's identity across turns: its policy and the two ends. */

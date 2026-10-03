@@ -15,7 +15,8 @@ use Throwable;
  * Reads every file's content hash, runs an incremental scan, reads them
  * again: the difference is exactly what changed on disk since the last
  * scan, whoever changed it, with no git needed. Then reports fan-in, the
- * tests that reach the changed files, and the boundary-policy violations the
+ * tests that reach the changed files (a JavaScript one with the runner its
+ * package.json names, {@see JsTestRunner}), and the boundary-policy violations the
  * turn introduced: those whose source lives in a file the caller reported as
  * edited and that were not there before the scan. Files changed by other
  * means never contribute to the policy verdict. Scans only roots the operator
@@ -94,7 +95,7 @@ final readonly class TurnBriefService
             'added_files' => $added,
             'deleted_files' => $deleted,
             'impact' => (new FileFanInQuery($this->pdo))->forPaths($scan->projectId, $live, self::TOP_DEPENDENTS),
-            'tests' => $live === [] ? [] : $this->tests($queries, $scan->projectId, $live),
+            'tests' => $live === [] ? [] : JsTestRunner::annotate($root, $this->tests($queries, $scan->projectId, $live)),
             'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($scan->projectId, $policies, $edited)),
         ] + $envelope;
     }

@@ -6,7 +6,7 @@
  * the session's running total (the mod stores it after each turn's scan);
  * the rest reads that total. Every list is capped, and a cap that bit says so.
  */
-import type { SessionChanges, TouchStatus, TurnBrief } from '../../types'
+import type { JsRunner, SessionChanges, TouchStatus, TurnBrief } from '../../types'
 import { boundaryLabel, HEADING, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
@@ -86,6 +86,7 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
       boundary: impact === undefined ? (before?.boundary ?? null) : (impact.boundary ?? null),
     }
   }
+  const runners = { ...(changes.js_runners ?? {}) }
   for (const test of brief.tests) {
     const before = tests[test.path]
     if (before === undefined && Object.keys(tests).length >= TEST_CAP) {
@@ -93,6 +94,7 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
       continue
     }
     tests[test.path] = Math.min(before ?? test.distance, test.distance)
+    if (test.js_runner !== undefined) runners[test.path] = test.js_runner
   }
   for (const v of brief.policy.violations) {
     const key = `${v.source} → ${v.target}`
@@ -102,7 +104,7 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
     }
     violations.add(key)
   }
-  return { turns: changes.turns + 1, files, tests, violations: [...violations], truncated }
+  return { turns: changes.turns + 1, files, tests, js_runners: runners, violations: [...violations], truncated }
 }
 
 /** Single-quoted for a POSIX shell when it holds anything a shell would read. */
@@ -116,7 +118,8 @@ const quote = (word: string): string => (/^[\w./@%+=:,-]+$/.test(word) ? word : 
  */
 const RUNNERS = {
   phpunit: { test: /Test\.php$/, invoked: /\b(phpunit|paratest|pest)\b|\bcomposer\s+(run(-script)?\s+)?test\b/ },
-  vitest: { test: /\.(spec|test)\.[cm]?[jt]sx?$/, invoked: /\b(vitest|jest)\b|\b(npm|yarn|pnpm)\s+(run\s+)?test(:[\w-]+)?\b/ },
+  // Vitest or Jest, as the project's package.json says (`JsRunners`).
+  js: { test: /\.(spec|test)\.[cm]?[jt]sx?$/, invoked: /\b(vitest|jest)\b|\b(npm|yarn|pnpm)\s+(run\s+)?test(:[\w-]+)?\b/ },
   pytest: { test: /(^|\/)test_[^/]*\.py$|_test\.py$/, invoked: /\bpytest\b/ },
   go: { test: /_test\.go$/, invoked: /\bgo\s+test\b/ },
   cargo: { test: /\.rs$/, invoked: /\bcargo\s+(test|nextest)\b/ },
@@ -127,17 +130,29 @@ export function runnerOf(path: string): keyof typeof RUNNERS | null {
   return (Object.keys(RUNNERS) as (keyof typeof RUNNERS)[]).find(r => RUNNERS[r].test.test(path)) ?? null
 }
 
+/** The runner of each JavaScript test as the turn brief read it from package.json; null or absent when unknown. */
+export type JsRunners = Readonly<Record<string, JsRunner | null>>
+
+/** Whether a command names `test` itself: a PHPUnit or pytest test, or a script whose runner is known. */
+export function namedByCommand(test: string, js: JsRunners = {}): boolean {
+  const runner = runnerOf(test)
+  return runner === 'phpunit' || runner === 'pytest' || (runner === 'js' && (js[test] ?? null) !== null)
+}
+
 /**
  * A command that runs `tests`, by the runner their paths call for: PHPUnit
  * for `*Test.php` (the file, or a `--filter` over the classes for several),
- * Vitest for `*.spec.*` and `*.test.*` scripts, pytest for `test_*.py` and
- * `*_test.py`, `go test` per package for `*_test.go`, `cargo test` for Rust.
+ * Vitest or Jest for `*.spec.*` and `*.test.*` scripts as the project's
+ * package.json says (`js`), pytest for `test_*.py` and `*_test.py`, `go test`
+ * per package for `*_test.go`, `cargo test` for Rust. A script whose runner is
+ * unknown is left out rather than handed to a runner that may not be there.
  * Several runners are joined with `&&`; null when no path names a runner.
  */
-export function testCommand(tests: string[]): string | null {
+export function testCommand(tests: string[], js: JsRunners = {}): string | null {
   const of = (runner: keyof typeof RUNNERS) => tests.filter(t => runnerOf(t) === runner)
   const php = of('phpunit')
-  const vitest = of('vitest')
+  const vitest = of('js').filter(t => js[t] === 'vitest')
+  const jest = of('js').filter(t => js[t] === 'jest')
   const pytest = of('pytest')
   const packageOf = (t: string) => (t.includes('/') ? `./${t.slice(0, t.lastIndexOf('/'))}` : '.')
   const go = [...new Set(of('go').map(packageOf))]
@@ -145,6 +160,7 @@ export function testCommand(tests: string[]): string | null {
   if (php.length === 1) commands.push(`vendor/bin/phpunit ${quote(php[0]!)}`)
   if (php.length > 1) commands.push(`vendor/bin/phpunit --filter ${quote(`(${[...new Set(php.map(t => baseName(t).slice(0, -4)))].join('|')})`)}`)
   if (vitest.length > 0) commands.push(`npx vitest run ${vitest.map(quote).join(' ')}`)
+  if (jest.length > 0) commands.push(`npx jest ${jest.map(quote).join(' ')}`)
   if (pytest.length > 0) commands.push(`python -m pytest ${pytest.map(quote).join(' ')}`)
   if (go.length > 0) commands.push(`go test ${go.map(quote).join(' ')}`)
   if (of('cargo').length > 0) commands.push('cargo test')
@@ -220,7 +236,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     turns: changes.turns,
     files,
     tests,
-    command: testCommand(tests.map(t => t.path)),
+    command: testCommand(tests.map(t => t.path), changes.js_runners),
     boundaries: reached.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
     violations: changes.violations.length,
     truncated: changes.truncated,

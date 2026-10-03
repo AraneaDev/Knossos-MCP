@@ -2135,7 +2135,7 @@ describe('knossos mod', () => {
   })
 
   test('look at now: e opens the riskiest file touched and t copies the test command', async ($, on) => {
-    const covered = brief({ tests: [{ path: 'hooks/lib/band.spec.ts', distance: 1 }] })
+    const covered = brief({ tests: [{ path: 'hooks/lib/band.spec.ts', distance: 1, js_runner: 'vitest' }] })
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: covered }] })
     await $.session.start(START)
     await w.clock.settle()

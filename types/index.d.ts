@@ -30,7 +30,8 @@ export type TurnBrief = {
   added_files: string[]
   deleted_files: string[]
   impact: Record<string, FanIn>
-  tests: { path: string; distance: number }[]
+  /** `js_runner` on a JavaScript test: the runner its nearest package.json names, null when that is unknown. */
+  tests: { path: string; distance: number; js_runner?: JsRunner | null }[]
   /** Violations this turn introduced; `truncated` when the check hit its cap or time limit, so `total` is a bound. */
   policy: { status: string; total: number; violations: Violation[]; truncated: boolean }
 }
@@ -66,6 +67,9 @@ export type Summary = {
   languages_truncated: boolean
 }
 export type Diagnostic = { severity: string; code: string; message: string; path: string | null; line: number | null }
+/** A JavaScript test runner the mod can hand a command for. */
+export type JsRunner = 'vitest' | 'jest'
+
 /**
  * A declared policy as a rule: `from` may not depend on `deny`, or (with
  * `allow`) only on itself and `allow`; `@unassigned` stands for code in no
@@ -219,6 +223,8 @@ export type SessionChanges = {
   /** `boundaries` are the dependents' (where a change reaches), `boundary` the file's own label. */
   files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null }>
   tests: Record<string, number>
+  /** The runner of each JavaScript test as its brief said; absent or null when unknown. */
+  js_runners?: Record<string, JsRunner | null>
   violations: string[]
   truncated: boolean
 }

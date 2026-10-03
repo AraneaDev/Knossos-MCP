@@ -78,8 +78,11 @@ the Changes tab. A test the turn already ran after its last edit is left
 out: a Bash command that runs its runner and names the test, a directory
 holding it, or no test at all (the whole suite, such as `vendor/bin/phpunit`
 or `npm run test:mod`). A test named in an earlier note is not named again.
-Tests the command names itself (PHPUnit, Vitest, pytest) are not listed
-twice:
+Tests the command names itself (PHPUnit, Vitest, Jest, pytest) are not
+listed twice. A JavaScript test runs with the runner its nearest
+`package.json` names (Vitest or Jest, in its dependencies or its `test`
+script); when that is ambiguous or unknown, the test is listed and no
+command is given for it:
 
 ```text
 knossos: 3 tests reach this turn's changes. Run: vendor/bin/phpunit --filter '(DashboardServiceTest|FileFanInQueryTest|TurnBriefServiceTest)'
@@ -211,8 +214,10 @@ and its languages. A narrow pane drops the languages first.
   dependents are in (where the changes reach), any policy violations they introduced, and the tests that
   reach them, nearest first, each once. Below, the command that runs those
   tests, chosen from their paths: `vendor/bin/phpunit` (the file, or
-  `--filter` over the test classes), `npx vitest run`, `python -m pytest`,
-  `go test` per package or `cargo test`, joined with `&&`. `c` copies it;
+  `--filter` over the test classes), `npx vitest run` or `npx jest` (as the
+  project's `package.json` says; a script whose runner is unknown is left
+  out), `python -m pytest`, `go test` per package or `cargo test`, joined
+  with `&&`. `c` copies it;
   `o` opens the marked file in your editor. The tab label counts the files.
   The list lives for the session and keeps at most 500 files and 500 tests
   (`partial` past that).

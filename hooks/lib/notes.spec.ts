@@ -118,7 +118,7 @@ describe('testsNote', () => {
   const tests = [
     { path: 'tests/Http/RouterTest.php', distance: 1 },
     { path: 'tests/Support/Helper.php', distance: 1 },
-    { path: 'hooks/lib/changes.spec.ts', distance: 2 },
+    { path: 'hooks/lib/changes.spec.ts', distance: 2, js_runner: 'vitest' as const },
   ]
   it('names the runnable tests nearest first and the command that runs them', () =>
     expect(testsNote(tests, [], new Set())).toEqual({
@@ -131,6 +131,13 @@ describe('testsNote', () => {
     )
     expect(testsNote(tests, [], new Set(['hooks/lib/changes.spec.ts']))?.tests).toEqual(['tests/Http/RouterTest.php'])
     expect(testsNote(tests, ['vendor/bin/phpunit', 'npm run test:mod'], new Set())).toBeNull()
+  })
+  it('runs a Jest project with Jest, and lists a script whose runner is unknown without a command for it', () => {
+    expect(testsNote([{ path: 'src/a.test.js', distance: 1, js_runner: 'jest' }], [], new Set())?.text).toBe("knossos: 1 test reaches this turn's changes. Run: npx jest src/a.test.js")
+    expect(testsNote([{ path: 'src/a.test.js', distance: 1, js_runner: null }], [], new Set())?.text).toBe("knossos: 1 test reaches this turn's changes: src/a.test.js.")
+    expect(testsNote([{ path: 'src/a.test.js', distance: 1 }, { path: 'tests/ATest.php', distance: 2 }], [], new Set())?.text).toBe(
+      "knossos: 2 tests reach this turn's changes: src/a.test.js. Run: vendor/bin/phpunit tests/ATest.php",
+    )
   })
   it('names no test twice: one the command names is not listed, one run by package is, five at most', () => {
     const many = Array.from({ length: 7 }, (_, i) => ({ path: `tests/T${i}Test.php`, distance: i }))
