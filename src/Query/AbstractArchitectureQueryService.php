@@ -23,7 +23,8 @@ abstract readonly class AbstractArchitectureQueryService
         'routes_to', 'calls', 'dispatches', 'handles', 'listens_to', 'constructs',
         'injects', 'binds', 'observes', 'depends_on', 'imports', 'uses_middleware',
     ];
-    protected const IMPACT_EDGE_KINDS = [
+    /** The relationships that count as one component depending on another: what a policy check and the boundary matrix walk. */
+    public const IMPACT_EDGE_KINDS = [
         'routes_to', 'calls', 'dispatches', 'handles', 'listens_to', 'constructs', 'injects',
         'binds', 'observes', 'depends_on', 'imports', 'uses_middleware', 'references',
         'extends', 'implements', 'returns', 'exports', 're_exports', 'uses_trait',

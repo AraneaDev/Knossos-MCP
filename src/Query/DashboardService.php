@@ -28,7 +28,8 @@ use PDO;
  * most 40 members as `nodes`, `nodes_truncated` when it has more), the first
  * 10 dead-code candidates with their file and line, and the counts and short
  * lists of {@see ProjectFindings} (summary, boundaries, diagnostics, largest
- * files and policy violations), whose own flags say when a figure is a floor.
+ * files and policy violations), whose own flags say when a figure is a floor,
+ * and the {@see BoundaryMatrix} over the boundaries that label components.
  */
 final readonly class DashboardService
 {
@@ -121,6 +122,7 @@ final readonly class DashboardService
             'fan_in_truncated' => count($fanIn) > $this->fanInCap,
             'summary' => $findings->summary($id),
             'boundaries' => $labels->listed(self::BOUNDARIES),
+            'boundary_matrix' => (new BoundaryMatrix($this->pdo, $this->clock))->build($id, $labels, FileViolationQuery::policies($root, null)),
             'diagnostics' => $findings->diagnostics($id),
             'largest_files' => $findings->largestFiles($id),
             'policy' => $findings->policy($id, $root, $labels),
@@ -243,6 +245,7 @@ final readonly class DashboardService
             'hubs' => [], 'hubs_truncated' => false, 'hubs_truncation_reasons' => [], 'hotspots' => [], 'dead_code_candidates' => 0, 'dead_code_truncated' => false,
             'cycles' => ['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []],
             'trend' => [], 'fan_in' => [], 'fan_in_truncated' => false, 'dead_code' => [],
+            'boundary_matrix' => ['boundaries' => [], 'members' => [], 'boundaries_truncated' => false, 'cells' => [], 'forbidden' => [], 'edges' => 0, 'truncated' => false, 'truncation_reasons' => []],
         ] + ProjectFindings::none();
     }
 }

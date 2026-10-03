@@ -6,6 +6,7 @@ namespace Knossos\Tests\Phpunit\Query;
 
 use Knossos\Query\ArchitectureQueryService;
 use Knossos\Query\BoundaryLabels;
+use Knossos\Query\BoundaryMatrix;
 use Knossos\Query\DashboardService;
 use Knossos\Scan\ProjectScanService;
 use PDO;
@@ -675,6 +676,90 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame('evaluated', $policy['status']);
             assertSame(true, $policy['truncated']);
             assertSame(['time_limit'], $policy['truncation_reasons']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Each dependency edge lands in one cell: row the source's boundary, column the target's. */
+    #[Group('query')]
+    public function testTheBoundaryMatrixCountsDependenciesBetweenBoundaries(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $d = (new DashboardService($pdo))->dashboard($root);
+            $matrix = $d['boundary_matrix'];
+            // The declared boundaries label every component the fixture has.
+            assertSame(['Core', 'Edge'], array_slice($matrix['boundaries'], 0, 2));
+            assertSame(false, $matrix['boundaries_truncated']);
+            $at = array_flip($matrix['boundaries']);
+            $labelled = array_count_values(BoundaryLabels::load($pdo, $projectId)->forProject($projectId));
+            assertSame($labelled['Core'], $matrix['members'][$at['Core']]);
+            assertSame(array_sum($labelled), array_sum($matrix['members']));
+            assertGreaterThan(0, $matrix['cells'][$at['Edge']][$at['Core']]);
+            assertSame(0, $matrix['cells'][$at['Core']][$at['Edge']]);
+            assertSame(array_sum(array_map('array_sum', $matrix['cells'])), $matrix['edges']);
+            assertCount(count($matrix['boundaries']), $matrix['cells']);
+            assertSame([], $matrix['forbidden']);
+            assertSame(false, $matrix['truncated']);
+            assertSame([], $matrix['truncation_reasons']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A denied target is one forbidden cell; an allow list forbids every other boundary but its own. */
+    #[Group('query')]
+    public function testTheBoundaryMatrixMarksTheCellsAPolicyForbids(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->denyEdgeToCore($root);
+            $this->rescan($pdo, $root);
+            $matrix = (new DashboardService($pdo))->dashboard($root)['boundary_matrix'];
+            $at = array_flip($matrix['boundaries']);
+            assertSame([[$at['Edge'], $at['Core']]], $matrix['forbidden']);
+
+            $config = json_decode((string) file_get_contents($root . '/knossos.json'), true, flags: JSON_THROW_ON_ERROR);
+            $config['policies'] = [['id' => 'core-keeps-to-itself', 'from_boundary' => 'Core', 'allow_targets' => ['Core']]];
+            file_put_contents($root . '/knossos.json', json_encode($config, JSON_THROW_ON_ERROR));
+            $matrix = (new DashboardService($pdo))->dashboard($root)['boundary_matrix'];
+            $at = array_flip($matrix['boundaries']);
+            $expected = [];
+            foreach ($matrix['boundaries'] as $column => $name) {
+                if ($name !== 'Core') {
+                    $expected[] = [$at['Core'], $column];
+                }
+            }
+            assertSame($expected, $matrix['forbidden']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The count stops at its edge budget and its time limit, and says which. */
+    #[Group('query')]
+    public function testTheBoundaryMatrixReportsTheLimitThatStoppedIt(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $labels = BoundaryLabels::load($pdo, $projectId);
+            $byEdges = (new BoundaryMatrix($pdo, maxEdges: 1))->build($projectId, $labels, []);
+            assertSame(true, $byEdges['truncated']);
+            assertSame(['edge_limit'], $byEdges['truncation_reasons']);
+            assertLessThanOrEqual(1, $byEdges['edges']);
+
+            $ticks = 0;
+            $clock = static function () use (&$ticks): int {
+                return $ticks += 10_000_000_000;
+            };
+            $byTime = (new BoundaryMatrix($pdo, $clock))->build($projectId, $labels, []);
+            // One axis only: the rest are counted past it.
+            $one = (new BoundaryMatrix($pdo))->build($projectId, $labels, [], 1);
+            assertSame(['Core'], $one['boundaries']);
+            assertSame(true, $one['boundaries_truncated']);
+            assertSame(true, $byTime['truncated']);
+            assertSame(['time_limit'], $byTime['truncation_reasons']);
         } finally {
             $this->removeTempTree($root);
         }

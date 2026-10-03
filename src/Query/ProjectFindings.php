@@ -156,7 +156,9 @@ final readonly class ProjectFindings
             return $none;
         }
         try {
-            $check = (new ArchitectureQueryService($this->pdo, $this->clock))->checkArchitecture($projectId, $policies, limit: self::VIOLATIONS);
+            // The whole project's edges: on a graph of several thousand components
+            // a one-second budget ran out on a cold read and flagged a clean project.
+            $check = (new ArchitectureQueryService($this->pdo, $this->clock))->checkArchitecture($projectId, $policies, limit: self::VIOLATIONS, timeoutMs: 5000);
         } catch (InvalidArgumentException) {
             return $none;
         }

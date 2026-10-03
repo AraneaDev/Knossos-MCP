@@ -104,6 +104,48 @@ final readonly class BoundaryLabels
     }
 
     /**
+     * The label of every node of the project that sits in a boundary, by node
+     * id, read in one query over the project's memberships.
+     *
+     * @return array<string, string>
+     */
+    public function forProject(string $projectId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT bm.node_id, bm.boundary_id FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id '
+            . 'WHERE b.project_id = :project',
+        );
+        $statement->execute(['project' => $projectId]);
+        $best = [];
+        foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$node, $boundary]) {
+            $rank = $this->ranks[(string) $boundary] ?? null;
+            if ($rank !== null && (!isset($best[(string) $node]) || $rank < $best[(string) $node])) {
+                $best[(string) $node] = $rank;
+            }
+        }
+
+        return array_map(static fn(array $rank): string => $rank[3], $best);
+    }
+
+    /**
+     * The name a policy's boundary reference stands for: a boundary id, or a
+     * name, the way the policy check resolves one. Null when it names none.
+     */
+    public function nameOf(string $reference): ?string
+    {
+        if (isset($this->ranks[$reference])) {
+            return $this->ranks[$reference][3];
+        }
+        foreach ($this->ranks as $rank) {
+            if ($rank[3] === $reference) {
+                return $reference;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The project's boundaries as the pane lists them, with their member
      * counts: declared first, a repository-wide one last, then the largest.
      * `truncated` when more boundaries exist than are listed.
