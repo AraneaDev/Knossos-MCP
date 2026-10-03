@@ -4,9 +4,12 @@
  *
  * Pure, like the rest of the layout. `accumulate` folds one `ok` brief into
  * the session's running total (the mod stores it after each turn's scan);
- * the rest reads that total. Every list is capped, and a cap that bit says so.
+ * `fromLedger` puts in its place everything the scan ledger says changed in
+ * the project since the session began, whoever changed it, while a live
+ * watcher keeps that ledger; the rest reads either. Every list is capped,
+ * and a cap that bit says so.
  */
-import type { JsRunner, SessionChanges, TouchStatus, TurnBrief } from '../../types'
+import type { JsRunner, SessionChanges, SessionLedger, TouchStatus, TurnBrief } from '../../types'
 import { ACCENT, boundaryLabel, HEADING, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
@@ -18,6 +21,7 @@ import {
   dimRow,
   grouped,
   numberWidth,
+  padEnd,
   plural,
   sectionRow,
   sectionWidth,
@@ -42,6 +46,9 @@ const TESTS_SHOWN = 8
 const REACH_SHOWN = 3
 /** Paths longer than this are cut from the front in a table. */
 const PATH_MAX = 56
+/** Where a file's change came from, as the Changes tab labels it. */
+const ORIGIN_LABELS = { session: 'this session', outside: 'outside' } as const
+const ORIGIN_WIDTH = Math.max(...Object.values(ORIGIN_LABELS).map(l => l.length))
 
 export const NO_CHANGES: SessionChanges = { turns: 0, files: {}, tests: {}, violations: [], truncated: false }
 
@@ -105,6 +112,27 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
     violations.add(key)
   }
   return { turns: changes.turns + 1, files, tests, js_runners: runners, violations: [...violations], truncated }
+}
+
+/**
+ * The session's changes as the scan ledger has them: every file changed in
+ * the project since the session began, whoever changed it, each labelled by
+ * where its change came from (`edited`: the project-relative paths the
+ * session's own edit tools wrote, in the main loop or a subagent), and the
+ * tests that reach them. The turn count and the violations introduced stay
+ * the turn briefs': they are the model's own, and only its own edits are
+ * judged.
+ */
+export function fromLedger(ledger: SessionLedger, turns: SessionChanges, edited: ReadonlySet<string>): SessionChanges {
+  const tests: Record<string, number> = {}
+  const runners: Record<string, JsRunner | null> = {}
+  for (const t of ledger.tests) {
+    tests[t.path] = t.distance
+    if (t.js_runner !== undefined) runners[t.path] = t.js_runner
+  }
+  const origins: Record<string, 'session' | 'outside'> = {}
+  for (const path of Object.keys(ledger.files)) origins[path] = edited.has(path) ? 'session' : 'outside'
+  return { turns: turns.turns, files: ledger.files, tests, js_runners: runners, violations: turns.violations, truncated: ledger.files_truncated || ledger.tests_truncated, origins }
 }
 
 /** Single-quoted for a POSIX shell when it holds anything a shell would read. */
@@ -214,7 +242,7 @@ export function rankIn(hues: Hues): (boundary: string) => number {
   return b => (order.includes(b) ? order.indexOf(b) : order.length)
 }
 
-export type TouchedFile = { path: string; status: TouchStatus; boundary: string | null; dependents: number; loc: Loc | null }
+export type TouchedFile = { path: string; status: TouchStatus; boundary: string | null; dependents: number; loc: Loc | null; origin?: 'session' | 'outside' }
 export type ChangesInput = {
   turns: number
   /** Most dependents first. */
@@ -226,6 +254,10 @@ export type ChangesInput = {
   boundaries: string[]
   violations: number
   truncated: boolean
+  /** Whether the files are every change since the session began (from the scan ledger), each with its origin. */
+  sinceStart: boolean
+  /** Why only the turn briefs' files are listed, when that is so. */
+  fallback: string | null
 }
 
 /**
@@ -241,6 +273,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
       boundary: f.boundary ?? null,
       dependents: f.dependents,
       loc: f.status === 'deleted' ? null : locIn(root, path),
+      ...(changes.origins === undefined ? {} : { origin: changes.origins[path] ?? 'outside' }),
     }))
     .sort((a, b) => b.dependents - a.dependents || a.path.localeCompare(b.path))
   const tests = Object.entries(changes.tests)
@@ -256,6 +289,8 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     boundaries: reached.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
     violations: changes.violations.length,
     truncated: changes.truncated,
+    sinceStart: changes.origins !== undefined,
+    fallback: changes.fallback ?? null,
   }
 }
 
@@ -341,29 +376,39 @@ export function statusMark(status: TouchStatus): Segment {
  */
 export function changesRows(input: ChangesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] {
   const rows: Row[] = [blank('gap-changes')]
+  const said = (key: string, text: string) => wrapWords(text, Math.max(1, columns - 3)).forEach((line, i) => rows.push(dimRow(`${key}-${i}`, `   ${line}`, columns)))
   if (input.files.length === 0) {
     rows.push(sectionRow('changes-head', 'Changes this session', '', columns))
-    wrapWords("Nothing yet. The files Claude edits show here after each turn's scan, with what depends on them and the tests that reach them.", Math.max(1, columns - 3)).forEach(
-      (line, i) => rows.push(dimRow(`changes-none-${i}`, `   ${line}`, columns)),
+    if (input.fallback !== null) said('changes-fallback', input.fallback)
+    said(
+      'changes-none',
+      input.sinceStart
+        ? 'Nothing changed in this project since this session began.'
+        : "Nothing yet. The files Claude edits show here after each turn's scan, with what depends on them and the tests that reach them.",
     )
     return rows
   }
   const deps = input.files.reduce((n, f) => n + f.dependents, 0)
-  const spec = tableSpec(columns, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents))], PATH_MAX)
+  // Every change since the session began says where it came from, in a column of its own at the end.
+  const origin = input.sinceStart && columns > ORIGIN_WIDTH + 20 ? ORIGIN_WIDTH + 1 : 0
+  const spec = tableSpec(columns - origin, input.files.map(f => f.path), input.files.map(f => boundaryLabel(f.boundary)), [numberWidth('deps', input.files.map(f => f.dependents))], PATH_MAX)
   const max = Math.max(0, ...input.files.map(f => f.dependents))
-  const note = `${plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
-  rows.push(sectionRow('changes-head', 'Changes this session', note, sectionWidth(specWidth(spec), 'Changes this session', note, columns)))
+  const note = `${input.sinceStart ? 'since it began' : plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
+  rows.push(sectionRow('changes-head', 'Changes this session', note, sectionWidth(specWidth(spec) + origin, 'Changes this session', note, columns)))
+  if (input.fallback !== null) said('changes-fallback', input.fallback)
   // What the changes reach: the dependents, and every boundary they are in, each in its colour.
   rows.push(...reachRows('changes-reach', `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, input.boundaries, columns, hues))
   if (input.violations > 0) {
     rows.push({ key: 'changes-policy', segments: [{ text: '   ' }, { text: `▲ ${plural(input.violations, 'policy violation', 'policy violations')} introduced`, color: STATUS_COLOURS.alert }] })
   }
-  rows.push(tableHead('changes-cols', spec, { name: 'file', boundary: 'boundary', numbers: ['deps'] }))
-  input.files.forEach((f, i) =>
-    rows.push(
-      tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), cutStart: true, press: `row:${i}` }, spec, hues),
-    ),
-  )
+  const head = tableHead('changes-cols', spec, { name: 'file', boundary: 'boundary', numbers: ['deps'] })
+  rows.push(origin === 0 ? head : { ...head, segments: [...head.segments, { text: ` ${padEnd('from', ORIGIN_WIDTH)}`, dim: true }] })
+  input.files.forEach((f, i) => {
+    const line = tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), cutStart: true, press: `row:${i}` }, spec, hues)
+    if (origin === 0 || f.origin === undefined) return rows.push(line)
+    const label: Segment = f.origin === 'session' ? { text: padEnd(ORIGIN_LABELS.session, ORIGIN_WIDTH), color: ACCENT } : { text: padEnd(ORIGIN_LABELS.outside, ORIGIN_WIDTH), dim: true }
+    return rows.push({ ...line, segments: [...line.segments, { text: ' ' }, label] })
+  })
   rows.push(blank('gap-tests'), ...testRows(input, columns, hues))
   return rows
 }

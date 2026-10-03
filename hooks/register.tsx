@@ -3,8 +3,9 @@ import type { Elements, EngineInterface, Register, RenderSurface, Timer } from '
 
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
-import type { TurnBrief } from './lib/envelopes'
+import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseSessionLedger, parseTurnBrief, rescanReason } from './lib/envelopes'
+import type { SessionLedger, TurnBrief } from './lib/envelopes'
+import { fromLedger } from './lib/changes'
 import {
   accumulate,
   allowInput,
@@ -89,6 +90,13 @@ const FINAL_ENDS: readonly string[] = ['prompt_input_exit', 'logout', 'other']
 const KILL_TIMEOUT_MS = 5_000
 /** How often the pane with no figures, after a load that failed, asks for the dashboard again. */
 const EMPTY_RETRY_MS = 15_000
+/** The wrapper bounds session-changes at 15 s. */
+const LEDGER_TIMEOUT_MS = 20_000
+/** The most paths kept as the session's own edits. */
+const EDITS_KEPT = 1_000
+/** Why the Changes tab lists only the turn briefs' files. */
+const NO_WATCHER = "No live watcher, so only what this session's turns reported is listed."
+const LEDGER_SHORT = "The scan record does not reach back to this session's start, so only what its turns reported is listed."
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -115,6 +123,12 @@ const changes = atom({ plugin: 'knossos', key: 'changes' } as const, NO_CHANGES 
 const sessionRoot = atom({ plugin: 'knossos', key: 'sessionRoot' } as const, null as string | null)
 /** The live watcher, as the header shows it. */
 const live = atom({ plugin: 'knossos', key: 'live' } as const, LIVE_OFF as LiveState)
+/** Everything the scan ledger says changed in the project since the session began, whoever changed it; null until read. */
+const sessionLedger = atom({ plugin: 'knossos', key: 'sessionLedger' } as const, null as SessionLedger | null)
+/** The snapshot the graph was at when the session began. */
+const sessionStart = atom({ plugin: 'knossos', key: 'sessionStart' } as const, null as string | null)
+/** The paths the session's own edit tools wrote, main loop and subagents alike: the Changes tab's "this session". */
+const sessionEdits = atom({ plugin: 'knossos', key: 'sessionEdits' } as const, [] as string[])
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -153,6 +167,8 @@ const mod = {
   dashboardFlight: null as SingleFlight | null,
   /** Whether the latest dashboard load stored what it read. */
   dashboardStored: false,
+  /** Reads of the changes since the session began, one at a time, a request during one coalescing into one more. */
+  ledgerFlight: null as SingleFlight | null,
   /** What the band last drew, or null when it drew nothing: the age tick compares against it. */
   bandText: null as string | null,
   /** The pane's header status as last drawn, or null when the pane drew none: the age tick compares against it too. */
@@ -405,9 +421,50 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   await update($, refresh, (): RefreshState => ({ fetchedAt: now, failed: false }))
   mod.dashboardStored = true
   if (parsed.status === 'ok') mod.snapshot = parsed.snapshot_id ?? mod.snapshot
+  // The session's changes are read since the first snapshot it saw.
+  if (parsed.status === 'ok' && parsed.snapshot_id !== null && (await read($, sessionStart)) === null) await update($, sessionStart, () => parsed.snapshot_id)
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown)
+}
+
+/**
+ * Asks for the changes since the session began again (from the scan ledger),
+ * coalesced with a read in flight. Only while a watcher keeps that ledger:
+ * without one the Changes tab shows the turn briefs. Called from the
+ * watcher's loop and after a turn's brief, never inside a render.
+ */
+function requestLedger($: EngineInterface): void {
+  if (mod.disabled || mod.watcher === null) return
+  void (mod.ledgerFlight ??= new SingleFlight(() => loadLedger($))).request().catch(() => undefined)
+}
+
+/** One read of the changes since the session began; silence or an error keeps the last one. */
+async function loadLedger($: EngineInterface): Promise<void> {
+  const since = await read($, sessionStart)
+  if (since === null || mod.disabled) return
+  const parsed = parseSessionLedger(await wrapper($, 'session-changes', [`--since=${since}`], LEDGER_TIMEOUT_MS))
+  if (parsed?.status === 'no-binary') return disable($)
+  if (parsed?.status !== 'ok') return
+  // A session that began again (a /clear) while this read ran reads since its own start.
+  if ((await read($, sessionStart)) === since) await update($, sessionLedger, () => parsed)
+}
+
+/**
+ * The session's changes as the Changes tab and "Look at now" show them:
+ * while a watcher keeps the scan ledger, everything that changed since the
+ * session began, whoever changed it, each file labelled by whether the
+ * session's own edits made it; otherwise what the turn briefs reported, with
+ * why. The notes to the model never read this: they stay the turns' own.
+ */
+async function shownChanges($: EngineInterface, root: string | null): Promise<SessionChanges> {
+  const turns = await read($, changes)
+  if (mod.watcher === null || !isWatching(await read($, live))) return { ...turns, fallback: NO_WATCHER }
+  const ledger = await read($, sessionLedger)
+  if (ledger === null || ledger.since !== (await read($, sessionStart))) return turns
+  if (!ledger.complete) return { ...turns, fallback: LEDGER_SHORT }
+  const edits = (await read($, sessionEdits)).map(p => (p.startsWith('/') && root !== null ? (relativise(root, p) ?? p) : p))
+  return fromLedger(ledger, turns, new Set(edits))
 }
 
 /**
@@ -585,6 +642,8 @@ async function scan($: EngineInterface): Promise<void> {
   if (!(await settleBrief($, parsed, await $.clock.now())) || parsed === null) return
   const note = turnEndNote(parsed, cdFor(parsed.project_root, await read($, sessionRoot)))
   if (note !== null) await deliverNote($, note)
+  // The brief's own scan is in the ledger too.
+  requestLedger($)
   await refreshDashboard($)
 }
 
@@ -641,6 +700,11 @@ async function scanSafely($: EngineInterface): Promise<void> {
   }
 }
 
+/** Keeps a path the session's own edit tools wrote, for the Changes tab's "this session". */
+async function keepEdit($: EngineInterface, path: string): Promise<void> {
+  await update($, sessionEdits, edits => (edits.includes(path) || edits.length >= EDITS_KEPT ? edits : [...edits, path]))
+}
+
 /**
  * Records an edit that landed inside the project, with `base` (the snapshot
  * from before it) as the turn's start when the turn has none yet. Resolves
@@ -658,6 +722,7 @@ async function noteEdit($: EngineInterface, reported: string, base: string | nul
     mod.dirty = true
     mod.edited.add(path)
     mod.turnBase ??= base
+    await keepEdit($, path)
     return null
   }
   const relative = relativise(root, path)
@@ -665,6 +730,7 @@ async function noteEdit($: EngineInterface, reported: string, base: string | nul
   mod.dirty = true
   mod.edited.add(relative)
   mod.turnBase ??= base
+  await keepEdit($, relative)
   const entry = fanInIndex(current).get(relative)
   return entry === undefined || entry.dependent_files < mod.threshold ? null : { text: editNote(entry), path: relative }
 }
@@ -892,11 +958,14 @@ async function onWatchEvent($: EngineInterface, event: WatchEvent): Promise<void
   const after = liveAfter(event, before)
   if (after.phase !== before.phase || after.stale !== before.stale) await update($, live, () => after)
   const snapshot = snapshotOf(event)
-  if (snapshot !== null && snapshot !== mod.snapshot) {
+  const moved = snapshot !== null && snapshot !== mod.snapshot
+  if (moved) {
     mod.snapshot = snapshot
     // Coalesced with any load in flight: the last to land is the newest.
     void refreshDashboard($).catch(() => undefined)
   }
+  // What changed since the session began: read once the watcher is up, and again after each scan it saw.
+  if (moved || event.event === 'ready' || event.event === 'leading' || event.event === 'following') requestLedger($)
 }
 
 /** Resolves after `ms` on the mod's clock. */
@@ -926,7 +995,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const v = await read($, view)
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
-  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await read($, changes), await read($, sessionRoot), await read($, live))
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await shownChanges($, d.project_root), await read($, sessionRoot), await read($, live))
 }
 
 /** The rows the selection walks on what the pane shows, from state. */
@@ -1253,6 +1322,7 @@ export const register: Register = (on, options) => {
   mod.scanning = Promise.resolve()
   mod.dashboardFlight = null
   mod.dashboardStored = false
+  mod.ledgerFlight = null
   mod.bandText = null
   mod.paneText = null
   mod.emptyShown = false
@@ -1311,6 +1381,11 @@ export const register: Register = (on, options) => {
     } else {
       mod.watchFailures = 0
       mod.watchRetryAt = 0
+      // A new session in the same process: its changes start now, at the graph as it stands.
+      await update($, sessionStart, () => mod.snapshot)
+      await update($, sessionEdits, () => [])
+      await update($, sessionLedger, () => null)
+      await update($, changes, () => NO_CHANGES)
     }
     return next(e)
   })

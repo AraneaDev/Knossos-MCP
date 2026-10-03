@@ -270,6 +270,32 @@ export type SessionChanges = {
   js_runners?: Record<string, JsRunner | null>
   violations: string[]
   truncated: boolean
+  /**
+   * Set when the files and tests come from the scan ledger (every change in
+   * the project since the session began, whoever made it) rather than from
+   * the turn briefs: where each file's change came from, `session` for the
+   * session's own edit tools (main loop or subagent), `outside` otherwise.
+   */
+  origins?: Record<string, 'session' | 'outside'>
+  /** Why the view is the turn briefs' only (no live watcher, or a ledger that does not reach back far enough); absent when it is not. */
+  fallback?: string
+}
+
+/**
+ * The `session-changes` subcommand's answer: every file a recorded scan
+ * changed since the session's first snapshot, as the graph holds it now, with
+ * its dependents and boundaries, and the tests that reach them. `complete`
+ * false (and no files) when the ledger cannot account for every scan since.
+ */
+export type SessionLedger = {
+  status: 'ok' | 'unscanned' | 'error' | 'no-binary'
+  since?: string
+  snapshot_id?: string | null
+  complete: boolean
+  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[]; boundary: string | null }>
+  files_truncated: boolean
+  tests: { path: string; distance: number; js_runner?: JsRunner | null }[]
+  tests_truncated: boolean
 }
 
 /** The degree the hubs tab sorts by, most first. */
@@ -315,9 +341,10 @@ export type RescanState = { phase: 'idle' | 'scanning' | 'failed'; reason: strin
  * `starting` until it says it is ready, `live` while it watches,
  * `scanning` while its scan runs, `following` while another session's
  * watcher leads (this one only reads the snapshot), `off` when there is
- * none (switched off, refused, not offered, or stopped).
+ * none (switched off, refused, not offered, or stopped). `stale` while
+ * following a leader whose heartbeat stopped (its watcher is stuck or gone
+ * quiet).
  */
-/** `stale`: following a leader whose heartbeat stopped (its watcher is stuck or gone quiet). */
 export type LiveState = { phase: 'off' | 'starting' | 'live' | 'scanning' | 'following'; stale?: true }
 
 /** One event of the live watcher, one JSON object per line on its stdout; `no-binary` comes from the wrapper. */
@@ -359,6 +386,12 @@ declare module 'claude-code' {
       /** The session's root with its links followed, or null before it is known: where a copied command runs. */
       sessionRoot: string | null
       live: LiveState
+      /** What the scan ledger says changed since the session began, as last read; null before the first read. */
+      sessionLedger: SessionLedger | null
+      /** The snapshot the graph was at when the session began: what `session-changes` reads since. */
+      sessionStart: string | null
+      /** The paths the session's own edit tools wrote (project-relative, or absolute before the root was known). */
+      sessionEdits: string[]
     }
   }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Dashboard, KnossosView, SessionChanges, TurnBrief } from '../../types'
-import { accumulate, cdFor, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, testCommand, testsRan } from './changes'
+import type { Dashboard, KnossosView, SessionChanges, SessionLedger, TurnBrief } from '../../types'
+import { accumulate, cdFor, changesInput, changesList, changesRows, FILE_CAP, fromLedger, lookAtOf, lookAtRows, NO_CHANGES, testCommand, testsRan } from './changes'
 import { editTarget, paneInput, paneRows } from './layout'
 import { fileHref, linkMarkdown, locOf, plainText, rowWidth } from './rows'
 import type { Row } from './rows'
@@ -336,5 +336,49 @@ describe('testsRan', () => {
     expect(testsRan('pkg/a/x_test.go', ['go test ./...'])).toBe(true)
     expect(testsRan('src/lib.rs', ['cargo test'])).toBe(true)
     expect(testsRan('docs/readme.md', ['vendor/bin/phpunit'])).toBe(false)
+  })
+})
+
+describe('the changes since the session began, from the scan ledger', () => {
+  const ledger: SessionLedger = {
+    status: 'ok',
+    since: 's0',
+    snapshot_id: 's9',
+    complete: true,
+    files: {
+      'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http' },
+      'src/Config/app.php': { status: 'added', dependents: 0, boundaries: [], boundary: null },
+      'src/Old.php': { status: 'deleted', dependents: 0, boundaries: [], boundary: null },
+    },
+    files_truncated: false,
+    tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }],
+    tests_truncated: false,
+  }
+  const changes = fromLedger(ledger, session(), new Set(['src/Router.php']))
+
+  it("labels each file by where its change came from, and keeps the turns' own violations", () => {
+    expect(changes.origins).toEqual({ 'src/Router.php': 'session', 'src/Config/app.php': 'outside', 'src/Old.php': 'outside' })
+    expect(changes.violations).toEqual(session().violations)
+    expect(changes.tests).toEqual({ 'tests/Http/RouterTest.php': 1 })
+    expect(fromLedger({ ...ledger, files_truncated: true }, NO_CHANGES, new Set()).truncated).toBe(true)
+  })
+
+  it('draws the origin of every file at every width, within the width', () => {
+    for (const columns of WIDTHS) {
+      const rows = changesRows(changesInput(changes, ROOT), 0, columns)
+      for (const r of rows) expect(rowWidth(r), `${columns}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+      const text = textOf(rows)
+      expect(text).toContain('since it began')
+      for (const key of ['change-0', 'change-1', 'change-2']) expect(plainText(row(rows, key)!)).toMatch(/(this session|outside) *$/)
+      expect(plainText(row(rows, 'change-0')!)).toMatch(/this session *$/)
+    }
+  })
+
+  it('says why only the turns are listed when it falls back, and what an empty ledger means', () => {
+    const fallback = changesRows(changesInput({ ...session(), fallback: 'No live watcher: only what this session\'s turns reported.' }, ROOT), 0, 60)
+    expect(textOf(fallback)).toContain('No live watcher')
+    expect(textOf(fallback)).toContain('2 turns')
+    const empty = changesRows(changesInput(fromLedger({ ...ledger, files: {}, tests: [] }, NO_CHANGES, new Set()), ROOT), 0, 60)
+    expect(textOf(empty)).toContain('Nothing changed in this project since this session began.')
   })
 })

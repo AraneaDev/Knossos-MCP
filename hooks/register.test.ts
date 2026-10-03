@@ -69,6 +69,8 @@ function world(
     file?: Answer[]
     scan?: Answer[]
     allow?: Answer[]
+    /** What `session-changes` answers: the scan ledger's changes since the session began. */
+    ledger?: Answer[]
     editor?: 'opens' | 'missing'
     refuseRegister?: () => boolean | Promise<boolean>
     /** Per watcher start, the event lines it writes at once; none left: the start writes nothing and ends (no watcher offered). */
@@ -86,6 +88,7 @@ function world(
     file: answers.file ?? [{ stdout: '' }],
     scan: answers.scan ?? [{ stdout: '{"status":"ok"}' }],
     allow: answers.allow ?? [{ stdout: '{"path":"/repo","roots_file":"/data/roots.json","added":true}' }],
+    ledger: answers.ledger ?? [{ stdout: '' }],
   }
   /** Every prompt submitted, and every copy with the surface it was for. */
   const prompts: string[] = []
@@ -216,7 +219,9 @@ function world(
               ? queues.scan
               : sub === 'allow-root'
                 ? queues.allow
-                : queues.brief
+                : sub === 'session-changes'
+                  ? queues.ledger
+                  : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -234,7 +239,8 @@ function world(
   const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
   const editorRuns = () => calls.filter(c => c[0] === 'code')
   const kills = () => calls.filter(c => c[0] === 'kill')
-  return { kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  const ledgerRuns = () => calls.filter(c => c[2] === 'session-changes')
+  return { ledgerRuns, kills, watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -2866,5 +2872,58 @@ describe('the live watcher', () => {
     await w.clock.advance(3_000)
     expect(w.briefRuns()).toHaveLength(1)
     expect(w.briefRuns()[0]).toContain('--since=s2')
+  })
+
+  const LEDGER = JSON.stringify({
+    status: 'ok',
+    path: ROOT,
+    project_root: ROOT,
+    project_id: 'p1',
+    snapshot_id: 's2',
+    since: 's1',
+    complete: true,
+    files: {
+      'src/Router.php': { status: 'changed', dependents: 41, boundaries: ['Http'], boundary: 'Http' },
+      'src/Config/app.php': { status: 'added', dependents: 0, boundaries: [], boundary: null },
+    },
+    files_truncated: false,
+    tests: [{ path: 'tests/RouterTest.php', distance: 1 }],
+    tests_truncated: false,
+  })
+
+  test('the Changes tab lists every change since the session began, each labelled this session or outside', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]], ledger: [{ stdout: LEDGER }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    // A subagent's edit is the session's own as much as the main loop's.
+    await $.tool.call({ tool: 'Edit', file_path: `${ROOT}/src/Router.php`, old_string: 'a', new_string: 'b', agentId: 'sub-1' } as never)
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 2 })
+    await w.clock.advance(100)
+    expect(w.ledgerRuns().at(-1)).toContain('--since=s1')
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    const rows = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+    expect(rows).toContain('since it began')
+    expect((await ui.find({ key: 'change-0' }))?.text).toMatch(/Router\.php.*this session/)
+    expect((await ui.find({ key: 'change-1' }))?.text).toMatch(/app\.php.*outside/)
+    expect(rows).not.toContain('No live watcher')
+    await ui.unmount()
+  })
+
+  test('without a watcher the Changes tab falls back to the turns and says so', { options: { watch: false } }, async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], ledger: [{ stdout: LEDGER }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    const rows = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+    expect(rows).toContain('No live watcher')
+    expect(rows).toContain('1 turn')
+    expect(rows).not.toContain('outside')
+    expect(w.ledgerRuns()).toEqual([])
+    await ui.unmount()
   })
 })

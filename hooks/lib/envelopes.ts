@@ -1,8 +1,8 @@
-import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, SessionLedger, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
-export type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, TurnBrief, Violation }
+export type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, SessionLedger, TurnBrief, Violation }
 
 // `no-binary` is the wrapper's own answer when there is nothing to run; every envelope may be it.
 const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
@@ -17,6 +17,8 @@ const DETAIL_ARRAYS = ['candidates']
 const DETAIL_OBJECTS = ['component']
 const FILE = new Set(['ok', 'unscanned', 'not-found', 'error', 'no-binary'])
 const FILE_OBJECTS = ['file']
+const LEDGER_ARRAYS = ['tests']
+const LEDGER_OBJECTS = ['files']
 const RESCAN = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
 
 const isObject = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -45,6 +47,12 @@ function parse(
 /** A turn brief from the wrapper's stdout; null for silence or anything unexpected. */
 export function parseTurnBrief(stdout: string): TurnBrief | null {
   return parse(stdout, BRIEF, BRIEF_ARRAYS, BRIEF_OBJECTS) as TurnBrief | null
+}
+
+/** The changes since the session began from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseSessionLedger(stdout: string): SessionLedger | null {
+  const parsed = parse(stdout, DASH, LEDGER_ARRAYS, LEDGER_OBJECTS) as SessionLedger | null
+  return parsed === null || (parsed.status === 'ok' && typeof parsed.complete !== 'boolean') ? null : parsed
 }
 
 /** A dashboard from the wrapper's stdout; null for silence or anything unexpected. */
