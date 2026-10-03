@@ -231,6 +231,8 @@ function sampleSession(d, first) {
 const NOW = Date.now()
 const BASE_VIEW = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
 const IDLE = { phase: 'idle', reason: null }
+/** The live watcher is on by default: the pane's header says so while the graph is fresh. */
+const LIVE = { phase: 'live' }
 const FETCHED = { fetchedAt: NOW, failed: false }
 const detail = detailOf(dashboard)
 const fileDetail = fileDetailOf(dashboard)
@@ -240,8 +242,8 @@ const root = dashboard.project_root ?? PROJECT
 const refused = { ...brief, status: 'not-allowed', refused_root: root, roots_file: join(DATA_DIR, 'roots.json') }
 
 /** The pane for a state: the view over BASE_VIEW, and what else the state holds. */
-function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null } = {}) {
-  const input = layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes)
+function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE } = {}) {
+  const input = layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live)
   return columns => layout.paneRows(input, columns)
 }
 
@@ -250,10 +252,14 @@ function bandRows(cases) {
   const tones = { alert: 'error', warn: 'warning', normal: 'inactive' }
   return columns =>
     cases.flatMap(([key, b, job], i) => {
-      const model = band.bandModel(b, job, NOW, palette.declaredOf(dashboard))
+      const model = band.bandModel(b, job, NOW, palette.declaredOf(dashboard), palette.huesOf(dashboard))
       if (model === null) return []
-      const segments = [{ text: `${model.text} `, color: tones[model.tone] }]
+      // As the band hook: the text gives way to the buttons, each `[ label ]` and a space.
+      const labels = [...(model.showDetails ? ['details'] : []), ...(model.copy === undefined ? [] : ['copy']), 'hide']
+      const room = Math.max(1, columns - labels.reduce((n, l) => n + l.length + 5, 0) - 1)
+      const segments = [{ text: `${rows.fit(model.text, room)} `, color: tones[model.tone] }]
       if (model.showDetails) segments.push(rows.button('details', 'details'), { text: ' ' })
+      if (model.copy !== undefined) segments.push(rows.button('copy', 'copy'), { text: ' ' })
       segments.push(rows.button('hide', 'hide'))
       const row = { key, segments }
       const fitted = rows.rowWidth(row) <= columns ? row : { ...row, segments: rows.clip(segments, columns) }
@@ -305,6 +311,9 @@ const VIEWS = [
   ['allow-offer', pane({ tab: 'overview' }, { turn: refused })],
   ['allow-confirm', pane({ tab: 'overview' }, { turn: refused, allow: { phase: 'confirming', root, reason: null } })],
   ['scanning', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'scanning', reason: null } })],
+  ['live-scanning', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'scanning' } })],
+  ['live-following', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'following' } })],
+  ['live-off', pane({ tab: 'overview' }, { turn: brief, live: { phase: 'off' } })],
   ['refresh-failed', pane({ tab: 'overview' }, { turn: brief, refresh: { fetchedAt: NOW - 600_000, failed: true } })],
   ['rescan-failed', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'failed', reason: 'the scan timed out' } })],
   ['no-data', columns => layout.emptyRows(null, columns)],
