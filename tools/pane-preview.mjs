@@ -10,9 +10,12 @@
  *
  * It lays the pane out with the mod's own pure functions (hooks/lib) over
  * this repository's real dashboard, read through the mod's wrapper, and draws
- * every tab plus a component's detail at 60 and 100 columns in Claude Code's
- * dark and light themes. Rows the terminal draws as a `Raster` are drawn
- * from the packed cells exactly as the engine would receive them.
+ * every tab plus a component's detail at 60, 100, 140 and 200 columns (the
+ * narrow, medium and wide layouts) and, for the pane's views, at a short and
+ * a tall height, in Claude Code's dark and light themes. A mark in the left
+ * margin shows where the pane's body ends at that height. Rows the terminal
+ * draws as a `Raster` are drawn from the packed cells exactly as the engine
+ * would receive them.
  *
  * Not read-only. `dashboard` and `component-detail` never scan, but the
  * dashboard writes trend cache rows (`snapshot_metrics`) and brings an older
@@ -22,8 +25,8 @@
  *
  * Usage:
  *   node tools/pane-preview.mjs --data-dir=<dir> [--out=<dir>] [--project=<dir>]
- *                               [--dashboard=<file.json>] [--columns=60,100] [--themes=dark,light]
- *                               [--only=<view,...>]
+ *                               [--dashboard=<file.json>] [--columns=60,100,140,200] [--heights=24,60]
+ *                               [--themes=dark,light] [--only=<view,...>]
  *   node tools/pane-preview.mjs --readme --data-dir=<dir> --since=<snapshot> --session-rev=<git rev> [--out=<dir>]
  *
  * Defaults: --out=.superpowers/sdd/2026-10-02-claude-code-mod/preview, the
@@ -92,7 +95,9 @@ const README = 'readme' in args
 const OUT = resolve(args.out ?? join(REPO, README ? 'docs/images/claude-code-mod' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
 const PROJECT = resolve(args.project ?? REPO)
 const DATA_DIR = resolve(args['data-dir'])
-const COLUMNS = (args.columns ?? '60,100').split(',').map(Number)
+const COLUMNS = (args.columns ?? '60,100,140,200').split(',').map(Number)
+/** The pane heights a sized view is drawn at: a short pane (lists at their minimum) and a tall one. */
+const HEIGHTS = (args.heights ?? '24,60').split(',').map(Number)
 const THEME_NAMES = (args.themes ?? 'dark,light').split(',')
 
 /** Claude Code 2.1.288's dark and light themes, as `#rrggbb` (from the binary's theme objects). */
@@ -300,7 +305,8 @@ const refused = { ...brief, status: 'not-allowed', refused_root: root, roots_fil
 /** The pane for a state: the view over BASE_VIEW, and what else the state holds. */
 function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null, live = LIVE } = {}) {
   const input = layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes, null, live)
-  return columns => layout.paneRows(input, columns)
+  // Sized by the pane's height too: its lists grow with the rows it has.
+  return Object.assign((columns, height = layout.DEFAULT_ROWS) => layout.paneRows(input, columns, height), { sized: true })
 }
 
 /** The band above the prompt as the mod draws it: the model's text in its tone, then its buttons. */
@@ -581,13 +587,19 @@ function cellLayer(lines, ox, oy) {
   return parts
 }
 
-function svgOf(lines, columns, themeName) {
+function svgOf(lines, columns, themeName, bodyRows = null) {
   const term = TERMINAL[themeName]
   const width = (columns + PAD_X * 2) * CELL_W
   const height = (lines.length + PAD_Y * 2) * CELL_H
+  // Where the pane's body ends at this height: rows past the mark are the ones the person scrolls to.
+  const fold =
+    bodyRows === null || bodyRows >= lines.length
+      ? []
+      : [`<rect x="0" y="${(PAD_Y + bodyRows) * CELL_H}" width="${PAD_X * CELL_W - 4}" height="2" fill="${THEMES[themeName].warning}"/>`]
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
     `<rect width="100%" height="100%" fill="${term.bg}"/>`,
+    ...fold,
     `<g font-family="DejaVu Sans Mono" font-size="${FONT_SIZE}">`,
     ...cellLayer(lines, PAD_X * CELL_W, PAD_Y * CELL_H),
     '</g>',
@@ -711,11 +723,13 @@ if (README) {
   for (const [name, draw] of VIEWS) {
     if (only !== null && !only.has(name)) continue
     for (const columns of COLUMNS) {
-      const laidOut = draw(columns)
-      for (const themeName of THEME_NAMES) {
-        const file = join(OUT, `${name}-${columns}-${themeName}.png`)
-        png(svgOf(screen(laidOut, themeName, columns), columns, themeName), file)
-        written.push(file)
+      for (const height of draw.sized === true ? HEIGHTS : [null]) {
+        const laidOut = height === null ? draw(columns) : draw(columns, height)
+        for (const themeName of THEME_NAMES) {
+          const file = join(OUT, `${name}-${columns}${height === null ? '' : `x${height}`}-${themeName}.png`)
+          png(svgOf(screen(laidOut, themeName, columns), columns, themeName, height), file)
+          written.push(file)
+        }
       }
     }
   }
