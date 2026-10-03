@@ -109,7 +109,11 @@ final readonly class ArchitecturePolicyQueryService extends AbstractArchitecture
             "AND CASE e.confidence WHEN 'certain' THEN 3 WHEN 'probable' THEN 2 ELSE 1 END >= CAST(? AS INTEGER) " .
             'ORDER BY e.source_id, e.target_id, e.kind, e.id LIMIT ?',
         );
-        $statement->execute([$projectId, ...$allKinds, $confidenceRank[$minConfidence], $maxEdges + 1]);
+        // bindValue keeps the integers integers; execute([...]) would send them as text.
+        foreach ([$projectId, ...$allKinds, $confidenceRank[$minConfidence], $maxEdges + 1] as $index => $value) {
+            $statement->bindValue($index + 1, $value, is_int($value) ? \PDO::PARAM_INT : \PDO::PARAM_STR);
+        }
+        $statement->execute();
         // Streamed rather than collected: a gate asks for the largest bound the
         // checker accepts, and holding that many joined rows exhausted a 128 MB
         // limit. Memory is now the boundary map plus the violations kept, both
