@@ -45,6 +45,15 @@ export type Hues = ReadonlyMap<string, string>
 export const NO_HUES: Hues = new Map()
 
 /**
+ * The names of the project's declared boundaries: every one the dashboard
+ * names as declared, and those its short list marks so (all an older
+ * knossos sends).
+ */
+export function declaredOf(d: Pick<Dashboard, 'boundaries'>): Set<string> {
+  return new Set([...(d.boundaries?.declared ?? []), ...(d.boundaries?.items ?? []).filter(b => b.source === 'explicit').map(b => b.name)])
+}
+
+/**
  * The project's boundaries in a stable order, the first eight each given a
  * colour of their own: declared boundaries first (the ones a person named
  * and counts), then inferred ones, each group largest first, ties by name.
@@ -56,7 +65,7 @@ export function huesOf(d: Pick<Dashboard, 'boundaries' | 'boundary_matrix'>): Hu
   const add = (name: string, members: number) => sizes.set(name, Math.max(members, sizes.get(name) ?? 0))
   d.boundaries?.items.forEach(b => add(b.name, b.members))
   d.boundary_matrix?.boundaries.forEach((name, i) => add(name, d.boundary_matrix?.members[i] ?? 0))
-  const declared = new Set(d.boundaries?.items.filter(b => b.source === 'explicit').map(b => b.name))
+  const declared = declaredOf(d)
   const rank = (name: string) => (declared.has(name) ? 0 : 1)
   const order = [...sizes.entries()].sort((a, b) => rank(a[0]) - rank(b[0]) || b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name)
   return new Map(order.slice(0, BOUNDARY_COLOURS.length).map((name, i) => [name, BOUNDARY_COLOURS[i]!]))

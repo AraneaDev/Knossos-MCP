@@ -115,7 +115,12 @@ export type Dashboard = {
   /** The first dead-code candidates; `dead_code_candidates` counts them all. */
   dead_code?: DeadCode[]
   summary?: Summary
-  boundaries?: { items: { name: string; source: string; members: number }[]; truncated: boolean }
+  /**
+   * The largest boundaries with their member counts, and (absent from an
+   * older knossos) the name of every declared one, at most 200
+   * (`declared_truncated` past that), whether or not the short list has room.
+   */
+  boundaries?: { items: { name: string; source: string; members: number }[]; truncated: boolean; declared?: string[]; declared_truncated?: boolean }
   diagnostics?: { total: number; errors: number; warnings: number; infos: number; items: Diagnostic[] }
   largest_files?: { path: string; language: string; lines: number }[]
   /**

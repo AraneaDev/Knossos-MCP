@@ -30,6 +30,7 @@ import {
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Row } from './lib/layout'
 import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
+import { declaredOf } from './lib/palette'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { textStyle } from './lib/rows'
@@ -537,7 +538,7 @@ async function noteRead($: EngineInterface, reported: string, loop: string): Pro
   if (relative === null || mod.noted.has(`${loop}\u0000${relative}`)) return null
   const prefix = `${loop}\u0000`
   const ruled = new Set([...mod.ruled].filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length)))
-  const declared = new Set((d.boundaries?.items ?? []).filter(b => b.source === 'explicit').map(b => b.name))
+  const declared = declaredOf(d)
   const note = readNote(relative, fanInIndex(d).get(relative), mod.threshold, d.policy, ruled, declared)
   if (note === null || !takeNoteSlot(loop)) return null
   mod.noted.add(`${prefix}${relative}`)

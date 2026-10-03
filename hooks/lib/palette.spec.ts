@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ACCENT, BOUNDARY_COLOURS, FAINT, HEADING, SECONDARY, STATUS_COLOURS, boundaryColour, boundaryLabel, huesOf } from './palette'
+import { ACCENT, BOUNDARY_COLOURS, FAINT, HEADING, SECONDARY, STATUS_COLOURS, boundaryColour, boundaryLabel, declaredOf, huesOf } from './palette'
 
 describe('boundaryColour', () => {
   it('is one of the palette, and the same for the same name every time', () => {
@@ -47,6 +47,11 @@ describe('huesOf', () => {
     expect([...hues.keys()]).toEqual(['core', 'tests', 'namespace:App', 'module:hooks'])
     expect([...hues.values()]).toEqual(BOUNDARY_COLOURS.slice(0, 4))
     expect(boundaryColour('core', hues)).toBe(BOUNDARY_COLOURS[0])
+  })
+  it('ranks a boundary declared past the short list as declared', () => {
+    const past = { ...d, boundaries: { ...d.boundaries, declared: ['core', 'tests', 'module:hooks'] } }
+    expect(declaredOf(past)).toEqual(new Set(['core', 'tests', 'module:hooks']))
+    expect([...huesOf(past).keys()]).toEqual(['core', 'tests', 'module:hooks', 'namespace:App'])
   })
   it('is the same whatever order the dashboard lists them in', () => {
     const shuffled = { ...d, boundaries: { ...d.boundaries, items: [...d.boundaries.items].reverse() } }

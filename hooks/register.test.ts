@@ -1133,6 +1133,23 @@ describe('knossos mod', () => {
     expect((sub as { context?: string[] }).context?.[0]).toContain('Policy: core may not depend on workers, tests.')
   })
 
+  test('a boundary declared past the dashboard\'s short list is still named on a Read', async ($, on) => {
+    const crowded = JSON.stringify({
+      ...(JSON.parse(dashboard) as object),
+      fan_in: [{ path: 'src/Router.php', dependent_files: 41, boundaries: [], boundary: 'routing' }],
+      boundaries: {
+        items: Array.from({ length: 12 }, (_, i) => ({ name: `big${i}`, source: 'explicit', members: 900 - i })),
+        truncated: true,
+        declared: ['routing', ...Array.from({ length: 12 }, (_, i) => `big${i}`)],
+        declared_truncated: false,
+      },
+    })
+    const w = world(on, { dashboard: [{ stdout: crowded }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect((await readFile($, `${ROOT}/src/Router.php`)).context).toEqual(['knossos: src/Router.php (routing) has 41 dependent files.'])
+  })
+
   test('notes to the model stop at three a turn and start again with the next', async ($, on) => {
     const many = JSON.stringify({
       ...(JSON.parse(dashboard) as object),

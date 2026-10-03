@@ -191,14 +191,21 @@ final readonly class BoundaryLabels
         return count($ids) === 1 ? (string) $ids[0] : null;
     }
 
+    /** The most declared boundaries named beside the list. */
+    public const DECLARED = 200;
+
     /**
      * The project's boundaries as the pane lists them, with their member
      * counts: declared first, a repository-wide one last, then the largest.
      * `truncated` when more boundaries exist than are listed.
      *
-     * @return array{items: list<array{name: string, source: string, members: int}>, truncated: bool}
+     * Beside them, the name of every declared boundary in name order
+     * (`declared`, at most `$declaredLimit`, `declared_truncated` past it):
+     * whether a boundary is declared must not hang on the short list's cap.
+     *
+     * @return array{items: list<array{name: string, source: string, members: int}>, truncated: bool, declared: list<string>, declared_truncated: bool}
      */
-    public function listed(int $limit): array
+    public function listed(int $limit, int $declaredLimit = self::DECLARED): array
     {
         $ranks = $this->ranks;
         uasort($ranks, static fn(array $a, array $b): int => [$a[0], $a[1], -$a[2], $a[3]] <=> [$b[0], $b[1], -$b[2], $b[3]]);
@@ -207,6 +214,20 @@ final readonly class BoundaryLabels
             $items[] = ['name' => $rank[3], 'source' => $this->sources[$id], 'members' => $rank[2]];
         }
 
-        return ['items' => $items, 'truncated' => count($ranks) > $limit];
+        $declared = [];
+        foreach ($this->sources as $id => $source) {
+            if ($source === 'explicit') {
+                $declared[] = $this->ranks[$id][3];
+            }
+        }
+        $declared = array_values(array_unique($declared));
+        sort($declared, SORT_STRING);
+
+        return [
+            'items' => $items,
+            'truncated' => count($ranks) > $limit,
+            'declared' => array_slice($declared, 0, $declaredLimit),
+            'declared_truncated' => count($declared) > $declaredLimit,
+        ];
     }
 }

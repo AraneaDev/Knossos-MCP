@@ -91,7 +91,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame([], $d['fan_in']);
             assertSame([], $d['dead_code']);
             assertSame(0, $d['summary']['components']);
-            assertSame(['items' => [], 'truncated' => false], $d['boundaries']);
+            assertSame(['items' => [], 'truncated' => false, 'declared' => [], 'declared_truncated' => false], $d['boundaries']);
             assertSame(0, $d['diagnostics']['total']);
             assertSame([], $d['largest_files']);
             assertSame('not_evaluated', $d['policy']['status']);
@@ -530,6 +530,10 @@ final class DashboardServiceTest extends KnossosTestCase
             $listed = BoundaryLabels::load($pdo, $projectId)->listed(1);
             assertCount(1, $listed['items']);
             assertSame(true, $listed['truncated']);
+            // Every declared boundary is named apart from the short list, so one past its cap is still known as declared.
+            assertSame(['Core', 'Edge'], $boundaries['declared']);
+            assertSame(false, $boundaries['declared_truncated']);
+            assertSame(['items' => [$boundaries['items'][0]], 'truncated' => true, 'declared' => ['Core'], 'declared_truncated' => true], BoundaryLabels::load($pdo, $projectId)->listed(1, 1));
         } finally {
             $this->removeTempTree($root);
         }

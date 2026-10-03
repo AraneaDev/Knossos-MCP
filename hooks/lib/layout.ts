@@ -14,7 +14,7 @@ import type { BoundariesInput } from './boundaries'
 import { changesInput, changesList, changesRows, lookAtOf, lookAtRows, NO_CHANGES } from './changes'
 import type { ChangesInput, LookAt } from './changes'
 import { countLabel } from './envelopes'
-import { ACCENT, boundaryLabel, FAINT, huesOf, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, declaredOf, FAINT, huesOf, STATUS_COLOURS } from './palette'
 import type { Hues, Tone } from './palette'
 import {
   baseName,
@@ -248,10 +248,15 @@ export function summaryParts(d: Dashboard, hubs: number): string[] {
     ]
   }
   const all = d.boundaries?.items ?? []
-  const declared = all.filter(b => b.source === 'explicit')
-  const boundaries = declared.length > 0 ? declared.length : all.length
-  // Cut short: a floor when every listed one is counted (none declared) or the declared ones fill the list.
-  const more = d.boundaries?.truncated === true && (declared.length === 0 || declared.length === all.length)
+  const declared = declaredOf(d).size
+  const boundaries = declared > 0 ? declared : all.length
+  // Cut short: the declared names past their own cap, or, without declared ones, the list past its.
+  // An older knossos names declared ones only in the list: a floor when they fill it.
+  const listedDeclared = all.filter(b => b.source === 'explicit').length
+  const more =
+    d.boundaries?.declared !== undefined && declared > 0
+      ? d.boundaries.declared_truncated === true
+      : d.boundaries?.truncated === true && (listedDeclared === 0 || listedDeclared === all.length)
   const languages = d.summary.languages.map(l => LANGUAGES[l.language] ?? l.language.toUpperCase()).join(' ')
   // Languages last: the line drops parts from its end, and drift says more than the languages.
   return [

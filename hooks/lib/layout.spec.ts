@@ -558,6 +558,12 @@ describe('the header summary', () => {
     const inferred = full({ boundaries: { items: [{ name: 'namespace:App', source: 'inferred', members: 3 }], truncated: true } })
     expect(summaryParts(inferred, 0)[1]).toBe('1+ boundaries')
   })
+  it('counts every declared boundary, also those past the short list, as a floor only past their own cap', () => {
+    const items = Array.from({ length: 12 }, (_, i) => ({ name: `d${i}`, source: 'explicit', members: 50 - i }))
+    const declared = Array.from({ length: 15 }, (_, i) => `d${i}`)
+    expect(summaryParts(full({ boundaries: { items, truncated: true, declared, declared_truncated: false } }), 0)[1]).toBe('15 boundaries')
+    expect(summaryParts(full({ boundaries: { items, truncated: true, declared, declared_truncated: true } }), 0)[1]).toBe('15+ boundaries')
+  })
 })
 
 describe('the issues tab', () => {
