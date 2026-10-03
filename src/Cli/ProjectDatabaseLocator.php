@@ -14,10 +14,27 @@ namespace Knossos\Cli;
  */
 final readonly class ProjectDatabaseLocator
 {
+    /** Ancestors walked looking for an existing database, matching ProjectPathResolver's own bound. */
     private const MAX_ANCESTORS = 64;
 
     /**
      * The database path for $target; never creates anything.
+     *
+     * {@see \Knossos\Runtime\RuntimeFactory::defaultDatabasePath()} falls back
+     * to `<cwd>/.knossos/knossos.sqlite`, which is right for every command a
+     * person types and wrong for these: the hook supplies the project
+     * directory as an argument while the process inherits whatever working
+     * directory the session started in. When those differ, the brief answers a
+     * question about one directory out of another directory's database, and
+     * reports a fully scanned project as `NOT SCANNED`. Deriving from the
+     * argument makes the two agree by construction. Scoped to the path-addressed
+     * brief commands, because every other command addresses a project by id and
+     * is meant to follow the working directory.
+     *
+     * Precedence is unchanged where it was ever explicit: `--db` first,
+     * `KNOSSOS_DATA_DIR` second (a container installation depends on it, and
+     * the runtime already knows how to join it), and only then the target
+     * path.
      *
      * @param array<string, list<string>> $options
      */
