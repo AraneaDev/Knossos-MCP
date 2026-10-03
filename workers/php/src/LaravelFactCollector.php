@@ -35,6 +35,7 @@ final class LaravelFactCollector extends NodeVisitorAbstract
     }
 
     /** Fan the node out to the scope tracker and each specialised collector. */
+    #[\Override]
     public function enterNode(Node $node): ?int
     {
         $this->context->enterNode($node);
@@ -47,6 +48,7 @@ final class LaravelFactCollector extends NodeVisitorAbstract
     }
 
     /** Unwind the scope tracker so enclosing-class attribution stays correct. */
+    #[\Override]
     public function leaveNode(Node $node): ?int
     {
         $this->routes->leaveNode($node);

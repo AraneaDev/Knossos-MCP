@@ -542,6 +542,17 @@ impl Walk<'_> {
                                 );
                             }
                         }
+                        // Every method of a trait impl fulfils a member the
+                        // trait declares, and is reached through the trait,
+                        // which may be a dependency's (`Default`, a visitor)
+                        // whose members the graph cannot see.
+                        if node.trait_.is_some() {
+                            self.facts.node_attribute(
+                                &method_canonical,
+                                "overrides",
+                                serde_json::Value::Bool(true),
+                            );
+                        }
                         if (drop_impl && name == "drop")
                             || (exported_impl && matches!(method.vis, syn::Visibility::Public(_)))
                         {
@@ -2439,6 +2450,39 @@ mod tests {
         assert!(!marked("crate::Widget::measure"));
         // A `cfg_attr` may apply another that applies it.
         assert!(marked("crate::Widget::paint"));
+    }
+
+    #[test]
+    fn a_trait_impl_marks_its_methods_as_overriding() {
+        let file: syn::File = syn::parse_str(
+            "struct Manifest;\nimpl Default for Manifest {\n    fn default() -> Self { Manifest }\n}\nimpl Manifest {\n    fn build(&self) {}\n}",
+        )
+        .expect("parses");
+        let mut facts = Facts::new("src/lib.rs");
+        walk(
+            &mut facts,
+            "crate",
+            &file,
+            &[],
+            &Declarations::new(),
+            &TestModules::new(),
+        );
+        let contribution = facts.finish();
+        let overrides = |name: &str| {
+            contribution
+                .nodes
+                .iter()
+                .filter(|node| node.canonical_name == name)
+                .any(|node| {
+                    node.attributes.get("overrides") == Some(&serde_json::Value::Bool(true))
+                })
+        };
+
+        // What the trait declares, reached through it: `Default::default`
+        // calls it, and nothing names `Manifest::default`.
+        assert!(overrides("crate::Manifest::default"));
+        // An inherent method fulfils no trait and keeps its reference check.
+        assert!(!overrides("crate::Manifest::build"));
     }
 
     #[test]

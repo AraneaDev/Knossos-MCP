@@ -912,6 +912,53 @@ class TypeScriptLanguageFactCollector {
         }
     }
 
+    /**
+     * Whether a method fulfils a member of a type its class extends or
+     * implements, or of the type its object literal is handed to: the source
+     * says so with `override`, or the checker finds a member of that name on
+     * a heritage or contextual type. The type may be a dependency's
+     * or a built-in one (`Iterator`), whose members are not in the graph, so
+     * the dispatch through it leaves no edge to this method.
+     */
+    overridesSupertypeMember(node) {
+        if (!ts.isMethodDeclaration(node)) return false;
+        // An object literal's method fulfils the member of the type the
+        // literal is handed to (`registerHooks({ resolve() {} })`), which
+        // calls it unseen.
+        if (ts.isObjectLiteralExpression(node.parent)) {
+            const name = this.checker.getSymbolAtLocation(
+                node.name,
+            )?.escapedName;
+            const contract = this.checker.getContextualType(node.parent);
+            return (
+                name !== undefined &&
+                contract?.getProperty(ts.unescapeLeadingUnderscores(name)) !==
+                    undefined
+            );
+        }
+        if (
+            !ts.isClassDeclaration(node.parent) &&
+            !ts.isClassExpression(node.parent)
+        )
+            return false;
+        const flags = ts.getCombinedModifierFlags(node);
+        if (flags & ts.ModifierFlags.Override) return true;
+        // A heritage type describes instances; a static method sharing an
+        // instance member's name fulfils nothing of it.
+        if (flags & ts.ModifierFlags.Static) return false;
+        const name = this.checker.getSymbolAtLocation(node.name)?.escapedName;
+        if (name === undefined) return false;
+        return (node.parent.heritageClauses ?? []).some((clause) =>
+            clause.types.some(
+                (type) =>
+                    this.checker
+                        .getTypeAtLocation(type)
+                        .getProperty(ts.unescapeLeadingUnderscores(name)) !==
+                    undefined,
+            ),
+        );
+    }
+
     markRuntimeInvoked(member) {
         const id = this.declaredIds.get(member);
         const fact =
@@ -1066,6 +1113,10 @@ class TypeScriptLanguageFactCollector {
                 : ambientAttributes(node, descriptor.attributes),
         );
         this.addEdge("contains", parent.id, id, node);
+        if (this.overridesSupertypeMember(node)) {
+            const fact = this.accumulator.nodesById.get(id);
+            fact.attributes = { ...fact.attributes, overrides: true };
+        }
         const nest = this.nest.declaration(node, id, canonical);
         const applicationRoles = this.application.declaration(
             node,

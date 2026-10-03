@@ -294,6 +294,46 @@ final class PhpScannerTest extends KnossosTestCase
     }
 
     /**
+     * A method fulfilling a supertype's member is marked `overrides` when the
+     * source or the language says so: `#[\Override]`, or a member of a PHP
+     * built-in interface or class the type implements or extends, which the
+     * worker's own runtime describes. A dependency's members are not in the
+     * graph, so without the mark the dispatch through them (a traverser
+     * calling `enterNode`, `json_encode` calling `jsonSerialize`) reads as
+     * no reference at all.
+     */
+    #[Group('php-scanner')]
+    public function testPhpWorkerMarksMethodsThatOverrideASupertypesMember(): void
+    {
+        $client = $this->phpWorkerClient();
+        $contributions = iterator_to_array($client->scan([
+            'root' => self::repositoryRoot() . '/tests/Fixtures/php-scanner',
+            'files' => ['src/Overriding.php'],
+        ]), false);
+        $client->shutdown();
+        $overrides = [];
+        foreach ($contributions[0]->nodes as $node) {
+            if ($node->kind === 'method') {
+                $overrides[$node->canonicalName] = $node->attributes['overrides'] ?? false;
+            }
+        }
+        ksort($overrides);
+
+        assertSame([
+            'Fixture\\Collector::count' => true,
+            'Fixture\\Collector::enterNode' => true,
+            'Fixture\\Collector::helper' => false,
+            'Fixture\\Collector::jsonSerialize' => true,
+            // A dependency's member the source does not mark: the worker
+            // cannot see the dependency, so it says nothing.
+            'Fixture\\Collector::leaveNode' => false,
+            'Fixture\\Lookalike::enterNode' => false,
+            'Fixture\\Size::jsonSerialize' => true,
+            'Fixture\\Size::label' => false,
+        ], $overrides);
+    }
+
+    /**
      * A class name built from a namespace literal, `new ($prefix . $name)`,
      * may be any class in that namespace; the scanner names the namespace for
      * the reconciler to expand. A variable reassigned since, rebound by a

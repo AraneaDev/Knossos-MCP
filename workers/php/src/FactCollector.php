@@ -33,7 +33,7 @@ final class FactCollector extends NodeVisitorAbstract
     /** @var list<array<string, mixed>> */
     private array $diagnostics = [];
 
-    /** @var list<array{id: string, name: string, parent: ?string, properties: array<string, string>}> */
+    /** @var list<array{id: string, name: string, parent: ?string, interfaces: list<string>, properties: array<string, string>}> */
     private array $classes = [];
 
     /** @var list<array{id: string, variables: array<string, array{type: ?string, confidence: string, returned_by?: string}>}> */
@@ -105,6 +105,7 @@ final class FactCollector extends NodeVisitorAbstract
      *
      * @param list<Node> $nodes
      */
+    #[\Override]
     public function beforeTraverse(array $nodes): ?array
     {
         $finder = new NodeFinder();
@@ -152,6 +153,7 @@ final class FactCollector extends NodeVisitorAbstract
     }
     /** Collect whatever facts this node declares as the traversal enters it. */
 
+    #[\Override]
     public function enterNode(Node $node): ?int
     {
         if ($node instanceof Node\FunctionLike) {
@@ -236,6 +238,7 @@ final class FactCollector extends NodeVisitorAbstract
     }
     /** Unwind scope on the way out, keeping enclosing-class attribution correct. */
 
+    #[\Override]
     public function leaveNode(Node $node): ?int
     {
         if ($node instanceof Node\FunctionLike) {
@@ -343,7 +346,7 @@ final class FactCollector extends NodeVisitorAbstract
             }
         }
 
-        $this->classes[] = ['id' => $id, 'name' => $name, 'parent' => $parent, 'properties' => []];
+        $this->classes[] = ['id' => $id, 'name' => $name, 'parent' => $parent, 'interfaces' => $interfaces, 'properties' => []];
     }
 
     /** Emit a method node, its edge to the declaring class, and its signature types. */
@@ -363,6 +366,7 @@ final class FactCollector extends NodeVisitorAbstract
             'abstract' => $node->isAbstract(),
             'php_attributes' => $attributes,
             ...(self::isVirtualProperty($node, $attributes) ? ['runtime_invoked' => true] : []),
+            ...(self::overridesSupertypeMember($node->name->toString(), $attributes, $class) ? ['overrides' => true] : []),
         ]);
         $this->addEdge('contains', $class['id'], $id, $node);
         $this->callables[] = ['id' => $id, 'variables' => []];
@@ -388,6 +392,38 @@ final class FactCollector extends NodeVisitorAbstract
         $comment = $node->getDocComment()?->getText() ?? '';
 
         return preg_match('/(?:^|[\s*])@(?:[A-Za-z_\\\\]+\\\\)?VirtualProperty\b/m', $comment) === 1;
+    }
+
+    /**
+     * Whether a method fulfils a member of a type its class extends or
+     * implements, by the source's word or by the language's.
+     *
+     * `#[\Override]` is the source saying so, and PHP checks it. A built-in
+     * supertype (`JsonSerializable`, `Countable`, `IteratorAggregate`) is
+     * described by the worker's own runtime, so its members are known without
+     * loading anything. A dependency's supertype is neither, and is left to
+     * the attribute: guessing from its name would hide a method that only
+     * happens to share one.
+     *
+     * @param list<string> $attributes resolved attribute names
+     * @param array{parent: ?string, interfaces: list<string>} $class
+     */
+    private static function overridesSupertypeMember(string $method, array $attributes, array $class): bool
+    {
+        if (in_array('Override', $attributes, true)) {
+            return true;
+        }
+        foreach ([$class['parent'], ...$class['interfaces']] as $supertype) {
+            if ($supertype === null || (!class_exists($supertype, false) && !interface_exists($supertype, false))) {
+                continue;
+            }
+            $reflection = new \ReflectionClass($supertype);
+            if ($reflection->isInternal() && $reflection->hasMethod($method)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1029,7 +1065,7 @@ final class FactCollector extends NodeVisitorAbstract
     /**
      * The innermost enclosing class-like declaration, or null at file scope.
      *
-     * @return array{id: string, name: string, parent: ?string, properties: array<string, string>}|null
+     * @return array{id: string, name: string, parent: ?string, interfaces: list<string>, properties: array<string, string>}|null
      */
     private function currentClass(): ?array
     {
