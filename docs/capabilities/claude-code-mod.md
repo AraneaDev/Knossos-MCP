@@ -93,7 +93,8 @@ This line and the policy note below arrive together, as one note.
 **Limits.** Each file is noted once per session and per agent: a subagent
 gets its own notes, since what the main loop read was never in its context.
 At most three notes follow tool results in one turn; a note held back by
-that cap is said at the next Read of the file. A turn ends with at most one
+that cap is said at the next Read or edit of the file. A note that fails
+leaves the tool result as it was and one line in the debug log. A turn ends with at most one
 note. `agentNotes` turns them all off; the toast stays.
 
 Approximate cost on this repository: 20 to 60 tokens for a Read note (60

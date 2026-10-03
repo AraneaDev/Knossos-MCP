@@ -163,6 +163,8 @@ const mod = {
   testsNamed: new Set<string>(),
   violationsSeen: new Set<string>(),
   truncationSaid: false,
+  /** Whether a failed note after a tool call was logged this session: once is enough. */
+  noteFailureLogged: false,
   /** Notes after tool results this turn, by loop; cleared when that loop's turn ends. */
   turnNotes: new Map<string, number>(),
   /** Bash commands run since the turn's last edit; at the turn's end they become `turnRan`, what its scan's note checks. */
@@ -495,6 +497,23 @@ async function noteEdit($: EngineInterface, reported: string): Promise<{ text: s
   mod.edited.add(relative)
   const entry = fanInIndex(current).get(relative)
   return entry === undefined || entry.dependent_files < mod.threshold ? null : { text: editNote(entry), path: relative }
+}
+
+/**
+ * The tool result with the note `add` gives it, or `ran` unchanged when that
+ * throws: a note is never worth a failed tool call. The first failure of a
+ * session leaves one debug line; later ones are as quiet as the first.
+ */
+async function noteSafely<T>($: EngineInterface, ran: T, add: () => Promise<T>): Promise<T> {
+  try {
+    return await add()
+  } catch (err) {
+    if (!mod.noteFailureLogged) {
+      mod.noteFailureLogged = true
+      $.ui.log(`knossos: a note after a tool call failed and was left out (${err instanceof Error ? err.message : String(err)})`, { to: 'debug' })
+    }
+    return ran
+  }
 }
 
 /** Whether `loop` may get another note this turn; counts it when it may. */
@@ -907,6 +926,7 @@ export const register: Register = (on, options) => {
   mod.testsNamed = new Set()
   mod.violationsSeen = new Set()
   mod.truncationSaid = false
+  mod.noteFailureLogged = false
   mod.turnNotes = new Map()
   mod.ranCommands = []
   mod.turnRan = []
@@ -927,24 +947,29 @@ export const register: Register = (on, options) => {
     if (mod.disabled || ran.deny !== undefined || ran.isError === true) return ran
     // Tests run before this edit ran the old code.
     mod.ranCommands = []
-    const path = editedPath(e)
-    const note = path === null ? null : await noteEdit($, path)
-    const key = note === null ? '' : `${e.agentId ?? ''}\u0000${note.path}`
-    // Told already, on its Read or an earlier edit.
-    if (note === null || mod.noted.has(key)) return ran
-    mod.noted.add(key)
-    $.ui.toast(note.text)
-    if (!mod.notesOn || !takeNoteSlot(e.agentId ?? '')) return ran
-    return { ...ran, context: [...(ran.context ?? []), note.text] }
+    return noteSafely($, ran, async () => {
+      const path = editedPath(e)
+      const note = path === null ? null : await noteEdit($, path)
+      const key = note === null ? '' : `${e.agentId ?? ''}\u0000${note.path}`
+      // Told already, on its Read or an earlier edit.
+      if (note === null || mod.noted.has(key)) return ran
+      // Held back by this turn's cap: not delivered, so not noted; a later edit or Read says it.
+      if (mod.notesOn && !takeNoteSlot(e.agentId ?? '')) return ran
+      mod.noted.add(key)
+      $.ui.toast(note.text)
+      return mod.notesOn ? { ...ran, context: [...(ran.context ?? []), note.text] } : ran
+    })
   })
 
   // Before an edit: what the file is to the rest of the project, so the edit keeps to its rules.
   on('tool.call', { tool: 'Read' }, async ($, e, next) => {
     const ran = await next(e)
     if (mod.disabled || ran.deny !== undefined || ran.isError === true) return ran
-    const path = (e as { file_path?: unknown }).file_path
-    const note = typeof path === 'string' ? await noteRead($, path, e.agentId ?? '') : null
-    return note === null ? ran : { ...ran, context: [...(ran.context ?? []), note] }
+    return noteSafely($, ran, async () => {
+      const path = (e as { file_path?: unknown }).file_path
+      const note = typeof path === 'string' ? await noteRead($, path, e.agentId ?? '') : null
+      return note === null ? ran : { ...ran, context: [...(ran.context ?? []), note] }
+    })
   })
 
   // Every command is kept for the turn-end note, which leaves out the tests the turn already ran.

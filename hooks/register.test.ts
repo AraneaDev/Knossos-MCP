@@ -63,7 +63,7 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
 function world(
   on: On,
   answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[]; allow?: Answer[]; editor?: 'opens' | 'missing' } = {},
-  disk: { root?: string; links?: Record<string, string>; gone?: string[] } = {},
+  disk: { root?: string; links?: Record<string, string>; gone?: string[]; garbled?: string[] } = {},
 ) {
   const clock = mock.clock(on)
   const links = disk.links ?? {}
@@ -88,9 +88,10 @@ function world(
   const panes = new Set<string>()
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('session.root', () => ({ value: disk.root ?? ROOT }))
-  // Every path exists except those gone; a path under a link lands under its target.
+  // Every path exists except those gone; a path under a link lands under its target; a garbled one answers nonsense.
   on('fs.stat', (_$, e) => {
     if (gone.has(e.path)) throw Object.assign(new Error(`ENOENT: ${e.path}`), { code: 'ENOENT' })
+    if (disk.garbled?.includes(e.path) === true) return { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: false, realPath: 42 as never } }
     const link = Object.keys(links).find(l => e.path === l || e.path.startsWith(`${l}/`))
     const realPath = link === undefined ? e.path : `${links[link]}${e.path.slice(link.length)}`
     return { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: link !== undefined, ...(e.resolve ? { realPath } : {}) } }
@@ -1147,6 +1148,32 @@ describe('knossos mod', () => {
     await w.clock.settle()
     // Dropped for the cap, not told: the next turn's Read still gets it.
     expect((await readFile($, `${ROOT}/src/d.php`)).context).toEqual(['knossos: src/d.php has 50 dependent files.'])
+  })
+
+  test('an edit note held back by the cap is not marked told: the next turn still gets it', async ($, on) => {
+    const many = JSON.stringify({
+      ...(JSON.parse(dashboard) as object),
+      fan_in: ['a', 'b', 'c', 'd'].map(n => ({ path: `src/${n}.php`, dependent_files: 50, boundaries: [], boundary: null })),
+    })
+    const w = world(on, { dashboard: [{ stdout: many }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const n of ['a', 'b', 'c']) await readFile($, `${ROOT}/src/${n}.php`)
+    expect((await edit($, `${ROOT}/src/d.php`)).context ?? []).toEqual([])
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect((await edit($, `${ROOT}/src/d.php`)).context).toEqual(['knossos: src/d.php has 50 dependent files; run test_impact before finishing.'])
+  })
+
+  test('a note that throws leaves the tool result as it was and one debug line', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }] }, { garbled: [`${ROOT}/src/Router.php`, `${ROOT}/src/Quiet.php`] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const read = await readFile($, `${ROOT}/src/Router.php`)
+    expect(read.text).toBe('ran Read')
+    expect(read.context ?? []).toEqual([])
+    expect((await edit($, `${ROOT}/src/Quiet.php`)).text).toBe('ran Edit')
+    expect(w.logs.filter(l => l.to === 'debug' && l.text.startsWith('knossos: a note after a tool call failed'))).toHaveLength(1)
   })
 
   test('agentNotes off keeps every note from the model', { options: { agentNotes: false } }, async ($, on) => {
