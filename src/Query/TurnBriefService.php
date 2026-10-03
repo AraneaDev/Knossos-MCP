@@ -20,9 +20,10 @@ use Throwable;
  * again: the difference is exactly what changed on disk since the last
  * scan, whoever changed it, with no git needed. Then reports fan-in, the
  * tests that reach the changed files, and the boundary-policy violations the
- * turn introduced: those whose source lives in a changed or added file after
- * the scan and was not already there before it, in the files the caller
- * reported. Scans only roots the operator allowed.
+ * turn introduced: those whose source lives in a file the caller reported as
+ * edited and that were not there before the scan. Files changed by other
+ * means never contribute to the policy verdict. Scans only roots the operator
+ * allowed.
  */
 final readonly class TurnBriefService
 {
@@ -88,6 +89,9 @@ final readonly class TurnBriefService
         $after = $this->hashes($projectId);
         [$changed, $added, $deleted] = self::diff($before, $after, $reported);
         $live = array_merge($changed, $added);
+        // Policy looks only at what the turn itself edited: a checkout, a formatter or a shell command
+        // can change many files at once, and their old violations are not the model's to fix.
+        $edited = array_values(array_intersect($live, $reported));
         $queries = new ArchitectureQueryService($this->pdo, gitWorkingTree: new ProcessGitWorkingTreeProvider());
         return [
             'status' => 'ok',
@@ -101,7 +105,7 @@ final readonly class TurnBriefService
             'deleted_files' => $deleted,
             'impact' => (new FileFanInQuery($this->pdo))->forPaths($scan->projectId, $live, self::TOP_DEPENDENTS),
             'tests' => $live === [] ? [] : $this->tests($queries, $scan->projectId, $live),
-            'policy' => self::policy($enforcePolicies, $live, $baseline, $baseline === null ? null : $violations->inFiles($scan->projectId, $policies, $live)),
+            'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($scan->projectId, $policies, $edited)),
         ] + $envelope;
     }
 
@@ -229,10 +233,10 @@ final readonly class TurnBriefService
     }
 
     /**
-     * The boundary-policy verdict: the violations in the live files after the
-     * scan that were not in the reported files before it.
+     * The boundary-policy verdict: the violations in the edited files after the
+     * scan that were not in them before it.
      *
-     * @param list<string> $live
+     * @param list<string> $live the reported files still tracked after the scan
      * @param array{violations: array<string, array<string, mixed>>, truncated: bool}|null $before null when not evaluable
      * @param array{violations: array<string, array<string, mixed>>, truncated: bool}|null $after
      * @return array{status: string, total: int, violations: list<array<string, mixed>>, truncated: bool}

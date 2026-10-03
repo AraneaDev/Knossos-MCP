@@ -351,6 +351,32 @@ final class TurnBriefServiceTest extends KnossosTestCase
         }
     }
 
+    /** A file changed by other means (a checkout, a formatter) never counts against the turn. */
+    #[Group('query')]
+    public function testOnlyFilesTheTurnEditedCountForPolicy(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $service = $this->service($pdo);
+            // Changed on disk but not reported (as a formatter would): its existing violations are not introduced.
+            $file = $root . '/' . self::CALLER;
+            file_put_contents($file, str_replace('final class Caller', "// reformatted\nfinal class Caller", (string) file_get_contents($file)));
+            $other = $service->brief($root, [], self::POLICIES);
+            assertSame([self::CALLER], $other['changed_files']);
+            assertSame(0, $other['policy']['total']);
+            // Even a new violating call stays out until the turn reports the file.
+            $this->addCall($root, 'quiet');
+            assertSame(0, $service->brief($root, [], self::POLICIES)['policy']['total']);
+            // Reported with a newly added call: only that call is new.
+            $this->addCall($root, 'loud');
+            $edited = $service->brief($root, [self::CALLER], self::POLICIES);
+            assertSame(2, $edited['policy']['total']);
+            assertSame(['App\\Caller::loud'], array_values(array_unique(array_column($edited['policy']['violations'], 'source'))));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     /** Past the check's own result cap the figures are bounds, and the brief says so. */
     #[Group('query')]
     public function testATruncatedPolicyCheckIsFlagged(): void
@@ -362,7 +388,7 @@ final class TurnBriefServiceTest extends KnossosTestCase
                 $methods .= sprintf("    public function run%d(): string\n    {\n        return (new \\App\\Greeter())->greet('x');\n    }\n\n", $n);
             }
             file_put_contents($root . '/src/Edge/Many.php', "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nfinal class Many\n{\n" . $methods . "}\n");
-            $brief = $this->service($pdo)->brief($root, [], self::POLICIES);
+            $brief = $this->service($pdo)->brief($root, ['src/Edge/Many.php'], self::POLICIES);
             assertSame(['src/Edge/Many.php'], $brief['added_files']);
             assertSame('evaluated', $brief['policy']['status']);
             assertSame(true, $brief['policy']['truncated']);
@@ -443,7 +469,8 @@ final class TurnBriefServiceTest extends KnossosTestCase
                     $n,
                 ));
             }
-            $brief = $this->service($pdo)->brief($root, [], self::POLICIES);
+            $reported = array_map(static fn(int $n): string => 'src/Edge/Extra' . $n . '.php', range(1, 6));
+            $brief = $this->service($pdo)->brief($root, $reported, self::POLICIES);
             // Six new callers, each reaching the class and its method; the old caller's are not new.
             assertSame(12, $brief['policy']['total']);
             assertCount(10, $brief['policy']['violations']);

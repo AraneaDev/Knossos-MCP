@@ -50,7 +50,7 @@ When the project declares boundary policies (in `knossos.json`) and
 `enforcePolicies` is on, the post-turn brief reports only the violations the
 turn introduced. Before the scan it evaluates the policies for violations
 whose source component lives in a file the turn edited; after the scan it
-does the same for every changed and added file. A violation in the second set
+does the same for those files again. A violation in the second set
 and not the first is new. One that was already there, in an edited file or in
 a file that merely depends on one, is not reported. New violations reach the
 model as a note it reads before its next step:
@@ -66,9 +66,10 @@ across the whole project and at its time limit. When it stops early the brief
 says so (`policy.truncated`), the count is a bound rather than exact, and the
 note adds `(check was truncated; run check_architecture)`.
 
-A file changed outside the turn's own edits (by a shell command, say) has no
-before picture, so its existing violations count as new the first time a
-brief sees it.
+Only files the turn edited with Edit, Write or NotebookEdit count. A file
+changed by other means (a branch checkout, a formatter, a shell command) never
+contributes to the policy verdict, so switching branches does not hand the
+model a whole branch's worth of violations to fix.
 
 ## The pane
 
