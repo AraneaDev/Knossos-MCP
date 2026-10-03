@@ -58,6 +58,17 @@ expect_silent_success 'scan refuses an option' env KNOSSOS_BIN="$STUBS/echoing" 
 expect_silent_success 'scan refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" scan "$STUBS/proj" extra
 expect_output 'missing binary says so for a scan' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" scan /tmp
 expect_silent_success 'failing binary on a scan' env KNOSSOS_BIN="$STUBS/failing" /bin/sh "$RUN" scan /tmp
+# allow-root: the root alone, always with --execute, and only into a roots file the installation (or the environment) names.
+expect_output 'allow-root grants the root with --execute' "allow-root|$ABS_PROJ|--execute|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json /bin/sh "$RUN" allow-root "$STUBS/proj"
+expect_silent_success 'allow-root without a named roots file does nothing' \
+    env -u KNOSSOS_ROOTS_FILE KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" allow-root "$STUBS/proj"
+expect_silent_success 'allow-root refuses an option' \
+    env KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json /bin/sh "$RUN" allow-root "$STUBS/proj" --db=/tmp/other.sqlite
+expect_silent_success 'allow-root refuses a second argument' \
+    env KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json /bin/sh "$RUN" allow-root "$STUBS/proj" extra
+expect_silent_success 'failing binary on allow-root' \
+    env KNOSSOS_BIN="$STUBS/failing" KNOSSOS_ROOTS_FILE=/tmp/roots.json /bin/sh "$RUN" allow-root /tmp
 expect_silent_success 'missing project dir' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" dashboard
 expect_silent_success 'unenterable project dir' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" dashboard /nonexistent/dir
 expect_output 'passes arguments with spaces intact' "turn-brief|$ABS_PROJ|--files=a, b.php|--json|" \
@@ -134,6 +145,10 @@ expect_output 'container scan runs the rescan command' "img:1|rescan|$ABS_PROJ|-
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" scan "$STUBS/proj"
 expect_silent_success 'container scan refuses an option' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" scan /tmp --db=/x
+expect_output 'container allow-root grants the root with --execute' "img:1|allow-root|$ABS_PROJ|--execute|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root "$STUBS/proj"
+expect_silent_success 'container allow-root refuses an option' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root /tmp --db=/x
 expect_silent_success 'container component-detail without a name' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp
 expect_output 'container without docker says so' "$NO_BINARY" \
@@ -150,6 +165,7 @@ printf '#!/bin/sh\nprintf "%%s" "$1"\n' > "$STUBS/timeoutbin/timeout"; chmod +x 
 expect_output 'dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" dashboard /tmp
 expect_output 'turn-brief is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" turn-brief /tmp
 expect_output 'scan is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" scan /tmp
+expect_output 'allow-root is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" allow-root /tmp
 expect_output 'component-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" component-detail /tmp X
 expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
 

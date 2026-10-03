@@ -4,6 +4,7 @@
 # Usage: knossos-run-container.sh <turn-brief|dashboard> <project-dir> [options...]
 #        knossos-run-container.sh component-detail <project-dir> <name>
 #        knossos-run-container.sh scan <project-dir>
+#        knossos-run-container.sh allow-root <root>
 #
 # Emitted by `knossos install-agent-plugin --out`, with __KNOSSOS_IMAGE__ and
 # __KNOSSOS_DATA__ substituted at emit time. Not used in place.
@@ -35,6 +36,7 @@ case "$SUBCOMMAND" in
     # A cold first dashboard of a large project walks the whole graph.
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
 
@@ -47,6 +49,13 @@ fi
 # scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
 if [ "$SUBCOMMAND" = scan ]; then
     [ "$#" -eq 0 ] || exit 0
+fi
+# allow-root takes nothing but the root, and always writes: the pane runs it
+# only after the person confirmed, so a preview would answer a question nobody
+# asked. An option such as `--db=...` would grant the root in another file.
+if [ "$SUBCOMMAND" = allow-root ]; then
+    [ "$#" -eq 0 ] || exit 0
+    set -- --execute
 fi
 
 # The working directory and the argument must name the same place. `docker run`

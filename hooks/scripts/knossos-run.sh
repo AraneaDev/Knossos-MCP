@@ -4,6 +4,7 @@
 # Usage: knossos-run.sh <turn-brief|dashboard> <project-dir> [options...]
 #        knossos-run.sh component-detail <project-dir> <name>
 #        knossos-run.sh scan <project-dir>
+#        knossos-run.sh allow-root <root>
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
@@ -30,6 +31,7 @@ case "$SUBCOMMAND" in
     # A cold first dashboard of a large project walks the whole graph.
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
 
@@ -43,6 +45,13 @@ fi
 if [ "$SUBCOMMAND" = scan ]; then
     [ "$#" -eq 0 ] || exit 0
 fi
+# allow-root takes nothing but the root, and always writes: the pane runs it
+# only after the person confirmed, so a preview would answer a question nobody
+# asked. An option such as `--db=...` would grant the root in another file.
+if [ "$SUBCOMMAND" = allow-root ]; then
+    [ "$#" -eq 0 ] || exit 0
+    set -- --execute
+fi
 
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 # Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
@@ -54,6 +63,12 @@ PROJECT_DIR=$(pwd -P) || exit 0
 [ -r "$LIB" ] || exit 0
 # shellcheck source=hooks/scripts/lib.sh
 . "$LIB" 2>/dev/null || exit 0
+# A grant goes only into the roots file the installation baked in (or one the
+# environment names): without it the binary would fall back to a file beside
+# the working directory, which no server reads.
+if [ "$SUBCOMMAND" = allow-root ] && [ -z "${KNOSSOS_ROOTS_FILE:-}" ]; then
+    exit 0
+fi
 
 # The one failure that is not silent: with no binary there is nothing to
 # retry, so the mod is told and turns itself off. Every other failure
