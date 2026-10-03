@@ -391,8 +391,9 @@ the files, their dependents, the tests that reach them, and how old the figures 
 ![The band above the Claude Code prompt](docs/images/claude-code-mod/band-prompt-dark.png)
 
 `/knossos` opens the pane. The Overview leads with the file this session touched that most
-of the project depends on, a key away from your editor, and a key that copies the command for
-the tests that reach the changes. It draws in your Claude Code theme's own colours.
+of the project depends on, marked: `o` lists the files that depend on it, `e` opens it in your
+editor, and `t` copies the command for the tests that reach the changes. It draws in your
+Claude Code theme's own colours.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/claude-code-mod/overview-light.png">
@@ -400,7 +401,8 @@ the tests that reach the changes. It draws in your Claude Code theme's own colou
 </picture>
 
 The Changes tab adds up every turn of the session: each file with its dependents and its
-boundary, the tests that reach them, nearest first, and the command that runs them.
+boundary, the tests that reach them, nearest first, and the command that runs them. Every file
+there opens to the files that depend on it.
 
 ![The Changes tab](docs/images/claude-code-mod/changes-dark.png)
 
