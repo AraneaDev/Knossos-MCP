@@ -209,6 +209,10 @@ describe('changesRows', () => {
 })
 
 describe('look at now', () => {
+  it('draws a file in no boundary without a gap where the boundary would be', () => {
+    const none = accumulate(NO_CHANGES, brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: null } } }))
+    expect(plainText(row(lookAtRows(lookAtOf(changesInput(none, ROOT))!, 60), 'look-file')!)).toBe('   e: Router.php · 41 dependents')
+  })
   it('points at the riskiest file still there, and counts the tests that reach the changes', () => {
     const look = lookAtOf(changesInput(session(), ROOT))!
     expect(look.file?.path).toBe('src/Router.php')

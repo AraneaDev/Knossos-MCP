@@ -257,8 +257,7 @@ export function lookAtRows(look: LookAt, columns: number, hues: Hues = NO_HUES):
     const segments: Segment[] = [
       { text: '   ' },
       button('edit', baseName(f.path), 'e'),
-      { text: ' ' },
-      { text: boundaryLabel(f.boundary), ...boundaryStyle(f.boundary, hues) },
+      ...(f.boundary === null ? [] : [{ text: ' ' }, { text: boundaryLabel(f.boundary), ...boundaryStyle(f.boundary, hues) }]),
       { text: ` · ${plural(f.dependents, 'dependent', 'dependents')}`, dim: true },
     ]
     rows.push({ key: 'look-file', segments: clip(segments.filter(s => s.text !== ''), columns) })
