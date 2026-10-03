@@ -106,7 +106,9 @@ final readonly class BoundaryLabels
     /**
      * The label of each file, by project-relative path: the label among the
      * boundaries its own components belong to (never its dependents'). A file
-     * none of whose components sits in a boundary is absent.
+     * none of whose components sits in a boundary is absent, and so is one
+     * that sits only in a boundary spanning the whole repository: every file
+     * is in that one, so it says nothing about where this file sits.
      *
      * @param list<string> $paths project-relative paths
      * @return array<string, string>
@@ -123,7 +125,9 @@ final readonly class BoundaryLabels
             );
             $statement->execute([$projectId, ...$chunk]);
             foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$path, $id, $name]) {
-                $memberships[(string) $path][] = ['id' => $id, 'name' => $name];
+                if (($this->ranks[(string) $id][1] ?? 0) === 0) {
+                    $memberships[(string) $path][] = ['id' => $id, 'name' => $name];
+                }
             }
         }
 

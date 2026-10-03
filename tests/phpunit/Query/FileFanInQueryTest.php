@@ -73,6 +73,22 @@ final class FileFanInQueryTest extends KnossosTestCase
         assertSame(['Core'], $rows['a.php']['boundaries']);
     }
 
+    /** A boundary spanning the whole repository labels no file: c.php sits only in it, b.php keeps Core. */
+    #[Group('query')]
+    public function testARepositoryWideBoundaryLabelsNoFile(): void
+    {
+        [$pdo, $projectId] = $this->fanInGraph();
+        $repository = new SqliteGraphRepository($pdo);
+        $scanId = (string) $pdo->query('SELECT id FROM scans LIMIT 1')->fetchColumn();
+        $wideId = StableId::boundary($projectId, 'composer:app', 'inferred');
+        $repository->saveBoundary($wideId, $projectId, 'composer:app', ['type' => 'path_prefix', 'value' => ''], 'inferred', $scanId);
+        foreach (['B', 'C'] as $node) {
+            $repository->saveBoundaryMembership($wideId, $projectId, $node, $scanId);
+        }
+        $rows = (new FileFanInQuery($pdo))->forPaths($projectId, ['b.php', 'c.php']);
+        assertSame(['Core', null], [$rows['b.php']['boundary'], $rows['c.php']['boundary']]);
+    }
+
     /** The dependents list honours its limit, and an empty path list asks nothing. */
     #[Group('query')]
     public function testForPathsLimitsDependentsAndAcceptsNoPaths(): void
