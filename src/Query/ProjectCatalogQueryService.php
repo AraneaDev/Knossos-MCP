@@ -378,20 +378,25 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         }
         $listed = $this->listSnapshots($projectId, $limit);
         $series = [];
+        $cache = new SnapshotMetricsCache($this->pdo);
         foreach (array_reverse($listed->data['snapshots']) as $snapshot) {
             if ($snapshot['retained'] && $snapshot['complete_archive'] === false) {
                 $series[] = ['scan_id' => $snapshot['scan_id'], 'captured_at' => $snapshot['captured_at'], 'complete' => false];
                 continue;
             }
-            $loaded = $this->snapshotFacts($projectId, $snapshot['scan_id'], $project['active_scan_id'] ?? '');
-            $metrics = $this->snapshotQualityMetrics($loaded['facts']);
+            // A complete archive never changes, so its figures are computed once (see SnapshotMetricsCache);
+            // the active snapshot is the live tables, computed every time.
+            $archived = !$snapshot['active'] && $snapshot['complete_archive'] === true;
+            $figures = $archived ? $cache->get($snapshot['scan_id'], (string) $snapshot['captured_at'], (int) $snapshot['byte_size']) : null;
+            if ($figures === null) {
+                $figures = $this->snapshotFigures($this->snapshotFacts($projectId, $snapshot['scan_id'], $project['active_scan_id'] ?? '')['facts']);
+                if ($archived) {
+                    $cache->put($snapshot['scan_id'], (string) $snapshot['captured_at'], (int) $snapshot['byte_size'], $figures);
+                }
+            }
             $series[] = ['scan_id' => $snapshot['scan_id'], 'active' => $snapshot['active'], 'complete' => true,
                 'finished_at' => $snapshot['finished_at'], 'scanner_set_hash' => $snapshot['scanner_set_hash'],
-                'config_hash' => $snapshot['config_hash'], 'counts' => [
-                    'components' => count($loaded['facts']['nodes'] ?? []), 'relationships' => count($loaded['facts']['edges'] ?? []),
-                    'roles' => count($loaded['facts']['classifications'] ?? []), 'boundaries' => count($loaded['facts']['boundaries'] ?? []),
-                    'diagnostics' => count($loaded['facts']['diagnostics'] ?? []),
-                ], 'metrics' => $metrics];
+                'config_hash' => $snapshot['config_hash'], 'counts' => $figures['counts'], 'metrics' => $figures['metrics']];
         }
         $releaseNotes = null;
         if ($releaseFrom !== null) {
@@ -722,6 +727,24 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
         }
 
         return false;
+    }
+
+    /**
+     * A snapshot's fact counts and quality metrics, as a trend reports them.
+     *
+     * @param array<string, list<array<string, mixed>>> $facts
+     * @return array{counts: array<string, int>, metrics: array<string, int>}
+     */
+    private function snapshotFigures(array $facts): array
+    {
+        return [
+            'counts' => [
+                'components' => count($facts['nodes'] ?? []), 'relationships' => count($facts['edges'] ?? []),
+                'roles' => count($facts['classifications'] ?? []), 'boundaries' => count($facts['boundaries'] ?? []),
+                'diagnostics' => count($facts['diagnostics'] ?? []),
+            ],
+            'metrics' => $this->snapshotQualityMetrics($facts),
+        ];
     }
 
     /**
