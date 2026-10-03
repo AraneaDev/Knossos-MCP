@@ -23,14 +23,23 @@
  * Usage:
  *   node tools/pane-preview.mjs --data-dir=<dir> [--out=<dir>] [--project=<dir>]
  *                               [--dashboard=<file.json>] [--columns=60,100] [--themes=dark,light]
+ *                               [--only=<view,...>]
+ *   node tools/pane-preview.mjs --readme --data-dir=<dir> [--out=<dir>]
  *
  * Defaults: --out=.superpowers/sdd/2026-10-02-claude-code-mod/preview, the
  * repository as the project.
+ *
+ * `--readme` draws the README's screenshots instead: a few views at one
+ * width, each in a terminal window frame (a title bar, rounded corners, a
+ * soft shadow on a transparent margin) at twice the size for sharp text, to
+ * docs/images/claude-code-mod/, shrunk to a 256-colour palette when python3
+ * with Pillow is there. The Last turn and Changes figures in them
+ * come from a sample turn over this repository's real files.
  */
 import { Buffer } from 'node:buffer'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename as baseName, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const args = Object.fromEntries(
@@ -66,7 +75,8 @@ const rows = await import(join(REPO, 'hooks/lib/rows.ts'))
 const band = await import(join(REPO, 'hooks/lib/band.ts'))
 const palette = await import(join(REPO, 'hooks/lib/palette.ts'))
 
-const OUT = resolve(args.out ?? join(REPO, '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
+const README = 'readme' in args
+const OUT = resolve(args.out ?? join(REPO, README ? 'docs/images/claude-code-mod' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
 const PROJECT = resolve(args.project ?? REPO)
 const DATA_DIR = resolve(args['data-dir'])
 const COLUMNS = (args.columns ?? '60,100').split(',').map(Number)
@@ -241,6 +251,17 @@ function bandRows(cases) {
     })
 }
 
+/** Claude Code's prompt box under the band, empty, in its border colour. */
+function promptRows(columns) {
+  const width = Math.max(4, columns)
+  const edge = (l, r) => ({ key: `prompt-${l}`, segments: [{ text: `${l}${'─'.repeat(width - 2)}${r}`, color: 'promptBorder' }] })
+  return [
+    edge('╭', '╮'),
+    { key: 'prompt-line', segments: [{ text: '│', color: 'promptBorder' }, { text: ' > ', dim: true }, { text: ' '.repeat(width - 5) }, { text: '│', color: 'promptBorder' }] },
+    edge('╰', '╯'),
+  ]
+}
+
 const scannedNow = { ...brief, scanned_at: Math.floor(NOW / 1000) - 42 }
 const violated = {
   ...scannedNow,
@@ -259,6 +280,8 @@ const VIEWS = [
   ['hubs-no-match', pane({ tab: 'hubs', filter: 'zebra' })],
   ['hubs-sort-cross', pane({ tab: 'hubs', sort: 'cross' })],
   ['boundaries', pane({ tab: 'boundaries' })],
+  // Marked on the first boundary a policy binds, so the spelled-out block shows what it may not use.
+  ['boundaries-marked', pane({ tab: 'boundaries', selected: dashboard.boundary_matrix?.forbidden?.[0]?.[0] ?? 0 })],
   ['cycles', pane({ tab: 'cycles' })],
   ['issues', pane({ tab: 'issues' })],
   ['changes', pane({ tab: 'changes', selected: 1 }, { turn: brief })],
@@ -272,6 +295,7 @@ const VIEWS = [
   ['rescan-failed', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'failed', reason: 'the scan timed out' } })],
   ['no-data', columns => layout.emptyRows(null, columns)],
   ['no-data-refused', columns => layout.emptyRows(layout.allowInput(refused, IDLE, null), columns)],
+  ['band-prompt', columns => [...bandRows([['band-ok', scannedNow, JOB_IDLE]])(columns), ...promptRows(columns)]],
   [
     'band',
     bandRows([
@@ -383,20 +407,26 @@ function blockShape(ch, x, y, fg) {
   if (ch === '╸') return `<rect x="${x}" y="${y + h / 2 - 1.5}" width="${w / 2}" height="3" fill="${fg}"/>`
   if (ch === '━') return `<rect x="${x}" y="${y + h / 2 - 1.5}" width="${w}" height="3" fill="${fg}"/>`
   if (ch === '─') return `<rect x="${x}" y="${y + h / 2 - 0.5}" width="${w}" height="1" fill="${fg}"/>`
+  if (ch === '│') return `<rect x="${x + w / 2 - 0.5}" y="${y}" width="1" height="${h}" fill="${fg}"/>`
+  // Rounded corners as terminals draw them: a quarter circle joining the cell's middle lines.
+  const cx = x + w / 2
+  const cy = y + h / 2
+  const r = w / 2
+  const corner = {
+    '╭': `M ${x + w} ${cy} H ${cx + r} A ${r} ${r} 0 0 0 ${cx} ${cy + r} V ${y + h}`,
+    '╮': `M ${x} ${cy} H ${cx - r} A ${r} ${r} 0 0 1 ${cx} ${cy + r} V ${y + h}`,
+    '╰': `M ${cx} ${y} V ${cy - r} A ${r} ${r} 0 0 0 ${cx + r} ${cy} H ${x + w}`,
+    '╯': `M ${cx} ${y} V ${cy - r} A ${r} ${r} 0 0 1 ${cx - r} ${cy} H ${x}`,
+  }[ch]
+  if (corner !== undefined) return `<path d="${corner}" fill="none" stroke="${fg}" stroke-width="1"/>`
   return null
 }
 
-function svgOf(lines, columns, themeName) {
-  const term = TERMINAL[themeName]
-  const width = (columns + PAD_X * 2) * CELL_W
-  const height = (lines.length + PAD_Y * 2) * CELL_H
-  const parts = [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
-    `<rect width="100%" height="100%" fill="${term.bg}"/>`,
-    `<g font-family="DejaVu Sans Mono" font-size="${FONT_SIZE}">`,
-  ]
+/** The cells as SVG, the first at (`ox`, `oy`) pixels. */
+function cellLayer(lines, ox, oy) {
+  const parts = []
   lines.forEach((line, row) => {
-    const y = (row + PAD_Y) * CELL_H
+    const y = oy + row * CELL_H
     let run = null
     const flush = () => {
       if (run === null) return
@@ -408,7 +438,7 @@ function svgOf(lines, columns, themeName) {
       run = null
     }
     line.forEach((cell, col) => {
-      const x = (col + PAD_X) * CELL_W
+      const x = ox + col * CELL_W
       if (cell.bg !== null) parts.push(`<rect x="${x}" y="${y}" width="${CELL_W}" height="${CELL_H}" fill="${cell.bg}"/>`)
       const shape = blockShape(cell.ch, x, y, cell.fg)
       if (shape !== null) {
@@ -427,32 +457,147 @@ function svgOf(lines, columns, themeName) {
     })
     flush()
   })
-  parts.push('</g>', '</svg>')
-  return parts.join('\n')
+  return parts
+}
+
+function svgOf(lines, columns, themeName) {
+  const term = TERMINAL[themeName]
+  const width = (columns + PAD_X * 2) * CELL_W
+  const height = (lines.length + PAD_Y * 2) * CELL_H
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    `<rect width="100%" height="100%" fill="${term.bg}"/>`,
+    `<g font-family="DejaVu Sans Mono" font-size="${FONT_SIZE}">`,
+    ...cellLayer(lines, PAD_X * CELL_W, PAD_Y * CELL_H),
+    '</g>',
+    '</svg>',
+  ].join('\n')
+}
+
+/** The README frame: room for the shadow, the window's corner radius, its title bar and the padding around the cells. */
+const FRAME = { margin: 32, radius: 10, bar: 34, padX: 26, padY: 20 }
+
+/**
+ * The cells in a terminal window: a title bar with three quiet dots and the
+ * title, rounded corners, a hairline edge and a soft shadow that falls on a
+ * transparent margin, so the image sits on a light or a dark page alike.
+ */
+function framedSvg(lines, columns, themeName, title) {
+  const term = TERMINAL[themeName]
+  const dark = themeName.startsWith('dark')
+  const { margin, radius, bar, padX, padY } = FRAME
+  const w = columns * CELL_W + padX * 2
+  const h = bar + lines.length * CELL_H + padY * 2
+  const width = w + margin * 2
+  const height = h + margin * 2
+  const chrome = mix(term.bg, term.fg, dark ? 0.07 : 0.045)
+  const dots = mix(term.bg, term.fg, dark ? 0.28 : 0.22)
+  const edge = dark ? 'stroke="#ffffff" stroke-opacity="0.09"' : 'stroke="#000000" stroke-opacity="0.12"'
+  const x0 = margin
+  const y0 = margin
+  return [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+    '<defs>',
+    `<filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feGaussianBlur in="SourceAlpha" stdDeviation="11"/><feOffset dy="7"/><feComponentTransfer><feFuncA type="linear" slope="${dark ? 0.42 : 0.2}"/></feComponentTransfer></filter>`,
+    `<clipPath id="window"><rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="${radius}"/></clipPath>`,
+    '</defs>',
+    `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="${radius}" fill="#000000" filter="url(#shadow)"/>`,
+    `<g clip-path="url(#window)">`,
+    `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" fill="${term.bg}"/>`,
+    `<rect x="${x0}" y="${y0}" width="${w}" height="${bar}" fill="${chrome}"/>`,
+    `<rect x="${x0}" y="${y0 + bar - 1}" width="${w}" height="1" fill="${mix(term.bg, term.fg, dark ? 0.12 : 0.1)}"/>`,
+    '</g>',
+    ...[0, 1, 2].map(i => `<circle cx="${x0 + 20 + i * 17}" cy="${y0 + bar / 2}" r="5.5" fill="${dots}"/>`),
+    `<text x="${x0 + w / 2}" y="${y0 + bar / 2 + 4.5}" text-anchor="middle" font-family="DejaVu Sans" font-size="13" fill="${mix(term.bg, term.fg, 0.55)}">${esc(title)}</text>`,
+    `<rect x="${x0 + 0.5}" y="${y0 + 0.5}" width="${w - 1}" height="${h - 1}" rx="${radius - 0.5}" fill="none" ${edge}/>`,
+    `<g font-family="DejaVu Sans Mono" font-size="${FONT_SIZE}">`,
+    ...cellLayer(lines, x0 + padX, y0 + bar + padY),
+    '</g>',
+    '</svg>',
+  ].join('\n')
+}
+
+/** SVG to PNG through rsvg-convert, at `zoom`; exits on failure. */
+function png(svg, file, zoom = 1) {
+  const run = spawnSync('rsvg-convert', ['-z', String(zoom), '-o', file], { input: svg })
+  if (run.status !== 0) {
+    console.error(`rsvg-convert failed for ${file}: ${run.stderr}`)
+    process.exit(1)
+  }
 }
 
 // ---------------------------------------------------------------- main
+
+/**
+ * Shrinks a README PNG to a 256-colour palette through Python's Pillow: the
+ * window's opaque pixels get 192 colours (text and flat fills need no more),
+ * and the shadow, which is black at varying opacity, gets 62 steps of its
+ * own and one fully clear entry, so it stays a soft fall-off. A quantizer
+ * left to itself spends too few entries on alpha and draws the shadow as a
+ * flat grey band. Without Pillow the PNG stays as drawn, and says so.
+ */
+function shrink(file) {
+  const script = [
+    'import sys',
+    'from PIL import Image',
+    'path = sys.argv[1]',
+    'image = Image.open(path).convert("RGBA")',
+    'alpha = image.getchannel("A")',
+    'window = image.convert("RGB").quantize(colors=192, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)',
+    'steps = alpha.point(lambda a: 255 if a == 0 else 192 + min(61, a * 62 // 256))',
+    'out = window.copy()',
+    'out.paste(steps, mask=alpha.point(lambda a: 255 if a < 250 else 0))',
+    'palette = window.getpalette()[: 192 * 3] + [0, 0, 0] * 64',
+    'out.putpalette(palette)',
+    'clear = [255] * 192 + [round((i + 0.5) * 256 / 62) for i in range(62)] + [0, 0]',
+    'out.save(path, optimize=True, transparency=bytes(min(255, c) for c in clear))',
+  ].join('\n')
+  const run = spawnSync('python3', ['-c', script, file], { encoding: 'utf8' })
+  if (run.status !== 0) console.error(`pane-preview: kept ${file} unshrunk (python3 with Pillow is needed to shrink it): ${run.stderr}`)
+}
+
+/** The README's screenshots: view, theme, and the window's title. One width for all of them. */
+const README_COLUMNS = 100
+const README_SHOTS = [
+  ['overview', 'dark'],
+  ['changes', 'dark'],
+  ['boundaries-marked', 'dark'],
+  ['cycles', 'dark'],
+  ['detail', 'dark'],
+  ['band-prompt', 'dark'],
+  ['overview', 'light'],
+]
 
 const only = args.only ? new Set(args.only.split(',')) : null
 mkdirSync(OUT, { recursive: true })
 // A full run starts the directory over; `--only` redraws its views beside the rest.
 if (only === null) for (const file of readdirSync(OUT)) if (file.endsWith('.png')) rmSync(join(OUT, file))
 const written = []
-for (const [name, draw] of VIEWS) {
-  if (only !== null && !only.has(name)) continue
-  for (const columns of COLUMNS) {
-    const laidOut = draw(columns)
-    for (const themeName of THEME_NAMES) {
-      const png = join(OUT, `${name}-${columns}-${themeName}.png`)
-      const svg = svgOf(screen(laidOut, themeName), columns, themeName)
-      const run = spawnSync('rsvg-convert', ['-o', png], { input: svg })
-      if (run.status !== 0) {
-        console.error(`rsvg-convert failed for ${png}: ${run.stderr}`)
-        process.exit(1)
+if (README) {
+  const draws = new Map(VIEWS)
+  const project = baseName(dashboard.project_root ?? PROJECT)
+  for (const [name, themeName] of README_SHOTS) {
+    if (only !== null && !only.has(name)) continue
+    const draw = draws.get(name)
+    if (draw === undefined) continue
+    const file = join(OUT, `${name}-${themeName}.png`)
+    const title = name === 'band-prompt' ? `claude · ${project}` : `/knossos · ${project}`
+    png(framedSvg(screen(draw(README_COLUMNS), themeName), README_COLUMNS, themeName, title), file, 2)
+    shrink(file)
+    written.push(file)
+  }
+} else {
+  for (const [name, draw] of VIEWS) {
+    if (only !== null && !only.has(name)) continue
+    for (const columns of COLUMNS) {
+      const laidOut = draw(columns)
+      for (const themeName of THEME_NAMES) {
+        const file = join(OUT, `${name}-${columns}-${themeName}.png`)
+        png(svgOf(screen(laidOut, themeName), columns, themeName), file)
+        written.push(file)
       }
-      written.push(png)
     }
   }
+  writeFileSync(join(OUT, 'index.txt'), `${written.map(p => p.slice(OUT.length + 1)).join('\n')}\n`)
 }
-writeFileSync(join(OUT, 'index.txt'), `${written.map(p => p.slice(OUT.length + 1)).join('\n')}\n`)
 console.log(`${written.length} PNGs in ${OUT}`)

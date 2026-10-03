@@ -49,6 +49,32 @@ each stage asserts and how to read its report.
 tools/install-hooks
 ```
 
+### Previewing the Claude Code pane
+
+`tools/pane-preview.mjs` draws the [Claude Code mod](docs/capabilities/claude-code-mod.md)'s
+pane as PNGs, the way a terminal shows it, so a layout change can be judged without a live
+session. It lays the pane out with the mod's own functions over this repository's graph. It
+needs Node.js with TypeScript type stripping (22.18 or newer), `rsvg-convert`, and the
+DejaVu Sans and DejaVu Sans Mono fonts. It is never installed with the plugin and never runs
+in the quality gate.
+
+The dashboard it reads writes trend cache rows, so it only runs against a copy of the
+database, named with `--data-dir`:
+
+```bash
+D=$(mktemp -d)
+sqlite3 -readonly ~/.knossos/knossos.sqlite ".backup $D/knossos.sqlite"
+cp ~/.knossos/roots.json "$D/"
+KNOSSOS_DATA_DIR="$D" knossos scan .    # optional: a fresh snapshot of the copy
+node tools/pane-preview.mjs --data-dir="$D"             # every view, 60 and 100 columns, dark and light
+node tools/pane-preview.mjs --readme --data-dir="$D"    # the README screenshots
+rm -r "$D"
+```
+
+`--readme` rewrites `docs/images/claude-code-mod/`: framed screenshots at 100 columns, drawn
+at twice their size and shrunk to a 256-colour palette when `python3` with Pillow is
+available. Their "Last turn" and "Changes" figures come from a sample turn over real files.
+
 ## Test Suite Invariants
 
 Two rules exist because breaking either one silently disables mutation testing

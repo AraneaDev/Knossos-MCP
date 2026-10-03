@@ -26,4 +26,13 @@ describe('pane-preview', () => {
     expect(existsSync(out)).toBe(false)
     expect(existsSync(join(scratch, 'data'))).toBe(false)
   })
+
+  it('refuses the README screenshots without --data-dir too, and writes no image', () => {
+    scratch = mkdtempSync(join(tmpdir(), 'knossos-stale-preview-'))
+    const out = join(scratch, 'images')
+    const run = spawnSync(process.execPath, [SCRIPT, '--readme', `--out=${out}`], { encoding: 'utf8' })
+    expect(run.status).toBe(2)
+    expect(run.stderr).toContain('--data-dir=<dir> is required')
+    expect(existsSync(out)).toBe(false)
+  })
 })
