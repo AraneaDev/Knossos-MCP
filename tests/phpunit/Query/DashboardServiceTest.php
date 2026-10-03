@@ -179,6 +179,45 @@ final class DashboardServiceTest extends KnossosTestCase
         }
     }
 
+    /**
+     * The fixture declares Core and Edge; its package inference adds wider
+     * boundaries over the same files. The declared one is the label.
+     */
+    #[Group('query')]
+    public function testEachHubIsLabelledWithItsDeclaredBoundary(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $d = (new DashboardService($pdo))->dashboard($root, 1);
+            $labels = array_column(array_merge($d['hubs'], $d['hotspots']), 'boundary', 'canonical_name');
+            assertSame('Core', $labels['App\\Greeter'] ?? null);
+            assertSame('Core', $labels['App\\Greeter::greet'] ?? null);
+            assertSame('Edge', $labels['App\\Caller::run'] ?? null);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** With no declared boundary the narrowest inferred one wins over the repository-wide package. */
+    #[Group('query')]
+    public function testWithoutDeclaredBoundariesTheNarrowestInferredOneIsTheLabel(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            file_put_contents($root . '/knossos.json', json_encode(['version' => 1], JSON_THROW_ON_ERROR));
+            $this->rescan($pdo, $root);
+            $d = (new DashboardService($pdo))->dashboard($root, 1);
+            $labels = array_filter(array_column(array_merge($d['hubs'], $d['hotspots']), 'boundary'), is_string(...));
+            assertNotSame([], $labels);
+            $wide = (string) $pdo->query("SELECT name FROM boundaries WHERE source = 'inferred' AND matcher_json LIKE '%\"value\":\"\"%'")->fetchColumn();
+            foreach ($labels as $label) {
+                assertNotSame($wide, $label);
+            }
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
     #[Group('query')]
     public function testHubsHotspotsAndDeadCodeAreBoundedAndShaped(): void
     {
@@ -194,7 +233,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['component']['display_name'], $d['hubs'][0]['name']);
             assertSame($health['hubs'][0]['component']['kind'], $d['hubs'][0]['kind']);
             assertSame(
-                ['name', 'canonical_name', 'kind', 'in_degree', 'out_degree', 'cross_boundary_degree'],
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree'],
                 array_keys($d['hubs'][0]),
             );
             // The pane shows the display name and looks the component up by the canonical one.
@@ -203,7 +242,13 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['metrics']['in_degree'], $d['hubs'][0]['in_degree']);
             assertSame($health['hubs'][0]['metrics']['out_degree'], $d['hubs'][0]['out_degree']);
             assertSame($health['hubs'][0]['metrics']['cross_boundary_degree'], $d['hubs'][0]['cross_boundary_degree']);
-            assertSame(['name', 'canonical_name', 'kind', 'score'], array_keys($d['hotspots'][0]));
+            assertSame(
+                ['name', 'canonical_name', 'kind', 'boundary', 'in_degree', 'out_degree', 'cross_boundary_degree', 'score'],
+                array_keys($d['hotspots'][0]),
+            );
+            // A hotspot carries the same degrees the health walk measured for it.
+            assertSame($health['static_hotspots'][0]['factors']['in_degree'], $d['hotspots'][0]['in_degree']);
+            assertSame($health['static_hotspots'][0]['factors']['cross_boundary_degree'], $d['hotspots'][0]['cross_boundary_degree']);
             // Ten of many is the page, not a cut.
             assertSame(false, $d['hubs_truncated']);
             assertSame([], $d['hubs_truncation_reasons']);

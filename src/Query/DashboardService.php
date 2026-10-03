@@ -22,7 +22,8 @@ use PDO;
  * number or list was cut short.
  *
  * Hubs and hotspots are always the top 10; that page is the design, not a
- * truncation, so it never sets `hubs_truncated`.
+ * truncation, so it never sets `hubs_truncated`. Each carries its degrees
+ * and the one boundary the pane labels it with (see {@see self::boundaryOf()}).
  */
 final readonly class DashboardService
 {
@@ -70,6 +71,7 @@ final readonly class DashboardService
         $cycles = $cycleSearch->data['cycles'];
         $fanIn = (new FileFanInQuery($this->pdo))->aboveThreshold($id, $fanInThreshold, $this->fanInCap + 1);
         $series = $queries->architectureTrends($id, self::TREND_POINTS)->data['series'];
+        $specificity = $this->boundarySpecificity($id);
 
         return [
             'status' => 'ok',
@@ -84,22 +86,13 @@ final readonly class DashboardService
                     + (int) ($probe['added_files_since'] ?? 0)
                     + (int) ($probe['deleted_files_since'] ?? 0),
             ],
-            'hubs' => array_map(static fn(array $h): array => [
-                'name' => $h['component']['display_name'],
-                'canonical_name' => $h['component']['canonical_name'],
-                'kind' => $h['component']['kind'],
-                'in_degree' => $h['metrics']['in_degree'],
-                'out_degree' => $h['metrics']['out_degree'],
-                'cross_boundary_degree' => $h['metrics']['cross_boundary_degree'],
-            ], $health['hubs']),
+            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $specificity), $health['hubs']),
             'hubs_truncated' => $hubLimits !== [],
             'hubs_truncation_reasons' => $hubLimits,
-            'hotspots' => array_map(static fn(array $h): array => [
-                'name' => $h['component']['display_name'],
-                'canonical_name' => $h['component']['canonical_name'],
-                'kind' => $h['component']['kind'],
-                'score' => $h['score'],
-            ], $health['static_hotspots']),
+            'hotspots' => array_map(
+                static fn(array $h): array => self::listed($h['component'], $h['factors'], $specificity) + ['score' => $h['score']],
+                $health['static_hotspots'],
+            ),
             // The listed candidates are paged by the health limit, so the
             // total is the honest count; the list length would read as ten.
             'dead_code_candidates' => $health['bounds']['candidates_total'],
@@ -120,6 +113,76 @@ final readonly class DashboardService
             'fan_in' => array_slice($fanIn, 0, $this->fanInCap),
             'fan_in_truncated' => count($fanIn) > $this->fanInCap,
         ];
+    }
+
+    /**
+     * One ranked component as the pane lists it: names, kind, degrees and boundary.
+     *
+     * @param array<string, mixed> $component
+     * @param array<string, mixed> $metrics the degree walk's in, out and cross-boundary degrees
+     * @param array<string, array{int, int, int, string}> $specificity
+     * @return array<string, mixed>
+     */
+    private static function listed(array $component, array $metrics, array $specificity): array
+    {
+        return [
+            'name' => $component['display_name'],
+            'canonical_name' => $component['canonical_name'],
+            'kind' => $component['kind'],
+            'boundary' => self::boundaryOf($component['boundaries'], $specificity),
+            'in_degree' => $metrics['in_degree'],
+            'out_degree' => $metrics['out_degree'],
+            'cross_boundary_degree' => $metrics['cross_boundary_degree'],
+        ];
+    }
+
+    /**
+     * The one boundary a component is labelled with, or null when it has none.
+     *
+     * A component usually sits in several: a declared one, a package, a
+     * namespace and the repository-wide package of a single-package project.
+     * The label is the most telling of them: declared before inferred, then
+     * anything before a boundary spanning the whole repository, then the
+     * fewest members, then the name, so the choice is stable between loads.
+     *
+     * @param list<array<string, mixed>> $boundaries the component's memberships, `id` and `name` each
+     * @param array<string, array{int, int, int, string}> $specificity
+     */
+    private static function boundaryOf(array $boundaries, array $specificity): ?string
+    {
+        $best = null;
+        foreach ($boundaries as $boundary) {
+            $rank = $specificity[$boundary['id']] ?? [2, 2, PHP_INT_MAX, (string) $boundary['name']];
+            if ($best === null || $rank < $best) {
+                $best = $rank;
+            }
+        }
+
+        return $best === null ? null : $best[3];
+    }
+
+    /**
+     * Each of the project's boundaries ranked for {@see self::boundaryOf()}:
+     * declared first, not repository-wide first, fewest members, then name.
+     * One query over the project's boundaries, which number in the tens.
+     *
+     * @return array<string, array{int, int, int, string}>
+     */
+    private function boundarySpecificity(string $projectId): array
+    {
+        $statement = $this->pdo->prepare(
+            'SELECT b.id, b.name, b.source, b.matcher_json, COUNT(bm.node_id) AS members FROM boundaries b '
+            . 'LEFT JOIN boundary_memberships bm ON bm.boundary_id = b.id WHERE b.project_id = :project GROUP BY b.id',
+        );
+        $statement->execute(['project' => $projectId]);
+        $ranks = [];
+        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $matcher = json_decode((string) $row['matcher_json'], true);
+            $wide = is_array($matcher) && ($matcher['type'] ?? null) === 'path_prefix' && ($matcher['value'] ?? null) === '';
+            $ranks[(string) $row['id']] = [$row['source'] === 'explicit' ? 0 : 1, $wide ? 1 : 0, (int) $row['members'], (string) $row['name']];
+        }
+
+        return $ranks;
     }
 
     /**
