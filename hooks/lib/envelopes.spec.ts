@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countLabel, detailLines, parseAllowRoot, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './envelopes'
+import { countLabel, detailLines, fileDetailLines, parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseTurnBrief, rescanReason } from './envelopes'
 
 describe('envelopes', () => {
   it('empty stdout is no data', () => expect(parseTurnBrief('')).toBeNull())
@@ -16,6 +16,7 @@ describe('envelopes', () => {
     expect(parseTurnBrief(answer)?.status).toBe('no-binary')
     expect(parseDashboard(answer)?.status).toBe('no-binary')
     expect(parseComponentDetail(answer)?.status).toBe('no-binary')
+    expect(parseFileDetail(answer)?.status).toBe('no-binary')
   })
   it('a bare null is no data', () => expect(parseTurnBrief('null')).toBeNull())
 })
@@ -121,5 +122,32 @@ describe('parseAllowRoot', () => {
     expect(parseAllowRoot('{"path":"/w/p","added":false,"preview":true}')).toBeNull()
     expect(parseAllowRoot('[1]')).toBeNull()
     expect(parseAllowRoot('{"path":3,"added":true}')).toBeNull()
+  })
+})
+
+describe('file detail', () => {
+  const file = {
+    path: 'src/Router.php',
+    language: 'php',
+    lines: 120,
+    boundary: 'Http',
+    dependents: { count: 2, truncated: false, boundaries: ['Core'], items: [{ path: 'src/Kernel.php', edges: 3, boundary: 'Core' }] },
+    components: { count: 1, truncated: false, items: [{ name: 'Router', canonical_name: 'App\\Router', kind: 'class', line: 7, boundary: 'Http', used_by: 4 }] },
+  }
+  const envelope = (over: Record<string, unknown> = {}) => JSON.stringify({ status: 'ok', path: '/r/src/Router.php', project_id: 'p1', snapshot_id: 's1', file, ...over })
+
+  it('an ok answer parses with its lists', () => expect(parseFileDetail(envelope())?.file?.dependents.items[0]?.path).toBe('src/Kernel.php'))
+  it('an ok answer without its file is no data', () => expect(parseFileDetail(envelope({ file: null }))).toBeNull())
+  it('an ok answer whose lists are missing is no data', () => expect(parseFileDetail(envelope({ file: { ...file, components: {} } }))).toBeNull())
+  it('a component status that is no file status is no data', () => expect(parseFileDetail('{"status":"ambiguous"}')).toBeNull())
+  it('not-found and unscanned parse without a file', () => {
+    expect(parseFileDetail(envelope({ status: 'not-found', file: null }))?.status).toBe('not-found')
+    expect(parseFileDetail(envelope({ status: 'unscanned', file: null }))?.status).toBe('unscanned')
+  })
+  it('says why there is no detail, by status', () => {
+    const not = parseFileDetail(envelope({ status: 'not-found', file: null }))!
+    expect(fileDetailLines(not, 'src/Gone.php')).toEqual(['src/Gone.php is not in the graph: never scanned, ignored, or gone before the snapshot.'])
+    expect(fileDetailLines({ ...not, status: 'unscanned' }, 'a.php')).toEqual(['No Knossos data for this project. Scan it with knossos scan.'])
+    expect(fileDetailLines({ ...not, status: 'error' }, 'a.php')).toEqual(['knossos could not read a.php.'])
   })
 })

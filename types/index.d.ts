@@ -93,7 +93,13 @@ export type Dashboard = {
   project_root: string | null
   project_id: string | null
   snapshot_id: string | null
-  freshness: { state: string; age_seconds: number | null; drift_files: number }
+  /**
+   * `drifted` (absent from an older knossos): the first files that changed
+   * since the snapshot, by path, each with how (`changed`, `added`,
+   * `deleted`) and its own boundary label; `drifted_truncated` when there are
+   * more than it names.
+   */
+  freshness: { state: string; age_seconds: number | null; drift_files: number; drifted?: Drifted[]; drifted_truncated?: boolean }
   hubs: (Ranked & { in_degree: number; out_degree: number; cross_boundary_degree: number })[]
   /** The degree walk stopped at a node, edge or time limit: hubs and hotspots rank only what it reached. */
   hubs_truncated: boolean
@@ -199,16 +205,45 @@ export type ComponentDetail = {
   candidates: string[]
 }
 
-/** The pane's detail for one component: loading, or done with what knossos answered (null when it said nothing). */
-export type DetailState = { snapshot_id: string | null; name: string; detail: ComponentDetail | null; phase: 'loading' | 'done' }
+/** A file that drifted since the snapshot, and how. */
+export type Drifted = { path: string; change: 'changed' | 'added' | 'deleted'; boundary: string | null }
+
+/**
+ * One file as `file-detail` answers: the files that depend on it (exact
+ * `count`, the boundaries they sit in, the most connected few with their
+ * relationship counts) and the components it declares (the most used few,
+ * each with how many components in other files use it). `truncated` when a
+ * list holds fewer than its count.
+ */
+export type FileDetail = {
+  status: 'ok' | 'unscanned' | 'not-found' | 'error' | 'no-binary'
+  path: string
+  project_id: string | null
+  snapshot_id: string | null
+  file: {
+    path: string
+    language: string
+    lines: number | null
+    boundary: string | null
+    dependents: { count: number; truncated: boolean; boundaries: string[]; items: { path: string; edges: number; boundary: string | null }[] }
+    components: { count: number; truncated: boolean; items: (Listed & { line: number | null; boundary: string | null; used_by: number })[] }
+  } | null
+}
+
+/**
+ * The pane's detail for one component or, with `file`, one file (`name` its
+ * project-relative path): loading, or done with what knossos answered (null
+ * when it said nothing), in `detail` for a component and `fileDetail` for a file.
+ */
+export type DetailState = { snapshot_id: string | null; name: string; file?: true; detail: ComponentDetail | null; fileDetail?: FileDetail | null; phase: 'loading' | 'done' }
 
 export type JobState = { phase: 'idle' | 'scanning' | 'failed'; lastAttemptAt: number | null }
 
 /** When the dashboard was last stored (mod clock, ms), and whether the latest refresh since failed. */
 export type RefreshState = { fetchedAt: number | null; failed: boolean }
 
-/** The component the pane shows: `name` is what it is looked up by, `label` what the pane prints. */
-export type Inspected = { name: string; label: string }
+/** The component (or, with `file`, the file) the pane shows: `name` is what it is looked up by, `label` what the pane prints. */
+export type Inspected = { name: string; label: string; file?: true }
 
 /** The pane's tabs, in their hotkey order (1 to 6). */
 export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes'
@@ -251,6 +286,9 @@ export type KnossosView = {
   filter: string
   filtering: boolean
   sort: HubSort
+  /** Whether the files drifted since the snapshot are listed under the header (absent: not). */
+  drift?: boolean  /** Where the tab's marker stood when a detail opened from it: `b` puts it back there. */
+  opened?: number
 }
 
 /** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */

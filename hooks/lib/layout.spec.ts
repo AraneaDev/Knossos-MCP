@@ -255,9 +255,11 @@ describe('paneRows', () => {
   })
 
   it('marks the selected row and keeps the marker inside the list', () => {
-    const rows = paneRows(input({ selected: 1 }), 60)
+    // One marker over the Overview's lists: the last turn's two files come first, then the most depended on.
+    const rows = paneRows(input({ selected: 3 }), 60)
     expect(plainText(row(rows, 'top-1')!)).toMatch(/^› {2}ArchitectureQueryService/)
     expect(plainText(row(rows, 'top-0')!)).toMatch(/^ {3}StableId/)
+    expect(plainText(row(paneRows(input({ selected: 1 }), 60), 'turn-1')!)).toMatch(/^› {2}register\.tsx/)
     const past = paneRows(input({ selected: 99 }), 60)
     expect(plainText(row(past, 'top-4')!).startsWith('›')).toBe(true)
   })
@@ -289,13 +291,21 @@ describe('paneRows', () => {
   it('shows the last turn, health and the top five on the overview', () => {
     const text = textOf(paneRows(input(), 60))
     expect(text).toContain('Last turn')
-    expect(text).toMatch(/2 files → 27 deps · 1 test/)
+    expect(text).toMatch(/2 files → 27 dependents · 1 test/)
     expect(text).toMatch(/TurnBriefService\.php +core +[━╸]+·* +21/)
     expect(text).toMatch(/cycles +2/)
     expect(text).toMatch(/max degree +161/)
     expect(text).toMatch(/dead code +55\n {3}policy +✓ 0\n/)
     expect(text).toContain('Most depended on')
-    expect(listFor(input())).toHaveLength(5)
+    // The last turn's files are walked first, each a file row that opens as its detail.
+    const list = listFor(input())
+    expect(list).toHaveLength(7)
+    expect(list.slice(0, 2).map(o => [o.canonical, o.file])).toEqual([
+      ['src/Query/TurnBriefService.php', true],
+      ['hooks/register.tsx', true],
+    ])
+    expect(row(paneRows(input(), 60), 'turn-0')!.segments.find(s => s.press)?.press?.id).toBe('row:0')
+    expect(row(paneRows(input(), 60), 'top-0')!.segments.find(s => s.press)?.press?.id).toBe('row:2')
   })
 
   it('draws a trend only from five snapshots that move', () => {

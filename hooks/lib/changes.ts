@@ -7,7 +7,7 @@
  * the rest reads that total. Every list is capped, and a cap that bit says so.
  */
 import type { JsRunner, SessionChanges, TouchStatus, TurnBrief } from '../../types'
-import { boundaryLabel, HEADING, NO_HUES, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, HEADING, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
   baseName,
@@ -209,7 +209,7 @@ export function testsRan(path: string, commands: string[]): boolean {
 }
 
 /** A boundary's place in `hues` (the project's colour order), past the end for one it does not hold. */
-function rankIn(hues: Hues): (boundary: string) => number {
+export function rankIn(hues: Hues): (boundary: string) => number {
   const order = [...hues.keys()]
   return b => (order.includes(b) ? order.indexOf(b) : order.length)
 }
@@ -259,7 +259,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
   }
 }
 
-/** The files the Changes tab walks: each opens in the editor, not as a component. */
+/** The files the Changes tab walks: each opens as a file's detail (who depends on it), and `e` opens it in the editor. */
 export function changesList(input: ChangesInput): Openable[] {
   return input.files.map(f => ({ name: f.path, canonical: f.path, loc: f.loc, file: true }))
 }
@@ -277,37 +277,59 @@ export function lookAtOf(input: ChangesInput): LookAt | null {
 /** Count of `n` with a `+` when a cap made it a floor. */
 const floor = (n: number, plus: boolean) => `${grouped(n)}${plus ? '+' : ''}`
 
+/** The Overview list rows "Look at now" adds before the last turn's: its file, when there is one. */
+export const lookAtList = (look: LookAt | null): Openable[] =>
+  look?.file ? [{ name: look.file.path, canonical: look.file.path, loc: look.file.loc, file: true }] : []
+
 /**
- * The Overview's "Look at now": the riskiest file this session touched, a
- * key (`e`) away from the editor, and the tests that reach the changes, a
- * key (`t`) away from a copied command; a warning when no test reaches them.
+ * The Overview's "Look at now", scoped to this session in its header: the
+ * riskiest file it touched, the first row the marker walks (so `o` shows who
+ * depends on it and `e` opens it, as on any file row), and the tests that
+ * reach these changes, a key (`t`) away from a copied command; a warning
+ * when no test reaches them.
  */
-export function lookAtRows(look: LookAt, columns: number, hues: Hues = NO_HUES): Row[] {
-  const rows: Row[] = [sectionRow('look-head', 'Look at now', '', columns)]
+export function lookAtRows(look: LookAt, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
+  const rows: Row[] = [sectionRow('look-head', 'Look at now', 'this session', columns)]
   if (look.file !== null) {
     const f = look.file
     const segments: Segment[] = [
-      { text: '   ' },
-      button('edit', baseName(f.path), 'e'),
+      { text: selected === 0 ? '›' : ' ', color: ACCENT, bold: true },
+      { text: '  ' },
+      button('row:0', baseName(f.path)),
       ...(f.boundary === null ? [] : [{ text: ' ' }, { text: boundaryLabel(f.boundary), ...boundaryStyle(f.boundary, hues) }]),
       { text: ` · ${plural(f.dependents, 'dependent', 'dependents')}`, dim: true },
     ]
     rows.push({ key: 'look-file', segments: clip(segments.filter(s => s.text !== ''), columns) })
   }
-  const tests: Segment[] =
-    look.tests === 0
-      ? [{ text: '   ' }, { text: "▲ no test reaches this session's changes", color: STATUS_COLOURS.warn }]
-      : [
-          { text: '   ' },
-          ...(look.command === null ? [] : [button('tests', 'copy test command', 't'), { text: ' · ', dim: true }]),
-          { text: `${floor(look.tests, look.plus)} ${look.tests === 1 && !look.plus ? 'test reaches' : 'tests reach'} the changes`, dim: true },
-        ]
-  rows.push({ key: 'look-tests', segments: clip(tests, columns) })
-  return rows
+  if (look.tests === 0) {
+    rows.push({ key: 'look-tests', segments: clip([{ text: '   ' }, { text: '▲ no test reaches these changes', color: STATUS_COLOURS.warn }], columns) })
+    return rows
+  }
+  const said = `${floor(look.tests, look.plus)} ${look.tests === 1 && !look.plus ? 'test reaches' : 'tests reach'} these changes`
+  const groups: Segment[][] = [...(look.command === null ? [] : [[button('tests', 'copy test command', 't')]]), [{ text: said, dim: true }]]
+  return [...rows, ...wrapGroups('look-tests', groups, columns, 3, 3)]
+}
+
+/**
+ * A line of what something reaches: `lead` (the files and their dependents,
+ * or nothing), then the best ranked few boundaries in their colours and the rest counted,
+ * so the line stays a line and not a rainbow. Fewer are named when the pane
+ * is narrow, so the count never wraps onto a line of its own.
+ */
+export function reachRows(key: string, lead: string, boundaries: string[], columns: number, hues: Hues = NO_HUES): Row[] {
+  const groups = (shown: number): Segment[][] => {
+    const named = boundaries.slice(0, shown)
+    const out: Segment[][] = lead === '' ? [] : [[{ text: lead, dim: true }]]
+    if (named.length > 0) out.push([{ text: 'reaching', dim: true }], ...named.map(b => [{ text: boundaryLabel(b), ...boundaryStyle(b, hues) }]))
+    if (boundaries.length > named.length) out.push([{ text: `+${boundaries.length - named.length} more`, dim: true }])
+    return out
+  }
+  const shown = [REACH_SHOWN, 2, 1].find(n => wrapGroups(key, groups(n), columns, 1, 3).length === 1) ?? REACH_SHOWN
+  return wrapGroups(key, groups(shown), columns, 1, 3)
 }
 
 /** A one-cell mark for how a file stands: `+` added, `−` deleted, nothing for changed. */
-function statusMark(status: TouchStatus): Segment {
+export function statusMark(status: TouchStatus): Segment {
   if (status === 'added') return { text: '+', color: STATUS_COLOURS.ok }
   return status === 'deleted' ? { text: '−', color: STATUS_COLOURS.alert } : { text: ' ' }
 }
@@ -332,24 +354,14 @@ export function changesRows(input: ChangesInput, selected: number, columns: numb
   const note = `${plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
   rows.push(sectionRow('changes-head', 'Changes this session', note, sectionWidth(specWidth(spec), 'Changes this session', note, columns)))
   // What the changes reach: the dependents, and every boundary they are in, each in its colour.
-  // The best ranked few in colour; the rest counted, so the line stays a line and not a rainbow.
-  // Fewer are named when the pane is narrow, so the count never wraps onto a line of its own.
-  const reachOf = (shown: number): Segment[][] => {
-    const named = input.boundaries.slice(0, shown)
-    const groups: Segment[][] = [[{ text: `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, dim: true }]]
-    if (named.length > 0) groups.push([{ text: 'reaching', dim: true }], ...named.map(b => [{ text: boundaryLabel(b), ...boundaryStyle(b, hues) }]))
-    if (input.boundaries.length > named.length) groups.push([{ text: `+${input.boundaries.length - named.length} more`, dim: true }])
-    return groups
-  }
-  const shown = [REACH_SHOWN, 2, 1].find(n => wrapGroups('changes-reach', reachOf(n), columns, 1, 3).length === 1) ?? REACH_SHOWN
-  rows.push(...wrapGroups('changes-reach', reachOf(shown), columns, 1, 3))
+  rows.push(...reachRows('changes-reach', `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, input.boundaries, columns, hues))
   if (input.violations > 0) {
     rows.push({ key: 'changes-policy', segments: [{ text: '   ' }, { text: `▲ ${plural(input.violations, 'policy violation', 'policy violations')} introduced`, color: STATUS_COLOURS.alert }] })
   }
   rows.push(tableHead('changes-cols', spec, { name: 'file', boundary: 'boundary', numbers: ['deps'] }))
   input.files.forEach((f, i) =>
     rows.push(
-      tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), cutStart: true, link: f.loc }, spec, hues),
+      tableRow(`change-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, selected: i === selected, mark: statusMark(f.status), cutStart: true, press: `row:${i}` }, spec, hues),
     ),
   )
   rows.push(blank('gap-tests'), ...testRows(input, columns, hues))
@@ -361,13 +373,13 @@ function testRows(input: ChangesInput, columns: number, hues: Hues): Row[] {
   const count = `${grouped(input.tests.length)}${input.truncated ? '+' : ''}`
   if (input.tests.length === 0) {
     return [
-      sectionRow('tests-head', 'Tests that reach them', '', columns),
-      { key: 'tests-none', segments: [{ text: '   ' }, { text: '▲ none: no test reaches these changes', color: STATUS_COLOURS.warn }] },
+      sectionRow('tests-head', 'Tests that reach these changes', '', columns),
+      { key: 'tests-none', segments: [{ text: '   ' }, { text: '▲ no test reaches these changes', color: STATUS_COLOURS.warn }] },
     ]
   }
   const shown = input.tests.slice(0, TESTS_SHOWN)
   const spec = { ...tableSpec(columns, shown.map(t => t.path), [], [numberWidth('hops', shown.map(t => t.distance))], PATH_MAX), bar: 0 }
-  const title = 'Tests that reach them'
+  const title = 'Tests that reach these changes'
   const rows: Row[] = [sectionRow('tests-head', title, 'hops', sectionWidth(specWidth(spec), `${title} · ${count}`, 'hops', columns), count)]
   shown.forEach((t, i) => rows.push(tableRow(`test-${i}`, { name: t.path, boundary: null, values: [t.distance], max: 0, cutStart: true, link: t.loc }, spec, hues)))
   if (input.tests.length > shown.length) rows.push(dimRow('tests-more', `   +${input.tests.length - shown.length} more`, columns))

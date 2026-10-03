@@ -199,7 +199,7 @@ describe('changesRows', () => {
   it('says what will show before anything changed', () => {
     expect(textOf(changesRows(changesInput(NO_CHANGES, ROOT), 0, 60))).toMatch(/Changes this session\n {3}Nothing yet. The files Claude edits show here/)
   })
-  it('draws files with their marks and links, the tests, and the command', () => {
+  it('draws files with their marks, each pressable to its detail, the tests, and the command', () => {
     const rows = changesRows(changesInput(session(), ROOT), 1, 90)
     const text = textOf(rows)
     expect(text).toMatch(/Changes this session +2 turns/)
@@ -207,9 +207,10 @@ describe('changesRows', () => {
     expect(text).toContain('▲ 1 policy violation introduced')
     expect(plainText(row(rows, 'change-1')!)).toMatch(/^›\+ src\/Core\/Kernel\.php +Core +━/)
     expect(plainText(row(rows, 'change-2')!)).toMatch(/^ − src\/Helper\.php/)
-    expect(row(rows, 'change-0')!.segments.find(s => s.link)?.link).toEqual({ path: '/work/app/src/Router.php', line: null })
-    expect(row(rows, 'change-2')!.segments.some(s => s.link)).toBe(false)
-    expect(text).toMatch(/Tests that reach them · 2 +hops/)
+    // A file opens as its detail, by the same index the marker walks; `e` opens it in the editor.
+    expect(row(rows, 'change-0')!.segments.find(s => s.press)?.press).toEqual({ id: 'row:0', label: 'src/Router.php' })
+    expect(row(rows, 'change-2')!.segments.find(s => s.press)?.press?.id).toBe('row:2')
+    expect(text).toMatch(/Tests that reach these changes · 2 +hops/)
     expect(text).toContain("$ vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
   })
   it('names fewer boundaries on a narrow pane rather than leave the count on a line of its own', () => {
@@ -223,7 +224,7 @@ describe('changesRows', () => {
   })
   it('warns when no test reaches the changes', () => {
     const none = accumulate(NO_CHANGES, brief({ tests: [] }))
-    expect(textOf(changesRows(changesInput(none, ROOT), 0, 60))).toContain('▲ none: no test reaches these changes')
+    expect(textOf(changesRows(changesInput(none, ROOT), 0, 60))).toContain('▲ no test reaches these changes')
   })
   it('never draws wider than the columns', () => {
     const long = accumulate(
@@ -243,18 +244,25 @@ describe('changesRows', () => {
 describe('look at now', () => {
   it('draws a file in no boundary without a gap where the boundary would be', () => {
     const none = accumulate(NO_CHANGES, brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: null } } }))
-    expect(plainText(row(lookAtRows(lookAtOf(changesInput(none, ROOT))!, 60), 'look-file')!)).toBe('   e: Router.php · 41 dependents')
+    expect(plainText(row(lookAtRows(lookAtOf(changesInput(none, ROOT))!, 60), 'look-file')!)).toBe('   Router.php · 41 dependents')
   })
   it('points at the riskiest file still there, and counts the tests that reach the changes', () => {
     const look = lookAtOf(changesInput(session(), ROOT))!
     expect(look.file?.path).toBe('src/Router.php')
     expect(look.tests).toBe(2)
-    const rows = lookAtRows(look, 60)
-    expect(plainText(row(rows, 'look-file')!)).toBe('   e: Router.php Http · 42 dependents')
-    expect(plainText(row(rows, 'look-tests')!)).toBe('   t: copy test command · 2 tests reach the changes')
+    // Scoped in its header: these counts are the session's, never the last turn's.
+    const rows = lookAtRows(look, 60, undefined, 0)
+    expect(plainText(row(rows, 'look-head')!)).toMatch(/^Look at now +this session$/)
+    // The first row the Overview's marker walks: pressed, it opens as the file's detail.
+    expect(plainText(row(rows, 'look-file')!)).toBe('›  Router.php Http · 42 dependents')
+    expect(row(rows, 'look-file')!.segments.find(s => s.press)?.press?.id).toBe('row:0')
+    expect(plainText(row(rows, 'look-tests')!)).toBe('   t: copy test command   2 tests reach these changes')
+    // Narrow, the count goes onto its own line rather than off the edge.
+    const narrow = lookAtRows(look, 40).filter(r => r.key.startsWith('look-tests'))
+    expect(narrow.map(r => plainText(r).trim())).toEqual(['t: copy test command', '2 tests reach these changes'])
     expect(lookAtOf(changesInput(NO_CHANGES, ROOT))).toBeNull()
   })
-  it('sits first on the Overview, where e opens its file, at every width', () => {
+  it('sits first on the Overview, marked, where e opens its file, at every width', () => {
     const d = { ...dash(), project_root: ROOT } as Dashboard
     const v: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
     const pane = paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, v, 0, true, null, null, session())

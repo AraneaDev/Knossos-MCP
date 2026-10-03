@@ -66,6 +66,7 @@ function world(
     dashboard?: Answer[]
     brief?: Answer[]
     detail?: Answer[]
+    file?: Answer[]
     scan?: Answer[]
     allow?: Answer[]
     editor?: 'opens' | 'missing'
@@ -80,6 +81,7 @@ function world(
     dashboard: answers.dashboard ?? [{ stdout: dashboard }],
     brief: answers.brief ?? [{ stdout: brief() }],
     detail: answers.detail ?? [{ stdout: '' }],
+    file: answers.file ?? [{ stdout: '' }],
     scan: answers.scan ?? [{ stdout: '{"status":"ok"}' }],
     allow: answers.allow ?? [{ stdout: '{"path":"/repo","roots_file":"/data/roots.json","added":true}' }],
   }
@@ -167,11 +169,13 @@ function world(
         ? queues.dashboard
         : sub === 'component-detail'
           ? queues.detail
-          : sub === 'scan'
-            ? queues.scan
-            : sub === 'allow-root'
-              ? queues.allow
-              : queues.brief
+          : sub === 'file-detail'
+            ? queues.file
+            : sub === 'scan'
+              ? queues.scan
+              : sub === 'allow-root'
+                ? queues.allow
+                : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -183,11 +187,12 @@ function world(
   on('tool.call', (_$, e) => ({ result: {} as never, text: `ran ${e.tool}` }))
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
   const detailRuns = () => calls.filter(c => c[2] === 'component-detail')
+  const fileRuns = () => calls.filter(c => c[2] === 'file-detail')
   const scanRuns = () => calls.filter(c => c[2] === 'scan')
   const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
   const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
   const editorRuns = () => calls.filter(c => c[0] === 'code')
-  return { registered, clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  return { registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -377,6 +382,38 @@ const fullDetailOf = (name: string) =>
         items: [{ name: 'Request', canonical_name: 'App\\Http\\Request', kind: 'class', boundary: 'Http', edges: 2 }],
       },
       annotations: [{ kind: 'note', value: 'The one way in.' }],
+    },
+  })
+
+/** What `file-detail --json` prints for a file two others depend on (fourteen in all). */
+const fileDetailOf = (path: string) =>
+  JSON.stringify({
+    status: 'ok',
+    path: `${ROOT}/${path}`,
+    project_id: 'p1',
+    snapshot_id: 's1',
+    file: {
+      path,
+      language: 'php',
+      lines: 120,
+      boundary: 'Http',
+      dependents: {
+        count: 14,
+        truncated: true,
+        boundaries: ['Core', 'tests'],
+        items: [
+          { path: 'src/Core/Kernel.php', edges: 6, boundary: 'Core' },
+          { path: 'tests/Http/RouterTest.php', edges: 2, boundary: 'tests' },
+        ],
+      },
+      components: {
+        count: 2,
+        truncated: false,
+        items: [
+          { name: 'Router', canonical_name: 'App\\Router', kind: 'class', line: 7, boundary: 'Http', used_by: 9 },
+          { name: 'route', canonical_name: 'App\\Router::route', kind: 'method', line: 20, boundary: 'Http', used_by: 3 },
+        ],
+      },
     },
   })
 
@@ -2139,7 +2176,8 @@ describe('knossos mod', () => {
       await ui.press({ key: 'ask' })
       await w.clock.settle()
       expect(w.prompts).toHaveLength(surface === 'terminal' ? 1 : 2)
-      expect(w.prompts.at(-1)).toBe('Using the Knossos graph, what depends on App\\Router and what would break if I changed it?')
+      // The marker starts on the file the turn touched ("Look at now"): the prompt is about it.
+      expect(w.prompts.at(-1)).toBe('Using the Knossos graph, what depends on src/Router.php and what would break if I changed it?')
       await ui.unmount()
     }
   })
@@ -2323,17 +2361,21 @@ describe('knossos mod', () => {
       expect(drawn((await ui.find({ key: 'change-0' }))?.text ?? '')).toMatch(/^› +src\/Router\.php +Http .*42$/)
       expect(drawn((await ui.find({ key: 'change-1' }))?.text ?? '')).toMatch(/^ \+ src\/Kernel\.php +Core .*3$/)
       // Each test once, at its nearest distance.
-      expect(text).toMatch(/Tests that reach them · 2 +hops/)
+      expect(text).toMatch(/Tests that reach these changes · 2 +hops/)
       expect(drawn((await ui.find({ key: 'test-0' }))?.text ?? '')).toMatch(/tests\/Core\/KernelTest\.php +1$/)
       expect(drawn((await ui.find({ key: 'test-1' }))?.text ?? '')).toMatch(/tests\/Http\/RouterTest\.php +1$/)
       expect(text).toContain("$ vendor/bin/phpunit --filter '(KernelTest|RouterTest)'")
-      await ui.press({ key: 'copy' })
+      // `t` copies the test command, as on Overview; `c` copies the marked file, as on every list.
+      await ui.press({ key: 'tests' })
       await w.clock.settle()
       expect(w.copies.at(-1)).toEqual({ text: "vendor/bin/phpunit --filter '(KernelTest|RouterTest)'", surface })
       expect(w.toasts.at(-1)).toBe('Copied the command for 2 tests')
-      // A file opens in the editor, not as a component.
+      await ui.press({ key: 'copy' })
+      await w.clock.settle()
+      expect(w.copies.at(-1)).toEqual({ text: 'src/Router.php', surface })
+      // `e` opens the marked file in the editor.
       await ui.press({ key: 'down' })
-      await ui.press({ key: 'open' })
+      await ui.press({ key: 'edit' })
       await w.clock.settle()
       expect(w.editorRuns().at(-1)).toEqual(['code', '-g', '/repo/src/Kernel.php'])
       await ui.press({ key: 'tab:overview' })
@@ -2343,7 +2385,95 @@ describe('knossos mod', () => {
     expect(w.prompts).toEqual([])
   })
 
-  test('look at now: e opens the riskiest file touched and t copies the test command', async ($, on) => {
+  test('a changed file opens a detail that names who depends on it, from Changes, Last turn and Look at now', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], file: [{ stdout: fileDetailOf('src/Router.php') }], detail: [{ stdout: fullDetailOf('Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      // Look at now is row 0, the last turn's file row 1; each opens the same file's detail.
+      for (const [tab, key] of [['tab:overview', 'row:0'], ['tab:overview', 'row:1'], ['tab:changes', 'row:0']] as const) {
+        await ui.press({ key: tab })
+        await ui.press({ key })
+        await w.clock.settle()
+        const text = drawn((await ui.find({ key: 'detail' }))?.text ?? '')
+        expect(text, `${tab} ${key}`).toMatch(/Router\.php +Http/)
+        expect(text).toMatch(/Depended on by 14 files +edges/)
+        expect(drawn((await ui.find({ key: 'dep-0' }))?.text ?? '')).toMatch(/^› +src\/Core\/Kernel\.php +Core .*6$/)
+        expect(text).toMatch(/Declares 2 components/)
+        await ui.press({ key: 'back' })
+        // Back on the tab, the marker stands where the detail was opened from.
+        expect((await ui.find({ key: key === 'row:1' ? 'turn-0' : tab === 'tab:changes' ? 'change-0' : 'look-file' }))?.text).toMatch(/^›/)
+      }
+      await ui.unmount()
+    }
+    // Read once per snapshot, by its path under the project root.
+    expect(w.fileRuns()).toEqual([['sh', expect.stringMatching(/knossos-run\.sh$/), 'file-detail', ROOT, 'src/Router.php']])
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    // From the detail, a dependent opens as its own file detail, a component as a component's.
+    await ui.press({ key: 'row:1' })
+    await w.clock.settle()
+    expect(w.fileRuns().at(-1)?.slice(2)).toEqual(['file-detail', ROOT, 'tests/Http/RouterTest.php'])
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'tab:changes' })
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    await ui.press({ key: 'row:2' })
+    await w.clock.settle()
+    expect(w.detailRuns().at(-1)?.slice(2)).toEqual(['component-detail', ROOT, 'App\\Router'])
+    await ui.unmount()
+  })
+
+  test('the drifted files are named where their count stands, and each opens', async ($, on) => {
+    const drifted = issuesDashboard({
+      freshness: {
+        state: 'stale',
+        age_seconds: 60,
+        drift_files: 2,
+        drifted: [
+          { path: 'src/Gone.php', change: 'deleted', boundary: 'Core' },
+          { path: 'src/Router.php', change: 'changed', boundary: 'Http' },
+        ],
+        drifted_truncated: false,
+      },
+    })
+    const w = world(on, { dashboard: [{ stdout: drifted }], file: [{ stdout: fileDetailOf('src/Router.php') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      expect((await ui.find({ key: 'drifted' }))?.props.label).toBe('2 drifted')
+      expect(await ui.find({ key: 'drift-head' })).toBeUndefined()
+      await ui.press({ key: 'drifted' })
+      expect(drawn((await ui.find({ key: 'drift-0' }))?.text ?? '')).toMatch(/^›− src\/Gone\.php +Core$/)
+      // A deleted file has nothing for the editor; the changed one does.
+      expect(await ui.find({ key: 'edit' })).toBeUndefined()
+      await ui.press({ key: 'down' })
+      await ui.press({ key: 'edit' })
+      await w.clock.settle()
+      expect(w.editorRuns().at(-1)).toEqual(['code', '-g', '/repo/src/Router.php'])
+      await ui.press({ key: 'open' })
+      await w.clock.settle()
+      expect(drawn((await ui.find({ key: 'detail' }))?.text ?? '')).toMatch(/Depended on by 14 files/)
+      await ui.press({ key: 'back' })
+      // `d` hides them again; a tab switch does too.
+      await ui.press({ key: 'drift' })
+      expect(await ui.find({ key: 'drift-head' })).toBeUndefined()
+      await ui.press({ key: 'drift' })
+      await ui.press({ key: 'tab:hubs' })
+      expect(await ui.find({ key: 'drift-head' })).toBeUndefined()
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
+  })
+
+  test('look at now: the marker starts on the riskiest file touched, e opens the marked row and t copies the test command', async ($, on) => {
     const covered = brief({ tests: [{ path: 'hooks/lib/band.spec.ts', distance: 1, js_runner: 'vitest' }] })
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: covered }] })
     await $.session.start(START)
@@ -2353,14 +2483,22 @@ describe('knossos mod', () => {
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
-    expect((await ui.find({ key: 'look-file' }))?.text).toMatch(/Router\.php Http · 41 dependents/)
-    expect((await ui.find({ key: 'edit' }))?.props.hotkey).toBe('e')
-    expect((await ui.find({ key: 'look-tests' }))?.text).toContain('1 test reaches the changes')
+    expect((await ui.find({ key: 'look-head' }))?.text).toMatch(/Look at now +this session/)
+    expect((await ui.find({ key: 'look-file' }))?.text).toMatch(/^› +Router\.php Http · 41 dependents/)
+    expect((await ui.find({ key: 'look-tests' }))?.text).toContain('1 test reaches these changes')
     await ui.press({ key: 'edit' })
     await ui.press({ key: 'tests' })
     await w.clock.settle()
     expect(w.editorRuns()).toEqual([['code', '-g', '/repo/src/Router.php']])
     expect(w.copies.at(-1)?.text).toBe('npx vitest run hooks/lib/band.spec.ts')
+    // Past the two file rows the marker is on the hub, which has no file: `e` goes, and opens nothing.
+    await ui.press({ key: 'down' })
+    await ui.press({ key: 'down' })
+    expect(await ui.find({ key: 'edit' })).toBeUndefined()
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    expect(w.detailRuns().at(-1)?.slice(2)).toEqual(['component-detail', ROOT, 'App\\Router'])
+    expect(w.editorRuns()).toHaveLength(1)
     await ui.unmount()
   })
 
@@ -2372,7 +2510,7 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     const again = await mountPane($)
-    expect((await again.find({ key: 'look-tests' }))?.text).toContain("▲ no test reaches this session's changes")
+    expect((await again.find({ key: 'look-tests' }))?.text).toContain('▲ no test reaches these changes')
     expect(await again.find({ key: 'tests' })).toBeUndefined()
     await again.unmount()
   })

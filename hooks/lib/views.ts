@@ -40,6 +40,7 @@ import {
   wrapWords,
 } from './rows'
 import type { Loc, Row, Segment } from './rows'
+import type { FileView } from './files'
 
 /**
  * A row the marker can walk to: `name` to show, `canonical` to look it up by,
@@ -91,6 +92,8 @@ export type DetailInput = {
     uses: Side
     annotations: { kind: string; value: string }[]
   } | null
+  /** Present (null until it is read) when the detail is a file's, not a component's. */
+  file?: FileView | null
 }
 
 /** Below this many columns the detail stacks "used by" over "uses"; at or above it they sit side by side. */

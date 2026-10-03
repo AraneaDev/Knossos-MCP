@@ -1,8 +1,8 @@
-import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation } from '../../types'
+import type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
-export type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation }
+export type { AllowRoot, BoundaryRef, ComponentDetail, Dashboard, FanIn, FileDetail, Listed, Related, Rescan, TurnBrief, Violation }
 
 // `no-binary` is the wrapper's own answer when there is nothing to run; every envelope may be it.
 const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
@@ -15,6 +15,8 @@ const DASH_OBJECTS = ['cycles', 'freshness']
 const DETAIL = new Set(['ok', 'unscanned', 'not-found', 'ambiguous', 'error', 'no-binary'])
 const DETAIL_ARRAYS = ['candidates']
 const DETAIL_OBJECTS = ['component']
+const FILE = new Set(['ok', 'unscanned', 'not-found', 'error', 'no-binary'])
+const FILE_OBJECTS = ['file']
 const RESCAN = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
 
 const isObject = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v)
@@ -83,6 +85,22 @@ export function detailLines(detail: ComponentDetail, name: string): string[] {
   if (detail.status === 'ambiguous') return [`"${name}" names more than one component: ${detail.candidates.join(', ')}`]
   if (detail.status === 'unscanned') return ['No Knossos data for this project. Scan it with knossos scan.']
   return [`knossos could not read ${name}.`]
+}
+
+/** A file's detail from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseFileDetail(stdout: string): FileDetail | null {
+  const parsed = parse(stdout, FILE, [], FILE_OBJECTS) as FileDetail | null
+  // The lists are drawn as they come: an `ok` without them is as unexpected as one without the file.
+  const file = parsed?.status === 'ok' ? parsed.file : null
+  if (file !== null && file !== undefined && !(Array.isArray(file.dependents?.items) && Array.isArray(file.components?.items))) return null
+  return parsed
+}
+
+/** What the pane says instead of a file's detail, by the status knossos answered with; `path` is the file asked about. */
+export function fileDetailLines(detail: FileDetail, path: string): string[] {
+  if (detail.status === 'not-found') return [`${path} is not in the graph: never scanned, ignored, or gone before the snapshot.`]
+  if (detail.status === 'unscanned') return ['No Knossos data for this project. Scan it with knossos scan.']
+  return [`knossos could not read ${path}.`]
 }
 
 /** A rescan's answer from the wrapper's stdout; null for silence or anything unexpected. */

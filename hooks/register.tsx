@@ -3,7 +3,7 @@ import type { Elements, EngineInterface, Register, RenderSurface, Timer } from '
 
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { parseAllowRoot, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseAllowRoot, parseComponentDetail, parseDashboard, parseFileDetail, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { TurnBrief } from './lib/envelopes'
 import {
   accumulate,
@@ -14,6 +14,7 @@ import {
   detailInput,
   editTarget,
   emptyRows,
+  fileDetailInput,
   linkMarkdown,
   listFor,
   locOf,
@@ -30,12 +31,12 @@ import {
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Row } from './lib/layout'
 import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
-import { declaredOf } from './lib/palette'
+import { declaredOf, huesOf } from './lib/palette'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, DetailState, Inspected, KnossosView, PaneTab, RefreshState, RescanState, SessionChanges } from '../types'
+import type { AllowState, ComponentDetail, DetailState, FileDetail, Inspected, KnossosView, PaneTab, RefreshState, RescanState, SessionChanges } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -327,7 +328,7 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   mod.dashboardStored = true
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
-  if (shown !== null) await requestDetail($, shown.name)
+  if (shown !== null) await requestDetail($, shown)
 }
 
 /**
@@ -355,49 +356,61 @@ async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> 
 }
 
 /**
- * Shows one component on the pane and starts its lookup. The lookup runs on
- * a timer, never inside a render: the pane draws "Inspecting <name>…" from
- * state until the answer is stored.
+ * Shows one component (or, with `file`, one file) on the pane and starts its
+ * lookup. The lookup runs on a timer, never inside a render: the pane draws
+ * a loading line from state until the answer is stored.
  */
 async function showComponent($: EngineInterface, shown: Inspected): Promise<void> {
-  await update($, view, v => ({ ...v, inspect: shown }))
-  await requestDetail($, shown.name)
+  // The detail's marker starts on its first row; the tab's is kept for `b` to put back.
+  await update($, view, v => ({ ...v, inspect: shown, selected: 0, opened: v.inspect === null ? v.selected : v.opened }))
+  await requestDetail($, shown)
 }
 
-/** Starts a lookup of `name` unless one is running or done for this snapshot; silence is asked again. */
-async function requestDetail($: EngineInterface, name: string): Promise<void> {
+/** Whether a stored detail is the one asked for: the same name, kind and snapshot. */
+const sameDetail = (state: DetailState | null, shown: Inspected, snapshot: string | null): boolean =>
+  state !== null && state.name === shown.name && (state.file === true) === (shown.file === true) && state.snapshot_id === snapshot
+
+/** Starts a lookup of what `shown` names unless one is running or done for this snapshot; silence is asked again. */
+async function requestDetail($: EngineInterface, shown: Inspected): Promise<void> {
   const snapshot = (await read($, dashboard))?.snapshot_id ?? null
-  const key = `${snapshot ?? ''}\u0000${name}`
-  const loading = (): DetailState => ({ snapshot_id: snapshot, name, detail: null, phase: 'loading' })
+  const { name } = shown
+  const file = shown.file === true
+  const key = `${snapshot ?? ''}\u0000${file ? 'file' : 'component'}\u0000${name}`
+  const loading = (): DetailState => ({ snapshot_id: snapshot, name, ...(file ? { file: true } : {}), detail: null, phase: 'loading' })
   if (mod.fetching.has(key)) {
     // A lookup for this name is already in flight. When the detail has since
     // moved to another name (A, then B, then A again inside one lookup), put
     // the loading state back so the in-flight answer is stored when it lands.
-    const inFlight = await read($, detail)
-    if (inFlight?.name !== name || inFlight.snapshot_id !== snapshot) await update($, detail, loading)
+    if (!sameDetail(await read($, detail), shown, snapshot)) await update($, detail, loading)
     return
   }
   mod.fetching.add(key)
   const current = await read($, detail)
-  if (current?.name === name && current.snapshot_id === snapshot && current.phase === 'done' && current.detail !== null) {
+  if (sameDetail(current, shown, snapshot) && current?.phase === 'done' && (file ? current.fileDetail : current.detail) != null) {
     mod.fetching.delete(key)
     return
   }
   await update($, detail, loading)
-  $.clock.after(0, () => void loadDetail($, snapshot, name, key))
+  $.clock.after(0, () => void loadDetail($, snapshot, shown, key))
 }
 
-/** One lookup; its answer is stored only while the detail still asks for that component and snapshot. */
-async function loadDetail($: EngineInterface, snapshot: string | null, name: string, key: string): Promise<void> {
+/**
+ * One lookup; its answer is stored only while the detail still asks for that
+ * component (or file) and snapshot. A file is read by its path under the
+ * project root, where the dashboard placed it.
+ */
+async function loadDetail($: EngineInterface, snapshot: string | null, shown: Inspected, key: string): Promise<void> {
   try {
-    const parsed = parseComponentDetail(await wrapper($, 'component-detail', [name], DETAIL_TIMEOUT_MS))
+    const file = shown.file === true
+    const root = file ? ((await read($, dashboard))?.project_root ?? undefined) : undefined
+    const stdout = await wrapper($, file ? 'file-detail' : 'component-detail', [shown.name], DETAIL_TIMEOUT_MS, root)
+    const parsed = file ? parseFileDetail(stdout) : parseComponentDetail(stdout)
     if (parsed?.status === 'no-binary') {
       await disable($)
       return
     }
-    await update($, detail, (current): DetailState | null =>
-      current?.name === name && current.snapshot_id === snapshot ? { ...current, detail: parsed, phase: 'done' } : current,
-    )
+    const answer = file ? { fileDetail: parsed as FileDetail | null } : { detail: parsed as ComponentDetail | null }
+    await update($, detail, (current): DetailState | null => (sameDetail(current, shown, snapshot) ? { ...current!, ...answer, phase: 'done' } : current))
   } catch {
     // A lost write leaves the loading line; the next press asks again.
   } finally {
@@ -668,7 +681,8 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const d = await read($, dashboard)
   if (d?.status !== 'ok') return null
   const v = await read($, view)
-  const shown = v.inspect === null ? null : detailInput(v.inspect, await read($, detail), d.project_root)
+  const stored = await read($, detail)
+  const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
   return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await read($, changes), await read($, sessionRoot))
 }
 
@@ -684,19 +698,15 @@ async function moveSelection($: EngineInterface, by: number): Promise<void> {
   await update($, view, v => ({ ...v, selected: Math.min(Math.max(0, v.selected + by), Math.max(0, length - 1)) }))
 }
 
-/** Opens the row at `index` (the marker's when absent) and leaves the marker there: a file in the editor, a component as its detail. */
-async function openRow($: EngineInterface, index?: number, surface?: RenderSurface): Promise<void> {
+/** Opens the row at `index` (the marker's when absent) and leaves the marker there: a component or a file as its detail. */
+async function openRow($: EngineInterface, index?: number): Promise<void> {
   const at = index ?? (await read($, view)).selected
   const item = (await currentList($))[at]
   if (item === undefined) return
   await update($, view, v => ({ ...v, selected: at }))
   // A boundary opens nothing: marking it is what spells it out.
   if (item.inert === true) return
-  if (item.file === true) {
-    if (item.loc) await openLocation($, item.loc, surface)
-    return
-  }
-  await showComponent($, { name: item.canonical, label: item.name })
+  await showComponent($, { name: item.canonical, label: item.name, ...(item.file === true ? { file: true } : {}) })
 }
 
 /**
@@ -726,7 +736,7 @@ async function openLink($: EngineInterface, href: string, surface?: RenderSurfac
   if (loc !== null) await openLocation($, loc, surface)
 }
 
-/** `e`: opens the marked row's file, the shown component's, or on Overview the riskiest file touched. */
+/** `e`: opens the file of what the detail shows, else of the marked row, whatever list the marker is in. */
 async function openEditTarget($: EngineInterface, surface?: RenderSurface): Promise<void> {
   const input = await currentInput($, true)
   const loc = input === null ? null : editTarget(input)
@@ -769,10 +779,9 @@ async function submitFilter($: EngineInterface, text: string): Promise<void> {
   await update($, view, v => ({ ...v, filter: text.trim(), filtering: false, selected: 0 }))
 }
 
-/** Copies the marked component's canonical name onto the clipboard of the surface the press came from; on Changes, the test command. */
+/** Copies the marked row's canonical name (a file's path) onto the clipboard of the surface the press came from. */
 async function copySubject($: EngineInterface, surface?: RenderSurface): Promise<void> {
   const input = await currentInput($, true)
-  if (input !== null && input.detail === null && input.tab === 'changes') return copyTestCommand($, surface)
   const subject = input === null ? null : subjectOf(input)
   if (subject === null) return
   // A cycle copies its chain, said by its name in the toast; anything else its full name.
@@ -864,16 +873,17 @@ function twinTarget(element: string): string | null | undefined {
 async function pressPane($: EngineInterface, id: string, surface?: RenderSurface): Promise<unknown> {
   if (id.startsWith('tab:') || id.startsWith('tabkey:')) {
     const tab = id.slice(id.indexOf(':') + 1) as PaneTab
-    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false }))
+    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false, drift: false }))
     return
   }
-  if (id.startsWith('row:')) return openRow($, Number(id.slice(4)), surface)
+  if (id === 'drift' || id === 'drifted') return update($, view, v => ({ ...v, drift: v.drift !== true, selected: 0 }))
+  if (id.startsWith('row:')) return openRow($, Number(id.slice(4)))
   if (id.startsWith('rel:')) return openRelated($, Number(id.slice(4)))
   if (id === 'down' || id === 'up') return moveSelection($, id === 'down' ? 1 : -1)
-  if (id === 'open') return openRow($, undefined, surface)
+  if (id === 'open') return openRow($)
   if (id === 'edit') return openEditTarget($, surface)
   if (id === 'tests') return copyTestCommand($, surface)
-  if (id === 'back') return update($, view, v => ({ ...v, inspect: null }))
+  if (id === 'back') return update($, view, v => ({ ...v, inspect: null, selected: v.opened ?? 0 }))
   if (id === 'keys') return update($, view, v => ({ ...v, showKeys: !v.showKeys }))
   if (id === 'filter') return openFilter($)
   if (id === 'clear') return update($, view, v => ({ ...v, filter: '', filtering: false, selected: 0 }))
