@@ -31,18 +31,67 @@ there is one. Red means the turn introduced policy violations.
 `[ details ]` opens the architecture pane; `[ hide ]` hides the band for the
 rest of the session.
 
-## The edit note
+## Notes for the model
 
-When the model edits or writes a file with at least `fanInThreshold`
-dependent files, it reads one extra line after the tool result, and you see
-the same line as a toast:
+The mod tells the model a few facts at the moment they help, so it keeps to
+the architecture instead of being told afterwards that it broke it. Every
+note is one short line, said once, and none costs a process: the figures
+come from the last dashboard load.
+
+**Before an edit.** When the model Reads a file with at least
+`fanInThreshold` dependent files, or a file in a boundary a declared policy
+binds, it reads one line after the file:
 
 ```text
-knossos: src/Router.php has 41 dependent files across 3 boundaries (Http, Core, Cli); run test_impact before finishing.
+knossos: src/Boundary/BoundaryInference.php (core) has 269 dependent files. Policy: core may not depend on php-worker, typescript-worker, python-worker, rust-worker, tooling, tests.
 ```
 
-The figures come from the last dashboard load, so the note costs no process
-at edit time.
+The rules of a boundary are stated once per session: the next file read in
+`core` gets its count alone (`knossos: src/Bundle/GraphBundleDecoder.php
+(core) has 244 dependent files.`), and a quiet file there gets nothing. A
+quiet file in a policed boundary nobody read yet gets the boundary and its
+rules (`knossos: workers/php/bin/worker is in php-worker. Policy: php-worker
+may not depend on core.`). Only a declared boundary is named; a file in an
+inferred one only, or in none, gets its count. A rule with an allow list
+reads `edge may depend only on itself, core, unassigned code`, and one
+limited to some dependency kinds names them in brackets. The rules and the
+files they bind come with the dashboard (its `policy.rules` and
+`policy.files`, at most 2,000 files).
+
+**On an edit.** An edit or write of a file with at least `fanInThreshold`
+dependent files that the model was not told about on Read (Claude Code reads
+a file before it edits it, so this is rare) adds one line, which you also see
+as a toast:
+
+```text
+knossos: src/Router.php has 41 dependent files across 3 boundaries; run test_impact before finishing.
+```
+
+**After a turn.** When the turn's scan finds tests that reach the files it
+changed, the model reads which, and the command that runs them, chosen as on
+the Changes tab. A test the turn already ran after its last edit is left
+out: a Bash command that runs its runner and names the test, a directory
+holding it, or no test at all (the whole suite, such as `vendor/bin/phpunit`
+or `npm run test:mod`). A test named in an earlier note is not named again.
+Tests the command names itself (PHPUnit, Vitest, pytest) are not listed
+twice:
+
+```text
+knossos: 3 tests reach this turn's changes. Run: vendor/bin/phpunit --filter '(DashboardServiceTest|FileFanInQueryTest|TurnBriefServiceTest)'
+```
+
+This line and the policy note below arrive together, as one note.
+
+**Limits.** Each file is noted once per session and per agent: a subagent
+gets its own notes, since what the main loop read was never in its context.
+At most three notes follow tool results in one turn; a note held back by
+that cap is said at the next Read of the file. A turn ends with at most one
+note. `agentNotes` turns them all off; the toast stays.
+
+Approximate cost on this repository: 20 to 60 tokens for a Read note (60
+only for the first file read in a policed boundary), about 35 for an edit
+note, about 50 for a tests note naming three PHPUnit classes (up to about
+150 at the brief's cap of 20 tests), about 55 for one policy violation.
 
 ## Policy violations
 
@@ -53,7 +102,7 @@ whose source component lives in a file the turn edited; after the scan it
 does the same for those files again. A violation in the second set
 and not the first is new. One that was already there, in an edited file or in
 a file that merely depends on one, is not reported. New violations reach the
-model as a note it reads before its next step:
+model as a note it reads before its next step, each once a session:
 
 ```text
 knossos: this turn introduced 1 boundary-policy violation. Fix it before finishing:
@@ -98,8 +147,8 @@ rules on a dotted track.
 ```text
 Knossos-MCP                         ● stale · 11h  r: rescan
 7,878 components · 7 boundaries · 46 drifted · PHP JS RS
-1: Over  2: Hubs  3: Bound  4: Cyc  5: Iss  6: Chg ³
-━━━━━━━─────────────────────────────────────────────────────
+1: Overview  2  3  4  5  6³
+━━━━━━━━━━━─────────────────────────────────────────────────
 
 Look at now
    e: TurnBriefService.php core · 21 dependents
@@ -152,8 +201,9 @@ and its languages. A narrow pane drops the languages first.
   `Issues ³`.
 - **Changes:** everything this session's turns touched, added up from each
   turn's brief: every file (most dependents first, `+` added, `−` deleted)
-  with its dependents and the boundary they are in, the boundaries the
-  changes reach, any policy violations they introduced, and the tests that
+  with its dependents and the boundary it sits in (blank when it sits in
+  none, or only in one spanning the whole repository), the boundaries its
+  dependents are in (where the changes reach), any policy violations they introduced, and the tests that
   reach them, nearest first, each once. Below, the command that runs those
   tests, chosen from their paths: `vendor/bin/phpunit` (the file, or
   `--filter` over the test classes), `npx vitest run`, `python -m pytest`,
@@ -277,12 +327,13 @@ seats at any width.
 
 ## Settings
 
-| Field             | Default | What it does                                                     |
-| ----------------- | ------- | ---------------------------------------------------------------- |
-| `enabled`         | `true`  | Turns the band, notes and pane on or off.                        |
-| `fanInThreshold`  | `20`    | Dependent files at which an edit gets a note (1 to 100000).      |
-| `enforcePolicies` | `true`  | Tells the model about violations a turn introduced.              |
-| `openPaneOnStart` | `false` | Opens the pane when a session starts, on a wide enough terminal. |
+| Field             | Default | What it does                                                       |
+| ----------------- | ------- | ------------------------------------------------------------------ |
+| `enabled`         | `true`  | Turns the band, notes and pane on or off.                          |
+| `fanInThreshold`  | `20`    | Dependent files at which a Read or edit gets a note (1 to 100000). |
+| `agentNotes`      | `true`  | Gives the model its notes (Read, edit, turn end); off, none.       |
+| `enforcePolicies` | `true`  | Tells the model about violations a turn introduced.                |
+| `openPaneOnStart` | `false` | Opens the pane when a session starts, on a wide enough terminal.   |
 
 They appear in Claude Code's config menu under the plugin's name.
 
@@ -297,8 +348,10 @@ and never two at a time within a session. The pane's allow-root action writes
 the roots file, and only after you confirmed it. `knossos dashboard` and
 `knossos component-detail` only read the graph, though like the scans they
 bring a database with an older schema up to date before they read it. One
-small exception: the dashboard's trend keeps the figures it computed for a
-retained snapshot in `snapshot_metrics`, since an archived snapshot never
+small exception: the dashboard writes trend cache rows. It keeps the figures
+it computed for a retained snapshot in the `snapshot_metrics` table
+(migration 018, applied the first time an updated knossos opens the
+database), since an archived snapshot never
 changes, so the next dashboard reads them instead of decoding the archive
 again. A row answers only for the archive and the code it came from, goes
 with the archive, and is never written while a scan holds the database: that
