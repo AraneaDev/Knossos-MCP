@@ -104,19 +104,21 @@ final readonly class ScanLedger
      *
      * `before` maps every file a scan since then changed to its hash before
      * that scan (null: the scan added it). `baselines` maps those files to the
-     * violations they held then (null: that scan did not check them). Null
-     * altogether when the ledger cannot account for every scan since: none
+     * violations they held then (null: that scan did not check them). `scans`
+     * maps them to the snapshot each recorded scan that changed them produced,
+     * in recording order, so a reader can tell whose scan took a change in.
+     * Null altogether when the ledger cannot account for every scan since: none
      * recorded starts at `$since`, one in between was not recorded or was
      * recorded cut ({@see self::MAX_FILES}), or the last recorded one is not
      * the project's active snapshot.
      *
-     * @return array{before: array<string, string|null>, baselines: array<string, array{violations: array<string, array<string, mixed>>, truncated: bool}|null>}|null
+     * @return array{before: array<string, string|null>, baselines: array<string, array{violations: array<string, array<string, mixed>>, truncated: bool}|null>, scans: array<string, list<string>>}|null
      */
     public function since(string $projectId, string $since): ?array
     {
         $active = $this->activeSnapshot($projectId);
         if ($active === $since) {
-            return ['before' => [], 'baselines' => []];
+            return ['before' => [], 'baselines' => [], 'scans' => []];
         }
         $statement = $this->pdo->prepare('SELECT from_snapshot, to_snapshot, changes_json FROM scan_ledger WHERE project_id = ? ORDER BY id');
         $statement->execute([$projectId]);
@@ -134,10 +136,12 @@ final readonly class ScanLedger
         }
         $before = [];
         $baselines = [];
+        $scans = [];
         foreach ($chain as $index) {
             $changes = $rows[$index]['changes'];
             foreach ($changes['before'] as $path => $hash) {
                 $path = (string) $path;
+                $scans[$path][] = $rows[$index]['to'];
                 if (array_key_exists($path, $before)) {
                     continue;
                 }
@@ -146,7 +150,7 @@ final readonly class ScanLedger
             }
         }
 
-        return ['before' => $before, 'baselines' => $baselines];
+        return ['before' => $before, 'baselines' => $baselines, 'scans' => $scans];
     }
 
     /**

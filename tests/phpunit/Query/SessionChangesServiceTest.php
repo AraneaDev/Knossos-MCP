@@ -68,6 +68,55 @@ final class SessionChangesServiceTest extends KnossosTestCase
     }
 
     #[Group('query')]
+    public function testEachFileNamesTheSnapshotsOfTheScansThatChangedIt(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $ledger = new ScanLedger($pdo);
+            $since = (string) $ledger->activeSnapshot($projectId);
+            file_put_contents($root . '/src/Core/Greeter.php', "\n// first\n", FILE_APPEND);
+            $this->ledgered($pdo, $root);
+            $first = (string) $ledger->activeSnapshot($projectId);
+            file_put_contents($root . '/src/Core/Greeter.php', "\n// second\n", FILE_APPEND);
+            file_put_contents($root . '/src/Core/Added.php', "<?php\nnamespace App;\nfinal class Added {}\n");
+            $this->ledgered($pdo, $root);
+            $second = (string) $ledger->activeSnapshot($projectId);
+            $files = self::changes($pdo, $root, $since)['files'];
+            assertSame([$first, $second], $files['src/Core/Greeter.php']['scans']);
+            assertSame([$second], $files['src/Core/Added.php']['scans']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testOnlyTheNewestScansOfAFileAreNamed(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $ledger = new ScanLedger($pdo);
+            $since = (string) $ledger->activeSnapshot($projectId);
+            $hashes = $ledger->hashes($projectId);
+            $from = $since;
+            $pdo->exec('PRAGMA foreign_keys = OFF');
+            for ($i = 0; $i < SessionChangesService::MAX_SCANS + 5; ++$i) {
+                $after = ['src/Core/Greeter.php' => 'h' . $i] + $hashes;
+                $ledger->record($projectId, $from, 's' . $i, $hashes, $after);
+                $hashes = $after;
+                $from = 's' . $i;
+            }
+            $pdo->prepare('UPDATE projects SET active_scan_id = ? WHERE id = ?')->execute([$from, $projectId]);
+            $pdo->prepare('UPDATE files SET content_hash = ? WHERE project_id = ? AND relative_path = ?')->execute([$hashes['src/Core/Greeter.php'], $projectId, 'src/Core/Greeter.php']);
+            $scans = self::changes($pdo, $root, $since)['files']['src/Core/Greeter.php']['scans'];
+            assertCount(SessionChangesService::MAX_SCANS, $scans);
+            assertSame('s' . (SessionChangesService::MAX_SCANS + 4), $scans[SessionChangesService::MAX_SCANS - 1]);
+            assertSame('s5', $scans[0]);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
     public function testAScanTheLedgerNeverSawLeavesTheListIncompleteAndEmpty(): void
     {
         [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);

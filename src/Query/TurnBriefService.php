@@ -98,7 +98,7 @@ final readonly class TurnBriefService
         try {
             $from = $ledger->activeSnapshot($projectId);
             $current = $ledger->hashes($projectId);
-            $absorbed = $since === null ? ['before' => [], 'baselines' => []] : $ledger->since($projectId, $since);
+            $absorbed = $since === null ? ['before' => [], 'baselines' => [], 'scans' => []] : $ledger->since($projectId, $since);
             // Taken before the scan rewrites the graph: what the reported files already broke is not this turn's doing.
             [$baseline, $perFile] = $this->baseline($violations, $projectId, $policies, $reported, $absorbed);
             $before = self::rewound($current, $absorbed['before'] ?? []);

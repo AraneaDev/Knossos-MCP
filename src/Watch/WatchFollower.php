@@ -12,6 +12,11 @@ use Knossos\Scan\CancellationToken;
  * A session's stand-in while another session's watcher leads: it scans
  * nothing, reads the project's active snapshot once a poll (one row) and
  * says when it moves, and gives way as soon as the lead is free.
+ *
+ * It also says when the leader starts a scan (`leader_scanning`, seen in the
+ * lock's state within a poll): the session behind it learns when the changes
+ * that scan takes in were noticed, as a leader's own `scan_started` tells
+ * its session.
  */
 final readonly class WatchFollower
 {
@@ -37,7 +42,9 @@ final readonly class WatchFollower
     public function follow(int $pollMs, CancellationToken $cancellation, callable $emit, ?Closure $alive, ?int $maxPolls): ?WatchLock
     {
         $snapshot = $this->ledger->activeSnapshot($this->projectId);
-        $stale = $this->stale();
+        $owner = WatchLock::owner($this->lockDir, $this->projectId);
+        $stale = self::isStale($owner);
+        $scanning = self::isScanning($owner);
         $emit($this->following($snapshot, $stale));
         $polls = 0;
         $beat = hrtime(true);
@@ -56,8 +63,16 @@ final readonly class WatchFollower
             if ($lock !== null) {
                 return $lock;
             }
+            $owner = WatchLock::owner($this->lockDir, $this->projectId);
+            // A scan the leader starts is said once, when it is first seen.
+            if (self::isScanning($owner) !== $scanning) {
+                $scanning = !$scanning;
+                if ($scanning) {
+                    $emit(['event' => 'leader_scanning']);
+                }
+            }
             // A leader that stops answering (stuck, or its process hung) is said at once, and so is its return.
-            if ($this->stale() !== $stale) {
+            if (self::isStale($owner) !== $stale) {
                 $stale = !$stale;
                 $emit($this->following($snapshot, $stale));
             }
@@ -69,11 +84,24 @@ final readonly class WatchFollower
         return null;
     }
 
-    /** Whether the leader's last heartbeat is older than {@see self::STALE_AFTER_SECONDS}. */
-    private function stale(): bool
+    /**
+     * Whether the leader's last heartbeat is older than {@see self::STALE_AFTER_SECONDS}.
+     *
+     * @param array<string, mixed>|null $owner the lock's state
+     */
+    private static function isStale(?array $owner): bool
     {
-        $owner = WatchLock::owner($this->lockDir, $this->projectId);
         return isset($owner['heartbeat']) && time() - (int) $owner['heartbeat'] > self::STALE_AFTER_SECONDS;
+    }
+
+    /**
+     * Whether the leader says it is scanning.
+     *
+     * @param array<string, mixed>|null $owner the lock's state
+     */
+    private static function isScanning(?array $owner): bool
+    {
+        return ($owner['phase'] ?? null) === 'scanning';
     }
 
     /**

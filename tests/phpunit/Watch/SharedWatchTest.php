@@ -271,4 +271,25 @@ final class SharedWatchTest extends KnossosTestCase
         assertSame([false, true, false], array_map(static fn(array $e): bool => $e['stale'], $following));
         $held->release();
     }
+
+    /** Each scan the leader starts is said once, when the follower first sees it, so the session behind it knows when it began. */
+    #[Group('watch')]
+    public function testAFollowerSaysWhenTheLeaderStartsAScan(): void
+    {
+        [$pdo, $database, $root, $projectId] = $this->project();
+        $held = WatchLock::acquire(dirname($database) . '/watch', $projectId);
+        assertNotNull($held);
+        $state = self::statePath($database, $projectId);
+        $phases = ['scanning', 'scanning', 'idle', 'scanning', 'idle'];
+        file_put_contents($state, (string) json_encode(['pid' => 7, 'parent_pid' => 1, 'heartbeat' => time(), 'phase' => 'idle']));
+        $polls = 0;
+        $alive = static function () use (&$polls, $phases, $state): bool {
+            file_put_contents($state, (string) json_encode(['pid' => 7, 'parent_pid' => 1, 'heartbeat' => time(), 'phase' => $phases[$polls] ?? 'idle']));
+            ++$polls;
+            return true;
+        };
+        $events = $this->watch($pdo, $database, $root, count($phases), $alive);
+        assertSame(['following', 'leader_scanning', 'leader_scanning', 'stopped'], self::names($events));
+        $held->release();
+    }
 }

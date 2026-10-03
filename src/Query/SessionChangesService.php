@@ -20,6 +20,11 @@ use PDO;
  * was not recorded, or the session began before the oldest entry kept),
  * `complete` is false and no file is listed: a partial list would read as
  * the whole story.
+ *
+ * Each file also names the snapshots the recorded scans that changed it
+ * produced (`scans`, the newest {@see self::MAX_SCANS} in recording order),
+ * so the caller can tell a change its own session's scans took in from one
+ * scanned while it was idle.
  */
 final readonly class SessionChangesService
 {
@@ -28,6 +33,9 @@ final readonly class SessionChangesService
 
     /** Tests listed, nearest first. */
     public const MAX_TESTS = 50;
+
+    /** Scans named per file, the newest kept: a file changed more often than this is still told by its latest. */
+    public const MAX_SCANS = 20;
 
     /** Files the test search starts from: the most depended on, past it the rest are left to the turn briefs. */
     private const MAX_TEST_SOURCES = 100;
@@ -67,6 +75,7 @@ final readonly class SessionChangesService
                 'dependents' => (int) ($found['dependent_files'] ?? 0),
                 'boundaries' => array_values($found['boundaries'] ?? []),
                 'boundary' => $found['boundary'] ?? null,
+                'scans' => array_slice($absorbed['scans'][$file] ?? [], -self::MAX_SCANS),
             ];
         }
         uksort($files, static fn(string $a, string $b): int => $files[$b]['dependents'] <=> $files[$a]['dependents'] ?: strcmp($a, $b));
