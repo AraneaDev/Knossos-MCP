@@ -378,6 +378,43 @@ Registering the MCP server and installing the plugin are separate steps and stay
 The full picture, including containerised installs and why there is no public marketplace
 route, is in [the agent plugin guide](docs/guides/agent-plugin.md).
 
+### The architecture pane in Claude Code
+
+The same plugin carries a [Claude Code mod](docs/capabilities/claude-code-mod.md) that puts
+the graph on screen while a session works. The images below are rendered by
+`tools/pane-preview.mjs` from this repository's own graph. The "Last turn" and "Changes"
+figures come from a sample turn over real files, not from a recorded session.
+
+After a turn that edited files, one line above the prompt says how far the change reaches:
+the files, their dependents, the tests that reach them, and how old the figures are.
+
+![The band above the Claude Code prompt](docs/images/claude-code-mod/band-prompt-dark.png)
+
+`/knossos` opens the pane. The Overview leads with the file this session touched that most
+of the project depends on, a key away from your editor, and a key that copies the command for
+the tests that reach the changes. It draws in your Claude Code theme's own colours.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/images/claude-code-mod/overview-light.png">
+  <img alt="The pane's Overview: look at now, the last turn, health and the most depended-on components" src="docs/images/claude-code-mod/overview-dark.png">
+</picture>
+
+The Changes tab adds up every turn of the session: each file with its dependents and its
+boundary, the tests that reach them, nearest first, and the command that runs them.
+
+![The Changes tab](docs/images/claude-code-mod/changes-dark.png)
+
+The Boundaries tab maps how much each boundary depends on each other one, with the pairs a
+policy forbids in red. Marking a boundary spells out what it depends on, what depends on it,
+and what it may not use.
+
+![The Boundaries tab with core marked](docs/images/claude-code-mod/boundaries-marked-dark.png)
+
+The Cycles tab lists each dependency cycle as a chain. Marking one lets you open the member
+where it crosses its boundary, copy the chain, or ask Claude how to break it.
+
+![The Cycles tab](docs/images/claude-code-mod/cycles-dark.png)
+
 ## Supported languages
 
 | Language                                         | Extraction                                                                                         | Framework enrichment                                                               |
