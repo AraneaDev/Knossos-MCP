@@ -49,7 +49,7 @@ final readonly class WatchScanAttempt
     /** Attempt one rescan and classify the outcome as success, cancelled, retryable, or terminal. */
 
     public static function run(
-        ProjectScanner $scanner,
+        ProjectScanner|\Closure $scanner,
         string $root,
         string $mode,
         CancellationToken $cancellation,
@@ -58,7 +58,8 @@ final readonly class WatchScanAttempt
             return new self(self::CANCELLED, null, null);
         }
         try {
-            $result = $scanner->scan($root, mode: $mode, cancellation: $cancellation);
+            // A closure takes the root, the mode and the cancellation: a scanner that needs no other option.
+            $result = $scanner instanceof \Closure ? $scanner($root, $mode, $cancellation) : $scanner->scan($root, mode: $mode, cancellation: $cancellation);
             return new self(self::SUCCESS, $result, null);
         } catch (ScanCancelledException) {
             return new self(self::CANCELLED, null, null);

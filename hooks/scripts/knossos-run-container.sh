@@ -13,6 +13,11 @@
 # Same contract as knossos-run.sh: every failure exits 0 with nothing on stdout,
 # except a missing docker, which prints {"status":"no-binary"}.
 #
+# `watch` is not offered here and answers with silence, so the mod falls back
+# to scanning at the end of a turn: a container outlives the docker client
+# that started it unless that client forwards every signal, and a watcher left
+# running after its session would poll the project for nobody.
+#
 # The project is mounted at the same path inside the container as outside. That
 # is not cosmetic: projects are keyed by `root_realpath`, so a project scanned
 # as /work would never match a session starting in /home/me/project.

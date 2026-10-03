@@ -6,11 +6,17 @@
 #        knossos-run.sh file-detail <project-dir> <file>
 #        knossos-run.sh scan <project-dir>
 #        knossos-run.sh allow-root <root>
+#        knossos-run.sh watch <project-dir> [--poll-ms=N]
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
 # broken install can never break a session. The exception is a missing
 # binary, which prints {"status":"no-binary"} so the mod can turn itself off.
+#
+# `watch` is the one that does not end on its own: it becomes the live
+# watcher (`knossos watch --shared`), which prints one JSON event per line
+# for as long as the session keeps it, and stops when the session stops it
+# or goes away. It is never bounded by a timeout.
 set -u
 
 [ "$#" -ge 2 ] || exit 0
@@ -33,6 +39,7 @@ case "$SUBCOMMAND" in
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    watch) LIMIT=0 ;;
     *) exit 0 ;;
 esac
 
@@ -52,6 +59,15 @@ fi
 # scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
 if [ "$SUBCOMMAND" = scan ]; then
     [ "$#" -eq 0 ] || exit 0
+fi
+# watch takes at most its poll interval, in milliseconds: an option such as
+# `--db=...` would point it at another graph.
+if [ "$SUBCOMMAND" = watch ]; then
+    [ "$#" -le 1 ] || exit 0
+    if [ "$#" -eq 1 ]; then
+        case "$1" in --poll-ms=*[!0-9]* | --poll-ms=) exit 0 ;; --poll-ms=*) ;; *) exit 0 ;; esac
+    fi
+    set -- --shared "$@"
 fi
 # allow-root takes nothing but the root, and always writes: the pane runs it
 # only after the person confirmed, so a preview would answer a question nobody
@@ -91,6 +107,11 @@ BIN="$(find_knossos)" || {
     printf '%s\n' '{"status":"no-binary"}'
     exit 0
 }
+
+# The watcher replaces this shell, so stopping the child the session holds stops the watcher itself.
+if [ "$SUBCOMMAND" = watch ]; then
+    exec "$BIN" watch "$TARGET" "$@" 2>/dev/null
+fi
 
 if TIMEOUT_BIN="$(find_timeout)"; then
     OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0

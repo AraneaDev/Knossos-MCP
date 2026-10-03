@@ -144,6 +144,27 @@ expect_silent_success 'file-detail with a file that reads as an option' \
 expect_silent_success 'file-detail with an absolute path' \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" file-detail /tmp /etc/passwd
 
+# watch: the live watcher, `knossos watch --shared`, with at most its poll interval.
+expect_output 'watch runs the shared watcher on the project' "watch|$ABS_PROJ|--shared|--poll-ms=1500|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=1500
+expect_output 'watch without a poll interval leaves it to the binary' "watch|$ABS_PROJ|--shared|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj"
+expect_silent_success 'watch refuses another option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --db=/tmp/other.sqlite
+expect_silent_success 'watch refuses a poll interval that is not a number' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=1e3
+expect_silent_success 'watch refuses an empty poll interval' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=
+expect_silent_success 'watch refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" watch "$STUBS/proj" --poll-ms=1 extra
+expect_output 'missing binary says so for a watch' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" watch /tmp
+# The watcher replaces the wrapper's shell: stopping the process the session started stops the watcher.
+printf '#!/bin/sh\nprintf "%%s" "$$"\n' > "$STUBS/pid"; chmod +x "$STUBS/pid"
+env KNOSSOS_BIN="$STUBS/pid" /bin/sh "$RUN" watch "$STUBS/proj" > "$STUBS/pid.out" &
+started=$!
+wait "$started"
+if [ "$(cat "$STUBS/pid.out")" = "$started" ]; then
+    printf 'ok   %s\n' 'watch execs the binary in place of the wrapper'
+else
+    printf 'FAIL %s (wrapper %s, binary %s)\n' 'watch execs the binary in place of the wrapper' "$started" "$(cat "$STUBS/pid.out")"; failures=$((failures + 1))
+fi
+
 # The container variant, emitted with its placeholders filled, against a docker stand-in.
 mkdir -p "$STUBS/container" "$STUBS/dockerbin"
 sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run.sh"
@@ -167,6 +188,8 @@ expect_silent_success 'container allow-root refuses an option' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" allow-root /tmp --db=/x
 expect_output 'container file-detail passes the file under the project' "img:1|file-detail|$ABS_PROJ/src/A.php|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail "$STUBS/proj" src/A.php
+expect_silent_success 'container offers no watcher' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" watch "$STUBS/proj"
 expect_silent_success 'container file-detail with an absolute path' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail /tmp /etc/passwd
 expect_silent_success 'container component-detail without a name' \
