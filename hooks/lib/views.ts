@@ -256,9 +256,9 @@ type Entry = { selected?: boolean; mark?: Segment; need: number; main: (width: n
  * boundary goes first, then the place; the main text keeps at least
  * {@link MAIN_MIN}.
  */
-function entrySpec(columns: number, entries: Entry[]): EntrySpec {
+function entrySpec(columns: number, entries: Entry[], hues: Hues = NO_HUES): EntrySpec {
   const placeNeed = Math.min(Math.max(12, Math.floor(columns * PLACE_SHARE)), Math.max(0, ...entries.map(e => cells(e.place))))
-  const boundaryNeed = Math.min(12, Math.max(0, ...entries.map(e => cells(boundaryLabel(e.boundary ?? null)))))
+  const boundaryNeed = Math.min(12, Math.max(0, ...entries.map(e => cells(boundaryLabel(e.boundary ?? null, hues)))))
   const mainNeed = Math.max(1, ...entries.map(e => e.need))
   const attempt = (boundary: number, place: number): EntrySpec | null => {
     const room = columns - MARK - (boundary > 0 ? boundary + 1 : 0) - (place > 0 ? place + 1 : 0)
@@ -280,7 +280,7 @@ function entryRow(key: string, e: Entry, spec: EntrySpec, hues: Hues): Row {
     ...main,
     { text: spaces(spec.main - used) },
   ]
-  if (spec.boundary > 0) segments.push({ text: ' ' }, { text: padEnd(fit(boundaryLabel(e.boundary ?? null), spec.boundary), spec.boundary), ...boundaryStyle(e.boundary ?? null, hues) })
+  if (spec.boundary > 0) segments.push({ text: ' ' }, { text: padEnd(fit(boundaryLabel(e.boundary ?? null, hues), spec.boundary), spec.boundary), ...boundaryStyle(e.boundary ?? null, hues) })
   // Places are left-aligned: a column of file names reads down its left edge.
   if (spec.place > 0) segments.push({ text: ' ' }, linked(fitStart(e.place, spec.place), e.loc ?? null, { dim: true }))
   return { key, segments: segments.filter(s => s.text !== '') }
@@ -332,9 +332,9 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
     need: cells(c.name),
     main: width => [button(`row:${offset + i}`, fit(c.name, width))],
   }))
-  const vSpec = entrySpec(columns, violationEntries)
-  const dSpec = entrySpec(columns, diagEntries)
-  const deadSpec = entrySpec(columns, deadEntries)
+  const vSpec = entrySpec(columns, violationEntries, hues)
+  const dSpec = entrySpec(columns, diagEntries, hues)
+  const deadSpec = entrySpec(columns, deadEntries, hues)
   const spec = tableSpec(columns, issues.largest.map(f => f.path), [], [numberWidth('lines', issues.largest.map(f => f.lines))], 56)
   // Every header of the tab spreads over the widest of its lists, so the notes stand over the places and numbers.
   const listed = [violationEntries.length > 0 ? entryWidth(vSpec) : 0, diagEntries.length > 0 ? entryWidth(dSpec) : 0, deadEntries.length > 0 ? entryWidth(deadSpec) : 0]
@@ -401,7 +401,7 @@ export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_H
   const seen = new Map<string, Segment[]>()
   for (const node of input.cycles.flatMap(c => c.nodes.filter(n => n.boundary !== homeBoundary(c)))) {
     if (node.boundary === null || seen.has(node.boundary)) continue
-    seen.set(node.boundary, [{ text: `■ ${boundaryLabel(node.boundary)}`, color: boundaryColour(node.boundary, hues) }])
+    seen.set(node.boundary, [{ text: `■ ${boundaryLabel(node.boundary, hues)}`, color: boundaryColour(node.boundary, hues) }])
   }
   if (seen.size > 0) rows.push(...wrapGroups('cycles-legend', [...seen.values()], columns, 2, MARK))
   input.cycles.forEach((cycle, i) => {
@@ -413,7 +413,7 @@ export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_H
       button(`row:${i}`, `cycle ${i + 1}`),
       { text: ` · ${plural(cycle.size, 'member', 'members')}`, dim: true },
     ]
-    if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home), ...boundaryStyle(home, hues) })
+    if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home, hues), ...boundaryStyle(home, hues) })
     rows.push(blank(`gap-cycle-${i}`), { key: `cycle-${i}`, segments: clip(head, columns) })
     const room = Math.max(1, columns - MARK - 2)
     const groups: Segment[][] = cycle.nodes.map((node, j) => {
@@ -433,7 +433,7 @@ function sideRows(prefix: string, side: Side, offset: number, width: number, hue
   const counted = side.items.some(i => i.edges > 0)
   // Bars that are all one length compare nothing: the counts say it alone.
   const flat = side.items.length > 1 && side.items.every(i => i.edges === side.items[0]!.edges)
-  const boundaries = side.items.map(i => boundaryLabel(i.boundary))
+  const boundaries = side.items.map(i => boundaryLabel(i.boundary, hues))
   const spec = counted
     ? { ...tableSpec(width, side.items.map(i => i.name), boundaries, [numberWidth('', side.items.map(i => i.edges))]), ...(flat ? { bar: 0 } : {}) }
     : { ...tableSpec(width, side.items.map(i => i.name), boundaries, []), bar: 0 }
@@ -472,7 +472,7 @@ export function detailRows(detail: DetailInput, columns: number, hues: Hues = NO
       ...lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
     ]
   }
-  const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, { text: boundaryLabel(c.boundary), ...boundaryStyle(c.boundary, hues) }])]
+  const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, { text: boundaryLabel(c.boundary, hues), ...boundaryStyle(c.boundary, hues) }])]
   const rows: Row[] = [blank('gap-detail'), spread('detail-name', [{ text: fit(c.name, columns), bold: true, color: 'text' }], label, columns)]
   if (c.place !== null) rows.push({ key: 'detail-place', segments: [linked(fitStart(c.place, columns), c.loc, { dim: true })] })
   if (c.canonical !== c.name) rows.push(dimRow('detail-canonical', c.canonical, columns))

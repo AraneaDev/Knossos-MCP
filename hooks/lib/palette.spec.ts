@@ -57,12 +57,40 @@ describe('huesOf', () => {
     const shuffled = { ...d, boundaries: { ...d.boundaries, items: [...d.boundaries.items].reverse() } }
     expect([...huesOf(shuffled).entries()]).toEqual([...huesOf(d).entries()])
   })
-  it('gives at most eight colours; the rest are picked by name', () => {
+  it('gives at most seven colours, never red; the rest are picked by name', () => {
     const many = { boundaries: { items: Array.from({ length: 11 }, (_, i) => ({ name: `b${i}`, source: 'explicit', members: 100 - i })), truncated: false } }
     const hues = huesOf(many)
-    expect(hues.size).toBe(8)
-    expect(new Set(hues.values()).size).toBe(8)
+    expect(hues.size).toBe(7)
+    expect(new Set(hues.values()).size).toBe(7)
     expect(BOUNDARY_COLOURS).toContain(boundaryColour('b10', hues))
+    expect(BOUNDARY_COLOURS.some(c => c.startsWith('red'))).toBe(false)
+    // Pink, nearest the error colour in the dark themes, only for a seventh boundary.
+    expect(BOUNDARY_COLOURS.at(-1)).toBe('pink_FOR_SUBAGENTS_ONLY')
+  })
+  it('leaves an inferred boundary past the coloured ones neutral, never red or a declared one\'s colour by chance', () => {
+    const declared = Array.from({ length: 7 }, (_, i) => ({ name: `d${i}`, source: 'explicit', members: 100 - i }))
+    const hues = huesOf({ boundaries: { items: [...declared, { name: 'namespace:Knossos', source: 'inferred', members: 5000 }], truncated: false } })
+    expect(hues.has('namespace:Knossos')).toBe(false)
+    expect(boundaryColour('namespace:Knossos', hues)).toBeUndefined()
+    expect(boundaryColour('module:never-listed', hues)).toBeUndefined()
+  })
+  it('tells apart two labels that differ only in case, by their source', () => {
+    const hues = huesOf({
+      boundaries: {
+        items: [
+          { name: 'core', source: 'explicit', members: 10 },
+          { name: 'namespace:Knossos', source: 'inferred', members: 9 },
+          { name: 'composer:vendor/knossos (+node:x)', source: 'inferred', members: 8 },
+          { name: 'module:hooks', source: 'inferred', members: 7 },
+        ],
+        truncated: false,
+      },
+    })
+    expect(boundaryLabel('namespace:Knossos', hues)).toBe('namespace:Knossos')
+    expect(boundaryLabel('composer:vendor/knossos (+node:x)', hues)).toBe('composer:knossos')
+    // Labels that collide on nothing stay short.
+    expect(boundaryLabel('module:hooks', hues)).toBe('hooks')
+    expect(boundaryLabel('core', hues)).toBe('core')
   })
 })
 

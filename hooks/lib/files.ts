@@ -123,7 +123,7 @@ export function fileDetailRows(detail: DetailInput, columns: number, hues: Hues 
       ...lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
     ]
   }
-  const own: Segment[] = f.boundary === null ? [] : [{ text: boundaryLabel(f.boundary), ...boundaryStyle(f.boundary, hues) }]
+  const own: Segment[] = f.boundary === null ? [] : [{ text: boundaryLabel(f.boundary, hues), ...boundaryStyle(f.boundary, hues) }]
   const facts = [f.language.toUpperCase(), ...(f.lines === null ? [] : [plural(f.lines, 'line', 'lines')])].filter(s => s !== '').join(' · ')
   const tail = facts === '' ? '' : ` · ${facts}`
   const rows: Row[] = [
@@ -135,7 +135,7 @@ export function fileDetailRows(detail: DetailInput, columns: number, hues: Hues 
 
   // Who depends on it: what a change here reaches.
   const deps = f.dependents
-  const depSpec = countedSpec(columns, deps.items.map(d => d.path), deps.items.map(d => boundaryLabel(d.boundary)), deps.items.map(d => d.edges))
+  const depSpec = countedSpec(columns, deps.items.map(d => d.path), deps.items.map(d => boundaryLabel(d.boundary, hues)), deps.items.map(d => d.edges))
   const depTitle = `Depended on by ${plural(deps.count, 'file', 'files')}`
   const depNote = deps.items.length > 0 ? 'edges' : ''
   rows.push(sectionRow('deps-head', depTitle, depNote, sectionWidth(specWidth(depSpec), depTitle, depNote, columns)))

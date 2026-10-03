@@ -183,7 +183,9 @@ describe('the drifted files', () => {
     const rows = paneRows(pane(), 90)
     const summary = row(rows, 'summary')!
     expect(plainText(summary)).toBe('1,234 components · 2 boundaries · 23 drifted · PHP')
-    expect(summary.segments.find(s => s.press)?.press).toEqual({ id: 'drifted', label: '23 drifted' })
+    // The count in the accent, the word after it the button: the one pressable thing on a quiet line looks it.
+    expect(summary.segments.find(s => s.press)?.press).toEqual({ id: 'drifted', label: 'drifted' })
+    expect(summary.segments.find(s => s.text === '23 ')).toMatchObject({ color: 'suggestion' })
     expect(keysOf(rows)).toContain('d')
     expect(row(rows, 'drift-head')).toBeUndefined()
   })

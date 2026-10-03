@@ -299,7 +299,9 @@ export function wrapGroups(key: string, groups: Segment[][], columns: number, ga
  */
 export function sectionRow(key: string, title: string, note: string, columns: number, subtitle = ''): Row {
   const head: Segment[] = [{ text: fit(title, columns), bold: true, color: HEADING }]
-  if (subtitle !== '' && cells(title) + 3 + cells(subtitle) <= columns) head.push({ text: ` · ${subtitle}`, dim: true })
+  // The subtitle gives way to the note: the note says something the rows do not (`partial`, `all in core`).
+  const noteRoom = note === '' ? 0 : cells(note) + 2
+  if (subtitle !== '' && cells(title) + 3 + cells(subtitle) + noteRoom <= columns) head.push({ text: ` · ${subtitle}`, dim: true })
   return spread(key, head, note === '' ? [] : [{ text: note, dim: true }], columns)
 }
 
@@ -375,6 +377,8 @@ export type TableLine = {
   mark?: Segment
   /** The number column the list is sorted by: the others are drawn dim beside it. */
   sorted?: number
+  /** The same boundary as the row above: its label is drawn dim, so the column reads by where it changes. */
+  repeat?: boolean
 }
 
 /** One table row: marker, name (pressable when it has an id), boundary, bar and numbers. */
@@ -389,8 +393,8 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hu
     { text: spaces(spec.name - cells(name)) },
   ]
   if (spec.boundary > 0) {
-    const label = fit(boundaryLabel(line.boundary), spec.boundary)
-    segments.push({ text: ' ' }, { text: padEnd(label, spec.boundary), ...style })
+    const label = fit(boundaryLabel(line.boundary, hues), spec.boundary)
+    segments.push({ text: ' ' }, { text: padEnd(label, spec.boundary), ...(line.repeat === true ? { dim: true } : style) })
   }
   if (spec.bar > 0) {
     const glyphs = bar(line.barValue ?? line.values[0] ?? 0, line.max, spec.bar)

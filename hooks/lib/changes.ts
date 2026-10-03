@@ -296,7 +296,7 @@ export function lookAtRows(look: LookAt, columns: number, hues: Hues = NO_HUES, 
       { text: selected === 0 ? '›' : ' ', color: ACCENT, bold: true },
       { text: '  ' },
       button('row:0', baseName(f.path)),
-      ...(f.boundary === null ? [] : [{ text: ' ' }, { text: boundaryLabel(f.boundary), ...boundaryStyle(f.boundary, hues) }]),
+      ...(f.boundary === null ? [] : [{ text: ' ' }, { text: boundaryLabel(f.boundary, hues), ...boundaryStyle(f.boundary, hues) }]),
       { text: ` · ${plural(f.dependents, 'dependent', 'dependents')}`, dim: true },
     ]
     rows.push({ key: 'look-file', segments: clip(segments.filter(s => s.text !== ''), columns) })
@@ -320,7 +320,7 @@ export function reachRows(key: string, lead: string, boundaries: string[], colum
   const groups = (shown: number): Segment[][] => {
     const named = boundaries.slice(0, shown)
     const out: Segment[][] = lead === '' ? [] : [[{ text: lead, dim: true }]]
-    if (named.length > 0) out.push([{ text: 'reaching', dim: true }], ...named.map(b => [{ text: boundaryLabel(b), ...boundaryStyle(b, hues) }]))
+    if (named.length > 0) out.push([{ text: 'reaching', dim: true }], ...named.map(b => [{ text: boundaryLabel(b, hues), ...boundaryStyle(b, hues) }]))
     if (boundaries.length > named.length) out.push([{ text: `+${boundaries.length - named.length} more`, dim: true }])
     return out
   }

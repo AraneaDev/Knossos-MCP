@@ -1,8 +1,10 @@
 import type { JobState, TurnBrief } from '../../types'
-import { boundaryLabel } from './palette'
+import { boundaryLabel, NO_HUES } from './palette'
+import type { Hues } from './palette'
 
 export type { JobState }
-export type BandModel = { tone: 'normal' | 'warn' | 'alert'; text: string; showDetails: boolean } | null
+/** `copy`: a command the band offers to copy, whole, where its text could only name part of it. */
+export type BandModel = { tone: 'normal' | 'warn' | 'alert'; text: string; showDetails: boolean; copy?: string } | null
 
 /** 12s, 14m, 3h. */
 export function formatAge(ms: number): string {
@@ -22,7 +24,7 @@ const REACH_NAMED = 2
  * violations, tests. The boundaries the dependents sit in come apart, as
  * `reach`: they go last, after the age, since a narrow band cuts from the end.
  */
-function figures(b: TurnBrief, declared: ReadonlySet<string>): { body: string | null; reach: string } {
+function figures(b: TurnBrief, declared: ReadonlySet<string>, hues: Hues): { body: string | null; reach: string } {
   const files = b.changed_files.length + b.added_files.length
   const dependents = Object.values(b.impact).reduce((sum, f) => sum + f.dependent_files, 0)
   const parts: string[] = []
@@ -35,7 +37,7 @@ function figures(b: TurnBrief, declared: ReadonlySet<string>): { body: string | 
   for (const f of Object.values(b.impact)) {
     // With boundaries declared, only those: the inferred ones and the one spanning the repository say little here.
     for (const name of declared.size === 0 ? f.boundaries : f.boundaries.filter(n => declared.has(n))) {
-      const label = boundaryLabel(name)
+      const label = boundaryLabel(name, hues)
       if (label !== '') weight.set(label, (weight.get(label) ?? 0) + f.dependent_files)
     }
   }
@@ -55,7 +57,7 @@ const quote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
  * Units: `scanned_at` is Unix seconds (it comes from PHP's time()); `now` and
  * `lastAttemptAt` are the mod clock in milliseconds.
  */
-export function bandModel(brief: TurnBrief | null, job: JobState, now: number, declared: ReadonlySet<string> = new Set()): BandModel {
+export function bandModel(brief: TurnBrief | null, job: JobState, now: number, declared: ReadonlySet<string> = new Set(), hues: Hues = NO_HUES): BandModel {
   if (brief === null) {
     if (job.phase === 'scanning') return { tone: 'normal', text: 'knossos · scanning…', showDetails: false }
     if (job.phase === 'failed') return { tone: 'warn', text: 'knossos · scan failed', showDetails: false }
@@ -63,16 +65,19 @@ export function bandModel(brief: TurnBrief | null, job: JobState, now: number, d
   }
   if (brief.status === 'not-allowed') {
     // The roots file the brief actually read (a baked data directory moves it) and the root that has to be allowed.
+    // The command does not fit a band: the band names the root's last part and copies the command whole;
+    // its details open the pane, which offers to allow the root.
+    const refused = brief.refused_root ?? brief.path
     const file = brief.roots_file ? `KNOSSOS_ROOTS_FILE=${quote(brief.roots_file)} ` : ''
-    const root = quote(brief.refused_root ?? brief.path)
-    return { tone: 'warn', text: `knossos · not an allowed root: ${file}knossos allow-root ${root} --execute`, showDetails: false }
+    const name = refused.replace(/\/+$/, '').split('/').pop() || refused
+    return { tone: 'warn', text: `knossos · not allowed: ${name}`, showDetails: true, copy: `${file}knossos allow-root ${quote(refused)} --execute` }
   }
   if (brief.status === 'scan-failed') {
     const why = brief.reason ? `: ${brief.reason}` : ''
     return { tone: 'warn', text: `knossos · scan failed${why}`, showDetails: false }
   }
   if (brief.status !== 'ok') return null
-  const { body, reach } = figures(brief, declared)
+  const { body, reach } = figures(brief, declared, hues)
   const tone = brief.policy.total > 0 ? 'alert' : 'normal'
   const age = brief.scanned_at === null ? null : formatAge(now - brief.scanned_at * 1000)
   if (job.phase === 'scanning') {

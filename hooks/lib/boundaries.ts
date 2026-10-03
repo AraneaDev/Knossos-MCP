@@ -15,7 +15,7 @@
  * the table below the map spell each letter out, so they are the legend.
  */
 import type { Dashboard } from '../../types'
-import { ACCENT, boundaryLabel, FAINT, NO_HUES, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, FAINT, huesOf, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import { HEAT_KEYS } from './raster'
 import { blank, boundaryStyle, cells, dimRow, fit, grouped, numberWidth, padEnd, rowWidth, sectionRow, sectionWidth, spaces, specWidth, tableHead, tableRow, tableSpec, wrapGroups } from './rows'
@@ -62,6 +62,7 @@ export const axisCode = (index: number): string =>
 export function boundariesInput(d: Dashboard): BoundariesInput | null {
   const m = d.boundary_matrix
   if (m === undefined) return null
+  const hues = huesOf(d)
   const n = m.boundaries.length
   const forbidden = m.boundaries.map(() => m.boundaries.map(() => false))
   for (const [from, to] of m.forbidden) {
@@ -72,7 +73,7 @@ export function boundariesInput(d: Dashboard): BoundariesInput | null {
     boundaries: m.boundaries.map((name, i) => ({
       code: axisCode(i),
       name,
-      label: boundaryLabel(name),
+      label: boundaryLabel(name, hues),
       members: m.members[i] ?? 0,
       in: m.boundaries.reduce((sum, _, from) => sum + (from === i ? 0 : at(from, i)), 0),
       out: m.boundaries.reduce((sum, _, to) => sum + (to === i ? 0 : at(i, to)), 0),

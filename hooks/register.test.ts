@@ -71,6 +71,8 @@ function world(
     allow?: Answer[]
     editor?: 'opens' | 'missing'
     refuseRegister?: () => boolean | Promise<boolean>
+    /** Per watcher start, the event lines it writes at once; none left: the start writes nothing and ends (no watcher offered). */
+    watch?: object[][]
   } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[]; garbled?: string[] } = {},
 ) {
@@ -156,6 +158,43 @@ function world(
   on('ui.panes', () => ({
     value: [...panes].map(id => ({ id, title: 'Knossos', isShown: true, isFocused: false, isPlaced: true })),
   }))
+  /**
+   * The live watcher's child: each start writes its scripted lines, then
+   * whatever `send` queues, sleeping on the mocked clock between, until
+   * `stop` ends it or the mod leaves its loop (`ended` counts the ends).
+   */
+  const watcher = { starts: [] as string[][], ended: 0, queue: [] as string[], stopped: false }
+  on('process.spawn', async function* (_$, e) {
+    watcher.starts.push([...e.argv])
+    const script = answers.watch?.shift()
+    if (script === undefined) return { value: { code: 0, signal: null } }
+    watcher.stopped = false
+    try {
+      for (const line of script) yield { stream: 'stdout' as const, text: `${JSON.stringify(line)}\n` }
+      // A watcher that refused or stopped exits after saying so.
+      const last = (script.at(-1) as { event?: string } | undefined)?.event
+      watcher.stopped = last === 'refused' || last === 'stopped'
+      // As the real one, it says it is still there every 15 s even when nothing changes.
+      let quiet = 0
+      while (!watcher.stopped) {
+        while (watcher.queue.length > 0) yield { stream: 'stdout' as const, text: watcher.queue.shift()! }
+        await clock.sleep(50)
+        quiet += 50
+        if (quiet >= 15_000) {
+          quiet = 0
+          yield { stream: 'stdout' as const, text: '{"event":"heartbeat"}\n' }
+        }
+      }
+    } finally {
+      watcher.ended++
+    }
+    return { value: { code: 0, signal: null } }
+  })
+  on('session.end', (_$, e) => ({ sessionId: e.sessionId }) as never)
+  const watchSend = (event: object) => watcher.queue.push(`${JSON.stringify(event)}\n`)
+  const watchStop = () => {
+    watcher.stopped = true
+  }
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
     // The editor's command: there and opening the file, or not installed.
@@ -192,7 +231,7 @@ function world(
   const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
   const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
   const editorRuns = () => calls.filter(c => c[0] === 'code')
-  return { registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  return { watcher, watchSend, watchStop, registered, clock, calls, briefRuns, detailRuns, fileRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -782,7 +821,7 @@ describe('knossos mod', () => {
       await $.turn.complete(TURN)
       await w.clock.settle()
     }
-    expect(await bandText($)).toContain('knossos allow-root')
+    expect(await bandText($)).toContain('not allowed: repo')
   })
 
   test('an unscanned brief replaces the figures and draws nothing', async ($, on) => {
@@ -923,7 +962,7 @@ describe('knossos mod', () => {
   })
 
   test('a silent first dashboard is asked again at the next dirty turn, never disabling', async ($, on) => {
-    const w = world(on, { dashboard: [{ stdout: '' }, { stdout: '' }, { stdout: dashboard }] })
+    const w = world(on, { dashboard: [{ stdout: '' }, { stdout: '' }, { stdout: '' }, { stdout: dashboard }] })
     await $.session.start(START)
     await w.clock.settle()
     expect(w.calls.filter(c => c[2] === 'dashboard')).toHaveLength(1)
@@ -935,7 +974,8 @@ describe('knossos mod', () => {
       await w.clock.settle()
     }
     expect(w.briefRuns()).toHaveLength(2)
-    expect(w.calls.filter(c => c[2] === 'dashboard')).toHaveLength(3)
+    // Asked again after each turn while there is none: the second turn's end finds it.
+    expect(w.calls.filter(c => c[2] === 'dashboard').length).toBeGreaterThanOrEqual(3)
     expect(w.logs).toHaveLength(0)
     expect(await bandText($)).toContain('1 file → 41 dependents')
     // The fan-in map arrived with the third dashboard, so the note is back.
@@ -1045,7 +1085,13 @@ describe('knossos mod', () => {
     await edit($, `${ROOT}/src/Router.php`)
     await $.turn.complete(TURN)
     await w.clock.settle()
-    expect(await bandText($)).toContain(`not an allowed root: KNOSSOS_ROOTS_FILE='/data/roots.json' knossos allow-root '${ROOT}' --execute`)
+    // The band names the root; the command, too long for a band, is copied whole.
+    expect(await bandText($)).toContain('not allowed: repo')
+    const band = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: 50 } })
+    expect(drawn((await band.find({ key: 'band' }))?.text ?? '')).not.toContain('allow-root')
+    await band.press({ key: 'copy' })
+    expect(w.copies.map(c => c.text)).toEqual([`KNOSSOS_ROOTS_FILE='/data/roots.json' knossos allow-root '${ROOT}' --execute`])
+    await band.unmount()
   })
 
   test('the pane opens on start when asked', { options: { openPaneOnStart: true } }, async ($, on) => {
@@ -1570,8 +1616,12 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'empty' }))?.text).toContain('knossos scan')
+    expect((await ui.find({ key: 'empty' }))?.text).toContain('No architecture graph yet')
     expect(await ui.find({ key: 'pane' })).toBeUndefined()
+    // One thing to do, and only the press sends it.
+    expect(w.prompts).toEqual([])
+    await ui.press({ key: 'scan-ask' })
+    expect(w.prompts).toEqual(['Scan this project with Knossos (scan_project), then give me a short summary of its architecture.'])
     await ui.unmount()
   })
 
@@ -2265,7 +2315,9 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'empty' }))?.text).toContain('knossos scan')
+    expect((await ui.find({ key: 'empty' }))?.text).toContain('No architecture graph yet')
+    // The offer is the one action: no second one beside it.
+    expect(await ui.find({ key: 'scan-ask' })).toBeUndefined()
     await ui.press({ key: 'allow' })
     await w.clock.settle()
     expect((await ui.find({ key: 'empty' }))?.text).toMatch(/This adds it to\s+\/data\/roots\.json\./)
@@ -2448,7 +2500,8 @@ describe('knossos mod', () => {
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
-      expect((await ui.find({ key: 'drifted' }))?.props.label).toBe('2 drifted')
+      expect((await ui.find({ key: 'drifted' }))?.props.label).toBe('drifted')
+      expect((await ui.find({ key: 'summary' }))?.text).toContain('2 drifted')
       expect(await ui.find({ key: 'drift-head' })).toBeUndefined()
       await ui.press({ key: 'drifted' })
       expect(drawn((await ui.find({ key: 'drift-0' }))?.text ?? '')).toMatch(/^›− src\/Gone\.php +Core$/)
@@ -2513,5 +2566,170 @@ describe('knossos mod', () => {
     expect((await again.find({ key: 'look-tests' }))?.text).toContain('▲ no test reaches these changes')
     expect(await again.find({ key: 'tests' })).toBeUndefined()
     await again.unmount()
+  })
+})
+
+describe('the live watcher', () => {
+  const READY = { event: 'ready', project_id: 'p1', snapshot_id: 's1', files: 3, scanned: false }
+
+  test('starts once a dashboard of a scanned project is stored, and the header says live', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.watcher.starts).toHaveLength(1)
+    expect(w.watcher.starts[0]?.slice(2)).toEqual(['watch', ROOT, '--poll-ms=1000'])
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live$/)
+    await ui.unmount()
+    // Its own ready names the snapshot the dashboard already has: no second load.
+    expect(w.dashboardRuns()).toHaveLength(1)
+  })
+
+  test('says scanning while it scans, then reloads the dashboard once for the new snapshot', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    w.watchSend({ event: 'changes', changes: 1 })
+    w.watchSend({ event: 'scan_started', mode: 'incremental', changes: 1 })
+    await w.clock.advance(100)
+    expect((await ui.find({ key: 'title' }))?.text).toContain('scanning…')
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(100)
+    expect(w.dashboardRuns()).toHaveLength(2)
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● live$/)
+    await ui.unmount()
+  })
+
+  test('another session leading: this one follows, says so, and reloads when that session scans', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], watch: [[{ event: 'following', owner_pid: 7, stale: false, snapshot_id: 's1' }]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'title' }))?.text).toContain('live · watched by another session')
+    w.watchSend({ event: 'snapshot', snapshot_id: 's9' })
+    await w.clock.advance(100)
+    expect(w.dashboardRuns()).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test('is not started when switched off', { options: { watch: false } }, async ($, on) => {
+    const w = world(on, { watch: [[READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.watcher.starts).toHaveLength(0)
+  })
+
+  test('takes its poll interval from the options', { options: { watchPollMs: 2500 } }, async ($, on) => {
+    const w = world(on, { watch: [[READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.watcher.starts[0]?.at(-1)).toBe('--poll-ms=2500')
+  })
+
+  test('ends with the session: the child is stopped, never left behind', async ($, on) => {
+    const w = world(on, { watch: [[READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.watcher.ended).toBe(0)
+    await $.session.end({ reason: 'other', sessionId: 'x', resume: { id: 'x' } } as never)
+    // Stopped at once, or at the latest when its next line (a heartbeat) reaches a loop that has let go.
+    await w.clock.advance(15_100)
+    expect(w.watcher.ended).toBe(1)
+    // And is not started again by a later dashboard.
+    await w.clock.advance(120_000)
+    expect(w.watcher.starts).toHaveLength(1)
+  })
+
+  test('after a /clear the same project is watched again', async ($, on) => {
+    const w = world(on, { watch: [[READY], [READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await $.session.end({ reason: 'clear', sessionId: 'x', resume: { id: 'x' } } as never)
+    await w.clock.advance(15_100)
+    expect(w.watcher.ended).toBe(1)
+    expect(w.watcher.starts).toHaveLength(2)
+  })
+
+  test('a watcher that never says a word is not offered here and is not started again', async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    await w.clock.advance(200_000)
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.advance(5_000)
+    expect(w.watcher.starts).toHaveLength(1)
+  })
+
+  test('a refused watcher stays off until a root is allowed', async ($, on) => {
+    const w = world(on, { watch: [[{ event: 'refused', status: 'not-allowed' }], [READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await w.clock.advance(200_000)
+    expect(w.watcher.starts).toHaveLength(1)
+  })
+
+  test('a watcher that ran and then ended on its own is started again after a pause', async ($, on) => {
+    const w = world(on, { watch: [[READY], [READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    w.watchStop()
+    await w.clock.advance(100)
+    expect(w.watcher.starts).toHaveLength(1)
+    await w.clock.advance(31_000)
+    expect(w.watcher.starts).toHaveLength(2)
+  })
+
+  test("a turn's brief waits for the watcher, then names the turn's start and reuses its scan", async ($, on) => {
+    const w = world(on, { watch: [[READY]] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    w.watchSend({ event: 'changes', changes: 1 })
+    await w.clock.advance(100)
+    await $.turn.complete(TURN)
+    await w.clock.advance(500)
+    // The watcher still holds the change: the brief waits.
+    expect(w.briefRuns()).toHaveLength(0)
+    w.watchSend({ event: 'scan_started', mode: 'incremental', changes: 1 })
+    w.watchSend({ event: 'scan_completed', mode: 'incremental', snapshot_id: 's2', parsed_files: 1 })
+    await w.clock.advance(3_000)
+    expect(w.briefRuns()).toHaveLength(1)
+    const args = w.briefRuns()[0]!
+    // s1: the snapshot before the turn's edit, though the watcher has since moved the graph to s2.
+    expect(args).toContain('--since=s1')
+    expect(args).toContain('--reuse-scan')
+    expect(args).toContain('--files=src/Router.php')
+  })
+
+  test("without a watcher the brief scans as before: no --reuse-scan", { options: { watch: false } }, async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()[0]).toContain('--since=s1')
+    expect(w.briefRuns()[0]).not.toContain('--reuse-scan')
+  })
+
+  test('a brief that did not land keeps the turn\'s start for the next one', { options: { watch: false } }, async ($, on) => {
+    const later = JSON.stringify({ ...(JSON.parse(dashboard) as object), snapshot_id: 's3' })
+    const w = world(on, { brief: [{ stdout: '' }, { stdout: brief({ snapshot_id: 's3' }) }], dashboard: [{ stdout: dashboard }, { stdout: later }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()[1]).toContain('--since=s1')
+    // Once one lands, the next turn starts from the snapshot that brief reported.
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()[2]).toContain('--since=s3')
   })
 })

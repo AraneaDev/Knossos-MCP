@@ -15,6 +15,7 @@ import {
   editTarget,
   emptyRows,
   fileDetailInput,
+  fit,
   linkMarkdown,
   listFor,
   locOf,
@@ -25,18 +26,20 @@ import {
   paneStatus,
   refusedRoot,
   rowWidth,
+  SCAN_PROMPT,
   SORTS,
   subjectOf,
   TABS,
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Row } from './lib/layout'
 import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
+import { isWatching, LIVE_OFF, phaseAfter, snapshotOf, watchLines, watchPollMsOf } from './lib/live'
 import { declaredOf, huesOf } from './lib/palette'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, ComponentDetail, DetailState, FileDetail, Inspected, KnossosView, PaneTab, RefreshState, RescanState, SessionChanges } from '../types'
+import type { AllowState, ComponentDetail, DetailState, FileDetail, Inspected, KnossosView, LiveState, PaneTab, RefreshState, RescanState, SessionChanges, WatchEvent } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -72,6 +75,13 @@ const NOTES_PER_TURN = 3
 const COMMANDS_KEPT = 50
 /** The largest threshold the dashboard command accepts. */
 const MAX_THRESHOLD = 100_000
+/** The watcher's debounce (its default): how long it waits after a change before it scans. */
+const WATCH_DEBOUNCE_MS = 300
+/** The longest a turn's brief waits for the watcher to take the turn's edits in before it scans them itself. */
+const WATCH_SETTLE_MAX_MS = 20_000
+/** How often a watcher that ended on its own is started again, and the pause before each try (times the try's number). */
+const WATCH_RESTARTS = 3
+const WATCH_RESTART_MS = 30_000
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
@@ -96,6 +106,8 @@ const theme = atom({ plugin: 'knossos', key: 'theme' } as const, 'dark' as strin
 const changes = atom({ plugin: 'knossos', key: 'changes' } as const, NO_CHANGES as SessionChanges)
 /** The session's root with its links followed: a test command run from it changes to the project root first when they differ. */
 const sessionRoot = atom({ plugin: 'knossos', key: 'sessionRoot' } as const, null as string | null)
+/** The live watcher, as the header shows it. */
+const live = atom({ plugin: 'knossos', key: 'live' } as const, LIVE_OFF as LiveState)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -186,6 +198,37 @@ const mod = {
   registerGen: 0,
   /** Whether a refused registration was logged this load: once is enough. */
   registerFailureLogged: false,
+  /** Whether the live watcher runs at all (userConfig `watch`), and its poll interval (`watchPollMs`). */
+  watchOn: true,
+  watchPollMs: 1_000,
+  /** The watcher child's stream while it runs: leaving its loop, or `return()` on it, ends the child. */
+  watcher: null as AsyncGenerator<unknown, unknown> | null,
+  /** Bumped by every start and stop: a loop of an older generation ends at its next piece instead of acting. */
+  watchGen: 0,
+  /**
+   * Set when the watcher said this project is not its to watch (not allowed,
+   * not scanned) or ended without a word (none offered, as a container
+   * installation): not asked again until a root is allowed.
+   */
+  watchRefused: false,
+  /** Restarts of a watcher that ended on its own, since the last one that came up. */
+  watchFailures: 0,
+  /** Not started again before this (mod clock, ms): the pause after a watcher ended on its own. */
+  watchRetryAt: 0,
+  /** Set between deciding to start the watcher and the timer that starts it: one start at a time. */
+  watchStarting: false,
+  /** Whether the watcher has seen changes it has not taken in yet. */
+  watchPending: false,
+  /** The newest snapshot the mod knows of: from the dashboard, a turn brief or the watcher. */
+  snapshot: null as string | null,
+  /**
+   * The snapshot the graph was at when the turn's first edit landed: the turn
+   * brief's `--since`, so it still reports the turn when the watcher (or
+   * anyone) scanned its edits first. Null between turns.
+   */
+  turnBase: null as string | null,
+  /** When the last edit was seen (mod clock, ms): the watcher needs a moment to notice it. */
+  lastEditAt: 0,
 }
 
 /** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
@@ -243,13 +286,15 @@ function thresholdOf(value: unknown): number {
  * as "as of 12s ago" would stand still while the figures grow old.
  */
 async function tickAge($: EngineInterface): Promise<void> {
+  // The watcher is kept running from here, never from what its own events start: no call loops back on itself.
+  await ensureWatcher($)
   // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it.
   if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) mod.paneText = null
   if (mod.bandText === null && mod.paneText === null) return
   const now = await $.clock.now()
   const d = await read($, dashboard)
-  const model = bandModel(await read($, brief), await read($, job), now, d?.status === 'ok' ? declaredOf(d) : undefined)
-  const pane = d?.status === 'ok' ? paneStatus(d, await read($, refresh), await read($, rescan), now).text : null
+  const model = bandModel(await read($, brief), await read($, job), now, d?.status === 'ok' ? declaredOf(d) : undefined, d?.status === 'ok' ? huesOf(d) : undefined)
+  const pane = d?.status === 'ok' ? paneStatus(d, await read($, refresh), await read($, rescan), now, await read($, live)).text : null
   const bandStale = mod.bandText !== null && (model?.text ?? null) !== mod.bandText
   const paneStale = mod.paneText !== null && pane !== mod.paneText
   if (bandStale || paneStale) $.ui.invalidate('ui.render')
@@ -280,6 +325,7 @@ async function disable($: EngineInterface): Promise<void> {
   mod.registerGen++
   mod.registerTimer?.cancel()
   mod.registerTimer = null
+  stopWatcher()
   $.ui.log('knossos: no knossos binary found; the band and pane are off for this session.')
   $.ui.invalidate('ui.render')
 }
@@ -326,6 +372,7 @@ async function loadDashboard($: EngineInterface): Promise<void> {
   await update($, dashboard, () => parsed)
   await update($, refresh, (): RefreshState => ({ fetchedAt: now, failed: false }))
   mod.dashboardStored = true
+  if (parsed.status === 'ok') mod.snapshot = parsed.snapshot_id ?? mod.snapshot
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown)
@@ -351,6 +398,7 @@ async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> 
   const stored = await refreshDashboard($)
   if (mod.disabled) return
   mod.ticker ??= $.clock.every(AGE_TICK_MS, () => void tickAge($).catch(() => undefined))
+  await ensureWatcher($)
   // A refused or unplaced pane is the person's layout, not a failure of the mod.
   if (openOnStart) await openPane($, !stored)
 }
@@ -480,18 +528,27 @@ async function scan($: EngineInterface): Promise<void> {
   // Drained at the start of each run, so a coalesced rerun scans every path reported since.
   const files = [...mod.edited]
   mod.edited = new Set()
+  // The turn's start goes with its files: a later turn's first edit takes the snapshot of its own.
+  const base = mod.turnBase
+  mod.turnBase = null
   let parsed: TurnBrief | null = null
   try {
     await update($, job, (j): JobState => ({ ...j, phase: 'scanning' }))
-    const args = [...files.map(f => `--files=${f}`), ...(mod.enforce ? [] : ['--no-policies'])]
+    // With a watcher keeping the graph current, the turn's edits are (or are about to be) scanned already:
+    // the brief waits for that and reads them from the ledger instead of scanning again.
+    const watching = isWatching(await read($, live))
+    if (watching) await settleWatcher($)
+    const args = [...files.map(f => `--files=${f}`), ...(base === null ? [] : [`--since=${base}`]), ...(watching ? ['--reuse-scan'] : []), ...(mod.enforce ? [] : ['--no-policies'])]
     parsed = parseTurnBrief(await exclusively(() => wrapper($, 'turn-brief', args, BRIEF_TIMEOUT_MS)))
   } finally {
     // A brief that never ran its scan (silence, an error, a refused root) saw none of these edits:
     // the next one must report them, since only reported files count toward the policy verdict.
     if (parsed === null || parsed.status !== 'ok') {
       for (const file of files) mod.edited.add(file)
+      mod.turnBase ??= base
     }
   }
+  if (parsed?.status === 'ok') mod.snapshot = parsed.snapshot_id ?? mod.snapshot
   if (!(await settleBrief($, parsed, await $.clock.now())) || parsed === null) return
   const note = turnEndNote(parsed, cdFor(parsed.project_root, await read($, sessionRoot)))
   if (note !== null) await deliverNote($, note)
@@ -676,6 +733,126 @@ async function runRescan($: EngineInterface): Promise<void> {
   await update($, rescan, (): RescanState => ({ phase: 'idle', reason: null }))
 }
 
+/**
+ * Starts the live watcher when it should run and does not: switched on, not
+ * refused, past any pause before a restart, and with a dashboard of an
+ * allowed, scanned project to watch. Called at start-up and on every age
+ * tick, so a watcher that ended is started again from here.
+ */
+async function ensureWatcher($: EngineInterface): Promise<void> {
+  if (!mod.watchOn || mod.disabled || mod.watcher !== null || mod.watchStarting || mod.watchRefused) return
+  if ((await $.clock.now()) < mod.watchRetryAt) return
+  const d = await read($, dashboard)
+  if (d?.status !== 'ok' || d.project_root === null) return
+  mod.watchStarting = true
+  const gen = ++mod.watchGen
+  // The loop runs for the session's life: never inside a hook's dispatch.
+  $.clock.after(0, () => {
+    mod.watchStarting = false
+    void runWatcher($, gen, d.project_root!).catch(() => undefined)
+  })
+}
+
+/**
+ * Stops the live watcher: its loop ends at its next piece and `return()`
+ * ends the child now. Never leaves one running: the engine also ends it
+ * when the module unloads, and the watcher stops itself once the process
+ * that started it is gone.
+ */
+function stopWatcher(): void {
+  mod.watchGen++
+  const running = mod.watcher
+  mod.watcher = null
+  mod.watchPending = false
+  if (running !== null) void running.return(undefined).catch(() => undefined)
+}
+
+/**
+ * One watcher child, `knossos watch --shared` through the wrapper, read to
+ * its end. Each event moves the header's phase; one that names a newer
+ * snapshot reloads the dashboard (one load at a time). A watcher that ends
+ * on its own after coming up is started again a few times; one that never
+ * said a word is not offered here and is not asked again.
+ */
+async function runWatcher($: EngineInterface, gen: number, root: string): Promise<void> {
+  if (gen !== mod.watchGen) return
+  let stream: AsyncGenerator<{ stream: string; text: string }, unknown>
+  try {
+    stream = $.process.spawn({ argv: ['sh', `${$.plugin.root}/hooks/scripts/knossos-run.sh`, 'watch', root, `--poll-ms=${mod.watchPollMs}`] })
+  } catch {
+    mod.watchRefused = true
+    return
+  }
+  mod.watcher = stream
+  await update($, live, (): LiveState => ({ phase: 'starting' }))
+  let rest = ''
+  let heard = false
+  try {
+    for await (const piece of stream) {
+      if (gen !== mod.watchGen) break
+      if (piece.stream !== 'stdout') continue
+      const got = watchLines(rest, piece.text)
+      rest = got.rest
+      for (const event of got.events) {
+        heard = true
+        await onWatchEvent($, event)
+      }
+      // Its last word: the child ends on its own after it.
+      if (got.events.some(e => e.event === 'refused' || e.event === 'stopped' || e.status === 'no-binary')) break
+    }
+  } catch {
+    // A child that could not start, or a stream torn down under the loop: what follows decides.
+  } finally {
+    if (mod.watcher === stream) mod.watcher = null
+  }
+  if (gen !== mod.watchGen) return
+  mod.watchPending = false
+  await update($, live, () => LIVE_OFF)
+  if (!heard) mod.watchRefused = true
+  if (mod.watchRefused || mod.disabled) return
+  // Started again by the age tick once the pause is over; past the last try, not at all.
+  mod.watchFailures++
+  mod.watchRetryAt = mod.watchFailures > WATCH_RESTARTS ? Number.POSITIVE_INFINITY : (await $.clock.now()) + WATCH_RESTART_MS * mod.watchFailures
+}
+
+/** What one watcher event changes: the phase, whether changes wait, and the dashboard when the snapshot moved. */
+async function onWatchEvent($: EngineInterface, event: WatchEvent): Promise<void> {
+  if (event.status === 'no-binary') return disable($)
+  if (event.event === 'refused') mod.watchRefused = true
+  if (event.event === 'ready' || event.event === 'following') mod.watchFailures = 0
+  if (event.event === 'changes') mod.watchPending = true
+  if (event.event === 'scan_completed' || event.event === 'absorbed' || event.event === 'stopped') mod.watchPending = false
+  const before = (await read($, live)).phase
+  const phase = phaseAfter(event, before)
+  if (phase !== before) await update($, live, (): LiveState => ({ phase }))
+  const snapshot = snapshotOf(event)
+  if (snapshot !== null && snapshot !== mod.snapshot) {
+    mod.snapshot = snapshot
+    // Coalesced with any load in flight: the last to land is the newest.
+    void refreshDashboard($).catch(() => undefined)
+  }
+}
+
+/** Resolves after `ms` on the mod's clock. */
+const sleep = ($: EngineInterface, ms: number): Promise<void> => new Promise(resolve => void $.clock.after(ms, () => resolve()))
+
+/**
+ * Waits, at most {@link WATCH_SETTLE_MAX_MS}, for the watcher to take the
+ * turn's last edits in: until it has had a poll and its debounce to notice
+ * them, and is neither scanning nor holding changes. The brief then finds
+ * its files already in the graph and scans nothing itself.
+ */
+async function settleWatcher($: EngineInterface): Promise<void> {
+  const quiet = mod.watchPollMs + WATCH_DEBOUNCE_MS + 250
+  const until = (await $.clock.now()) + WATCH_SETTLE_MAX_MS
+  for (;;) {
+    const now = await $.clock.now()
+    const busy = (await read($, live)).phase === 'scanning' || mod.watchPending
+    if (now >= until || (!busy && now - mod.lastEditAt >= quiet)) return
+    await sleep($, 100)
+  }
+}
+
 /** Everything the pane draws, from state; null when there is no dashboard to draw. */
 async function currentInput($: EngineInterface, terminal: boolean): Promise<PaneInput | null> {
   const d = await read($, dashboard)
@@ -683,7 +860,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const v = await read($, view)
   const stored = await read($, detail)
   const shown = v.inspect === null ? null : v.inspect.file ? fileDetailInput(v.inspect, stored, d.project_root, huesOf(d)) : detailInput(v.inspect, stored, d.project_root)
-  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await read($, changes), await read($, sessionRoot))
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await read($, changes), await read($, sessionRoot), await read($, live))
 }
 
 /** The rows the selection walks on what the pane shows, from state. */
@@ -741,6 +918,12 @@ async function openEditTarget($: EngineInterface, surface?: RenderSurface): Prom
   const input = await currentInput($, true)
   const loc = input === null ? null : editTarget(input)
   if (loc !== null) await openLocation($, loc, surface)
+}
+
+/** Copies a command the band offers (the allow-root command it could only name part of). */
+async function copyCommand($: EngineInterface, command: string, surface?: RenderSurface): Promise<void> {
+  const copied = await $.ui.copy({ text: command, ...(surface === undefined ? {} : { surface }) })
+  $.ui.toast(copied.isCopied ? `Copied ${command}` : `Could not copy the command: ${copied.reason ?? 'the surface refused'}`)
 }
 
 /** Copies the command for the tests that reach this session's changes. */
@@ -850,6 +1033,8 @@ async function runAllow($: EngineInterface, root: string): Promise<void> {
   }
   await update($, allow, (): AllowState => ({ phase: 'done', root, reason: null }))
   await update($, rescan, (r): RescanState => ({ ...r, refusedRoot: null }))
+  // A watcher refused for this root may watch it now, once the scan below lands a dashboard.
+  mod.watchRefused = false
   // The edits that were refused are still unscanned: the turn's scan picks them up now.
   void (mod.flight ??= new SingleFlight(() => scanSafely($))).request()
 }
@@ -891,6 +1076,8 @@ async function pressPane($: EngineInterface, id: string, surface?: RenderSurface
   if (id === 'rescan') return requestRescan($)
   if (id === 'copy') return copySubject($, surface)
   if (id === 'ask') return askClaude($)
+  // The no-data pane's one action: the person's press sends it, as "Ask Claude" does.
+  if (id === 'scan-ask') return $.prompt.submit({ text: SCAN_PROMPT })
   if (id === 'allow') return offerAllow($)
   if (id === 'allow-yes') return confirmAllow($)
   if (id === 'allow-no') return update($, allow, (a): AllowState => (a.phase === 'confirming' ? { phase: 'idle', root: null, reason: null } : a))
@@ -1011,6 +1198,17 @@ export const register: Register = (on, options) => {
   mod.turnNotes = new Map()
   mod.ranCommands = []
   mod.turnRan = []
+  // A reload starts the module over; the engine ends the old load's child with it, and this makes sure.
+  stopWatcher()
+  mod.watchOn = options.watch !== false
+  mod.watchPollMs = watchPollMsOf(options.watchPollMs)
+  mod.watchRefused = false
+  mod.watchFailures = 0
+  mod.watchRetryAt = 0
+  mod.watchStarting = false
+  mod.snapshot = null
+  mod.turnBase = null
+  mod.lastEditAt = 0
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -1024,8 +1222,19 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // The session ends (exit, /clear, resume): its watcher ends with it. After a /clear the
+  // process goes on with the same project, so the next tick starts a watcher for it again.
+  on('session.end', async ($, e, next) => {
+    stopWatcher()
+    if (e.reason !== 'clear') mod.watchRetryAt = Number.POSITIVE_INFINITY
+    return next(e)
+  })
+
   on('tool.call', { tool: EDIT_TOOLS }, async ($, e, next) => {
+    // Before the edit lands: the snapshot the turn's brief diffs against, whoever scans the edit first.
+    if (!mod.disabled) mod.turnBase ??= mod.snapshot
     const ran = await next(e)
+    if (!mod.disabled) mod.lastEditAt = await $.clock.now()
     if (mod.disabled || ran.deny !== undefined || ran.isError === true) return ran
     // Tests run before this edit ran the old code.
     mod.ranCommands = []
@@ -1072,6 +1281,8 @@ export const register: Register = (on, options) => {
     mod.ranCommands = []
     // Still refused once the timed retries ran out: each turn's end asks again, a session being bound by now.
     if (!mod.disabled && !mod.commandRegistered && mod.registerTimer === null) await registerCommand($)
+    // No graph to draw yet (the person may just have asked Claude to scan): look again, once the turn is over.
+    if (!mod.disabled && (await read($, dashboard))?.status !== 'ok') $.clock.after(0, () => void refreshDashboard($).catch(() => undefined))
     if (mod.disabled || !mod.dirty) return result
     mod.dirty = false
     const current = (mod.flight ??= new SingleFlight(() => scanSafely($)))
@@ -1086,18 +1297,25 @@ export const register: Register = (on, options) => {
       return next(e)
     }
     const d = await read($, dashboard)
-    const model = bandModel(await read($, brief), await read($, job), await $.clock.now(), d?.status === 'ok' ? declaredOf(d) : undefined)
+    const model = bandModel(await read($, brief), await read($, job), await $.clock.now(), d?.status === 'ok' ? declaredOf(d) : undefined, d?.status === 'ok' ? huesOf(d) : undefined)
     mod.bandText = model?.text ?? null
     if (model === null) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const color = model.tone === 'alert' ? 'error' : model.tone === 'warn' ? 'warning' : 'inactive'
+    // The text gives way to the buttons, each drawn `[ label ]` and a space: a cut line still names what happened.
+    const labels = [...(model.showDetails ? ['details'] : []), ...(model.copy === undefined ? [] : ['copy']), 'hide']
+    const room = Math.max(1, e.props.bodyColumns - labels.reduce((n, l) => n + l.length + 5, 0) - 1)
+    const copy = model.copy
     return (
       <Box key="band">
-        <Text color={color}>
-          {model.text}{' '}
+        <Text color={color} wrap="truncate-end">
+          {fit(model.text, room)}{' '}
         </Text>
         {model.showDetails && (
           <Button key="details" label="details" onPress={() => openPane($)} />
+        )}
+        {copy !== undefined && (
+          <Button key="copy" label="copy" onPress={pressed => void copyCommand($, copy, pressed.surface).catch(() => undefined)} />
         )}
         <Button key="hide" label="hide" onPress={() => update($, view, v => ({ ...v, isBandHidden: true }))} />
       </Box>

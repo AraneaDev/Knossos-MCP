@@ -39,6 +39,18 @@
       "title": "Open pane on start",
       "description": "Open the architecture pane when a session starts.",
       "default": false
+    },
+    "watch": {
+      "type": "boolean",
+      "title": "Live watcher",
+      "description": "Keep the graph current while you work: rescan an allowed, scanned project as its files change (one watcher per project, shared by your sessions).",
+      "default": true
+    },
+    "watchPollMs": {
+      "type": "number",
+      "title": "Watcher poll interval (ms)",
+      "description": "How often the live watcher checks the project for changes, 250 to 60000 milliseconds.",
+      "default": 1000
     }
   }
 }

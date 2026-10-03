@@ -160,7 +160,7 @@ describe('mergeRanked', () => {
   })
   it('reads hotspots from an older knossos without degrees or boundary', () => {
     const items = mergeRanked({ hubs: [], hotspots: [{ name: 'K', canonical_name: 'App\\K', kind: 'class', score: 7 }] })
-    expect(items).toEqual([{ name: 'K', canonical: 'App\\K', kind: 'class', boundary: null, in: 0, out: 0, cross: 0, hotspotOnly: true }])
+    expect(items).toEqual([{ name: 'K', canonical: 'App\\K', kind: 'class', boundary: null, in: 0, out: 0, cross: 0, hotspotOnly: true, loc: null }])
   })
 })
 
@@ -920,7 +920,8 @@ describe('the allow-root offer', () => {
         widthsFit(emptyRows(offer(phase), columns), columns)
       }
     }
-    expect(emptyRows(null, 60).map(plainText).join(' ')).toContain('No Knossos data for this project.')
+    // Refused, the one action is the offer; there is no second one beside it.
+    expect(keysOf(emptyRows(offer('idle'), 60))).toEqual(['a:allow'])
   })
 })
 
@@ -941,5 +942,78 @@ describe('copy and Ask Claude', () => {
     expect(askPrompt('Knossos\\Store\\StableId')).toBe(
       'Using the Knossos graph, what depends on Knossos\\Store\\StableId and what would break if I changed it?',
     )
+  })
+})
+
+describe('the live watcher in the header', () => {
+  const fresh = dash({ freshness: { state: 'fresh', age_seconds: 5, drift_files: 0 } })
+  it('says live instead of an age while the watcher keeps a fresh graph current', () => {
+    expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'live' })).toEqual({ tone: 'ok', text: 'live' })
+    expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'following' })).toEqual({ tone: 'ok', text: 'live · watched by another session' })
+  })
+  it('says scanning while the watcher scans, and offers no rescan of its own then', () => {
+    expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'scanning' })).toEqual({ tone: 'warn', text: 'scanning… · fresh · 11s' })
+    const drifted = dash({ freshness: { state: 'stale', age_seconds: 5, drift_files: 3 } })
+    expect(paneInput(drifted, null, FETCHED, IDLE, view(), 0, true, null, null, undefined, null, { phase: 'scanning' }).canRescan).toBe(false)
+    expect(paneInput(drifted, null, FETCHED, IDLE, view(), 0, true, null, null, undefined, null, { phase: 'live' }).canRescan).toBe(true)
+  })
+  it('keeps the old states when the graph is not fresh, when starting, or off', () => {
+    expect(paneStatus(dash(), FETCHED, IDLE, 0, { phase: 'live' }).text).toBe('stale · 11h')
+    expect(paneStatus(fresh, FETCHED, IDLE, 6_000, { phase: 'starting' }).text).toBe('fresh · 11s')
+    expect(paneStatus(fresh, { fetchedAt: 0, failed: true }, IDLE, 6_000, { phase: 'live' }).tone).toBe('alert')
+  })
+})
+
+describe('a boundary column that one boundary dominates', () => {
+  const allCore = dash({
+    hubs: [hub('A', 'App\\A', 'class', 'core', 30), hub('B', 'App\\B', 'class', 'core', 20), hub('C', 'App\\C', 'class', 'core', 10)],
+    hotspots: [],
+  })
+  it('is said once in the note when every row shares it, and the column goes', () => {
+    for (const columns of WIDTHS) {
+      const rows = paneRows(input({ tab: 'hubs' }, allCore), columns)
+      expect(plainText(row(rows, 'hubs-head')!)).toContain('all in core')
+      expect(plainText(row(rows, 'hub-1')!)).not.toContain('core')
+      const top = paneRows(input({}, allCore), columns)
+      expect(plainText(row(top, 'top-head')!)).toContain('all in core')
+    }
+  })
+  it('draws a repeat dim, so the column reads by where the boundary changes', () => {
+    const rows = paneRows(input({ tab: 'hubs' }), 120)
+    const label = (key: string) => row(rows, key)!.segments.find(s => s.text.trim() === 'core')
+    // StableId (core), ArchitectureQueryService (core): the second is the repeat.
+    expect(label('hub-0')?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
+    expect(label('hub-1')).toMatchObject({ dim: true })
+    expect(label('hub-1')?.color).toBeUndefined()
+  })
+})
+
+describe('hubs carry their file', () => {
+  const placed = dash({
+    hubs: [{ ...hub('StableId', 'Knossos\\Store\\StableId', 'class', 'core', 525), path: 'src/Store/StableId.php', line: 19 }],
+    hotspots: [],
+  })
+  it('so e opens a hub row without opening its detail first', () => {
+    const items = mergeRanked(placed)
+    expect(items[0]?.loc).toEqual({ path: '/work/Knossos-MCP/src/Store/StableId.php', line: 19 })
+    const hubs = input({ tab: 'hubs', selected: 0 }, placed)
+    expect(subjectOf(hubs)?.loc).toEqual({ path: '/work/Knossos-MCP/src/Store/StableId.php', line: 19 })
+    expect(paneRows(hubs, 90).some(r => r.segments.some(s => s.press?.id === 'edit'))).toBe(true)
+  })
+  it('and a hub the dashboard places nowhere offers no e', () => {
+    const hubs = input({ tab: 'hubs', selected: 0 })
+    expect(paneRows(hubs, 90).some(r => r.segments.some(s => s.press?.id === 'edit'))).toBe(false)
+  })
+})
+
+describe('the pane with no graph', () => {
+  it('has a heading and one thing to do: ask Claude to scan it', () => {
+    for (const columns of WIDTHS) {
+      const rows = emptyRows(null, columns)
+      expect(rows[0]).toMatchObject({ key: 'empty-head', segments: [{ text: 'No architecture graph yet', bold: true }] })
+      const presses = rows.flatMap(r => r.segments.flatMap(s => (s.press ? [s.press] : [])))
+      expect(presses).toEqual([{ id: 'scan-ask', label: 'ask Claude to scan it', hotkey: 'q' }])
+      for (const r of rows) expect(rowWidth(r)).toBeLessThanOrEqual(columns)
+    }
   })
 })

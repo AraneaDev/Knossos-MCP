@@ -43,6 +43,9 @@ export type Listed = { name: string; canonical_name: string; kind: string }
  */
 export type Ranked = Listed & {
   boundary?: string | null
+  /** Where it is declared, relative to the project root; absent from a knossos older than the mod's live watcher. */
+  path?: string | null
+  line?: number | null
   in_degree?: number
   out_degree?: number
   cross_boundary_degree?: number
@@ -307,6 +310,24 @@ export type Rescan = {
  */
 export type RescanState = { phase: 'idle' | 'scanning' | 'failed'; reason: string | null; refusedRoot?: string | null }
 
+/**
+ * The live watcher (`knossos watch --shared`) as the pane and band show it:
+ * `starting` until it says it is ready, `live` while it watches,
+ * `scanning` while its scan runs, `following` while another session's
+ * watcher leads (this one only reads the snapshot), `off` when there is
+ * none (switched off, refused, not offered, or stopped).
+ */
+export type LiveState = { phase: 'off' | 'starting' | 'live' | 'scanning' | 'following' }
+
+/** One event of the live watcher, one JSON object per line on its stdout; `no-binary` comes from the wrapper. */
+export type WatchEvent = {
+  event?: 'ready' | 'refused' | 'following' | 'leading' | 'changes' | 'scan_started' | 'scan_completed' | 'absorbed' | 'snapshot' | 'overflow' | 'error' | 'stopped'
+  status?: string
+  snapshot_id?: string | null
+  retryable?: boolean
+  reason?: string
+}
+
 /** The `allow-root` subcommand's answer: the root granted and the roots file it now stands in. */
 export type AllowRoot = { status?: 'no-binary'; path?: string; roots_file?: string; added?: boolean }
 
@@ -331,6 +352,7 @@ declare module 'claude-code' {
       changes: SessionChanges
       /** The session's root with its links followed, or null before it is known: where a copied command runs. */
       sessionRoot: string | null
+      live: LiveState
     }
   }
 }

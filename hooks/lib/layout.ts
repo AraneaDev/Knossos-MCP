@@ -7,7 +7,7 @@
  * shared primitives (segments, cutting, bars, the self-fitting table) are in
  * `rows.ts`; the Issues and Cycles tabs and the component detail in `views.ts`.
  */
-import type { AllowState, Dashboard, HubSort, KnossosView, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
+import type { AllowState, Dashboard, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
 import { boundariesInput, boundariesList, boundaryRows } from './boundaries'
 import type { BoundariesInput } from './boundaries'
@@ -16,7 +16,7 @@ import type { ChangesInput, LookAt } from './changes'
 import { countLabel } from './envelopes'
 import { driftInput, driftList, driftRows, fileDetailList, fileDetailRows } from './files'
 import type { DriftInput } from './files'
-import { ACCENT, boundaryLabel, declaredOf, FAINT, huesOf, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryLabel, declaredOf, FAINT, HEADING, huesOf, STATUS_COLOURS } from './palette'
 import type { Hues, Tone } from './palette'
 import {
   baseName,
@@ -47,6 +47,7 @@ import {
 } from './rows'
 import type { Loc, Row, Segment, TableSpec } from './rows'
 import { sparkline } from './sparkline'
+import { LIVE_OFF } from './live'
 import { cycleRows, cyclesInput, cyclesList, detailList, detailRows, issueCount, issueRows, issuesInput, issuesList, locIn, superscript } from './views'
 import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
 
@@ -72,6 +73,8 @@ export type Item = {
   cross: number
   /** Ranked as a hotspot but not as a hub: marked `◆`. */
   hotspotOnly: boolean
+  /** Where it is declared, so `e` opens its file; null when the dashboard places it nowhere. */
+  loc: Loc | null
 }
 
 export type PaneStatus = { tone: Tone; text: string }
@@ -170,7 +173,7 @@ export const CONTENT_MAX = 100
  * depended on first; a hotspot that is not a hub keeps its place after the
  * hubs with the same in-degree.
  */
-export function mergeRanked(d: Pick<Dashboard, 'hubs' | 'hotspots'>): Item[] {
+export function mergeRanked(d: Pick<Dashboard, 'hubs' | 'hotspots'> & Partial<Pick<Dashboard, 'project_root'>>): Item[] {
   const seen = new Map<string, Item>()
   const add = (r: Ranked, hotspotOnly: boolean) => {
     if (seen.has(r.canonical_name)) return
@@ -183,6 +186,7 @@ export function mergeRanked(d: Pick<Dashboard, 'hubs' | 'hotspots'>): Item[] {
       out: r.out_degree ?? 0,
       cross: r.cross_boundary_degree ?? 0,
       hotspotOnly,
+      loc: locIn(d.project_root ?? null, r.path ?? null, r.line ?? null),
     })
   }
   d.hubs.forEach(hub => add(hub, false))
@@ -227,14 +231,24 @@ export function listFor(input: ListInput): Openable[] {
   return input.tab === 'issues' ? issuesList(input.issues) : []
 }
 
-/** The header's status: the snapshot's state and age, or what the rescan or refresh is doing. */
-export function paneStatus(d: Dashboard, refresh: RefreshState, rescan: RescanState, now: number): PaneStatus {
+/**
+ * The header's status: the snapshot's state and age, or what the rescan,
+ * the refresh or the live watcher is doing. While the watcher keeps a fresh
+ * graph current it says `live` (`live · watched by another session` when
+ * another session's watcher leads) instead of an age, which a live graph
+ * does not have.
+ */
+export function paneStatus(d: Dashboard, refresh: RefreshState, rescan: RescanState, now: number, live: LiveState = LIVE_OFF): PaneStatus {
   const sinceFetch = refresh.fetchedAt === null ? 0 : now - refresh.fetchedAt
   const age = d.freshness.age_seconds === null ? '' : ` · ${formatAge(d.freshness.age_seconds * 1000 + sinceFetch)}`
   // The figures on show are still the old snapshot's while a scan runs: say how old, never only that a scan runs.
   if (rescan.phase === 'scanning') return { tone: 'warn', text: `scanning… · ${refresh.failed ? 'refresh failed' : d.freshness.state}${age}` }
   if (rescan.phase === 'failed') return { tone: 'alert', text: `rescan failed${rescan.reason ? `: ${rescan.reason}` : ''}` }
   if (refresh.failed) return { tone: 'alert', text: `refresh failed${age}` }
+  if (live.phase === 'scanning') return { tone: 'warn', text: `scanning… · ${d.freshness.state}${age}` }
+  if ((live.phase === 'live' || live.phase === 'following') && d.freshness.state === 'fresh' && d.freshness.drift_files === 0) {
+    return { tone: 'ok', text: live.phase === 'live' ? 'live' : 'live · watched by another session' }
+  }
   return { tone: d.freshness.state === 'fresh' ? 'ok' : 'warn', text: `${d.freshness.state}${age}` }
 }
 
@@ -309,6 +323,7 @@ export function paneInput(
   allow: AllowState | null = null,
   session: SessionChanges = NO_CHANGES,
   sessionRoot: string | null = null,
+  live: LiveState = LIVE_OFF,
 ): PaneInput {
   const items = mergeRanked(d)
   const issues = issuesInput(d)
@@ -320,8 +335,9 @@ export function paneInput(
   const diagnostics = issues.diagnostics === null ? null : issues.diagnostics.errors + issues.diagnostics.warnings
   return {
     project: baseName(d.project_root ?? d.path) || (d.project_root ?? d.path),
-    status: paneStatus(d, refresh, rescan, now),
-    canRescan: rescan.phase !== 'scanning' && needsRescan(d),
+    status: paneStatus(d, refresh, rescan, now, live),
+    // A watcher that is scanning already does what a rescan would.
+    canRescan: rescan.phase !== 'scanning' && live.phase !== 'scanning' && needsRescan(d),
     summary: summaryParts(d, items.length),
     tab: view.tab,
     selected: view.selected,
@@ -455,8 +471,9 @@ function headerRows(input: PaneInput, columns: number): Row[] {
 
 /**
  * The summary line under the title. When the dashboard names the files that
- * drifted, their count is a button that lists them (as `d` does), so they
- * are shown where their count stands.
+ * drifted, their count is drawn in the accent and the word after it is a
+ * button that lists them (as `d` does): the one thing on a quiet line that
+ * can be pressed looks like it.
  */
 function summaryRow(input: PaneInput, columns: number): Row {
   const text = joinFitting(input.summary, columns)
@@ -469,7 +486,8 @@ function summaryRow(input: PaneInput, columns: number): Row {
     key: 'summary',
     segments: [
       { text: before === '' ? '' : `${before} · `, dim: true },
-      button('drifted', input.summary[at]!, undefined, { dim: !input.driftOpen }),
+      { text: `${input.summary[at]!.slice(0, input.summary[at]!.indexOf(' '))} `, color: ACCENT },
+      button('drifted', 'drifted', undefined, { dim: false }),
       { text: after === '' ? '' : ` · ${after}`, dim: true },
     ].filter(s => s.text !== ''),
   }
@@ -538,14 +556,31 @@ export function tabRows(active: PaneTab, columns: number, terminal: boolean, bad
   return [strip, ruleRow]
 }
 
+/**
+ * The one boundary every listed row is in, when there are two rows or more
+ * and they all share it: a column repeating it on every row says nothing,
+ * so the section's note says it once instead.
+ */
+export function sharedBoundary(rows: { boundary: string | null }[]): string | null {
+  const first = rows[0]?.boundary ?? null
+  return rows.length > 1 && first !== null && rows.every(r => r.boundary === first) ? first : null
+}
+
 /** A component's numbers as a table shows them: in, out and cross, or in alone. */
 const degreesOf = (item: Item, withDegrees: boolean): number[] => (withDegrees ? [item.in, item.out, item.cross] : [item.in])
 const degreeTitles = (withDegrees: boolean): string[] => (withDegrees ? ['in', 'out', 'cross'] : ['in'])
 
-/** How a table of components fits `columns`. */
-function componentSpec(items: Item[], columns: number, withDegrees: boolean): TableSpec {
+/** How a table of components fits `columns`: without the boundary column when every row shares one. */
+function componentSpec(items: Item[], columns: number, withDegrees: boolean, hues: Hues): TableSpec {
   const widths = degreeTitles(withDegrees).map((t, i) => numberWidth(t, items.map(item => degreesOf(item, withDegrees)[i] ?? 0)))
-  return tableSpec(columns, items.map(i => i.name), items.map(i => boundaryLabel(i.boundary)), widths)
+  const labels = sharedBoundary(items) === null ? items.map(i => boundaryLabel(i.boundary, hues)) : []
+  return tableSpec(columns, items.map(i => i.name), labels, widths)
+}
+
+/** A section's note with the boundary every row shares said once, in front: `all in core · in`. */
+function sharedNote(items: Item[], note: string, hues: Hues): string {
+  const shared = sharedBoundary(items)
+  return shared === null ? note : [`all in ${boundaryLabel(shared, hues)}`, note].filter(s => s !== '').join(' · ')
 }
 
 /** The listed components as table rows laid out by `spec`, with the selection marker on `selected`; the bar draws `sort`. */
@@ -565,6 +600,7 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
         selected: offset + i === selected,
         hotspotOnly: item.hotspotOnly,
         press: `row:${offset + i}`,
+        repeat: i > 0 && item.boundary !== null && item.boundary === items[i - 1]!.boundary,
         ...(withDegrees ? { sorted: SORTS.indexOf(sort) } : {}),
       }, spec, hues),
     ),
@@ -572,9 +608,9 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
 }
 
 /** How the last turn's table fits `columns`. */
-function lastTurnSpec(turn: LastTurn, columns: number): TableSpec {
+function lastTurnSpec(turn: LastTurn, columns: number, hues: Hues): TableSpec {
   const shown = turn.impact.slice(0, TURN_SHOWN)
-  return tableSpec(columns, shown.map(f => f.name), shown.map(f => boundaryLabel(f.boundary)), [numberWidth('', shown.map(f => f.dependents))])
+  return tableSpec(columns, shown.map(f => f.name), shown.map(f => boundaryLabel(f.boundary, hues)), [numberWidth('', shown.map(f => f.dependents))])
 }
 
 /** The last turn: what it touched and how much depends on it, each file a row the marker walks from `offset`. */
@@ -584,7 +620,14 @@ function lastTurnRows(turn: LastTurn, spec: TableSpec, columns: number, hues: Hu
   const max = Math.max(0, ...shown.map(f => f.dependents))
   return [
     sectionRow('turn-head', 'Last turn', note, sectionWidth(specWidth(spec), 'Last turn', note, columns)),
-    ...shown.map((f, i) => tableRow(`turn-${i}`, { name: f.name, boundary: f.boundary, values: [f.dependents], max, selected: offset + i === selected, press: `row:${offset + i}` }, spec, hues)),
+    ...shown.map((f, i) =>
+      tableRow(
+        `turn-${i}`,
+        { name: f.name, boundary: f.boundary, values: [f.dependents], max, selected: offset + i === selected, press: `row:${offset + i}`, repeat: i > 0 && f.boundary !== null && f.boundary === shown[i - 1]!.boundary },
+        spec,
+        hues,
+      ),
+    ),
   ]
 }
 
@@ -684,8 +727,8 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
 /** The hubs tab: its section header, the filter field or line, and the filtered, sorted table. */
 function hubRows(input: PaneInput, list: Item[], selected: number, columns: number): Row[] {
   const hotspots = input.items.some(i => i.hotspotOnly) ? '◆ hotspot only' : ''
-  const note = [hotspots, input.partial ? 'partial' : ''].filter(s => s !== '').join(' · ')
-  const spec = componentSpec(list, columns, true)
+  const note = sharedNote(list, [hotspots, input.partial ? 'partial' : ''].filter(s => s !== '').join(' · '), input.hues)
+  const spec = componentSpec(list, columns, true, input.hues)
   const title = 'Hubs and hotspots'
   const subtitle = `sorted by ${input.sort}`
   const head = sectionWidth(specWidth(spec), `${title} · ${subtitle}`, note, columns)
@@ -702,14 +745,25 @@ function hubRows(input: PaneInput, list: Item[], selected: number, columns: numb
   return [...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort)]
 }
 
+/** What "ask Claude to scan it" asks: the model scans through the Knossos server, into the graph the pane reads. */
+export const SCAN_PROMPT = 'Scan this project with Knossos (scan_project), then give me a short summary of its architecture.'
+
 /**
- * The pane with no dashboard to draw: what to do about it, and the allow-root
- * offer when the project's root was refused (often the reason there is none).
+ * The pane with no dashboard to draw: a heading, why, and one thing to do
+ * about it. When the project's root was refused (often the reason there is
+ * no graph), that one thing is the allow-root offer; otherwise it is asking
+ * Claude to scan the project, which reaches the same graph the pane reads
+ * without a terminal or a data directory to get right.
  */
 export function emptyRows(allow: AllowInput | null, columns: number): Row[] {
   const width = Math.max(1, Math.min(CONTENT_MAX, columns))
-  const said = wrapWords('No Knossos data for this project. Scan it with knossos scan.', width).map((line, i) => dimRow(`empty-${i}`, line, width))
-  return allow === null ? said : [...said, blank('gap-allow'), ...allowRows(allow, width)]
+  const head: Row[] = [
+    { key: 'empty-head', segments: [{ text: fit('No architecture graph yet', width), bold: true, color: HEADING }] },
+    ...wrapWords('Knossos has not scanned this project, so there is nothing to draw.', width).map((line, i) => dimRow(`empty-${i}`, line, width)),
+    blank('gap-empty'),
+  ]
+  if (allow !== null) return [...head, ...allowRows(allow, width)]
+  return [...head, { key: 'empty-action', segments: [button('scan-ask', 'ask Claude to scan it', 'q', { dim: false })] }]
 }
 
 /**
@@ -719,8 +773,8 @@ export function emptyRows(allow: AllowInput | null, columns: number): Row[] {
  */
 function overviewRows(input: PaneInput, selected: number, columns: number): Row[] {
   const top = input.items.slice(0, OVERVIEW_TOP)
-  const topSpec = componentSpec(top, columns, false)
-  const turnSpec = input.lastTurn === null ? null : lastTurnSpec(input.lastTurn, columns)
+  const topSpec = componentSpec(top, columns, false, input.hues)
+  const turnSpec = input.lastTurn === null ? null : lastTurnSpec(input.lastTurn, columns, input.hues)
   const width = Math.min(columns, Math.max(HEALTH_MIN, top.length > 0 ? specWidth(topSpec) : 0, turnSpec === null ? 0 : specWidth(turnSpec)))
   // One marker over the three lists, in the order they are drawn.
   const looked = lookAtList(input.lookAt).length
@@ -729,7 +783,7 @@ function overviewRows(input: PaneInput, selected: number, columns: number): Row[
   if (input.lookAt !== null) rows.push(blank('gap-look'), ...lookAtRows(input.lookAt, columns, input.hues, selected))
   if (input.lastTurn !== null && turnSpec !== null) rows.push(blank('gap-turn'), ...lastTurnRows(input.lastTurn, turnSpec, columns, input.hues, selected, looked))
   rows.push(blank('gap-health'), ...healthRows(input.health, width))
-  const note = input.partial ? 'partial · in' : 'in'
+  const note = sharedNote(top, input.partial ? 'partial · in' : 'in', input.hues)
   rows.push(blank('gap-top'), sectionRow('top-head', 'Most depended on', note, sectionWidth(specWidth(topSpec), 'Most depended on', note, columns)))
   rows.push(...(top.length === 0 ? [dimRow('top-none', '   none', columns)] : componentRows('top', top, selected, topSpec, false, input.hues, 'in', looked + turned)))
   return rows
