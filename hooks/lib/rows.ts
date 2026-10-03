@@ -10,15 +10,24 @@
  * Bars are thin rules (`━`, in half cells) on a faint dotted track, so a
  * column of them reads as a set of gauges rather than a block of colour.
  *
- * As the width shrinks a table gives way in a fixed order: its bars shorten
- * to a minimum, then names are cut with an ellipsis, then the boundary column
- * goes, then the bars go. The numbers always stay.
+ * A table is packed to the left: names take what the longest needs (up to a
+ * cap), the boundary follows them, then the bar (up to {@link BAR_MAX}) and
+ * the numbers. Width a table does not need stays at the right edge, never
+ * between a name and its boundary. As the width shrinks it gives way in a
+ * fixed order: its bars shorten to a minimum, then names are cut with an
+ * ellipsis, then the boundary column goes, then the bars go. The numbers
+ * always stay.
  */
 import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, NO_HUES, SECONDARY } from './palette'
 import type { Hues } from './palette'
 
 /** A pressable segment: drawn as a plain Button, `hotkey: label` when it has a hotkey. */
 export type Press = { id: string; label: string; hotkey?: string }
+/**
+ * A place in a file: an absolute path and, when known, a line. A segment
+ * that carries one is drawn as a link the person can click to open it.
+ */
+export type Loc = { path: string; line: number | null }
 /** A one-line text field: drawn as an Input keyed `id`, holding `value`. */
 export type Field = { id: string; value: string; placeholder: string }
 /**
@@ -32,7 +41,7 @@ export type Cell = { glyph: string; fg?: string; bg?: string }
  * A run of text in one style. `color` is a Claude Code theme key (see
  * `palette.ts`); `dim` marks secondary text, drawn in the theme's `inactive`.
  */
-export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field; cell?: Cell }
+export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field; cell?: Cell; link?: Loc }
 /**
  * One line of the pane. Consecutive rows with the same `raster` key form a
  * grid the terminal may draw as one `Raster`; every surface can draw their
@@ -83,6 +92,47 @@ export const baseName = (path: string): string => path.slice(path.lastIndexOf('/
 export function placeOf(path: string | null, line: number | null): string {
   if (path === null) return ''
   return line === null ? baseName(path) : `${baseName(path)}:${line}`
+}
+
+/** A project-relative path made absolute under `root`; an absolute path is kept. */
+export function absolute(root: string, path: string): string {
+  return path.startsWith('/') ? path : `${root.replace(/\/+$/, '')}/${path}`
+}
+
+/** `path:line` (or the path alone), as an editor's go-to and a copy take it. */
+export const locText = (loc: Loc): string => (loc.line === null ? loc.path : `${loc.path}:${loc.line}`)
+
+/**
+ * The `file:` URL a link opens: the path percent-encoded, the line as a
+ * `#L<n>` fragment, as Claude Code writes links to a line in its own replies.
+ */
+export function fileHref(loc: Loc): string {
+  const path = loc.path.split('/').map(encodeURIComponent).join('/')
+  return `file://${path}${loc.line === null ? '' : `#L${loc.line}`}`
+}
+
+/** The place a `file:` URL from {@link fileHref} names; null for anything else. */
+export function locOf(href: string): Loc | null {
+  if (!href.startsWith('file://')) return null
+  const hash = href.indexOf('#')
+  const rest = hash < 0 ? href.slice(7) : href.slice(7, hash)
+  const line = hash < 0 ? null : (/^#L(\d+)$/.exec(href.slice(hash))?.[1] ?? null)
+  try {
+    const path = decodeURIComponent(rest)
+    return path.startsWith('/') ? { path, line: line === null ? null : Number(line) } : null
+  } catch {
+    return null
+  }
+}
+
+/** Markdown text that draws `text` literally as a link to `loc`: every character markdown would read escaped. */
+export function linkMarkdown(text: string, loc: Loc): string {
+  return `[${text.replace(/[\\`*_{}[\]()<>#+\-.!|~]/g, ch => `\\${ch}`)}](${fileHref(loc)})`
+}
+
+/** A segment drawing `text` as a link to `loc`, or as plain text when there is no place. */
+export function linked(text: string, loc: Loc | null, style: Omit<Segment, 'text' | 'link'> = {}): Segment {
+  return loc === null || text === '' ? { ...style, text } : { ...style, text, link: loc }
 }
 
 /** A whole cell of a bar, and its left half. */
@@ -234,10 +284,14 @@ export function wrapGroups(key: string, groups: Segment[][], columns: number, ga
   return rows
 }
 
-/** A section header: its title in bold, a note against the right edge when it fits. */
-export function sectionRow(key: string, title: string, note: string, columns: number): Row {
-  const head: Segment = { text: fit(title, columns), bold: true, color: HEADING }
-  return spread(key, [head], note === '' ? [] : [{ text: note, dim: true }], columns)
+/**
+ * A section header: its title in bold, then its `subtitle` dim beside it (what
+ * the list is sorted by), and a note against the right edge when it fits.
+ */
+export function sectionRow(key: string, title: string, note: string, columns: number, subtitle = ''): Row {
+  const head: Segment[] = [{ text: fit(title, columns), bold: true, color: HEADING }]
+  if (subtitle !== '' && cells(title) + 3 + cells(subtitle) <= columns) head.push({ text: ` · ${subtitle}`, dim: true })
+  return spread(key, head, note === '' ? [] : [{ text: note, dim: true }], columns)
 }
 
 export const blank = (key: string): Row => ({ key, segments: [{ text: ' ' }] })
@@ -259,9 +313,9 @@ export function tableSpec(columns: number, names: string[], boundaries: string[]
   const attempt = (withBoundary: boolean, withBar: boolean): TableSpec | null => {
     const boundary = withBoundary && boundaryNeed > 0 ? boundaryNeed : 0
     const avail = columns - fixed - (boundary > 0 ? boundary + 1 : 0)
-    if (!withBar) return avail >= Math.min(NAME_MIN, nameNeed) ? { name: avail, boundary, bar: 0, numbers } : null
+    if (!withBar) return avail >= Math.min(NAME_MIN, nameNeed) ? { name: Math.min(avail, nameNeed), boundary, bar: 0, numbers } : null
     const barWidth = Math.min(BAR_MAX, Math.max(BAR_MIN, avail - 1 - nameNeed))
-    const name = avail - 1 - barWidth
+    const name = Math.min(nameNeed, avail - 1 - barWidth)
     return name >= Math.min(NAME_MIN, nameNeed) ? { name, boundary, bar: barWidth, numbers } : null
   }
   return (
@@ -269,6 +323,19 @@ export function tableSpec(columns: number, names: string[], boundaries: string[]
     attempt(false, true) ??
     attempt(false, false) ?? { name: Math.max(1, columns - fixed), boundary: 0, bar: 0, numbers }
   )
+}
+
+/** How many columns a table laid out by `spec` takes. */
+export const specWidth = (spec: TableSpec): number =>
+  MARK + spec.name + (spec.boundary > 0 ? spec.boundary + 1 : 0) + (spec.bar > 0 ? spec.bar + 1 : 0) + spec.numbers.reduce((n, w) => n + 1 + w, 0)
+
+/**
+ * The width a section's header spreads over: its table's, so a note such as
+ * `in` stands over the numbers, but never less than the header needs, nor
+ * more than `columns`.
+ */
+export function sectionWidth(tableWidth: number, title: string, note: string, columns: number): number {
+  return Math.min(columns, Math.max(tableWidth, cells(title) + (note === '' ? 0 : cells(note) + 2)))
 }
 
 /** A column-title row for a table, dim. */
@@ -293,6 +360,10 @@ export type TableLine = {
   press?: string
   /** Cut the name from the front (a path), not the end. */
   cutStart?: boolean
+  /** Where the name's file is: the name is drawn as a link to it. */
+  link?: Loc | null
+  /** The one-cell mark before the name, when not the hotspot mark. */
+  mark?: Segment
 }
 
 /** One table row: marker, name (pressable when it has an id), boundary, bar and numbers. */
@@ -301,9 +372,9 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hu
   const name = line.cutStart ? fitStart(line.name, spec.name) : fit(line.name, spec.name)
   const segments: Segment[] = [
     { text: line.selected ? '›' : ' ', color: ACCENT, bold: true },
-    { text: line.hotspotOnly ? '◆' : ' ', dim: true },
+    line.mark ?? { text: line.hotspotOnly ? '◆' : ' ', dim: true },
     { text: ' ' },
-    line.press === undefined ? { text: name } : button(line.press, name),
+    line.press === undefined ? linked(name, line.link ?? null) : button(line.press, name),
     { text: spaces(spec.name - cells(name)) },
   ]
   if (spec.boundary > 0) {

@@ -62,7 +62,7 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  */
 function world(
   on: On,
-  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[]; allow?: Answer[] } = {},
+  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[]; allow?: Answer[]; editor?: 'opens' | 'missing' } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[] } = {},
 ) {
   const clock = mock.clock(on)
@@ -135,6 +135,11 @@ function world(
   }))
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
+    // The editor's command: there and opening the file, or not installed.
+    if (e.argv[0] === 'code') {
+      if (answers.editor === 'missing') throw Object.assign(new Error('spawn code ENOENT'), { code: 'ENOENT' })
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     const sub = e.argv[2]
     const queue =
       sub === 'dashboard'
@@ -160,7 +165,8 @@ function world(
   const scanRuns = () => calls.filter(c => c[2] === 'scan')
   const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
   const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
-  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, toasts, logs, opened, closed, invalidations, prompts, copies }
+  const editorRuns = () => calls.filter(c => c[0] === 'code')
+  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -330,6 +336,14 @@ function hotkeyPrefixes(row: { children: unknown[] }): number {
     const child = c as { type?: unknown; props?: { hotkey?: unknown } } | null
     return typeof child === 'object' && child !== null && child.type === 'Button' && child.props?.hotkey !== undefined
   }).length * 3
+}
+
+/**
+ * A row's text as the surface draws it: a Markdown link (`[label](file:…)`)
+ * shows its label, unescaped, where the kit's text holds the markdown.
+ */
+function drawn(text: string): string {
+  return text.replace(/\[((?:\\.|[^\]\\])*)\]\(file:[^)]*\)/g, (_, label: string) => label.replace(/\\(.)/g, '$1'))
 }
 
 const PANE_PROPS = {
@@ -959,12 +973,14 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       const tabs = await ui.findAll({ type: 'Button' })
+      // Six tabs at 60 columns: the labels shorten.
       expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(t => `${String(t.props.hotkey)} ${t.text}`)).toEqual([
-        '1 Overview',
+        '1 Over',
         '2 Hubs',
-        '3 Boundaries',
-        '4 Cycles',
-        '5 Issues',
+        '3 Bound',
+        '4 Cyc',
+        '5 Iss',
+        '6 Chg',
       ])
       // The active tab is drawn at full strength, the others dim.
       expect((await ui.find({ key: 'tab:overview' }))?.props.dimColor).toBeUndefined()
@@ -1030,7 +1046,7 @@ describe('knossos mod', () => {
     const ui = await mountPane($)
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.press({ key: 'keys' })
-    expect((await ui.find({ key: 'help-0' }))?.text).toContain('1–5 or a click switch tabs')
+    expect((await ui.find({ key: 'help-0' }))?.text).toContain('1–6 or a click switch tabs')
     await ui.press({ key: 'keys' })
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.unmount()
@@ -1138,19 +1154,27 @@ describe('knossos mod', () => {
         { name: 'symbol', canonical_name: 'Knossos\\Store\\StableId::symbol', kind: 'method', boundary: 'core', in_degree: 199, out_degree: 1, cross_boundary_degree: 0 },
       ],
     })
-    const w = world(on, { dashboard: [{ stdout: long }], detail: [{ stdout: fullDetailOf('ArchitectureQueryService') }] })
+    const touched = brief({
+      changed_files: ['src/Http/a/rather/deeply/nested/directory/with/a/LongControllerName.php'],
+      impact: { 'src/Http/a/rather/deeply/nested/directory/with/a/LongControllerName.php': { path: 'src/Http/a/rather/deeply/nested/directory/with/a/LongControllerName.php', dependent_files: 1234, boundaries: ['Http', 'Core'] } },
+      tests: [{ path: 'tests/phpunit/Http/a/rather/deeply/nested/directory/LongControllerNameTest.php', distance: 1 }],
+    })
+    const w = world(on, { dashboard: [{ stdout: long }], detail: [{ stdout: fullDetailOf('ArchitectureQueryService') }], brief: [{ stdout: touched }] })
     await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Http/x.php`)
+    await $.turn.complete(TURN)
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       for (const bodyColumns of [40, 60, 90, 120]) {
         const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns } })
-        for (const step of ['tab:overview', 'tab:hubs', 'filter', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'keys', 'tab:hubs', 'row:0']) {
+        for (const step of ['tab:overview', 'tab:hubs', 'filter', 'tab:boundaries', 'tab:cycles', 'tab:issues', 'tab:changes', 'keys', 'tab:hubs', 'row:0']) {
           await ui.press({ key: step })
           await w.clock.settle()
           const rows = (await ui.findAll({ type: 'Box' })).filter(b => b.key !== 'pane' && b.key !== 'detail')
           expect(rows.length).toBeGreaterThan(5)
           for (const row of rows) {
-            const width = [...row.text].length + hotkeyPrefixes(row)
+            const width = [...drawn(row.text)].length + hotkeyPrefixes(row)
             expect(width, `${surface} ${bodyColumns} ${step} ${String(row.key)}: ${row.text}`).toBeLessThanOrEqual(bodyColumns)
           }
           for (const grid of await ui.findAll({ type: 'Raster' })) {
@@ -1435,9 +1459,9 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       // Two violations and one error: the label counts them.
-      expect((await ui.find({ key: 'tab:issues' }))?.text).toBe('Issues ³')
+      expect((await ui.find({ key: 'tab:issues' }))?.text).toBe('Iss ³')
       await ui.press({ key: 'tab:issues' })
-      const text = (await ui.find({ key: 'pane' }))?.text ?? ''
+      const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
       expect(text).toMatch(/Policy violations *▲ 2/)
       expect(text).toContain('Kernel::boot')
       expect(text).toContain('Kernel.php:12')
@@ -1494,7 +1518,7 @@ describe('knossos mod', () => {
       await wide.press({ key: 'row:0' })
       await w.clock.settle()
       expect((await wide.find({ key: 'detail-name' }))?.text).toMatch(/^Router +class · Http$/)
-      expect((await wide.find({ key: 'detail-place' }))?.text).toBe('src/Http/Router.php:3')
+      expect(drawn((await wide.find({ key: 'detail-place' }))?.text ?? '')).toBe('src/Http/Router.php:3')
       expect((await wide.find({ key: 'side-0' }))?.text).toMatch(/^Used by 2 +edges +Uses 1 +edges$/)
       expect((await wide.find({ key: 'side-1' }))?.text).toMatch(/Kernel +Core +[━╸]+·* +4 +Request +Http +[━╸]+·* +2$/)
       expect((await wide.find({ key: 'detail' }))?.text).toContain('note: The one way in.')
@@ -1818,5 +1842,147 @@ describe('knossos mod', () => {
     expect((await ui.find({ key: 'empty' }))?.text).toMatch(/This adds it to\s+\/data\/roots\.json\./)
     expect(w.allowRuns()).toEqual([])
     await ui.unmount()
+  })
+  for (const editor of ['opens', 'missing'] as const) {
+    test(`a file:line is a link: a click opens it in the editor, or copies it where no editor answers (${editor})`, async ($, on) => {
+      const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], editor })
+      await $.session.start(START)
+      await w.clock.settle()
+      for (const surface of ['terminal', 'desktop'] as const) {
+        const ui = await mountPane($, surface)
+        await ui.press({ key: 'tab:issues' })
+        const links = await ui.findAll({ type: 'Markdown' })
+        const hrefs = links.map(l => /\]\((file:[^)]*)\)/.exec(String(l.props.text))?.[1])
+        // The violation's place, the diagnostic's, the dead code's and the largest file.
+        expect(hrefs).toEqual([
+          'file:///repo/src/Core/Kernel.php#L12',
+          'file:///repo/src/Broken.php#L9',
+          'file:///repo/src/Http/Router.php#L40',
+          'file:///repo/src/Http/Router.php',
+        ])
+        const dead = links[2]!
+        await ui.press({ key: String(dead.key), link: { href: 'file:///repo/src/Http/Router.php#L40' } })
+        await w.clock.settle()
+        expect(w.editorRuns().at(-1)).toEqual(['code', '-g', '/repo/src/Http/Router.php:40'])
+        if (editor === 'opens') {
+          expect(w.toasts.at(-1)).toBe('Opened /repo/src/Http/Router.php:40')
+        } else {
+          expect(w.copies.at(-1)).toEqual({ text: '/repo/src/Http/Router.php:40', surface })
+          expect(w.toasts.at(-1)).toBe('No editor command to open it; copied /repo/src/Http/Router.php:40')
+        }
+        // e opens the marked row's place: the first violation.
+        await ui.press({ key: 'edit' })
+        await w.clock.settle()
+        expect(w.editorRuns().at(-1)).toEqual(['code', '-g', '/repo/src/Core/Kernel.php:12'])
+        await ui.press({ key: 'tab:overview' })
+        await ui.unmount()
+      }
+      expect(w.prompts).toEqual([])
+    })
+  }
+
+  test("the detail's place is a link, and e opens it", async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: fullDetailOf('Router') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'row:0' })
+    await w.clock.settle()
+    const place = await ui.find({ type: 'Markdown' })
+    expect(place?.props.text).toBe('[src/Http/Router\\.php:3](file:///repo/src/Http/Router.php#L3)')
+    await ui.press({ key: 'edit' })
+    await w.clock.settle()
+    expect(w.editorRuns()).toEqual([['code', '-g', '/repo/src/Http/Router.php:3']])
+    await ui.unmount()
+  })
+
+  test('the changes tab adds up every turn: files, dependents, boundaries, tests and their command', async ($, on) => {
+    const first = brief({
+      changed_files: ['src/Router.php'],
+      impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'] } },
+      tests: [{ path: 'tests/Http/RouterTest.php', distance: 1 }],
+    })
+    const second = brief({
+      changed_files: ['src/Router.php'],
+      added_files: ['src/Kernel.php'],
+      impact: {
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 42, boundaries: ['Http'] },
+        'src/Kernel.php': { path: 'src/Kernel.php', dependent_files: 3, boundaries: ['Core'] },
+      },
+      tests: [
+        { path: 'tests/Http/RouterTest.php', distance: 2 },
+        { path: 'tests/Core/KernelTest.php', distance: 1 },
+      ],
+    })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], brief: [{ stdout: first }, { stdout: second }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const file of ['src/Router.php', 'src/Kernel.php']) {
+      await edit($, `${ROOT}/${file}`)
+      await $.turn.complete(TURN)
+      await w.clock.settle()
+    }
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      expect((await ui.find({ key: 'tab:changes' }))?.text).toBe('Chg ²')
+      await ui.press({ key: 'tab:changes' })
+      const text = drawn((await ui.find({ key: 'pane' }))?.text ?? '')
+      expect(text).toMatch(/Changes this session +2 turns/)
+      expect(text).toMatch(/2 files → 45 dependents reaching Http Core/)
+      expect(drawn((await ui.find({ key: 'change-0' }))?.text ?? '')).toMatch(/^› +src\/Router\.php +Http .*42$/)
+      expect(drawn((await ui.find({ key: 'change-1' }))?.text ?? '')).toMatch(/^ \+ src\/Kernel\.php +Core .*3$/)
+      // Each test once, at its nearest distance.
+      expect(text).toMatch(/Tests that reach them 2 +hops/)
+      expect(drawn((await ui.find({ key: 'test-0' }))?.text ?? '')).toMatch(/tests\/Core\/KernelTest\.php +1$/)
+      expect(drawn((await ui.find({ key: 'test-1' }))?.text ?? '')).toMatch(/tests\/Http\/RouterTest\.php +1$/)
+      expect(text).toContain("$ vendor/bin/phpunit --filter '(KernelTest|RouterTest)'")
+      await ui.press({ key: 'copy' })
+      await w.clock.settle()
+      expect(w.copies.at(-1)).toEqual({ text: "vendor/bin/phpunit --filter '(KernelTest|RouterTest)'", surface })
+      expect(w.toasts.at(-1)).toBe('Copied the command for 2 tests')
+      // A file opens in the editor, not as a component.
+      await ui.press({ key: 'down' })
+      await ui.press({ key: 'open' })
+      await w.clock.settle()
+      expect(w.editorRuns().at(-1)).toEqual(['code', '-g', '/repo/src/Kernel.php'])
+      await ui.press({ key: 'tab:overview' })
+      await ui.unmount()
+    }
+    expect(w.detailRuns()).toEqual([])
+    expect(w.prompts).toEqual([])
+  })
+
+  test('look at now: e opens the riskiest file touched and t copies the test command', async ($, on) => {
+    const covered = brief({ tests: [{ path: 'hooks/lib/band.spec.ts', distance: 1 }] })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: covered }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect(await ui.find({ key: 'look-head' })).toBeUndefined()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect((await ui.find({ key: 'look-file' }))?.text).toMatch(/Router\.php Http · 41 dependents/)
+    expect((await ui.find({ key: 'edit' }))?.props.hotkey).toBe('e')
+    expect((await ui.find({ key: 'look-tests' }))?.text).toContain('1 test reaches the changes')
+    await ui.press({ key: 'edit' })
+    await ui.press({ key: 'tests' })
+    await w.clock.settle()
+    expect(w.editorRuns()).toEqual([['code', '-g', '/repo/src/Router.php']])
+    expect(w.copies.at(-1)?.text).toBe('npx vitest run hooks/lib/band.spec.ts')
+    await ui.unmount()
+  })
+
+  test('look at now warns when no test reaches the changes', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const again = await mountPane($)
+    expect((await again.find({ key: 'look-tests' }))?.text).toContain("▲ no test reaches this session's changes")
+    expect(await again.find({ key: 'tests' })).toBeUndefined()
+    await again.unmount()
   })
 })

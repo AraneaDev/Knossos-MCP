@@ -7,10 +7,12 @@
  * shared primitives (segments, cutting, bars, the self-fitting table) are in
  * `rows.ts`; the Issues and Cycles tabs and the component detail in `views.ts`.
  */
-import type { AllowState, Dashboard, HubSort, KnossosView, PaneTab, Ranked, RefreshState, RescanState, TurnBrief } from '../../types'
+import type { AllowState, Dashboard, HubSort, KnossosView, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
 import { boundariesInput, boundaryRows } from './boundaries'
 import type { BoundariesInput } from './boundaries'
+import { changesInput, changesList, changesRows, lookAtOf, lookAtRows, NO_CHANGES, pickBoundary } from './changes'
+import type { ChangesInput, LookAt } from './changes'
 import { countLabel } from './envelopes'
 import { ACCENT, boundaryLabel, FAINT, huesOf, STATUS_COLOURS } from './palette'
 import type { Hues, Tone } from './palette'
@@ -31,7 +33,9 @@ import {
   plural,
   rowWidth,
   sectionRow,
+  sectionWidth,
   spaces,
+  specWidth,
   spread,
   tableHead,
   tableRow,
@@ -39,16 +43,18 @@ import {
   wrapGroups,
   wrapWords,
 } from './rows'
-import type { Row, Segment } from './rows'
+import type { Loc, Row, Segment, TableSpec } from './rows'
 import { sparkline } from './sparkline'
-import { cycleRows, cyclesInput, detailList, detailRows, issueCount, issueRows, issuesInput, issuesList, superscript } from './views'
+import { cycleRows, cyclesInput, detailList, detailRows, issueCount, issueRows, issuesInput, issuesList, locIn, superscript } from './views'
 import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
 
 // Everything the specs and the render hook draw with, from one module.
-export { bar, button, cells, displayName, fit, plainText, rowWidth, tableSpec, wrapWords } from './rows'
-export type { Field, Press, Row, Segment, TableSpec } from './rows'
+export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, plainText, rowWidth, tableSpec, wrapWords } from './rows'
+export type { Field, Loc, Press, Row, Segment, TableSpec } from './rows'
 export type { DetailInput, Openable } from './views'
 export type { BoundariesInput } from './boundaries'
+export { accumulate, NO_CHANGES } from './changes'
+export type { ChangesInput, LookAt } from './changes'
 export { detailInput, SIDE_BY_SIDE } from './views'
 
 /** One component in a list the selection walks: hubs and hotspots merged. */
@@ -70,7 +76,7 @@ export type LastTurn = {
   files: number
   dependents: number
   tests: number
-  impact: { name: string; boundary: string | null; dependents: number }[]
+  impact: { name: string; boundary: string | null; dependents: number; loc: Loc | null }[]
 }
 
 export type Health = {
@@ -114,23 +120,31 @@ export type PaneInput = {
   allow: AllowInput | null
   /** Each boundary's colour, the project's largest first. */
   hues: Hues
+  /** Everything this session changed, for the Changes tab. */
+  changes: ChangesInput
+  /** The Overview's "Look at now", or null before anything changed. */
+  lookAt: LookAt | null
 }
 
 /** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
 export type AllowInput = { root: string; rootsFile: string | null; phase: AllowState['phase']; reason: string | null }
 
-export const TABS: { id: PaneTab; full: string; short: string; hotkey: string }[] = [
-  { id: 'overview', full: 'Overview', short: 'Over', hotkey: '1' },
-  { id: 'hubs', full: 'Hubs', short: 'Hubs', hotkey: '2' },
-  { id: 'boundaries', full: 'Boundaries', short: 'Bound', hotkey: '3' },
-  { id: 'cycles', full: 'Cycles', short: 'Cyc', hotkey: '4' },
-  { id: 'issues', full: 'Issues', short: 'Iss', hotkey: '5' },
+/** The tabs in hotkey order; Changes came last, so the older tabs keep their digits. */
+export const TABS: { id: PaneTab; full: string; short: string; tiny: string; hotkey: string }[] = [
+  { id: 'overview', full: 'Overview', short: 'Over', tiny: 'O', hotkey: '1' },
+  { id: 'hubs', full: 'Hubs', short: 'Hubs', tiny: 'H', hotkey: '2' },
+  { id: 'boundaries', full: 'Boundaries', short: 'Bound', tiny: 'B', hotkey: '3' },
+  { id: 'cycles', full: 'Cycles', short: 'Cyc', tiny: 'C', hotkey: '4' },
+  { id: 'issues', full: 'Issues', short: 'Iss', tiny: 'I', hotkey: '5' },
+  { id: 'changes', full: 'Changes', short: 'Chg', tiny: 'Ch', hotkey: '6' },
 ]
 
 export const SORTS: HubSort[] = ['in', 'out', 'cross']
 
 /** How many components the overview lists. */
 export const OVERVIEW_TOP = 5
+/** The narrowest the overview's sections spread, so health and its trend never crowd together. */
+const HEALTH_MIN = 48
 /** A trend is drawn only with this many snapshots, and only when it moves. */
 const TREND_MIN_POINTS = 5
 const TREND_MAX_POINTS = 24
@@ -177,10 +191,11 @@ export function hubList(items: Item[], filter: string, sort: HubSort): Item[] {
 }
 
 /** The rows the selection walks: the detail's counterparts, else the tab's list. */
-export function listFor(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail'>): Openable[] {
+export function listFor(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'changes'>): Openable[] {
   if (input.detail !== null) return detailList(input.detail)
   if (input.tab === 'overview') return input.items.slice(0, OVERVIEW_TOP)
   if (input.tab === 'hubs') return hubList(input.items, input.filter, input.sort)
+  if (input.tab === 'changes') return changesList(input.changes)
   return input.tab === 'issues' ? issuesList(input.issues) : []
 }
 
@@ -202,16 +217,14 @@ export function needsRescan(d: Dashboard): boolean {
 /**
  * The last turn's impact from a fresh brief, or null when there is none to
  * show. A file in several boundaries is labelled with the one that ranks
- * first among `hues` (declared before inferred), else its first.
+ * first among `hues` (declared before inferred), else its first. `root`
+ * places the files on disk, so their names open them.
  */
-export function lastTurnOf(brief: TurnBrief | null, hues: Hues = new Map()): LastTurn | null {
+export function lastTurnOf(brief: TurnBrief | null, hues: Hues = new Map(), root: string | null = null): LastTurn | null {
   if (brief === null || brief.status !== 'ok') return null
-  const order = [...hues.keys()]
-  const rank = (b: string) => (order.includes(b) ? order.indexOf(b) : order.length)
-  const pick = (boundaries: string[]) => [...boundaries].sort((a, b) => rank(a) - rank(b))[0] ?? null
   const impact = Object.values(brief.impact)
     .sort((a, b) => b.dependent_files - a.dependent_files || a.path.localeCompare(b.path))
-    .map(f => ({ name: baseName(f.path), boundary: pick(f.boundaries), dependents: f.dependent_files }))
+    .map(f => ({ name: baseName(f.path), boundary: pickBoundary(f.boundaries, hues), dependents: f.dependent_files, loc: locIn(root, f.path) }))
   const files = brief.changed_files.length + brief.added_files.length
   if (files === 0 && impact.length === 0) return null
   return { files, dependents: impact.reduce((n, f) => n + f.dependents, 0), tests: brief.tests.length, impact }
@@ -260,10 +273,12 @@ export function paneInput(
   terminal: boolean,
   detail: DetailInput | null = null,
   allow: AllowState | null = null,
+  session: SessionChanges = NO_CHANGES,
 ): PaneInput {
   const items = mergeRanked(d)
   const issues = issuesInput(d)
   const hues = huesOf(d)
+  const changes = changesInput(session, d.project_root, hues)
   const turn = brief?.status === 'ok' && brief.policy.status === 'evaluated' ? String(brief.policy.total) : null
   const policy = issues.policy?.evaluated ? issues.policy.total : turn
   const diagnostics = issues.diagnostics === null ? null : issues.diagnostics.errors + issues.diagnostics.warnings
@@ -278,7 +293,7 @@ export function paneInput(
     terminal,
     items,
     partial: d.hubs_truncated,
-    lastTurn: lastTurnOf(brief, hues),
+    lastTurn: lastTurnOf(brief, hues, d.project_root),
     health: {
       cycles: countLabel(d.cycles.count, d.cycles.truncated),
       maxDegree: d.trend.at(-1)?.max_degree ?? null,
@@ -297,6 +312,8 @@ export function paneInput(
     detail,
     allow: allowInput(brief, rescan, allow),
     hues,
+    changes,
+    lookAt: lookAtOf(changes),
   }
 }
 
@@ -322,12 +339,28 @@ export function allowInput(brief: TurnBrief | null, rescan: RescanState, allow: 
  * The component a copy or an "Ask Claude" is about: the one on show in the
  * detail, else the marked row of the tab's list; null when there is none.
  */
-export function subjectOf(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected'>): Openable | null {
-  if (input.detail !== null) return input.detail.component === null ? null : { name: input.detail.component.name, canonical: input.detail.component.canonical }
+export function subjectOf(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected' | 'changes'>): Openable | null {
+  if (input.detail !== null) {
+    const c = input.detail.component
+    return c === null ? null : { name: c.name, canonical: c.canonical, loc: c.loc }
+  }
   const list = listFor(input)
   const marked = list[Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))]
-  return marked === undefined ? null : { name: marked.name, canonical: marked.canonical }
+  return marked === undefined ? null : { name: marked.name, canonical: marked.canonical, loc: marked.loc ?? null, ...(marked.file ? { file: true } : {}) }
 }
+
+/**
+ * The place `e` opens in the editor: the Overview's riskiest touched file,
+ * else the file of the component on show or of the marked row; null when
+ * there is none.
+ */
+export function editTarget(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected' | 'changes' | 'lookAt'>): Loc | null {
+  if (input.detail === null && input.tab === 'overview') return input.lookAt?.file?.loc ?? null
+  return subjectOf(input)?.loc ?? null
+}
+
+/** The test command `c` (on Changes) and `t` (on Overview) copy, or null when no test reaches the changes. */
+export const testCommandOf = (input: Pick<PaneInput, 'changes'>): string | null => input.changes.command
 
 /** The prompt "Ask Claude" submits for a component. */
 export const askPrompt = (canonical: string): string =>
@@ -394,7 +427,7 @@ export function tabRows(active: PaneTab, columns: number, terminal: boolean, bad
     [t => badged(t, t.full, ' '), 2],
     [t => badged(t, t.short, ' '), 2],
     [t => badged(t, t.short, ''), 1],
-    [t => badged(t, t.full.charAt(0), ''), 1],
+    [t => badged(t, t.tiny, ''), 1],
   ]
   const width = (label: (t: (typeof TABS)[number]) => string, gap: number) =>
     TABS.reduce((n, t) => n + cells(`${t.hotkey}: ${label(t)}`), 0) + gap * (TABS.length - 1)
@@ -430,12 +463,20 @@ export function tabRows(active: PaneTab, columns: number, terminal: boolean, bad
   return [strip, ruleRow]
 }
 
-/** The listed components as table rows, with the selection marker on `selected`; the bar draws `sort`. */
-function componentRows(prefix: string, items: Item[], selected: number, columns: number, withDegrees: boolean, hues: Hues, sort: HubSort = 'in'): Row[] {
-  const titles = withDegrees ? ['in', 'out', 'cross'] : ['in']
-  const columnsOf = (item: Item) => (withDegrees ? [item.in, item.out, item.cross] : [item.in])
-  const widths = titles.map((t, i) => numberWidth(t, items.map(item => columnsOf(item)[i] ?? 0)))
-  const spec = tableSpec(columns, items.map(i => i.name), items.map(i => boundaryLabel(i.boundary)), widths)
+/** A component's numbers as a table shows them: in, out and cross, or in alone. */
+const degreesOf = (item: Item, withDegrees: boolean): number[] => (withDegrees ? [item.in, item.out, item.cross] : [item.in])
+const degreeTitles = (withDegrees: boolean): string[] => (withDegrees ? ['in', 'out', 'cross'] : ['in'])
+
+/** How a table of components fits `columns`. */
+function componentSpec(items: Item[], columns: number, withDegrees: boolean): TableSpec {
+  const widths = degreeTitles(withDegrees).map((t, i) => numberWidth(t, items.map(item => degreesOf(item, withDegrees)[i] ?? 0)))
+  return tableSpec(columns, items.map(i => i.name), items.map(i => boundaryLabel(i.boundary)), widths)
+}
+
+/** The listed components as table rows laid out by `spec`, with the selection marker on `selected`; the bar draws `sort`. */
+function componentRows(prefix: string, items: Item[], selected: number, spec: TableSpec, withDegrees: boolean, hues: Hues, sort: HubSort = 'in'): Row[] {
+  const titles = degreeTitles(withDegrees)
+  const columnsOf = (item: Item) => degreesOf(item, withDegrees)
   const max = Math.max(0, ...items.map(i => i[sort]))
   return [
     ...(withDegrees ? [tableHead(`${prefix}-head`, spec, { name: 'name', boundary: 'boundary', numbers: titles })] : []),
@@ -454,15 +495,23 @@ function componentRows(prefix: string, items: Item[], selected: number, columns:
   ]
 }
 
-function lastTurnRows(turn: LastTurn, columns: number, hues: Hues): Row[] {
+/** How many of the last turn's files the overview lists. */
+const TURN_SHOWN = 4
+
+/** How the last turn's table fits `columns`. */
+function lastTurnSpec(turn: LastTurn, columns: number): TableSpec {
+  const shown = turn.impact.slice(0, TURN_SHOWN)
+  return tableSpec(columns, shown.map(f => f.name), shown.map(f => boundaryLabel(f.boundary)), [numberWidth('', shown.map(f => f.dependents))])
+}
+
+/** The last turn: what it touched and how much depends on it, each name a link to its file. */
+function lastTurnRows(turn: LastTurn, spec: TableSpec, columns: number, hues: Hues): Row[] {
   const note = `${plural(turn.files, 'file', 'files')} → ${turn.dependents} deps · ${plural(turn.tests, 'test', 'tests')}`
-  const shown = turn.impact.slice(0, 4)
-  const widths = [numberWidth('', shown.map(f => f.dependents))]
-  const spec = tableSpec(columns, shown.map(f => f.name), shown.map(f => boundaryLabel(f.boundary)), widths)
+  const shown = turn.impact.slice(0, TURN_SHOWN)
   const max = Math.max(0, ...shown.map(f => f.dependents))
   return [
-    sectionRow('turn-head', 'Last turn', note, columns),
-    ...shown.map((f, i) => tableRow(`turn-${i}`, { name: f.name, boundary: f.boundary, values: [f.dependents], max }, spec, hues)),
+    sectionRow('turn-head', 'Last turn', note, sectionWidth(specWidth(spec), 'Last turn', note, columns)),
+    ...shown.map((f, i) => tableRow(`turn-${i}`, { name: f.name, boundary: f.boundary, values: [f.dependents], max, link: f.loc }, spec, hues)),
   ]
 }
 
@@ -503,9 +552,17 @@ function healthRows(h: Health, columns: number): Row[] {
 /** The key buttons, wrapped onto as many rows as they need: a key that does not fit is never dropped, since it would stop working. */
 function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] {
   const keys: Segment[] = []
+  const changes = input.detail === null && input.tab === 'changes'
   if (input.detail !== null) keys.push(button('back', 'back', 'b'))
   if (hasList) keys.push(button('down', '↓', 'j'), button('up', '↑', 'k'), button('open', 'open', 'o'))
-  if (subjectOf(input) !== null) keys.push(button('copy', 'copy', 'c'), button('ask', 'ask Claude', 'q'))
+  // On Overview the "Look at now" row carries its own `e`.
+  if (editTarget(input) !== null && !(input.detail === null && input.tab === 'overview')) keys.push(button('edit', 'edit', 'e'))
+  if (changes) {
+    if (input.changes.command !== null) keys.push(button('copy', 'copy test command', 'c'))
+    if (subjectOf(input) !== null) keys.push(button('ask', 'ask Claude', 'q'))
+  } else if (subjectOf(input) !== null) {
+    keys.push(button('copy', 'copy', 'c'), button('ask', 'ask Claude', 'q'))
+  }
   if (input.detail === null && input.tab === 'hubs') {
     keys.push(button('filter', 'filter', 'f'), button('sort', `sort: ${input.sort}`, 's'))
     if (input.filter !== '') keys.push(button('clear', 'clear', 'x'))
@@ -514,9 +571,11 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
   const rows = wrapGroups('keys', keys.map(k => [{ ...k, dim: true }]), columns)
   if (input.showKeys) {
     const help =
-      '1–5 or a click switch tabs. j/k, Tab or a click move the marker; o or Enter opens it, b goes back. ' +
+      '1–6 or a click switch tabs. j/k, Tab or a click move the marker; o or Enter opens it, b goes back. ' +
+      'A file:line opens in your editor on a click; e opens the marked one (on Overview, the riskiest file this session touched). ' +
       'On Hubs, f filters (type, then Enter; x clears) and s sorts by in, out or cross. ' +
-      'c copies the marked component\'s full name; q asks Claude what depends on it (your press sends the prompt). ' +
+      'c copies the marked component\'s full name (on Changes, the command for the tests that reach the changes; t copies it from Overview); ' +
+      'q asks Claude what depends on it (your press sends the prompt). ' +
       'r rescans when the snapshot is stale; a offers to allow a refused root and asks first. Every key has a button.'
     wrapWords(help, columns).forEach((line, i) => rows.push({ key: `help-${i}`, segments: [{ text: line, dim: true }] }))
   }
@@ -526,8 +585,12 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
 /** The hubs tab: its section header, the filter field or line, and the filtered, sorted table. */
 function hubRows(input: PaneInput, list: Item[], selected: number, columns: number): Row[] {
   const hotspots = input.items.some(i => i.hotspotOnly) ? '◆ hotspot only' : ''
-  const note = [hotspots, `by ${input.sort}`, input.partial ? 'partial' : ''].filter(s => s !== '').join(' · ')
-  const rows: Row[] = [blank('gap-hubs'), sectionRow('hubs-head', 'Hubs and hotspots', note, columns)]
+  const note = [hotspots, input.partial ? 'partial' : ''].filter(s => s !== '').join(' · ')
+  const spec = componentSpec(list, columns, true)
+  const title = 'Hubs and hotspots'
+  const subtitle = `sorted by ${input.sort}`
+  const head = sectionWidth(specWidth(spec), `${title} · ${subtitle}`, note, columns)
+  const rows: Row[] = [blank('gap-hubs'), sectionRow('hubs-head', title, note, head, subtitle)]
   if (input.filtering) {
     rows.push({ key: 'filter-row', segments: [{ text: '   filter: ', dim: true }, { text: input.filter, field: { id: 'filter', value: input.filter, placeholder: 'part of a name' } }] })
   } else if (input.filter !== '') {
@@ -537,7 +600,7 @@ function hubRows(input: PaneInput, list: Item[], selected: number, columns: numb
     const empty = input.filter === '' ? '   none' : `   no hub matches "${input.filter}"`
     return [...rows, dimRow('hubs-none', empty, columns)]
   }
-  return [...rows, ...componentRows('hub', list, selected, columns, true, input.hues, input.sort)]
+  return [...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort)]
 }
 
 /**
@@ -548,6 +611,26 @@ export function emptyRows(allow: AllowInput | null, columns: number): Row[] {
   const width = Math.max(1, Math.min(CONTENT_MAX, columns))
   const said = wrapWords('No Knossos data for this project. Scan it with knossos scan.', width).map((line, i) => dimRow(`empty-${i}`, line, width))
   return allow === null ? said : [...said, blank('gap-allow'), ...allowRows(allow, width)]
+}
+
+/**
+ * The Overview: what to look at now (once this session changed something),
+ * the last turn, health and the most depended on. Its sections share one
+ * width, the widest of its tables, so their notes stand in one column.
+ */
+function overviewRows(input: PaneInput, selected: number, columns: number): Row[] {
+  const top = input.items.slice(0, OVERVIEW_TOP)
+  const topSpec = componentSpec(top, columns, false)
+  const turnSpec = input.lastTurn === null ? null : lastTurnSpec(input.lastTurn, columns)
+  const width = Math.min(columns, Math.max(HEALTH_MIN, top.length > 0 ? specWidth(topSpec) : 0, turnSpec === null ? 0 : specWidth(turnSpec)))
+  const rows: Row[] = []
+  if (input.lookAt !== null) rows.push(blank('gap-look'), ...lookAtRows(input.lookAt, columns, input.hues))
+  if (input.lastTurn !== null && turnSpec !== null) rows.push(blank('gap-turn'), ...lastTurnRows(input.lastTurn, turnSpec, columns, input.hues))
+  rows.push(blank('gap-health'), ...healthRows(input.health, width))
+  const note = input.partial ? 'partial · in' : 'in'
+  rows.push(blank('gap-top'), sectionRow('top-head', 'Most depended on', note, sectionWidth(specWidth(topSpec), 'Most depended on', note, columns)))
+  rows.push(...(top.length === 0 ? [dimRow('top-none', '   none', columns)] : componentRows('top', top, selected, topSpec, false, input.hues)))
+  return rows
 }
 
 /** Every row of the pane for `input`, none wider than `columns` (nor {@link CONTENT_MAX}). */
@@ -561,12 +644,16 @@ export function paneRows(input: PaneInput, columns: number): Row[] {
     rows.push(...detailRows(input.detail, width, input.hues))
   } else {
     const count = issueCount(input.issues)
-    rows.push(...tabRows(input.tab, width, input.terminal, count.n > 0 ? { issues: superscript(count.n, count.plus) } : {}))
+    const touched = input.changes.files.length
+    const badges: Partial<Record<PaneTab, string>> = {
+      ...(count.n > 0 ? { issues: superscript(count.n, count.plus) } : {}),
+      ...(touched > 0 ? { changes: superscript(touched, input.changes.truncated) } : {}),
+    }
+    rows.push(...tabRows(input.tab, width, input.terminal, badges))
     if (input.tab === 'overview') {
-      if (input.lastTurn !== null) rows.push(blank('gap-turn'), ...lastTurnRows(input.lastTurn, width, input.hues))
-      rows.push(blank('gap-health'), ...healthRows(input.health, width))
-      rows.push(blank('gap-top'), sectionRow('top-head', 'Most depended on', input.partial ? 'partial · in' : 'in', width))
-      rows.push(...(list.length === 0 ? [dimRow('top-none', '   none', width)] : componentRows('top', input.items.slice(0, OVERVIEW_TOP), selected, width, false, input.hues)))
+      rows.push(...overviewRows(input, selected, width))
+    } else if (input.tab === 'changes') {
+      rows.push(...changesRows(input.changes, selected, width, input.hues))
     } else if (input.tab === 'hubs') {
       rows.push(...hubRows(input, hubList(input.items, input.filter, input.sort), selected, width))
     } else if (input.tab === 'issues') {

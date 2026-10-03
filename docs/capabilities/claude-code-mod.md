@@ -79,9 +79,11 @@ model a whole branch's worth of violations to fix.
 ## The pane
 
 `/knossos-pane` opens and closes the architecture pane. It lays itself out to
-the width it has, from about 40 columns up: as the pane narrows, bars shorten
-first, then long names are cut with `…`, then the boundary column goes, then
-the bars. The numbers always stay.
+the width it has, from about 40 columns up. Its tables are packed to the left:
+names take what the longest one needs, the boundary follows the name, then the
+bar and the numbers, and width a table does not need stays at the right edge.
+As the pane narrows, bars shorten first, then long names are cut with `…`,
+then the boundary column goes, then the bars. The numbers always stay.
 
 The pane draws in your Claude Code theme's own colours (its theme keys), so it
 follows a dark, light, daltonized or ANSI theme. Colour carries meaning only:
@@ -96,12 +98,17 @@ rules on a dotted track.
 ```text
 Knossos-MCP                         ● stale · 11h  r: rescan
 7,878 components · 7 boundaries · 46 drifted · PHP JS RS
-1: Overview  2: Hubs  3: Boundaries  4: Cycles  5: Issues
-━━━━━━━━━━━─────────────────────────────────────────────────
+1: Over  2: Hubs  3: Bound  4: Cyc  5: Iss  6: Chg ³
+━━━━━━━─────────────────────────────────────────────────────
 
-Last turn                         2 files → 27 deps · 4 tests
-   TurnBriefService.php  core ━━━━━━━━━━━━━━━━━━━━━━━━━  21
-   register.tsx         hooks ━━━━━━━╸·················   6
+Look at now
+   e: TurnBriefService.php core · 21 dependents
+   t: copy test command · 3 tests reach the changes
+
+Last turn                     3 files → 29 deps · 3 tests
+   TurnBriefService.php core  ━━━━━━━━━━━━━━━━━━━━━━━━ 21
+   register.tsx         hooks ━━━━━━━·················  6
+   changes.ts           hooks ━━╸·····················  2
 
 Health
    cycles       2
@@ -117,8 +124,11 @@ The line under the project counts its components, its declared boundaries
 (every boundary when none is declared), the files drifted since the snapshot
 and its languages. A narrow pane drops the languages first.
 
-- **Overview:** the project, the snapshot's state and age, the last turn's
-  impact (files, dependents, tests), health (cycles, maximum degree, dead-code
+- **Overview:** the project, the snapshot's state and age, "Look at now"
+  once this session changed something (the touched file with the most
+  dependents, which `e` opens in your editor, and how many tests reach the
+  session's changes, whose command `t` copies; a warning when none does), the
+  last turn's impact (files, dependents, tests), health (cycles, maximum degree, dead-code
   candidates, the project's policy violations and its diagnostic errors and
   warnings) and the five most depended-on components. A trend line appears
   beside a figure only once there are five snapshots and the figure moved; a
@@ -128,7 +138,8 @@ and its languages. A narrow pane drops the languages first.
   that is not also a hub. Methods read `Class::method`. `f` opens a filter
   field: the list narrows as you type to the components whose name holds the
   text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
-  cross-boundary degree in turn; the bar follows the sort.
+  cross-boundary degree in turn; the bar follows the sort, and the title says
+  it (`Hubs and hotspots · sorted by in`).
 - **Cycles:** each dependency cycle, the largest first, as a chain of its
   members (`a → b → c ↺`) wrapped to the pane's width, under a line naming
   the boundary most of them are in. A member outside that boundary is drawn
@@ -139,6 +150,17 @@ and its languages. A narrow pane drops the languages first.
   candidates (`◇` marks one only tests reach) and the five largest files.
   The tab label carries the count of violations, errors and warnings, as in
   `Issues ³`.
+- **Changes:** everything this session's turns touched, added up from each
+  turn's brief: every file (most dependents first, `+` added, `−` deleted)
+  with its dependents and the boundary they are in, the boundaries the
+  changes reach, any policy violations they introduced, and the tests that
+  reach them, nearest first, each once. Below, the command that runs those
+  tests, chosen from their paths: `vendor/bin/phpunit` (the file, or
+  `--filter` over the test classes), `npx vitest run`, `python -m pytest`,
+  `go test` per package or `cargo test`, joined with `&&`. `c` copies it;
+  `o` opens the marked file in your editor. The tab label counts the files.
+  The list lives for the session and keeps at most 500 files and 500 tests
+  (`partial` past that).
 - **Boundaries:** a heat map of how much each boundary depends on each
   other one. Rows are where a dependency starts, columns where it lands; the
   axes are lettered (`A`, `B`, ...) and the row labels spell the letters out.
@@ -161,7 +183,25 @@ Boundaries                                  10 · 29,854 deps
    C typescript-worker ·  ·  ▓▓ ·  ·  ·  ·  ·  ·  ·
 ```
 
-Every action is a button, so a click works as well as its key: `1` to `5`
+```text
+Changes this session                                 2 turns
+   3 files → 29 dependents reaching core hooks
+   file                                                 deps
+›  src/Query/TurnBriefService.php core  ━━━━━━━━━━━━━━━   21
+   hooks/register.tsx             hooks ━━━━╸··········    6
+ + hooks/lib/changes.ts           hooks ━╸·············    2
+
+Tests that reach them 3                         hops
+   hooks/lib/changes.spec.ts                       1
+   tests/phpunit/Query/TurnBriefServiceTest.php    1
+   tests/phpunit/Store/StoreTest.php               2
+
+   $ vendor/bin/phpunit --filter
+     '(TurnBriefServiceTest|StoreTest)' && npx vitest run
+     hooks/lib/changes.spec.ts
+```
+
+Every action is a button, so a click works as well as its key: `1` to `6`
 switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
 Tab or the arrows onto a row), `o` or Enter opens the marked component, `b`
 goes back, `h` shows the keys. A component opens from the Overview, Hubs and
@@ -184,6 +224,17 @@ columns and one above the other below that. Every name there opens in turn.
 Annotations recorded on the component follow. Escape cannot be caught by a
 pane (it hands the keyboard back), so `b` is the way back, and the filter
 clears with `x` or an empty Enter.
+
+Every `file:line` the pane shows is a link: the detail's place, the places on
+the Issues tab, the largest files, the last turn's files and the Changes
+tab's files and tests. It is a Markdown `file:` link (`#L<line>` names the
+line), so a ctrl- or cmd-click opens it as a link in one of Claude's replies
+would. A plain click, and `e` on the marked row (or the shown component, or
+on Overview the riskiest file), runs `code -g <path>:<line>`, which VS Code
+and its forks answer; where no such command answers, the pane copies
+`path:line` to your clipboard instead and says so in a toast. A terminal
+editor from `$EDITOR` cannot be started this way: it needs a terminal of its
+own.
 
 Two more keys act on the marked component, or on the one the detail shows:
 
@@ -245,8 +296,13 @@ is already scanned and inside an allowed root, never inside a hook dispatch,
 and never two at a time within a session. The pane's allow-root action writes
 the roots file, and only after you confirmed it. `knossos dashboard` and
 `knossos component-detail` only read the graph, though like the scans they
-bring a database with an older schema up to date before they read it. None
-of them ever creates a database.
+bring a database with an older schema up to date before they read it. One
+small exception: the dashboard's trend keeps the figures it computed for a
+retained snapshot in `snapshot_metrics`, since an archived snapshot never
+changes, so the next dashboard reads them instead of decoding the archive
+again. A row answers only for the archive and the code it came from, goes
+with the archive, and is never written while a scan holds the database: that
+write is skipped, not waited for. None of them ever creates a database.
 
 The scan only counts changes Claude made with Edit, Write or NotebookEdit as
 a reason to run. A turn that only ran shell commands does not trigger one,

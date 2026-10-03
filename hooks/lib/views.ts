@@ -12,6 +12,7 @@ import { countLabel, detailLines } from './envelopes'
 import { ACCENT, boundaryColour, boundaryLabel, NO_HUES, STATUS_COLOURS } from './palette'
 import type { Hues } from './palette'
 import {
+  absolute,
   blank,
   boundaryStyle,
   button,
@@ -21,36 +22,42 @@ import {
   displayName,
   fit,
   fitStart,
+  linked,
   MARK,
   numberWidth,
   padEnd,
-  padStart,
   placeOf,
   plural,
   sectionRow,
+  sectionWidth,
   shortName,
   spaces,
+  specWidth,
   spread,
   tableRow,
   tableSpec,
   wrapGroups,
   wrapWords,
 } from './rows'
-import type { Row, Segment } from './rows'
+import type { Loc, Row, Segment } from './rows'
 
-/** A component a row can open: `name` to show, `canonical` to look it up by. */
-export type Openable = { name: string; canonical: string }
+/**
+ * A row the marker can walk to: `name` to show, `canonical` to look it up by,
+ * and `loc` where its file is, when known, for `e` to open. A `file` row is a
+ * file, not a component: opening it opens the file itself.
+ */
+export type Openable = { name: string; canonical: string; loc?: Loc | null; file?: boolean }
 
 export type ViolationLine = { source: Openable & { boundary: string | null }; target: string; targetBoundary: string | null; place: string }
 export type DeadLine = Openable & { boundary: string | null; place: string; testOnly: boolean }
-export type DiagnosticLine = { severity: string; text: string; place: string }
+export type DiagnosticLine = { severity: string; text: string; place: string; loc: Loc | null }
 
 export type IssuesInput = {
   /** Null when the knossos that answered sends no policy section. */
   policy: { evaluated: boolean; total: string; count: number; items: ViolationLine[] } | null
   diagnostics: { errors: number; warnings: number; infos: number; items: DiagnosticLine[] } | null
   deadCode: { total: string; items: DeadLine[] }
-  largest: { path: string; lines: number }[]
+  largest: { path: string; lines: number; loc: Loc | null }[]
 }
 
 export type CycleLine = { size: number; nodes: { name: string; boundary: string | null }[]; more: number }
@@ -68,6 +75,7 @@ export type DetailInput = {
     kind: string
     boundary: string | null
     place: string | null
+    loc: Loc | null
     usedBy: Side
     uses: Side
     annotations: { kind: string; value: string }[]
@@ -88,10 +96,16 @@ export function superscript(n: number, plus = false): string {
   return [...String(n)].map(d => SUPERSCRIPT[Number(d)] ?? '').join('') + (plus ? '⁺' : '')
 }
 
+/** Where `path` (project-relative) is on disk under `root`, at `line`; null without a path or a root. */
+export function locIn(root: string | null, path: string | null, line: number | null = null): Loc | null {
+  return root === null || path === null || path === '' ? null : { path: absolute(root, path), line }
+}
+
 /** The Issues tab's view of a dashboard. */
 export function issuesInput(d: Dashboard): IssuesInput {
   const policy = d.policy
   const diagnostics = d.diagnostics
+  const root = d.project_root
   return {
     policy:
       policy === undefined
@@ -101,7 +115,7 @@ export function issuesInput(d: Dashboard): IssuesInput {
             total: countLabel(policy.total, policy.truncated),
             count: policy.total,
             items: policy.items.map(v => ({
-              source: { name: shortName(v.source), canonical: v.source, boundary: v.source_boundary },
+              source: { name: shortName(v.source), canonical: v.source, boundary: v.source_boundary, loc: locIn(root, v.path, v.line) },
               target: shortName(v.target),
               targetBoundary: v.target_boundary,
               place: placeOf(v.path, v.line),
@@ -114,7 +128,7 @@ export function issuesInput(d: Dashboard): IssuesInput {
             errors: diagnostics.errors,
             warnings: diagnostics.warnings,
             infos: diagnostics.infos,
-            items: diagnostics.items.map(x => ({ severity: x.severity, text: `${x.code} ${x.message}`, place: placeOf(x.path, x.line) })),
+            items: diagnostics.items.map(x => ({ severity: x.severity, text: `${x.code} ${x.message}`, place: placeOf(x.path, x.line), loc: locIn(root, x.path, x.line) })),
           },
     deadCode: {
       total: countLabel(d.dead_code_candidates, d.dead_code_truncated),
@@ -123,10 +137,11 @@ export function issuesInput(d: Dashboard): IssuesInput {
         canonical: c.canonical_name,
         boundary: c.boundary,
         place: placeOf(c.path, c.line),
+        loc: locIn(root, c.path, c.line),
         testOnly: c.reachability === 'test_only',
       })),
     },
-    largest: (d.largest_files ?? []).map(f => ({ path: f.path, lines: f.lines })),
+    largest: (d.largest_files ?? []).map(f => ({ path: f.path, lines: f.lines, loc: locIn(root, f.path) })),
   }
 }
 
@@ -162,8 +177,8 @@ const sideOf = (title: string, related: { count: number; truncated: boolean; nam
     related.names.map(name => ({ name, canonical: name, boundary: null, edges: 0 })),
 })
 
-/** The detail's view of the component on show, from the stored lookup. */
-export function detailInput(shown: Inspected, state: DetailState | null): DetailInput {
+/** The detail's view of the component on show, from the stored lookup; `root` places its file on disk. */
+export function detailInput(shown: Inspected, state: DetailState | null, root: string | null = null): DetailInput {
   const label = shown.label
   if (state === null || state.name !== shown.name || state.phase === 'loading') return { label, loading: true, messages: null, component: null }
   const answer: ComponentDetail | null = state.detail
@@ -181,6 +196,7 @@ export function detailInput(shown: Inspected, state: DetailState | null): Detail
       kind: c.kind,
       boundary: c.boundary ?? c.boundaries[0] ?? null,
       place: c.path === null ? null : `${c.path}${c.line === null ? '' : `:${c.line}`}`,
+      loc: locIn(root, c.path, c.line),
       usedBy: sideOf('Used by', c.used_by),
       uses: sideOf('Uses', c.uses),
       annotations: c.annotations ?? [],
@@ -193,20 +209,31 @@ export function detailList(detail: DetailInput): Openable[] {
   return detail.component === null ? [] : [...detail.component.usedBy.items, ...detail.component.uses.items]
 }
 
-/** An issue row's columns: its main text, then the boundary, then the place against the right edge. */
+/** An issue row's columns: its main text, then the boundary, then the place. */
 type EntrySpec = { main: number; boundary: number; place: number }
-type Entry = { selected?: boolean; mark?: Segment; main: (width: number) => Segment[]; boundary?: string | null; place: string }
+/** One issue row: `need` is how wide its main text is uncut; `loc` makes its place a link. */
+type Entry = { selected?: boolean; mark?: Segment; need: number; main: (width: number) => Segment[]; boundary?: string | null; place: string; loc?: Loc | null }
 
-/** Fits issue rows to `columns`: the boundary goes first, then the place; the main text keeps at least {@link MAIN_MIN}. */
+/**
+ * Fits issue rows to `columns`, packed to the left like a table: the main
+ * text takes what the longest needs, the boundary and the place follow it,
+ * and width left over stays at the right edge. As the width shrinks the
+ * boundary goes first, then the place; the main text keeps at least
+ * {@link MAIN_MIN}.
+ */
 function entrySpec(columns: number, entries: Entry[]): EntrySpec {
   const placeNeed = Math.min(Math.max(12, Math.floor(columns * PLACE_SHARE)), Math.max(0, ...entries.map(e => cells(e.place))))
   const boundaryNeed = Math.min(12, Math.max(0, ...entries.map(e => cells(boundaryLabel(e.boundary ?? null)))))
+  const mainNeed = Math.max(1, ...entries.map(e => e.need))
   const attempt = (boundary: number, place: number): EntrySpec | null => {
-    const main = columns - MARK - (boundary > 0 ? boundary + 1 : 0) - (place > 0 ? place + 1 : 0)
-    return main >= MAIN_MIN ? { main, boundary, place } : null
+    const room = columns - MARK - (boundary > 0 ? boundary + 1 : 0) - (place > 0 ? place + 1 : 0)
+    return room >= Math.min(MAIN_MIN, mainNeed) ? { main: Math.min(room, mainNeed), boundary, place } : null
   }
   return attempt(boundaryNeed, placeNeed) ?? attempt(0, placeNeed) ?? attempt(0, 0) ?? { main: Math.max(1, columns - MARK), boundary: 0, place: 0 }
 }
+
+/** How many columns issue rows laid out by `spec` take. */
+const entryWidth = (spec: EntrySpec): number => MARK + spec.main + (spec.boundary > 0 ? spec.boundary + 1 : 0) + (spec.place > 0 ? spec.place + 1 : 0)
 
 function entryRow(key: string, e: Entry, spec: EntrySpec, hues: Hues): Row {
   const main = e.main(spec.main)
@@ -219,7 +246,8 @@ function entryRow(key: string, e: Entry, spec: EntrySpec, hues: Hues): Row {
     { text: spaces(spec.main - used) },
   ]
   if (spec.boundary > 0) segments.push({ text: ' ' }, { text: padEnd(fit(boundaryLabel(e.boundary ?? null), spec.boundary), spec.boundary), ...boundaryStyle(e.boundary ?? null, hues) })
-  if (spec.place > 0) segments.push({ text: ` ${padStart(fitStart(e.place, spec.place), spec.place)}`, dim: true })
+  // Places are left-aligned: a column of file names reads down its left edge.
+  if (spec.place > 0) segments.push({ text: ' ' }, linked(fitStart(e.place, spec.place), e.loc ?? null, { dim: true }))
   return { key, segments: segments.filter(s => s.text !== '') }
 }
 
@@ -236,9 +264,47 @@ const none = (key: string): Row => ({ key, segments: [{ text: '   none', dim: tr
 
 /** The Issues tab: policy violations, diagnostics, dead code and the largest files, each a short list. */
 export function issueRows(issues: IssuesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] {
-  const rows: Row[] = []
   const policy = issues.policy
   const violations = policy?.items ?? []
+  const violationEntries: Entry[] = violations.map((v, i) => ({
+    selected: i === selected,
+    mark: { text: '▲', color: STATUS_COLOURS.alert },
+    boundary: v.source.boundary,
+    place: v.place,
+    loc: v.source.loc ?? null,
+    need: cells(v.source.name) + 3 + cells(v.target),
+    main: width => {
+      const [a, b] = pair(v.source.name, v.target, width)
+      return [button(`row:${i}`, a), { text: ' → ', dim: true }, { text: b, ...boundaryStyle(v.targetBoundary, hues) }]
+    },
+  }))
+  const d = issues.diagnostics
+  const diagEntries: Entry[] = (d?.items ?? []).map(x => ({
+    mark: x.severity === 'error' ? { text: '✖', color: STATUS_COLOURS.alert } : { text: '▲', color: STATUS_COLOURS.warn },
+    place: x.place,
+    loc: x.loc,
+    need: cells(x.text),
+    main: width => [{ text: fit(x.text, width) }],
+  }))
+  const dead = issues.deadCode
+  const offset = violations.length
+  const deadEntries: Entry[] = dead.items.map((c, i) => ({
+    selected: offset + i === selected,
+    mark: c.testOnly ? { text: '◇', dim: true } : undefined,
+    boundary: c.boundary,
+    place: c.place,
+    loc: c.loc ?? null,
+    need: cells(c.name),
+    main: width => [button(`row:${offset + i}`, fit(c.name, width))],
+  }))
+  const vSpec = entrySpec(columns, violationEntries)
+  const dSpec = entrySpec(columns, diagEntries)
+  const deadSpec = entrySpec(columns, deadEntries)
+  const spec = tableSpec(columns, issues.largest.map(f => f.path), [], [numberWidth('lines', issues.largest.map(f => f.lines))], 56)
+  // Every header of the tab spreads over the widest of its lists, so the notes stand over the places and numbers.
+  const listed = [violationEntries.length > 0 ? entryWidth(vSpec) : 0, diagEntries.length > 0 ? entryWidth(dSpec) : 0, deadEntries.length > 0 ? entryWidth(deadSpec) : 0]
+  const tab = (title: string, note: string) => sectionWidth(Math.max(...listed, issues.largest.length > 0 ? specWidth(spec) : 0), title, note, columns)
+
   // Policy violations.
   const verdict: Segment[] =
     policy === null
@@ -248,59 +314,32 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
         : policy.count === 0
           ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }]
           : [{ text: `▲ ${policy.total}`, color: STATUS_COLOURS.alert }]
-  rows.push(blank('gap-policy'), spread('policy-head', [{ text: fit('Policy violations', columns), bold: true, color: 'text' }], verdict, columns))
-  const violationEntries: Entry[] = violations.map((v, i) => ({
-    selected: i === selected,
-    mark: { text: '▲', color: STATUS_COLOURS.alert },
-    boundary: v.source.boundary,
-    place: v.place,
-    main: width => {
-      const [a, b] = pair(v.source.name, v.target, width)
-      return [button(`row:${i}`, a), { text: ' → ', dim: true }, { text: b, ...boundaryStyle(v.targetBoundary, hues) }]
-    },
-  }))
-  const vSpec = entrySpec(columns, violationEntries)
+  const policyWidth = tab('Policy violations', verdict.map(v => v.text).join(''))
+  const rows: Row[] = [blank('gap-policy'), spread('policy-head', [{ text: fit('Policy violations', columns), bold: true, color: 'text' }], verdict, policyWidth)]
   violationEntries.forEach((e, i) => rows.push(entryRow(`pol-${i}`, e, vSpec, hues)))
   if (policy !== null && policy.evaluated && policy.count > violations.length) rows.push(dimRow('pol-more', `   +${policy.count - violations.length} more`, columns))
 
   // Diagnostics.
-  const d = issues.diagnostics
   const counts =
     d === null
       ? 'not reported'
       : [plural(d.errors, 'error', 'errors'), plural(d.warnings, 'warning', 'warnings'), ...(d.infos > 0 ? [plural(d.infos, 'note', 'notes')] : [])].join(' · ')
-  rows.push(blank('gap-diag'), sectionRow('diag-head', 'Diagnostics', counts, columns))
-  const diagEntries: Entry[] = (d?.items ?? []).map(x => ({
-    mark: x.severity === 'error' ? { text: '✖', color: STATUS_COLOURS.alert } : { text: '▲', color: STATUS_COLOURS.warn },
-    place: x.place,
-    main: width => [{ text: fit(x.text, width) }],
-  }))
-  const dSpec = entrySpec(columns, diagEntries)
+  rows.push(blank('gap-diag'), sectionRow('diag-head', 'Diagnostics', counts, tab('Diagnostics', counts)))
   diagEntries.forEach((e, i) => rows.push(entryRow(`diag-${i}`, e, dSpec, hues)))
   if (d !== null && d.items.length === 0 && d.errors + d.warnings === 0) rows.push(none('diag-none'))
 
   // Dead code.
-  const dead = issues.deadCode
   const deadNote = dead.items.length > 0 && dead.total !== String(dead.items.length) ? `${dead.total} · first ${dead.items.length}` : dead.total
-  rows.push(blank('gap-dead'), sectionRow('dead-head', 'Dead code', deadNote, columns))
-  const offset = violations.length
-  const deadEntries: Entry[] = dead.items.map((c, i) => ({
-    selected: offset + i === selected,
-    mark: c.testOnly ? { text: '◇', dim: true } : undefined,
-    boundary: c.boundary,
-    place: c.place,
-    main: width => [button(`row:${offset + i}`, fit(c.name, width))],
-  }))
-  const deadSpec = entrySpec(columns, deadEntries)
+  rows.push(blank('gap-dead'), sectionRow('dead-head', 'Dead code', deadNote, tab('Dead code', deadNote)))
   deadEntries.forEach((e, i) => rows.push(entryRow(`dead-${i}`, e, deadSpec, hues)))
   if (dead.items.length === 0) rows.push(none('dead-none'))
 
   // Largest files.
-  rows.push(blank('gap-large'), sectionRow('large-head', 'Largest files', issues.largest.length > 0 ? 'lines' : '', columns))
+  const linesNote = issues.largest.length > 0 ? 'lines' : ''
+  rows.push(blank('gap-large'), sectionRow('large-head', 'Largest files', linesNote, tab('Largest files', linesNote)))
   if (issues.largest.length === 0) rows.push(none('large-none'))
-  const spec = tableSpec(columns, issues.largest.map(f => f.path), [], [numberWidth('lines', issues.largest.map(f => f.lines))], 56)
   const max = Math.max(0, ...issues.largest.map(f => f.lines))
-  issues.largest.forEach((f, i) => rows.push(tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true }, spec, hues)))
+  issues.largest.forEach((f, i) => rows.push(tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true, link: f.loc }, spec, hues)))
   return rows
 }
 
@@ -351,12 +390,14 @@ export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_H
 
 /** One side of the detail ("used by" or "uses") as a small table in `width` columns. */
 function sideRows(prefix: string, side: Side, offset: number, width: number, hues: Hues): Row[] {
-  const rows: Row[] = [sectionRow(`${prefix}-head`, `${side.title} ${side.count}`, side.items.some(i => i.edges > 0) ? 'edges' : '', width)]
-  if (side.items.length === 0) return [...rows, none(`${prefix}-none`)]
   const counted = side.items.some(i => i.edges > 0)
   const spec = counted
     ? tableSpec(width, side.items.map(i => i.name), side.items.map(i => boundaryLabel(i.boundary)), [numberWidth('', side.items.map(i => i.edges))])
     : { ...tableSpec(width, side.items.map(i => i.name), [], []), bar: 0 }
+  const title = `${side.title} ${side.count}`
+  const note = counted ? 'edges' : ''
+  const rows: Row[] = [sectionRow(`${prefix}-head`, title, note, side.items.length === 0 ? width : sectionWidth(specWidth(spec), title, note, width))]
+  if (side.items.length === 0) return [...rows, none(`${prefix}-none`)]
   const max = Math.max(0, ...side.items.map(i => i.edges))
   side.items.forEach((item, i) =>
     rows.push(tableRow(`${prefix}-${i}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + i}` }, spec, hues)),
@@ -390,7 +431,7 @@ export function detailRows(detail: DetailInput, columns: number, hues: Hues = NO
   }
   const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, { text: boundaryLabel(c.boundary), ...boundaryStyle(c.boundary, hues) }])]
   const rows: Row[] = [blank('gap-detail'), spread('detail-name', [{ text: fit(c.name, columns), bold: true, color: 'text' }], label, columns)]
-  if (c.place !== null) rows.push(dimRow('detail-place', fitStart(c.place, columns), columns))
+  if (c.place !== null) rows.push({ key: 'detail-place', segments: [linked(fitStart(c.place, columns), c.loc, { dim: true })] })
   if (c.canonical !== c.name) rows.push(dimRow('detail-canonical', c.canonical, columns))
   rows.push(blank('gap-sides'))
   const usedBy = c.usedBy

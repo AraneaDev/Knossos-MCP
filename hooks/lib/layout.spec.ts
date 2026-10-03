@@ -28,11 +28,11 @@ import {
   wrapWords,
 } from './layout'
 import type { PaneInput, Row } from './layout'
-import { fitStart, shortName, wrapGroups } from './rows'
+import { fitStart, shortName, specWidth, wrapGroups } from './rows'
 import { cycleRows, cyclesInput, issueCount, issuesInput, issuesList, superscript } from './views'
 
 const WIDTHS = [40, 60, 90, 120] as const
-const TABS: PaneTab[] = ['overview', 'hubs', 'boundaries', 'cycles', 'issues']
+const TABS: PaneTab[] = ['overview', 'hubs', 'boundaries', 'cycles', 'issues', 'changes']
 
 const hub = (name: string, canonical: string, kind: string, boundary: string | null, inDegree: number, out = 1, cross = 0) => ({
   name,
@@ -172,10 +172,11 @@ describe('tableSpec', () => {
   it('gives way in order: bars shrink, names truncate, the boundary goes, then the bars', () => {
     const at = (columns: number) => tableSpec(columns, names, boundaries, numbers)
     const full = at(120)
-    // Bars stop at BAR_MAX; the names take the room past it, so bars and numbers stay together.
+    // Names take what the longest needs, bars stop at BAR_MAX, and the rest stays at the right edge.
     expect(full.bar).toBe(24)
-    expect(full.name).toBeGreaterThan(24)
+    expect(full.name).toBe(24)
     expect(full.boundary).toBe(12)
+    expect(specWidth(full)).toBeLessThan(120)
     const shrinking = at(70)
     expect(shrinking.name).toBe(24)
     expect(shrinking.bar).toBeLessThan(full.bar)
@@ -319,29 +320,29 @@ describe('paneRows', () => {
   })
 
   it('shows the key help on request', () => {
-    expect(textOf(paneRows(input({ showKeys: true }), 60))).toContain('1–5 or a click switch tabs')
+    expect(textOf(paneRows(input({ showKeys: true }), 60))).toContain('1–6 or a click switch tabs')
     expect(textOf(paneRows(input(), 60))).not.toContain('switch tabs')
   })
 })
 
 describe('tabRows', () => {
   it('names every tab in full when it fits and marks the active one on the terminal', () => {
-    const [strip, rule] = tabRows('hubs', 60, true)
-    expect(plainText(strip!)).toBe('1: Overview  2: Hubs  3: Boundaries  4: Cycles  5: Issues')
+    const [strip, rule] = tabRows('hubs', 80, true)
+    expect(plainText(strip!)).toBe('1: Overview  2: Hubs  3: Boundaries  4: Cycles  5: Issues  6: Changes')
     expect(rule!.segments.find(s => s.text.includes('━'))?.text).toBe('━━━━━━━')
-    expect(rowWidth(rule!)).toBe(60)
+    expect(rowWidth(rule!)).toBe(80)
   })
   it('shortens labels, then gaps, then keeps the initials', () => {
-    expect(plainText(tabRows('overview', 50, true)[0]!)).toBe('1: Over  2: Hubs  3: Bound  4: Cyc  5: Iss')
-    expect(plainText(tabRows('overview', 40, true)[0]!)).toBe('1: Over 2: Hubs 3: Bound 4: Cyc 5: Iss')
-    expect(plainText(tabRows('overview', 30, true)[0]!)).toBe('1: O 2: H 3: B 4: C 5: I')
+    expect(plainText(tabRows('overview', 60, true)[0]!)).toBe('1: Over  2: Hubs  3: Bound  4: Cyc  5: Iss  6: Chg')
+    expect(plainText(tabRows('overview', 49, true)[0]!)).toBe('1: Over 2: Hubs 3: Bound 4: Cyc 5: Iss 6: Chg')
+    expect(plainText(tabRows('overview', 40, true)[0]!)).toBe('1: O 2: H 3: B 4: C 5: I 6: Ch')
   })
   it('draws no rule where tabs are native buttons', () => {
     expect(tabRows('overview', 60, false)).toHaveLength(1)
   })
   it('gives every tab its digit as hotkey', () => {
     const presses = tabRows('overview', 60, true)[0]!.segments.flatMap(s => (s.press ? [s.press] : []))
-    expect(presses.map(p => `${p.hotkey}:${p.id}`)).toEqual(['1:tab:overview', '2:tab:hubs', '3:tab:boundaries', '4:tab:cycles', '5:tab:issues'])
+    expect(presses.map(p => `${p.hotkey}:${p.id}`)).toEqual(['1:tab:overview', '2:tab:hubs', '3:tab:boundaries', '4:tab:cycles', '5:tab:issues', '6:tab:changes'])
   })
 })
 
@@ -579,9 +580,9 @@ describe('the issues tab', () => {
     expect(superscript(9)).toBe('⁹')
     expect(superscript(12, true)).toBe('¹²⁺')
     expect(plainText(row(paneRows(fullInput(), 90), 'tabs')!)).toContain('5: Issues ⁹')
-    expect(plainText(row(paneRows(fullInput(), 40), 'tabs')!)).toContain('5: Iss⁹')
+    expect(plainText(row(paneRows(fullInput(), 40), 'tabs')!)).toContain('5: I⁹')
     // Nothing to act on: no badge.
-    expect(plainText(row(paneRows(input(), 90), 'tabs')!)).toMatch(/5: Issues$/)
+    expect(plainText(row(paneRows(input(), 90), 'tabs')!)).toMatch(/5: Issues {2}6: Changes$/)
   })
   it('says what it cannot know from an older knossos, and when no policy is declared', () => {
     const old = textOf(paneRows(input({ tab: 'issues' }), 60))
@@ -689,6 +690,39 @@ describe('the detail view', () => {
   })
 })
 
+describe('tables packed to the left', () => {
+  // The longest name meets its boundary with one space, whatever the width; width the table does not need stays at the right edge.
+  it('keeps every boundary beside its name, on every tab, at every width', () => {
+    for (const columns of [...WIDTHS, 100]) {
+      const hubs = paneRows(fullInput({ tab: 'hubs' }), columns)
+      const top = paneRows(fullInput({ tab: 'overview' }), columns)
+      const issues = paneRows(fullInput({ tab: 'issues' }), columns)
+      if (columns >= 60) {
+        expect(plainText(row(hubs, 'hub-1')!), `hubs ${columns}`).toMatch(/ArchitectureQueryService core +━/)
+        expect(plainText(row(top, 'top-1')!), `top ${columns}`).toMatch(/ArchitectureQueryService core +━/)
+        expect(plainText(row(top, 'turn-0')!), `turn ${columns}`).toMatch(/TurnBriefService\.php core +━/)
+      }
+      if (columns >= 90) expect(plainText(row(issues, 'dead-0')!), `dead ${columns}`).toMatch(/FactCollector::beforeTraverse php-worker +FactCollector\.php:108$/)
+      for (const r of [...hubs, ...top, ...issues]) expect(rowWidth(r)).toBeLessThanOrEqual(columns)
+    }
+    // At 120 the tables end well short of the edge rather than stretching.
+    expect(rowWidth(row(paneRows(fullInput({ tab: 'hubs' }), 120), 'hub-1')!)).toBeLessThan(90)
+  })
+  it('stands a header note over its own table, and names the sort beside the title', () => {
+    const rows = paneRows(fullInput({ tab: 'hubs' }), 100)
+    const head = row(rows, 'hubs-head')!
+    expect(plainText(head)).toMatch(/^Hubs and hotspots · sorted by in +◆ hotspot only$/)
+    expect(rowWidth(head)).toBe(rowWidth(row(rows, 'hub-0')!))
+    const top = paneRows(fullInput({ tab: 'overview' }), 100)
+    expect(rowWidth(row(top, 'top-head')!)).toBe(rowWidth(row(top, 'top-0')!))
+  })
+  it('makes every place on the Issues tab a link to its file and line', () => {
+    const rows = paneRows(fullInput({ tab: 'issues' }), 90)
+    expect(row(rows, 'dead-0')!.segments.find(seg => seg.link)?.link).toEqual({ path: '/work/Knossos-MCP/workers/php/src/FactCollector.php', line: 108 })
+    expect(row(rows, 'large-0')!.segments.find(seg => seg.link)?.link?.line).toBeNull()
+  })
+})
+
 describe('the hubs filter and sort', () => {
   for (const columns of WIDTHS) {
     it(`fits ${columns} columns with the field open, a filter kept and every sort`, () => {
@@ -720,7 +754,7 @@ describe('the hubs filter and sort', () => {
   })
   it('names the sort, draws its bar, and offers f, s and x as keys', () => {
     const rows = paneRows(input({ tab: 'hubs', sort: 'out', filter: 'a' }), 90)
-    expect(plainText(row(rows, 'hubs-head')!)).toMatch(/◆ hotspot only · by out$/)
+    expect(plainText(row(rows, 'hubs-head')!)).toMatch(/^Hubs and hotspots · sorted by out +◆ hotspot only$/)
     expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +core +[━╸]+·* +119 +58 +0$/)
     const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
     expect(keys).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'x', 'h'])
@@ -807,7 +841,7 @@ describe('the allow-root offer', () => {
 
 describe('copy and Ask Claude', () => {
   it('act on the marked row of the tab, or on the component in the detail', () => {
-    expect(subjectOf(input({ tab: 'hubs', selected: 1 }))).toEqual({ name: 'ArchitectureQueryService', canonical: 'Knossos\\Query\\ArchitectureQueryService' })
+    expect(subjectOf(input({ tab: 'hubs', selected: 1 }))).toEqual({ name: 'ArchitectureQueryService', canonical: 'Knossos\\Query\\ArchitectureQueryService', loc: null })
     expect(subjectOf(input({ tab: 'cycles' }))).toBeNull()
     expect(subjectOf(detailPane())?.canonical).toBe(detailPane().detail!.component!.canonical)
     expect(subjectOf(detailPane(null))).toBeNull()

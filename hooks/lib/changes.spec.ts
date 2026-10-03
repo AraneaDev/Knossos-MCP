@@ -1,0 +1,250 @@
+import { describe, expect, it } from 'vitest'
+import type { Dashboard, KnossosView, SessionChanges, TurnBrief } from '../../types'
+import { accumulate, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, pickBoundary, testCommand } from './changes'
+import { editTarget, paneInput, paneRows } from './layout'
+import { fileHref, linkMarkdown, locOf, plainText, rowWidth } from './rows'
+import type { Row } from './rows'
+
+const WIDTHS = [40, 60, 90, 120] as const
+const ROOT = '/work/app'
+
+const brief = (over: Partial<TurnBrief> = {}): TurnBrief => ({
+  status: 'ok',
+  project_root: ROOT,
+  project_id: 'p1',
+  snapshot_id: 's1',
+  scanned_at: 0,
+  scan_ms: 5,
+  reason: null,
+  roots_file: null,
+  refused_root: null,
+  path: ROOT,
+  changed_files: ['src/Router.php'],
+  added_files: [],
+  deleted_files: [],
+  impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http', 'Core'] } },
+  tests: [{ path: 'tests/Http/RouterTest.php', distance: 2 }],
+  policy: { status: 'evaluated', total: 0, violations: [], truncated: false },
+  ...over,
+})
+
+const textOf = (rows: Row[]) => rows.map(plainText).join('\n')
+const row = (rows: Row[], key: string) => rows.find(r => r.key === key)
+
+/** Two turns: the router edited twice, a kernel added, a helper deleted. */
+function session(): SessionChanges {
+  const first = accumulate(NO_CHANGES, brief())
+  return accumulate(
+    first,
+    brief({
+      changed_files: ['src/Router.php'],
+      added_files: ['src/Core/Kernel.php'],
+      deleted_files: ['src/Helper.php'],
+      impact: {
+        'src/Router.php': { path: 'src/Router.php', dependent_files: 42, boundaries: ['Http'] },
+        'src/Core/Kernel.php': { path: 'src/Core/Kernel.php', dependent_files: 3, boundaries: ['Core'] },
+      },
+      tests: [
+        { path: 'tests/Http/RouterTest.php', distance: 1 },
+        { path: 'tests/Core/KernelTest.php', distance: 3 },
+      ],
+      policy: {
+        status: 'evaluated',
+        total: 1,
+        truncated: false,
+        violations: [{ policy_id: 'p', source: 'App\\Core\\Kernel', target: 'App\\Http\\Router', source_boundaries: [], target_boundaries: [] }],
+      },
+    }),
+  )
+}
+
+describe('accumulate', () => {
+  it('adds up the files, keeps each at its latest dependents, and each test at its nearest distance', () => {
+    const s = session()
+    expect(s.turns).toBe(2)
+    expect(s.files).toEqual({
+      'src/Router.php': { status: 'changed', dependents: 42, boundaries: ['Http'] },
+      'src/Core/Kernel.php': { status: 'added', dependents: 3, boundaries: ['Core'] },
+      'src/Helper.php': { status: 'deleted', dependents: 0, boundaries: [] },
+    })
+    expect(s.tests).toEqual({ 'tests/Http/RouterTest.php': 1, 'tests/Core/KernelTest.php': 3 })
+    expect(s.violations).toEqual(['App\\Core\\Kernel → App\\Http\\Router'])
+    expect(s.truncated).toBe(false)
+  })
+  it('keeps an added file added while it is edited, and a deleted one deleted until it is written again', () => {
+    const added = accumulate(NO_CHANGES, brief({ changed_files: [], added_files: ['a.php'], impact: {} }))
+    expect(accumulate(added, brief({ changed_files: ['a.php'], impact: {} })).files['a.php']?.status).toBe('added')
+    const deleted = accumulate(added, brief({ changed_files: [], deleted_files: ['a.php'], impact: {} }))
+    expect(deleted.files['a.php']?.status).toBe('deleted')
+    expect(accumulate(deleted, brief({ changed_files: [], added_files: ['a.php'], impact: {} })).files['a.php']?.status).toBe('changed')
+  })
+  it('counts a violation once however many turns report it', () => {
+    const s = session()
+    const again = accumulate(s, brief({ policy: { status: 'evaluated', total: 1, truncated: false, violations: [{ policy_id: 'p', source: 'App\\Core\\Kernel', target: 'App\\Http\\Router', source_boundaries: [], target_boundaries: [] }] } }))
+    expect(again.violations).toHaveLength(1)
+  })
+  it('ignores a brief that is not ok', () => {
+    expect(accumulate(NO_CHANGES, brief({ status: 'scan-failed' }))).toBe(NO_CHANGES)
+  })
+  it('stops growing at its cap and says so', () => {
+    const many = Array.from({ length: FILE_CAP + 3 }, (_, i) => `src/F${i}.php`)
+    const s = accumulate(NO_CHANGES, brief({ changed_files: many, impact: {} }))
+    expect(Object.keys(s.files)).toHaveLength(FILE_CAP)
+    expect(s.truncated).toBe(true)
+    expect(lookAtOf(changesInput(s, ROOT))?.plus).toBe(true)
+  })
+})
+
+describe('testCommand', () => {
+  it('runs one PHPUnit test by its file and several by a filter over their classes', () => {
+    expect(testCommand(['tests/Http/RouterTest.php'])).toBe('vendor/bin/phpunit tests/Http/RouterTest.php')
+    expect(testCommand(['tests/Http/RouterTest.php', 'tests/Core/KernelTest.php'])).toBe("vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
+  })
+  it('leaves out a PHP file that is no test class, such as a helper', () => {
+    expect(testCommand(['tests/Support/Assertions.php'])).toBeNull()
+  })
+  it('picks the runner from each path and joins several', () => {
+    expect(testCommand(['hooks/lib/band.spec.ts', 'web/app.test.tsx'])).toBe('npx vitest run hooks/lib/band.spec.ts web/app.test.tsx')
+    expect(testCommand(['tests/test_scan.py', 'pkg/walk_test.py'])).toBe('python -m pytest tests/test_scan.py pkg/walk_test.py')
+    expect(testCommand(['internal/scan/walk_test.go', 'internal/scan/read_test.go', 'main_test.go'])).toBe('go test ./internal/scan .')
+    expect(testCommand(['workers/rust/tests/scan.rs'])).toBe('cargo test')
+    expect(testCommand(['tests/ATest.php', 'a.spec.ts'])).toBe('vendor/bin/phpunit tests/ATest.php && npx vitest run a.spec.ts')
+  })
+  it('quotes a path a shell would split', () => {
+    expect(testCommand(["tests/it's here/a.spec.ts"])).toBe(`npx vitest run 'tests/it'\\''s here/a.spec.ts'`)
+  })
+  it('is null when no path names a runner', () => {
+    expect(testCommand([])).toBeNull()
+    expect(testCommand(['docs/readme.md'])).toBeNull()
+  })
+})
+
+describe('pickBoundary', () => {
+  it('labels a file with the boundary ranking first in the project, else its first', () => {
+    const hues = new Map([
+      ['Core', 'blue'],
+      ['Http', 'purple'],
+    ])
+    expect(pickBoundary(['Http', 'Core'], hues)).toBe('Core')
+    expect(pickBoundary(['zeta', 'alpha'])).toBe('zeta')
+    expect(pickBoundary([])).toBeNull()
+  })
+})
+
+describe('changesInput and changesList', () => {
+  it('lists the most depended on first, places files on disk except deleted ones, and the nearest tests first', () => {
+    const c = changesInput(session(), ROOT)
+    expect(c.files.map(f => [f.path, f.status, f.dependents])).toEqual([
+      ['src/Router.php', 'changed', 42],
+      ['src/Core/Kernel.php', 'added', 3],
+      ['src/Helper.php', 'deleted', 0],
+    ])
+    expect(c.files[0]?.loc).toEqual({ path: '/work/app/src/Router.php', line: null })
+    expect(c.files[2]?.loc).toBeNull()
+    expect(c.tests.map(t => t.path)).toEqual(['tests/Http/RouterTest.php', 'tests/Core/KernelTest.php'])
+    expect(c.boundaries).toEqual(['Core', 'Http'])
+    expect(c.violations).toBe(1)
+    expect(changesList(c).map(o => [o.canonical, o.file])).toEqual([
+      ['src/Router.php', true],
+      ['src/Core/Kernel.php', true],
+      ['src/Helper.php', true],
+    ])
+  })
+})
+
+describe('changesRows', () => {
+  it('says what will show before anything changed', () => {
+    expect(textOf(changesRows(changesInput(NO_CHANGES, ROOT), 0, 60))).toMatch(/Changes this session\n {3}Nothing yet. The files Claude edits show here/)
+  })
+  it('draws files with their marks and links, the tests, and the command', () => {
+    const rows = changesRows(changesInput(session(), ROOT), 1, 90)
+    const text = textOf(rows)
+    expect(text).toMatch(/Changes this session +2 turns/)
+    expect(text).toContain('3 files → 45 dependents reaching Core Http')
+    expect(text).toContain('▲ 1 policy violation introduced')
+    expect(plainText(row(rows, 'change-1')!)).toMatch(/^›\+ src\/Core\/Kernel\.php +Core +━/)
+    expect(plainText(row(rows, 'change-2')!)).toMatch(/^ − src\/Helper\.php/)
+    expect(row(rows, 'change-0')!.segments.find(s => s.link)?.link).toEqual({ path: '/work/app/src/Router.php', line: null })
+    expect(row(rows, 'change-2')!.segments.some(s => s.link)).toBe(false)
+    expect(text).toMatch(/Tests that reach them 2 +hops/)
+    expect(text).toContain("$ vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
+  })
+  it('warns when no test reaches the changes', () => {
+    const none = accumulate(NO_CHANGES, brief({ tests: [] }))
+    expect(textOf(changesRows(changesInput(none, ROOT), 0, 60))).toContain('▲ none: no test reaches these changes')
+  })
+  it('never draws wider than the columns', () => {
+    const long = accumulate(
+      session(),
+      brief({
+        changed_files: ['src/a/rather/deeply/nested/directory/with/a/VeryLongControllerName.php'],
+        impact: { 'src/a/rather/deeply/nested/directory/with/a/VeryLongControllerName.php': { path: 'x', dependent_files: 12_345, boundaries: ['module:hooks (+typescript:hooks/tsconfig.json)'] } },
+        tests: [{ path: 'tests/a/rather/deeply/nested/directory/with/a/VeryLongControllerNameTest.php', distance: 1 }],
+      }),
+    )
+    for (const columns of WIDTHS) {
+      for (const r of changesRows(changesInput(long, ROOT), 0, columns)) expect(rowWidth(r), `${columns} ${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+    }
+  })
+})
+
+describe('look at now', () => {
+  it('points at the riskiest file still there, and counts the tests that reach the changes', () => {
+    const look = lookAtOf(changesInput(session(), ROOT))!
+    expect(look.file?.path).toBe('src/Router.php')
+    expect(look.tests).toBe(2)
+    const rows = lookAtRows(look, 60)
+    expect(plainText(row(rows, 'look-file')!)).toBe('   e: Router.php Http · 42 dependents')
+    expect(plainText(row(rows, 'look-tests')!)).toBe('   t: copy test command · 2 tests reach the changes')
+    expect(lookAtOf(changesInput(NO_CHANGES, ROOT))).toBeNull()
+  })
+  it('sits first on the Overview, where e opens its file, at every width', () => {
+    const d = { ...dash(), project_root: ROOT } as Dashboard
+    const v: KnossosView = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
+    const pane = paneInput(d, null, { fetchedAt: 0, failed: false }, { phase: 'idle', reason: null }, v, 0, true, null, null, session())
+    expect(editTarget(pane)).toEqual({ path: '/work/app/src/Router.php', line: null })
+    for (const columns of WIDTHS) {
+      const rows = paneRows(pane, columns)
+      const keys = rows.map(r => r.key)
+      expect(keys.indexOf('look-head')).toBeLessThan(keys.indexOf('health-head'))
+      for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
+    }
+    // The tab carries how many files were touched.
+    expect(plainText(paneRows(pane, 90).find(r => r.key === 'tabs')!)).toContain('6: Changes ³')
+  })
+})
+
+describe('file links', () => {
+  it('round-trips a place through its file: URL, spaces and all', () => {
+    const loc = { path: '/work/my app/src/A#1.php', line: 12 }
+    expect(fileHref(loc)).toBe('file:///work/my%20app/src/A%231.php#L12')
+    expect(locOf(fileHref(loc))).toEqual(loc)
+    expect(locOf(fileHref({ path: '/a/b.ts', line: null }))).toEqual({ path: '/a/b.ts', line: null })
+    expect(locOf('https://example.com/a')).toBeNull()
+    expect(locOf('file://relative/x')).toBeNull()
+  })
+  it('escapes what markdown would read in the label', () => {
+    expect(linkMarkdown('my_file*.php:3', { path: '/a/my_file*.php', line: 3 })).toBe('[my\\_file\\*\\.php:3](file:///a/my_file*.php#L3)')
+  })
+})
+
+function dash(): Dashboard {
+  return {
+    status: 'ok',
+    path: ROOT,
+    project_root: ROOT,
+    project_id: 'p1',
+    snapshot_id: 's1',
+    freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 },
+    hubs: [{ name: 'Router', canonical_name: 'App\\Http\\Router', kind: 'class', boundary: 'Http', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 }],
+    hubs_truncated: false,
+    hubs_truncation_reasons: [],
+    hotspots: [],
+    dead_code_candidates: 0,
+    dead_code_truncated: false,
+    cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] },
+    trend: [],
+    fan_in: [],
+    fan_in_truncated: false,
+  }
+}

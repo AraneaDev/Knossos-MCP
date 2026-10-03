@@ -167,8 +167,26 @@ export type RefreshState = { fetchedAt: number | null; failed: boolean }
 /** The component the pane shows: `name` is what it is looked up by, `label` what the pane prints. */
 export type Inspected = { name: string; label: string }
 
-/** The pane's tabs, in their hotkey order (1 to 5). */
-export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues'
+/** The pane's tabs, in their hotkey order (1 to 6). */
+export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues' | 'changes'
+
+/** How a file this session touched stands now: the last turn that named it decides. */
+export type TouchStatus = 'changed' | 'added' | 'deleted'
+
+/**
+ * Everything this session's turn briefs reported, accumulated: each file
+ * touched with its latest dependents and the boundaries they are in, every
+ * test that reached a change (by its nearest distance), and the policy
+ * violations introduced, by `source → target`. `truncated` when a cap
+ * stopped a list growing, so the counts are floors.
+ */
+export type SessionChanges = {
+  turns: number
+  files: Record<string, { status: TouchStatus; dependents: number; boundaries: string[] }>
+  tests: Record<string, number>
+  violations: string[]
+  truncated: boolean
+}
 
 /** The degree the hubs tab sorts by, most first. */
 export type HubSort = 'in' | 'out' | 'cross'
@@ -226,6 +244,7 @@ declare module 'claude-code' {
       rescan: RescanState
       allow: AllowState
       theme: string
+      changes: SessionChanges
     }
   }
 }

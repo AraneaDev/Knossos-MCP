@@ -5,14 +5,35 @@ import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
 import { parseAllowRoot, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { TurnBrief } from './lib/envelopes'
-import { allowInput, askPrompt, CONTENT_MAX, detailInput, emptyRows, listFor, paneInput, paneRows, paneStatus, refusedRoot, rowWidth, SORTS, subjectOf, TABS } from './lib/layout'
-import type { Openable, PaneInput, Row } from './lib/layout'
+import {
+  accumulate,
+  allowInput,
+  askPrompt,
+  CONTENT_MAX,
+  detailInput,
+  editTarget,
+  emptyRows,
+  linkMarkdown,
+  listFor,
+  locOf,
+  locText,
+  NO_CHANGES,
+  paneInput,
+  paneRows,
+  paneStatus,
+  refusedRoot,
+  rowWidth,
+  SORTS,
+  subjectOf,
+  TABS,
+} from './lib/layout'
+import type { Loc, Openable, PaneInput, Row } from './lib/layout'
 import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
-import type { AllowState, DetailState, Inspected, KnossosView, PaneTab, RefreshState, RescanState } from '../types'
+import type { AllowState, DetailState, Inspected, KnossosView, PaneTab, RefreshState, RescanState, SessionChanges } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -30,6 +51,14 @@ const DETAIL_TIMEOUT_MS = 20_000
 const RESCAN_TIMEOUT_MS = 70_000
 /** The wrapper bounds allow-root at 15 s. */
 const ALLOW_TIMEOUT_MS = 20_000
+/** How long the editor's command may take to hand a file to the editor. */
+const EDITOR_TIMEOUT_MS = 10_000
+/**
+ * The command that opens `path:line` in the person's editor: VS Code's
+ * `code -g`, which Cursor and the other forks also answer to. A terminal
+ * editor (`$EDITOR`) needs a terminal of its own, which a press cannot give.
+ */
+const EDITOR = ['code', '-g'] as const
 const USAGE = 'Usage: /knossos-pane to toggle the architecture pane; /knossos-pane inspect <component> to open it on one component.'
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
 const AGE_TICK_MS = 1_000
@@ -56,6 +85,8 @@ const rescan = atom({ plugin: 'knossos', key: 'rescan' } as const, { phase: 'idl
 const allow = atom({ plugin: 'knossos', key: 'allow' } as const, { phase: 'idle', root: null, reason: null } as AllowState)
 /** The person's Claude Code theme by name (`dark`, `light`, ...): what the heat map's raw colours are resolved for. */
 const theme = atom({ plugin: 'knossos', key: 'theme' } as const, 'dark' as string)
+/** Everything this session's turn briefs reported, added up: what the Changes tab and "Look at now" draw. */
+const changes = atom({ plugin: 'knossos', key: 'changes' } as const, NO_CHANGES as SessionChanges)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -334,6 +365,7 @@ async function settleBrief($: EngineInterface, parsed: TurnBrief | null, now: nu
     return false
   }
   await update($, brief, () => parsed)
+  if (parsed.status === 'ok') await update($, changes, c => accumulate(c, parsed))
   await update($, job, (): JobState => ({ phase: 'idle', lastAttemptAt: now }))
   return parsed.status === 'ok'
 }
@@ -473,8 +505,8 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   const d = await read($, dashboard)
   if (d?.status !== 'ok') return null
   const v = await read($, view)
-  const shown = v.inspect === null ? null : detailInput(v.inspect, await read($, detail))
-  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow))
+  const shown = v.inspect === null ? null : detailInput(v.inspect, await read($, detail), d.project_root)
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await read($, changes))
 }
 
 /** The rows the selection walks on what the pane shows, from state. */
@@ -489,13 +521,61 @@ async function moveSelection($: EngineInterface, by: number): Promise<void> {
   await update($, view, v => ({ ...v, selected: Math.min(Math.max(0, v.selected + by), Math.max(0, length - 1)) }))
 }
 
-/** Opens the detail of the row at `index` (the marker's when absent), and leaves the marker there. */
-async function openRow($: EngineInterface, index?: number): Promise<void> {
+/** Opens the row at `index` (the marker's when absent) and leaves the marker there: a file in the editor, a component as its detail. */
+async function openRow($: EngineInterface, index?: number, surface?: RenderSurface): Promise<void> {
   const at = index ?? (await read($, view)).selected
   const item = (await currentList($))[at]
   if (item === undefined) return
   await update($, view, v => ({ ...v, selected: at }))
+  if (item.file === true) {
+    if (item.loc) await openLocation($, item.loc, surface)
+    return
+  }
   await showComponent($, { name: item.canonical, label: item.name })
+}
+
+/**
+ * Opens a place in the person's editor (see {@link EDITOR}). Where no editor
+ * command answers, `path:line` goes onto the clipboard of the surface the
+ * press came from instead, and a toast says which happened.
+ */
+async function openLocation($: EngineInterface, loc: Loc, surface?: RenderSurface): Promise<void> {
+  const target = locText(loc)
+  const opened = await $.process
+    .run([...EDITOR, target], { timeoutMs: EDITOR_TIMEOUT_MS })
+    .then(
+      r => r.exitCode === 0,
+      () => false,
+    )
+  if (opened) {
+    $.ui.toast(`Opened ${target}`)
+    return
+  }
+  const copied = await $.ui.copy({ text: target, ...(surface === undefined ? {} : { surface }) })
+  $.ui.toast(copied.isCopied ? `No editor command to open it; copied ${target}` : `Could not open ${target}: ${copied.reason ?? 'no editor command, and the surface refused the copy'}`)
+}
+
+/** A press on a `file:` link the pane drew: opens its place. */
+async function openLink($: EngineInterface, href: string, surface?: RenderSurface): Promise<void> {
+  const loc = locOf(href)
+  if (loc !== null) await openLocation($, loc, surface)
+}
+
+/** `e`: opens the marked row's file, the shown component's, or on Overview the riskiest file touched. */
+async function openEditTarget($: EngineInterface, surface?: RenderSurface): Promise<void> {
+  const input = await currentInput($, true)
+  const loc = input === null ? null : editTarget(input)
+  if (loc !== null) await openLocation($, loc, surface)
+}
+
+/** Copies the command for the tests that reach this session's changes. */
+async function copyTestCommand($: EngineInterface, surface?: RenderSurface): Promise<void> {
+  const input = await currentInput($, true)
+  const command = input?.changes.command ?? null
+  if (command === null) return
+  const copied = await $.ui.copy({ text: command, ...(surface === undefined ? {} : { surface }) })
+  const tests = input?.changes.tests.length ?? 0
+  $.ui.toast(copied.isCopied ? `Copied the command for ${tests === 1 ? '1 test' : `${tests} tests`}` : `Could not copy the test command: ${copied.reason ?? 'the surface refused'}`)
 }
 
 /** Opens a component the detail lists (who uses it, what it uses): the detail moves to that one. */
@@ -524,9 +604,10 @@ async function submitFilter($: EngineInterface, text: string): Promise<void> {
   await update($, view, v => ({ ...v, filter: text.trim(), filtering: false, selected: 0 }))
 }
 
-/** Copies the marked component's canonical name onto the clipboard of the surface the press came from. */
+/** Copies the marked component's canonical name onto the clipboard of the surface the press came from; on Changes, the test command. */
 async function copySubject($: EngineInterface, surface?: RenderSurface): Promise<void> {
   const input = await currentInput($, true)
+  if (input !== null && input.detail === null && input.tab === 'changes') return copyTestCommand($, surface)
   const subject = input === null ? null : subjectOf(input)
   if (subject === null) return
   const copied = await $.ui.copy({ text: subject.canonical, ...(surface === undefined ? {} : { surface }) })
@@ -602,10 +683,12 @@ async function pressPane($: EngineInterface, id: string, surface?: RenderSurface
     if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false }))
     return
   }
-  if (id.startsWith('row:')) return openRow($, Number(id.slice(4)))
+  if (id.startsWith('row:')) return openRow($, Number(id.slice(4)), surface)
   if (id.startsWith('rel:')) return openRelated($, Number(id.slice(4)))
   if (id === 'down' || id === 'up') return moveSelection($, id === 'down' ? 1 : -1)
-  if (id === 'open') return openRow($)
+  if (id === 'open') return openRow($, undefined, surface)
+  if (id === 'edit') return openEditTarget($, surface)
+  if (id === 'tests') return copyTestCommand($, surface)
   if (id === 'back') return update($, view, v => ({ ...v, inspect: null }))
   if (id === 'keys') return update($, view, v => ({ ...v, showKeys: !v.showKeys }))
   if (id === 'filter') return openFilter($)
@@ -620,11 +703,15 @@ async function pressPane($: EngineInterface, id: string, surface?: RenderSurface
 }
 
 /**
- * One laid-out row as elements: a pressable segment is a plain Button, any
- * other a Text. The layout already fitted the row, so nothing here wraps.
+ * One laid-out row as elements: a pressable segment is a plain Button, a
+ * segment with a place a Markdown link to its `file:` URL (where `links`),
+ * any other a Text. The layout already fitted the row, so nothing here wraps.
+ *
+ * A link is the surface's own: ctrl- or cmd-click opens it as a link in a
+ * reply would, and a plain click (`onLinkPress`) opens it in the editor.
  */
-function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void) {
-  const { Box, Button, Text } = ui
+function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string, surface?: RenderSurface) => void, links = false) {
+  const { Box, Button, Markdown, Text } = ui
   // Every surface but mobile has a text field; there the filter is shown as text.
   const Input = 'Input' in ui ? ui.Input : undefined
   return (
@@ -649,6 +736,13 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
             {...(s.dim ? { dimColor: true } : {})}
             onPress={pressed => press(s.press!.id, pressed.surface)}
           />
+        ) : s.link && links ? (
+          <Markdown
+            key={`${row.key}-link-${i}`}
+            text={linkMarkdown(s.text, s.link)}
+            {...(s.dim ? { dimColor: true } : {})}
+            onLinkPress={(link, pressed) => void openLink($, link.href, pressed.surface).catch(() => undefined)}
+          />
         ) : (
           <Text key={`${row.key}-${i}`} wrap="truncate-end" {...textStyle(s)}>
             {s.text}
@@ -664,12 +758,12 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
  * a `raster` key (the heat map) are one `Raster` of coloured cells; every
  * other surface draws them as text, glyphs and colours alike.
  */
-function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boolean, themeName: string, rows: Row[], press: (id: string, surface?: RenderSurface) => void) {
+function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boolean, links: boolean, themeName: string, rows: Row[], press: (id: string, surface?: RenderSurface) => void) {
   const drawn = []
   for (let i = 0; i < rows.length; i++) {
     const block = rows[i]!.raster
     if (!terminal || block === undefined) {
-      drawn.push(drawRow($, ui, rows[i]!, press))
+      drawn.push(drawRow($, ui, rows[i]!, press, links))
       continue
     }
     let end = i
@@ -811,7 +905,7 @@ export const register: Register = (on, options) => {
     // A press that outlives the session (a teardown under it) fails quietly.
     return (
       <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-        {drawRows($, ui, e.surface === 'terminal', await read($, theme), paneRows(input, columns), press)}
+        {drawRows($, ui, e.surface === 'terminal', e.surface !== 'mobile', await read($, theme), paneRows(input, columns), press)}
       </Box>
     )
   })
