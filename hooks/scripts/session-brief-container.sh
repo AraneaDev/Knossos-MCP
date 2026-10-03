@@ -19,6 +19,8 @@ DATA='__KNOSSOS_DATA__'
 # carries the project in; entering it here keeps a caller that passes no
 # CLAUDE_PROJECT_DIR from mounting one directory and reading another.
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
+# Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
+PROJECT_DIR=$(pwd -P) || exit 0
 
 command -v docker >/dev/null 2>&1 || exit 0
 

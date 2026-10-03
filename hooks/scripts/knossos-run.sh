@@ -32,6 +32,8 @@ if [ "$SUBCOMMAND" = component-detail ]; then
 fi
 
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
+# Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
+PROJECT_DIR=$(pwd -P) || exit 0
 
 # Shared discovery helpers and the install-time data location. A missing
 # library is silent like every other failure: a plain `.` of a missing file

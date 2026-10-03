@@ -19,6 +19,8 @@ LIB="$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)/lib.sh"
 # Guarded like every other failure path here: a directory that cannot be
 # entered is silent, not fatal.
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
+# Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
+PROJECT_DIR=$(pwd -P) || exit 0
 
 # Shared discovery helpers. A missing library is silent like every other
 # failure: a plain `.` of a missing file would abort the shell with a diagnostic.

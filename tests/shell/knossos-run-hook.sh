@@ -44,6 +44,14 @@ expect_silent_success 'unenterable project dir' env KNOSSOS_BIN="$STUBS/echoing"
 expect_output 'passes arguments with spaces intact' 'turn-brief|/tmp|--files=a, b.php|--json|' \
     env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" turn-brief /tmp '--files=a, b.php'
 
+# A relative project directory is resolved after the cd, so the binary and the
+# bind mount receive the absolute path rather than one that means nothing from
+# inside the directory.
+mkdir -p "$STUBS/proj"
+ABS_PROJ=$(CDPATH='' cd -- "$STUBS/proj" && pwd -P)
+expect_output 'relative project directory reaches the binary as an absolute path' "dashboard|$ABS_PROJ|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh -c "cd '$STUBS' && /bin/sh '$RUN' dashboard proj"
+
 # Install-time data location: lib.sh carries a placeholder the installer fills.
 # The wrapper sources lib.sh from its own directory, so each case runs a copy.
 install_copy() {
@@ -101,6 +109,8 @@ expect_output 'container component-detail passes the name intact' 'img:1|compone
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp 'My Router'
 expect_output 'container dashboard keeps its arguments' 'img:1|dashboard|/tmp|--fan-in-threshold=20|--json|' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp --fan-in-threshold=20
+expect_output 'container with a relative project directory mounts and passes the absolute path' "img:1|dashboard|$ABS_PROJ|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh -c "cd '$STUBS' && /bin/sh '$STUBS/container/knossos-run.sh' dashboard proj"
 expect_silent_success 'container component-detail with a name that reads as an option' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp -x
 expect_silent_success 'container component-detail without a name' \
