@@ -40,6 +40,37 @@ export type Ranked = Listed & {
   out_degree?: number
   cross_boundary_degree?: number
 }
+/** A cycle member as the pane colours it; `name` to show, `canonical_name` to look it up by. */
+export type CycleNode = Listed & { boundary: string | null }
+/** A dead-code candidate with where it is declared. */
+export type DeadCode = Listed & {
+  boundary: string | null
+  reachability: string
+  confidence: string
+  path: string | null
+  line: number | null
+}
+/** What the project holds; `*_truncated` when a breakdown lists fewer categories than exist. */
+export type Summary = {
+  components: number
+  kinds: { kind: string; count: number }[]
+  kinds_truncated: boolean
+  files: number
+  languages: { language: string; files: number }[]
+  languages_truncated: boolean
+}
+export type Diagnostic = { severity: string; code: string; message: string; path: string | null; line: number | null }
+export type PolicyViolation = {
+  policy_id: string
+  source: string
+  source_kind: string
+  source_boundary: string | null
+  target: string
+  target_kind: string
+  target_boundary: string | null
+  path: string | null
+  line: number | null
+}
 export type Dashboard = {
   status: 'ok' | 'unscanned' | 'error' | 'no-binary'
   path: string
@@ -58,15 +89,31 @@ export type Dashboard = {
     count: number
     truncated: boolean
     truncation_reasons: string[]
-    largest: { size: number; members: string[] }[]
+    /** `nodes` and `nodes_truncated` are optional: a knossos older than the mod sends names only. */
+    largest: { size: number; members: string[]; nodes?: CycleNode[]; nodes_truncated?: boolean }[]
   }
   trend: { snapshot_id: string; cycles: number; max_degree: number }[]
   fan_in: FanIn[]
   fan_in_truncated: boolean
+  // Optional from here on: a knossos older than the mod sends none of them.
+  /** The first dead-code candidates; `dead_code_candidates` counts them all. */
+  dead_code?: DeadCode[]
+  summary?: Summary
+  boundaries?: { items: { name: string; source: string; members: number }[]; truncated: boolean }
+  diagnostics?: { total: number; errors: number; warnings: number; infos: number; items: Diagnostic[] }
+  largest_files?: { path: string; language: string; lines: number }[]
+  /** `truncated` when the check stopped at its edge or time limit, so `total` is a floor. */
+  policy?: { status: string; total: number; truncated: boolean; truncation_reasons: string[]; items: PolicyViolation[] }
 }
 
-/** One direction of a component's relationships: distinct names, `truncated` when the count is a floor. */
-export type Related = { count: number; truncated: boolean; names: string[] }
+/** A component on the other end of some relationships: how many of them, and its boundary. */
+export type Counterpart = Listed & { boundary: string | null; edges: number }
+/**
+ * One direction of a component's relationships: how many distinct components,
+ * the first distinct names, the most connected few (`items`, absent from an
+ * older knossos), and `truncated` when the counts are floors.
+ */
+export type Related = { count: number; truncated: boolean; names: string[]; items?: Counterpart[] }
 export type ComponentDetail = {
   status: 'ok' | 'unscanned' | 'not-found' | 'ambiguous' | 'error' | 'no-binary'
   path: string
@@ -75,18 +122,22 @@ export type ComponentDetail = {
   snapshot_id: string | null
   component: {
     name: string
+    display_name?: string
     kind: string
     path: string | null
     line: number | null
+    /** The one boundary the pane labels it with, as the dashboard does. */
+    boundary?: string | null
     boundaries: string[]
     used_by: Related
     uses: Related
+    annotations?: { kind: string; value: string }[]
   } | null
   candidates: string[]
 }
 
-/** The pane's detail for one component: loading, or done with its lines (null when knossos said nothing). */
-export type DetailState = { snapshot_id: string | null; name: string; lines: string[] | null; phase: 'loading' | 'done' }
+/** The pane's detail for one component: loading, or done with what knossos answered (null when it said nothing). */
+export type DetailState = { snapshot_id: string | null; name: string; detail: ComponentDetail | null; phase: 'loading' | 'done' }
 
 export type JobState = { phase: 'idle' | 'scanning' | 'failed'; lastAttemptAt: number | null }
 
@@ -99,9 +150,13 @@ export type Inspected = { name: string; label: string }
 /** The pane's tabs, in their hotkey order (1 to 5). */
 export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues'
 
+/** The degree the hubs tab sorts by, most first. */
+export type HubSort = 'in' | 'out' | 'cross'
+
 /**
  * What the pane shows: a component's detail, or a tab with the row under the
  * selection marker (an index into that tab's list), and the key help line.
+ * The hubs tab keeps its filter text, whether its field is open, and its sort.
  */
 export type KnossosView = {
   inspect: Inspected | null
@@ -109,6 +164,9 @@ export type KnossosView = {
   tab: PaneTab
   selected: number
   showKeys: boolean
+  filter: string
+  filtering: boolean
+  sort: HubSort
 }
 
 /** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */

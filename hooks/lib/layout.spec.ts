@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import type { Dashboard, KnossosView, PaneTab, TurnBrief } from '../../types'
+import type { ComponentDetail, Dashboard, DetailState, KnossosView, PaneTab, TurnBrief } from '../../types'
 import {
   CONTENT_MAX,
+  SIDE_BY_SIDE,
   bar,
+  detailInput,
   displayName,
   fit,
+  hubList,
   lastTurnOf,
   listFor,
   mergeRanked,
@@ -15,10 +18,13 @@ import {
   plainText,
   rowWidth,
   tabRows,
+  summaryParts,
   tableSpec,
   wrapWords,
 } from './layout'
 import type { PaneInput, Row } from './layout'
+import { fitStart, shortName, wrapGroups } from './rows'
+import { cycleRows, cyclesInput, issueCount, issuesInput, issuesList, superscript } from './views'
 
 const WIDTHS = [40, 60, 90, 120] as const
 const TABS: PaneTab[] = ['overview', 'hubs', 'boundaries', 'cycles', 'issues']
@@ -91,6 +97,9 @@ const view = (over: Partial<KnossosView> = {}): KnossosView => ({
   tab: 'overview',
   selected: 0,
   showKeys: false,
+  filter: '',
+  filtering: false,
+  sort: 'in',
   ...over,
 })
 
@@ -292,11 +301,9 @@ describe('paneRows', () => {
     expect(lastTurnOf(brief({ status: 'scan-failed' }))).toBeNull()
   })
 
-  it('says the later tabs are coming', () => {
-    for (const tab of ['boundaries', 'cycles', 'issues'] as const) {
-      expect(textOf(paneRows(input({ tab }), 60))).toContain('coming next')
-      expect(listFor({ tab, items: input().items })).toEqual([])
-    }
+  it('says the boundaries tab is coming, and walks nothing there or on cycles', () => {
+    expect(textOf(paneRows(input({ tab: 'boundaries' }), 60))).toContain('coming next')
+    for (const tab of ['boundaries', 'cycles'] as const) expect(listFor(input({ tab }))).toEqual([])
   })
 
   it('shows the key help on request', () => {
@@ -347,5 +354,389 @@ describe('wrapWords', () => {
   it('wraps on words and cuts a word longer than a row', () => {
     expect(wrapWords('a bb ccc dddd', 6)).toEqual(['a bb', 'ccc', 'dddd'])
     expect(wrapWords('abcdefghij', 4)).toEqual(['abc…'])
+  })
+})
+
+/** A dashboard from a knossos that reports everything the Issues and Cycles tabs and the header draw. */
+const full = (over: Partial<Dashboard> = {}): Dashboard =>
+  dash({
+    summary: {
+      components: 7878,
+      kinds: [{ kind: 'method', count: 5959 }],
+      kinds_truncated: true,
+      files: 635,
+      languages: [
+        { language: 'php', files: 569 },
+        { language: 'javascript', files: 41 },
+        { language: 'rust', files: 9 },
+      ],
+      languages_truncated: false,
+    },
+    boundaries: {
+      items: [
+        { name: 'tests', source: 'explicit', members: 4913 },
+        { name: 'core', source: 'explicit', members: 1610 },
+        { name: 'namespace:Knossos', source: 'inferred', members: 5984 },
+      ],
+      truncated: true,
+    },
+    diagnostics: {
+      total: 3,
+      errors: 1,
+      warnings: 1,
+      infos: 1,
+      items: [
+        { severity: 'error', code: 'TS2307', message: "Cannot find module '@scope/missing' or its corresponding type declarations.", path: 'workers/typescript/src/scanner.ts', line: 14 },
+        { severity: 'warning', code: 'PY001', message: 'Unused import', path: 'workers/python/bin/worker.py', line: 3 },
+      ],
+    },
+    largest_files: [
+      { path: 'workers/typescript/src/scanner.js', language: 'javascript', lines: 4986 },
+      { path: 'src/Discovery/ProjectDiscoverer.php', language: 'php', lines: 2835 },
+    ],
+    policy: {
+      status: 'evaluated',
+      total: 7,
+      truncated: false,
+      truncation_reasons: [],
+      items: [
+        {
+          policy_id: 'core-does-not-reach-into-workers',
+          source: 'Knossos\\Query\\ArchitectureQueryService::fileMetrics',
+          source_kind: 'method',
+          source_boundary: 'core',
+          target: 'KnossosPhpScanner\\FactCollector',
+          target_kind: 'class',
+          target_boundary: 'php-worker',
+          path: 'src/Query/ArchitectureQueryService.php',
+          line: 191,
+        },
+      ],
+    },
+    dead_code: [
+      {
+        name: 'beforeTraverse',
+        canonical_name: 'KnossosPhpScanner\\FactCollector::beforeTraverse',
+        kind: 'method',
+        boundary: 'php-worker',
+        reachability: 'unreferenced',
+        confidence: 'possible',
+        path: 'workers/php/src/FactCollector.php',
+        line: 108,
+      },
+      {
+        name: 'helper',
+        canonical_name: 'Knossos\\Support\\helper',
+        kind: 'function',
+        boundary: 'core',
+        reachability: 'test_only',
+        confidence: 'possible',
+        path: 'src/Support/helper.php',
+        line: 4,
+      },
+    ],
+    cycles: {
+      count: 2,
+      truncated: false,
+      truncation_reasons: [],
+      largest: [
+        {
+          size: 5,
+          members: ['a', 'b', 'c', 'd', 'e'],
+          nodes: ['_add_instances', 'module_declarations', 'read_bounded', '_add_reexports', 'safe_file'].map((n, i) => ({
+            name: n,
+            canonical_name: `python.bin.worker.Index::${n}`,
+            kind: 'method',
+            boundary: i < 4 ? 'python-worker' : 'core',
+          })),
+          nodes_truncated: false,
+        },
+        { size: 4, members: ['visit', 'walk', 'Scanner::scan', 'emit'], nodes: undefined, nodes_truncated: false },
+      ],
+    },
+    ...over,
+  })
+
+const fullInput = (over: Partial<PaneInput> = {}, d = full()): PaneInput => ({ ...paneInput(d, brief(), FETCHED, IDLE, view(), 0, true), ...over })
+
+const detailAnswer = (over: Partial<NonNullable<ComponentDetail['component']>> = {}): ComponentDetail => ({
+  status: 'ok',
+  path: '/work/Knossos-MCP',
+  name: 'Knossos\\Query\\DashboardService',
+  project_id: 'p1',
+  snapshot_id: 's1',
+  candidates: [],
+  component: {
+    name: 'Knossos\\Query\\DashboardService',
+    display_name: 'DashboardService',
+    kind: 'class',
+    path: 'src/Query/DashboardService.php',
+    line: 28,
+    boundary: 'core',
+    boundaries: ['core', 'namespace:Knossos'],
+    used_by: {
+      count: 19,
+      truncated: false,
+      names: ['answer'],
+      items: [
+        { name: 'testDrift', canonical_name: 'Knossos\\Tests\\DashboardServiceTest::testDrift', kind: 'method', boundary: 'tests', edges: 3 },
+        { name: 'answer', canonical_name: 'Knossos\\Cli\\Command\\BriefCommand::answer', kind: 'method', boundary: 'core', edges: 1 },
+      ],
+    },
+    uses: {
+      count: 2,
+      truncated: false,
+      names: ['BoundaryLabels', 'ProjectFindings'],
+      items: [
+        { name: 'BoundaryLabels', canonical_name: 'Knossos\\Query\\BoundaryLabels', kind: 'class', boundary: 'core', edges: 4 },
+        { name: 'ProjectFindings', canonical_name: 'Knossos\\Query\\ProjectFindings', kind: 'class', boundary: 'core', edges: 2 },
+      ],
+    },
+    annotations: [{ kind: 'note', value: 'Read-only: it never scans.' }],
+    ...over,
+  },
+})
+
+const shown = { name: 'Knossos\\Query\\DashboardService', label: 'DashboardService' }
+const done = (answer: ComponentDetail | null): DetailState => ({ snapshot_id: 's1', name: shown.name, detail: answer, phase: 'done' })
+const detailPane = (answer: ComponentDetail | null = detailAnswer(), state: DetailState | null = done(answer)) =>
+  paneInput(full(), brief(), FETCHED, IDLE, view({ inspect: shown }), 0, true, detailInput(shown, state))
+
+const widthsFit = (rows: Row[], columns: number) => {
+  for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(Math.min(columns, CONTENT_MAX))
+}
+
+describe('the header summary', () => {
+  it('counts components, declared boundaries and languages when knossos reports them', () => {
+    expect(summaryParts(full(), 6)).toEqual(['7,878 components', '2 boundaries', '41 drifted', 'PHP JS RS'])
+    expect(plainText(row(paneRows(fullInput(), 60), 'summary')!)).toBe('7,878 components · 2 boundaries · 41 drifted · PHP JS RS')
+  })
+  it('falls back to hubs, cycles and dead code from an older knossos', () => {
+    expect(summaryParts(dash(), 6)).toEqual(['6 hubs', '2 cycles', '55 dead code', '41 drifted'])
+  })
+  it('counts every boundary, as a floor when cut, where none is declared', () => {
+    const inferred = full({ boundaries: { items: [{ name: 'namespace:App', source: 'inferred', members: 3 }], truncated: true } })
+    expect(summaryParts(inferred, 0)[1]).toBe('1+ boundaries')
+  })
+})
+
+describe('the issues tab', () => {
+  for (const columns of WIDTHS) {
+    it(`fits ${columns} columns`, () => {
+      widthsFit(paneRows(fullInput({ tab: 'issues' }), columns), columns)
+      widthsFit(paneRows(fullInput({ tab: 'issues', showKeys: true, terminal: false }), columns), columns)
+    })
+  }
+  it('lists violations, diagnostics, dead code and the largest files, each with its place', () => {
+    const text = textOf(paneRows(fullInput({ tab: 'issues' }), 100))
+    expect(text).toMatch(/POLICY VIOLATIONS +▲ 7/)
+    expect(text).toMatch(/ArchitectureQueryService::fileMetrics → FactCollector +core +ArchitectureQueryService\.php:191/)
+    expect(text).toContain('+6 more')
+    expect(text).toMatch(/DIAGNOSTICS +1 error · 1 warning · 1 note/)
+    expect(text).toMatch(/✖ TS2307 Cannot find module/)
+    expect(text).toMatch(/scanner\.ts:14$/m)
+    expect(text).toMatch(/DEAD CODE +55 · first 2/)
+    expect(text).toMatch(/FactCollector::beforeTraverse +php-worker +FactCollector\.php:108/)
+    expect(text).toMatch(/◇ helper/)
+    expect(text).toMatch(/LARGEST FILES +lines/)
+    expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*█+ +4986/)
+  })
+  it('gives way in order: names are cut, then the boundary goes, then the place', () => {
+    const dead = (columns: number) => plainText(row(paneRows(fullInput({ tab: 'issues' }), columns), 'dead-0')!)
+    expect(dead(90)).toMatch(/FactCollector::beforeTraverse +php-worker +FactCollector\.php:108$/)
+    expect(dead(50)).toMatch(/FactCollector::be… php-worker …ollector\.php:108$/)
+    expect(dead(40)).not.toContain('php-worker')
+    expect(dead(40)).toMatch(/\.php:108$/)
+    expect(dead(30)).not.toContain('.php')
+    expect(dead(30)).toContain('FactCollector::')
+  })
+  it('walks violations then dead code, each row pressable by its index', () => {
+    const input = fullInput({ tab: 'issues', selected: 1 })
+    expect(listFor(input).map(i => i.canonical)).toEqual([
+      'Knossos\\Query\\ArchitectureQueryService::fileMetrics',
+      'KnossosPhpScanner\\FactCollector::beforeTraverse',
+      'Knossos\\Support\\helper',
+    ])
+    const rows = paneRows(input, 90)
+    expect(plainText(row(rows, 'dead-0')!)).toMatch(/^›/)
+    expect(row(rows, 'dead-1')!.segments.find(s => s.press)?.press?.id).toBe('row:2')
+    expect(row(rows, 'pol-0')!.segments.find(s => s.press)?.press?.id).toBe('row:0')
+  })
+  it('counts violations, errors and warnings into the tab label', () => {
+    expect(issueCount(issuesInput(full()))).toEqual({ n: 9, plus: false })
+    expect(superscript(9)).toBe('⁹')
+    expect(superscript(12, true)).toBe('¹²⁺')
+    expect(plainText(row(paneRows(fullInput(), 90), 'tabs')!)).toContain('5: Issues ⁹')
+    expect(plainText(row(paneRows(fullInput(), 40), 'tabs')!)).toContain('5: Iss⁹')
+    // Nothing to act on: no badge.
+    expect(plainText(row(paneRows(input(), 90), 'tabs')!)).toMatch(/5: Issues$/)
+  })
+  it('says what it cannot know from an older knossos, and when no policy is declared', () => {
+    const old = textOf(paneRows(input({ tab: 'issues' }), 60))
+    expect(old).toMatch(/POLICY VIOLATIONS +not reported/)
+    expect(old).toMatch(/DIAGNOSTICS +not reported/)
+    const undeclared = full({ policy: { status: 'not_evaluated', total: 0, truncated: false, truncation_reasons: [], items: [] } })
+    expect(textOf(paneRows(fullInput({ tab: 'issues' }, undeclared), 60))).toMatch(/POLICY VIOLATIONS +no policies declared/)
+    expect(issuesList(issuesInput(undeclared))).toHaveLength(2)
+  })
+  it('reads a policy total cut short as a floor', () => {
+    const cut = full({ policy: { status: 'evaluated', total: 100, truncated: true, truncation_reasons: ['time_limit'], items: [] } })
+    expect(textOf(paneRows(fullInput({ tab: 'issues' }, cut), 60))).toContain('▲ 100+')
+    expect(issueCount(issuesInput(cut)).plus).toBe(true)
+  })
+})
+
+describe('the cycles tab', () => {
+  for (const columns of WIDTHS) {
+    it(`fits ${columns} columns`, () => widthsFit(paneRows(fullInput({ tab: 'cycles' }), columns), columns))
+  }
+  it('draws each cycle as a chain closing on itself, names coloured by boundary', () => {
+    const rows = paneRows(fullInput({ tab: 'cycles' }), 100)
+    const text = textOf(rows)
+    expect(text).toMatch(/CYCLES +2 · largest first/)
+    expect(text).toContain('cycle 1 · 5 members')
+    expect(text).toContain('Index::_add_instances → Index::module_declarations → ')
+    expect(text).toContain('Index::safe_file ↺')
+    const chain = rows.filter(r => r.key.startsWith('chain-0')).flatMap(r => r.segments)
+    const coloured = (name: string) => chain.find(s => s.text === name)?.color
+    expect(coloured('Index::_add_instances')).toBeDefined()
+    expect(coloured('Index::_add_instances')).toBe(coloured('Index::read_bounded'))
+    expect(coloured('Index::_add_instances')).not.toBe(coloured('Index::safe_file'))
+    // The legend names each colour once.
+    expect(plainText(row(rows, 'cycles-legend')!)).toBe('   ■ python-worker  ■ core')
+  })
+  it('wraps a chain onto more rows as the pane narrows, keeping each name whole where it can', () => {
+    const at = (columns: number) => paneRows(fullInput({ tab: 'cycles' }), columns).filter(r => r.key.startsWith('chain-0'))
+    expect(at(100)).toHaveLength(2)
+    expect(at(40).length).toBeGreaterThan(at(100).length)
+    expect(at(40).map(plainText).join(' ')).toContain('Index::module_declarations →')
+  })
+  it('lists names alone from an older knossos, and says how many more a long cycle has', () => {
+    const text = textOf(cycleRows(cyclesInput(full()), 60))
+    expect(text).toContain('visit → walk → Scanner::scan → emit ↺')
+    const long = full({ cycles: { count: 60, truncated: true, truncation_reasons: ['result_limit'], largest: [{ size: 50, members: [], nodes: [{ name: 'a', canonical_name: 'a', kind: 'function', boundary: null }], nodes_truncated: true }] } })
+    const cut = textOf(cycleRows(cyclesInput(long), 60))
+    expect(cut).toMatch(/CYCLES +60\+ · 1 shown · largest first/)
+    expect(cut).toContain('a → … +49 more')
+  })
+  it('says when there is none', () => {
+    expect(textOf(paneRows(fullInput({ tab: 'cycles' }, full({ cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] } })), 60))).toContain('No dependency cycles.')
+  })
+})
+
+describe('the detail view', () => {
+  for (const columns of WIDTHS) {
+    it(`fits ${columns} columns, loading, answered and not found`, () => {
+      widthsFit(paneRows(detailPane(), columns), columns)
+      widthsFit(paneRows(detailPane(null, { ...done(null), phase: 'loading' }), columns), columns)
+      widthsFit(paneRows(detailPane({ ...detailAnswer(), status: 'not-found', component: null }), columns), columns)
+    })
+  }
+  it('heads with name, kind, boundary and place, then used by and uses side by side when wide', () => {
+    const rows = paneRows(detailPane(), 100)
+    expect(plainText(row(rows, 'detail-name')!)).toMatch(/^DashboardService +class · core$/)
+    expect(plainText(row(rows, 'detail-place')!)).toBe('src/Query/DashboardService.php:28')
+    expect(plainText(row(rows, 'detail-canonical')!)).toBe('Knossos\\Query\\DashboardService')
+    expect(plainText(row(rows, 'side-0')!)).toMatch(/^USED BY 19 +edges +USES 2 +edges$/)
+    expect(plainText(row(rows, 'side-1')!)).toMatch(/DashboardServiceTest::testDrift +tests +█+ +3 +BoundaryLabels +core +█+ +4$/)
+    expect(textOf(rows)).toContain('+17 more')
+    expect(textOf(rows)).toMatch(/ANNOTATIONS\n {3}note: Read-only: it never scans\./)
+    expect(100).toBeGreaterThanOrEqual(SIDE_BY_SIDE)
+  })
+  it('stacks uses under used by when narrow', () => {
+    const rows = paneRows(detailPane(), 60)
+    expect(row(rows, 'side-0')).toBeUndefined()
+    const text = textOf(rows)
+    expect(text.indexOf('USED BY 19')).toBeLessThan(text.indexOf('USES 2'))
+    expect(plainText(row(rows, 'uses-0')!)).toMatch(/BoundaryLabels +core +█+ +4$/)
+  })
+  it('makes every counterpart pressable, used by first, and offers back instead of the list keys', () => {
+    const input = detailPane()
+    expect(listFor(input).map(i => i.name)).toEqual(['DashboardServiceTest::testDrift', 'BriefCommand::answer', 'BoundaryLabels', 'ProjectFindings'])
+    const rows = paneRows(input, 60)
+    expect(row(rows, 'uses-1')!.segments.find(s => s.press)?.press?.id).toBe('rel:3')
+    const keys = row(rows, 'keys')!.segments.flatMap(s => (s.press ? [s.press.hotkey] : []))
+    expect(keys).toEqual(['b', 'h'])
+    expect(row(rows, 'tabs')).toBeUndefined()
+  })
+  it('says it is looking, or what knossos said instead', () => {
+    expect(textOf(paneRows(detailPane(null, { ...done(null), phase: 'loading' }), 60))).toContain('Inspecting DashboardService…')
+    expect(textOf(paneRows(detailPane(null), 60))).toContain('No details for DashboardService: knossos said nothing.')
+    expect(textOf(paneRows(detailPane({ ...detailAnswer(), status: 'not-found', component: null }), 60))).toContain('No component matched')
+  })
+  it('lists names without counts or bars from an older knossos', () => {
+    const old = detailAnswer({ used_by: { count: 1, truncated: false, names: ['Kernel'] }, uses: { count: 0, truncated: false, names: [] } })
+    const text = textOf(paneRows(detailPane(old), 60))
+    expect(text).toMatch(/USED BY 1\n {3}Kernel/)
+    expect(text).not.toMatch(/█/)
+  })
+})
+
+describe('the hubs filter and sort', () => {
+  for (const columns of WIDTHS) {
+    it(`fits ${columns} columns with the field open, a filter kept and every sort`, () => {
+      for (const sort of ['in', 'out', 'cross'] as const) {
+        widthsFit(paneRows(fullInput({ tab: 'hubs', filtering: true, filter: 'stab', sort }), columns), columns)
+        widthsFit(paneRows(fullInput({ tab: 'hubs', filter: 'a', sort, showKeys: true }), columns), columns)
+      }
+    })
+  }
+  it('filters by any part of the shown or canonical name, any case', () => {
+    const items = input().items
+    expect(hubList(items, 'stable', 'in').map(i => i.name)).toEqual(['StableId', 'StableId::symbol'])
+    expect(hubList(items, 'KNOSSOS\\QUERY', 'in').map(i => i.name)).toEqual(['ArchitectureQueryService'])
+    expect(hubList(items, '', 'in')).toHaveLength(items.length)
+  })
+  it('sorts by in, out or cross, most first', () => {
+    const items = input().items
+    expect(hubList(items, '', 'out')[0]?.name).toBe('ProjectScanService::scan')
+    expect(hubList(items, '', 'cross')[0]?.name).toBe('register')
+  })
+  it('shows the field while filtering, then the filter and how many match', () => {
+    const open = paneRows(input({ tab: 'hubs', filtering: true, filter: 'stab' }), 60)
+    const field = row(open, 'filter-row')!.segments.find(s => s.field)
+    expect(field?.field).toEqual({ id: 'filter', value: 'stab', placeholder: 'part of a name' })
+    const kept = paneRows(input({ tab: 'hubs', filter: 'stab' }), 60)
+    expect(plainText(row(kept, 'filter-row')!)).toBe('   filter "stab" · 2 of 6')
+    expect(plainText(row(kept, 'hub-0')!)).toContain('StableId')
+    expect(textOf(paneRows(input({ tab: 'hubs', filter: 'zzz' }), 60))).toContain('no hub matches "zzz"')
+  })
+  it('names the sort, draws its bar, and offers f, s and x as keys', () => {
+    const rows = paneRows(input({ tab: 'hubs', sort: 'out', filter: 'a' }), 90)
+    expect(plainText(row(rows, 'hubs-head')!)).toMatch(/◆ hotspot only · by out$/)
+    expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +core +█+ +119 +58 +0$/)
+    const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
+    expect(keys).toEqual(['j', 'k', 'o', 'f', 's', 'x', 'h'])
+  })
+  it('wraps the keys rather than dropping one that does not fit', () => {
+    const rows = paneRows(input({ tab: 'hubs', filter: 'a' }), 40)
+    const keyRows = rows.filter(r => r.key.startsWith('keys'))
+    expect(keyRows.length).toBeGreaterThan(1)
+    expect(keyRows.flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))).toEqual(['j', 'k', 'o', 'f', 's', 'x', 'h'])
+    widthsFit(rows, 40)
+  })
+})
+
+describe('the overview health line', () => {
+  it('shows the project policy and diagnostics when knossos reports them', () => {
+    const rows = paneRows(fullInput(), 90)
+    expect(plainText(row(rows, 'health-dead')!)).toMatch(/dead code +55 +policy ▲ 7 +diagnostics ▲ 2/)
+    expect(row(rows, 'health-dead')!.segments.find(s => s.text === '▲ 2')?.color).toBe('yellow')
+  })
+})
+
+describe('row primitives', () => {
+  it('cuts a path from the front so the file name stays', () => {
+    expect(fitStart('workers/typescript/src/scanner.js', 12)).toBe('…/scanner.js')
+  })
+  it('names the ends of a violation by class and member', () => {
+    expect(shortName('Knossos\\Query\\Foo::bar')).toBe('Foo::bar')
+    expect(shortName('Knossos\\Query\\Foo')).toBe('Foo')
+    expect(shortName('hooks/register.tsx#register')).toBe('register')
+  })
+  it('wraps groups whole and indents every row', () => {
+    const rows = wrapGroups('g', [[{ text: 'aaaa' }], [{ text: 'bbbb' }], [{ text: 'cccc' }]], 12, 1, 2)
+    expect(rows.map(plainText)).toEqual(['  aaaa bbbb', '  cccc'])
+    expect(rows.map(r => r.key)).toEqual(['g', 'g-1'])
   })
 })

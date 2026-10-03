@@ -66,8 +66,10 @@ final class PluginCommand implements CliCommand
         '/hooks/lib/notes.ts',
         '/hooks/lib/palette.ts',
         '/hooks/lib/paths.ts',
+        '/hooks/lib/rows.ts',
         '/hooks/lib/scheduler.ts',
         '/hooks/lib/sparkline.ts',
+        '/hooks/lib/views.ts',
         '/skills/knossos/SKILL.md',
         '/types/index.d.ts',
     ];
@@ -87,8 +89,10 @@ final class PluginCommand implements CliCommand
         'hooks/lib/notes.ts',
         'hooks/lib/palette.ts',
         'hooks/lib/paths.ts',
+        'hooks/lib/rows.ts',
         'hooks/lib/scheduler.ts',
         'hooks/lib/sparkline.ts',
+        'hooks/lib/views.ts',
         'skills/knossos/SKILL.md',
         'types/index.d.ts',
     ];

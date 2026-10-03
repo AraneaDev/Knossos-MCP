@@ -3,10 +3,10 @@ import type { Elements, EngineInterface, Register, RenderSurface, Timer } from '
 
 import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { detailLines, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
+import { parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { TurnBrief } from './lib/envelopes'
-import { CONTENT_MAX, listFor, mergeRanked, paneInput, paneRows, paneStatus, TABS, wrapWords } from './lib/layout'
-import type { Item, Row } from './lib/layout'
+import { CONTENT_MAX, detailInput, listFor, paneInput, paneRows, paneStatus, SORTS, TABS } from './lib/layout'
+import type { Openable, PaneInput, Row } from './lib/layout'
 import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
 import { SingleFlight } from './lib/scheduler'
@@ -42,6 +42,9 @@ const view = atom({ plugin: 'knossos', key: 'view' } as const, {
   tab: 'overview',
   selected: 0,
   showKeys: false,
+  filter: '',
+  filtering: false,
+  sort: 'in',
 } as KnossosView)
 const detail = atom({ plugin: 'knossos', key: 'detail' } as const, null as DetailState | null)
 const refresh = atom({ plugin: 'knossos', key: 'refresh' } as const, { fetchedAt: null, failed: false } as RefreshState)
@@ -220,7 +223,7 @@ async function showComponent($: EngineInterface, shown: Inspected): Promise<void
 async function requestDetail($: EngineInterface, name: string): Promise<void> {
   const snapshot = (await read($, dashboard))?.snapshot_id ?? null
   const key = `${snapshot ?? ''}\u0000${name}`
-  const loading = (): DetailState => ({ snapshot_id: snapshot, name, lines: null, phase: 'loading' })
+  const loading = (): DetailState => ({ snapshot_id: snapshot, name, detail: null, phase: 'loading' })
   if (mod.fetching.has(key)) {
     // A lookup for this name is already in flight. When the detail has since
     // moved to another name (A, then B, then A again inside one lookup), put
@@ -231,7 +234,7 @@ async function requestDetail($: EngineInterface, name: string): Promise<void> {
   }
   mod.fetching.add(key)
   const current = await read($, detail)
-  if (current?.name === name && current.snapshot_id === snapshot && current.phase === 'done' && current.lines !== null) {
+  if (current?.name === name && current.snapshot_id === snapshot && current.phase === 'done' && current.detail !== null) {
     mod.fetching.delete(key)
     return
   }
@@ -247,9 +250,8 @@ async function loadDetail($: EngineInterface, snapshot: string | null, name: str
       await disable($)
       return
     }
-    const lines = parsed === null ? null : detailLines(parsed, name)
     await update($, detail, (current): DetailState | null =>
-      current?.name === name && current.snapshot_id === snapshot ? { ...current, lines, phase: 'done' } : current,
+      current?.name === name && current.snapshot_id === snapshot ? { ...current, detail: parsed, phase: 'done' } : current,
     )
   } catch {
     // A lost write leaves the loading line; the next press asks again.
@@ -442,12 +444,19 @@ async function runRescan($: EngineInterface): Promise<void> {
   await update($, rescan, (): RescanState => ({ phase: 'idle', reason: null }))
 }
 
-/** The rows the selection walks on the tab the pane shows, from state. */
-async function currentList($: EngineInterface): Promise<Item[]> {
+/** Everything the pane draws, from state; null when there is no dashboard to draw. */
+async function currentInput($: EngineInterface, terminal: boolean): Promise<PaneInput | null> {
   const d = await read($, dashboard)
-  if (d?.status !== 'ok') return []
+  if (d?.status !== 'ok') return null
   const v = await read($, view)
-  return listFor({ tab: v.tab, items: mergeRanked(d) })
+  const shown = v.inspect === null ? null : detailInput(v.inspect, await read($, detail))
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown)
+}
+
+/** The rows the selection walks on what the pane shows, from state. */
+async function currentList($: EngineInterface): Promise<Openable[]> {
+  const input = await currentInput($, true)
+  return input === null ? [] : listFor(input)
 }
 
 /** Moves the selection marker by `by` rows, kept inside the list. */
@@ -465,17 +474,48 @@ async function openRow($: EngineInterface, index?: number): Promise<void> {
   await showComponent($, { name: item.canonical, label: item.name })
 }
 
+/** Opens a component the detail lists (who uses it, what it uses): the detail moves to that one. */
+async function openRelated($: EngineInterface, index: number): Promise<void> {
+  const item = (await currentList($))[index]
+  if (item !== undefined) await showComponent($, { name: item.canonical, label: item.name })
+}
+
+/**
+ * Opens the hubs filter's field and moves the focus into it once it is
+ * drawn: the focus call waits for the next drawing, so it runs on a timer,
+ * never inside the press or a render.
+ */
+async function openFilter($: EngineInterface): Promise<void> {
+  await update($, view, v => ({ ...v, tab: 'hubs', filtering: true }))
+  $.clock.after(0, () => void $.ui.focus({ requestId: PANE, key: 'filter' }).catch(() => undefined))
+}
+
+/** The filter as typed, applied at once; the marker goes back to the top of the shorter list. */
+async function typeFilter($: EngineInterface, text: string): Promise<void> {
+  await update($, view, v => ({ ...v, filter: text, selected: 0 }))
+}
+
+/** Enter in the filter field: keep the text (an empty one clears the filter) and close the field. */
+async function submitFilter($: EngineInterface, text: string): Promise<void> {
+  await update($, view, v => ({ ...v, filter: text.trim(), filtering: false, selected: 0 }))
+}
+
 /** What a press on the pane does, by the pressed element's id. */
 async function pressPane($: EngineInterface, id: string): Promise<void> {
   if (id.startsWith('tab:')) {
     const tab = id.slice(4) as PaneTab
-    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0 }))
+    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0, filtering: false }))
     return
   }
   if (id.startsWith('row:')) return openRow($, Number(id.slice(4)))
+  if (id.startsWith('rel:')) return openRelated($, Number(id.slice(4)))
   if (id === 'down' || id === 'up') return moveSelection($, id === 'down' ? 1 : -1)
   if (id === 'open') return openRow($)
+  if (id === 'back') return update($, view, v => ({ ...v, inspect: null }))
   if (id === 'keys') return update($, view, v => ({ ...v, showKeys: !v.showKeys }))
+  if (id === 'filter') return openFilter($)
+  if (id === 'clear') return update($, view, v => ({ ...v, filter: '', filtering: false, selected: 0 }))
+  if (id === 'sort') return update($, view, v => ({ ...v, sort: SORTS[(SORTS.indexOf(v.sort) + 1) % SORTS.length] ?? 'in', selected: 0 }))
   if (id === 'rescan') requestRescan($)
 }
 
@@ -483,12 +523,22 @@ async function pressPane($: EngineInterface, id: string): Promise<void> {
  * One laid-out row as elements: a pressable segment is a plain Button, any
  * other a Text. The layout already fitted the row, so nothing here wraps.
  */
-function drawRow(ui: Elements[RenderSurface], row: Row, press: (id: string) => void) {
-  const { Box, Button, Text } = ui
+function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, press: (id: string) => void) {
+  const { Box, Button, Input, Text } = ui
   return (
     <Box key={row.key} flexDirection="row">
       {row.segments.map((s, i) =>
-        s.press ? (
+        s.field ? (
+          <Input
+            key={s.field.id}
+            value={s.field.value}
+            placeholder={s.field.placeholder}
+            submitLabel="keep"
+            autoFocus
+            onInput={value => void typeFilter($, value).catch(() => undefined)}
+            onSubmit={value => void submitFilter($, value).catch(() => undefined)}
+          />
+        ) : s.press ? (
           <Button
             key={s.press.id}
             plain
@@ -609,7 +659,7 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const ui = $.ui.resolve(e)
-    const { Box, Button, Text } = ui
+    const { Box, Text } = ui
     mod.paneText = null
     if (mod.disabled) return <Box key="off" />
     const d = await read($, dashboard)
@@ -622,37 +672,15 @@ export const register: Register = (on, options) => {
       )
     }
     const columns = Math.max(1, Math.min(CONTENT_MAX, e.props.bodyColumns))
-    if (v.inspect !== null) {
-      const { name, label } = v.inspect
-      // State only: a detail for another component (an answer that came late) is not this one's.
-      const shown = await read($, detail)
-      const lines =
-        shown === null || shown.name !== name || shown.phase === 'loading'
-          ? [`Inspecting ${label}…`]
-          : (shown.lines ?? [`No details for ${label}: knossos said nothing.`])
-      return (
-        <Box key="detail" flexDirection="column">
-          <Text bold wrap="truncate-end">
-            {label}
-          </Text>
-          {lines.flatMap((line, i) =>
-            wrapWords(line, columns).map((part, j) => (
-              <Text key={`line-${i}-${j}`} wrap="truncate-end">
-                {part}
-              </Text>
-            )),
-          )}
-          <Button key="back" plain hotkey="b" label="back" onPress={() => update($, view, x => ({ ...x, inspect: null }))} />
-        </Box>
-      )
-    }
-    const input = paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), e.surface === 'terminal')
+    const input = await currentInput($, e.surface === 'terminal')
+    if (input === null) return <Box key="empty" />
     mod.paneText = input.status.text
     // No loop variable may be called `h`: JSX compiles to h(...), and a
     // parameter of that name shadows the element factory inside its callback.
+    // A press that outlives the session (a teardown under it) fails quietly.
     return (
-      <Box key="pane" flexDirection="column">
-        {paneRows(input, columns).map(row => drawRow(ui, row, id => void pressPane($, id)))}
+      <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
+        {paneRows(input, columns).map(row => drawRow($, ui, row, id => void pressPane($, id).catch(() => undefined)))}
       </Box>
     )
   })
