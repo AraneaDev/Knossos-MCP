@@ -86,6 +86,7 @@ const rows = await import(join(REPO, 'hooks/lib/rows.ts'))
 const band = await import(join(REPO, 'hooks/lib/band.ts'))
 const palette = await import(join(REPO, 'hooks/lib/palette.ts'))
 const changesLib = await import(join(REPO, 'hooks/lib/changes.ts'))
+const diffLib = await import(join(REPO, 'hooks/lib/diff.ts'))
 
 const README = 'readme' in args
 const OUT = resolve(args.out ?? join(REPO, README ? 'docs/images/claude-code-mod' : '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
@@ -206,6 +207,29 @@ function detailOf(d) {
   return layout.detailInput(shown, { snapshot_id: d.snapshot_id, name: top.canonical, detail: answer, phase: 'done' }, d.project_root)
 }
 
+/**
+ * A changed file's detail with its change since a commit, as the mod shows
+ * it when the file is opened from Changes: the first file `git diff` names
+ * since `--session-rev` (else the commit three back) that `file-detail`
+ * knows, with the diff `session-diff` reads. Null without git or such a file.
+ */
+function changedDetailOf(d) {
+  const rev = spawnSync('git', ['-C', PROJECT, 'rev-parse', args['session-rev'] ?? 'HEAD~3'], { encoding: 'utf8' }).stdout?.trim() ?? ''
+  if (!/^[0-9a-f]{40,64}$/.test(rev)) return null
+  // A file that was there and changed shows both sides of a diff; added ones only after them.
+  const changed = (spawnSync('git', ['-C', PROJECT, 'diff', '--name-status', '--relative', rev], { encoding: 'utf8' }).stdout ?? '').split('\n').map(l => l.split('\t'))
+  const names = [...changed.filter(([k]) => k === 'M'), ...changed.filter(([k]) => k !== 'M')].map(([, n]) => n ?? '').filter(n => /\.(ts|tsx|php)$/.test(n))
+  for (const path of names) {
+    const answer = envelopes.parseFileDetail(wrapper('file-detail', path))
+    if (answer?.status !== 'ok') continue
+    const shown = { name: path, label: path, file: true, changed: true }
+    const input = layout.fileDetailInput(shown, { snapshot_id: d.snapshot_id, name: path, file: true, detail: null, fileDetail: answer, phase: 'done' }, d.project_root, palette.huesOf(d))
+    const diff = envelopes.parseSessionDiff(wrapper('session-diff', `--rev=${rev}`, `--file=${path}`))
+    return { ...input, diff: diffLib.diffView(shown, { name: path, rev, snapshot: d.snapshot_id, phase: 'done', diff }, { status: 'ok', rev }) }
+  }
+  return null
+}
+
 /** The detail of the file most depended on, as `file-detail` reads it. */
 function fileDetailOf(d) {
   const path = (d.fan_in ?? [])[0]?.path
@@ -267,6 +291,7 @@ const LIVE = README ? { phase: 'off' } : { phase: 'live' }
 const FETCHED = { fetchedAt: NOW, failed: false }
 const detail = detailOf(dashboard)
 const fileDetail = fileDetailOf(dashboard)
+const changedDetail = changedDetailOf(dashboard)
 const brief = sampleBrief(dashboard)
 const session = README ? ledgerSession(brief) : sampleSession(dashboard, brief)
 const root = dashboard.project_root ?? PROJECT
@@ -335,6 +360,10 @@ const VIEWS = [
   ['changes-empty', pane({ tab: 'changes' }, { changes: layout.NO_CHANGES })],
   ...(detail === null ? [] : [['detail', pane({ tab: 'hubs' }, { shown: detail })]]),
   ...(fileDetail === null ? [] : [['file-detail', pane({ tab: 'changes' }, { shown: fileDetail })]]),
+  ...(changedDetail === null ? [] : [['file-detail-diff', pane({ tab: 'changes' }, { shown: changedDetail })]]),
+  ...(fileDetail === null
+    ? []
+    : [['file-detail-diff-no-git', pane({ tab: 'changes' }, { shown: { ...fileDetail, diff: diffLib.diffView({ name: 'x', label: 'x', file: true, changed: true }, null, { status: 'no-git' }) } })]]),
   ['file-detail-loading', pane({ tab: 'changes' }, { shown: { label: 'src/Query/DashboardService.php', loading: true, messages: null, component: null, file: null } })],
   ...(dashboard.freshness.drifted?.length ? [['drift', pane({ tab: 'overview', drift: true }, { turn: brief })]] : []),
   ['overview-hub-marked', pane({ tab: 'overview', selected: 5 }, { turn: brief })],
@@ -403,6 +432,35 @@ function rowCells(row, theme, term) {
   return out
 }
 
+/**
+ * A diff element's hunks as Claude Code draws them: each line with its line
+ * number in a dim gutter, its marker, and an added or removed line on the
+ * theme's diff background; `…` between hunks it leaves apart.
+ */
+function codeCells(row, theme, term, columns, first) {
+  const lines = []
+  for (const hunk of diffLib.parseHunks(row.code.source)) {
+    let old = hunk.oldStart
+    let now = hunk.newStart
+    const width = String(Math.max(old, now) + hunk.lines.length).length
+    if (!first) lines.push([...' '.repeat(width) + ' …'].map(ch => ({ ch, fg: mix(term.fg, term.bg, 0.5), bg: null, bold: false })))
+    for (const line of hunk.lines) {
+      const marker = line[0]
+      const number = marker === '-' ? old++ : now++
+      if (marker === ' ') old++
+      const bg = marker === '+' ? theme.diffAdded : marker === '-' ? theme.diffRemoved : null
+      const gutter = [...`${String(number).padStart(width)} `].map(ch => ({ ch, fg: mix(term.fg, term.bg, 0.5), bg, bold: false }))
+      const body = [...`${marker} ${line.slice(1)}`.replace(/\t/g, '  ')].map(ch => ({ ch, fg: term.fg, bg, bold: false }))
+      const cells = [...gutter, ...body].slice(0, columns)
+      // A changed line's background runs to the edge, as the terminal paints it.
+      while (bg !== null && cells.length < columns) cells.push({ ch: ' ', fg: term.fg, bg, bold: false })
+      if (cells.length === columns && gutter.length + body.length > columns) cells[columns - 1] = { ...cells[columns - 1], ch: '…' }
+      lines.push(cells)
+    }
+  }
+  return lines
+}
+
 /** A run of raster rows as the engine receives them: the packed cells, decoded. */
 function rasterCells(grid, themeName, term) {
   const packed = raster.rasterOf(grid, Math.max(1, ...grid.map(rows.rowWidth)), raster.rasterTheme(themeName))
@@ -426,11 +484,17 @@ function rasterCells(grid, themeName, term) {
 }
 
 /** The pane's rows as lines of cells, raster blocks drawn as the terminal's Raster would be. */
-function screen(laidOut, themeName) {
+function screen(laidOut, themeName, columns) {
   const theme = THEMES[themeName]
   const term = TERMINAL[themeName]
   const lines = []
+  let firstHunk = true
   for (let i = 0; i < laidOut.length; i++) {
+    if (laidOut[i].code !== undefined) {
+      lines.push(...codeCells(laidOut[i], theme, term, columns, firstHunk))
+      firstHunk = false
+      continue
+    }
     const block = laidOut[i].raster
     if (block === undefined) {
       lines.push(rowCells(laidOut[i], theme, term))
@@ -639,7 +703,7 @@ if (README) {
     if (draw === undefined) continue
     const file = join(OUT, `${name}-${themeName}.png`)
     const title = name === 'band-prompt' ? `claude · ${project}` : `/knossos · ${project}`
-    png(framedSvg(screen(draw(README_COLUMNS), themeName), README_COLUMNS, themeName, title), file, 2)
+    png(framedSvg(screen(draw(README_COLUMNS), themeName, README_COLUMNS), README_COLUMNS, themeName, title), file, 2)
     shrink(file)
     written.push(file)
   }
@@ -650,7 +714,7 @@ if (README) {
       const laidOut = draw(columns)
       for (const themeName of THEME_NAMES) {
         const file = join(OUT, `${name}-${columns}-${themeName}.png`)
-        png(svgOf(screen(laidOut, themeName), columns, themeName), file)
+        png(svgOf(screen(laidOut, themeName, columns), columns, themeName), file)
         written.push(file)
       }
     }
