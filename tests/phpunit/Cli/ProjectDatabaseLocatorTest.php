@@ -20,6 +20,7 @@ final class ProjectDatabaseLocatorTest extends KnossosTestCase
 
     protected function setUp(): void
     {
+        parent::setUp();
         $this->dataDir = getenv('KNOSSOS_DATA_DIR');
         putenv('KNOSSOS_DATA_DIR');
     }
@@ -27,6 +28,7 @@ final class ProjectDatabaseLocatorTest extends KnossosTestCase
     protected function tearDown(): void
     {
         putenv($this->dataDir === false ? 'KNOSSOS_DATA_DIR' : 'KNOSSOS_DATA_DIR=' . $this->dataDir);
+        parent::tearDown();
     }
 
     private function context(?string $db = null): CliCommandContext
@@ -63,11 +65,19 @@ final class ProjectDatabaseLocatorTest extends KnossosTestCase
         }
     }
 
+    /** It is the `--db` option that decides, not a database path the context happens to carry. */
     #[Group('cli')]
     public function testAnExplicitDatabaseWins(): void
     {
-        $found = (new ProjectDatabaseLocator())->locate('/', ['db' => ['/tmp/x.sqlite']], $this->context('/tmp/x.sqlite'));
-        assertSame('/tmp/x.sqlite', $found);
+        $root = sys_get_temp_dir() . '/knossos-stale-locator-' . bin2hex(random_bytes(4));
+        mkdir($root, 0700, true);
+        try {
+            $locator = new ProjectDatabaseLocator();
+            assertSame('/tmp/x.sqlite', $locator->locate($root, ['db' => ['/tmp/x.sqlite']], $this->context('/tmp/x.sqlite')));
+            assertSame(realpath($root) . '/.knossos/knossos.sqlite', $locator->locate($root, [], $this->context('/tmp/x.sqlite')));
+        } finally {
+            $this->removeTempTree($root);
+        }
     }
 
     #[Group('cli')]
