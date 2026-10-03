@@ -169,26 +169,53 @@ function detailOf(d) {
   if (top === undefined) return null
   const shown = { name: top.canonical, label: top.name }
   const answer = envelopes.parseComponentDetail(wrapper('component-detail', top.canonical))
-  return layout.detailInput(shown, { snapshot_id: d.snapshot_id, name: top.canonical, detail: answer, phase: 'done' })
+  return layout.detailInput(shown, { snapshot_id: d.snapshot_id, name: top.canonical, detail: answer, phase: 'done' }, d.project_root)
+}
+
+/**
+ * A session of three turns over real files (made-up turns): the sample turn,
+ * then one that edits the next most depended on files, adds a file and deletes
+ * one, with tests reaching the changes from more than one runner.
+ */
+function sampleSession(d, first) {
+  const files = (d.fan_in ?? []).slice(3, 6)
+  const second = {
+    ...first,
+    changed_files: files.map(f => f.path),
+    added_files: ['hooks/lib/changes.ts'],
+    deleted_files: ['hooks/lib/legacy.ts'],
+    impact: { ...Object.fromEntries(files.map(f => [f.path, f])), 'hooks/lib/changes.ts': { path: 'hooks/lib/changes.ts', dependent_files: 2, boundaries: ['hooks'] } },
+    tests: [
+      { path: 'tests/phpunit/Query/DashboardServiceTest.php', distance: 2 },
+      { path: 'tests/phpunit/Query/TurnBriefServiceTest.php', distance: 1 },
+      { path: 'tests/phpunit/Store/StoreTest.php', distance: 3 },
+      { path: 'hooks/lib/changes.spec.ts', distance: 1 },
+    ],
+  }
+  return [first, second, first].reduce((s, b) => layout.accumulate(s, b), layout.NO_CHANGES)
 }
 
 const NOW = Date.now()
 const BASE_VIEW = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
 const detail = detailOf(dashboard)
 const brief = sampleBrief(dashboard)
+const session = sampleSession(dashboard, brief)
 
-/** Every view the preview draws: each tab, then the detail. */
+/** Every view the preview draws: each tab, then the detail; `session` is what this session changed. */
 const VIEWS = [
-  ['overview', { tab: 'overview' }, brief, null],
-  ['hubs', { tab: 'hubs', selected: 1 }, null, null],
-  ['boundaries', { tab: 'boundaries' }, null, null],
-  ['cycles', { tab: 'cycles' }, null, null],
-  ['issues', { tab: 'issues' }, null, null],
-  ['detail', { tab: 'hubs' }, null, detail],
+  ['overview', { tab: 'overview' }, brief, null, session],
+  ['overview-fresh', { tab: 'overview' }, null, null, layout.NO_CHANGES],
+  ['hubs', { tab: 'hubs', selected: 1 }, null, null, session],
+  ['boundaries', { tab: 'boundaries' }, null, null, session],
+  ['cycles', { tab: 'cycles' }, null, null, session],
+  ['issues', { tab: 'issues' }, null, null, session],
+  ['changes', { tab: 'changes', selected: 1 }, brief, null, session],
+  ['changes-empty', { tab: 'changes' }, null, null, layout.NO_CHANGES],
+  ['detail', { tab: 'hubs' }, null, detail, session],
 ]
 
-function inputFor([, view, turn, shown]) {
-  return layout.paneInput(dashboard, turn, { fetchedAt: NOW, failed: false }, { phase: 'idle', reason: null }, { ...BASE_VIEW, ...view }, NOW, true, shown, null)
+function inputFor([, view, turn, shown, changes]) {
+  return layout.paneInput(dashboard, turn, { fetchedAt: NOW, failed: false }, { phase: 'idle', reason: null }, { ...BASE_VIEW, ...view }, NOW, true, shown, null, changes)
 }
 
 // ---------------------------------------------------------------- cells
@@ -223,7 +250,8 @@ function rowCells(row, theme, term) {
     }
     const style = rows.textStyle(s)
     const fg = colourOf(style.color, theme, term)
-    for (const ch of s.text) out.push({ ch, fg, bg: null, bold: style.bold === true })
+    // A link is drawn underlined, as a terminal draws an OSC 8 hyperlink.
+    for (const ch of s.text) out.push({ ch, fg, bg: null, bold: style.bold === true, link: s.link !== undefined })
   }
   return out
 }
@@ -310,6 +338,7 @@ function svgOf(lines, columns, themeName) {
       parts.push(
         `<text x="${xs}" y="${y + BASELINE}" fill="${run.fg}"${run.bold ? ' font-weight="bold"' : ''} xml:space="preserve">${esc(run.text)}</text>`,
       )
+      if (run.link) parts.push(`<rect x="${run.xs[0]}" y="${y + BASELINE + 2}" width="${run.text.length * CELL_W}" height="1" fill="${run.fg}" fill-opacity="0.6"/>`)
       run = null
     }
     line.forEach((cell, col) => {
@@ -325,8 +354,8 @@ function svgOf(lines, columns, themeName) {
         flush()
         return
       }
-      if (run !== null && (run.fg !== cell.fg || run.bold !== cell.bold)) flush()
-      run ??= { fg: cell.fg, bold: cell.bold, text: '', xs: [] }
+      if (run !== null && (run.fg !== cell.fg || run.bold !== cell.bold || run.link !== (cell.link === true))) flush()
+      run ??= { fg: cell.fg, bold: cell.bold, link: cell.link === true, text: '', xs: [] }
       run.text += cell.ch
       run.xs.push(x)
     })
