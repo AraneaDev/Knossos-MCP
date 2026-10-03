@@ -136,7 +136,10 @@ model a whole branch's worth of violations to fix.
 
 ## The pane
 
-`/knossos` opens and closes the architecture pane. It lays itself out to
+`/knossos` opens and closes the architecture pane. Right after a reload of
+the plugin Claude Code can refuse to register the command until a session is
+bound; the mod tries again on a timer (for about a minute) and then at the
+end of each turn, and starts up meanwhile. The pane lays itself out to
 the width it has, from about 40 columns up. Its tables are packed to the left:
 names take what the longest one needs, the boundary follows the name, then the
 bar and the numbers, and width a table does not need stays at the right edge.

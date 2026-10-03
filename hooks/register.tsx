@@ -173,6 +173,54 @@ const mod = {
   turnRan: [] as string[],
   /** The pane element the focus ring last landed on: a tab's hidden twin is walked past by where it came from. */
   focused: null as string | null,
+  /** Whether `/knossos` is registered; until it is, retries run on a timer and at each turn's end. */
+  commandRegistered: false,
+  /** The pending registration retry, if any. */
+  registerTimer: null as Timer | null,
+  /** Whether a refused registration was logged this load: once is enough. */
+  registerFailureLogged: false,
+}
+
+/** How long to wait before each retry of a refused registration, in milliseconds; after the last, turn ends retry. */
+const REGISTER_RETRY_MS = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000] as const
+
+/**
+ * Registers `/knossos`; false when the engine refuses, as it does when no
+ * session is bound in the process yet (the moment after a hot reload). The
+ * first refusal leaves one debug line.
+ */
+async function registerCommand($: EngineInterface): Promise<boolean> {
+  if (mod.commandRegistered) return true
+  try {
+    await $.command.register({
+      name: 'knossos',
+      description: 'Toggle the Knossos architecture pane; /knossos inspect <component> to drill in',
+    })
+    mod.commandRegistered = true
+    return true
+  } catch (err) {
+    if (!mod.registerFailureLogged) {
+      mod.registerFailureLogged = true
+      $.ui.log(`knossos: could not register /knossos yet, retrying (${err instanceof Error ? err.message : String(err)})`, { to: 'debug' })
+    }
+    return false
+  }
+}
+
+/** Retries a refused registration after the `attempt`-th delay, then the next; past the last, the end of a turn tries again. */
+function retryRegister($: EngineInterface, attempt: number): void {
+  const delay = REGISTER_RETRY_MS[attempt]
+  if (delay === undefined || mod.commandRegistered) return
+  try {
+    mod.registerTimer = $.clock.after(delay, () => {
+      mod.registerTimer = null
+      void registerCommand($)
+        .then(done => (done ? undefined : retryRegister($, attempt + 1)))
+        .catch(() => undefined)
+    })
+  } catch {
+    mod.registerTimer = null
+  }
 }
 
 /** The fan-in threshold from the options: an integer the dashboard command accepts (1 to 100000), else the default. */
@@ -921,6 +969,10 @@ export const register: Register = (on, options) => {
   mod.fetching = new Set()
   mod.allowing = false
   mod.focused = null
+  mod.registerTimer?.cancel()
+  mod.registerTimer = null
+  mod.commandRegistered = false
+  mod.registerFailureLogged = false
   mod.notesOn = options.agentNotes !== false
   mod.noted = new Set()
   mod.ruled = new Set()
@@ -934,10 +986,10 @@ export const register: Register = (on, options) => {
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
-    await $.command.register({
-      name: 'knossos',
-      description: 'Toggle the Knossos architecture pane; /knossos inspect <component> to drill in',
-    })
+    // A refused registration (no session bound yet, after a hot reload) is retried; start-up goes on regardless.
+    mod.registerTimer?.cancel()
+    mod.registerTimer = null
+    if (!(await registerCommand($))) retryRegister($, 0)
     // A start-up that outlives the session (torn down under it) fails quietly, never as a stray rejection.
     $.clock.after(0, () => void startUp($, openOnStart).catch(() => undefined))
     return next(e)
@@ -989,6 +1041,8 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) return result
     mod.turnRan = mod.ranCommands
     mod.ranCommands = []
+    // Still refused once the timed retries ran out: each turn's end asks again, a session being bound by now.
+    if (!mod.commandRegistered && mod.registerTimer === null) await registerCommand($)
     if (mod.disabled || !mod.dirty) return result
     mod.dirty = false
     const current = (mod.flight ??= new SingleFlight(() => scanSafely($)))

@@ -62,7 +62,7 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  */
 function world(
   on: On,
-  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[]; allow?: Answer[]; editor?: 'opens' | 'missing' } = {},
+  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[]; allow?: Answer[]; editor?: 'opens' | 'missing'; refuseRegister?: () => boolean } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[]; garbled?: string[] } = {},
 ) {
   const clock = mock.clock(on)
@@ -97,7 +97,13 @@ function world(
     return { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: link !== undefined, ...(e.resolve ? { realPath } : {}) } }
   })
   on('turn.complete', (_$, e) => ({ text: e.answer }))
-  on('command.register', (_$, e) => ({ value: { command: e.name } }))
+  /** Commands registered; `refuseRegister` refuses one as the engine does while no session is bound. */
+  const registered: string[] = []
+  on('command.register', (_$, e) => {
+    if (answers.refuseRegister?.() === true) throw new Error('$.command.register is not available in this mode: no session is bound in this process')
+    registered.push(e.name)
+    return { value: { command: e.name } }
+  })
   on('ui.toast', (_$, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -173,7 +179,7 @@ function world(
   const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
   const allowRuns = () => calls.filter(c => c[2] === 'allow-root')
   const editorRuns = () => calls.filter(c => c[0] === 'code')
-  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
+  return { registered, clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, allowRuns, editorRuns, toasts, logs, opened, closed, invalidations, prompts, copies, focuses }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -416,6 +422,39 @@ async function bandText($: Engine, surface: 'terminal' | 'desktop' = 'terminal')
 }
 
 describe('knossos mod', () => {
+  test('a session.start that cannot register /knossos yet still starts up, and registers it on a retry', async ($, on) => {
+    // After a hot reload no session may be bound yet: the first registrations throw.
+    let refusals = 2
+    const w = world(on, { refuseRegister: () => refusals-- > 0 })
+    const registered = w.registered
+    await $.session.start(START)
+    await w.clock.settle()
+    // Start-up went on regardless: the dashboard loaded.
+    expect(w.dashboardRuns()).toHaveLength(1)
+    expect(registered).toEqual([])
+    await w.clock.advance(5_000)
+    expect(registered).toEqual(['knossos'])
+    // Registered once; later retries and turns leave it alone.
+    await w.clock.advance(60_000)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(registered).toEqual(['knossos'])
+    expect(w.logs.filter(l => l.to === 'debug' && l.text.includes('could not register /knossos'))).toHaveLength(1)
+  })
+
+  test('a registration still refused after the timed retries is tried again at the end of a turn', async ($, on) => {
+    let refusing = true
+    const w = world(on, { refuseRegister: () => refusing })
+    const registered = w.registered
+    await $.session.start(START)
+    await w.clock.advance(600_000)
+    expect(registered).toEqual([])
+    refusing = false
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(registered).toEqual(['knossos'])
+  })
+
   test('an edit to a high fan-in file adds a note for the model', async ($, on) => {
     const w = world(on)
     await $.session.start(START)
