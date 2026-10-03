@@ -208,8 +208,20 @@ fi
 # The container variant, emitted with its placeholders filled, against a docker stand-in.
 mkdir -p "$STUBS/container" "$STUBS/dockerbin"
 sed -e "s|__KNOSSOS_IMAGE__|img:1|" -e "s|__KNOSSOS_DATA__|/srv/data|" "$SCRIPTS/knossos-run-container.sh" > "$STUBS/container/knossos-run.sh"
-# Drops `run --rm -v <project> -v <data>` and prints the rest: the image and its argv.
-printf '#!/bin/sh\nshift 6\nprintf "%%s|" "$@"\n' > "$STUBS/dockerbin/docker"; chmod +x "$STUBS/dockerbin/docker"
+# Drops `run --rm` and the `-v` mounts, says `user=<uid:gid>` when the run names a user, then prints the image and its argv.
+cat > "$STUBS/dockerbin/docker" <<'STUB'
+#!/bin/sh
+shift 2
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -v) shift 2 ;;
+        --user=*) printf 'user=%s|' "${1#--user=}"; shift ;;
+        *) break ;;
+    esac
+done
+printf "%s|" "$@"
+STUB
+chmod +x "$STUBS/dockerbin/docker"
 expect_output 'container component-detail passes the name intact' "img:1|component-detail|$ABS_PROJ|My Router|--json|" \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail "$STUBS/proj" 'My Router'
 expect_output 'container dashboard keeps its arguments' "img:1|dashboard|$ABS_PROJ|--fan-in-threshold=20|--json|" \
@@ -234,6 +246,23 @@ expect_silent_success 'container file-detail with an absolute path' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" file-detail /tmp /etc/passwd
 expect_silent_success 'container component-detail without a name' \
     env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" component-detail /tmp
+# The session commands, as the local wrapper takes them; the two that read git run as the caller, whom git trusts with the mounted project.
+ME="$(id -u):$(id -g)"
+expect_output 'container session-changes reads since the snapshot it names' "img:1|session-changes|$ABS_PROJ|--since=scan_ab12|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-changes "$STUBS/proj" --since=scan_ab12
+expect_silent_success 'container session-changes refuses another option' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-changes "$STUBS/proj" --db=/tmp/other.sqlite
+expect_output 'container session-head runs as the caller' "user=$ME|img:1|session-head|$ABS_PROJ|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-head "$STUBS/proj"
+expect_silent_success 'container session-head refuses an option' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-head "$STUBS/proj" --db=/tmp/other.sqlite
+expect_output 'container session-diff runs as the caller with the commit and the file' "user=$ME|img:1|session-diff|$ABS_PROJ|--rev=$REV|--file=src/a b.php|--json|" \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff "$STUBS/proj" "--rev=$REV" '--file=src/a b.php'
+for bad in --file=../a.php --file=/etc/passwd --file=-x --file=a/../../b; do
+    expect_silent_success "container session-diff refuses $bad" env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff "$STUBS/proj" "--rev=$REV" "$bad"
+done
+expect_silent_success 'container session-diff refuses a commit that is not hex' \
+    env PATH="$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff "$STUBS/proj" --rev=HEAD~1xxxxxxxxx --file=a.php
 expect_output 'container without docker says so' "$NO_BINARY" \
     env PATH="$STUBS/bare" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
 printf '#!/bin/sh\nexit 1\n' > "$STUBS/dockerbin-failing"; mkdir -p "$STUBS/dockerfail"; mv "$STUBS/dockerbin-failing" "$STUBS/dockerfail/docker"; chmod +x "$STUBS/dockerfail/docker"
@@ -251,6 +280,7 @@ expect_output 'scan is bounded at 60 s' '60' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_
 expect_output 'allow-root is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" KNOSSOS_ROOTS_FILE=/tmp/roots.json PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" allow-root /tmp
 expect_output 'component-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" component-detail /tmp X
 expect_output 'file-detail is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT KNOSSOS_BIN="$STUBS/echoing" PATH="$STUBS/timeoutbin:$PATH" /bin/sh "$RUN" file-detail /tmp a.php
+expect_output 'container session-diff is bounded at 15 s' '15' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" session-diff /tmp "--rev=$REV" --file=a.php
 expect_output 'container dashboard is bounded at 30 s' '30' env -u KNOSSOS_RUN_TIMEOUT PATH="$STUBS/timeoutbin:$STUBS/dockerbin:$PATH" /bin/sh "$STUBS/container/knossos-run.sh" dashboard /tmp
 
 [ "$failures" -eq 0 ] || exit 1

@@ -6,12 +6,20 @@
 #        knossos-run-container.sh file-detail <project-dir> <file>
 #        knossos-run-container.sh scan <project-dir>
 #        knossos-run-container.sh allow-root <root>
+#        knossos-run-container.sh session-changes <project-dir> --since=<snapshot>
+#        knossos-run-container.sh session-head <project-dir>
+#        knossos-run-container.sh session-diff <project-dir> --rev=<commit> --file=<file>
 #
 # Emitted by `knossos install-agent-plugin --out`, with __KNOSSOS_IMAGE__ and
 # __KNOSSOS_DATA__ substituted at emit time. Not used in place.
 #
 # Same contract as knossos-run.sh: every failure exits 0 with nothing on stdout,
 # except a missing docker, which prints {"status":"no-binary"}.
+#
+# The session commands take exactly what the local wrapper lets through. The
+# two that read git (`session-head`, `session-diff`) run as the caller's own
+# user and group: git refuses a repository another user owns, and the image's
+# user owns none of the caller's. They read the project only, never the data.
 #
 # `watch` is not offered here and answers with silence, so the mod falls back
 # to scanning at the end of a turn: a container outlives the docker client
@@ -43,6 +51,7 @@ case "$SUBCOMMAND" in
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    session-changes|session-head|session-diff) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
 
@@ -62,6 +71,25 @@ fi
 # scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
 if [ "$SUBCOMMAND" = scan ]; then
     [ "$#" -eq 0 ] || exit 0
+fi
+# session-changes takes exactly the snapshot the session began at, a plain id:
+# any other option (`--db=...`) would read another graph.
+if [ "$SUBCOMMAND" = session-changes ]; then
+    [ "$#" -eq 1 ] || exit 0
+    case "$1" in --since=*[!A-Za-z0-9_.:-]* | --since=) exit 0 ;; --since=*) ;; *) exit 0 ;; esac
+fi
+# session-head takes nothing but the project.
+if [ "$SUBCOMMAND" = session-head ]; then
+    [ "$#" -eq 0 ] || exit 0
+fi
+# session-diff takes exactly the commit the session began at (a hex id) and one
+# file relative to the project directory, in that order: no other option, no
+# absolute path and no step out of the directory.
+if [ "$SUBCOMMAND" = session-diff ]; then
+    [ "$#" -eq 2 ] || exit 0
+    case "$1" in --rev=*[!0-9a-f]* | --rev=) exit 0 ;; --rev=*) ;; *) exit 0 ;; esac
+    [ "${#1}" -ge 13 ] && [ "${#1}" -le 70 ] || exit 0
+    case "$2" in --file=-* | --file=/* | --file= | --file=.. | --file=../* | --file=*/../* | --file=*/..) exit 0 ;; --file=*) ;; *) exit 0 ;; esac
 fi
 # allow-root takes nothing but the root, and always writes: the pane runs it
 # only after the person confirmed, so a preview would answer a question nobody
@@ -108,14 +136,20 @@ find_timeout() {
     return 1
 }
 
+# Git reads the project as the user who owns it (see above); everything else runs as the image's user.
+USER_ARG=
+case "$SUBCOMMAND" in
+    session-head|session-diff) USER_ARG="--user=$(id -u):$(id -g)" ;;
+esac
+
 if TIMEOUT_BIN="$(find_timeout)"; then
-    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" docker run --rm \
+    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" docker run --rm ${USER_ARG:+"$USER_ARG"} \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
-    OUTPUT="$(docker run --rm \
+    OUTPUT="$(docker run --rm ${USER_ARG:+"$USER_ARG"} \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
         "$IMAGE" "$COMMAND" "$TARGET" "$@" --json 2>/dev/null)" || exit 0
