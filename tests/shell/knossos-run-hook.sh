@@ -161,6 +161,39 @@ expect_silent_success 'session-changes refuses another option' env KNOSSOS_BIN="
 expect_silent_success 'session-changes refuses a snapshot that is not a plain id' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" '--since=a b'
 expect_silent_success 'session-changes refuses no snapshot' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj"
 expect_silent_success 'session-changes refuses a second argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-changes "$STUBS/proj" --since=s1 --db=/tmp/x
+# session-head: the commit the session starts at, with nothing but the project.
+expect_output 'session-head asks for the project alone' "session-head|$ABS_PROJ|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-head "$STUBS/proj"
+expect_silent_success 'session-head refuses an option' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-head "$STUBS/proj" --db=/tmp/other.sqlite
+# session-diff: one file's change since that commit, a hex id and a file inside the project, in that order.
+REV=0123456789abcdef0123456789abcdef01234567
+expect_output 'session-diff passes the commit and the file' "session-diff|$ABS_PROJ|--rev=$REV|--file=src/a b.php|--json|" \
+    env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-diff "$STUBS/proj" "--rev=$REV" '--file=src/a b.php'
+for bad in '--rev=HEAD' '--rev=' '--rev=abc' "--rev=$REV$REV$REV" '--since=s1'; do
+    expect_silent_success "session-diff refuses $bad" env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-diff "$STUBS/proj" "$bad" --file=src/a.php
+done
+for bad in '--file=/etc/passwd' '--file=../x' '--file=src/../../x' '--file=..' '--file=src/..' '--file=--output=x' '--file=' '--db=/tmp/x'; do
+    expect_silent_success "session-diff refuses $bad" env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-diff "$STUBS/proj" "--rev=$REV" "$bad"
+done
+expect_silent_success 'session-diff refuses a third argument' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-diff "$STUBS/proj" "--rev=$REV" --file=a.php extra
+expect_silent_success 'session-diff refuses the file before the commit' env KNOSSOS_BIN="$STUBS/echoing" /bin/sh "$RUN" session-diff "$STUBS/proj" --file=a.php "--rev=$REV"
+expect_output 'missing binary says so for a session diff' "$NO_BINARY" env KNOSSOS_BIN=/nonexistent/knossos PATH="$STUBS/bare" HOME=/nonexistent /bin/sh "$RUN" session-diff /tmp "--rev=$REV" --file=a.php
+# The real binary against a real repository: the head it names is the one git has, and a file's diff comes back.
+if command -v git >/dev/null 2>&1 && command -v php >/dev/null 2>&1; then
+    REPO="$STUBS/repo"
+    git init --quiet "$REPO" && printf 'one\n' > "$REPO/a.txt" \
+        && git -C "$REPO" add a.txt && git -C "$REPO" -c user.name=t -c user.email=t@example.test -c commit.gpgsign=false commit --quiet -m one
+    HEAD_REV=$(git -C "$REPO" rev-parse HEAD)
+    REAL_REPO=$(CDPATH='' cd -- "$REPO" && pwd -P)
+    expect_output 'session-head names the commit the project is at' "{\"status\":\"ok\",\"path\":\"$REAL_REPO\",\"rev\":\"$HEAD_REV\"}" \
+        env KNOSSOS_BIN="$HERE/../../bin/knossos" /bin/sh "$RUN" session-head "$REPO"
+    printf 'two\n' >> "$REPO/a.txt"
+    out=$(env KNOSSOS_BIN="$HERE/../../bin/knossos" /bin/sh "$RUN" session-diff "$REPO" "--rev=$HEAD_REV" --file=a.txt)
+    case "$out" in
+        *'"kind":"changed"'*'@@ -1 +1,2 @@\n one\n+two\n'*) printf 'ok   %s\n' 'session-diff answers with the hunks since the commit' ;;
+        *) printf 'FAIL %s (output %s)\n' 'session-diff answers with the hunks since the commit' "$out"; failures=$((failures + 1)) ;;
+    esac
+fi
 # The watcher replaces the wrapper's shell: stopping the process the session started stops the watcher.
 printf '#!/bin/sh\nprintf "%%s" "$$"\n' > "$STUBS/pid"; chmod +x "$STUBS/pid"
 env KNOSSOS_BIN="$STUBS/pid" /bin/sh "$RUN" watch "$STUBS/proj" > "$STUBS/pid.out" &

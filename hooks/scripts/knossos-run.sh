@@ -8,6 +8,8 @@
 #        knossos-run.sh allow-root <root>
 #        knossos-run.sh watch <project-dir> [--poll-ms=N]
 #        knossos-run.sh session-changes <project-dir> --since=<snapshot>
+#        knossos-run.sh session-head <project-dir>
+#        knossos-run.sh session-diff <project-dir> --rev=<commit> --file=<file>
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
@@ -40,7 +42,7 @@ case "$SUBCOMMAND" in
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail|file-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     allow-root) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
-    session-changes) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    session-changes|session-head|session-diff) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     watch) LIMIT=0 ;;
     *) exit 0 ;;
 esac
@@ -76,6 +78,19 @@ fi
 if [ "$SUBCOMMAND" = session-changes ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in --since=*[!A-Za-z0-9_.:-]* | --since=) exit 0 ;; --since=*) ;; *) exit 0 ;; esac
+fi
+# session-head takes nothing but the project.
+if [ "$SUBCOMMAND" = session-head ]; then
+    [ "$#" -eq 0 ] || exit 0
+fi
+# session-diff takes exactly the commit the session began at (a hex id) and one
+# file relative to the project directory, in that order: no other option, no
+# absolute path and no step out of the directory.
+if [ "$SUBCOMMAND" = session-diff ]; then
+    [ "$#" -eq 2 ] || exit 0
+    case "$1" in --rev=*[!0-9a-f]* | --rev=) exit 0 ;; --rev=*) ;; *) exit 0 ;; esac
+    [ "${#1}" -ge 13 ] && [ "${#1}" -le 70 ] || exit 0
+    case "$2" in --file=-* | --file=/* | --file= | --file=.. | --file=../* | --file=*/../* | --file=*/..) exit 0 ;; --file=*) ;; *) exit 0 ;; esac
 fi
 # allow-root takes nothing but the root, and always writes: the pane runs it
 # only after the person confirmed, so a preview would answer a question nobody
