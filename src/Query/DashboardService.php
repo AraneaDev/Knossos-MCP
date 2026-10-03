@@ -23,13 +23,22 @@ use PDO;
  *
  * Hubs and hotspots are always the top 10; that page is the design, not a
  * truncation, so it never sets `hubs_truncated`. Each carries its degrees
- * and the one boundary the pane labels it with (see {@see self::boundaryOf()}).
+ * and the one boundary the pane labels it with (see {@see BoundaryLabels}).
+ * The same holds for the other pages: the 10 largest cycles (each listing at
+ * most 40 members as `nodes`, `nodes_truncated` when it has more), the first
+ * 10 dead-code candidates with their file and line, and the counts and short
+ * lists of {@see ProjectFindings} (summary, boundaries, diagnostics, largest
+ * files and policy violations), whose own flags say when a figure is a floor.
  */
 final readonly class DashboardService
 {
     private const TOP = 10;
-    private const LARGEST_CYCLES = 3;
+    private const LARGEST_CYCLES = 10;
+    /** Members listed per cycle as `nodes`; `members` keeps every name the cycle search returned. */
+    private const CYCLE_NODES = 40;
     private const TREND_POINTS = 20;
+    /** Boundaries listed with their member counts. */
+    private const BOUNDARIES = 12;
 
     /**
      * @param PDO $pdo an existing, migrated graph database
@@ -62,21 +71,24 @@ final readonly class DashboardService
             return self::unscanned($absolute);
         }
         $id = (string) $project['id'];
+        $root = (string) $project['root_realpath'];
         $queries = new ArchitectureQueryService($this->pdo, $this->clock);
         $probe = (new StalenessProbe($this->pdo))->probe($id) ?? [];
-        $health = $queries->architectureHealth($id, limit: self::TOP, timeoutMs: $this->healthTimeoutMs)->data;
+        $healthResult = $queries->architectureHealth($id, limit: self::TOP, timeoutMs: $this->healthTimeoutMs);
+        $health = $healthResult->data;
         $hubLimits = array_values(array_diff($health['bounds']['truncation_reasons'], ['result_limit']));
         // Already ordered largest first by the cycle search.
         $cycleSearch = $queries->dependencyCycles($id, limit: $this->cycleLimit);
         $cycles = $cycleSearch->data['cycles'];
         $fanIn = (new FileFanInQuery($this->pdo))->aboveThreshold($id, $fanInThreshold, $this->fanInCap + 1);
         $series = $queries->architectureTrends($id, self::TREND_POINTS)->data['series'];
-        $specificity = $this->boundarySpecificity($id);
+        $labels = BoundaryLabels::load($this->pdo, $id);
+        $findings = new ProjectFindings($this->pdo, $this->clock);
 
         return [
             'status' => 'ok',
             'path' => $absolute,
-            'project_root' => (string) $project['root_realpath'],
+            'project_root' => $root,
             'project_id' => $id,
             'snapshot_id' => $project['active_scan_id'],
             'freshness' => [
@@ -86,32 +98,32 @@ final readonly class DashboardService
                     + (int) ($probe['added_files_since'] ?? 0)
                     + (int) ($probe['deleted_files_since'] ?? 0),
             ],
-            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $specificity), $health['hubs']),
+            'hubs' => array_map(static fn(array $h): array => self::listed($h['component'], $h['metrics'], $labels), $health['hubs']),
             'hubs_truncated' => $hubLimits !== [],
             'hubs_truncation_reasons' => $hubLimits,
             'hotspots' => array_map(
-                static fn(array $h): array => self::listed($h['component'], $h['factors'], $specificity) + ['score' => $h['score']],
+                static fn(array $h): array => self::listed($h['component'], $h['factors'], $labels) + ['score' => $h['score']],
                 $health['static_hotspots'],
             ),
             // The listed candidates are paged by the health limit, so the
             // total is the honest count; the list length would read as ten.
             'dead_code_candidates' => $health['bounds']['candidates_total'],
             'dead_code_truncated' => in_array('time_limit', $health['bounds']['candidate_truncation_reasons'], true),
+            'dead_code' => self::deadCode($health['dead_code_candidates'], $healthResult->evidence, $labels),
             'cycles' => [
                 'count' => count($cycles),
                 'truncated' => $cycleSearch->truncated,
                 'truncation_reasons' => $cycleSearch->data['bounds']['truncation_reasons'],
-                'largest' => array_map(static fn(array $c): array => [
-                    'size' => $c['size'],
-                    'members' => array_map(
-                        static fn(array $m): string => (string) ($m['display_name'] ?? $m['canonical_name'] ?? ''),
-                        $c['members'],
-                    ),
-                ], array_slice($cycles, 0, self::LARGEST_CYCLES)),
+                'largest' => array_map(static fn(array $c): array => self::cycle($c, $labels), array_slice($cycles, 0, self::LARGEST_CYCLES)),
             ],
             'trend' => self::trend($series),
             'fan_in' => array_slice($fanIn, 0, $this->fanInCap),
             'fan_in_truncated' => count($fanIn) > $this->fanInCap,
+            'summary' => $findings->summary($id),
+            'boundaries' => $labels->listed(self::BOUNDARIES),
+            'diagnostics' => $findings->diagnostics($id),
+            'largest_files' => $findings->largestFiles($id),
+            'policy' => $findings->policy($id, $root, $labels),
         ];
     }
 
@@ -120,16 +132,15 @@ final readonly class DashboardService
      *
      * @param array<string, mixed> $component
      * @param array<string, mixed> $metrics the degree walk's in, out and cross-boundary degrees
-     * @param array<string, array{int, int, int, string}> $specificity
      * @return array<string, mixed>
      */
-    private static function listed(array $component, array $metrics, array $specificity): array
+    private static function listed(array $component, array $metrics, BoundaryLabels $labels): array
     {
         return [
             'name' => $component['display_name'],
             'canonical_name' => $component['canonical_name'],
             'kind' => $component['kind'],
-            'boundary' => self::boundaryOf($component['boundaries'], $specificity),
+            'boundary' => $labels->of($component['boundaries']),
             'in_degree' => $metrics['in_degree'],
             'out_degree' => $metrics['out_degree'],
             'cross_boundary_degree' => $metrics['cross_boundary_degree'],
@@ -137,52 +148,61 @@ final readonly class DashboardService
     }
 
     /**
-     * The one boundary a component is labelled with, or null when it has none.
+     * One cycle: its size, every member name the search returned (as before),
+     * and the first members as nodes the pane colours by boundary.
      *
-     * A component usually sits in several: a declared one, a package, a
-     * namespace and the repository-wide package of a single-package project.
-     * The label is the most telling of them: declared before inferred, then
-     * anything before a boundary spanning the whole repository, then the
-     * fewest members, then the name, so the choice is stable between loads.
-     *
-     * @param list<array<string, mixed>> $boundaries the component's memberships, `id` and `name` each
-     * @param array<string, array{int, int, int, string}> $specificity
+     * @param array<string, mixed> $cycle
+     * @return array<string, mixed>
      */
-    private static function boundaryOf(array $boundaries, array $specificity): ?string
+    private static function cycle(array $cycle, BoundaryLabels $labels): array
     {
-        $best = null;
-        foreach ($boundaries as $boundary) {
-            $rank = $specificity[$boundary['id']] ?? [2, 2, PHP_INT_MAX, (string) $boundary['name']];
-            if ($best === null || $rank < $best) {
-                $best = $rank;
-            }
-        }
-
-        return $best === null ? null : $best[3];
+        return [
+            'size' => $cycle['size'],
+            'members' => array_map(
+                static fn(array $m): string => (string) ($m['display_name'] ?? $m['canonical_name'] ?? ''),
+                $cycle['members'],
+            ),
+            'nodes' => array_map(static fn(array $m): array => [
+                'name' => (string) ($m['display_name'] ?? $m['canonical_name'] ?? ''),
+                'canonical_name' => (string) ($m['canonical_name'] ?? ''),
+                'kind' => (string) ($m['kind'] ?? ''),
+                'boundary' => $labels->of($m['boundaries'] ?? []),
+            ], array_slice($cycle['members'], 0, self::CYCLE_NODES)),
+            'nodes_truncated' => $cycle['size'] > min(count($cycle['members']), self::CYCLE_NODES),
+        ];
     }
 
     /**
-     * Each of the project's boundaries ranked for {@see self::boundaryOf()}:
-     * declared first, not repository-wide first, fewest members, then name.
-     * One query over the project's boundaries, which number in the tens.
+     * The listed dead-code candidates, each with the file and line it is
+     * declared at; unreferenced ones come before those only tests reach.
      *
-     * @return array<string, array{int, int, int, string}>
+     * @param list<array<string, mixed>> $candidates the health query's page
+     * @param list<array<string, mixed>> $evidence its evidence, by component id
+     * @return list<array<string, mixed>>
      */
-    private function boundarySpecificity(string $projectId): array
+    private static function deadCode(array $candidates, array $evidence, BoundaryLabels $labels): array
     {
-        $statement = $this->pdo->prepare(
-            'SELECT b.id, b.name, b.source, b.matcher_json, COUNT(bm.node_id) AS members FROM boundaries b '
-            . 'LEFT JOIN boundary_memberships bm ON bm.boundary_id = b.id WHERE b.project_id = :project GROUP BY b.id',
-        );
-        $statement->execute(['project' => $projectId]);
-        $ranks = [];
-        foreach ($statement->fetchAll(PDO::FETCH_ASSOC) as $row) {
-            $matcher = json_decode((string) $row['matcher_json'], true);
-            $wide = is_array($matcher) && ($matcher['type'] ?? null) === 'path_prefix' && ($matcher['value'] ?? null) === '';
-            $ranks[(string) $row['id']] = [$row['source'] === 'explicit' ? 0 : 1, $wide ? 1 : 0, (int) $row['members'], (string) $row['name']];
+        $places = [];
+        foreach ($evidence as $place) {
+            if (isset($place['component_id'])) {
+                $places[(string) $place['component_id']] ??= $place;
+            }
         }
 
-        return $ranks;
+        return array_map(static function (array $candidate) use ($places, $labels): array {
+            $component = $candidate['component'];
+            $place = $places[(string) $component['id']] ?? null;
+            return [
+                'name' => $component['display_name'],
+                'canonical_name' => $component['canonical_name'],
+                'kind' => $component['kind'],
+                'boundary' => $labels->of($component['boundaries']),
+                'reachability' => $candidate['reachability'],
+                'confidence' => $candidate['confidence'],
+                'path' => $place === null ? null : (string) $place['path'],
+                'line' => isset($place['start_line']) ? (int) $place['start_line'] : null,
+            ];
+        }, $candidates);
     }
 
     /**
@@ -222,7 +242,7 @@ final readonly class DashboardService
             'snapshot_id' => null, 'freshness' => ['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0],
             'hubs' => [], 'hubs_truncated' => false, 'hubs_truncation_reasons' => [], 'hotspots' => [], 'dead_code_candidates' => 0, 'dead_code_truncated' => false,
             'cycles' => ['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []],
-            'trend' => [], 'fan_in' => [], 'fan_in_truncated' => false,
-        ];
+            'trend' => [], 'fan_in' => [], 'fan_in_truncated' => false, 'dead_code' => [],
+        ] + ProjectFindings::none();
     }
 }

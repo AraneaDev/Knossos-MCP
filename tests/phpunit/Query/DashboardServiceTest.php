@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Knossos\Tests\Phpunit\Query;
 
 use Knossos\Query\ArchitectureQueryService;
+use Knossos\Query\BoundaryLabels;
 use Knossos\Query\DashboardService;
 use Knossos\Scan\ProjectScanService;
 use PDO;
@@ -42,7 +43,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertNotSame([], $d['hubs']);
             assertNotSame([], $d['fan_in']);
             assertSame($d['snapshot_id'], $d['trend'][count($d['trend']) - 1]['snapshot_id']);
-            assertLessThanOrEqual(3, count($d['cycles']['largest']));
+            assertLessThanOrEqual(10, count($d['cycles']['largest']));
             assertSame(0, $d['cycles']['count']);
         } finally {
             $this->removeTempTree($root);
@@ -86,6 +87,12 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(false, $d['hubs_truncated']);
             assertSame([], $d['trend']);
             assertSame([], $d['fan_in']);
+            assertSame([], $d['dead_code']);
+            assertSame(0, $d['summary']['components']);
+            assertSame(['items' => [], 'truncated' => false], $d['boundaries']);
+            assertSame(0, $d['diagnostics']['total']);
+            assertSame([], $d['largest_files']);
+            assertSame('not_evaluated', $d['policy']['status']);
         } finally {
             $this->removeTempTree($empty);
         }
@@ -169,10 +176,18 @@ final class DashboardServiceTest extends KnossosTestCase
             $this->rescan($pdo, $root);
             $d = (new DashboardService($pdo))->dashboard($root);
             assertSame(4, $d['cycles']['count']);
-            assertSame([3, 2, 2], array_column($d['cycles']['largest'], 'size'));
+            assertSame([3, 2, 2, 2], array_column($d['cycles']['largest'], 'size'));
             $members = $d['cycles']['largest'][0]['members'];
             sort($members);
             assertSame(['Zz0hop', 'Zz1hop', 'Zz2hop'], $members);
+            // Each member also comes as a node the pane colours by its boundary.
+            $nodes = $d['cycles']['largest'][0]['nodes'];
+            assertSame(['name', 'canonical_name', 'kind', 'boundary'], array_keys($nodes[0]));
+            $canonical = array_column($nodes, 'canonical_name');
+            sort($canonical);
+            assertSame(['App\\Zz0::Zz0hop', 'App\\Zz1::Zz1hop', 'App\\Zz2::Zz2hop'], $canonical);
+            assertSame(['Edge'], array_values(array_unique(array_column($nodes, 'boundary'))));
+            assertSame(false, $d['cycles']['largest'][0]['nodes_truncated']);
             assertSame(4, $d['trend'][count($d['trend']) - 1]['cycles']);
         } finally {
             $this->removeTempTree($root);
@@ -422,5 +437,267 @@ final class DashboardServiceTest extends KnossosTestCase
         } finally {
             $this->removeTempTree($root);
         }
+    }
+
+    /** A cycle longer than the pane lists keeps every name in `members` and says its nodes were cut. */
+    #[Group('query')]
+    public function testACycleLongerThanFortyListsFortyNodes(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->writeCycle($root, 'Aa', 42);
+            $this->rescan($pdo, $root);
+            $cycle = (new DashboardService($pdo))->dashboard($root)['cycles']['largest'][0];
+            assertSame(42, $cycle['size']);
+            assertCount(42, $cycle['members']);
+            assertCount(40, $cycle['nodes']);
+            assertSame(true, $cycle['nodes_truncated']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The summary matches the graph: components by kind without external symbols, files by language. */
+    #[Group('query')]
+    public function testTheSummaryCountsComponentsByKindAndFilesByLanguage(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $summary = (new DashboardService($pdo))->dashboard($root)['summary'];
+            $count = static fn(string $sql): int => (int) $pdo->query(str_replace(':p', $pdo->quote($projectId), $sql))->fetchColumn();
+            assertSame($count("SELECT COUNT(*) FROM nodes WHERE project_id = :p AND kind NOT LIKE 'external%'"), $summary['components']);
+            assertSame($count('SELECT COUNT(*) FROM files WHERE project_id = :p'), $summary['files']);
+            assertSame($summary['components'], array_sum(array_column($summary['kinds'], 'count')));
+            assertSame($summary['files'], array_sum(array_column($summary['languages'], 'files')));
+            // The most common first, a tie by name: the fixture has as many classes as methods.
+            $classes = $count("SELECT COUNT(*) FROM nodes WHERE project_id = :p AND kind = 'class'");
+            assertSame(['kind' => 'class', 'count' => $classes], $summary['kinds'][0]);
+            assertSame($classes, $count("SELECT COUNT(*) FROM nodes WHERE project_id = :p AND kind = 'method'"));
+            $counts = array_column($summary['kinds'], 'count');
+            $sorted = $counts;
+            rsort($sorted);
+            assertSame($sorted, $counts);
+            assertSame(false, $summary['kinds_truncated']);
+            assertSame(false, $summary['languages_truncated']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Nine kinds or languages list eight and say the breakdown no longer adds up. */
+    #[Group('query')]
+    public function testASummaryWithMoreThanEightCategoriesIsReportedTruncated(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $node = (string) $pdo->query("SELECT id FROM nodes WHERE project_id = '{$projectId}' AND kind = 'class' LIMIT 1")->fetchColumn();
+            $file = (string) $pdo->query("SELECT id FROM files WHERE project_id = '{$projectId}' LIMIT 1")->fetchColumn();
+            for ($i = 0; $i < 9; ++$i) {
+                $this->cloneRow($pdo, 'nodes', $node, ['id' => "node-k{$i}", 'kind' => "kind{$i}", 'canonical_name' => "K{$i}"]);
+                $this->cloneRow($pdo, 'files', $file, ['id' => "file-l{$i}", 'language' => "lang{$i}", 'relative_path' => "extra/{$i}.x"]);
+            }
+            $summary = (new DashboardService($pdo))->dashboard($root)['summary'];
+            assertCount(8, $summary['kinds']);
+            assertSame(true, $summary['kinds_truncated']);
+            assertCount(8, $summary['languages']);
+            assertSame(true, $summary['languages_truncated']);
+            assertGreaterThan(array_sum(array_column($summary['kinds'], 'count')), $summary['components']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The declared boundaries come first, each with how many components it holds. */
+    #[Group('query')]
+    public function testBoundariesAreListedWithTheirMemberCounts(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $boundaries = (new DashboardService($pdo))->dashboard($root)['boundaries'];
+            assertSame(false, $boundaries['truncated']);
+            assertSame(['Core', 'Edge'], array_column(array_slice($boundaries['items'], 0, 2), 'name'));
+            assertSame(['explicit', 'explicit'], array_column(array_slice($boundaries['items'], 0, 2), 'source'));
+            $members = $pdo->prepare('SELECT COUNT(*) FROM boundary_memberships bm JOIN boundaries b ON b.id = bm.boundary_id WHERE b.project_id = ? AND b.name = ?');
+            foreach (array_slice($boundaries['items'], 0, 2) as $boundary) {
+                $members->execute([$projectId, $boundary['name']]);
+                assertSame((int) $members->fetchColumn(), $boundary['members']);
+                assertGreaterThan(0, $boundary['members']);
+            }
+            // Larger first among the declared ones.
+            assertGreaterThanOrEqual($boundaries['items'][1]['members'], $boundaries['items'][0]['members']);
+            $listed = BoundaryLabels::load($pdo, $projectId)->listed(1);
+            assertCount(1, $listed['items']);
+            assertSame(true, $listed['truncated']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Diagnostics are counted by severity; the first errors, then warnings, are listed with file and line. */
+    #[Group('query')]
+    public function testDiagnosticsAreCountedAndTheFirstErrorsListed(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $clean = (new DashboardService($pdo))->dashboard($root)['diagnostics'];
+            assertSame(['total' => 0, 'errors' => 0, 'warnings' => 0, 'infos' => 0, 'items' => []], $clean);
+            $scan = (string) $pdo->query("SELECT active_scan_id FROM projects WHERE id = '{$projectId}'")->fetchColumn();
+            $file = (string) $pdo->query("SELECT id FROM files WHERE project_id = '{$projectId}' AND relative_path = 'src/Core/Greeter.php'")->fetchColumn();
+            $insert = $pdo->prepare('INSERT INTO diagnostics(id, project_id, scan_id, file_id, severity, code, message, start_line, end_line, owner_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+            $rows = [['info', 1], ['warning', 9], ['error', 7], ['warning', 2], ['error', 3], ['error', 5], ['info', 4]];
+            foreach ($rows as $i => [$severity, $line]) {
+                $insert->execute(["diag-{$i}", $projectId, $scan, $file, $severity, "C{$i}", str_repeat('m', 200), $line, $line, 'test']);
+            }
+            $d = (new DashboardService($pdo))->dashboard($root)['diagnostics'];
+            assertSame(7, $d['total']);
+            assertSame(3, $d['errors']);
+            assertSame(2, $d['warnings']);
+            assertSame(2, $d['infos']);
+            assertCount(5, $d['items']);
+            assertSame(['error', 'error', 'error', 'warning', 'warning'], array_column($d['items'], 'severity'));
+            assertSame([3, 5, 7, 2, 9], array_column($d['items'], 'line'));
+            assertSame('src/Core/Greeter.php', $d['items'][0]['path']);
+            assertSame(['severity', 'code', 'message', 'path', 'line'], array_keys($d['items'][0]));
+            // One line of message is all the pane shows.
+            assertSame(160, strlen($d['items'][0]['message']));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('query')]
+    public function testTheLargestFilesComeFirst(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            file_put_contents($root . '/src/Edge/Long.php', "<?php\n" . str_repeat("// line\n", 300));
+            $this->rescan($pdo, $root);
+            $files = (new DashboardService($pdo))->dashboard($root)['largest_files'];
+            assertLessThanOrEqual(5, count($files));
+            assertSame(['path' => 'src/Edge/Long.php', 'language' => 'php', 'lines' => 301], $files[0]);
+            $lines = array_column($files, 'lines');
+            $sorted = $lines;
+            rsort($sorted);
+            assertSame($sorted, $lines);
+            $total = (int) $pdo->query("SELECT COUNT(*) FROM files WHERE project_id = '{$projectId}'")->fetchColumn();
+            assertCount(min(5, $total), $files);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The first dead-code candidates are listed with their file, line and boundary. */
+    #[Group('query')]
+    public function testDeadCodeCandidatesAreListedWithWhereTheyAreDeclared(): void
+    {
+        [$pdo, $projectId, $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            file_put_contents($root . '/src/Edge/Unused.php', "<?php\nnamespace App;\nfinal class Unused { public function never(): int { return 1; } }\n");
+            $this->rescan($pdo, $root);
+            $d = (new DashboardService($pdo))->dashboard($root);
+            assertGreaterThan(0, count($d['dead_code']));
+            assertLessThanOrEqual(10, count($d['dead_code']));
+            assertLessThanOrEqual($d['dead_code_candidates'], count($d['dead_code']));
+            assertSame(
+                ['name', 'canonical_name', 'kind', 'boundary', 'reachability', 'confidence', 'path', 'line'],
+                array_keys($d['dead_code'][0]),
+            );
+            $health = (new ArchitectureQueryService($pdo))->architectureHealth($projectId, limit: 10)->data;
+            assertSame(
+                array_map(static fn(array $c): string => $c['component']['canonical_name'], $health['dead_code_candidates']),
+                array_column($d['dead_code'], 'canonical_name'),
+            );
+            $never = array_values(array_filter($d['dead_code'], static fn(array $c): bool => $c['canonical_name'] === 'App\\Unused::never'))[0] ?? null;
+            assertNotSame(null, $never);
+            assertSame('src/Edge/Unused.php', $never['path']);
+            assertSame(3, $never['line']);
+            assertSame('Edge', $never['boundary']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A project without declared policies has nothing to evaluate. */
+    #[Group('query')]
+    public function testAProjectWithoutPoliciesIsNotEvaluated(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $policy = (new DashboardService($pdo))->dashboard($root)['policy'];
+            assertSame(['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => []], $policy);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Violations of the project's declared policies are counted and the first listed with their place. */
+    #[Group('query')]
+    public function testPolicyViolationsAreCountedAndListedWithTheirPlace(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->denyEdgeToCore($root);
+            $this->rescan($pdo, $root);
+            $policy = (new DashboardService($pdo))->dashboard($root)['policy'];
+            assertSame('evaluated', $policy['status']);
+            assertGreaterThanOrEqual(1, $policy['total']);
+            assertSame(false, $policy['truncated']);
+            assertSame([], $policy['truncation_reasons']);
+            assertSame(min(5, $policy['total']), count($policy['items']));
+            $first = $policy['items'][0];
+            assertSame(
+                ['policy_id', 'source', 'source_kind', 'source_boundary', 'target', 'target_kind', 'target_boundary', 'path', 'line'],
+                array_keys($first),
+            );
+            assertSame('edge-stays-out-of-core', $first['policy_id']);
+            assertSame('Edge', $first['source_boundary']);
+            assertSame('Core', $first['target_boundary']);
+            assertSame('src/Edge/Caller.php', $first['path']);
+            assertIsInt($first['line']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** A policy check that runs out of time says its total is a floor. */
+    #[Group('query')]
+    public function testAPolicyCheckOutOfTimeIsReportedTruncated(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            $this->denyEdgeToCore($root);
+            $this->rescan($pdo, $root);
+            $ticks = 0;
+            $clock = static function () use (&$ticks): int {
+                return $ticks += 10_000_000_000;
+            };
+            $policy = (new DashboardService($pdo, clock: $clock))->dashboard($root)['policy'];
+            assertSame('evaluated', $policy['status']);
+            assertSame(true, $policy['truncated']);
+            assertSame(['time_limit'], $policy['truncation_reasons']);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** Declares a policy the fixture breaks: Edge's Caller calls Core's Greeter. */
+    private function denyEdgeToCore(string $root): void
+    {
+        $config = json_decode((string) file_get_contents($root . '/knossos.json'), true, flags: JSON_THROW_ON_ERROR);
+        $config['policies'] = [['id' => 'edge-stays-out-of-core', 'from_boundary' => 'Edge', 'deny_targets' => ['Core']]];
+        file_put_contents($root . '/knossos.json', json_encode($config, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * Copies one row of `$table` with some columns changed: a way to give the
+     * graph more kinds or languages than a fixture scan produces.
+     *
+     * @param array<string, string> $overrides
+     */
+    private function cloneRow(PDO $pdo, string $table, string $id, array $overrides): void
+    {
+        $columns = array_column($pdo->query("PRAGMA table_info({$table})")->fetchAll(PDO::FETCH_ASSOC), 'name');
+        $select = array_map(static fn(string $c): string => array_key_exists($c, $overrides) ? $pdo->quote($overrides[$c]) : $c, $columns);
+        $pdo->exec(sprintf('INSERT INTO %s (%s) SELECT %s FROM %s WHERE id = %s', $table, implode(', ', $columns), implode(', ', $select), $table, $pdo->quote($id)));
     }
 }
