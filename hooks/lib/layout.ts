@@ -54,13 +54,13 @@ import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
 // Everything the specs and the render hook draw with, from one module.
 export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, locText, rowWidth, tableSpec, wrapWords } from './rows'
 export type { Field, Loc, Press, Row, Segment, TableSpec } from './rows'
-export type { DetailInput, Openable } from './views'
+export type { DetailInput, FileView, Openable } from './views'
 export type { BoundariesInput } from './boundaries'
 export { accumulate, cdFor, NO_CHANGES } from './changes'
 export type { ChangesInput, LookAt } from './changes'
 export { detailInput, SIDE_BY_SIDE } from './views'
 export { driftInput, fileDetailInput } from './files'
-export type { DriftInput, FileView } from './files'
+export type { DriftInput } from './files'
 
 /** One component in a list the selection walks: hubs and hotspots merged. */
 export type Item = {

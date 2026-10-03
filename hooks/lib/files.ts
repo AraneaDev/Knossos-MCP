@@ -34,21 +34,10 @@ import {
 } from './rows'
 import type { Loc, Row, Segment, TableSpec } from './rows'
 import { locIn } from './views'
-import type { DetailInput, Openable } from './views'
+import type { DetailInput, FileView, Openable } from './views'
 
 /** Paths longer than this are cut from the front in a table, as on Changes. */
 const PATH_MAX = 56
-
-/** One file's detail as the pane draws it; `loc` places each file (and component) on disk. */
-export type FileView = {
-  path: string
-  language: string
-  lines: number | null
-  boundary: string | null
-  loc: Loc | null
-  dependents: { count: number; truncated: boolean; boundaries: string[]; items: { path: string; edges: number; boundary: string | null; loc: Loc | null }[] }
-  components: { count: number; truncated: boolean; items: { name: string; canonical: string; kind: string; boundary: string | null; usedBy: number; loc: Loc | null }[] }
-}
 
 /** The files drifted since the snapshot: how many in all, and the first few by path with how each drifted. */
 export type DriftInput = { count: number; truncated: boolean; items: (Drifted & { loc: Loc | null })[] }
