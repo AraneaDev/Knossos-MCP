@@ -271,7 +271,14 @@ describe('file links', () => {
     expect(locOf('file://relative/x')).toBeNull()
   })
   it('escapes what markdown would read in the label', () => {
-    expect(linkMarkdown('my_file*.php:3', { path: '/a/my_file*.php', line: 3 })).toBe('[my\\_file\\*\\.php:3](file:///a/my_file*.php#L3)')
+    expect(linkMarkdown('my_file*.php:3', { path: '/a/my_file*.php', line: 3 })).toBe('[my\\_file\\*\\.php:3](file:///a/my_file%2A.php#L3)')
+  })
+  it('encodes every character that would end or break a link target, an unbalanced ) among them', () => {
+    const loc = { path: "/work/a)b/(c)/it's!.php", line: 4 }
+    expect(fileHref(loc)).toBe('file:///work/a%29b/%28c%29/it%27s%21.php#L4')
+    expect(locOf(fileHref(loc))).toEqual(loc)
+    const target = /\]\((.*)\)$/.exec(linkMarkdown('x', loc))?.[1] ?? ''
+    expect(target).not.toMatch(/[()\s<>]/)
   })
 })
 

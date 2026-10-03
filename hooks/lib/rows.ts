@@ -106,12 +106,17 @@ export function absolute(root: string, path: string): string {
 /** `path:line` (or the path alone), as an editor's go-to and a copy take it. */
 export const locText = (loc: Loc): string => (loc.line === null ? loc.path : `${loc.path}:${loc.line}`)
 
+/** A path segment percent-encoded, with the characters `encodeURIComponent` keeps that a Markdown link target cannot: `( ) ! ' *`. */
+const encodeSegment = (segment: string): string => encodeURIComponent(segment).replace(/[!'()*]/g, ch => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`)
+
 /**
  * The `file:` URL a link opens: the path percent-encoded, the line as a
  * `#L<n>` fragment, as Claude Code writes links to a line in its own replies.
+ * Parentheses are encoded too, so an unbalanced `)` cannot end a Markdown
+ * link's target early.
  */
 export function fileHref(loc: Loc): string {
-  const path = loc.path.split('/').map(encodeURIComponent).join('/')
+  const path = loc.path.split('/').map(encodeSegment).join('/')
   return `file://${path}${loc.line === null ? '' : `#L${loc.line}`}`
 }
 
