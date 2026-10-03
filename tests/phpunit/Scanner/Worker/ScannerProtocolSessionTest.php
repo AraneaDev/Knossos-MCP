@@ -32,7 +32,6 @@ final class ScannerProtocolSessionTest extends TestCase
         };
 
         $channel = new class implements RpcChannelInterface {
-            public string $lastStderr = '';
             public int $beginCount = 0;
             /** @var list<array<string, mixed>> */
             public array $sent = [];
@@ -49,7 +48,6 @@ final class ScannerProtocolSessionTest extends TestCase
                 }
                 throw new WorkerException('WORKER_TIMEOUT', 'No more responses configured.');
             }
-            public function stderr(): string { return $this->lastStderr; }
         };
 
         return [$process, $channel];
@@ -121,16 +119,6 @@ final class ScannerProtocolSessionTest extends TestCase
         $session->close(true);
 
         assertSame(true, $process->lastTerminate);
-    }
-
-    public function testStderrDelegatesToChannel(): void
-    {
-        [$process, $channel] = $this->mockDependencies();
-        $channel->lastStderr = 'error output';
-
-        $session = new ScannerProtocolSession($process, $channel);
-
-        assertSame('error output', $session->stderr());
     }
 
     public function testLastScanResultReturnsEmptyArrayInitially(): void

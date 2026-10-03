@@ -61,12 +61,6 @@ final readonly class DirtyPathSet
         return new self($unique, true);
     }
 
-    /** A clean working tree, which is a complete answer and not an absent one. */
-    public static function clean(): self
-    {
-        return new self([], true);
-    }
-
     /**
      * The set a scan persisted, or null when it recorded none it can be
      * trusted on.

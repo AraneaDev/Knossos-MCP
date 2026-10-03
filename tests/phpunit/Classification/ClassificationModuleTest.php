@@ -7,7 +7,6 @@ namespace Knossos\Tests\Phpunit\Classification;
 use InvalidArgumentException;
 use Knossos\Classification\ClassificationEngine;
 use Knossos\Classification\ClassificationFact;
-use Knossos\Classification\ExplicitRoleRule;
 use Knossos\Classification\LaravelPathRoleRule;
 use Knossos\Classification\LaravelRoleRule;
 use Knossos\Classification\NameSuffixRule;
@@ -36,7 +35,6 @@ use PHPUnit\Framework\Attributes\Group;
  *   - src/Classification/LaravelPathRoleRule.php       (path-fragment convention)
  *   - src/Classification/TestModuleRule.php            (tests/spec directory + filename convention)
  *   - src/Classification/NameSuffixRule.php            (constructor-driven suffix matching)
- *   - src/Classification/ExplicitRoleRule.php          (constructor-driven canonical-name roles)
  *   - src/Classification/TypeScriptFrameworkRoleRule.php (nextjs/react/vue/state)
  *
  * (`ClassificationRule.php` is the structural-infimum interface per batch 7;
@@ -356,31 +354,6 @@ final class ClassificationModuleTest extends KnossosTestCase
             canonicalName: 'App\\Helper',
             displayName: 'Helper',
         );
-        assertSame([], $rule->classify($node));
-    }
-
-    // ===== ExplicitRoleRule ================================================
-
-    public function testExplicitRoleRuleMatchesCanonicalName(): void
-    {
-        $rule = new ExplicitRoleRule('user.explicit.v1', [
-            'App\\PaymentService' => ['payments.partner'],
-            'App\\InvoiceService' => ['billing.partner'],
-        ]);
-        $node = self::makeNode(
-            'php:class:App\\PaymentService',
-            canonicalName: 'App\\PaymentService',
-        );
-        $facts = $rule->classify($node);
-        assertSame(1, count($facts));
-        assertSame('payments.partner', $facts[0]->role);
-        assertSame(Origin::UserRule, $facts[0]->origin);
-    }
-
-    public function testExplicitRoleRuleSkipsMissing(): void
-    {
-        $rule = new ExplicitRoleRule('user.explicit.v1', ['App\\Unknown' => ['x']]);
-        $node = self::makeNode('php:class:App\\Other', canonicalName: 'App\\Other');
         assertSame([], $rule->classify($node));
     }
 

@@ -4,30 +4,18 @@
 //! sees one file per call and has no crate-wide view. The convention is Rust's
 //! own, so it agrees with the compiler for every layout that follows it.
 
-/// The canonical module path a source file declares.
+/// The canonical module path for a file relative to its crate's directory,
+/// with the crate root named `root`.
 ///
-/// `src/` is the crate root, so `src/lib.rs` and `src/main.rs` are `crate` itself
-/// and `src/net/http.rs` is `crate::net::http`. A `mod.rs` collapses into the
+/// `src/` is the crate root, so `src/lib.rs` and `src/main.rs` are `root` itself
+/// and `src/net/http.rs` is `root::net::http`. A `mod.rs` collapses into the
 /// directory that holds it. A path outside `src/` keeps its own directory chain,
 /// which is what `tests/` and `benches/` want: each of those files is its own
 /// crate root to the compiler, and pretending otherwise would collide their
-/// symbols with the library's.
-#[must_use]
-pub fn module_path(relative: &str) -> String {
-    module_path_with_binary_root(relative, false)
-}
-
-/// The canonical module path for a file, optionally under a binary root that
-/// shares a Cargo package with a library root. Cargo compiles `src/main.rs`
-/// and `src/lib.rs` as separate crates; the suffix keeps their graph identities
-/// distinct when both are present in one scan.
-#[must_use]
-pub fn module_path_with_binary_root(relative: &str, binary_root: bool) -> String {
-    module_path_in_crate(relative, "crate", binary_root)
-}
-
-/// The canonical module path for a file relative to its crate's directory,
-/// with the crate root named `root`.
+/// symbols with the library's. A binary root that shares a Cargo package with
+/// a library root (`binary_root`) is `root::main`: Cargo compiles `src/main.rs`
+/// and `src/lib.rs` as separate crates, and the suffix keeps their graph
+/// identities distinct when both are present in one scan.
 ///
 /// The package at the project root keeps `crate`. A workspace member's
 /// `src/` is a crate root of its own, which sibling crates name by the
@@ -336,8 +324,6 @@ pub fn glob_prefixes(tree: &syn::UseTree, prefix: &str, out: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::module_path;
-
     #[test]
     fn glob_leaves_yield_the_modules_they_import_from() {
         let tree: syn::UseTree = syn::parse_str("a::{b::*, c, d::e::*}").expect("parses");
@@ -351,6 +337,11 @@ mod tests {
         assert!(none.is_empty());
     }
 
+    /// The path a file at the project root's package declares.
+    fn module_path(relative: &str) -> String {
+        super::module_path_in_crate(relative, "crate", false)
+    }
+
     #[test]
     fn lib_and_main_collapse_to_the_crate_root() {
         assert_eq!("crate", module_path("src/lib.rs"));
@@ -361,7 +352,7 @@ mod tests {
     fn a_binary_root_can_be_disambiguated_from_a_library_root() {
         assert_eq!(
             "crate::main",
-            super::module_path_with_binary_root("src/main.rs", true)
+            super::module_path_in_crate("src/main.rs", "crate", true)
         );
     }
 

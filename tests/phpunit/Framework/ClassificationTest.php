@@ -6,7 +6,7 @@ namespace Knossos\Tests\Phpunit\Framework;
 
 use Knossos\Classification\ClassificationEngine;
 use Knossos\Classification\ClassificationFact;
-use Knossos\Classification\ExplicitRoleRule;
+use Knossos\Classification\ClassificationRule;
 use Knossos\Classification\NameSuffixRule;
 use Knossos\Reconciliation\FullScanRequest;
 use Knossos\Reconciliation\ReconciliationException;
@@ -45,7 +45,7 @@ final class ClassificationTest extends KnossosTestCase
         $contribution = new ScanContribution('knossos.php:file:src/CheckoutService.php', [$class, $method]);
         $engine = new ClassificationEngine([
             new NameSuffixRule('test.naming.v1', ['Service' => 'application.service']),
-            new ExplicitRoleRule('test.explicit.v1', ['Fixture\\CheckoutService' => ['domain.checkout', 'application.entry_point']]),
+            self::declaredRoles(),
         ]);
         $first = $engine->classify([$contribution]);
         $second = $engine->classify([$contribution]);
@@ -69,7 +69,7 @@ final class ClassificationTest extends KnossosTestCase
         [$pdo, $reconciler, $request] = $this->reconciliationFixture();
         $engine = new ClassificationEngine([
             new NameSuffixRule('test.naming.v1', ['Service' => 'application.service']),
-            new ExplicitRoleRule('test.explicit.v1', ['Fixture\\CheckoutService' => ['domain.checkout', 'application.entry_point']]),
+            self::declaredRoles(),
         ]);
         $facts = $engine->classify($request->contributions);
         $classified = new FullScanRequest(
@@ -109,5 +109,34 @@ final class ClassificationTest extends KnossosTestCase
         assertThrows(fn() => $reconciler->reconcile($badRequest), ReconciliationException::class);
         assertSame($active->scanId, (string) $pdo->query('SELECT active_scan_id FROM projects')->fetchColumn());
         assertSame(4, (int) $pdo->query('SELECT COUNT(*) FROM classifications')->fetchColumn());
+    }
+
+    /**
+     * A rule that grants `Fixture\CheckoutService` two roles as a user rule,
+     * certain, so the engine and the reconciler have a second rule's facts to
+     * order and persist beside the suffix rule's.
+     */
+    private static function declaredRoles(): ClassificationRule
+    {
+        return new class implements ClassificationRule {
+            /** {@inheritDoc} */
+            public function id(): string
+            {
+                return 'test.explicit.v1';
+            }
+
+            /** {@inheritDoc} */
+            public function classify(NodeFact $node): array
+            {
+                if ($node->canonicalName !== 'Fixture\\CheckoutService') {
+                    return [];
+                }
+
+                return array_map(
+                    static fn(string $role): ClassificationFact => new ClassificationFact($node->localId, $role, 'test.explicit.v1', Origin::UserRule, Confidence::Certain, $node->evidence),
+                    ['domain.checkout', 'application.entry_point'],
+                );
+            }
+        };
     }
 }

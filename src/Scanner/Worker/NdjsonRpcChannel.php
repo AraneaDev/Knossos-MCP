@@ -322,12 +322,6 @@ final class NdjsonRpcChannel implements RpcChannelInterface
         return sprintf('Scanner worker exited before responding (exit %d).', $status['exitcode']);
     }
 
-    /** {@inheritDoc} */
-    public function stderr(): string
-    {
-        return $this->stderrBuffer;
-    }
-
     /**
      * Drain a readable stream during a send(): stderr is accumulated for
      * diagnostics, stdout is buffered for the pending response.

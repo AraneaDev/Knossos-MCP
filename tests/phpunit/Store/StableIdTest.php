@@ -52,26 +52,6 @@ final class StableIdTest extends TestCase
         assertSame(4, count($parameters));
     }
 
-    public function testRouteSortsMethodsBeforeHashingSoOrderIsIrrelevant(): void
-    {
-        // sort() with SORT_STRING normalizes 'GET' vs 'POST' ordering → same hash regardless of input order.
-        $a = StableId::route('proj-1', ['POST', 'GET'], '/users', 'UsersController::create');
-        $b = StableId::route('proj-1', ['GET', 'POST'], '/users', 'UsersController::create');
-        $c = StableId::route('proj-1', ['POST', 'GET'], '/users', 'UsersController::create');
-
-        assertSame($a, $b);
-        assertSame($b, $c);
-        $this->assertStringStartsWith('route_', $a);
-    }
-
-    public function testRouteWithDifferentMethodsProducesDifferentHash(): void
-    {
-        $get = StableId::route('proj-1', ['GET'], '/users', 'list');
-        $post = StableId::route('proj-1', ['POST'], '/users', 'list');
-
-        assertNotSame($get, $post);
-    }
-
     public function testEdgeReturnsPrefixAndHash(): void
     {
         $id = StableId::edge('proj-1', 'calls', 'symbol-a', 'symbol-b', 'evidence-x');
@@ -123,7 +103,6 @@ final class StableIdTest extends TestCase
             StableId::file('b', 'c'),
             StableId::scan('d', 'e'),
             StableId::symbol('f', 'g', 'h', 'i'),
-            StableId::route('j', ['GET'], 'k', 'l'),
             StableId::edge('m', 'n', 'o', 'p', 'q'),
             StableId::classification('r', 's', 't', 'u'),
             StableId::boundary('v', 'w', 'x'),
@@ -172,19 +151,6 @@ final class StableIdTest extends TestCase
         );
 
         assertSame('symbol ID parts must not be empty.', $error->getMessage());
-    }
-
-    public function testEmptyRouteMethodsArrayThrows(): void
-    {
-        // implode(',', []) === '' which becomes one of the parts that the make() guard catches.
-        // (Routing a non-empty methods array that contains an empty-string method does NOT throw,
-        // because implode merges it away — e.g. ['GET', ''] sorts to ['', 'GET'] implodes to ',GET'.)
-        $error = captureThrows(
-            static fn () => StableId::route('proj-1', [], '/users', 'list'),
-            InvalidArgumentException::class,
-        );
-
-        assertSame('route ID parts must not be empty.', $error->getMessage());
     }
 
     public function testConstructorIsPrivateSoTheClassCannotBeInstantiated(): void

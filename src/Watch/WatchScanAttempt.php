@@ -82,12 +82,6 @@ final readonly class WatchScanAttempt
         }
     }
 
-    /** The scan completed and the graph was updated. */
-    public function isSuccess(): bool
-    {
-        return $this->outcome === self::SUCCESS;
-    }
-
     /** Stopped because cancellation was requested, so watching should end quietly. */
     public function isCancelled(): bool
     {

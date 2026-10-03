@@ -59,20 +59,6 @@ final class StableId
     }
 
     /**
-     * An HTTP route.
-     *
-     * Methods are sorted, so GET+POST and POST+GET describe one route rather than two.
-     *
-     * @param list<string> $methods
-     */
-    public static function route(string $projectId, array $methods, string $uri, string $action): string
-    {
-        sort($methods, SORT_STRING);
-
-        return self::make('route', [$projectId, implode(',', $methods), $uri, $action]);
-    }
-
-    /**
      * A relationship between two nodes.
      *
      * @param string $evidenceIdentity distinguishes several edges of the same kind

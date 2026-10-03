@@ -499,14 +499,6 @@ final class NdjsonRpcChannelTest extends TestCase
         assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
     }
 
-    public function testStderrReturnsEmptyInitially(): void
-    {
-        $process = $this->mockProcess();
-        $channel = new NdjsonRpcChannel($process, new WorkerLimits());
-
-        assertSame('', $channel->stderr());
-    }
-
     public function testBeginRequestStartsProcessAndResetsState(): void
     {
         $process = $this->mockProcess();
@@ -803,8 +795,7 @@ final class NdjsonRpcChannelTest extends TestCase
         );
 
         assertSame('WORKER_TIMEOUT', $error->diagnosticCode);
-        assertSame(true, str_contains($error->getMessage(), 'ImportError: no module named knossos'));
-        assertSame('ImportError: no module named knossos', $channel->stderr());
+        assertSame(true, str_contains($error->getMessage(), 'Worker stderr: ImportError: no module named knossos'));
         assertSame(true, $process->statusChecks < 10);
 
         fclose($stdoutPair[1]);
@@ -845,7 +836,7 @@ final class NdjsonRpcChannelTest extends TestCase
 
         assertSame(true, in_array($error->diagnosticCode, ['WORKER_TIMEOUT', 'WORKER_PIPE_BROKEN'], true));
         assertSame(true, $passes < 25);
-        assertSame('warming up', $channel->stderr());
+        assertSame(true, str_ends_with($error->getMessage(), ' Worker stderr: warming up'));
 
         fclose($stdinPair[1]);
         fclose($stdoutPair[1]);
@@ -912,7 +903,7 @@ final class NdjsonRpcChannelTest extends TestCase
 
         $passes = 0;
         $announced = false;
-        captureThrows(
+        $error = captureThrows(
             static function () use ($channel, &$passes, &$announced, $stderrPair): void {
                 $channel->send(['data' => str_repeat('y', 8_000_000)], static function () use (&$passes, &$announced, $stderrPair): bool {
                     // Any pass after the first: stdout's EOF has been observed
@@ -930,7 +921,7 @@ final class NdjsonRpcChannelTest extends TestCase
             WorkerException::class,
         );
 
-        assertSame('TAIL', $channel->stderr());
+        assertSame(true, str_ends_with($error->getMessage(), ' Worker stderr: TAIL'));
 
         fclose($stdinPair[1]);
         fclose($stderrPair[1]);

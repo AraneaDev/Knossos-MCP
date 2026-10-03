@@ -186,7 +186,6 @@ final class ScannerProtocolSessionInputHashesTest extends TestCase
 
                 return $message;
             }
-            public function stderr(): string { return ''; }
         };
         $process = new class implements ProcessSupervisorInterface {
             public function start(): void {}

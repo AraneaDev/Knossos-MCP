@@ -448,7 +448,7 @@ final class GitDriftOracleTest extends KnossosTestCase
             $project->execute(['project' => $projectId]);
             $scanId = (string) $project->fetchColumn();
             $pdo->prepare('UPDATE scans SET git_head = :head, dirty_paths_json = :dirty WHERE id = :id')
-                ->execute(['head' => self::HEAD, 'dirty' => DirtyPathSet::clean()->encode(), 'id' => $scanId]);
+                ->execute(['head' => self::HEAD, 'dirty' => DirtyPathSet::of([])->encode(), 'id' => $scanId]);
 
             file_put_contents($root . '/src/chunk1/f0005.php', "<?php\nfinal class Chunk1Edit {}\n");
             file_put_contents($root . '/src/chunk2/g0002.php', "<?php\nfinal class Chunk2Edit {}\n");
