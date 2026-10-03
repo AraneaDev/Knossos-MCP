@@ -76,20 +76,64 @@ model a whole branch's worth of violations to fix.
 
 ## The pane
 
-`/knossos-pane` opens and closes the architecture pane: hubs, hotspots, the
-largest dependency cycles, the dead-code candidate count, and two sparklines
-over the last snapshots (cycles and maximum degree per snapshot). A count
-that hit a search limit reads `50+`, never `50`. When the walk that ranks hubs
-and hotspots stops at its limit (five seconds on a cold, large graph), both
-headings read `(partial)`. Pressing a hub or hotspot shows its detail: kind,
-location, boundaries and who uses it. The pane shows the display name and
-looks the component up by its canonical name. `/knossos-pane inspect <component>`
-opens the pane on one component directly.
+`/knossos-pane` opens and closes the architecture pane. It lays itself out to
+the width it has, from about 40 columns up: as the pane narrows, bars shorten
+first, then long names are cut with `…`, then the boundary column goes, then
+the bars. The numbers always stay. Each boundary keeps one colour wherever it
+appears; the status dot is green for a fresh snapshot, yellow for a stale one
+and red when a refresh or rescan failed.
+
+```text
+Knossos-MCP                         ● stale · 11h  r: rescan
+10 hubs · 2 cycles · 55 dead code · 46 drifted
+1: Overview  2: Hubs  3: Boundaries  4: Cycles  5: Issues
+━━━━━━━━━━━─────────────────────────────────────────────────
+
+LAST TURN                         2 files → 27 deps · 4 tests
+   TurnBriefService.php core  ███████████████████████████ 21
+   register.tsx         hooks ███████▊                     6
+
+HEALTH
+   cycles       2
+   max degree 161
+   dead code   55   policy ✓ 0
+
+MOST DEPENDED ON                                          in
+›  StableId                 core  ██████████████████████ 525
+   ArchitectureQueryService core  ███████████            262
+```
+
+- **Overview:** the project, the snapshot's state and age, the last turn's
+  impact (files, dependents, tests), health (cycles, maximum degree, dead-code
+  candidates, the last turn's policy verdict) and the five most depended-on
+  components. A trend line appears beside a figure only once there are five
+  snapshots and the figure moved; a flat line says nothing.
+- **Hubs:** hubs and hotspots as one list, one row per component, with its
+  boundary and its in, out and cross-boundary degree. `◆` marks a hotspot
+  that is not also a hub. Methods read `Class::method`.
+- **Boundaries, Cycles, Issues:** coming in the next builds.
+
+Every action is a button, so a click works as well as its key: `1` to `5`
+switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
+Tab or the arrows onto a row), `o` or Enter opens the marked component, `b`
+goes back, `h` shows the keys. Opening a component shows its kind, location,
+boundaries and who uses it; the pane looks it up by its canonical name.
+`/knossos-pane inspect <component>` opens the pane on one component directly.
+
+A count that hit a search limit reads `50+`, never `50`. When the walk that
+ranks hubs and hotspots stops at its limit (five seconds on a cold, large
+graph), the lists say `partial`.
 
 Every time the pane opens, by `/knossos-pane`, `[ details ]` or on start, it
-reloads the dashboard. The top line gives the snapshot's age, which keeps
+reloads the dashboard. The header gives the snapshot's age, which keeps
 counting while the pane is open. When a reload fails, the pane keeps the
-figures it had and says `refresh failed, figures from 2m ago`.
+figures it had and the header says `refresh failed · 2m`.
+
+When the snapshot is stale or files drifted since it, the header offers
+`r: rescan`. It runs an incremental scan (`knossos rescan`) under the same
+rules as the turn's scan, shows `scanning…` meanwhile, and reloads the pane
+when it is done. A rescan that does not land says why in the header and
+leaves the figures as they were.
 
 `openPaneOnStart` opens it when a session starts. A pane opened that way,
 without you asking, only takes its place at 144 terminal columns or more; on
@@ -110,13 +154,14 @@ They appear in Claude Code's config menu under the plugin's name.
 ## What it writes
 
 After a turn that edited files, the mod runs `knossos turn-brief`, which
-runs an incremental scan into the project's existing database. That is the
-only write. It happens only for a project that is already scanned and inside
-an allowed root, never inside a hook dispatch, and never two at a time
-within a session. `knossos dashboard` and `knossos component-detail` only
-read the graph, though like `turn-brief` they bring a database with an older
-schema up to date before they read it. None of the three ever creates a
-database.
+runs an incremental scan into the project's existing database. The pane's
+rescan runs `knossos rescan`, the same incremental scan without the brief.
+Those are the only writes. They happen only for a project that is already
+scanned and inside an allowed root, never inside a hook dispatch, and never
+two at a time within a session. `knossos dashboard` and
+`knossos component-detail` only read the graph, though like the scans they
+bring a database with an older schema up to date before they read it. None
+of them ever creates a database.
 
 The scan only counts changes Claude made with Edit, Write or NotebookEdit as
 a reason to run. A turn that only ran shell commands does not trigger one,
@@ -157,9 +202,9 @@ The one exception is a missing binary (or, for a container install, a missing
 `docker`). The wrapper then prints `{"status":"no-binary"}`, and the mod writes
 one log line and turns the band and pane off for the session.
 
-The wrapper bounds each call: 60 seconds for `turn-brief`, 30 for `dashboard`
-(a first dashboard of a large project walks the whole graph), 15 for
-`component-detail`.
+The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
+rescan, 30 for `dashboard` (a first dashboard of a large project walks the
+whole graph), 15 for `component-detail`.
 
 Paths are compared after resolving symbolic links, so a checkout you reach
 through a linked directory is still recognised as the project.
