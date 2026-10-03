@@ -41,5 +41,6 @@
     "warning_diagnostics": 0,
     "hub_degree_growth": 25,
     "unreferenced_candidates": 110
-  }
+  },
+  "dead_code_suppressions": ["Knossos\\Scanner\\Sdk\\FixtureBuilder*"]
 }
