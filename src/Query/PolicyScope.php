@@ -17,8 +17,13 @@ use PDO;
  * Policies that do not validate (as the policy check would reject them) are
  * left out rather than guessed at.
  *
- * Bounded: at most {@see self::FILE_CAP} files, `files_truncated` when more
- * are bound, so an absent file is not proof that no rule binds it.
+ * Each policed boundary is sent by name (`boundaries`) with the ids of the
+ * rules that bind it and, for one whose members are placed by a path prefix,
+ * that prefix: a file under it is bound, wherever it sorts, with no file
+ * list needed. Only the files of a boundary no prefix places (a namespace
+ * one; `listed`) are listed in `files`, at most {@see self::FILE_CAP}, with
+ * `files_truncated` when more are bound: then a file absent from the list
+ * may still be bound, and a reader must say so rather than read "no rules".
  */
 final readonly class PolicyScope
 {
@@ -31,10 +36,10 @@ final readonly class PolicyScope
     public function __construct(private PDO $pdo, private int $fileCap = self::FILE_CAP) {}
 
     /**
-     * The rules and the files they bind.
+     * The rules, the boundaries they bind and the files of those no prefix places.
      *
      * @param list<array<string, mixed>> $policies as the project configuration declares them
-     * @return array{rules: list<array{id: string, from: string, deny: list<string>, allow: list<string>, edge_kinds: list<string>}>, files: array<string, list<string>>, files_truncated: bool}
+     * @return array{rules: list<array{id: string, from: string, deny: list<string>, allow: list<string>, edge_kinds: list<string>}>, boundaries: array<string, array{rules: list<string>, path_prefixes: list<string>, listed: bool}>, files: array<string, list<string>>, files_truncated: bool}
      */
     public function build(string $projectId, array $policies, BoundaryLabels $labels): array
     {
@@ -45,12 +50,52 @@ final readonly class PolicyScope
             $id = $rule === null ? null : $labels->idOf((string) $policy['from_boundary']);
             if ($rule !== null && $id !== null) {
                 $rules[] = $rule;
-                $from[$id] = true;
+                $from[$id][] = $rule['id'];
             }
         }
-        [$files, $truncated] = $this->boundFiles($projectId, array_map('strval', array_keys($from)));
+        $boundaries = [];
+        $listed = [];
+        foreach ($this->matchers(array_map('strval', array_keys($from))) as [$id, $name, $prefix]) {
+            $entry = $boundaries[$name] ?? ['rules' => [], 'path_prefixes' => [], 'listed' => false];
+            $entry['rules'] = array_values(array_unique([...$entry['rules'], ...$from[$id]]));
+            if ($prefix === null) {
+                $entry['listed'] = true;
+                $listed[] = $id;
+            } else {
+                $entry['path_prefixes'][] = $prefix;
+            }
+            $boundaries[$name] = $entry;
+        }
+        ksort($boundaries, SORT_STRING);
+        [$files, $truncated] = $this->boundFiles($projectId, $listed);
 
-        return ['rules' => $rules, 'files' => $files, 'files_truncated' => $truncated];
+        return ['rules' => $rules, 'boundaries' => $boundaries, 'files' => $files, 'files_truncated' => $truncated];
+    }
+
+    /**
+     * Each boundary of `$ids` with its name and the path prefix that places
+     * its members, or null for one placed otherwise (by namespace), by id.
+     *
+     * @param list<string> $ids
+     * @return list<array{0: string, 1: string, 2: string|null}>
+     */
+    private function matchers(array $ids): array
+    {
+        if ($ids === []) {
+            return [];
+        }
+        $statement = $this->pdo->prepare(
+            'SELECT id, name, matcher_json FROM boundaries WHERE id IN (' . implode(',', array_fill(0, count($ids), '?')) . ') ORDER BY name, id',
+        );
+        $statement->execute($ids);
+        $matchers = [];
+        foreach ($statement->fetchAll(PDO::FETCH_NUM) as [$id, $name, $json]) {
+            $matcher = json_decode((string) $json, true);
+            $path = is_array($matcher) && ($matcher['type'] ?? null) === 'path_prefix' && is_string($matcher['value'] ?? null);
+            $matchers[] = [(string) $id, (string) $name, $path ? $matcher['value'] : null];
+        }
+
+        return $matchers;
     }
 
     /**

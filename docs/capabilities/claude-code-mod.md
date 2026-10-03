@@ -54,9 +54,14 @@ rules (`knossos: workers/php/bin/worker is in php-worker. Policy: php-worker
 may not depend on core.`). Only a declared boundary is named; a file in an
 inferred one only, or in none, gets its count. A rule with an allow list
 reads `edge may depend only on itself, core, unassigned code`, and one
-limited to some dependency kinds names them in brackets. The rules and the
-files they bind come with the dashboard (its `policy.rules` and
-`policy.files`, at most 2,000 files).
+limited to some dependency kinds names them in brackets. The rules come with
+the dashboard (`policy.rules`), with each policed boundary
+(`policy.boundaries`): a boundary declared by `path_prefix` binds every file
+under that prefix, however large the project. Only the files of a boundary
+placed by namespace are listed (`policy.files`, at most 2,000 files). When
+that list stops at its cap before it reaches a file, the note does not read
+as "no rules": it says `knossos: lib/Late.php: rules may bind this file; run
+check_architecture.`
 
 **On an edit.** An edit or write of a file with at least `fanInThreshold`
 dependent files that the model was not told about on Read (Claude Code reads

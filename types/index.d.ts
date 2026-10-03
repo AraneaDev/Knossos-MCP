@@ -114,11 +114,13 @@ export type Dashboard = {
   boundaries?: { items: { name: string; source: string; members: number }[]; truncated: boolean }
   diagnostics?: { total: number; errors: number; warnings: number; infos: number; items: Diagnostic[] }
   largest_files?: { path: string; language: string; lines: number }[]
-  /** `truncated` when the check stopped at its edge or time limit, so `total` is a floor. */
   /**
-   * `rules` and `files` (absent from an older knossos): the declared policies
-   * with boundary names, and each file a rule binds with the boundaries it
-   * binds it through; `files_truncated` when the list stopped at its cap.
+   * `truncated` when the check stopped at its edge or time limit, so `total`
+   * is a floor. `rules`, `boundaries` and `files` (absent from an older
+   * knossos): the declared policies with boundary names, each policed
+   * boundary, and each file a rule binds through a boundary no path prefix
+   * places, with the boundaries it binds it through; `files_truncated` when
+   * that list stopped at its cap.
    */
   policy?: {
     status: string
@@ -127,6 +129,12 @@ export type Dashboard = {
     truncation_reasons: string[]
     items: PolicyViolation[]
     rules?: PolicyRule[]
+    /**
+     * Each policed boundary by name: the ids of the rules that bind it, the
+     * path prefixes that place its files, and `listed` when some of its files
+     * are placed otherwise (by namespace) and so come only through `files`.
+     */
+    boundaries?: Record<string, { rules: string[]; path_prefixes: string[]; listed: boolean }>
     files?: Record<string, string[]>
     files_truncated?: boolean
   }

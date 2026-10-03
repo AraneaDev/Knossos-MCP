@@ -83,6 +83,35 @@ describe('readNote', () => {
     expect(readNote('bin/router.php', hub('bin/router.php', 347, null), 20, POLICY, new Set(), DECLARED)?.text).toBe('knossos: bin/router.php has 347 dependent files.')
   })
   it('honours the threshold', () => expect(readNote('x.php', hub('x.php', 19, null), 20, POLICY, new Set(), DECLARED)).toBeNull())
+
+  // Past the file list's cap: a boundary placed by its path prefix still binds every file under it.
+  const CAPPED = {
+    rules: RULES,
+    boundaries: {
+      core: { rules: ['core-alone'], path_prefixes: ['src/'], listed: false },
+      edge: { rules: ['edge-only'], path_prefixes: [], listed: true },
+    },
+    files: { 'lib/Edge/A.php': ['edge'] },
+    files_truncated: true,
+  }
+  it('binds a file through its boundary\'s path prefix, wherever the capped list stopped', () =>
+    expect(readNote('src/Zz/Late.php', undefined, 20, CAPPED, new Set(), DECLARED)?.text).toBe(
+      'knossos: src/Zz/Late.php is in core. Policy: core may not depend on php-worker, tests. Other rules may bind this file; run check_architecture.',
+    ))
+  it('says rules may bind a file the capped list never reached, never nothing', () => {
+    expect(readNote('lib/Zz/Late.php', undefined, 20, CAPPED, new Set(), DECLARED)?.text).toBe('knossos: lib/Zz/Late.php: rules may bind this file; run check_architecture.')
+    expect(readNote('lib/Zz/Late.php', hub('lib/Zz/Late.php', 30, null), 20, CAPPED, new Set(), DECLARED)?.text).toBe(
+      'knossos: lib/Zz/Late.php has 30 dependent files. Rules may bind this file; run check_architecture.',
+    )
+    // An older knossos lists every bound file, so its cap leaves any unlisted file unsure.
+    expect(readNote('x.php', undefined, 20, { ...POLICY, files_truncated: true }, new Set(), DECLARED)?.text).toBe('knossos: x.php: rules may bind this file; run check_architecture.')
+  })
+  it('stays quiet about a file the list would have named: no cap, or every boundary placed by prefix', () => {
+    expect(readNote('lib/Zz/Late.php', undefined, 20, { ...CAPPED, files_truncated: false }, new Set(), DECLARED)).toBeNull()
+    const prefixed = { ...CAPPED, boundaries: { core: CAPPED.boundaries.core } }
+    expect(readNote('lib/Zz/Late.php', undefined, 20, prefixed, new Set(), DECLARED)).toBeNull()
+    expect(readNote('src/Zz/Late.php', undefined, 20, prefixed, new Set(), DECLARED)?.text).toBe('knossos: src/Zz/Late.php is in core. Policy: core may not depend on php-worker, tests.')
+  })
 })
 
 describe('testsNote', () => {

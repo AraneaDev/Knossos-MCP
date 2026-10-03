@@ -154,7 +154,7 @@ final readonly class ProjectFindings
      */
     public function policy(string $projectId, string $root, BoundaryLabels $labels): array
     {
-        $none = ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'files' => [], 'files_truncated' => false];
+        $none = ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'boundaries' => [], 'files' => [], 'files_truncated' => false];
         $policies = FileViolationQuery::policies($root, null);
         if ($policies === []) {
             return $none;
@@ -207,7 +207,7 @@ final readonly class ProjectFindings
             'boundaries' => ['items' => [], 'truncated' => false],
             'diagnostics' => ['total' => 0, 'errors' => 0, 'warnings' => 0, 'infos' => 0, 'items' => []],
             'largest_files' => [],
-            'policy' => ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'files' => [], 'files_truncated' => false],
+            'policy' => ['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'boundaries' => [], 'files' => [], 'files_truncated' => false],
         ];
     }
 

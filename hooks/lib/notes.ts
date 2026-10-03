@@ -36,8 +36,30 @@ export function fanInIndex(dashboard: Dashboard | null): Map<string, FanIn> {
   return new Map((dashboard?.fan_in ?? []).map(f => [f.path, f]))
 }
 
-/** The declared policies as the dashboard sends them: the rules, and the files each binds by boundary. */
-export type PolicyScope = Pick<NonNullable<Dashboard['policy']>, 'rules' | 'files' | 'files_truncated'>
+/**
+ * The declared policies as the dashboard sends them: the rules, each policed
+ * boundary with the path prefixes that place its files, and the files of
+ * those no prefix places.
+ */
+export type PolicyScope = Pick<NonNullable<Dashboard['policy']>, 'rules' | 'boundaries' | 'files' | 'files_truncated'>
+
+/**
+ * The policed boundaries `path` sits in: those whose path prefix holds it,
+ * and those the file list names it in. `unsure` when the list stopped at its
+ * cap before it reached this file and some policed boundary is known only
+ * through that list, so a rule may bind the file unseen. A knossos that sends
+ * no boundaries lists every bound file, so its cap leaves any file unsure.
+ */
+export function boundOf(path: string, policy: Partial<PolicyScope> | undefined): { bound: string[]; unsure: boolean } {
+  const files = policy?.files ?? {}
+  const policed = policy?.boundaries ?? {}
+  const byPrefix = Object.entries(policed)
+    .filter(([, b]) => b.path_prefixes.some(prefix => path.startsWith(prefix)))
+    .map(([name]) => name)
+  const listed = Object.hasOwn(files, path) ? (files[path] ?? []) : []
+  const throughList = policy?.boundaries === undefined || Object.values(policed).some(b => b.listed)
+  return { bound: [...new Set([...byPrefix, ...listed])], unsure: policy?.files_truncated === true && !Object.hasOwn(files, path) && throughList }
+}
 
 /** One rule in a line: what a boundary may not depend on, or may depend on alone; its edge kinds when it names some. */
 export function ruleText(rule: PolicyRule): string {
@@ -58,6 +80,8 @@ export function ruleText(rule: PolicyRule): string {
  *
  * Only a declared boundary (`declared`) or one a rule binds is named: an
  * inferred label (a package, the repository-wide one) tells the model nothing.
+ * When a cap leaves it unknown whether a rule binds the file, the note says
+ * so and points at check_architecture: silence would read as "no rules".
  */
 export function readNote(
   path: string,
@@ -68,16 +92,19 @@ export function readNote(
   declared: ReadonlySet<string>,
 ): { text: string; ruled: string[] } | null {
   const hub = fanIn !== undefined && fanIn.dependent_files >= threshold
-  const bound = policy?.files?.[path] ?? []
+  const { bound, unsure } = boundOf(path, policy)
   const fresh = bound.filter(b => !ruled.has(b))
-  if (!hub && fresh.length === 0) return null
+  if (!hub && fresh.length === 0 && !unsure) return null
   const own = fanIn?.boundary ?? null
   const boundary = bound[0] ?? (own !== null && declared.has(own) ? own : null)
+  const rules = (policy?.rules ?? []).filter(r => fresh.includes(r.from)).map(ruleText)
+  const may = `may bind this file; run check_architecture.`
+  if (!hub && boundary === null) return { text: `knossos: ${path}: rules ${may}`, ruled: fresh }
   const head = hub
     ? `knossos: ${path}${boundary === null ? '' : ` (${boundary})`} has ${fanIn.dependent_files} dependent files.`
     : `knossos: ${path} is in ${boundary}.`
-  const rules = (policy?.rules ?? []).filter(r => fresh.includes(r.from)).map(ruleText)
-  return { text: rules.length === 0 ? head : `${head} Policy: ${rules.join('; ')}.`, ruled: fresh }
+  const stated = rules.length === 0 ? head : `${head} Policy: ${rules.join('; ')}.`
+  return { text: unsure ? `${stated} ${rules.length === 0 ? 'Rules' : 'Other rules'} ${may}` : stated, ruled: fresh }
 }
 
 /** How many tests a tests note names before `and N more`. */

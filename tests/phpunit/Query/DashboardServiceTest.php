@@ -626,7 +626,7 @@ final class DashboardServiceTest extends KnossosTestCase
         [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
         try {
             $policy = (new DashboardService($pdo))->dashboard($root)['policy'];
-            assertSame(['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'files' => [], 'files_truncated' => false], $policy);
+            assertSame(['status' => 'not_evaluated', 'total' => 0, 'truncated' => false, 'truncation_reasons' => [], 'items' => [], 'rules' => [], 'boundaries' => [], 'files' => [], 'files_truncated' => false], $policy);
         } finally {
             $this->removeTempTree($root);
         }
@@ -656,9 +656,10 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame('Core', $first['target_boundary']);
             assertSame('src/Edge/Caller.php', $first['path']);
             assertIsInt($first['line']);
-            // The rule itself, and the files it binds: those with a component in Edge.
+            // The rule itself, and the boundary it binds: Edge places its files by prefix, so none is listed.
             assertSame([['id' => 'edge-stays-out-of-core', 'from' => 'Edge', 'deny' => ['Core'], 'allow' => [], 'edge_kinds' => []]], $policy['rules']);
-            assertSame(['src/Edge/Caller.php' => ['Edge']], $policy['files']);
+            assertSame(['Edge' => ['rules' => ['edge-stays-out-of-core'], 'path_prefixes' => ['src/Edge/'], 'listed' => false]], $policy['boundaries']);
+            assertSame([], $policy['files']);
             assertSame(false, $policy['files_truncated']);
         } finally {
             $this->removeTempTree($root);
@@ -688,10 +689,15 @@ final class DashboardServiceTest extends KnossosTestCase
                 ],
                 $scope['rules'],
             );
-            assertSame(['src/Core/Greeter.php' => ['Core'], 'src/Edge/Caller.php' => ['Edge']], $scope['files']);
-            $capped = (new PolicyScope($pdo, 1))->build($projectId, $policies, $labels);
-            assertSame(['src/Core/Greeter.php' => ['Core']], $capped['files']);
-            assertSame(true, $capped['files_truncated']);
+            assertSame(
+                [
+                    'Core' => ['rules' => ['core-alone'], 'path_prefixes' => ['src/Core/'], 'listed' => false],
+                    'Edge' => ['rules' => ['edge-only-core'], 'path_prefixes' => ['src/Edge/'], 'listed' => false],
+                ],
+                $scope['boundaries'],
+            );
+            assertSame([], $scope['files']);
+            assertSame(false, $scope['files_truncated']);
             assertSame(2000, PolicyScope::FILE_CAP);
         } finally {
             $this->removeTempTree($root);
@@ -720,9 +726,20 @@ final class DashboardServiceTest extends KnossosTestCase
                 . "SELECT 'inferred-edge', project_id, node_id, last_scan_id FROM boundary_memberships WHERE boundary_id = :core",
             );
             $members->execute(['core' => $coreId]);
+            $labels = BoundaryLabels::load($pdo, $projectId);
             $policies = [['id' => 'edge-stays-out-of-core', 'from_boundary' => $edgeId, 'deny_targets' => [$coreId]]];
-            $scope = (new PolicyScope($pdo))->build($projectId, $policies, BoundaryLabels::load($pdo, $projectId));
-            assertSame(['src/Edge/Caller.php' => ['Edge']], $scope['files']);
+            $scope = (new PolicyScope($pdo))->build($projectId, $policies, $labels);
+            assertSame(['Edge' => ['rules' => ['edge-stays-out-of-core'], 'path_prefixes' => ['src/Edge/'], 'listed' => false]], $scope['boundaries']);
+            assertSame([], $scope['files']);
+            // The twin itself, named by its id, places its members by namespace: its files are listed, up to the cap.
+            $twin = [['id' => 'twin-alone', 'from_boundary' => 'inferred-edge', 'deny_targets' => [$edgeId]]];
+            $listed = (new PolicyScope($pdo))->build($projectId, $twin, $labels);
+            assertSame(['Edge' => ['rules' => ['twin-alone'], 'path_prefixes' => [], 'listed' => true]], $listed['boundaries']);
+            assertSame(['src/Core/Greeter.php' => ['Edge']], $listed['files']);
+            assertSame(false, $listed['files_truncated']);
+            $capped = (new PolicyScope($pdo, 0))->build($projectId, $twin, $labels);
+            assertSame([], $capped['files']);
+            assertSame(true, $capped['files_truncated']);
         } finally {
             $this->removeTempTree($root);
         }
