@@ -62,7 +62,7 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  */
 function world(
   on: On,
-  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[] } = {},
+  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[] } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[] } = {},
 ) {
   const clock = mock.clock(on)
@@ -72,6 +72,7 @@ function world(
     dashboard: answers.dashboard ?? [{ stdout: dashboard }],
     brief: answers.brief ?? [{ stdout: brief() }],
     detail: answers.detail ?? [{ stdout: '' }],
+    scan: answers.scan ?? [{ stdout: '{"status":"ok"}' }],
   }
   const calls: string[][] = []
   const toasts: string[] = []
@@ -115,13 +116,22 @@ function world(
     panes.delete(e.id)
     return { value: undefined }
   })
+  // The focus ring lands where it was asked to.
+  on('ui.focus', () => ({}))
   on('ui.panes', () => ({
     value: [...panes].map(id => ({ id, title: 'Knossos', isShown: true, isFocused: false, isPlaced: true })),
   }))
   on('process.run', async (_$, e) => {
     calls.push([...e.argv])
     const sub = e.argv[2]
-    const queue = sub === 'dashboard' ? queues.dashboard : sub === 'component-detail' ? queues.detail : queues.brief
+    const queue =
+      sub === 'dashboard'
+        ? queues.dashboard
+        : sub === 'component-detail'
+          ? queues.detail
+          : sub === 'scan'
+            ? queues.scan
+            : queues.brief
     const answer = (queue.length > 1 ? queue.shift() : queue[0]) ?? { stdout: '' }
     if (answer.hold !== undefined) await clock.sleep(answer.hold)
     return {
@@ -133,7 +143,9 @@ function world(
   on('tool.call', (_$, e) => ({ result: {} as never, text: `ran ${e.tool}` }))
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
   const detailRuns = () => calls.filter(c => c[2] === 'component-detail')
-  return { clock, calls, briefRuns, detailRuns, toasts, logs, opened, closed, invalidations }
+  const scanRuns = () => calls.filter(c => c[2] === 'scan')
+  const dashboardRuns = () => calls.filter(c => c[2] === 'dashboard')
+  return { clock, calls, briefRuns, detailRuns, scanRuns, dashboardRuns, toasts, logs, opened, closed, invalidations }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -566,7 +578,7 @@ describe('knossos mod', () => {
     expect(await bandText($)).toBeUndefined()
     const ui = await mountPane($)
     expect(await ui.find({ key: 'empty' })).toBeUndefined()
-    expect(await ui.find({ key: 'hubs' })).toBeUndefined()
+    expect(await ui.find({ key: 'pane' })).toBeUndefined()
     await ui.unmount()
   })
 
@@ -609,8 +621,8 @@ describe('knossos mod', () => {
     await slash($, '')
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'hubs' }))?.text).toContain('Router (class) in 41')
-    expect((await ui.find({ key: 'freshness' }))?.text).toContain('refresh failed, figures from 1s ago')
+    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Router')
+    expect((await ui.find({ key: 'title' }))?.text).toContain('● refresh failed · 1s')
     await ui.unmount()
   })
 
@@ -628,9 +640,9 @@ describe('knossos mod', () => {
     await w.clock.settle()
     expect(w.calls.filter(c => c[2] === 'dashboard').length).toBe(before + 1)
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'freshness' }))?.text).toBe('snapshot fresh, 1s old · 0 files drifted')
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh · 1s$/)
     await w.clock.advance(5_000)
-    expect((await ui.find({ key: 'freshness' }))?.text).toBe('snapshot fresh, 6s old · 0 files drifted')
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh · 6s$/)
     await ui.unmount()
   })
 
@@ -642,8 +654,8 @@ describe('knossos mod', () => {
     await slash($, '')
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'freshness' }))?.text).toBe('refresh failed, figures from 11s ago · snapshot fresh · 0 files drifted')
-    expect((await ui.find({ key: 'hubs' }))?.text).toContain('Router (class) in 41')
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● refresh failed · 11s$/)
+    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Router')
     await ui.unmount()
   })
 
@@ -652,9 +664,9 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    const text = (await ui.find({ key: 'overview' }))?.text ?? ''
-    expect(text).toContain('Hubs (partial)')
-    expect(text).toContain('Hotspots (partial)')
+    expect((await ui.find({ key: 'top-head' }))?.text).toContain('partial')
+    await ui.press({ key: 'tab:hubs' })
+    expect((await ui.find({ key: 'hubs-head' }))?.text).toContain('partial')
     await ui.unmount()
   })
 
@@ -751,18 +763,21 @@ describe('knossos mod', () => {
     expect(w.opened).toEqual([])
   })
 
-  test('the pane lists hubs, hotspots, cycles and a trend on both surfaces', async ($, on) => {
+  test('the overview shows health and the most depended on, on both surfaces', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
     await $.session.start(START)
     await w.clock.settle()
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
-      expect((await ui.find({ key: 'hubs' }))?.text).toContain('Router (class) in 41')
-      expect((await ui.find({ key: 'hotspots' }))?.text).toContain('Kernel (class) 7.3')
-      expect((await ui.find({ key: 'cycles' }))?.text).toContain('Cycles: 1')
-      expect((await ui.find({ key: 'cycles' }))?.text).toContain('2: A → B')
-      expect((await ui.find({ key: 'dead-code' }))?.text).toContain('Dead-code candidates: 4')
-      expect(await ui.find({ key: 'trend' })).toBeDefined()
+      expect((await ui.find({ key: 'title' }))?.text).toMatch(/^repo +● fresh · 1s$/)
+      expect((await ui.find({ key: 'summary' }))?.text).toBe('2 hubs · 1 cycle · 4 dead code · 0 drifted')
+      expect((await ui.find({ key: 'health-cycles' }))?.text).toMatch(/cycles +1/)
+      expect((await ui.find({ key: 'health-degree' }))?.text).toMatch(/max degree +12/)
+      expect((await ui.find({ key: 'health-dead' }))?.text).toMatch(/dead code +4/)
+      expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^› +Router .*41$/)
+      // A hotspot that is not a hub is listed once, marked.
+      expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/◆ Kernel/)
+      expect(await ui.find({ key: 'tab-rule' })).toEqual(surface === 'terminal' ? expect.anything() : undefined)
       await ui.unmount()
     }
   })
@@ -773,22 +788,241 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'cycles' }))?.text).toContain('Cycles: 50+')
-    expect((await ui.find({ key: 'dead-code' }))?.text).toContain('Dead-code candidates: 100+')
+    expect((await ui.find({ key: 'health-cycles' }))?.text).toContain('50+')
+    expect((await ui.find({ key: 'health-dead' }))?.text).toContain('100+')
     await ui.unmount()
   })
 
-  test('the trend rows are labelled per snapshot and end on the newest value', async ($, on) => {
+  test('a trend is drawn only from five snapshots that move', async ($, on) => {
+    const trend = [1, 3, 2, 2, 4].map((cycles, i) => ({ snapshot_id: `s${i}`, cycles, max_degree: 10 }))
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard({ trend }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    // Two snapshots: numbers only.
+    expect((await ui.find({ key: 'health-head' }))?.text).not.toContain('trend')
+    await slash($, '')
+    await w.clock.settle()
+    expect((await ui.find({ key: 'health-head' }))?.text).toContain('trend (5 scans)')
+    expect((await ui.find({ key: 'health-cycles' }))?.text).toContain('▁▆▃▃█')
+    // A flat line says nothing.
+    expect((await ui.find({ key: 'health-degree' }))?.text).not.toMatch(/[▁-█]/)
+    await ui.unmount()
+  })
+
+  test('the tabs switch by their hotkey buttons, and the hubs tab lists every ranked component', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      const tabs = await ui.findAll({ type: 'Button' })
+      expect(tabs.filter(t => String(t.key).startsWith('tab:')).map(t => `${String(t.props.hotkey)} ${t.text}`)).toEqual([
+        '1 Overview',
+        '2 Hubs',
+        '3 Boundaries',
+        '4 Cycles',
+        '5 Issues',
+      ])
+      // The active tab is drawn at full strength, the others dim.
+      expect((await ui.find({ key: 'tab:overview' }))?.props.dimColor).toBeUndefined()
+      expect((await ui.find({ key: 'tab:hubs' }))?.props.dimColor).toBe(true)
+      await ui.press({ key: 'tab:hubs' })
+      expect((await ui.find({ key: 'tab:hubs' }))?.props.dimColor).toBeUndefined()
+      expect((await ui.find({ key: 'hub-head' }))?.text).toMatch(/name +in out cross$/)
+      expect((await ui.find({ key: 'hub-0' }))?.text).toMatch(/^› +Router .*41 +3 +2$/)
+      expect((await ui.find({ key: 'hub-1' }))?.text).toMatch(/◆ Kernel/)
+      await ui.press({ key: 'tab:cycles' })
+      expect((await ui.find({ key: 'pane' }))?.text).toContain('coming next')
+      expect(await ui.find({ key: 'hub-0' })).toBeUndefined()
+      await ui.press({ key: 'tab:overview' })
+      expect(await ui.find({ key: 'top-0' })).toBeDefined()
+      await ui.unmount()
+    }
+  })
+
+  test('j and k move the selection marker within the list, and o opens the marked row', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Kernel') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'down' }))?.props.hotkey).toBe('j')
+    expect((await ui.find({ key: 'up' }))?.props.hotkey).toBe('k')
+    expect((await ui.find({ key: 'open' }))?.props.hotkey).toBe('o')
+    await ui.press({ key: 'up' })
+    expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^›/)
+    await ui.press({ key: 'down' })
+    await ui.press({ key: 'down' })
+    expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^ /)
+    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Kernel')
+    expect(w.detailRuns()[0]?.slice(4)).toEqual(['App\\Kernel'])
+    await ui.unmount()
+  })
+
+  test('the focus ring moving onto a row moves the marker with it, and Enter there opens it', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Kernel') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect(await $.ui.focus({ requestId: 'knossos', key: 'row:1' })).toEqual({})
+    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    // Onto a tab: the marker stays on the list.
+    await $.ui.focus({ requestId: 'knossos', key: 'tab:hubs' })
+    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    // Enter on the focused row presses it.
+    await ui.press({ key: 'row:1' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Kernel')
+    await ui.press({ key: 'back' })
+    expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
+    await ui.unmount()
+  })
+
+  test('the key help line shows and hides', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    const trend = (await ui.find({ key: 'trend' }))?.text
-    expect(trend).toContain('cycles per snapshot')
-    expect(trend).toContain('▁█ 3')
-    expect(trend).toContain('max degree per snapshot')
-    expect(trend).toContain('▁█ 12')
+    expect(await ui.find({ key: 'help-0' })).toBeUndefined()
+    await ui.press({ key: 'keys' })
+    expect((await ui.find({ key: 'help-0' }))?.text).toContain('1–5 or a click switch tabs')
+    await ui.press({ key: 'keys' })
+    expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.unmount()
+  })
+
+  test('the rescan action shows only for a stale or drifted snapshot', async ($, on) => {
+    const fresh = paneDashboard()
+    const drifted = paneDashboard({ freshness: { state: 'fresh', age_seconds: 1, drift_files: 3 } })
+    const stale = paneDashboard({ freshness: { state: 'stale', age_seconds: 7200, drift_files: 0 } })
+    const w = world(on, { dashboard: [{ stdout: fresh }, { stdout: drifted }, { stdout: stale }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect(await ui.find({ key: 'rescan' })).toBeUndefined()
+    await slash($, '')
+    await w.clock.settle()
+    expect((await ui.find({ key: 'rescan' }))?.props.hotkey).toBe('r')
+    await slash($, '')
+    await slash($, '')
+    await w.clock.settle()
+    expect((await ui.find({ key: 'title' }))?.text).toMatch(/● stale · 2h {2}rescan$/)
+    expect(w.scanRuns()).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a rescan runs one scan, shows scanning, then refreshes the pane', async ($, on) => {
+    const stale = paneDashboard({ freshness: { state: 'stale', age_seconds: 7200, drift_files: 4 } })
+    const after = paneDashboard({ snapshot_id: 's2' })
+    const w = world(on, { dashboard: [{ stdout: stale }, { stdout: after }], scan: [{ stdout: '{"status":"ok"}', hold: 1000 }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await mountPane($, surface)
+      if (surface === 'terminal') {
+        const before = w.dashboardRuns().length
+        await ui.press({ key: 'rescan' })
+        await ui.press({ key: 'rescan' })
+        // Nothing runs inside the press: the scan starts on a timer.
+        expect(w.scanRuns()).toEqual([])
+        await w.clock.settle()
+        expect((await ui.find({ key: 'title' }))?.text).toMatch(/● scanning…$/)
+        expect(await ui.find({ key: 'rescan' })).toBeUndefined()
+        await w.clock.advance(1000)
+        await w.clock.settle()
+        // A second press while one is coming adds nothing.
+        expect(w.scanRuns()).toHaveLength(1)
+        expect(w.scanRuns()[0]).toEqual(['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'scan', ROOT])
+        expect(w.dashboardRuns().length).toBeGreaterThan(before)
+      }
+      expect((await ui.find({ key: 'title' }))?.text).toMatch(/● fresh · 1s$/)
+      expect(await ui.find({ key: 'rescan' })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+
+  test('a rescan that does not land says why and keeps the figures', async ($, on) => {
+    const stale = paneDashboard({ freshness: { state: 'stale', age_seconds: 7200, drift_files: 4 } })
+    const w = world(on, { dashboard: [{ stdout: stale }], scan: [{ stdout: '{"status":"not-allowed"}' }, { stdout: '' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    const loads = w.dashboardRuns().length
+    await ui.press({ key: 'rescan' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'title' }))?.text).toContain('● rescan failed: not an allowed root')
+    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Router')
+    expect(w.dashboardRuns().length).toBe(loads)
+    // Still stale, so it can be tried again; silence is a failure too.
+    await ui.press({ key: 'rescan' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'title' }))?.text).toContain('● rescan failed: knossos said nothing')
+    expect(w.scanRuns()).toHaveLength(2)
+    await ui.unmount()
+  })
+
+  test('a rescan and a turn scan never run at once', async ($, on) => {
+    const stale = paneDashboard({ freshness: { state: 'stale', age_seconds: 7200, drift_files: 4 } })
+    const w = world(on, {
+      dashboard: [{ stdout: stale }],
+      scan: [{ stdout: '{"status":"ok"}', hold: 3000 }],
+      brief: [{ stdout: brief(), hold: 1000 }],
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'rescan' })
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    // The turn's scan waits for the rescan.
+    expect(w.briefRuns()).toEqual([])
+    await w.clock.advance(3000)
+    await w.clock.settle()
+    expect(w.briefRuns()).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('nothing in the pane is wider than its body', async ($, on) => {
+    const long = paneDashboard({
+      project_root: '/work/a-project-with-a-rather-long-directory-name',
+      freshness: { state: 'stale', age_seconds: 40_000, drift_files: 41 },
+      hubs: [
+        { name: 'ArchitectureQueryService', canonical_name: 'Knossos\\Query\\ArchitectureQueryService', kind: 'class', boundary: 'namespace:Knossos', in_degree: 262, out_degree: 8, cross_boundary_degree: 1 },
+        { name: 'symbol', canonical_name: 'Knossos\\Store\\StableId::symbol', kind: 'method', boundary: 'core', in_degree: 199, out_degree: 1, cross_boundary_degree: 0 },
+      ],
+    })
+    const w = world(on, { dashboard: [{ stdout: long }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      for (const bodyColumns of [40, 60, 90, 120]) {
+        const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns } })
+        for (const tab of ['tab:overview', 'tab:hubs', 'keys']) {
+          await ui.press({ key: tab })
+          // Every row is one Box under the pane; its text is what it draws, less the `k: ` the
+          // terminal puts before a hotkey Button's label, added back here per row.
+          const rows = (await ui.findAll({ type: 'Box' })).filter(b => b.key !== 'pane')
+          expect(rows.length).toBeGreaterThan(5)
+          const prefixes = new Map<string, number>()
+          for (const b of await ui.findAll({ type: 'Button' })) {
+            if (b.props.hotkey === undefined) continue
+            const id = String(b.key)
+            const row = id.startsWith('tab:') ? 'tabs' : id === 'rescan' ? 'title' : 'keys'
+            prefixes.set(row, (prefixes.get(row) ?? 0) + 3)
+          }
+          for (const row of rows) {
+            const width = [...row.text].length + (prefixes.get(String(row.key)) ?? 0)
+            expect(width, `${surface} ${bodyColumns} ${String(row.key)}: ${row.text}`).toBeLessThanOrEqual(bodyColumns)
+          }
+        }
+        await ui.unmount()
+      }
+    }
   })
 
   test('the pane without data says how to get some', async ($, on) => {
@@ -798,7 +1032,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const ui = await mountPane($)
     expect((await ui.find({ key: 'empty' }))?.text).toContain('knossos scan')
-    expect(await ui.find({ key: 'hubs' })).toBeUndefined()
+    expect(await ui.find({ key: 'pane' })).toBeUndefined()
     await ui.unmount()
   })
 
@@ -807,7 +1041,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     const detail = (await ui.find({ key: 'detail' }))?.text
     expect(detail).toContain('class App\\Router')
@@ -817,7 +1051,7 @@ describe('knossos mod', () => {
     ])
     await ui.press({ key: 'back' })
     expect(await ui.find({ key: 'detail' })).toBeUndefined()
-    expect(await ui.find({ key: 'hubs' })).toBeDefined()
+    expect(await ui.find({ key: 'pane' })).toBeDefined()
     await ui.unmount()
   })
 
@@ -826,7 +1060,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hot-0' })
+    await ui.press({ key: 'row:1' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Kernel')
     // Looked up by its canonical name, shown by its display name.
@@ -839,7 +1073,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     // Drawn from state alone: no process has run inside the render.
     expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspecting Router…')
     await w.clock.settle()
@@ -855,10 +1089,10 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await w.clock.advance(1000)
     expect(w.detailRuns()).toHaveLength(1)
@@ -874,10 +1108,10 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
-    await ui.press({ key: 'hot-0' })
+    await ui.press({ key: 'row:1' })
     await w.clock.settle()
     // Router's answer arrives while Kernel is on screen.
     await w.clock.advance(1000)
@@ -897,13 +1131,13 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
-    await ui.press({ key: 'hot-0' })
+    await ui.press({ key: 'row:1' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspecting Router…')
     await w.clock.advance(1000)
@@ -917,10 +1151,10 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     await ui.press({ key: 'back' })
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Router')
     expect(w.detailRuns()).toHaveLength(1)
@@ -965,11 +1199,11 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('No details for Router')
     await ui.press({ key: 'back' })
-    await ui.press({ key: 'hub-0' })
+    await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect(w.detailRuns()).toHaveLength(2)
     await ui.unmount()
@@ -998,7 +1232,7 @@ describe('knossos mod', () => {
     await slash($, '')
     const ui = await mountPane($)
     expect(await ui.find({ key: 'detail' })).toBeUndefined()
-    expect(await ui.find({ key: 'hubs' })).toBeDefined()
+    expect(await ui.find({ key: 'pane' })).toBeDefined()
     await ui.unmount()
   })
 
@@ -1037,7 +1271,7 @@ describe('knossos mod', () => {
     await w.clock.advance(5_000)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'hubs' }))?.text).toContain('Newer')
+    expect((await ui.find({ key: 'top-0' }))?.text).toContain('Newer')
     await ui.unmount()
   })
 

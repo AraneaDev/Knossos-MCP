@@ -1,15 +1,16 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderSurface, Timer } from 'claude-code'
 
-import { bandModel, freshnessLine } from './lib/band'
+import { bandModel } from './lib/band'
 import type { JobState } from './lib/band'
-import { countLabel, detailLines, parseComponentDetail, parseDashboard, parseTurnBrief } from './lib/envelopes'
+import { detailLines, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './lib/envelopes'
 import type { TurnBrief } from './lib/envelopes'
+import { CONTENT_MAX, listFor, mergeRanked, paneInput, paneRows, paneStatus, TABS, wrapWords } from './lib/layout'
+import type { Item, Row } from './lib/layout'
 import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
 import { SingleFlight } from './lib/scheduler'
-import { sparkline } from './lib/sparkline'
-import type { DetailState, Inspected, KnossosView, RefreshState } from '../types'
+import type { DetailState, Inspected, KnossosView, PaneTab, RefreshState, RescanState } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -23,9 +24,9 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const
 const BRIEF_TIMEOUT_MS = 70_000
 const DASHBOARD_TIMEOUT_MS = 35_000
 const DETAIL_TIMEOUT_MS = 20_000
+/** The wrapper bounds a rescan at 60 s, as a turn brief. */
+const RESCAN_TIMEOUT_MS = 70_000
 const USAGE = 'Usage: /knossos-pane to toggle the architecture pane; /knossos-pane inspect <component> to open it on one component.'
-/** How many members of a cycle the pane names before it stops at an ellipsis. */
-const CYCLE_MEMBERS = 4
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
 const AGE_TICK_MS = 1_000
 const DEFAULT_THRESHOLD = 20
@@ -35,9 +36,16 @@ const MAX_THRESHOLD = 100_000
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
 const job = atom({ plugin: 'knossos', key: 'job' } as const, { phase: 'idle', lastAttemptAt: null } as JobState)
-const view = atom({ plugin: 'knossos', key: 'view' } as const, { inspect: null, isBandHidden: false } as KnossosView)
+const view = atom({ plugin: 'knossos', key: 'view' } as const, {
+  inspect: null,
+  isBandHidden: false,
+  tab: 'overview',
+  selected: 0,
+  showKeys: false,
+} as KnossosView)
 const detail = atom({ plugin: 'knossos', key: 'detail' } as const, null as DetailState | null)
 const refresh = atom({ plugin: 'knossos', key: 'refresh' } as const, { fetchedAt: null, failed: false } as RefreshState)
+const rescan = atom({ plugin: 'knossos', key: 'rescan' } as const, { phase: 'idle', reason: null } as RescanState)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -66,13 +74,19 @@ const mod = {
    */
   disabled: false,
   flight: null as SingleFlight | null,
+  /** The pane's rescans, one at a time. */
+  rescanFlight: null as SingleFlight | null,
+  /** Set between a rescan press and the timer that starts it. */
+  rescanQueued: false,
+  /** The tail of the scans queued so far: a turn's scan and a rescan never write one graph at once. */
+  scanning: Promise.resolve() as Promise<unknown>,
   /** Dashboard loads, one at a time: an older, slower load can never land over a newer one. */
   dashboardFlight: null as SingleFlight | null,
   /** Whether the latest dashboard load stored what it read. */
   dashboardStored: false,
   /** What the band last drew, or null when it drew nothing: the age tick compares against it. */
   bandText: null as string | null,
-  /** The pane's freshness line as last drawn, or null when the pane drew none: the age tick compares against it too. */
+  /** The pane's header status as last drawn, or null when the pane drew none: the age tick compares against it too. */
   paneText: null as string | null,
   /** Keeps the band's age current while the mod is on. */
   ticker: null as Timer | null,
@@ -102,7 +116,7 @@ async function tickAge($: EngineInterface): Promise<void> {
   const now = await $.clock.now()
   const model = bandModel(await read($, brief), await read($, job), now)
   const d = await read($, dashboard)
-  const pane = d?.status === 'ok' ? freshnessLine(d, await read($, refresh), now) : null
+  const pane = d?.status === 'ok' ? paneStatus(d, await read($, refresh), await read($, rescan), now).text : null
   const bandStale = mod.bandText !== null && (model?.text ?? null) !== mod.bandText
   const paneStale = mod.paneText !== null && pane !== mod.paneText
   if (bandStale || paneStale) $.ui.invalidate('ui.render')
@@ -277,12 +291,6 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
   return 'Knossos pane opened.'
 }
 
-/** One trend row: its label, the glyphs oldest to newest, and the newest value. */
-function trendRow(label: string, values: number[]): string {
-  const newest = values.at(-1)
-  return newest === undefined ? `${label}  no snapshots yet` : `${label}  ${sparkline(values)} ${newest}`
-}
-
 /** Stores what a turn brief says, by its status; resolves true when it is a fresh `ok`. */
 async function settleBrief($: EngineInterface, parsed: TurnBrief | null, now: number): Promise<boolean> {
   if (parsed?.status === 'no-binary') {
@@ -315,7 +323,7 @@ async function scan($: EngineInterface): Promise<void> {
   try {
     await update($, job, (j): JobState => ({ ...j, phase: 'scanning' }))
     const args = [...files.map(f => `--files=${f}`), ...(mod.enforce ? [] : ['--no-policies'])]
-    parsed = parseTurnBrief(await wrapper($, 'turn-brief', args, BRIEF_TIMEOUT_MS))
+    parsed = parseTurnBrief(await exclusively(() => wrapper($, 'turn-brief', args, BRIEF_TIMEOUT_MS)))
   } finally {
     // A brief that never ran its scan saw none of these edits: the next one must report them,
     // since only reported files count toward the policy verdict.
@@ -378,6 +386,133 @@ async function noteEdit($: EngineInterface, reported: string): Promise<string | 
   return entry === undefined || entry.dependent_files < mod.threshold ? null : editNote(entry)
 }
 
+/**
+ * Runs `job` once every scan queued before it has settled, so a turn's scan
+ * and a rescan never write one graph at once. A failed job does not stall
+ * the queue.
+ */
+function exclusively<T>(job: () => Promise<T>): Promise<T> {
+  const run = mod.scanning.then(job, job)
+  mod.scanning = run.catch(() => undefined)
+  return run
+}
+
+/**
+ * Starts the pane's rescan once the press has resolved. A press while one is
+ * queued or running adds nothing: the scan it asks for is already coming.
+ */
+function requestRescan($: EngineInterface): void {
+  const flight = (mod.rescanFlight ??= new SingleFlight(() => rescanSafely($)))
+  if (mod.rescanQueued || flight.isRunning) return
+  mod.rescanQueued = true
+  $.clock.after(0, () => {
+    mod.rescanQueued = false
+    void flight.request()
+  })
+}
+
+/** One rescan; a run that throws leaves the header saying it failed rather than scanning forever. */
+async function rescanSafely($: EngineInterface): Promise<void> {
+  try {
+    await runRescan($)
+  } catch {
+    await update($, rescan, (): RescanState => ({ phase: 'failed', reason: null })).catch(() => undefined)
+  }
+}
+
+/**
+ * Rescans the project incrementally through the wrapper's `scan`, then
+ * reloads the dashboard so the pane draws the new snapshot. The header shows
+ * `scanning…` meanwhile and the reason when it does not land.
+ */
+async function runRescan($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
+  await update($, rescan, (): RescanState => ({ phase: 'scanning', reason: null }))
+  const parsed = parseRescan(await exclusively(() => wrapper($, 'scan', [], RESCAN_TIMEOUT_MS)))
+  if (parsed?.status === 'no-binary') {
+    await update($, rescan, (): RescanState => ({ phase: 'idle', reason: null }))
+    await disable($)
+    return
+  }
+  if (parsed?.status !== 'ok') {
+    await update($, rescan, (): RescanState => ({ phase: 'failed', reason: rescanReason(parsed) }))
+    return
+  }
+  await refreshDashboard($)
+  await update($, rescan, (): RescanState => ({ phase: 'idle', reason: null }))
+}
+
+/** The rows the selection walks on the tab the pane shows, from state. */
+async function currentList($: EngineInterface): Promise<Item[]> {
+  const d = await read($, dashboard)
+  if (d?.status !== 'ok') return []
+  const v = await read($, view)
+  return listFor({ tab: v.tab, items: mergeRanked(d) })
+}
+
+/** Moves the selection marker by `by` rows, kept inside the list. */
+async function moveSelection($: EngineInterface, by: number): Promise<void> {
+  const length = (await currentList($)).length
+  await update($, view, v => ({ ...v, selected: Math.min(Math.max(0, v.selected + by), Math.max(0, length - 1)) }))
+}
+
+/** Opens the detail of the row at `index` (the marker's when absent), and leaves the marker there. */
+async function openRow($: EngineInterface, index?: number): Promise<void> {
+  const at = index ?? (await read($, view)).selected
+  const item = (await currentList($))[at]
+  if (item === undefined) return
+  await update($, view, v => ({ ...v, selected: at }))
+  await showComponent($, { name: item.canonical, label: item.name })
+}
+
+/** What a press on the pane does, by the pressed element's id. */
+async function pressPane($: EngineInterface, id: string): Promise<void> {
+  if (id.startsWith('tab:')) {
+    const tab = id.slice(4) as PaneTab
+    if (TABS.some(t => t.id === tab)) await update($, view, v => ({ ...v, tab, selected: 0 }))
+    return
+  }
+  if (id.startsWith('row:')) return openRow($, Number(id.slice(4)))
+  if (id === 'down' || id === 'up') return moveSelection($, id === 'down' ? 1 : -1)
+  if (id === 'open') return openRow($)
+  if (id === 'keys') return update($, view, v => ({ ...v, showKeys: !v.showKeys }))
+  if (id === 'rescan') requestRescan($)
+}
+
+/**
+ * One laid-out row as elements: a pressable segment is a plain Button, any
+ * other a Text. The layout already fitted the row, so nothing here wraps.
+ */
+function drawRow(ui: Elements[RenderSurface], row: Row, press: (id: string) => void) {
+  const { Box, Button, Text } = ui
+  return (
+    <Box key={row.key} flexDirection="row">
+      {row.segments.map((s, i) =>
+        s.press ? (
+          <Button
+            key={s.press.id}
+            plain
+            label={s.press.label}
+            {...(s.press.hotkey === undefined ? {} : { hotkey: s.press.hotkey })}
+            {...(s.dim ? { dimColor: true } : {})}
+            onPress={() => press(s.press!.id)}
+          />
+        ) : (
+          <Text
+            key={`${row.key}-${i}`}
+            wrap="truncate-end"
+            {...(s.color === undefined ? {} : { color: s.color })}
+            {...(s.dim ? { dimColor: true } : {})}
+            {...(s.bold ? { bold: true } : {})}
+          >
+            {s.text}
+          </Text>
+        ),
+      )}
+    </Box>
+  )
+}
+
 export const register: Register = (on, options) => {
   if (options.enabled === false) return
   mod.threshold = thresholdOf(options.fanInThreshold)
@@ -386,6 +521,9 @@ export const register: Register = (on, options) => {
   mod.edited = new Set()
   mod.disabled = false
   mod.flight = null
+  mod.rescanFlight = null
+  mod.rescanQueued = false
+  mod.scanning = Promise.resolve()
   mod.dashboardFlight = null
   mod.dashboardStored = false
   mod.bandText = null
@@ -458,8 +596,19 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'knossos-pane' }, async ($, e) => ({ text: await runCommand($, e.args) }))
 
+  // The arrows, Tab or a click moving the focus onto a listed row move the marker with it.
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    const moved = await next(e)
+    // A person's move names the element; a `$.ui.focus` call may arrive as its own arguments, naming it `key`.
+    const element = e.element ?? (e as { key?: unknown }).key
+    const index = typeof element === 'string' && element.startsWith('row:') ? Number(element.slice(4)) : Number.NaN
+    if (moved.deny === undefined && Number.isInteger(index)) await update($, view, v => ({ ...v, selected: index }))
+    return moved
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const ui = $.ui.resolve(e)
+    const { Box, Button, Text } = ui
     mod.paneText = null
     if (mod.disabled) return <Box key="off" />
     const d = await read($, dashboard)
@@ -471,7 +620,7 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    const show = (name: string, label: string) => showComponent($, { name, label })
+    const columns = Math.max(1, Math.min(CONTENT_MAX, e.props.bodyColumns))
     if (v.inspect !== null) {
       const { name, label } = v.inspect
       // State only: a detail for another component (an answer that came late) is not this one's.
@@ -482,65 +631,27 @@ export const register: Register = (on, options) => {
           : (shown.lines ?? [`No details for ${label}: knossos said nothing.`])
       return (
         <Box key="detail" flexDirection="column">
-          <Text bold>{label}</Text>
-          {lines.map((line, i) => (
-            <Text key={`line-${i}`}>{line}</Text>
-          ))}
-          <Button key="back" label="back" onPress={() => update($, view, x => ({ ...x, inspect: null }))} />
+          <Text bold wrap="truncate-end">
+            {label}
+          </Text>
+          {lines.flatMap((line, i) =>
+            wrapWords(line, columns).map((part, j) => (
+              <Text key={`line-${i}-${j}`} wrap="truncate-end">
+                {part}
+              </Text>
+            )),
+          )}
+          <Button key="back" plain hotkey="b" label="back" onPress={() => update($, view, x => ({ ...x, inspect: null }))} />
         </Box>
       )
     }
-    const freshness = freshnessLine(d, await read($, refresh), await $.clock.now())
-    mod.paneText = freshness
-    // The degree walk stopped early: both rankings cover only what it reached.
-    const partial = d.hubs_truncated ? ' (partial)' : ''
+    const input = paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), e.surface === 'terminal')
+    mod.paneText = input.status.text
     // No loop variable may be called `h`: JSX compiles to h(...), and a
     // parameter of that name shadows the element factory inside its callback.
     return (
-      <Box key="overview" flexDirection="column">
-        <Box key="freshness">
-          <Text dimColor>{freshness}</Text>
-        </Box>
-        <Text bold>Hubs{partial}</Text>
-        <Box key="hubs" flexDirection="column">
-          {d.hubs.length === 0 && <Text dimColor>none</Text>}
-          {d.hubs.map((hub, i) => (
-            <Button
-              key={`hub-${i}`}
-              plain
-              label={`${hub.name} (${hub.kind}) in ${hub.in_degree}`}
-              onPress={() => show(hub.canonical_name, hub.name)}
-            />
-          ))}
-        </Box>
-        <Text bold>Hotspots{partial}</Text>
-        <Box key="hotspots" flexDirection="column">
-          {d.hotspots.length === 0 && <Text dimColor>none</Text>}
-          {d.hotspots.map((spot, i) => (
-            <Button
-              key={`hot-${i}`}
-              plain
-              label={`${spot.name} (${spot.kind}) ${spot.score.toFixed(1)}`}
-              onPress={() => show(spot.canonical_name, spot.name)}
-            />
-          ))}
-        </Box>
-        <Box key="cycles" flexDirection="column">
-          <Text bold>Cycles: {countLabel(d.cycles.count, d.cycles.truncated)}</Text>
-          {d.cycles.largest.map((c, i) => (
-            <Text key={`cycle-${i}`} dimColor>
-              {c.size}: {c.members.slice(0, CYCLE_MEMBERS).join(' → ')}
-              {c.members.length > CYCLE_MEMBERS ? ' …' : ''}
-            </Text>
-          ))}
-        </Box>
-        <Box key="dead-code">
-          <Text>Dead-code candidates: {countLabel(d.dead_code_candidates, d.dead_code_truncated)}</Text>
-        </Box>
-        <Box key="trend" flexDirection="column">
-          <Text>{trendRow('cycles per snapshot    ', d.trend.map(t => t.cycles))}</Text>
-          <Text>{trendRow('max degree per snapshot', d.trend.map(t => t.max_degree))}</Text>
-        </Box>
+      <Box key="pane" flexDirection="column">
+        {paneRows(input, columns).map(row => drawRow(ui, row, id => void pressPane($, id)))}
       </Box>
     )
   })

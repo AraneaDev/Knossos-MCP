@@ -1,8 +1,8 @@
-import type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, TurnBrief, Violation } from '../../types'
+import type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
-export type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, TurnBrief, Violation }
+export type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, Rescan, TurnBrief, Violation }
 
 // `no-binary` is the wrapper's own answer when there is nothing to run; every envelope may be it.
 const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
@@ -15,6 +15,7 @@ const DASH_OBJECTS = ['cycles', 'freshness']
 const DETAIL = new Set(['ok', 'unscanned', 'not-found', 'ambiguous', 'error', 'no-binary'])
 const DETAIL_ARRAYS = ['candidates']
 const DETAIL_OBJECTS = ['component']
+const RESCAN = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
 
 const isObject = (v: unknown): boolean => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -82,4 +83,19 @@ export function detailLines(detail: ComponentDetail, name: string): string[] {
   if (detail.status === 'ambiguous') return [`"${name}" names more than one component: ${detail.candidates.join(', ')}`]
   if (detail.status === 'unscanned') return ['No Knossos data for this project. Scan it with knossos scan.']
   return [`knossos could not read ${name}.`]
+}
+
+/** A rescan's answer from the wrapper's stdout; null for silence or anything unexpected. */
+export function parseRescan(stdout: string): Rescan | null {
+  return parse(stdout, RESCAN, [], []) as Rescan | null
+}
+
+/** Why a rescan did not land, in a few words for the pane's header. */
+export function rescanReason(rescan: Rescan | null): string {
+  if (rescan === null) return 'knossos said nothing'
+  if (rescan.status === 'not-allowed') return 'not an allowed root'
+  if (rescan.status === 'missing') return 'the project is gone'
+  if (rescan.status === 'unscanned') return 'never scanned'
+  if (rescan.status === 'scan-failed') return rescan.reason ?? 'the scan failed'
+  return 'knossos could not run it'
 }

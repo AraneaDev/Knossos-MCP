@@ -30,6 +30,16 @@ export type TurnBrief = {
 }
 /** A component the pane lists: `name` to show, `canonical_name` to look it up by. */
 export type Listed = { name: string; canonical_name: string; kind: string }
+/**
+ * A ranked component's degrees and the boundary the pane labels it with.
+ * Optional: a knossos older than the mod sends hotspots without them.
+ */
+export type Ranked = Listed & {
+  boundary?: string | null
+  in_degree?: number
+  out_degree?: number
+  cross_boundary_degree?: number
+}
 export type Dashboard = {
   status: 'ok' | 'unscanned' | 'error' | 'no-binary'
   path: string
@@ -37,11 +47,11 @@ export type Dashboard = {
   project_id: string | null
   snapshot_id: string | null
   freshness: { state: string; age_seconds: number | null; drift_files: number }
-  hubs: (Listed & { in_degree: number; out_degree: number; cross_boundary_degree: number })[]
+  hubs: (Ranked & { in_degree: number; out_degree: number; cross_boundary_degree: number })[]
   /** The degree walk stopped at a node, edge or time limit: hubs and hotspots rank only what it reached. */
   hubs_truncated: boolean
   hubs_truncation_reasons: string[]
-  hotspots: (Listed & { score: number })[]
+  hotspots: (Ranked & { score: number })[]
   dead_code_candidates: number
   dead_code_truncated: boolean
   cycles: {
@@ -86,7 +96,30 @@ export type RefreshState = { fetchedAt: number | null; failed: boolean }
 /** The component the pane shows: `name` is what it is looked up by, `label` what the pane prints. */
 export type Inspected = { name: string; label: string }
 
-export type KnossosView = { inspect: Inspected | null; isBandHidden: boolean }
+/** The pane's tabs, in their hotkey order (1 to 5). */
+export type PaneTab = 'overview' | 'hubs' | 'boundaries' | 'cycles' | 'issues'
+
+/**
+ * What the pane shows: a component's detail, or a tab with the row under the
+ * selection marker (an index into that tab's list), and the key help line.
+ */
+export type KnossosView = {
+  inspect: Inspected | null
+  isBandHidden: boolean
+  tab: PaneTab
+  selected: number
+  showKeys: boolean
+}
+
+/** The `scan` subcommand's answer: an incremental rescan the person asked for from the pane. */
+export type Rescan = {
+  status: 'ok' | 'not-allowed' | 'missing' | 'unscanned' | 'scan-failed' | 'error' | 'no-binary'
+  snapshot_id?: string | null
+  reason?: string | null
+}
+
+/** The pane's rescan: running, or failed with why (null when knossos said nothing). */
+export type RescanState = { phase: 'idle' | 'scanning' | 'failed'; reason: string | null }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -97,6 +130,7 @@ declare module 'claude-code' {
       view: KnossosView
       detail: DetailState | null
       refresh: RefreshState
+      rescan: RescanState
     }
   }
 }

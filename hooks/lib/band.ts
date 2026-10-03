@@ -1,4 +1,4 @@
-import type { Dashboard, JobState, RefreshState, TurnBrief } from '../../types'
+import type { JobState, TurnBrief } from '../../types'
 
 export type { JobState }
 export type BandModel = { tone: 'normal' | 'warn' | 'alert'; text: string; showDetails: boolean } | null
@@ -64,23 +64,4 @@ export function bandModel(brief: TurnBrief | null, job: JobState, now: number): 
   }
   if (body === null) return null
   return { tone, text: `knossos · ${body}${age === null ? '' : ` · as of ${age} ago`}`, showDetails: true }
-}
-
-/**
- * The pane's freshness line: the snapshot's state, how old it is and the
- * drift. The age is the snapshot's at the last refresh plus the time since,
- * so it keeps counting between refreshes. After a failed refresh the old
- * figures stay and the line says how old they are.
- *
- * Units: `age_seconds` is seconds; `now` and `refresh.fetchedAt` are the mod clock in milliseconds.
- */
-export function freshnessLine(d: Dashboard, refresh: RefreshState, now: number): string {
-  const sinceFetch = refresh.fetchedAt === null ? 0 : now - refresh.fetchedAt
-  const age = d.freshness.age_seconds === null ? null : formatAge(d.freshness.age_seconds * 1000 + sinceFetch)
-  const drift = `${plural(d.freshness.drift_files, 'file', 'files')} drifted`
-  if (refresh.failed) {
-    const from = age === null ? '' : `, figures from ${age} ago`
-    return `refresh failed${from} · snapshot ${d.freshness.state} · ${drift}`
-  }
-  return `snapshot ${d.freshness.state}${age === null ? '' : `, ${age} old`} · ${drift}`
 }

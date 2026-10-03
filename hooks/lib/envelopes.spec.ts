@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countLabel, detailLines, parseComponentDetail, parseDashboard, parseTurnBrief } from './envelopes'
+import { countLabel, detailLines, parseComponentDetail, parseDashboard, parseRescan, parseTurnBrief, rescanReason } from './envelopes'
 
 describe('envelopes', () => {
   it('empty stdout is no data', () => expect(parseTurnBrief('')).toBeNull())
@@ -83,4 +83,25 @@ describe('component detail', () => {
     ]))
   it('an error says knossos could not read it', () =>
     expect(detailLines({ status: 'error' } as never, 'Router')).toEqual(['knossos could not read Router.']))
+})
+
+describe('parseRescan and rescanReason', () => {
+  it('reads every status the scan subcommand answers', () => {
+    for (const status of ['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary']) {
+      expect(parseRescan(JSON.stringify({ status }))?.status).toBe(status)
+    }
+  })
+  it('treats silence and other statuses as no answer', () => {
+    expect(parseRescan('')).toBeNull()
+    expect(parseRescan('{"status":"fresh"}')).toBeNull()
+  })
+  it('says in a few words why a rescan did not land', () => {
+    expect(rescanReason(null)).toBe('knossos said nothing')
+    expect(rescanReason({ status: 'not-allowed' })).toBe('not an allowed root')
+    expect(rescanReason({ status: 'missing' })).toBe('the project is gone')
+    expect(rescanReason({ status: 'unscanned' })).toBe('never scanned')
+    expect(rescanReason({ status: 'scan-failed', reason: 'disk full' })).toBe('disk full')
+    expect(rescanReason({ status: 'scan-failed' })).toBe('the scan failed')
+    expect(rescanReason({ status: 'error' })).toBe('knossos could not run it')
+  })
 })
