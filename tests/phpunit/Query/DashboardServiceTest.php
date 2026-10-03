@@ -83,6 +83,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []], $d['cycles']);
             assertSame(false, $d['dead_code_truncated']);
             assertSame(false, $d['fan_in_truncated']);
+            assertSame(false, $d['hubs_truncated']);
             assertSame([], $d['trend']);
             assertSame([], $d['fan_in']);
         } finally {
@@ -193,13 +194,19 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame($health['hubs'][0]['component']['display_name'], $d['hubs'][0]['name']);
             assertSame($health['hubs'][0]['component']['kind'], $d['hubs'][0]['kind']);
             assertSame(
-                ['name', 'kind', 'in_degree', 'out_degree', 'cross_boundary_degree'],
+                ['name', 'canonical_name', 'kind', 'in_degree', 'out_degree', 'cross_boundary_degree'],
                 array_keys($d['hubs'][0]),
             );
+            // The pane shows the display name and looks the component up by the canonical one.
+            assertSame($health['hubs'][0]['component']['canonical_name'], $d['hubs'][0]['canonical_name']);
+            assertSame($health['static_hotspots'][0]['component']['canonical_name'], $d['hotspots'][0]['canonical_name']);
             assertSame($health['hubs'][0]['metrics']['in_degree'], $d['hubs'][0]['in_degree']);
             assertSame($health['hubs'][0]['metrics']['out_degree'], $d['hubs'][0]['out_degree']);
             assertSame($health['hubs'][0]['metrics']['cross_boundary_degree'], $d['hubs'][0]['cross_boundary_degree']);
-            assertSame(['name', 'kind', 'score'], array_keys($d['hotspots'][0]));
+            assertSame(['name', 'canonical_name', 'kind', 'score'], array_keys($d['hotspots'][0]));
+            // Ten of many is the page, not a cut.
+            assertSame(false, $d['hubs_truncated']);
+            assertSame([], $d['hubs_truncation_reasons']);
             assertSame($health['static_hotspots'][0]['score'], $d['hotspots'][0]['score']);
             assertSame($health['static_hotspots'][0]['component']['display_name'], $d['hotspots'][0]['name']);
             assertSame($health['static_hotspots'][0]['component']['kind'], $d['hotspots'][0]['kind']);
@@ -278,6 +285,7 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame([], $d['cycles']['truncation_reasons']);
             assertSame(false, $d['dead_code_truncated']);
             assertSame(false, $d['fan_in_truncated']);
+            assertSame(false, $d['hubs_truncated']);
         } finally {
             $this->removeTempTree($root);
         }
@@ -337,6 +345,35 @@ final class DashboardServiceTest extends KnossosTestCase
             assertSame(true, $d['cycles']['truncated']);
             assertSame(true, in_array('time_limit', $d['cycles']['truncation_reasons'], true));
             assertSame(true, $d['dead_code_truncated']);
+            assertSame(true, $d['hubs_truncated']);
+            assertSame(true, in_array('time_limit', $d['hubs_truncation_reasons'], true));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    /** The degree walk gets five seconds unless told otherwise; the health query alone would allow one. */
+    #[Group('query')]
+    public function testTheHubWalkHasAFiveSecondBudget(): void
+    {
+        [$pdo, , $root] = $this->scanTempFixture(self::FIXTURE);
+        try {
+            // The first reading sets the walk's deadline; every later one is three seconds on.
+            $clock = static function (): int {
+                static $calls = 0;
+                return $calls++ === 0 ? 0 : 3_000_000_000;
+            };
+            $default = (new DashboardService($pdo, clock: $clock))->dashboard($root);
+            assertSame(false, $default['hubs_truncated']);
+            assertSame([], $default['hubs_truncation_reasons']);
+
+            $short = static function (): int {
+                static $calls = 0;
+                return $calls++ === 0 ? 0 : 3_000_000_000;
+            };
+            $tight = (new DashboardService($pdo, clock: $short, healthTimeoutMs: 1000))->dashboard($root);
+            assertSame(true, $tight['hubs_truncated']);
+            assertSame(['time_limit'], $tight['hubs_truncation_reasons']);
         } finally {
             $this->removeTempTree($root);
         }

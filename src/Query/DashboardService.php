@@ -15,9 +15,14 @@ use PDO;
  * largest cycles to 3 out of a search that stops at 50 cycles (or at its time
  * and edge limits), the trend to 20 snapshots and the fan-in map to 500 files.
  * A bound never reads as an exact figure: `cycles.truncated` with its
- * `truncation_reasons`, `dead_code_truncated` (the candidate search ran out of
- * time, so the total is a floor) and `fan_in_truncated` say when a number or
- * list was cut short.
+ * `truncation_reasons`, `hubs_truncated` with `hubs_truncation_reasons` (the
+ * degree walk stopped at its node, edge or time limit, so hubs and hotspots
+ * rank only what it reached), `dead_code_truncated` (the candidate search ran
+ * out of time, so the total is a floor) and `fan_in_truncated` say when a
+ * number or list was cut short.
+ *
+ * Hubs and hotspots are always the top 10; that page is the design, not a
+ * truncation, so it never sets `hubs_truncated`.
  */
 final readonly class DashboardService
 {
@@ -30,12 +35,15 @@ final readonly class DashboardService
      * @param int $cycleLimit how many cycles the search returns before it reports truncation
      * @param int $fanInCap how many fan-in entries are returned before truncation is reported
      * @param Closure|null $clock nanosecond clock handed to the query services, so time limits are testable
+     * @param int $healthTimeoutMs the degree walk's time budget; the health query's own default of one second
+     *                             cut a cold first dashboard of a large project short
      */
     public function __construct(
         private PDO $pdo,
         private int $cycleLimit = 50,
         private int $fanInCap = 500,
         private ?Closure $clock = null,
+        private int $healthTimeoutMs = 5000,
     ) {}
 
     /**
@@ -55,7 +63,8 @@ final readonly class DashboardService
         $id = (string) $project['id'];
         $queries = new ArchitectureQueryService($this->pdo, $this->clock);
         $probe = (new StalenessProbe($this->pdo))->probe($id) ?? [];
-        $health = $queries->architectureHealth($id, limit: self::TOP)->data;
+        $health = $queries->architectureHealth($id, limit: self::TOP, timeoutMs: $this->healthTimeoutMs)->data;
+        $hubLimits = array_values(array_diff($health['bounds']['truncation_reasons'], ['result_limit']));
         // Already ordered largest first by the cycle search.
         $cycleSearch = $queries->dependencyCycles($id, limit: $this->cycleLimit);
         $cycles = $cycleSearch->data['cycles'];
@@ -77,13 +86,17 @@ final readonly class DashboardService
             ],
             'hubs' => array_map(static fn(array $h): array => [
                 'name' => $h['component']['display_name'],
+                'canonical_name' => $h['component']['canonical_name'],
                 'kind' => $h['component']['kind'],
                 'in_degree' => $h['metrics']['in_degree'],
                 'out_degree' => $h['metrics']['out_degree'],
                 'cross_boundary_degree' => $h['metrics']['cross_boundary_degree'],
             ], $health['hubs']),
+            'hubs_truncated' => $hubLimits !== [],
+            'hubs_truncation_reasons' => $hubLimits,
             'hotspots' => array_map(static fn(array $h): array => [
                 'name' => $h['component']['display_name'],
+                'canonical_name' => $h['component']['canonical_name'],
                 'kind' => $h['component']['kind'],
                 'score' => $h['score'],
             ], $health['static_hotspots']),
@@ -144,7 +157,7 @@ final readonly class DashboardService
         return [
             'status' => 'unscanned', 'path' => $path, 'project_root' => null, 'project_id' => null,
             'snapshot_id' => null, 'freshness' => ['state' => 'unscanned', 'age_seconds' => null, 'drift_files' => 0],
-            'hubs' => [], 'hotspots' => [], 'dead_code_candidates' => 0, 'dead_code_truncated' => false,
+            'hubs' => [], 'hubs_truncated' => false, 'hubs_truncation_reasons' => [], 'hotspots' => [], 'dead_code_candidates' => 0, 'dead_code_truncated' => false,
             'cycles' => ['count' => 0, 'truncated' => false, 'truncation_reasons' => [], 'largest' => []],
             'trend' => [], 'fan_in' => [], 'fan_in_truncated' => false,
         ];
