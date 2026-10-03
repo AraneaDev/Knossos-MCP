@@ -538,7 +538,8 @@ export const register: Register = (on, options) => {
       name: 'knossos-pane',
       description: 'Toggle the Knossos architecture pane; /knossos-pane inspect <component> to drill in',
     })
-    $.clock.after(0, () => void startUp($, openOnStart))
+    // A start-up that outlives the session (torn down under it) fails quietly, never as a stray rejection.
+    $.clock.after(0, () => void startUp($, openOnStart).catch(() => undefined))
     return next(e)
   })
 
