@@ -163,9 +163,14 @@ its body:
 
 A framed card is a thin rounded border in the theme's faintest colour, its
 title (and the section's note, such as `this session` or `all in core`) set
-into the top edge, one cell of padding inside. Wide, each tab arranges its
-cards in two columns: Overview puts "Look at now", the last turn and health
-left and the most depended on with a small boundary map right; the detail
+into the top edge, one cell of padding inside. Cards stand one blank row
+apart. Wide, each tab arranges its cards in two columns: Overview puts the
+stat tiles across the top, "Look at now" and the last turn left and the most
+depended on right (with the trend under it when the pane has rows to spare),
+and the small boundary map and the files most depended on under whichever
+column leaves the two ending closest in height; Hubs sets the files most
+depended on beside the components, the components' table taking the wider
+share; the detail
 sets "used by" beside "uses" with the change below both; Boundaries puts the
 map beside the per-boundary table and the marked boundary; Cycles spells out
 the marked cycle, a member a row, beside the list; Issues puts violations and
@@ -174,17 +179,26 @@ beside the files.
 
 Lists size themselves to the rows the pane's body has: every list starts at
 a few rows, then the rows left after the rest of the tab are shared out
-between the lists in turn. A list cut short says `n more ↓` (and `n above ↑`
+between the lists in turn, up to ten each; then the charts take what they
+can use (the heat map's cells grow from one row to two or three, the trend
+appears as a chart); then the lists take the rest. A chart in one column of
+the wide grid stops growing once it would leave the other column more than
+three rows shorter. The dashboard sends up to fifty hubs, hotspots, dead-code
+candidates and largest files, enough for a tall pane. A list cut short says `n more ↓` (and `n above ↑`
 once the marker has moved down it), and moving the marker scrolls it. A pane
 too short for even those few rows scrolls as a whole.
 
 Tables are packed to the left: names take what the longest one needs, the
-boundary follows the name, then the bar, the numbers and, from the medium
-layout on, the file. A bar takes the width left after the names and numbers,
-between a minimum and a maximum share of the table that grow with the
-layout, so a wide pane draws longer gauges. As the pane narrows, the file
-column goes first, bars shorten, then long names are cut with `…`, then the
-boundary column goes, then the bars. The numbers always stay.
+kind and the boundary follow the name, then the bar, the numbers and, from
+the medium layout on, the file. A bar takes the width left after the names
+and numbers, but never more than a quarter of the table nor more than 16, 24
+or 30 cells by layout: it is a gauge beside a name, not the widest thing on
+the row. Width it may not take goes to more columns: a wide table of
+components adds how many files depend on each (`files`) and, where it fits,
+its kind; the file column (`where`) may cut the few longest names (the
+longest tenth) rather than be lost. As the pane narrows, the kind goes first,
+then the file column, bars shorten, then long names are cut with `…`, then the
+boundary column goes, then the bars. The numbers always stay, right-aligned.
 
 The pane draws in your Claude Code theme's own colours (its theme keys), so it
 follows a dark, light, daltonized or ANSI theme. Colour carries meaning only:
@@ -198,15 +212,19 @@ their source in the label, `namespace:Knossos` and `composer:knossos`, so they
 never read as one. The status dot is `success` for a fresh or live snapshot,
 `warning` for a stale one or a scan under way and `error` when a refresh or
 rescan failed, and the accent marks the selection and the active tab. Everything
-else is neutral: headings and numbers in the theme's text colour, notes in
-its secondary grey, bar tracks and empty cells fainter still. Bars are thin
-rules on a dotted track.
+else is neutral: names, headings and figures in the theme's text colour,
+units and notes in its secondary grey (a note's figures stay at full
+contrast: `3 files → 594 dependents`), bar tracks and empty cells fainter
+still. Bars are thin rules on a dotted track.
 
 ```text
 Knossos-MCP                         ● stale · 11h  r: rescan
 7,878 components · 7 boundaries · 46 drifted · PHP JS RS
 1: Overview  2  3  4  5  6³
 ━━━━━━━━━━━─────────────────────────────────────────────────
+
+2 cycles   161 max degree   55 dead code   0 policy
+0 diagnostics
 
 ── Look at now ───────────────────────────── this session ──
 ›  TurnBriefService.php core · 21 dependents
@@ -217,25 +235,31 @@ Knossos-MCP                         ● stale · 11h  r: rescan
    register.tsx         hooks ━━━━━╸············  6
    changes.ts           hooks ━━···············  2
 
-── Health ────────────────────────────────────────────────────
-   cycles         2
-   max degree   161
-   dead code     55
-   policy       ✓ 0
-   diagnostics  ✓ 0
-
 ── Most depended on ─────────────────────── all in core · in ──
    StableId                 ━━━━━━━━━━━━━━━━━━ 525
    ArchitectureQueryService ━━━━━━━━━········· 262
    4 more ↓
 ```
 
-That is the narrow layout (60 columns). From 80 columns each card is framed,
-and its tables add columns:
+That is the narrow layout (60 columns): the stat tiles collapse to a line of
+the figures the summary line does not already say. From 80 columns the tiles
+are a framed band across the Overview, a faint rule between them, spread
+evenly; they wrap onto as few lines as hold them when they do not fit on one.
+A figure is in the text colour unless it deviates: cycles and diagnostics
+above zero in `warning`, policy violations in `error`, drifted files in the
+accent. A tile shows its trend when it has room and the series moves. The
+summary line then keeps only the languages, and the drifted tile's label is
+the button that lists the drifted files. Each card is framed, and its tables
+add columns:
 
 ```text
+╭──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 9,026       │ 7           │ 2 ▁▅▁█▁ │ 165         │ 0          │ 12       │ 0      │ 0           │
+│ components  │ boundaries  │ cycles  │ max degree  │ dead code  │ drifted  │ policy │ diagnostics │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+
 ╭─ Most depended on ─────────────────────────────────────── all in core ─╮
-│   name                         in out cross file                       │
+│   name                         in out cross where                      │
 │   StableId     ━━━━━━━━━━━━━━ 525   0     0 StableId.php:19            │
 ╰────────────────────────────────────────────────────────────────────────╯
 ```
@@ -263,19 +287,26 @@ Drifted since the snapshot                                 3
   dependents, and how many tests reach this session's changes, whose command
   `t` copies; a warning when none does), the last turn's impact (files,
   dependents, tests: the last turn's alone, where "Look at now" counts the
-  whole session, and each section says which in its header), health (cycles, maximum degree, dead-code
-  candidates, the project's policy violations and its diagnostic errors and
-  warnings) and the most depended-on components, as many as the height
-  allows. One marker walks the
-  three lists in the order they are drawn, and starts on the file "Look at
+  whole session, and each section says which in its header), the stat tiles
+  (components, boundaries, cycles, maximum degree, dead-code candidates,
+  drifted files, the project's policy violations and its diagnostic errors and
+  warnings), the most depended-on components and the files most depended on,
+  each as many as the height allows. One marker walks the
+  lists in the order a narrow pane draws them, and starts on the file "Look at
   now" points at: `o` opens the marked file's or component's detail, `e` the
   marked file in your editor (a hub opens at the line that declares it; one
   the graph places nowhere, such as a stand-in for a vendor symbol, offers no
-  `e`). A trend line appears
-  beside a figure only once there are five snapshots and the figure moved; a
-  flat line says nothing.
+  `e`). A trend appears only once there are five snapshots and the figure
+  moved; a flat line says nothing. It is a sparkline in its tile and, when
+  the pane has rows left after its lists, a chart several rows tall, a column
+  per snapshot, the highest and lowest figure on its axis (on the terminal a
+  `Raster` in the accent, where no pressable row shares its lines).
 - **Hubs:** hubs and hotspots as one list, one row per component, with its
-  boundary and its in, out and cross-boundary degree. `◆` marks a hotspot
+  boundary and its in, out and cross-boundary degree, and beside them (below
+  them when narrower) the files most depended on, each with how many files
+  depend on it; the marker walks the components, then the files, and `o`
+  opens a file's detail. The filter narrows both.
+  `◆` marks a hotspot
   that is not also a hub. Methods read `Class::method`. `f` opens a filter
   field: the list narrows as you type to the components whose name holds the
   text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
@@ -296,8 +327,9 @@ Drifted since the snapshot                                 3
   closes the loop), `c` copies the whole chain, and `q` asks Claude how to
   break it.
 - **Issues:** the declared policy violations (each with the offending file
-  and line), the scan's errors and warnings, the first ten dead-code
-  candidates (`◇` marks one only tests reach) and the five largest files.
+  and line), the scan's errors and warnings, the first fifty dead-code
+  candidates (`◇` marks one only tests reach) and the fifty largest files,
+  each list as long as the height allows.
   The tab label carries the count of violations, errors and warnings, as in
   `Issues ³`.
 - **Changes:** everything that changed in the project since this session
@@ -364,7 +396,9 @@ snapshot>`, read again after each scan the watcher sees, one read at a
   something does. On the terminal the map is one grid of solid tiles in the
   theme's colours (it follows a theme picked in `/config`, daltonized and
   ANSI ones included, the ANSI colours as xterm paints them); elsewhere it is
-  drawn as shades from `░` to `█`. Below it each boundary is listed with
+  drawn as shades from `░` to `█`. Row labels are written out in full when
+  they fit; with rows to spare each cell grows to two or three rows tall and
+  twice as many cells wide, so it stays square. Below it each boundary is listed with
   its components and its dependencies in from and out to other boundaries.
   A component counts in one boundary, the one the pane labels it with, and
   only boundaries that label something get a row. `j` and `k` mark a

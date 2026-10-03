@@ -392,8 +392,10 @@ the files, their dependents, the tests that reach them, and how old the figures 
 
 ![The band above the Claude Code prompt](docs/images/claude-code-mod/band-prompt-dark.png)
 
-`/knossos` opens the pane. The Overview leads with the file this session touched that most
-of the project depends on, marked: `o` lists the files that depend on it, `e` opens it in your
+`/knossos` opens the pane. The Overview opens with a row of stat tiles (components,
+boundaries, cycles, the largest degree, dead code, drift, policy violations and
+diagnostics), coloured only where a figure needs your attention, then leads with the file
+this session touched that most of the project depends on, marked: `o` lists the files that depend on it, `e` opens it in your
 editor, and `t` copies the command for the tests that reach the changes. It draws in your
 Claude Code theme's own colours. A live watcher, one per project shared by your sessions,
 rescans as files change, so the header reads `● live` and the figures follow your edits and
@@ -402,7 +404,7 @@ turn's own scan, and the pane's `r` rescans on request.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/claude-code-mod/overview-light.png">
-  <img alt="The pane's Overview: look at now, the last turn, health and the most depended-on components" src="docs/images/claude-code-mod/overview-dark.png">
+  <img alt="The pane's Overview: stat tiles, look at now, the last turn, and the components and files most depended on" src="docs/images/claude-code-mod/overview-dark.png">
 </picture>
 
 The Changes tab lists everything that changed in the project since the session began,
