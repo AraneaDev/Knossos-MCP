@@ -11,6 +11,12 @@ describe('envelopes', () => {
   it('an ok dashboard missing its fields is no data', () => expect(parseDashboard('{"status":"ok"}')).toBeNull())
   it('a dashboard status is not a brief status', () => expect(parseDashboard('{"status":"missing"}')).toBeNull())
   it('a non-object is no data', () => expect(parseTurnBrief('[1]')).toBeNull())
+  it("the wrapper's no-binary answer parses on every envelope", () => {
+    const answer = '{"status":"no-binary"}'
+    expect(parseTurnBrief(answer)?.status).toBe('no-binary')
+    expect(parseDashboard(answer)?.status).toBe('no-binary')
+    expect(parseComponentDetail(answer)?.status).toBe('no-binary')
+  })
   it('a bare null is no data', () => expect(parseTurnBrief('null')).toBeNull())
 })
 

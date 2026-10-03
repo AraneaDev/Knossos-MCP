@@ -4,9 +4,10 @@
 # Usage: knossos-run.sh <turn-brief|dashboard> <project-dir> [options...]
 #        knossos-run.sh component-detail <project-dir> <name>
 #
-# Same contract as session-brief.sh: every failure exits 0 with nothing on
-# stdout. The mod reads silence as "no data" and keeps its last figures
-# with their age, so a broken install can never break a session.
+# Every failure exits 0. All but one print nothing: the mod reads silence as
+# "no data", keeps its last figures with their age and asks again later, so a
+# broken install can never break a session. The exception is a missing
+# binary, which prints {"status":"no-binary"} so the mod can turn itself off.
 set -u
 
 [ "$#" -ge 2 ] || exit 0
@@ -20,7 +21,9 @@ LIB="$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)/lib.sh"
 
 case "$SUBCOMMAND" in
     turn-brief) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60} ;;
-    dashboard | component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    # A cold first dashboard of a large project walks the whole graph.
+    dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
+    component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
 
@@ -42,7 +45,13 @@ PROJECT_DIR=$(pwd -P) || exit 0
 # shellcheck source=hooks/scripts/lib.sh
 . "$LIB" 2>/dev/null || exit 0
 
-BIN="$(find_knossos)" || exit 0
+# The one failure that is not silent: with no binary there is nothing to
+# retry, so the mod is told and turns itself off. Every other failure
+# (a timeout, a crash, empty output) is silence and is asked again later.
+BIN="$(find_knossos)" || {
+    printf '%s\n' '{"status":"no-binary"}'
+    exit 0
+}
 
 if TIMEOUT_BIN="$(find_timeout)"; then
     OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0

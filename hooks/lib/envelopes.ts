@@ -1,17 +1,18 @@
-import type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Related, TurnBrief, Violation } from '../../types'
+import type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, TurnBrief, Violation } from '../../types'
 
 // The envelope shapes are written once, in the plugin's contract, and re-exported
 // here so the rest of the mod keeps importing them from this module.
-export type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Related, TurnBrief, Violation }
+export type { BoundaryRef, ComponentDetail, Dashboard, FanIn, Listed, Related, TurnBrief, Violation }
 
-const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error'])
-const DASH = new Set(['ok', 'unscanned', 'error'])
+// `no-binary` is the wrapper's own answer when there is nothing to run; every envelope may be it.
+const BRIEF = new Set(['ok', 'not-allowed', 'missing', 'unscanned', 'scan-failed', 'error', 'no-binary'])
+const DASH = new Set(['ok', 'unscanned', 'error', 'no-binary'])
 
 const BRIEF_ARRAYS = ['changed_files', 'added_files', 'deleted_files', 'tests']
 const BRIEF_OBJECTS = ['policy']
 const DASH_ARRAYS = ['hubs', 'hotspots', 'trend', 'fan_in']
 const DASH_OBJECTS = ['cycles', 'freshness']
-const DETAIL = new Set(['ok', 'unscanned', 'not-found', 'ambiguous', 'error'])
+const DETAIL = new Set(['ok', 'unscanned', 'not-found', 'ambiguous', 'error', 'no-binary'])
 const DETAIL_ARRAYS = ['candidates']
 const DETAIL_OBJECTS = ['component']
 

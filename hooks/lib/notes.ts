@@ -12,7 +12,9 @@ export function editNote(entry: FanIn): string {
 export function violationNote(brief: TurnBrief): string | null {
   const { total, violations } = brief.policy
   if (total === 0) return null
-  const head = `knossos: this turn introduced ${total} boundary-policy violation${total === 1 ? '' : 's'}. Fix ${total === 1 ? 'it' : 'them'} before finishing:`
+  // A check cut short at its cap or time limit makes the count a bound; the full check is one call away.
+  const cut = brief.policy.truncated ? ' (check was truncated; run check_architecture)' : ''
+  const head = `knossos: this turn introduced ${total} boundary-policy violation${total === 1 ? '' : 's'}${cut}. Fix ${total === 1 ? 'it' : 'them'} before finishing:`
   const lines = violations.map(v => `- ${v.policy_id}: ${v.source} → ${v.target}`)
   const more = total > violations.length ? [`- …and ${total - violations.length} more (run review_diff)`] : []
   return [head, ...lines, ...more].join('\n')

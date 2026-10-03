@@ -14,6 +14,8 @@ const dashboard = JSON.stringify({
   snapshot_id: 's1',
   freshness: { state: 'fresh', age_seconds: 1, drift_files: 0 },
   hubs: [],
+  hubs_truncated: false,
+  hubs_truncation_reasons: [],
   hotspots: [],
   dead_code_candidates: 0,
   dead_code_truncated: false,
@@ -34,12 +36,13 @@ const brief = (over: Record<string, unknown> = {}) =>
     scan_ms: 5,
     reason: null,
     roots_file: null,
+    refused_root: null,
     changed_files: ['src/Router.php'],
     added_files: [],
     deleted_files: [],
     impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'] } },
     tests: [],
-    policy: { status: 'evaluated', total: 0, violations: [] },
+    policy: { status: 'evaluated', total: 0, violations: [], truncated: false },
     ...over,
   })
 
@@ -57,8 +60,14 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  * answers (a queue per subcommand, the last answer repeating), and every
  * engine call the mod makes, recorded.
  */
-function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[] } = {}) {
+function world(
+  on: On,
+  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[] } = {},
+  disk: { root?: string; links?: Record<string, string>; gone?: string[] } = {},
+) {
   const clock = mock.clock(on)
+  const links = disk.links ?? {}
+  const gone = new Set(disk.gone ?? [])
   const queues = {
     dashboard: answers.dashboard ?? [{ stdout: dashboard }],
     brief: answers.brief ?? [{ stdout: brief() }],
@@ -72,7 +81,14 @@ function world(on: On, answers: { dashboard?: Answer[]; brief?: Answer[]; detail
   /** The panes the engine holds open, as `ui.panes` lists them. */
   const panes = new Set<string>()
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
-  on('session.root', () => ({ value: ROOT }))
+  on('session.root', () => ({ value: disk.root ?? ROOT }))
+  // Every path exists except those gone; a path under a link lands under its target.
+  on('fs.stat', (_$, e) => {
+    if (gone.has(e.path)) throw Object.assign(new Error(`ENOENT: ${e.path}`), { code: 'ENOENT' })
+    const link = Object.keys(links).find(l => e.path === l || e.path.startsWith(`${l}/`))
+    const realPath = link === undefined ? e.path : `${links[link]}${e.path.slice(link.length)}`
+    return { value: { kind: 'file', size: 1, mtimeMs: 0, isLink: link !== undefined, ...(e.resolve ? { realPath } : {}) } }
+  })
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   on('command.register', (_$, e) => ({ value: { command: e.name } }))
   on('ui.toast', (_$, e) => {
@@ -125,8 +141,8 @@ async function edit($: Engine, path: string) {
 const paneDashboard = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
     ...(JSON.parse(dashboard) as object),
-    hubs: [{ name: 'Router', kind: 'class', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 }],
-    hotspots: [{ name: 'Kernel', kind: 'class', score: 7.25 }],
+    hubs: [{ name: 'Router', canonical_name: 'App\\Router', kind: 'class', in_degree: 41, out_degree: 3, cross_boundary_degree: 2 }],
+    hotspots: [{ name: 'Kernel', canonical_name: 'App\\Kernel', kind: 'class', score: 7.25 }],
     dead_code_candidates: 4,
     cycles: { count: 1, truncated: false, truncation_reasons: [], largest: [{ size: 2, members: ['A', 'B'] }] },
     trend: [
@@ -529,10 +545,10 @@ describe('knossos mod', () => {
   })
 
   test('a missing binary disables the mod quietly', async ($, on) => {
-    const w = world(on, { dashboard: [{ stdout: '' }] })
+    const w = world(on, { dashboard: [{ stdout: '{"status":"no-binary"}' }] })
     await $.session.start(START)
     await w.clock.settle()
-    expect(w.calls.filter(c => c[2] === 'dashboard')).toHaveLength(2)
+    expect(w.calls.filter(c => c[2] === 'dashboard')).toHaveLength(1)
     const ran = await edit($, `${ROOT}/src/Router.php`)
     expect(ran.context ?? []).toHaveLength(0)
     await $.turn.complete(TURN)
@@ -540,7 +556,150 @@ describe('knossos mod', () => {
     expect(w.briefRuns()).toHaveLength(0)
     expect(w.toasts).toHaveLength(0)
     expect(w.logs).toHaveLength(1)
-    expect(w.logs[0]?.text).toContain('no data from the knossos binary')
+    expect(w.logs[0]?.text).toContain('no knossos binary found')
+    expect(await bandText($)).toBeUndefined()
+    const ui = await mountPane($)
+    expect(await ui.find({ key: 'empty' })).toBeUndefined()
+    expect(await ui.find({ key: 'hubs' })).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a binary that goes missing mid-session turns the mod off', async ($, on) => {
+    const w = world(on, { brief: [{ stdout: '{"status":"no-binary"}' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.logs.map(l => l.text)).toEqual(['knossos: no knossos binary found; the band and pane are off for this session.'])
+    expect(await bandText($)).toBeUndefined()
+    expect((await edit($, `${ROOT}/src/Router.php`)).context ?? []).toHaveLength(0)
+  })
+
+  test('a silent first dashboard is asked again at the next dirty turn, never disabling', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: '' }, { stdout: '' }, { stdout: dashboard }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.calls.filter(c => c[2] === 'dashboard')).toHaveLength(1)
+    expect(w.logs).toHaveLength(0)
+    expect(await bandText($)).toBeUndefined()
+    for (let i = 0; i < 2; i++) {
+      await edit($, `${ROOT}/src/Router.php`)
+      await $.turn.complete(TURN)
+      await w.clock.settle()
+    }
+    expect(w.briefRuns()).toHaveLength(2)
+    expect(w.calls.filter(c => c[2] === 'dashboard')).toHaveLength(3)
+    expect(w.logs).toHaveLength(0)
+    expect(await bandText($)).toContain('1 file → 41 dependents')
+    // The fan-in map arrived with the third dashboard, so the note is back.
+    expect((await edit($, `${ROOT}/src/Router.php`)).context?.join('\n')).toContain('41 dependent files')
+  })
+
+  test('an error dashboard never replaces good figures', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }, { stdout: '{"status":"error"}' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, '')
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'hubs' }))?.text).toContain('Router (class) in 41')
+    expect((await ui.find({ key: 'freshness' }))?.text).toContain('refresh failed, figures from 1s ago')
+    await ui.unmount()
+  })
+
+  test('the pane refreshes when the details button opens it, and its age keeps counting', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const before = w.calls.filter(c => c[2] === 'dashboard').length
+    const band = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'AbovePrompt', props: BAND_PROPS })
+    await band.press({ key: 'details' })
+    await band.unmount()
+    await w.clock.settle()
+    expect(w.calls.filter(c => c[2] === 'dashboard').length).toBe(before + 1)
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'freshness' }))?.text).toBe('snapshot fresh, 1s old · 0 files drifted')
+    await w.clock.advance(5_000)
+    expect((await ui.find({ key: 'freshness' }))?.text).toBe('snapshot fresh, 6s old · 0 files drifted')
+    await ui.unmount()
+  })
+
+  test('a failed refresh keeps the old figures and says how old they are', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }, { stdout: '' }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await w.clock.advance(10_000)
+    await slash($, '')
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'freshness' }))?.text).toBe('refresh failed, figures from 11s ago · snapshot fresh · 0 files drifted')
+    expect((await ui.find({ key: 'hubs' }))?.text).toContain('Router (class) in 41')
+    await ui.unmount()
+  })
+
+  test('a walk cut short marks hubs and hotspots partial', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ hubs_truncated: true, hubs_truncation_reasons: ['time_limit'] }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    const text = (await ui.find({ key: 'overview' }))?.text ?? ''
+    expect(text).toContain('Hubs (partial)')
+    expect(text).toContain('Hotspots (partial)')
+    await ui.unmount()
+  })
+
+  test('an edit through a linked checkout lands in the project', async ($, on) => {
+    const w = world(on, {}, { root: '/link/repo', links: { '/link/repo': ROOT } })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ran = await edit($, '/link/repo/src/Router.php')
+    expect(ran.context?.join('\n')).toContain('src/Router.php has 41 dependent files')
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()[0]).toContain('--files=src/Router.php')
+  })
+
+  test('before the first dashboard, a linked session root and a deleted file still count', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: '' }] }, {
+      root: '/link/repo',
+      links: { '/link/repo': ROOT },
+      gone: ['/link/repo/src/Gone.php'],
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, '/link/repo/src/Gone.php')
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()[0]).toContain(`--files=${ROOT}/src/Gone.php`)
+  })
+
+  test('a threshold that is not a whole number in range falls back to 20', { options: { fanInThreshold: 2.5 } }, async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.calls[0]).toContain('--fan-in-threshold=20')
+  })
+
+  test('a threshold above the command limit falls back to 20', { options: { fanInThreshold: 100_001 } }, async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(w.calls[0]).toContain('--fan-in-threshold=20')
+  })
+
+  test('the allow-root hint names the roots file and the refused root', async ($, on) => {
+    const refused = brief({ status: 'not-allowed', path: `${ROOT}/src`, roots_file: '/data/roots.json', refused_root: ROOT })
+    const w = world(on, { brief: [{ stdout: refused }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(await bandText($)).toContain(`not an allowed root: KNOSSOS_ROOTS_FILE='/data/roots.json' knossos allow-root '${ROOT}' --execute`)
   })
 
   test('the pane opens on start when asked', { options: { openPaneOnStart: true } }, async ($, on) => {
@@ -566,9 +725,11 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const before = w.calls.filter(c => c[2] === 'dashboard').length
     expect((await slash($, '')).text).toBe('Knossos pane opened.')
+    await w.clock.settle()
     // Opening reads the dashboard afresh; closing reads nothing.
     expect(w.calls.filter(c => c[2] === 'dashboard').length).toBe(before + 1)
     expect((await slash($, '  ')).text).toBe('Knossos pane closed.')
+    await w.clock.settle()
     expect(w.calls.filter(c => c[2] === 'dashboard').length).toBe(before + 1)
     expect(w.opened).toEqual(['knossos'])
     expect(w.closed).toEqual(['knossos'])
@@ -646,7 +807,7 @@ describe('knossos mod', () => {
     expect(detail).toContain('class App\\Router')
     expect(detail).toContain('used by 1: Kernel')
     expect(w.detailRuns()).toEqual([
-      ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'component-detail', ROOT, 'Router'],
+      ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'component-detail', ROOT, 'App\\Router'],
     ])
     await ui.press({ key: 'back' })
     expect(await ui.find({ key: 'detail' })).toBeUndefined()
@@ -662,7 +823,8 @@ describe('knossos mod', () => {
     await ui.press({ key: 'hot-0' })
     await w.clock.settle()
     expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Kernel')
-    expect(w.detailRuns()[0]?.slice(4)).toEqual(['Kernel'])
+    // Looked up by its canonical name, shown by its display name.
+    expect(w.detailRuns()[0]?.slice(4)).toEqual(['App\\Kernel'])
     await ui.unmount()
   })
 
@@ -761,7 +923,8 @@ describe('knossos mod', () => {
 
   test('a new snapshot looks the component up again', async ($, on) => {
     const w = world(on, {
-      dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard({ snapshot_id: 's2' }) }],
+      // Start, then the refresh the open schedules, then the scan's: only the last is a new snapshot.
+      dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard() }, { stdout: paneDashboard({ snapshot_id: 's2' }) }],
       detail: [{ stdout: detailOf('Router') }],
     })
     await $.session.start(START)

@@ -20,6 +20,14 @@ describe('notes', () => {
       '- domain-isolation: App\\Domain\\Order → App\\Infra\\Db',
     )
   })
+  it('says when the check was truncated and where the full one is', () => {
+    const note = violationNote({ policy: { status: 'evaluated', total: 1, truncated: true, violations: [
+      { policy_id: 'p', source: 'A', target: 'B', source_boundaries: [], target_boundaries: [] },
+    ] } } as never)
+    expect(note?.split('\n')[0]).toBe(
+      'knossos: this turn introduced 1 boundary-policy violation (check was truncated; run check_architecture). Fix it before finishing:',
+    )
+  })
   it('says how many violations were left out of the list', () => {
     const note = violationNote({ policy: { status: 'evaluated', total: 3, violations: [
       { policy_id: 'p', source: 'A', target: 'B', source_boundaries: [], target_boundaries: [] },

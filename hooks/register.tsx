@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
-import { bandModel } from './lib/band'
+import { bandModel, freshnessLine } from './lib/band'
 import type { JobState } from './lib/band'
 import { countLabel, detailLines, parseComponentDetail, parseDashboard, parseTurnBrief } from './lib/envelopes'
 import type { TurnBrief } from './lib/envelopes'
@@ -9,7 +9,7 @@ import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
 import { SingleFlight } from './lib/scheduler'
 import { sparkline } from './lib/sparkline'
-import type { DetailState, KnossosView } from '../types'
+import type { DetailState, Inspected, KnossosView, RefreshState } from '../types'
 
 const PANE = 'knossos'
 /**
@@ -19,9 +19,9 @@ const PANE = 'knossos'
  */
 const BASH_MARKS_DIRTY = false
 const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const
-/** The wrapper's own limits (60 s and 15 s) plus room for it to exit on its own. */
+/** The wrapper's own limits (60 s, 30 s and 15 s) plus room for it to exit on its own. */
 const BRIEF_TIMEOUT_MS = 70_000
-const DASHBOARD_TIMEOUT_MS = 20_000
+const DASHBOARD_TIMEOUT_MS = 35_000
 const DETAIL_TIMEOUT_MS = 20_000
 const USAGE = 'Usage: /knossos to toggle the architecture pane; /knossos inspect <component> to open it on one component.'
 /** How many members of a cycle the pane names before it stops at an ellipsis. */
@@ -29,12 +29,15 @@ const CYCLE_MEMBERS = 4
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
 const AGE_TICK_MS = 1_000
 const DEFAULT_THRESHOLD = 20
+/** The largest threshold the dashboard command accepts. */
+const MAX_THRESHOLD = 100_000
 
 const brief = atom({ plugin: 'knossos', key: 'brief' } as const, null)
 const dashboard = atom({ plugin: 'knossos', key: 'dashboard' } as const, null)
 const job = atom({ plugin: 'knossos', key: 'job' } as const, { phase: 'idle', lastAttemptAt: null } as JobState)
 const view = atom({ plugin: 'knossos', key: 'view' } as const, { inspect: null, isBandHidden: false } as KnossosView)
 const detail = atom({ plugin: 'knossos', key: 'detail' } as const, null as DetailState | null)
+const refresh = atom({ plugin: 'knossos', key: 'refresh' } as const, { fetchedAt: null, failed: false } as RefreshState)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -56,11 +59,17 @@ const mod = {
   dirty: false,
   /** Paths edited since the last scan began: project-relative, or absolute before the first dashboard. */
   edited: new Set<string>(),
-  /** Two silent dashboards at start: no usable binary, so the mod stays out of the way. */
+  /**
+   * Set when the wrapper answers `no-binary`: nothing to run, so the mod stays
+   * out of the way. Silence (a timeout, a crash) never sets it; that is asked
+   * again at the next dirty turn.
+   */
   disabled: false,
   flight: null as SingleFlight | null,
   /** What the band last drew, or null when it drew nothing: the age tick compares against it. */
   bandText: null as string | null,
+  /** The pane's freshness line as last drawn, or null when the pane drew none: the age tick compares against it too. */
+  paneText: null as string | null,
   /** Keeps the band's age current while the mod is on. */
   ticker: null as Timer | null,
   /**
@@ -71,10 +80,10 @@ const mod = {
   fetching: new Set<string>(),
 }
 
-/** The fan-in threshold from the options: a positive finite number, else the default. */
+/** The fan-in threshold from the options: an integer the dashboard command accepts (1 to 100000), else the default. */
 function thresholdOf(value: unknown): number {
   const n = Number(value)
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_THRESHOLD
+  return Number.isInteger(n) && n >= 1 && n <= MAX_THRESHOLD ? n : DEFAULT_THRESHOLD
 }
 
 /**
@@ -83,9 +92,39 @@ function thresholdOf(value: unknown): number {
  * as "as of 12s ago" would stand still while the figures grow old.
  */
 async function tickAge($: EngineInterface): Promise<void> {
-  if (mod.bandText === null) return
-  const model = bandModel(await read($, brief), await read($, job), await $.clock.now())
-  if ((model?.text ?? null) !== mod.bandText) $.ui.invalidate('ui.render')
+  if (mod.bandText === null && mod.paneText === null) return
+  const now = await $.clock.now()
+  const model = bandModel(await read($, brief), await read($, job), now)
+  const d = await read($, dashboard)
+  const pane = d?.status === 'ok' ? freshnessLine(d, await read($, refresh), now) : null
+  const bandStale = mod.bandText !== null && (model?.text ?? null) !== mod.bandText
+  const paneStale = mod.paneText !== null && pane !== mod.paneText
+  if (bandStale || paneStale) $.ui.invalidate('ui.render')
+}
+
+/**
+ * Where a path lands with every link followed, so a checkout reached through
+ * a linked directory still lies under the project root (a real path). A file
+ * that is not there (deleted) lands through its directory; a path that cannot
+ * be placed at all is kept as given.
+ */
+async function placed($: EngineInterface, path: string): Promise<string> {
+  const own = await $.fs.stat(path, { resolve: true }).catch(() => undefined)
+  if (own?.realPath !== undefined) return own.realPath
+  const cut = path.lastIndexOf('/')
+  if (cut < 0) return path
+  const dir = await $.fs.stat(cut === 0 ? '/' : path.slice(0, cut), { resolve: true }).catch(() => undefined)
+  return dir?.realPath === undefined ? path : `${dir.realPath.replace(/\/+$/, '')}/${path.slice(cut + 1)}`
+}
+
+/** Turns the mod off for the session: the wrapper found no knossos binary to run. */
+async function disable($: EngineInterface): Promise<void> {
+  if (mod.disabled) return
+  mod.disabled = true
+  mod.ticker?.cancel()
+  mod.ticker = null
+  $.ui.log('knossos: no knossos binary found; the band and pane are off for this session.')
+  $.ui.invalidate('ui.render')
 }
 
 /** Runs the wrapper; its stdout, or '' for any failure (the wrapper's contract is silence). */
@@ -100,30 +139,42 @@ async function wrapper($: EngineInterface, sub: string, args: string[], timeoutM
   }
 }
 
-/** Loads the dashboard into state; false when the wrapper said nothing usable. */
+/**
+ * Loads the dashboard into state; false when nothing was stored. Silence, or
+ * an error envelope over good figures, keeps the figures there and marks the
+ * refresh failed so the pane says how old they are.
+ */
 async function refreshDashboard($: EngineInterface): Promise<boolean> {
+  if (mod.disabled) return false
   const stdout = await wrapper($, 'dashboard', [`--fan-in-threshold=${mod.threshold}`], DASHBOARD_TIMEOUT_MS)
   const parsed = parseDashboard(stdout)
-  if (parsed === null) return false
+  if (parsed?.status === 'no-binary') {
+    await disable($)
+    return false
+  }
+  if (parsed === null || (parsed.status === 'error' && (await read($, dashboard))?.status === 'ok')) {
+    await update($, refresh, r => ({ ...r, failed: true }))
+    return false
+  }
+  const now = await $.clock.now()
   await update($, dashboard, () => parsed)
+  await update($, refresh, (): RefreshState => ({ fetchedAt: now, failed: false }))
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
-  if (shown !== null) await requestDetail($, shown)
+  if (shown !== null) await requestDetail($, shown.name)
   return true
 }
 
-/** The first dashboard, retried once; two silences turn the mod off for the session. */
+/**
+ * The first dashboard. A silent one is not a reason to stop: the next dirty
+ * turn asks again. Only the wrapper's `no-binary` turns the mod off.
+ */
 async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> {
-  if (!(await refreshDashboard($)) && !(await refreshDashboard($))) {
-    mod.disabled = true
-    mod.ticker?.cancel()
-    mod.ticker = null
-    $.ui.log('knossos: no data from the knossos binary; the band is off for this session.')
-    return
-  }
+  const stored = await refreshDashboard($)
+  if (mod.disabled) return
   mod.ticker ??= $.clock.every(AGE_TICK_MS, () => void tickAge($).catch(() => undefined))
   // A refused or unplaced pane is the person's layout, not a failure of the mod.
-  if (openOnStart) await openPane($)
+  if (openOnStart) await openPane($, !stored)
 }
 
 /**
@@ -131,9 +182,9 @@ async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> 
  * a timer, never inside a render: the pane draws "Inspecting <name>…" from
  * state until the answer is stored.
  */
-async function showComponent($: EngineInterface, name: string): Promise<void> {
-  await update($, view, v => ({ ...v, inspect: name }))
-  await requestDetail($, name)
+async function showComponent($: EngineInterface, shown: Inspected): Promise<void> {
+  await update($, view, v => ({ ...v, inspect: shown }))
+  await requestDetail($, shown.name)
 }
 
 /** Starts a lookup of `name` unless one is running or done for this snapshot; silence is asked again. */
@@ -163,6 +214,10 @@ async function requestDetail($: EngineInterface, name: string): Promise<void> {
 async function loadDetail($: EngineInterface, snapshot: string | null, name: string, key: string): Promise<void> {
   try {
     const parsed = parseComponentDetail(await wrapper($, 'component-detail', [name], DETAIL_TIMEOUT_MS))
+    if (parsed?.status === 'no-binary') {
+      await disable($)
+      return
+    }
     const lines = parsed === null ? null : detailLines(parsed, name)
     await update($, detail, (current): DetailState | null =>
       current?.name === name && current.snapshot_id === snapshot ? { ...current, lines, phase: 'done' } : current,
@@ -174,8 +229,13 @@ async function loadDetail($: EngineInterface, snapshot: string | null, name: str
   }
 }
 
-/** Opens the pane; a refused or unplaced pane is the person's layout, not a failure of the mod. */
-async function openPane($: EngineInterface): Promise<void> {
+/**
+ * Opens the pane and, unless the dashboard was just loaded, refreshes it on a
+ * timer so the pane never presents old figures as current. A refused or
+ * unplaced pane is the person's layout, not a failure of the mod.
+ */
+async function openPane($: EngineInterface, refreshFirst = true): Promise<void> {
+  if (refreshFirst) $.clock.after(0, () => void refreshDashboard($).catch(() => undefined))
   await $.ui.open({ id: PANE, title: 'Knossos' }).catch(() => undefined)
 }
 
@@ -186,9 +246,9 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
     const name = args.trim().slice('inspect'.length).trim()
     if (name === '') return USAGE
     // The snapshot first, so the lookup is keyed to the graph it reads.
-    if ((await read($, dashboard)) === null) await refreshDashboard($)
-    await showComponent($, name)
-    await openPane($)
+    const loaded = (await read($, dashboard)) === null && (await refreshDashboard($))
+    await showComponent($, { name, label: name })
+    await openPane($, !loaded)
     return 'Knossos pane opened.'
   }
   if (verb !== '') return USAGE
@@ -197,7 +257,6 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
     return 'Knossos pane closed.'
   }
   await update($, view, v => ({ ...v, inspect: null }))
-  await refreshDashboard($)
   await openPane($)
   return 'Knossos pane opened.'
 }
@@ -210,6 +269,11 @@ function trendRow(label: string, values: number[]): string {
 
 /** Stores what a turn brief says, by its status; resolves true when it is a fresh `ok`. */
 async function settleBrief($: EngineInterface, parsed: TurnBrief | null, now: number): Promise<boolean> {
+  if (parsed?.status === 'no-binary') {
+    await update($, job, (): JobState => ({ phase: 'idle', lastAttemptAt: now }))
+    await disable($)
+    return false
+  }
   if (parsed === null || parsed.status === 'error') {
     await update($, job, (): JobState => ({ phase: 'failed', lastAttemptAt: now }))
     return false
@@ -269,13 +333,14 @@ async function scanSafely($: EngineInterface): Promise<void> {
 }
 
 /** Records an edit; the fan-in note for the model, or null when the file is quiet or outside. */
-async function noteEdit($: EngineInterface, path: string): Promise<string | null> {
+async function noteEdit($: EngineInterface, reported: string): Promise<string | null> {
+  const path = await placed($, reported)
   const current = await read($, dashboard)
   const root = current?.project_root ?? null
   if (root === null) {
     // No dashboard yet: the project root is unknown, so keep the absolute
     // path (the brief accepts those) when it lies under the session's root.
-    if (relativise(await $.session.root(), path) === null) return null
+    if (relativise(await placed($, await $.session.root()), path) === null) return null
     mod.dirty = true
     mod.edited.add(path)
     return null
@@ -297,6 +362,7 @@ export const register: Register = (on, options) => {
   mod.disabled = false
   mod.flight = null
   mod.bandText = null
+  mod.paneText = null
   mod.ticker?.cancel()
   mod.ticker = null
   mod.fetching = new Set()
@@ -367,6 +433,8 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
+    mod.paneText = null
+    if (mod.disabled) return <Box key="off" />
     const d = await read($, dashboard)
     const v = await read($, view)
     if (d === null || d.status !== 'ok') {
@@ -376,17 +444,18 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    const show = (name: string) => showComponent($, name)
+    const show = (name: string, label: string) => showComponent($, { name, label })
     if (v.inspect !== null) {
+      const { name, label } = v.inspect
       // State only: a detail for another component (an answer that came late) is not this one's.
       const shown = await read($, detail)
       const lines =
-        shown === null || shown.name !== v.inspect || shown.phase === 'loading'
-          ? [`Inspecting ${v.inspect}…`]
-          : (shown.lines ?? [`No details for ${v.inspect}: knossos said nothing.`])
+        shown === null || shown.name !== name || shown.phase === 'loading'
+          ? [`Inspecting ${label}…`]
+          : (shown.lines ?? [`No details for ${label}: knossos said nothing.`])
       return (
         <Box key="detail" flexDirection="column">
-          <Text bold>{v.inspect}</Text>
+          <Text bold>{label}</Text>
           {lines.map((line, i) => (
             <Text key={`line-${i}`}>{line}</Text>
           ))}
@@ -394,25 +463,39 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
+    const freshness = freshnessLine(d, await read($, refresh), await $.clock.now())
+    mod.paneText = freshness
+    // The degree walk stopped early: both rankings cover only what it reached.
+    const partial = d.hubs_truncated ? ' (partial)' : ''
     // No loop variable may be called `h`: JSX compiles to h(...), and a
     // parameter of that name shadows the element factory inside its callback.
     return (
-      <Box flexDirection="column">
-        <Text dimColor>
-          snapshot {d.freshness.state} · {d.freshness.drift_files} files drifted
-        </Text>
-        <Text bold>Hubs</Text>
+      <Box key="overview" flexDirection="column">
+        <Box key="freshness">
+          <Text dimColor>{freshness}</Text>
+        </Box>
+        <Text bold>Hubs{partial}</Text>
         <Box key="hubs" flexDirection="column">
           {d.hubs.length === 0 && <Text dimColor>none</Text>}
           {d.hubs.map((hub, i) => (
-            <Button key={`hub-${i}`} plain label={`${hub.name} (${hub.kind}) in ${hub.in_degree}`} onPress={() => show(hub.name)} />
+            <Button
+              key={`hub-${i}`}
+              plain
+              label={`${hub.name} (${hub.kind}) in ${hub.in_degree}`}
+              onPress={() => show(hub.canonical_name, hub.name)}
+            />
           ))}
         </Box>
-        <Text bold>Hotspots</Text>
+        <Text bold>Hotspots{partial}</Text>
         <Box key="hotspots" flexDirection="column">
           {d.hotspots.length === 0 && <Text dimColor>none</Text>}
           {d.hotspots.map((spot, i) => (
-            <Button key={`hot-${i}`} plain label={`${spot.name} (${spot.kind}) ${spot.score.toFixed(1)}`} onPress={() => show(spot.name)} />
+            <Button
+              key={`hot-${i}`}
+              plain
+              label={`${spot.name} (${spot.kind}) ${spot.score.toFixed(1)}`}
+              onPress={() => show(spot.canonical_name, spot.name)}
+            />
           ))}
         </Box>
         <Box key="cycles" flexDirection="column">

@@ -7,7 +7,8 @@
 # Emitted by `knossos install-agent-plugin --out`, with __KNOSSOS_IMAGE__ and
 # __KNOSSOS_DATA__ substituted at emit time. Not used in place.
 #
-# Same contract as knossos-run.sh: every failure exits 0 with nothing on stdout.
+# Same contract as knossos-run.sh: every failure exits 0 with nothing on stdout,
+# except a missing docker, which prints {"status":"no-binary"}.
 #
 # The project is mounted at the same path inside the container as outside. That
 # is not cosmetic: projects are keyed by `root_realpath`, so a project scanned
@@ -25,7 +26,9 @@ DATA='__KNOSSOS_DATA__'
 # The same bounds as the local wrapper, so a stuck daemon never stalls the mod.
 case "$SUBCOMMAND" in
     turn-brief) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60} ;;
-    dashboard | component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
+    # A cold first dashboard of a large project walks the whole graph.
+    dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
+    component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
     *) exit 0 ;;
 esac
 
@@ -44,7 +47,13 @@ CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
 # Absolute from here on: a relative path would mean something else to the binary, the mount and the find below once the directory changes.
 PROJECT_DIR=$(pwd -P) || exit 0
 
-command -v docker >/dev/null 2>&1 || exit 0
+# The one failure that is not silent: with no docker there is nothing to
+# retry, so the mod is told and turns itself off. Every other failure
+# (a timeout, a crash, empty output) is silence and is asked again later.
+command -v docker >/dev/null 2>&1 || {
+    printf '%s\n' '{"status":"no-binary"}'
+    exit 0
+}
 
 # `timeout` is GNU coreutils. A plain macOS ships none of it, and Homebrew's
 # coreutils installs the same tool as `gtimeout` so it never shadows a BSD
