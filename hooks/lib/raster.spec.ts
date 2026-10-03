@@ -31,10 +31,19 @@ describe('colourValue', () => {
 })
 
 describe('rasterTheme', () => {
-  it('reads a light theme as light and every other one, or none, as dark', () => {
-    expect(rasterTheme('light')).toBe(RASTER_THEMES.light)
-    expect(rasterTheme('light-daltonized')).toBe(RASTER_THEMES.light)
-    expect(rasterTheme('dark-ansi')).toBe(RASTER_THEMES.dark)
+  it('gives each of Claude Code\'s themes its own colours', () => {
+    for (const name of ['dark', 'light', 'dark-daltonized', 'light-daltonized', 'dark-ansi', 'light-ansi'] as const) expect(rasterTheme(name)).toBe(RASTER_THEMES[name])
+    expect(new Set(Object.values(RASTER_THEMES)).size).toBe(6)
+    // Daltonized: success and error told apart by more than red and green.
+    expect(RASTER_THEMES['dark-daltonized'].success).toBe(0x3399ff)
+    expect(RASTER_THEMES['light-daltonized'].error).toBe(0xcc0000)
+    // ANSI: the terminal's own basic colours, as xterm paints them.
+    expect(RASTER_THEMES['light-ansi'].error).toBe(0xcd0000)
+    expect(RASTER_THEMES['dark-ansi'].suggestion).toBe(0x5c5cff)
+  })
+  it('reads an unknown light theme as light and any other, or none, as dark', () => {
+    expect(rasterTheme('light-custom')).toBe(RASTER_THEMES.light)
+    expect(rasterTheme('solarized')).toBe(RASTER_THEMES.dark)
     expect(rasterTheme(undefined)).toBe(RASTER_THEMES.dark)
   })
   it('steps the heat map from the background to the accent, one hue', () => {
@@ -45,10 +54,10 @@ describe('rasterTheme', () => {
     }
     // On a dark theme each step is brighter than the last; on a light one darker.
     const sum = (c: number) => ((c >> 16) & 0xff) + ((c >> 8) & 0xff) + (c & 0xff)
-    const dark = HEAT_KEYS.map(k => sum(RASTER_THEMES.dark[k]!))
-    const light = HEAT_KEYS.map(k => sum(RASTER_THEMES.light[k]!))
-    expect(dark).toEqual([...dark].sort((a, b) => a - b))
-    expect(light).toEqual([...light].sort((a, b) => b - a))
+    for (const [name, theme] of Object.entries(RASTER_THEMES)) {
+      const steps = HEAT_KEYS.map(k => sum(theme[k]!))
+      expect(steps, name).toEqual([...steps].sort(name.startsWith('light') ? (a, b) => b - a : (a, b) => a - b))
+    }
   })
   it('blends channel by channel', () => {
     expect(blend(0x000000, 0xffffff, 0.5)).toBe(0x808080)

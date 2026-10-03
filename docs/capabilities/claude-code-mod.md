@@ -232,7 +232,8 @@ and its languages. A narrow pane drops the languages first.
   letters carry the boundaries' colours. The `error` colour marks a pair a
   declared policy forbids: `×` while nothing crosses it, an error tile once
   something does. On the terminal the map is one grid of solid tiles in the
-  theme's colours (it follows a theme picked in `/config`); elsewhere it is
+  theme's colours (it follows a theme picked in `/config`, daltonized and
+  ANSI ones included, the ANSI colours as xterm paints them); elsewhere it is
   drawn as shades from `░` to `█`. Below it each boundary is listed with
   its components and its dependencies in from and out to other boundaries.
   A component counts in one boundary, the one the pane labels it with, and

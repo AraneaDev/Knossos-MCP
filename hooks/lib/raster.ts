@@ -9,9 +9,11 @@
  *
  * A Raster takes raw colours only, where `Text` takes theme keys. So the few
  * theme keys the pane draws a grid with are resolved here, from the values
- * Claude Code's dark and light themes give them; a daltonized or ANSI theme
- * reads as its dark or light one. The heat map's four steps are the accent
- * laid over the theme's background at rising strength.
+ * each of Claude Code's themes gives them: dark and light, their daltonized
+ * forms, and the ANSI ones, whose basic terminal colours are taken as xterm
+ * paints them (a Raster cannot name a palette index). An unknown theme reads
+ * as light when its name says so, else dark. The heat map's four steps are
+ * the accent laid over the theme's background at rising strength.
  */
 import type { Row } from './rows'
 
@@ -28,7 +30,7 @@ export const HEAT_KEYS = ['heat-1', 'heat-2', 'heat-3', 'heat-4'] as const
 
 type Palette = Record<string, number>
 
-/** The keys both themes share: the eight subagent colours are the same in each. */
+/** The keys the RGB themes share: the eight subagent colours are the same in each. */
 const CATEGORICAL: Palette = {
   blue_FOR_SUBAGENTS_ONLY: 0x6a9bcc,
   purple_FOR_SUBAGENTS_ONLY: 0x827dbd,
@@ -50,14 +52,29 @@ export function blend(base: number, over: number, strength: number): number {
   return channel(16) | channel(8) | channel(0)
 }
 
-/** A theme's grid colours: its own keys plus the heat steps over `background`. */
-function palette(keys: Palette, background: number): Palette {
-  const heat = Object.fromEntries(HEAT_KEYS.map((key, i) => [key, blend(background, keys.suggestion!, HEAT_STRENGTH[i]!)]))
-  return { ...CATEGORICAL, ...keys, ...heat }
+/** The ANSI themes' subagent colours: the terminal's basic ones, as xterm paints them. */
+const ANSI_CATEGORICAL: Palette = {
+  blue_FOR_SUBAGENTS_ONLY: 0x0000ee,
+  purple_FOR_SUBAGENTS_ONLY: 0xcd00cd,
+  cyan_FOR_SUBAGENTS_ONLY: 0x00cdcd,
+  orange_FOR_SUBAGENTS_ONLY: 0xff0000,
+  pink_FOR_SUBAGENTS_ONLY: 0xff00ff,
+  green_FOR_SUBAGENTS_ONLY: 0x00cd00,
+  yellow_FOR_SUBAGENTS_ONLY: 0xcdcd00,
+  red_FOR_SUBAGENTS_ONLY: 0xcd0000,
 }
 
-/** Claude Code's dark and light theme values for the keys a grid draws with. */
-export const RASTER_THEMES: Record<'dark' | 'light', Palette> = {
+/** A theme's grid colours: its own keys plus the heat steps over `background`. */
+function palette(keys: Palette, background: number, categorical: Palette = CATEGORICAL): Palette {
+  const heat = Object.fromEntries(HEAT_KEYS.map((key, i) => [key, blend(background, keys.suggestion!, HEAT_STRENGTH[i]!)]))
+  return { ...categorical, ...keys, ...heat }
+}
+
+/** The themes Claude Code ships, by the name `/config` stores. */
+export type ThemeName = 'dark' | 'light' | 'dark-daltonized' | 'light-daltonized' | 'dark-ansi' | 'light-ansi'
+
+/** Each of Claude Code's themes' values for the keys a grid draws with. */
+export const RASTER_THEMES: Record<ThemeName, Palette> = {
   dark: palette(
     { text: 0xffffff, inactive: 0x999999, subtle: 0x505050, suggestion: 0xb1b9f9, success: 0x4eba65, warning: 0xffc107, error: 0xff6b80 },
     0x1e1e1e,
@@ -66,10 +83,29 @@ export const RASTER_THEMES: Record<'dark' | 'light', Palette> = {
     { text: 0x000000, inactive: 0x666666, subtle: 0xafafaf, suggestion: 0x5769f7, success: 0x2c7a39, warning: 0x966c1e, error: 0xab2b3f },
     0xffffff,
   ),
+  'dark-daltonized': palette(
+    { text: 0xffffff, inactive: 0x999999, subtle: 0x505050, suggestion: 0x99ccff, success: 0x3399ff, warning: 0xffcc00, error: 0xff6666 },
+    0x1e1e1e,
+  ),
+  'light-daltonized': palette(
+    { text: 0x000000, inactive: 0x666666, subtle: 0xafafaf, suggestion: 0x3366ff, success: 0x006699, warning: 0xff9900, error: 0xcc0000 },
+    0xffffff,
+  ),
+  'dark-ansi': palette(
+    { text: 0xffffff, inactive: 0xe5e5e5, subtle: 0x7f7f7f, suggestion: 0x5c5cff, success: 0x00ff00, warning: 0xffff00, error: 0xff0000 },
+    0x000000,
+    ANSI_CATEGORICAL,
+  ),
+  'light-ansi': palette(
+    { text: 0x000000, inactive: 0x7f7f7f, subtle: 0x7f7f7f, suggestion: 0x0000ee, success: 0x00cd00, warning: 0xcdcd00, error: 0xcd0000 },
+    0xffffff,
+    ANSI_CATEGORICAL,
+  ),
 }
 
-/** The grid colours for a theme by its name (`dark`, `light-daltonized`, ...); dark when unknown. */
+/** The grid colours for a theme by its name (`dark`, `light-daltonized`, ...); an unknown one by whether its name says light. */
 export function rasterTheme(name: string | null | undefined): Palette {
+  if (typeof name === 'string' && Object.hasOwn(RASTER_THEMES, name)) return RASTER_THEMES[name as ThemeName]
   return typeof name === 'string' && name.startsWith('light') ? RASTER_THEMES.light : RASTER_THEMES.dark
 }
 
