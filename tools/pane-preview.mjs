@@ -63,6 +63,8 @@ const layout = await import(join(REPO, 'hooks/lib/layout.ts'))
 const envelopes = await import(join(REPO, 'hooks/lib/envelopes.ts'))
 const raster = await import(join(REPO, 'hooks/lib/raster.ts'))
 const rows = await import(join(REPO, 'hooks/lib/rows.ts'))
+const band = await import(join(REPO, 'hooks/lib/band.ts'))
+const palette = await import(join(REPO, 'hooks/lib/palette.ts'))
 
 const OUT = resolve(args.out ?? join(REPO, '.superpowers/sdd/2026-10-02-claude-code-mod/preview'))
 const PROJECT = resolve(args.project ?? REPO)
@@ -189,12 +191,14 @@ function detailOf(d) {
  */
 function sampleSession(d, first) {
   const files = (d.fan_in ?? []).slice(3, 6)
+  // The hooks directory's own boundary, by the name the dashboard gives it, so it takes the colour the other tabs give it.
+  const hooks = (d.boundary_matrix?.boundaries ?? []).find(name => /^module:hooks\b/.test(name)) ?? 'module:hooks'
   const second = {
     ...first,
     changed_files: files.map(f => f.path),
     added_files: ['hooks/lib/changes.ts'],
     deleted_files: ['hooks/lib/legacy.ts'],
-    impact: { ...Object.fromEntries(files.map(f => [f.path, f])), 'hooks/lib/changes.ts': { path: 'hooks/lib/changes.ts', dependent_files: 2, boundaries: ['module:hooks'], boundary: 'module:hooks' } },
+    impact: { ...Object.fromEntries(files.map(f => [f.path, f])), 'hooks/lib/changes.ts': { path: 'hooks/lib/changes.ts', dependent_files: 2, boundaries: [hooks], boundary: hooks } },
     tests: [
       { path: 'tests/phpunit/Query/DashboardServiceTest.php', distance: 2 },
       { path: 'tests/phpunit/Query/TurnBriefServiceTest.php', distance: 1 },
@@ -207,26 +211,78 @@ function sampleSession(d, first) {
 
 const NOW = Date.now()
 const BASE_VIEW = { inspect: null, isBandHidden: false, tab: 'overview', selected: 0, showKeys: false, filter: '', filtering: false, sort: 'in' }
+const IDLE = { phase: 'idle', reason: null }
+const FETCHED = { fetchedAt: NOW, failed: false }
 const detail = detailOf(dashboard)
 const brief = sampleBrief(dashboard)
 const session = sampleSession(dashboard, brief)
+const root = dashboard.project_root ?? PROJECT
+const refused = { ...brief, status: 'not-allowed', refused_root: root, roots_file: join(DATA_DIR, 'roots.json') }
 
-/** Every view the preview draws: each tab, then the detail; `session` is what this session changed. */
-const VIEWS = [
-  ['overview', { tab: 'overview' }, brief, null, session],
-  ['overview-fresh', { tab: 'overview' }, null, null, layout.NO_CHANGES],
-  ['hubs', { tab: 'hubs', selected: 1 }, null, null, session],
-  ['boundaries', { tab: 'boundaries' }, null, null, session],
-  ['cycles', { tab: 'cycles' }, null, null, session],
-  ['issues', { tab: 'issues' }, null, null, session],
-  ['changes', { tab: 'changes', selected: 1 }, brief, null, session],
-  ['changes-empty', { tab: 'changes' }, null, null, layout.NO_CHANGES],
-  ['detail', { tab: 'hubs' }, null, detail, session],
-]
-
-function inputFor([, view, turn, shown, changes]) {
-  return layout.paneInput(dashboard, turn, { fetchedAt: NOW, failed: false }, { phase: 'idle', reason: null }, { ...BASE_VIEW, ...view }, NOW, true, shown, null, changes)
+/** The pane for a state: the view over BASE_VIEW, and what else the state holds. */
+function pane(view, { turn = null, shown = null, changes = session, refresh = FETCHED, rescan = IDLE, allow = null } = {}) {
+  const input = layout.paneInput(dashboard, turn, refresh, rescan, { ...BASE_VIEW, ...view }, NOW, true, shown, allow, changes)
+  return columns => layout.paneRows(input, columns)
 }
+
+/** The band above the prompt as the mod draws it: the model's text in its tone, then its buttons. */
+function bandRows(cases) {
+  const tones = { alert: 'error', warn: 'warning', normal: 'inactive' }
+  return columns =>
+    cases.flatMap(([key, b, job], i) => {
+      const model = band.bandModel(b, job, NOW, palette.declaredOf(dashboard))
+      if (model === null) return []
+      const segments = [{ text: `${model.text} `, color: tones[model.tone] }]
+      if (model.showDetails) segments.push(rows.button('details', 'details'), { text: ' ' })
+      segments.push(rows.button('hide', 'hide'))
+      const row = { key, segments }
+      const fitted = rows.rowWidth(row) <= columns ? row : { ...row, segments: rows.clip(segments, columns) }
+      return i === 0 ? [fitted] : [{ key: `gap-${key}`, segments: [{ text: ' ' }] }, fitted]
+    })
+}
+
+const scannedNow = { ...brief, scanned_at: Math.floor(NOW / 1000) - 42 }
+const violated = {
+  ...scannedNow,
+  policy: { status: 'evaluated', total: 1, truncated: false, violations: [{ policy_id: 'core-does-not-reach-into-workers', source: 'Knossos\\Query\\PolicyScope', target: 'KnossosPhpScanner\\Worker' }] },
+}
+const JOB_IDLE = { phase: 'idle', lastAttemptAt: null }
+
+/** Every view the preview draws, by name. */
+const VIEWS = [
+  ['overview', pane({ tab: 'overview' }, { turn: brief })],
+  ['overview-fresh', pane({ tab: 'overview' }, { changes: layout.NO_CHANGES })],
+  ['overview-keys', pane({ tab: 'overview', showKeys: true }, { turn: brief })],
+  ['hubs', pane({ tab: 'hubs', selected: 1 })],
+  ['hubs-filtering', pane({ tab: 'hubs', filtering: true, filter: 'query' })],
+  ['hubs-filtered', pane({ tab: 'hubs', filter: 'query' })],
+  ['hubs-no-match', pane({ tab: 'hubs', filter: 'zebra' })],
+  ['hubs-sort-cross', pane({ tab: 'hubs', sort: 'cross' })],
+  ['boundaries', pane({ tab: 'boundaries' })],
+  ['cycles', pane({ tab: 'cycles' })],
+  ['issues', pane({ tab: 'issues' })],
+  ['changes', pane({ tab: 'changes', selected: 1 }, { turn: brief })],
+  ['changes-empty', pane({ tab: 'changes' }, { changes: layout.NO_CHANGES })],
+  ...(detail === null ? [] : [['detail', pane({ tab: 'hubs' }, { shown: detail })]]),
+  ['detail-loading', pane({ tab: 'hubs' }, { shown: { label: 'StableId', loading: true, messages: null, component: null } })],
+  ['allow-offer', pane({ tab: 'overview' }, { turn: refused })],
+  ['allow-confirm', pane({ tab: 'overview' }, { turn: refused, allow: { phase: 'confirming', root, reason: null } })],
+  ['scanning', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'scanning', reason: null } })],
+  ['refresh-failed', pane({ tab: 'overview' }, { turn: brief, refresh: { fetchedAt: NOW - 600_000, failed: true } })],
+  ['rescan-failed', pane({ tab: 'overview' }, { turn: brief, rescan: { phase: 'failed', reason: 'the scan timed out' } })],
+  ['no-data', columns => layout.emptyRows(null, columns)],
+  ['no-data-refused', columns => layout.emptyRows(layout.allowInput(refused, IDLE, null), columns)],
+  [
+    'band',
+    bandRows([
+      ['band-ok', scannedNow, JOB_IDLE],
+      ['band-scanning', scannedNow, { phase: 'scanning', lastAttemptAt: NOW }],
+      ['band-violation', violated, JOB_IDLE],
+      ['band-failed', scannedNow, { phase: 'failed', lastAttemptAt: NOW }],
+      ['band-refused', refused, JOB_IDLE],
+    ]),
+  ],
+]
 
 // ---------------------------------------------------------------- cells
 
@@ -377,16 +433,17 @@ function svgOf(lines, columns, themeName) {
 
 // ---------------------------------------------------------------- main
 
+const only = args.only ? new Set(args.only.split(',')) : null
 mkdirSync(OUT, { recursive: true })
-for (const file of readdirSync(OUT)) if (file.endsWith('.png')) rmSync(join(OUT, file))
+// A full run starts the directory over; `--only` redraws its views beside the rest.
+if (only === null) for (const file of readdirSync(OUT)) if (file.endsWith('.png')) rmSync(join(OUT, file))
 const written = []
-for (const view of VIEWS) {
-  if (view[0] === 'detail' && view[3] === null) continue
-  const input = inputFor(view)
+for (const [name, draw] of VIEWS) {
+  if (only !== null && !only.has(name)) continue
   for (const columns of COLUMNS) {
-    const laidOut = layout.paneRows(input, columns)
+    const laidOut = draw(columns)
     for (const themeName of THEME_NAMES) {
-      const png = join(OUT, `${view[0]}-${columns}-${themeName}.png`)
+      const png = join(OUT, `${name}-${columns}-${themeName}.png`)
       const svg = svgOf(screen(laidOut, themeName), columns, themeName)
       const run = spawnSync('rsvg-convert', ['-o', png], { input: svg })
       if (run.status !== 0) {
