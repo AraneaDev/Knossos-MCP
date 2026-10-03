@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { BoundaryMatrix, Dashboard } from '../../types'
-import { axisCode, boundariesInput, boundaryRows, heatRows, heatSpec, shade, SHADES } from './boundaries'
-import { ACCENT, boundaryColour } from './palette'
+import { axisCode, boundariesInput, boundariesList, boundaryRows, heatRows, heatSpec, shade, SHADES } from './boundaries'
+import { ACCENT, boundaryColour, NO_HUES } from './palette'
 import { HEAT_KEYS } from './raster'
 import { plainText, rowWidth } from './rows'
 import type { Row } from './rows'
@@ -137,6 +137,43 @@ describe('heat map', () => {
   })
 })
 
+describe('the marked boundary', () => {
+  it('is walked by the marker, opens nothing, and spells out what it depends on and what depends on it', () => {
+    const input = boundariesInput(dash())!
+    const list = boundariesList(input)
+    expect(list.map(b => b.name)).toEqual(input.boundaries.map(b => b.label))
+    expect(list.every(b => b.inert === true && b.copy === b.canonical && b.ask?.includes(b.canonical) === true)).toBe(true)
+    const at = (selected: number) => boundaryRows(input, 60, NO_HUES, selected)
+    expect(plainText(row(at(1), 'bounds-1')!).startsWith('›')).toBe(true)
+    expect(row(at(1), 'bounds-1')!.segments.find(s => s.press)?.press?.id).toBe('row:1')
+    const focus = (selected: number) => at(selected).filter(r => r.key.startsWith('focus-')).map(plainText).join('\n')
+    for (const [i, b] of input.boundaries.entries()) {
+      const text = focus(i)
+      expect(text, b.label).toContain(b.label)
+      const out = input.cells[i]!.some((n, to) => to !== i && n > 0)
+      expect(text, b.label).toMatch(out ? /depends on +\S+ [\d,]+/ : /depends on +nothing outside itself/)
+    }
+  })
+  it('names the boundaries a policy forbids it to use, and a crossed one in the error colour', () => {
+    const input = boundariesInput(dash())!
+    const from = input.forbidden.findIndex(r => r.some(Boolean))
+    expect(from).toBeGreaterThanOrEqual(0)
+    const rows = boundaryRows(input, 60, NO_HUES, from)
+    expect(rows.filter(r => r.key.startsWith('focus-forbidden')).map(plainText).join(' ')).toMatch(/may not use +× \S+/)
+    const crossed = input.forbidden[from]!.findIndex((f, to) => f && (input.cells[from]![to] ?? 0) > 0)
+    if (crossed >= 0) {
+      const counts = rows.filter(r => r.key.startsWith('focus-out')).flatMap(r => r.segments).filter(s => s.color === 'error')
+      expect(counts.length).toBeGreaterThan(0)
+    }
+  })
+  it('stands each section note over its own table', () => {
+    const rows = boundaryRows(boundariesInput(dash()), 100)
+    const head = plainText(row(rows, 'bounds-head')!)
+    expect(head.length).toBeLessThan(100)
+    expect(plainText(row(rows, 'bounds-list')!).length).toBeLessThan(100)
+  })
+})
+
 describe('boundaryRows', () => {
   it('lists each boundary with its letter, components, in and out under the map, with a legend', () => {
     const rows = boundaryRows(boundariesInput(dash()), 60)
@@ -145,7 +182,7 @@ describe('boundaryRows', () => {
     // The legend is part of the grid, so the terminal draws its swatches as the same tiles.
     expect(rows.filter(r => r.key.startsWith('heat-legend')).every(r => r.raster === 'heat')).toBe(true)
     expect(plainText(row(rows, 'bounds-cols')!)).toMatch(/boundary +comps +in +out$/)
-    expect(plainText(row(rows, 'bounds-1')!)).toMatch(/^ {3}B core +[━╸]+·* +1633 +10779 +0$/)
+    expect(plainText(row(rows, 'bounds-1')!)).toMatch(/^ {3}B core +[━╸]+·* +1,633 +10,779 +0$/)
     expect(plainText(row(rows, 'bounds-3')!)).toMatch(/^ {3}D hooks /)
   })
   it('says so when no boundary labels a component, and when knossos sends no map', () => {

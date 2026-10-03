@@ -278,8 +278,11 @@ describe('paneRows', () => {
     expect(track?.color).toBe('subtle')
     const none = row(rows, 'hub-5')!.segments.find(s => /[━╸]/.test(s.text))
     expect(none?.dim).toBe(true)
-    // Numbers are plain text; only boundaries, statuses and the selection carry colour.
-    expect(row(rows, 'hub-0')!.segments.filter(s => /^ +\d+$/.test(s.text)).every(s => s.color === 'text')).toBe(true)
+    // Numbers are plain text, the sorted column bright and the others dim; only boundaries, statuses and the selection carry colour.
+    const numbers = row(rows, 'hub-0')!.segments.filter(s => /^ +[\d,]+$/.test(s.text))
+    expect(numbers.map(s => (s.dim === true ? 'dim' : s.color))).toEqual(['text', 'dim', 'dim'])
+    const byCross = row(paneRows(input({ tab: 'hubs', sort: 'cross' }), 90), 'hub-0')!.segments.filter(s => /^ +[\d,]+$/.test(s.text))
+    expect(byCross.map(s => (s.dim === true ? 'dim' : s.color))).toEqual(['dim', 'dim', 'text'])
     expect(row(rows, 'hub-0')!.segments[0]).toMatchObject({ text: '›', color: 'suggestion' })
   })
 
@@ -290,7 +293,7 @@ describe('paneRows', () => {
     expect(text).toMatch(/TurnBriefService\.php +core +[━╸]+·* +21/)
     expect(text).toMatch(/cycles +2/)
     expect(text).toMatch(/max degree +161/)
-    expect(text).toMatch(/dead code +55 +policy ✓ 0/)
+    expect(text).toMatch(/dead code +55\n {3}policy +✓ 0\n/)
     expect(text).toContain('Most depended on')
     expect(listFor(input())).toHaveLength(5)
   })
@@ -305,7 +308,7 @@ describe('paneRows', () => {
 
   it('names a policy violation in the error colour', () => {
     const rows = paneRows(input({}, dash(), brief({ policy: { status: 'evaluated', total: 3, violations: [], truncated: false } })), 60)
-    const seg = row(rows, 'health-dead')!.segments.find(s => s.text === '▲ 3')
+    const seg = row(rows, 'health-policy')!.segments.find(s => s.text.trim() === '▲ 3')
     expect(seg?.color).toBe('error')
   })
 
@@ -329,7 +332,12 @@ describe('paneRows', () => {
   })
 
   it('shows the key help on request', () => {
-    expect(textOf(paneRows(input({ showKeys: true }), 60))).toContain('1–6 or a click switch tabs')
+    const rows = paneRows(input({ showKeys: true }), 60)
+    expect(textOf(rows)).toMatch(/1–6 +switch tabs \(or click one\)/)
+    expect(textOf(rows)).toMatch(/\nq +ask Claude about the marked row/)
+    // One key a line, the key in the accent; a long action wraps under its own column.
+    expect(row(rows, 'help-0')!.segments[0]).toMatchObject({ text: '1–6    ', color: 'suggestion' })
+    expect(rows.filter(r => r.key.startsWith('help-')).every(r => r.segments[0]!.text.length === 7)).toBe(true)
     expect(textOf(paneRows(input(), 60))).not.toContain('switch tabs')
   })
 })
@@ -382,6 +390,11 @@ describe('paneStatus and needsRescan', () => {
   it('puts a failed refresh or rescan in red', () => {
     expect(paneStatus(dash(), { fetchedAt: 0, failed: true }, IDLE, 0).tone).toBe('alert')
     expect(paneStatus(dash(), FETCHED, { phase: 'failed', reason: 'not-allowed' }, 0)).toEqual({ tone: 'alert', text: 'rescan failed: not-allowed' })
+  })
+  it('keeps saying how old the figures on show are while a scan runs', () => {
+    const scanning = { phase: 'scanning', reason: null } as const
+    expect(paneStatus(dash(), { fetchedAt: 1_000, failed: false }, scanning, 61_000)).toEqual({ tone: 'warn', text: 'scanning… · stale · 11h' })
+    expect(paneStatus(dash(), { fetchedAt: 1_000, failed: true }, scanning, 61_000).text).toBe('scanning… · refresh failed · 11h')
   })
   it('wants a rescan when stale or drifted', () => {
     expect(needsRescan(dash())).toBe(true)
@@ -585,7 +598,7 @@ describe('the issues tab', () => {
     expect(text).toMatch(/FactCollector::beforeTraverse +php-worker +FactCollector\.php:108/)
     expect(text).toMatch(/◇ helper/)
     expect(text).toMatch(/Largest files +lines/)
-    expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*━+ +4986/)
+    expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*━+ +4,986/)
   })
   it('gives way in order: names are cut, then the boundary goes, then the place', () => {
     const dead = (columns: number) => plainText(row(paneRows(fullInput({ tab: 'issues' }), columns), 'dead-0')!)
@@ -646,7 +659,7 @@ describe('the cycles tab', () => {
     const chain = rows.filter(r => r.key.startsWith('chain-0')).flatMap(r => r.segments)
     const coloured = (name: string) => chain.find(s => s.text === name)?.color
     // Most members are python-worker: the cycle's line names it, in its colour, and its members stay neutral.
-    expect(plainText(row(rows, 'cycle-0')!)).toBe('   cycle 1 · 5 members · python-worker')
+    expect(plainText(row(rows, 'cycle-0')!)).toBe('›  cycle 1 · 5 members · python-worker')
     expect(row(rows, 'cycle-0')!.segments.at(-1)?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
     expect(coloured('Index::_add_instances')).toBeUndefined()
     expect(coloured('Index::read_bounded')).toBeUndefined()
@@ -669,6 +682,24 @@ describe('the cycles tab', () => {
     const cut = textOf(cycleRows(cyclesInput(long), 60))
     expect(cut).toMatch(/Cycles +60\+ · 1 shown · largest first/)
     expect(cut).toContain('a → … +49 more')
+  })
+  it('walks the cycles: the marker on a cycle, o opens the member where it crosses, c copies its chain, q asks how to break it', () => {
+    const input = fullInput({ tab: 'cycles', selected: 1 })
+    const list = listFor(input)
+    expect(list.map(c => c.name)).toEqual(['cycle 1', 'cycle 2'])
+    const rows = paneRows(input, 100)
+    expect(plainText(row(rows, 'cycle-1')!).startsWith('›')).toBe(true)
+    expect(plainText(row(rows, 'cycle-0')!).startsWith('›')).toBe(false)
+    expect(row(rows, 'cycle-0')!.segments.find(s => s.press)?.press).toEqual({ id: 'row:0', label: 'cycle 1' })
+    const first = subjectOf({ ...input, selected: 0 })!
+    // The member outside the cycle's own boundary is where it crosses: that one opens.
+    expect(first.canonical).toBe(list[0]!.canonical)
+    expect(first.canonical).toContain('safe_file')
+    expect(first.copy).toMatch(/_add_instances → .* → .*_add_instances$/)
+    expect(first.ask).toContain('how could I break this dependency cycle')
+    expect(first.ask).toContain(first.copy)
+    const keys = row(rows, 'keys')!.segments.flatMap(s => (s.press ? [s.press.hotkey] : []))
+    expect(keys).toEqual(expect.arrayContaining(['j', 'k', 'o', 'c', 'q']))
   })
   it('says when there is none', () => {
     expect(textOf(paneRows(fullInput({ tab: 'cycles' }, full({ cycles: { count: 0, truncated: false, truncation_reasons: [], largest: [] } })), 60))).toContain('No dependency cycles.')
@@ -701,13 +732,19 @@ describe('the detail view', () => {
     expect(text.indexOf('Used by 19')).toBeLessThan(text.indexOf('Uses 2'))
     expect(plainText(row(rows, 'uses-0')!)).toMatch(/BoundaryLabels +core +[━╸]+·* +4$/)
   })
-  it('makes every counterpart pressable, used by first, and offers back instead of the list keys', () => {
+  it('makes every counterpart pressable, used by first, marks the one j and k reach, and offers back beside the list keys', () => {
     const input = detailPane()
     expect(listFor(input).map(i => i.name)).toEqual(['DashboardServiceTest::testDrift', 'BriefCommand::answer', 'BoundaryLabels', 'ProjectFindings'])
     const rows = paneRows(input, 60)
     expect(row(rows, 'uses-1')!.segments.find(s => s.press)?.press?.id).toBe('rel:3')
     const keys = row(rows, 'keys')!.segments.flatMap(s => (s.press ? [s.press.hotkey] : []))
-    expect(keys).toEqual(['b', 'c', 'q', 'h'])
+    expect(keys.slice(0, 4)).toEqual(['b', 'j', 'k', 'o'])
+    expect(keys).toContain('q')
+    // The marker walks used by, then uses: the third counterpart is the first it uses.
+    expect(plainText(row(rows, 'used-0')!).startsWith('›')).toBe(true)
+    const third = paneRows({ ...input, selected: 2 }, 60)
+    expect(plainText(row(third, 'used-0')!).startsWith('›')).toBe(false)
+    expect(plainText(row(third, 'uses-0')!).startsWith('›')).toBe(true)
     expect(row(rows, 'tabs')).toBeUndefined()
   })
   it('says it is looking, or what knossos said instead', () => {
@@ -718,7 +755,7 @@ describe('the detail view', () => {
   it('lists names without counts or bars from an older knossos', () => {
     const old = detailAnswer({ used_by: { count: 1, truncated: false, names: ['Kernel'] }, uses: { count: 0, truncated: false, names: [] } })
     const text = textOf(paneRows(detailPane(old), 60))
-    expect(text).toMatch(/Used by 1\n {3}Kernel/)
+    expect(text).toMatch(/Used by 1\n› {2}Kernel/)
     expect(text).not.toMatch(/█/)
   })
 })
@@ -816,8 +853,13 @@ describe('colour', () => {
 describe('the overview health line', () => {
   it('shows the project policy and diagnostics when knossos reports them', () => {
     const rows = paneRows(fullInput(), 90)
-    expect(plainText(row(rows, 'health-dead')!)).toMatch(/dead code +55 +policy ▲ 7 +diagnostics ▲ 2/)
-    expect(row(rows, 'health-dead')!.segments.find(s => s.text === '▲ 2')?.color).toBe('warning')
+    expect(plainText(row(rows, 'health-dead')!)).toMatch(/^ {3}dead code +55$/)
+    expect(plainText(row(rows, 'health-policy')!)).toMatch(/^ {3}policy +▲ 7$/)
+    expect(plainText(row(rows, 'health-diagnostics')!)).toMatch(/^ {3}diagnostics +▲ 2$/)
+    expect(row(rows, 'health-diagnostics')!.segments.at(-1)?.color).toBe('warning')
+    // One column: every figure ends where the others end.
+    const ends = ['health-cycles', 'health-degree', 'health-dead', 'health-policy', 'health-diagnostics'].map(k => plainText(row(rows, k)!).trimEnd().length)
+    expect(new Set(ends).size).toBe(1)
   })
 })
 

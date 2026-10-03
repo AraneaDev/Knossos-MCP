@@ -373,6 +373,8 @@ export type TableLine = {
   link?: Loc | null
   /** The one-cell mark before the name, when not the hotspot mark. */
   mark?: Segment
+  /** The number column the list is sorted by: the others are drawn dim beside it. */
+  sorted?: number
 }
 
 /** One table row: marker, name (pressable when it has an id), boundary, bar and numbers. */
@@ -394,8 +396,11 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hu
     const glyphs = bar(line.barValue ?? line.values[0] ?? 0, line.max, spec.bar)
     segments.push({ text: ' ' }, { text: glyphs, ...style }, { text: TRACK.repeat(spec.bar - cells(glyphs)), color: FAINT })
   }
-  spec.numbers.forEach((w, i) => segments.push({ text: ` ${padStart(String(line.values[i] ?? 0), w)}`, color: HEADING }))
+  spec.numbers.forEach((w, i) => {
+    const text = ` ${padStart(grouped(line.values[i] ?? 0), w)}`
+    segments.push(line.sorted === undefined || line.sorted === i ? { text, color: HEADING } : { text, dim: true })
+  })
   return { key, segments: segments.filter(s => s.text !== '') }
 }
 
-export const numberWidth = (title: string, values: number[]) => Math.max(cells(title), ...values.map(v => cells(String(v))))
+export const numberWidth = (title: string, values: number[]) => Math.max(cells(title), ...values.map(v => cells(grouped(v))))

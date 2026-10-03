@@ -9,7 +9,7 @@
  */
 import type { AllowState, Dashboard, HubSort, KnossosView, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
-import { boundariesInput, boundaryRows } from './boundaries'
+import { boundariesInput, boundariesList, boundaryRows } from './boundaries'
 import type { BoundariesInput } from './boundaries'
 import { changesInput, changesList, changesRows, lookAtOf, lookAtRows, NO_CHANGES } from './changes'
 import type { ChangesInput, LookAt } from './changes'
@@ -45,7 +45,7 @@ import {
 } from './rows'
 import type { Loc, Row, Segment, TableSpec } from './rows'
 import { sparkline } from './sparkline'
-import { cycleRows, cyclesInput, detailList, detailRows, issueCount, issueRows, issuesInput, issuesList, locIn, superscript } from './views'
+import { cycleRows, cyclesInput, cyclesList, detailList, detailRows, issueCount, issueRows, issuesInput, issuesList, locIn, superscript } from './views'
 import type { CyclesInput, DetailInput, IssuesInput, Openable } from './views'
 
 // Everything the specs and the render hook draw with, from one module.
@@ -191,19 +191,22 @@ export function hubList(items: Item[], filter: string, sort: HubSort): Item[] {
 }
 
 /** The rows the selection walks: the detail's counterparts, else the tab's list. */
-export function listFor(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'changes'>): Openable[] {
+export function listFor(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries'>): Openable[] {
   if (input.detail !== null) return detailList(input.detail)
   if (input.tab === 'overview') return input.items.slice(0, OVERVIEW_TOP)
   if (input.tab === 'hubs') return hubList(input.items, input.filter, input.sort)
   if (input.tab === 'changes') return changesList(input.changes)
+  if (input.tab === 'cycles') return cyclesList(input.cycles)
+  if (input.tab === 'boundaries') return boundariesList(input.boundaries)
   return input.tab === 'issues' ? issuesList(input.issues) : []
 }
 
 /** The header's status: the snapshot's state and age, or what the rescan or refresh is doing. */
 export function paneStatus(d: Dashboard, refresh: RefreshState, rescan: RescanState, now: number): PaneStatus {
-  if (rescan.phase === 'scanning') return { tone: 'warn', text: 'scanning…' }
   const sinceFetch = refresh.fetchedAt === null ? 0 : now - refresh.fetchedAt
   const age = d.freshness.age_seconds === null ? '' : ` · ${formatAge(d.freshness.age_seconds * 1000 + sinceFetch)}`
+  // The figures on show are still the old snapshot's while a scan runs: say how old, never only that a scan runs.
+  if (rescan.phase === 'scanning') return { tone: 'warn', text: `scanning… · ${refresh.failed ? 'refresh failed' : d.freshness.state}${age}` }
   if (rescan.phase === 'failed') return { tone: 'alert', text: `rescan failed${rescan.reason ? `: ${rescan.reason}` : ''}` }
   if (refresh.failed) return { tone: 'alert', text: `refresh failed${age}` }
   return { tone: d.freshness.state === 'fresh' ? 'ok' : 'warn', text: `${d.freshness.state}${age}` }
@@ -345,14 +348,16 @@ export function allowInput(brief: TurnBrief | null, rescan: RescanState, allow: 
  * The component a copy or an "Ask Claude" is about: the one on show in the
  * detail, else the marked row of the tab's list; null when there is none.
  */
-export function subjectOf(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected' | 'changes'>): Openable | null {
+export function subjectOf(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected' | 'changes' | 'cycles' | 'boundaries'>): Openable | null {
   if (input.detail !== null) {
     const c = input.detail.component
     return c === null ? null : { name: c.name, canonical: c.canonical, loc: c.loc }
   }
   const list = listFor(input)
   const marked = list[Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))]
-  return marked === undefined ? null : { name: marked.name, canonical: marked.canonical, loc: marked.loc ?? null, ...(marked.file ? { file: true } : {}) }
+  if (marked === undefined) return null
+  const { name, canonical, loc, file, inert, copy, ask } = marked
+  return { name, canonical, loc: loc ?? null, ...(file ? { file } : {}), ...(inert ? { inert } : {}), ...(copy === undefined ? {} : { copy }), ...(ask === undefined ? {} : { ask }) }
 }
 
 /**
@@ -360,7 +365,7 @@ export function subjectOf(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 's
  * else the file of the component on show or of the marked row; null when
  * there is none.
  */
-export function editTarget(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected' | 'changes' | 'lookAt'>): Loc | null {
+export function editTarget(input: Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'selected' | 'changes' | 'cycles' | 'boundaries' | 'lookAt'>): Loc | null {
   if (input.detail === null && input.tab === 'overview') return input.lookAt?.file?.loc ?? null
   return subjectOf(input)?.loc ?? null
 }
@@ -511,6 +516,7 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
         selected: i === selected,
         hotspotOnly: item.hotspotOnly,
         press: `row:${i}`,
+        ...(withDegrees ? { sorted: SORTS.indexOf(sort) } : {}),
       }, spec, hues),
     ),
   ]
@@ -542,40 +548,67 @@ function trendGlyphs(values: number[]): string {
   return sparkline(values.slice(-TREND_MAX_POINTS))
 }
 
-/** A count drawn green when zero and in `tone` otherwise, after a dim label. */
-function verdict(label: string, value: string, tone: Tone): Segment[] {
-  const zero = value === '0'
-  return [{ text: `   ${label} `, dim: true }, zero ? { text: '✓ 0', color: STATUS_COLOURS.ok } : { text: `▲ ${value}`, color: STATUS_COLOURS[tone] }]
+/** A count as a verdict: `✓ 0` in green, else `▲ n` in `tone`. */
+function verdict(value: string, tone: Tone): Segment {
+  return value === '0' ? { text: '✓ 0', color: STATUS_COLOURS.ok } : { text: `▲ ${value}`, color: STATUS_COLOURS[tone] }
 }
 
+/**
+ * Health, one figure per row in one column: cycles, the largest degree and
+ * dead code as plain numbers (each with its trend, when it moves), then the
+ * policy violations and diagnostics as verdicts, green at zero.
+ */
 function healthRows(h: Health, columns: number): Row[] {
   const cyclesTrend = trendGlyphs(h.cyclesTrend)
   const degreeTrend = trendGlyphs(h.degreeTrend)
   const note = cyclesTrend !== '' || degreeTrend !== '' ? `trend (${Math.max(h.cyclesTrend.length, h.degreeTrend.length)} scans)` : ''
-  const values = [h.cycles, h.maxDegree === null ? '' : String(h.maxDegree), h.deadCode]
-  const valueWidth = Math.max(...values.map(cells))
-  const metric = (key: string, label: string, value: string, extra: Segment[], trend: string): Row => {
-    const left: Segment[] = [{ text: `   ${padEnd(label, 11)}`, dim: true }, { text: padStart(value, valueWidth), bold: true, color: 'text' }, ...extra]
-    return spread(key, left, trend === '' ? [] : [{ text: trend, dim: true }], columns)
-  }
-  const extra: Segment[] = [
-    ...(h.policy === null ? [] : verdict('policy', h.policy, 'alert')),
-    ...(h.diagnostics === null ? [] : verdict('diagnostics', String(h.diagnostics), 'warn')),
+  const verdicts: [string, string, string, Tone][] = [
+    ...(h.policy === null ? [] : [['health-policy', 'policy', h.policy, 'alert'] as [string, string, string, Tone]]),
+    ...(h.diagnostics === null ? [] : [['health-diagnostics', 'diagnostics', String(h.diagnostics), 'warn'] as [string, string, string, Tone]]),
   ]
+  const values = [h.cycles, h.maxDegree === null ? '' : String(h.maxDegree), h.deadCode, ...verdicts.map(([, , v, tone]) => verdict(v, tone).text)]
+  const valueWidth = Math.max(...values.map(cells))
+  const label = (text: string): Segment => ({ text: `   ${padEnd(text, HEALTH_LABEL)}`, dim: true })
+  const metric = (key: string, name: string, value: string, trend: string): Row =>
+    spread(key, [label(name), { text: padStart(value, valueWidth), bold: true, color: 'text' }], trend === '' ? [] : [{ text: trend, dim: true }], columns)
   return [
     sectionRow('health-head', 'Health', note, columns),
-    metric('health-cycles', 'cycles', h.cycles, [], cyclesTrend),
-    ...(h.maxDegree === null ? [] : [metric('health-degree', 'max degree', String(h.maxDegree), [], degreeTrend)]),
-    metric('health-dead', 'dead code', h.deadCode, extra, ''),
+    metric('health-cycles', 'cycles', h.cycles, cyclesTrend),
+    ...(h.maxDegree === null ? [] : [metric('health-degree', 'max degree', String(h.maxDegree), degreeTrend)]),
+    metric('health-dead', 'dead code', h.deadCode, ''),
+    ...verdicts.map(([key, name, value, tone]): Row => {
+      const v = verdict(value, tone)
+      return { key, segments: [label(name), { ...v, text: padStart(v.text, valueWidth) }] }
+    }),
   ]
 }
+
+/** The width of Health's labels: its longest, and a space. */
+const HEALTH_LABEL = 'diagnostics'.length + 1
+
+/** The keys and what each does, for the key list. */
+const KEY_HELP: [string, string][] = [
+  ['1–6', 'switch tabs (or click one)'],
+  ['j k', 'move the marker (or Tab, or a click)'],
+  ['o', 'open the marked row: a component shows its detail, a file opens in your editor'],
+  ['b', 'back from a detail'],
+  ['e', "open the marked row's file in your editor; on Overview, the riskiest file this session touched"],
+  ['c', "copy the marked row's full name; on Changes the test command (t copies it from Overview)"],
+  ['q', 'ask Claude about the marked row: your press sends the prompt'],
+  ['f s x', 'on Hubs: filter (type, then Enter), sort by in, out or cross, clear'],
+  ['r', 'rescan a stale snapshot'],
+  ['a', 'allow a refused root (asks first)'],
+]
+const KEY_WIDTH = Math.max(...KEY_HELP.map(([k]) => cells(k))) + 2
 
 /** The key buttons, wrapped onto as many rows as they need: a key that does not fit is never dropped, since it would stop working. */
 function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] {
   const keys: Segment[] = []
   const changes = input.detail === null && input.tab === 'changes'
   if (input.detail !== null) keys.push(button('back', 'back', 'b'))
-  if (hasList) keys.push(button('down', '↓', 'j'), button('up', '↑', 'k'), button('open', 'open', 'o'))
+  if (hasList) keys.push(button('down', '↓', 'j'), button('up', '↑', 'k'))
+  // A boundary has nothing to open: the marker only shows what it depends on.
+  if (hasList && !listFor(input).every(item => item.inert === true)) keys.push(button('open', 'open', 'o'))
   // On Overview the "Look at now" row carries its own `e`.
   if (editTarget(input) !== null && !(input.detail === null && input.tab === 'overview')) keys.push(button('edit', 'edit', 'e'))
   if (changes) {
@@ -591,14 +624,13 @@ function footerRows(input: PaneInput, columns: number, hasList: boolean): Row[] 
   keys.push(button('keys', input.showKeys ? 'hide keys' : 'keys', 'h'))
   const rows = wrapGroups('keys', keys.map(k => [{ ...k, dim: true }]), columns)
   if (input.showKeys) {
-    const help =
-      '1–6 or a click switch tabs. j/k, Tab or a click move the marker; o or Enter opens it, b goes back. ' +
-      'A file:line opens in your editor on a click; e opens the marked one (on Overview, the riskiest file this session touched). ' +
-      'On Hubs, f filters (type, then Enter; x clears) and s sorts by in, out or cross. ' +
-      'c copies the marked component\'s full name (on Changes, the command for the tests that reach the changes; t copies it from Overview); ' +
-      'q asks Claude what depends on it (your press sends the prompt). ' +
-      'r rescans when the snapshot is stale; a offers to allow a refused root and asks first. Every key has a button.'
-    wrapWords(help, columns).forEach((line, i) => rows.push({ key: `help-${i}`, segments: [{ text: line, dim: true }] }))
+    // One key a line, its action wrapped beside it: a list to look up, not a paragraph to read.
+    let n = 0
+    for (const [key, action] of [...KEY_HELP, ['', 'A file:line opens in your editor on a click. Every key has a button.'] as [string, string]]) {
+      wrapWords(action, Math.max(1, columns - KEY_WIDTH)).forEach((line, i) =>
+        rows.push({ key: `help-${n++}`, segments: [{ text: padEnd(i === 0 ? key : '', KEY_WIDTH), color: ACCENT }, { text: line, dim: true }] }),
+      )
+    }
   }
   return rows
 }
@@ -660,9 +692,9 @@ export function paneRows(input: PaneInput, columns: number): Row[] {
   const list = listFor(input)
   const selected = Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))
   const rows: Row[] = [...headerRows(input, width)]
-  if (input.allow !== null) rows.push(...allowRows(input.allow, width))
+  if (input.allow !== null) rows.push(...allowRows(input.allow, width), blank('gap-allow'))
   if (input.detail !== null) {
-    rows.push(...detailRows(input.detail, width, input.hues))
+    rows.push(...detailRows(input.detail, width, input.hues, selected))
   } else {
     const count = issueCount(input.issues)
     const touched = input.changes.files.length
@@ -680,11 +712,11 @@ export function paneRows(input: PaneInput, columns: number): Row[] {
     } else if (input.tab === 'issues') {
       rows.push(...issueRows(input.issues, selected, width, input.hues))
     } else if (input.tab === 'cycles') {
-      rows.push(...cycleRows(input.cycles, width, input.hues))
+      rows.push(...cycleRows(input.cycles, width, input.hues, selected))
     } else {
-      rows.push(...boundaryRows(input.boundaries, width, input.hues))
+      rows.push(...boundaryRows(input.boundaries, width, input.hues, selected))
     }
   }
-  rows.push(blank('gap-keys'), ...footerRows(input, width, list.length > 0 && input.detail === null))
+  rows.push(blank('gap-keys'), ...footerRows(input, width, list.length > 0))
   return rows.map(row => (rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
 }

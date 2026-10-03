@@ -16,12 +16,16 @@ After a turn that edited files, a single line above the prompt sums up the
 blast radius:
 
 ```text
-knossos · 2 files → 37 dependents · Core, Http · 4 tests · as of 12s ago
+knossos · 2 files → 37 dependents · 4 tests · as of 12s ago · reaching Core, Http
 ```
 
-That is the files the turn changed, how many other files depend on them, the
-boundaries those dependents sit in, the tests that reach the change, and how
-old the figures are. The age keeps counting while the band is on screen, so
+That is the files the turn changed, how many other files depend on them, any
+policy violations it introduced, the tests that reach the change, how old the
+figures are, and the boundaries those dependents sit in (by their short
+names, the two holding the most dependents, then a count of the rest). When
+the project declares boundaries, only declared ones are named. The figures
+come first and the boundaries last, so a narrow terminal cuts the boundaries
+before anything else. The age keeps counting while the band is on screen, so
 figures from an hour ago read as an hour old.
 
 While a scan runs, the band says `scanning…` and keeps the previous figures
@@ -172,9 +176,11 @@ Last turn                     3 files → 29 deps · 3 tests
    changes.ts           hooks ━━╸·····················  2
 
 Health
-   cycles       2
-   max degree 161
-   dead code   55   policy ✓ 0   diagnostics ✓ 0
+   cycles         2
+   max degree   161
+   dead code     55
+   policy       ✓ 0
+   diagnostics  ✓ 0
 
 Most depended on                                          in
 ›  StableId                 core ━━━━━━━━━━━━━━━━━━━━━━━ 525
@@ -200,12 +206,16 @@ and its languages. A narrow pane drops the languages first.
   field: the list narrows as you type to the components whose name holds the
   text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
   cross-boundary degree in turn; the bar follows the sort, and the title says
-  it (`Hubs and hotspots · sorted by in`).
+  it (`Hubs and hotspots · sorted by in`). The sorted column's numbers are in
+  the text colour and the other two are dimmed.
 - **Cycles:** each dependency cycle, the largest first, as a chain of its
   members (`a → b → c ↺`) wrapped to the pane's width, under a line naming
   the boundary most of them are in. A member outside that boundary is drawn
   in its own boundary's colour, with a legend: that is where the cycle
-  crosses. The ten largest are listed.
+  crosses. The ten largest are listed. `j` and `k` mark a cycle: `o` opens
+  the member where it leaves its own boundary (its uses include the edge that
+  closes the loop), `c` copies the whole chain, and `q` asks Claude how to
+  break it.
 - **Issues:** the declared policy violations (each with the offending file
   and line), the scan's errors and warnings, the first ten dead-code
   candidates (`◇` marks one only tests reach) and the five largest files.
@@ -240,7 +250,18 @@ and its languages. A narrow pane drops the languages first.
   drawn as shades from `░` to `█`. Below it each boundary is listed with
   its components and its dependencies in from and out to other boundaries.
   A component counts in one boundary, the one the pane labels it with, and
-  only boundaries that label something get a row.
+  only boundaries that label something get a row. `j` and `k` mark a
+  boundary, and the pane spells it out under the table: the boundaries it
+  depends on and the ones that depend on it, each with its count (red where a
+  policy forbids the pair), and the ones a policy forbids it to use. There is
+  nothing to open; `c` copies the boundary's name and `q` asks Claude what
+  its dependencies are for.
+
+```text
+G tooling
+   depends on   core 18  hooks 4
+   used by      nothing outside itself
+```
 
 ```text
 Boundaries                                  10 · 29,854 deps
@@ -258,7 +279,7 @@ Changes this session                                 2 turns
    hooks/register.tsx             hooks ━━━━╸··········    6
  + hooks/lib/changes.ts           hooks ━╸·············    2
 
-Tests that reach them 3                         hops
+Tests that reach them · 3                       hops
    hooks/lib/changes.spec.ts                       1
    tests/phpunit/Query/TurnBriefServiceTest.php    1
    tests/phpunit/Store/StoreTest.php               2
@@ -271,8 +292,10 @@ Tests that reach them 3                         hops
 Every action is a button, so a click works as well as its key: `1` to `6`
 switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
 Tab or the arrows onto a row), `o` or Enter opens the marked component, `b`
-goes back, `h` shows the keys. A component opens from the Overview, Hubs and
-Issues tabs; the pane looks it up by its canonical name.
+goes back, `h` lists the keys, one a line. A component opens from the
+Overview, Hubs, Cycles and Issues tabs and from a detail; the pane looks it
+up by its canonical name. Numbers of four digits or more are grouped
+(`10,867`).
 `/knossos inspect <component>` opens the pane on one component directly.
 
 ```text
@@ -287,7 +310,9 @@ Used by 91                       edges  Uses 13                      edges
 The detail heads with the component's name, kind, boundary, file and line.
 Below it, what uses it and what it uses, each the eight most connected with
 their boundary and how many relationships run to each, side by side from 72
-columns and one above the other below that. Every name there opens in turn.
+columns and one above the other below that. A side whose counts are all the
+same draws no bars, since they would compare nothing. The marker walks both
+sides, used by first, and every name there opens in turn.
 Annotations recorded on the component follow. Escape cannot be caught by a
 pane (it hands the keyboard back), so `b` is the way back, and the filter
 clears with `x` or an empty Enter.
@@ -307,9 +332,10 @@ Two more keys act on the marked component, or on the one the detail shows:
 
 - `c` copies its canonical name to the clipboard of the surface you pressed
   it on, and says so in a toast.
-- `q` asks Claude about it. Your press submits the one prompt below. It is
-  the only prompt the mod ever submits, and only on that press; the mod never
-  starts a turn on its own.
+- `q` asks Claude about it. Your press submits the one prompt below (on
+  Cycles, how to break the marked cycle; on Boundaries, what the marked
+  boundary's dependencies are for). It is the only prompt the mod ever
+  submits, and only on that press; the mod never starts a turn on its own.
 
 ```text
 Using the Knossos graph, what depends on <canonical name> and what would break if I changed it?
@@ -333,7 +359,8 @@ figures it had and the header says `refresh failed · 2m`.
 
 When the snapshot is stale or files drifted since it, the header offers
 `r: rescan`. It runs an incremental scan (`knossos rescan`) under the same
-rules as the turn's scan, shows `scanning…` meanwhile, and reloads the pane
+rules as the turn's scan, shows `scanning…` meanwhile with the state and age
+of the figures still on show (`scanning… · stale · 2h`), and reloads the pane
 when it is done. A rescan that does not land says why in the header and
 leaves the figures as they were.
 

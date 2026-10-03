@@ -791,6 +791,17 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
+  test('the band names the declared boundaries a turn reaches, after its figures and age', async ($, on) => {
+    const reaching = brief({ impact: { 'src/Router.php': { path: 'src/Router.php', dependent_files: 41, boundaries: ['namespace:App', 'Http', 'Core'], boundary: 'Http' } } })
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], brief: [{ stdout: reaching }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(await bandText($)).toMatch(/^knossos · 1 file → 41 dependents · as of 0s ago · reaching Core, Http details/)
+  })
+
   test('a threshold that is not a positive number falls back to 20', { options: { fanInThreshold: 0 } }, async ($, on) => {
     const w = world(on)
     await $.session.start(START)
@@ -1372,7 +1383,7 @@ describe('knossos mod', () => {
     const ui = await mountPane($)
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.press({ key: 'keys' })
-    expect((await ui.find({ key: 'help-0' }))?.text).toContain('1–6 or a click switch tabs')
+    expect((await ui.find({ key: 'help-0' }))?.text).toMatch(/1–6 +switch tabs/)
     await ui.press({ key: 'keys' })
     expect(await ui.find({ key: 'help-0' })).toBeUndefined()
     await ui.unmount()
@@ -1413,7 +1424,7 @@ describe('knossos mod', () => {
         // Nothing runs inside the press: the scan starts on a timer.
         expect(w.scanRuns()).toEqual([])
         await w.clock.settle()
-        expect((await ui.find({ key: 'title' }))?.text).toMatch(/● scanning…$/)
+        expect((await ui.find({ key: 'title' }))?.text).toMatch(/● scanning… · stale · \d+[smh]$/)
         expect(await ui.find({ key: 'rescan' })).toBeUndefined()
         await w.clock.advance(1000)
         await w.clock.settle()
@@ -1536,7 +1547,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const detail = (await ui.find({ key: 'detail' }))?.text
     expect(detail).toContain('App\\Router')
-    expect(detail).toMatch(/Used by 1 *Kernel/)
+    expect(detail).toMatch(/Used by 1 *› *Kernel/)
     expect(w.detailRuns()).toEqual([
       ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'component-detail', ROOT, 'App\\Router'],
     ])
@@ -1829,13 +1840,63 @@ describe('knossos mod', () => {
       expect(boot?.props.color).toBeDefined()
       expect(boot?.props.color).not.toBe(route?.props.color)
       // Most members are in Http: the cycle's line names it; Core, where it crosses, is the one colour on the chain.
-      expect((await ui.find({ key: 'cycle-0' }))?.text).toBe('   cycle 1 · 3 members · Http')
+      expect((await ui.find({ key: 'cycle-0' }))?.text).toBe('›  cycle 1 · 3 members · Http')
       expect(route?.props.color).toBeUndefined()
       expect((await ui.find({ key: 'cycles-legend' }))?.text).toBe('   ■ Core')
-      // Nothing to walk: no list keys.
-      expect(await ui.find({ key: 'down' })).toBeUndefined()
+      expect((await ui.find({ key: 'down' }))?.props.hotkey).toBe('j')
       await ui.unmount()
     }
+  })
+
+  test('a marked cycle copies its chain, asks how to break it on q alone, and opens the member where it crosses', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: issuesDashboard() }], detail: [{ stdout: fullDetailOf('Kernel') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:cycles' })
+    const chain = 'App\\Core\\Kernel::boot → App\\Http\\Router::route → App\\Http\\Router::dispatch → App\\Core\\Kernel::boot'
+    await ui.press({ key: 'copy' })
+    await w.clock.settle()
+    expect(w.copies.at(-1)?.text).toBe(chain)
+    expect(w.toasts.at(-1)).toBe(`Copied cycle 1: ${chain}`)
+    expect(w.prompts).toEqual([])
+    await ui.press({ key: 'ask' })
+    await w.clock.settle()
+    expect(w.prompts).toEqual([`Using the Knossos graph, how could I break this dependency cycle: ${chain}? Name the edge to cut and what would have to move.`])
+    // Kernel::boot is the member outside Http, the cycle's own boundary: o shows it.
+    await ui.press({ key: 'open' })
+    await w.clock.settle()
+    expect(w.detailRuns().at(-1)?.at(-1)).toBe('App\\Core\\Kernel::boot')
+    expect(await ui.find({ key: 'detail' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('the boundaries tab walks its boundaries, spells out the marked one, and opens nothing', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: boundariesDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'tab:boundaries' })
+    expect((await ui.find({ key: 'focus-head' }))?.text).toBe('A Http')
+    expect((await ui.find({ key: 'focus-out' }))?.text).toMatch(/depends on +Core 14/)
+    expect(await ui.find({ key: 'open' })).toBeUndefined()
+    await ui.press({ key: 'down' })
+    expect((await ui.find({ key: 'focus-head' }))?.text).toBe('B Core')
+    expect((await ui.find({ key: 'focus-out' }))?.text).toMatch(/depends on +Http 3/)
+    expect((await ui.find({ key: 'focus-forbidden' }))?.text).toMatch(/may not use +× Http +× cli/)
+    await ui.press({ key: 'row:2' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'focus-head' }))?.text).toBe('C cli')
+    expect(w.detailRuns()).toHaveLength(0)
+    await ui.press({ key: 'copy' })
+    await w.clock.settle()
+    expect(w.copies.at(-1)?.text).toBe('module:cli (+composer:app/cli)')
+    expect(w.prompts).toEqual([])
+    await ui.press({ key: 'ask' })
+    await w.clock.settle()
+    expect(w.prompts).toHaveLength(1)
+    expect(w.prompts[0]).toContain('what does the boundary module:cli (+composer:app/cli) depend on')
+    await ui.unmount()
   })
 
   test('the detail sets used by beside uses when wide, stacks them when narrow, and opens either', async ($, on) => {
@@ -1965,7 +2026,8 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       expect((await ui.find({ key: 'summary' }))?.text).toBe('1,234 components · 2 boundaries · 0 drifted · PHP TS')
-      expect((await ui.find({ key: 'health-dead' }))?.text).toMatch(/policy ▲ 2 +diagnostics ▲ 1/)
+      expect((await ui.find({ key: 'health-policy' }))?.text).toMatch(/policy +▲ 2$/)
+      expect((await ui.find({ key: 'health-diagnostics' }))?.text).toMatch(/diagnostics +▲ 1$/)
       await ui.unmount()
     }
   })
@@ -1999,9 +2061,9 @@ describe('knossos mod', () => {
     expect((await desk.find({ key: 'heat-legend' }))?.text).toContain('forbidden')
     expect(await desk.find({ key: 'heat-legend-1' })).toBeDefined()
     expect((await desk.find({ key: 'heat-2' }))?.text).toMatch(/^ {3}C cli /)
-    // Nothing to walk, copy or ask about on this tab.
-    expect(await desk.find({ key: 'down' })).toBeUndefined()
-    expect(await desk.find({ key: 'copy' })).toBeUndefined()
+    // The boundaries are walked, copied and asked about; there is nothing to open.
+    expect((await desk.find({ key: 'down' }))?.props.hotkey).toBe('j')
+    expect(await desk.find({ key: 'open' })).toBeUndefined()
     await desk.unmount()
   })
 
@@ -2261,7 +2323,7 @@ describe('knossos mod', () => {
       expect(drawn((await ui.find({ key: 'change-0' }))?.text ?? '')).toMatch(/^› +src\/Router\.php +Http .*42$/)
       expect(drawn((await ui.find({ key: 'change-1' }))?.text ?? '')).toMatch(/^ \+ src\/Kernel\.php +Core .*3$/)
       // Each test once, at its nearest distance.
-      expect(text).toMatch(/Tests that reach them 2 +hops/)
+      expect(text).toMatch(/Tests that reach them · 2 +hops/)
       expect(drawn((await ui.find({ key: 'test-0' }))?.text ?? '')).toMatch(/tests\/Core\/KernelTest\.php +1$/)
       expect(drawn((await ui.find({ key: 'test-1' }))?.text ?? '')).toMatch(/tests\/Http\/RouterTest\.php +1$/)
       expect(text).toContain("$ vendor/bin/phpunit --filter '(KernelTest|RouterTest)'")

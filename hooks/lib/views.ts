@@ -46,7 +46,18 @@ import type { Loc, Row, Segment } from './rows'
  * and `loc` where its file is, when known, for `e` to open. A `file` row is a
  * file, not a component: opening it opens the file itself.
  */
-export type Openable = { name: string; canonical: string; loc?: Loc | null; file?: boolean }
+export type Openable = {
+  name: string
+  canonical: string
+  loc?: Loc | null
+  file?: boolean
+  /** Nothing to open (a boundary): `o` only marks it. */
+  inert?: true
+  /** What `c` copies instead of the canonical name (a cycle's chain). */
+  copy?: string
+  /** What "Ask Claude" asks instead of what depends on it (a cycle, a boundary). */
+  ask?: string
+}
 
 export type ViolationLine = { source: Openable & { boundary: string | null }; target: string; targetBoundary: string | null; place: string }
 export type DeadLine = Openable & { boundary: string | null; place: string; testOnly: boolean }
@@ -60,7 +71,7 @@ export type IssuesInput = {
   largest: { path: string; lines: number; loc: Loc | null }[]
 }
 
-export type CycleLine = { size: number; nodes: { name: string; boundary: string | null }[]; more: number }
+export type CycleLine = { size: number; nodes: { name: string; canonical: string; boundary: string | null }[]; more: number }
 export type CyclesInput = { count: string; cycles: CycleLine[] }
 
 export type Side = { title: string; count: string; items: (Openable & { boundary: string | null; edges: number })[] }
@@ -162,10 +173,31 @@ export function cyclesInput(d: Dashboard): CyclesInput {
   return {
     count: countLabel(d.cycles.count, d.cycles.truncated),
     cycles: d.cycles.largest.map(c => {
-      const nodes = c.nodes?.map(n => ({ name: displayName(n), boundary: n.boundary })) ?? c.members.map(name => ({ name, boundary: null }))
+      const nodes = c.nodes?.map(n => ({ name: displayName(n), canonical: n.canonical_name, boundary: n.boundary })) ?? c.members.map(name => ({ name, canonical: name, boundary: null }))
       return { size: c.size, nodes, more: Math.max(0, c.size - nodes.length) }
     }),
   }
+}
+
+/**
+ * The cycles the marker walks, one per cycle. Opening one shows the member
+ * where it leaves its own boundary (else its first): its uses include the
+ * edge that closes the loop. `c` copies the chain and "Ask Claude" asks how
+ * to break it.
+ */
+export function cyclesList(input: CyclesInput): Openable[] {
+  return input.cycles.map((cycle, i) => {
+    const home = homeBoundary(cycle)
+    const first = cycle.nodes.find(n => n.boundary !== home) ?? cycle.nodes[0]
+    const names = cycle.nodes.map(n => n.canonical)
+    const chain = `${names.join(' → ')}${cycle.more > 0 ? ` → … (+${cycle.more} more)` : names.length > 0 ? ` → ${names[0]}` : ''}`
+    return {
+      name: `cycle ${i + 1}`,
+      canonical: first?.canonical ?? '',
+      copy: chain,
+      ask: `Using the Knossos graph, how could I break this dependency cycle: ${chain}? Name the edge to cut and what would have to move.`,
+    }
+  })
 }
 
 const sideOf = (title: string, related: { count: number; truncated: boolean; names: string[]; items?: Counterpart[] }): Side => ({
@@ -357,7 +389,7 @@ function homeBoundary(cycle: CycleLine): string | null {
  * width, under a line naming the boundary most of its members are in. Members
  * outside that boundary are drawn in their own boundary's colour.
  */
-export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_HUES): Row[] {
+export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
   const shown = input.cycles.length
   const note = shown === 0 ? 'none' : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
   const rows: Row[] = [blank('gap-cycles'), sectionRow('cycles-head', 'Cycles', note, columns)]
@@ -372,7 +404,12 @@ export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_H
   input.cycles.forEach((cycle, i) => {
     // The boundary most members share is named once, in its colour; only members outside it are coloured: they are where the cycle crosses.
     const home = homeBoundary(cycle)
-    const head: Segment[] = [{ text: `   cycle ${i + 1} · ${plural(cycle.size, 'member', 'members')}`, dim: true }]
+    const head: Segment[] = [
+      { text: i === selected ? '›' : ' ', color: ACCENT, bold: true },
+      { text: '  ' },
+      button(`row:${i}`, `cycle ${i + 1}`),
+      { text: ` · ${plural(cycle.size, 'member', 'members')}`, dim: true },
+    ]
     if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home), ...boundaryStyle(home, hues) })
     rows.push(blank(`gap-cycle-${i}`), { key: `cycle-${i}`, segments: clip(head, columns) })
     const room = Math.max(1, columns - MARK - 2)
@@ -389,18 +426,21 @@ export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_H
 }
 
 /** One side of the detail ("used by" or "uses") as a small table in `width` columns. */
-function sideRows(prefix: string, side: Side, offset: number, width: number, hues: Hues): Row[] {
+function sideRows(prefix: string, side: Side, offset: number, width: number, hues: Hues, selected = -1): Row[] {
   const counted = side.items.some(i => i.edges > 0)
+  // Bars that are all one length compare nothing: the counts say it alone.
+  const flat = side.items.length > 1 && side.items.every(i => i.edges === side.items[0]!.edges)
+  const boundaries = side.items.map(i => boundaryLabel(i.boundary))
   const spec = counted
-    ? tableSpec(width, side.items.map(i => i.name), side.items.map(i => boundaryLabel(i.boundary)), [numberWidth('', side.items.map(i => i.edges))])
-    : { ...tableSpec(width, side.items.map(i => i.name), [], []), bar: 0 }
+    ? { ...tableSpec(width, side.items.map(i => i.name), boundaries, [numberWidth('', side.items.map(i => i.edges))]), ...(flat ? { bar: 0 } : {}) }
+    : { ...tableSpec(width, side.items.map(i => i.name), boundaries, []), bar: 0 }
   const title = `${side.title} ${side.count}`
   const note = counted ? 'edges' : ''
   const rows: Row[] = [sectionRow(`${prefix}-head`, title, note, side.items.length === 0 ? width : sectionWidth(specWidth(spec), title, note, width))]
   if (side.items.length === 0) return [...rows, none(`${prefix}-none`)]
   const max = Math.max(0, ...side.items.map(i => i.edges))
   side.items.forEach((item, i) =>
-    rows.push(tableRow(`${prefix}-${i}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + i}` }, spec, hues)),
+    rows.push(tableRow(`${prefix}-${i}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + i}`, selected: offset + i === selected }, spec, hues)),
   )
   const count = Number.parseInt(side.count, 10)
   if (count > side.items.length) rows.push(dimRow(`${prefix}-more`, `   +${count - side.items.length} more`, width))
@@ -419,7 +459,7 @@ function besideRows(left: Row[], right: Row[], leftWidth: number, gap: number): 
 }
 
 /** The detail of one component: what it is, where, who uses it and what it uses, and its annotations. */
-export function detailRows(detail: DetailInput, columns: number, hues: Hues = NO_HUES): Row[] {
+export function detailRows(detail: DetailInput, columns: number, hues: Hues = NO_HUES, selected = -1): Row[] {
   const c = detail.component
   if (c === null) {
     const lines = detail.loading ? [`Inspecting ${detail.label}…`] : (detail.messages ?? [])
@@ -437,9 +477,9 @@ export function detailRows(detail: DetailInput, columns: number, hues: Hues = NO
   const usedBy = c.usedBy
   if (columns >= SIDE_BY_SIDE) {
     const half = Math.floor((columns - 2) / 2)
-    rows.push(...besideRows(sideRows('used', usedBy, 0, half, hues), sideRows('uses', c.uses, usedBy.items.length, columns - half - 2, hues), half, 2))
+    rows.push(...besideRows(sideRows('used', usedBy, 0, half, hues, selected), sideRows('uses', c.uses, usedBy.items.length, columns - half - 2, hues, selected), half, 2))
   } else {
-    rows.push(...sideRows('used', usedBy, 0, columns, hues), blank('gap-uses'), ...sideRows('uses', c.uses, usedBy.items.length, columns, hues))
+    rows.push(...sideRows('used', usedBy, 0, columns, hues, selected), blank('gap-uses'), ...sideRows('uses', c.uses, usedBy.items.length, columns, hues, selected))
   }
   if (c.annotations.length > 0) {
     rows.push(blank('gap-notes'), sectionRow('notes-head', 'Annotations', '', columns))

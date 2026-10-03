@@ -332,12 +332,17 @@ export function changesRows(input: ChangesInput, selected: number, columns: numb
   const note = `${plural(input.turns, 'turn', 'turns')}${input.truncated ? ' · partial' : ''}`
   rows.push(sectionRow('changes-head', 'Changes this session', note, sectionWidth(specWidth(spec), 'Changes this session', note, columns)))
   // What the changes reach: the dependents, and every boundary they are in, each in its colour.
-  const reach: Segment[][] = [[{ text: `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, dim: true }]]
   // The best ranked few in colour; the rest counted, so the line stays a line and not a rainbow.
-  const named = input.boundaries.slice(0, REACH_SHOWN)
-  if (named.length > 0) reach.push([{ text: 'reaching', dim: true }], ...named.map(b => [{ text: boundaryLabel(b), ...boundaryStyle(b, hues) }]))
-  if (input.boundaries.length > named.length) reach.push([{ text: `+${input.boundaries.length - named.length} more`, dim: true }])
-  rows.push(...wrapGroups('changes-reach', reach, columns, 1, 3))
+  // Fewer are named when the pane is narrow, so the count never wraps onto a line of its own.
+  const reachOf = (shown: number): Segment[][] => {
+    const named = input.boundaries.slice(0, shown)
+    const groups: Segment[][] = [[{ text: `${plural(input.files.length, 'file', 'files')} → ${grouped(deps)} dependents`, dim: true }]]
+    if (named.length > 0) groups.push([{ text: 'reaching', dim: true }], ...named.map(b => [{ text: boundaryLabel(b), ...boundaryStyle(b, hues) }]))
+    if (input.boundaries.length > named.length) groups.push([{ text: `+${input.boundaries.length - named.length} more`, dim: true }])
+    return groups
+  }
+  const shown = [REACH_SHOWN, 2, 1].find(n => wrapGroups('changes-reach', reachOf(n), columns, 1, 3).length === 1) ?? REACH_SHOWN
+  rows.push(...wrapGroups('changes-reach', reachOf(shown), columns, 1, 3))
   if (input.violations > 0) {
     rows.push({ key: 'changes-policy', segments: [{ text: '   ' }, { text: `▲ ${plural(input.violations, 'policy violation', 'policy violations')} introduced`, color: STATUS_COLOURS.alert }] })
   }
@@ -362,8 +367,8 @@ function testRows(input: ChangesInput, columns: number, hues: Hues): Row[] {
   }
   const shown = input.tests.slice(0, TESTS_SHOWN)
   const spec = { ...tableSpec(columns, shown.map(t => t.path), [], [numberWidth('hops', shown.map(t => t.distance))], PATH_MAX), bar: 0 }
-  const title = `Tests that reach them ${count}`
-  const rows: Row[] = [sectionRow('tests-head', title, 'hops', sectionWidth(specWidth(spec), title, 'hops', columns))]
+  const title = 'Tests that reach them'
+  const rows: Row[] = [sectionRow('tests-head', title, 'hops', sectionWidth(specWidth(spec), `${title} · ${count}`, 'hops', columns), count)]
   shown.forEach((t, i) => rows.push(tableRow(`test-${i}`, { name: t.path, boundary: null, values: [t.distance], max: 0, cutStart: true, link: t.loc }, spec, hues)))
   if (input.tests.length > shown.length) rows.push(dimRow('tests-more', `   +${input.tests.length - shown.length} more`, columns))
   if (input.command !== null) {

@@ -22,7 +22,7 @@ describe('bandModel', () => {
   it('summarises a clean turn with its age', () => {
     expect(bandModel(ok(), idle, 1_000_000 + 12_000)).toEqual({
       tone: 'normal',
-      text: 'knossos · 1 file → 37 dependents · Core, Http · 1 test · as of 12s ago',
+      text: 'knossos · 1 file → 37 dependents · 1 test · as of 12s ago · reaching Core, Http',
       showDetails: true,
     })
   })
@@ -33,12 +33,30 @@ describe('bandModel', () => {
   })
   it('says scanning and keeps the old figures', () => {
     const m = bandModel(ok(), { phase: 'scanning', lastAttemptAt: 1_000_000 }, 1_005_000)
-    expect(m?.text).toBe('knossos · scanning… · last: 1 file → 37 dependents · Core, Http · 1 test · as of 5s ago')
+    expect(m?.text).toBe('knossos · scanning… · last: 1 file → 37 dependents · 1 test · as of 5s ago · reaching Core, Http')
   })
   it('says the scan failed and how old the figures are', () => {
     const m = bandModel(ok(), { phase: 'failed', lastAttemptAt: 1_000_000 + 14 * 60_000 }, 1_000_000 + 14 * 60_000)
     expect(m?.tone).toBe('warn')
     expect(m?.text).toContain('scan failed, figures from 14m ago')
+  })
+  it('names the boundaries reached by their short labels, most dependents first, counting past two, after the age', () => {
+    const impact = {
+      'a.php': { path: 'a.php', dependent_files: 5, boundaries: ['composer:acme/app (+node:web)', 'tests'] },
+      'b.php': { path: 'b.php', dependent_files: 40, boundaries: ['tests', 'core', 'module:hooks (+typescript:hooks/tsconfig.json)'] },
+    }
+    const m = bandModel(ok({ changed_files: ['a.php', 'b.php'], impact }), idle, 1_012_000)
+    expect(m?.text).toBe('knossos · 2 files → 45 dependents · 1 test · as of 12s ago · reaching tests, core +2')
+  })
+  it('names only declared boundaries when the project declares some', () => {
+    const impact = { 'a.php': { path: 'a.php', dependent_files: 9, boundaries: ['namespace:App', 'composer:acme/app (+node:web)', 'core'] } }
+    const m = bandModel(ok({ impact }), idle, 1_012_000, new Set(['core', 'http']))
+    expect(m?.text).toBe('knossos · 1 file → 9 dependents · 1 test · as of 12s ago · reaching core')
+    expect(bandModel(ok({ impact }), idle, 1_012_000, new Set(['http']))?.text).toBe('knossos · 1 file → 9 dependents · 1 test · as of 12s ago')
+  })
+  it('puts violations before tests, so a narrow band keeps them', () => {
+    const m = bandModel(ok({ policy: { status: 'evaluated', total: 1, violations: [], truncated: false } }), idle, 1_012_000)
+    expect(m?.text).toBe('knossos · 1 file → 37 dependents · 1 policy violation · 1 test · as of 12s ago · reaching Core, Http')
   })
   it('lists deletions', () => {
     const m = bandModel(ok({ changed_files: [], impact: {}, deleted_files: ['gone.php'] }), idle, 1_000_000)
@@ -65,7 +83,7 @@ describe('bandModel', () => {
   it('shows a scan-failed brief without a reason', () =>
     expect(bandModel(ok({ status: 'scan-failed', reason: null }), idle, 1_000_000)?.text).toBe('knossos · scan failed'))
   it('omits the age when the scan time is unknown', () =>
-    expect(bandModel(ok({ scanned_at: null }), idle, 1_000_000)?.text).toBe('knossos · 1 file → 37 dependents · Core, Http · 1 test'))
+    expect(bandModel(ok({ scanned_at: null }), idle, 1_000_000)?.text).toBe('knossos · 1 file → 37 dependents · 1 test · reaching Core, Http'))
   it('draws nothing before the first brief', () => expect(bandModel(null, idle, 0)).toBeNull())
   it('draws nothing after a turn that changed nothing', () =>
     expect(bandModel(ok({ changed_files: [], impact: {}, tests: [] }), idle, 1_000_000)).toBeNull())

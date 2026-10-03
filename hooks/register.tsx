@@ -246,8 +246,8 @@ async function tickAge($: EngineInterface): Promise<void> {
   if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) mod.paneText = null
   if (mod.bandText === null && mod.paneText === null) return
   const now = await $.clock.now()
-  const model = bandModel(await read($, brief), await read($, job), now)
   const d = await read($, dashboard)
+  const model = bandModel(await read($, brief), await read($, job), now, d?.status === 'ok' ? declaredOf(d) : undefined)
   const pane = d?.status === 'ok' ? paneStatus(d, await read($, refresh), await read($, rescan), now).text : null
   const bandStale = mod.bandText !== null && (model?.text ?? null) !== mod.bandText
   const paneStale = mod.paneText !== null && pane !== mod.paneText
@@ -690,6 +690,8 @@ async function openRow($: EngineInterface, index?: number, surface?: RenderSurfa
   const item = (await currentList($))[at]
   if (item === undefined) return
   await update($, view, v => ({ ...v, selected: at }))
+  // A boundary opens nothing: marking it is what spells it out.
+  if (item.inert === true) return
   if (item.file === true) {
     if (item.loc) await openLocation($, item.loc, surface)
     return
@@ -773,19 +775,23 @@ async function copySubject($: EngineInterface, surface?: RenderSurface): Promise
   if (input !== null && input.detail === null && input.tab === 'changes') return copyTestCommand($, surface)
   const subject = input === null ? null : subjectOf(input)
   if (subject === null) return
-  const copied = await $.ui.copy({ text: subject.canonical, ...(surface === undefined ? {} : { surface }) })
-  $.ui.toast(copied.isCopied ? `Copied ${subject.canonical}` : `Could not copy ${subject.canonical}: ${copied.reason ?? 'the surface refused'}`)
+  // A cycle copies its chain, said by its name in the toast; anything else its full name.
+  const text = subject.copy ?? subject.canonical
+  const said = subject.copy === undefined || subject.copy === subject.canonical ? text : `${subject.name}: ${text}`
+  const copied = await $.ui.copy({ text, ...(surface === undefined ? {} : { surface }) })
+  $.ui.toast(copied.isCopied ? `Copied ${said}` : `Could not copy ${said}: ${copied.reason ?? 'the surface refused'}`)
 }
 
 /**
- * "Ask Claude" about the marked component. The one prompt the mod ever
+ * "Ask Claude" about the marked component (a cycle: how to break it; a
+ * boundary: what its dependencies are for). The one prompt the mod ever
  * submits, and only from this press: the person asked for it, so it does not
  * start a turn on the mod's own account. One press, one prompt.
  */
 async function askClaude($: EngineInterface): Promise<void> {
   const input = await currentInput($, true)
   const subject = input === null ? null : subjectOf(input)
-  if (subject !== null) await $.prompt.submit({ text: askPrompt(subject.canonical) })
+  if (subject !== null) await $.prompt.submit({ text: subject.ask ?? askPrompt(subject.canonical) })
 }
 
 /** `a`: asks the person to confirm allowing the refused root. Runs nothing. */
@@ -1069,7 +1075,8 @@ export const register: Register = (on, options) => {
       mod.bandText = null
       return next(e)
     }
-    const model = bandModel(await read($, brief), await read($, job), await $.clock.now())
+    const d = await read($, dashboard)
+    const model = bandModel(await read($, brief), await read($, job), await $.clock.now(), d?.status === 'ok' ? declaredOf(d) : undefined)
     mod.bandText = model?.text ?? null
     if (model === null) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)

@@ -209,8 +209,17 @@ describe('changesRows', () => {
     expect(plainText(row(rows, 'change-2')!)).toMatch(/^ − src\/Helper\.php/)
     expect(row(rows, 'change-0')!.segments.find(s => s.link)?.link).toEqual({ path: '/work/app/src/Router.php', line: null })
     expect(row(rows, 'change-2')!.segments.some(s => s.link)).toBe(false)
-    expect(text).toMatch(/Tests that reach them 2 +hops/)
+    expect(text).toMatch(/Tests that reach them · 2 +hops/)
     expect(text).toContain("$ vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
+  })
+  it('names fewer boundaries on a narrow pane rather than leave the count on a line of its own', () => {
+    const many = { ...changesInput(session(), ROOT), boundaries: ['tests', 'core', 'php-worker', 'tooling', 'hooks', 'types'] }
+    for (const columns of [56, 60, 90]) {
+      const reach = changesRows(many, 0, columns).filter(r => r.key.startsWith('changes-reach'))
+      expect(reach, `${columns}`).toHaveLength(1)
+      expect(plainText(reach[0]!), `${columns}`).toMatch(/\+\d more$/)
+    }
+    expect(plainText(changesRows(many, 0, 90).find(r => r.key.startsWith('changes-reach'))!)).toContain('reaching tests core php-worker +3 more')
   })
   it('warns when no test reaches the changes', () => {
     const none = accumulate(NO_CHANGES, brief({ tests: [] }))
