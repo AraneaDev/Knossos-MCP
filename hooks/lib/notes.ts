@@ -2,11 +2,14 @@ import type { PolicyRule } from '../../types'
 import { runnerOf, testCommand, testsRan } from './changes'
 import type { Dashboard, FanIn, TurnBrief, Violation } from './envelopes'
 
-/** One line the model reads after editing a heavily depended-on file. */
+/**
+ * One line the model reads after editing a heavily depended-on file it was
+ * not told about on Read. The dependents' boundaries are counted, not named:
+ * most are inferred labels (packages, namespaces) that cost tokens and say
+ * nothing the count does not.
+ */
 export function editNote(entry: FanIn): string {
-  const across = entry.boundaries.length > 0
-    ? ` across ${entry.boundaries.length} boundar${entry.boundaries.length === 1 ? 'y' : 'ies'} (${entry.boundaries.join(', ')})`
-    : ''
+  const across = entry.boundaries.length > 1 ? ` across ${entry.boundaries.length} boundaries` : ''
   return `knossos: ${entry.path} has ${entry.dependent_files} dependent files${across}; run test_impact before finishing.`
 }
 
@@ -79,12 +82,17 @@ export function readNote(
 
 /** How many tests a tests note names before `and N more`. */
 const TESTS_NAMED = 5
+/** Runners whose command names each test (its file, or its class in a filter): the command is the list. */
+const SELF_NAMING = new Set(['phpunit', 'vitest', 'pytest'])
 
 /**
  * The turn-end note on the tests that reach the turn's changes: the runnable
  * ones (a runner runs them; helpers and fixtures are left out) that no
  * command of the turn (`ran`) already ran and no earlier note named, nearest
  * first, and the command that runs them all. Null when none is left.
+ *
+ * Tests the command already names are not listed again; those it runs by
+ * package (`go test`, `cargo test`) are, at most five.
  */
 export function testsNote(tests: TurnBrief['tests'], ran: string[], named: ReadonlySet<string>): { text: string; tests: string[] } | null {
   const left = [...tests]
@@ -93,9 +101,11 @@ export function testsNote(tests: TurnBrief['tests'], ran: string[], named: Reado
     .map(t => t.path)
   const command = testCommand(left)
   if (left.length === 0 || command === null) return null
-  const more = left.length > TESTS_NAMED ? ` and ${left.length - TESTS_NAMED} more` : ''
+  const listed = left.filter(t => !SELF_NAMING.has(runnerOf(t) ?? ''))
+  const more = listed.length > TESTS_NAMED ? ` and ${listed.length - TESTS_NAMED} more` : ''
+  const names = listed.length === 0 ? '' : `: ${listed.slice(0, TESTS_NAMED).join(', ')}${more}`
   const count = left.length === 1 ? '1 test reaches' : `${left.length} tests reach`
-  return { text: `knossos: ${count} this turn's changes: ${left.slice(0, TESTS_NAMED).join(', ')}${more}. Run: ${command}`, tests: left }
+  return { text: `knossos: ${count} this turn's changes${names}. Run: ${command}`, tests: left }
 }
 
 /** A violation's identity across turns: its policy and the two ends. */

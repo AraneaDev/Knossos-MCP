@@ -1174,7 +1174,7 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     expect(turnNotes(w).map(l => l.text.slice(l.text.indexOf('): ') + 3))).toEqual([
-      "knossos: 1 test reaches this turn's changes: tests/RouterTest.php. Run: vendor/bin/phpunit tests/RouterTest.php",
+      "knossos: 1 test reaches this turn's changes. Run: vendor/bin/phpunit tests/RouterTest.php",
     ])
     // Named once: the same tests reaching the next turn's changes are not named again.
     await edit($, `${ROOT}/src/Router.php`)

@@ -4,7 +4,7 @@ import { editNote, fanInIndex, freshViolations, readNote, ruleText, testsNote, v
 describe('notes', () => {
   it('edit note names dependents, boundaries and the next step', () =>
     expect(editNote({ path: 'src/Router.php', dependent_files: 41, boundaries: ['Http', 'Core', 'Cli'] })).toBe(
-      'knossos: src/Router.php has 41 dependent files across 3 boundaries (Http, Core, Cli); run test_impact before finishing.',
+      'knossos: src/Router.php has 41 dependent files across 3 boundaries; run test_impact before finishing.',
     ))
   it('edit note without boundaries', () =>
     expect(editNote({ path: 'a.php', dependent_files: 20, boundaries: [] })).toBe(
@@ -93,20 +93,24 @@ describe('testsNote', () => {
   ]
   it('names the runnable tests nearest first and the command that runs them', () =>
     expect(testsNote(tests, [], new Set())).toEqual({
-      text: "knossos: 2 tests reach this turn's changes: tests/Http/RouterTest.php, hooks/lib/changes.spec.ts. Run: vendor/bin/phpunit tests/Http/RouterTest.php && npx vitest run hooks/lib/changes.spec.ts",
+      text: "knossos: 2 tests reach this turn's changes. Run: vendor/bin/phpunit tests/Http/RouterTest.php && npx vitest run hooks/lib/changes.spec.ts",
       tests: ['tests/Http/RouterTest.php', 'hooks/lib/changes.spec.ts'],
     }))
   it('leaves out tests the turn already ran and tests named before', () => {
     expect(testsNote(tests, ['vendor/bin/phpunit --filter RouterTest'], new Set())?.text).toBe(
-      "knossos: 1 test reaches this turn's changes: hooks/lib/changes.spec.ts. Run: npx vitest run hooks/lib/changes.spec.ts",
+      "knossos: 1 test reaches this turn's changes. Run: npx vitest run hooks/lib/changes.spec.ts",
     )
     expect(testsNote(tests, [], new Set(['hooks/lib/changes.spec.ts']))?.tests).toEqual(['tests/Http/RouterTest.php'])
     expect(testsNote(tests, ['vendor/bin/phpunit', 'npm run test:mod'], new Set())).toBeNull()
   })
-  it('lists five and counts the rest', () => {
+  it('names no test twice: one the command names is not listed, one run by package is, five at most', () => {
     const many = Array.from({ length: 7 }, (_, i) => ({ path: `tests/T${i}Test.php`, distance: i }))
     expect(testsNote(many, [], new Set())?.text).toBe(
-      "knossos: 7 tests reach this turn's changes: tests/T0Test.php, tests/T1Test.php, tests/T2Test.php, tests/T3Test.php, tests/T4Test.php and 2 more. Run: vendor/bin/phpunit --filter '(T0Test|T1Test|T2Test|T3Test|T4Test|T5Test|T6Test)'",
+      "knossos: 7 tests reach this turn's changes. Run: vendor/bin/phpunit --filter '(T0Test|T1Test|T2Test|T3Test|T4Test|T5Test|T6Test)'",
+    )
+    const go = Array.from({ length: 7 }, (_, i) => ({ path: `pkg/p${i}/x_test.go`, distance: 1 }))
+    expect(testsNote(go, [], new Set())?.text).toBe(
+      "knossos: 7 tests reach this turn's changes: pkg/p0/x_test.go, pkg/p1/x_test.go, pkg/p2/x_test.go, pkg/p3/x_test.go, pkg/p4/x_test.go and 2 more. Run: go test ./pkg/p0 ./pkg/p1 ./pkg/p2 ./pkg/p3 ./pkg/p4 ./pkg/p5 ./pkg/p6",
     )
   })
   it('says nothing when no test reaches the changes', () => expect(testsNote([], [], new Set())).toBeNull())
