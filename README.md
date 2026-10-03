@@ -393,7 +393,9 @@ the files, their dependents, the tests that reach them, and how old the figures 
 `/knossos` opens the pane. The Overview leads with the file this session touched that most
 of the project depends on, marked: `o` lists the files that depend on it, `e` opens it in your
 editor, and `t` copies the command for the tests that reach the changes. It draws in your
-Claude Code theme's own colours.
+Claude Code theme's own colours. A live watcher, one per project shared by your sessions,
+rescans as files change, so the header reads `● live` and the figures follow your edits and
+Claude's without a rescan.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/images/claude-code-mod/overview-light.png">

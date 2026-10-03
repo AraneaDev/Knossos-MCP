@@ -5,7 +5,8 @@ that puts the graph on screen while a session works. It shows you what the
 current turn did to the architecture, tells the model when it edits a file
 that many others depend on, and reports boundary-policy violations a turn
 introduced so the model fixes them. An architecture pane gives the
-project-wide picture on demand.
+project-wide picture on demand, and a live watcher keeps that picture current
+while you work.
 
 The mod never blocks an edit, never starts a turn on its own and never scans
 inside a hook. When anything it needs is missing, it stays quiet.
@@ -34,6 +35,12 @@ there is one. Red means the turn introduced policy violations.
 
 `[ details ]` opens the architecture pane; `[ hide ]` hides the band for the
 rest of the session.
+
+When the project's root is not allowed, the band says so and names the root
+(`knossos · not allowed: Knossos-MCP`). The command that allows it does
+not fit a band, so `[ copy ]` copies it whole, and `[ details ]` opens
+the pane, which offers to run it for you. Any band line that is still too
+wide for the terminal is cut at its end, before its buttons.
 
 ## Notes for the model
 
@@ -152,10 +159,16 @@ then the boundary column goes, then the bars. The numbers always stay.
 
 The pane draws in your Claude Code theme's own colours (its theme keys), so it
 follows a dark, light, daltonized or ANSI theme. Colour carries meaning only:
-each boundary keeps one of the eight subagent colours wherever it appears
-(declared boundaries first, largest first), the status dot is `success` for a
-fresh snapshot, `warning` for a stale one and `error` when a refresh or rescan
-failed, and the accent marks the selection and the active tab. Everything
+each boundary keeps one of seven subagent colours wherever it appears
+(declared boundaries first, largest first). Red is not one of them: on this
+pane red means an error or a policy violation, never a boundary. An inferred
+boundary that got no colour of its own is drawn neutral rather than in a
+colour it would share by chance. Two boundaries whose short names differ only
+in case (an inferred `namespace:Knossos` beside a `composer:…/knossos`) keep
+their source in the label, `namespace:Knossos` and `composer:knossos`, so they
+never read as one. The status dot is `success` for a fresh or live snapshot,
+`warning` for a stale one or a scan under way and `error` when a refresh or
+rescan failed, and the accent marks the selection and the active tab. Everything
 else is neutral: headings and numbers in the theme's text colour, notes in
 its secondary grey, bar tracks and empty cells fainter still. Bars are thin
 rules on a dotted track.
@@ -189,8 +202,10 @@ Most depended on                                          in
 
 The line under the project counts its components, its declared boundaries
 (every boundary when none is declared), the files drifted since the snapshot
-and its languages. A narrow pane drops the languages first. The drift count is
-a button, and `d` does the same: it lists the drifted files right there,
+and its languages. A narrow pane drops the languages first. When the dashboard
+names the drifted files, their count is drawn in the accent and the word after
+it is a button, the one thing on that quiet line you can press; `d` does the
+same: it lists the drifted files right there,
 under the header, each marked as Changes marks a file (`+` added, `−`
 deleted) with its own boundary, the first twenty by path and how many more.
 While they are listed the marker walks them: `o` opens a file's detail as the
@@ -213,8 +228,9 @@ Drifted since the snapshot                                 3
   warnings) and the five most depended-on components. One marker walks the
   three lists in the order they are drawn, and starts on the file "Look at
   now" points at: `o` opens the marked file's or component's detail, `e` the
-  marked file in your editor (a hub carries no file, so on one `e` is not
-  offered). A trend line appears
+  marked file in your editor (a hub opens at the line that declares it; one
+  the graph places nowhere, such as a stand-in for a vendor symbol, offers no
+  `e`). A trend line appears
   beside a figure only once there are five snapshots and the figure moved; a
   flat line says nothing.
 - **Hubs:** hubs and hotspots as one list, one row per component, with its
@@ -224,7 +240,12 @@ Drifted since the snapshot                                 3
   text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
   cross-boundary degree in turn; the bar follows the sort, and the title says
   it (`Hubs and hotspots · sorted by in`). The sorted column's numbers are in
-  the text colour and the other two are dimmed.
+  the text colour and the other two are dimmed. When every listed row sits in
+  one boundary, the boundary column goes and the header says it once
+  (`all in core`); otherwise a row in the same boundary as the row above
+  draws its label dimmed, so the column reads by where the boundary changes.
+  The same holds for Overview's most depended on, and the last turn dims its
+  repeats. `e` opens a hub's file at its declaration, as on Overview.
 - **Cycles:** each dependency cycle, the largest first, as a chain of its
   members (`a → b → c ↺`) wrapped to the pane's width, under a line naming
   the boundary most of them are in. A member outside that boundary is drawn
@@ -392,6 +413,13 @@ Two more keys act on the marked row, or on what the detail shows:
 Using the Knossos graph, what depends on <canonical name> and what would break if I changed it?
 ```
 
+With no graph for the project yet, the pane says so under a heading
+(`No architecture graph yet`) and offers one thing to do: `q: ask Claude to scan
+it`, which submits a prompt asking Claude to scan the project through the
+Knossos server, into the same graph the pane reads. The pane looks for the
+graph again at the end of every turn until it finds one. When the root is
+refused, the allow-root offer below is that one thing instead.
+
 When the project's root is not allowed, the pane says so under the header and
 offers `a: allow root`. That only asks: the pane shows which root it would
 allow and which roots file it would add it to, with `y: allow` and
@@ -405,7 +433,10 @@ graph), the lists say `partial`.
 
 Every time the pane opens, by `/knossos`, `[ details ]` or on start, it
 reloads the dashboard. The header gives the snapshot's age, which keeps
-counting while the pane is open. When a reload fails, the pane keeps the
+counting while the pane is open. While the live watcher keeps a fresh graph
+current, the header says `● live` instead (`● live · watched by another
+session` when another session's watcher leads), and `● scanning… · fresh · 4s`
+while the watcher scans. When a reload fails, the pane keeps the
 figures it had and the header says `refresh failed · 2m`.
 
 When the snapshot is stale or files drifted since it, the header offers
@@ -420,6 +451,73 @@ without you asking, only takes its place at 144 terminal columns or more; on
 a narrower terminal it waits until there is room. One you open yourself
 seats at any width.
 
+## The live watcher
+
+Once a session has the dashboard of an allowed, scanned project, the mod
+starts `knossos watch <project> --shared` through the wrapper and keeps it for
+the session's life. The watcher polls the project and rescans what changed,
+whoever changed it: Claude's edits, your editor, a checkout. Each scan it
+finishes reloads the dashboard (one load at a time), so the pane and its
+header follow the code as it changes.
+
+It watches only what a turn's brief may scan: an existing project inside an
+allowed root. It never creates a database or a project; asked about anything
+else it says `refused`, and the mod does not ask again until you allow a root
+from the pane.
+
+**One watcher per project.** Sessions that share a data directory share one
+watcher per project. The first to start leads; it holds an advisory lock on
+`watch/<key>.lock` beside the database, with `watch/<key>.json` saying who
+holds it (its PID, the snapshot it last saw, whether it is scanning) and when
+it last said so (a heartbeat every 15 seconds). Any other session follows: it
+scans nothing, reads the project's active snapshot once a poll (one database
+row) and reloads its pane when another session's scan moves it. The kernel
+releases the lock when the leader's process ends, however it ends, so a
+crashed leader never blocks the project: the next follower to look takes the
+lead over.
+
+**Stopping.** The watcher ends with the session (`session.end`) and with a
+reload of the mod, and Claude Code ends a module's children when it unloads
+it. The watcher also stops itself once the process that started it is gone,
+so a watcher outliving its session never keeps polling. A watcher that ends
+on its own after coming up is started again after 30 seconds, at most three
+times; one that never says a word (as with a container installation, which
+offers no watcher) is not started again.
+
+**The turn's brief.** The turn-end brief still runs: it computes what the
+turn did, its notes and its policy verdict. With a watcher running it waits
+for the watcher to take the turn's last edits in, then passes `--reuse-scan`,
+so it reads them from the graph instead of scanning again. It also passes
+`--since=<snapshot>`, the snapshot the graph was at before the turn's first
+edit. Every scan the watcher, the pane's rescan or a turn's brief runs is
+recorded in the `scan_ledger` table: the snapshot it started from and the one
+it made, each changed file's content hash before it and, for up to 20 changed
+files, the policy violations each held before it. Read in order from the
+turn's snapshot, the first entry that changed a file says what that file was
+before the turn, so the brief's changed, added and deleted files and its
+before-and-after policy check stay the turn's own, whoever scanned the edits.
+When a scan since the turn began was not recorded (a `knossos scan` from a
+shell, say), the brief still names the files but leaves the policy
+unevaluated rather than guess.
+
+**What it costs.** Between scans the watcher stats the files it last saw and
+their directories instead of hashing every file, and fingerprints the whole
+tree only when a stat moved, a file was written within the last second, or a
+minute has passed. Each scan runs in a process of its own, so the memory a
+scan peaks at (about 200 MB on this repository) goes back when it ends.
+Measured on this repository (about 660 files) with an up-to-date graph:
+
+| Poll interval     | Idle CPU (one core) | Memory |
+| ----------------- | ------------------- | ------ |
+| 500 ms            | 0.95%               | 41 MB  |
+| 1000 ms (default) | 0.48%               | 41 MB  |
+| 2000 ms           | 0.33%               | 40 MB  |
+| follower, 1000 ms | 0.03%               | 38 MB  |
+
+After a scan the leader holds about 47 MB. The default of one second puts a
+change on the pane about a second and a half after it is saved, at half a
+percent of one core.
+
 ## Settings
 
 | Field             | Default | What it does                                                       |
@@ -429,6 +527,8 @@ seats at any width.
 | `agentNotes`      | `true`  | Gives the model its notes (Read, edit, turn end); off, none.       |
 | `enforcePolicies` | `true`  | Tells the model about violations a turn introduced.                |
 | `openPaneOnStart` | `false` | Opens the pane when a session starts, on a wide enough terminal.   |
+| `watch`           | `true`  | Runs the live watcher for an allowed, scanned project.             |
+| `watchPollMs`     | `1000`  | How often the watcher looks for changes (250 to 60000 ms).         |
 
 They appear in Claude Code's config menu under the plugin's name.
 
@@ -437,7 +537,12 @@ They appear in Claude Code's config menu under the plugin's name.
 After a turn that edited files, the mod runs `knossos turn-brief`, which
 runs an incremental scan into the project's existing database. The pane's
 rescan runs `knossos rescan`, the same incremental scan without the brief.
-Those are the only writes to the graph. They happen only for a project that
+The live watcher runs incremental scans as files change, each a `knossos scan`
+process of its own. Those are the only writes to the graph, and each of them
+records what it changed in the `scan_ledger` table (migration 019, applied the
+first time an updated knossos opens the database; the newest 200 entries per
+project are kept). The watcher also writes its lock and state files under
+`watch/` beside the database. They happen only for a project that
 is already scanned and inside an allowed root, never inside a hook dispatch,
 and never two at a time within a session. The pane's allow-root action writes
 the roots file, and only after you confirmed it. `knossos dashboard` and
@@ -476,10 +581,10 @@ knossos install-agent-plugin --data-dir="$HOME/.knossos" --execute
 ## When it stays silent
 
 - No `knossos` binary on the path or in the usual locations.
-- The project is not inside an allowed root: the band shows the exact
-  command instead of figures, naming the roots file the brief read and the
-  root to allow (the ancestor project root when that is what would be
-  scanned):
+- The project is not inside an allowed root: the band names the root
+  instead of figures, and `[ copy ]` copies the exact command, naming
+  the roots file the brief read and the root to allow (the ancestor project
+  root when that is what would be scanned):
   `KNOSSOS_ROOTS_FILE='<roots file>' knossos allow-root '<root>' --execute`.
   The pane offers to run it for you, after asking.
 - The project has never been scanned.
@@ -496,7 +601,9 @@ one log line and turns the band and pane off for the session.
 
 The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
-whole graph), 15 for `component-detail`, `file-detail` and `allow-root`. It runs
+whole graph), 15 for `component-detail`, `file-detail` and `allow-root`.
+`watch` is not bounded: the wrapper replaces itself with the watcher, so
+stopping the process the session started stops the watcher. It runs
 `allow-root` only with a roots file the installation (or the environment)
 names, never one it would guess from the working directory.
 
