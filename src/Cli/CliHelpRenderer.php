@@ -115,6 +115,7 @@ Usage:
   knossos session-brief [path] [--db=FILE] [--json]
   knossos turn-brief [path] [--files=PATH]... [--policies=FILE] [--no-policies]
                      [--db=FILE] [--json]
+  knossos rescan [path] [--db=FILE] [--json]
   knossos dashboard [path] [--fan-in-threshold=N] [--db=FILE] [--json]
   knossos component-detail [path] <name> [--db=FILE] [--json]
   knossos install-agent-plugin [--scope=user] [--data-dir=DIR] [--execute]

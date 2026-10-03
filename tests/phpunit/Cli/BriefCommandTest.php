@@ -126,8 +126,10 @@ final class BriefCommandTest extends KnossosTestCase
         assertSame(true, $command->supports('turn-brief'));
         assertSame(true, $command->supports('dashboard'));
         assertSame(true, $command->supports('component-detail'));
+        assertSame(true, $command->supports('rescan'));
         assertSame(false, $command->supports('session-brief'));
-        foreach (['turn-brief', 'dashboard', 'component-detail'] as $name) {
+        assertSame(false, $command->supports('scan'));
+        foreach (['turn-brief', 'rescan', 'dashboard', 'component-detail'] as $name) {
             assertSame([CliOptionParser::ANY], $command->allowedOptions($name));
         }
     }
@@ -242,6 +244,53 @@ final class BriefCommandTest extends KnossosTestCase
     }
 
     #[Group('cli')]
+    public function testRescanPrintsItsStatusEnvelopeAsJson(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            file_put_contents($root . '/' . self::TARGET, file_get_contents($root . '/' . self::TARGET) . "\n// touched\n");
+            [$status, $out] = $this->runJson('rescan', [$root], []);
+            assertSame(0, $status);
+            assertSame('ok', $out['status']);
+            assertSame(realpath($root), $out['project_root']);
+            assertSame(true, is_string($out['snapshot_id']));
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('cli')]
+    public function testRescanNeverCreatesADatabase(): void
+    {
+        $directory = $this->temporaryDirectory();
+        try {
+            [$status, $out] = $this->runJson('rescan', [$directory], []);
+            assertSame(0, $status);
+            assertSame('unscanned', $out['status']);
+            assertFalse(is_dir($directory . '/.knossos'));
+        } finally {
+            $this->removeTempTree($directory);
+        }
+    }
+
+    /** Only the options the pane passes: a turn brief's are refused, still with exit 0. */
+    #[Group('cli')]
+    public function testRescanRefusesTheTurnBriefOptions(): void
+    {
+        $root = $this->scannedFixtureOnDisk();
+        try {
+            [$status, $out] = $this->runJson('rescan', [$root], ['files' => ['a.php']]);
+            assertSame(0, $status);
+            assertSame(['status' => 'error'], $out);
+            [$status, $out] = $this->runJson('rescan', [$root, 'extra'], []);
+            assertSame(0, $status);
+            assertSame(['status' => 'error'], $out);
+        } finally {
+            $this->removeTempTree($root);
+        }
+    }
+
+    #[Group('cli')]
     public function testRepeatedFilesOptionsAreAllPassedThrough(): void
     {
         $root = $this->scannedFixtureOnDisk();
@@ -350,6 +399,7 @@ final class BriefCommandTest extends KnossosTestCase
         assertStringContainsString('knossos turn-brief [path]', $help);
         assertStringContainsString('knossos dashboard [path]', $help);
         assertStringContainsString('knossos component-detail [path] <name>', $help);
+        assertStringContainsString('knossos rescan [path]', $help);
     }
 
     #[Group('cli')]
