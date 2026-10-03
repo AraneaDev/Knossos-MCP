@@ -3,7 +3,6 @@
   "version": 1,
   "ignores": [
     "tests/Fixtures",
-    "hooks/register.tsx",
     "hooks/register.test.ts",
     "hooks/lib/*.spec.ts"
   ],

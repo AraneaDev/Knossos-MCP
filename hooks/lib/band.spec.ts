@@ -27,7 +27,7 @@ describe('bandModel', () => {
     })
   })
   it('is red with violations', () => {
-    const m = bandModel(ok({ policy: { status: 'evaluated', total: 2, violations: [] } }), idle, 1_012_000)
+    const m = bandModel(ok({ policy: { status: 'evaluated', total: 2, violations: [], truncated: false } }), idle, 1_012_000)
     expect(m?.tone).toBe('alert')
     expect(m?.text).toContain('2 policy violations')
   })
