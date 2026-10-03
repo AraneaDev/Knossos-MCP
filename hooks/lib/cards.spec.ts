@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { arrange, besideRows, cardInner, cardRows, DEFAULT_ROWS, fitBlocks, gridColumns, moreRows, paneHeight, topRow, windowOf } from './cards'
+import { arrange, BALANCE_SLACK, balanceColumns, besideRows, cardInner, cardRows, DEFAULT_ROWS, figures, fitBlocks, gridColumns, LIST_SOFT, moreRows, paneHeight, topRow, windowOf } from './cards'
 import type { Block, Section } from './cards'
 import { rawText } from './__tests__/plain-text'
-import { barRange, button, rowWidth, tableSpec, tierOf } from './rows'
+import { BAR_SHARE, barRange, button, percentile, rowWidth, tableSpec, tierOf } from './rows'
 import type { Row, Tier } from './rows'
 
 const WIDTHS = [40, 60, 80, 100, 130, 140, 200] as const
@@ -163,7 +163,7 @@ describe('lists sized to the height', () => {
 
 describe('bars', () => {
   const tiers: Tier[] = ['narrow', 'medium', 'wide']
-  it('take a share of the table between a minimum and a maximum per tier, with no fixed cap', () => {
+  it('take a share of the table between a minimum and a maximum per tier', () => {
     for (const tier of tiers) {
       for (const columns of [40, 60, 100, 136, 196]) {
         const range = barRange(columns, tier)
@@ -178,9 +178,138 @@ describe('bars', () => {
     // Wider tiers draw longer gauges: past the old 24-cell cap.
     expect(tableSpec(196, ['Short'], ['core'], [3], undefined, { tier: 'wide' }).bar).toBeGreaterThan(24)
   })
+  it('never take more than a quarter of the table, nor past their tier cap however wide', () => {
+    for (const tier of tiers) {
+      for (const columns of [40, 60, 80, 96, 126, 136, 196, 400]) {
+        const bar = tableSpec(columns, ['Short'], ['core'], [3], undefined, { tier }).bar
+        expect(bar, `${tier} ${columns}`).toBeLessThanOrEqual(Math.max(4, Math.floor(columns / 4)))
+        expect(bar, `${tier} ${columns}`).toBeLessThanOrEqual(BAR_SHARE[tier].cap)
+      }
+    }
+    // A wide hubs card at 200 columns: the bar is a gauge, not the widest thing on the row.
+    expect(tableSpec(196, ['ArchitectureQueryService'], [], [3, 3, 5, 5], undefined, { tier: 'wide' }).bar).toBe(30)
+  })
+  it('make room for a kind and a file column, cutting only the few longest names', () => {
+    const names = [...Array.from({ length: 19 }, (_, i) => `Component${i}`), 'ArchitectureQueryService::architectureHealth']
+    const places = names.map(n => `${n}.php:12`.slice(0, 30))
+    const kinds = names.map((_, i) => (i % 2 === 0 ? 'class' : 'method'))
+    const spec = tableSpec(115, names, [], [3, 3, 5, 5], undefined, { tier: 'wide', places, kinds })
+    expect(spec.place).toBeGreaterThan(0)
+    expect(spec.kind).toBe(6)
+    // The longest name is cut; the typical one (the 90th percentile) is whole.
+    expect(spec.name).toBeLessThan(44)
+    expect(spec.name).toBeGreaterThanOrEqual(percentile(names.map(n => n.length), 0.9))
+    // Narrower, the kind goes before the file.
+    const narrower = tableSpec(80, names, [], [3, 3, 5, 5], undefined, { tier: 'wide', places, kinds })
+    expect(narrower.kind).toBeUndefined()
+    expect(percentile([], 0.9)).toBe(1)
+    expect(percentile([5, 1, 3], 1)).toBe(5)
+  })
   it('give way to a file column only while names stay whole, and drop it first', () => {
     const places = ['ArchitectureQueryService.php:22']
     expect(tableSpec(120, ['ArchitectureQueryService'], ['core'], [3, 3, 5], undefined, { tier: 'medium', places }).place).toBe(31)
     expect(tableSpec(60, ['ArchitectureQueryService'], ['core'], [3, 3, 5], undefined, { tier: 'medium', places }).place).toBeUndefined()
+  })
+})
+
+describe('growth in phases', () => {
+  /** A chart that grows a step of `step` rows per limit, from nothing. */
+  const chartBlock = (key: string, steps: number, step: number): Block => ({
+    key,
+    grow: { length: steps, min: 0, late: true },
+    make: (columns, limit) => (limit === 0 ? null : { key, title: 'Chart', body: Array.from({ length: limit * step }, (_, i) => line(`${key}-${i}`, '█')) }),
+  })
+
+  it('gives lists their soft length first, then the late charts, then the lists the rest', () => {
+    const blocks = [listBlock('a', 50, 3), chartBlock('c', 3, 4)]
+    // Just room for the soft length and one chart step: the chart gets it, the list stops at its soft length.
+    const soft = fitBlocks(blocks, 100, 'medium', LIST_SOFT + 4 /* list frame, gap, more */ + 7 /* chart frame, gap, four rows */)
+    expect(items(soft, 'a')).toHaveLength(LIST_SOFT)
+    expect(items(soft, 'c')).toHaveLength(4)
+    // Taller, the chart takes all its steps and the list everything after.
+    const tall = fitBlocks(blocks, 100, 'medium', 60)
+    expect(items(tall, 'c')).toHaveLength(12)
+    expect(items(tall, 'a').length).toBeGreaterThan(LIST_SOFT)
+    expect(tall.length).toBeLessThanOrEqual(60)
+    // Short, the chart draws nothing and the list keeps its minimum.
+    const short = fitBlocks(blocks, 100, 'medium', 7)
+    expect(items(short, 'c')).toHaveLength(0)
+    expect(items(short, 'a')).toHaveLength(3)
+  })
+
+  it('holds the late charts to their own budget, never the lists', () => {
+    const blocks = [listBlock('a', 50, 3), chartBlock('c', 3, 4)]
+    const held = fitBlocks(blocks, 100, 'medium', 60, 20)
+    expect(items(held, 'c')).toHaveLength(0)
+    expect(items(held, 'a').length).toBeGreaterThan(LIST_SOFT)
+  })
+})
+
+describe('balanced columns', () => {
+  const chartBlock = (key: string): Block => ({
+    key,
+    grow: { length: 2, min: 0, late: true },
+    make: (columns, limit) => ({ key, title: 'Map', body: Array.from({ length: 6 + limit * 8 }, (_, i) => line(`${key}-${i}`, 'x')) }),
+  })
+  /** Where each column of the grid ends: the last row whose left or right half holds anything. */
+  const ends = (rows: Row[], split: number): [number, number] => {
+    let left = -1
+    let right = -1
+    rows.forEach((r, i) => {
+      const text = rawText(r)
+      if (text.slice(0, split).trim() !== '') left = i
+      if (text.slice(split).trim() !== '') right = i
+    })
+    return [left, right]
+  }
+
+  it('place each floating card under the column that leaves the two closest in height', () => {
+    const [l, r] = balanceColumns([fixedBlock('l', 20)], [fixedBlock('r', 4)], [fixedBlock('f1', 6), fixedBlock('f2', 6)], [69, 69], 'wide', 60)
+    // Both floating cards go right: 22 rows against 8 + 16.
+    expect(r.some(row => row.key === 'f1-0') && r.some(row => row.key === 'f2-0')).toBe(true)
+    expect(Math.abs(l.length - r.length)).toBeLessThanOrEqual(BALANCE_SLACK)
+  })
+
+  it('hold a chart to its neighbour when growing it would leave that column short', () => {
+    const rows = arrange({ left: [chartBlock('map')], right: [fixedBlock('table', 12)] }, 140, 60)
+    const [left, right] = ends(rows, gridColumns(140)[0] + 1)
+    expect(Math.abs(left - right)).toBeLessThanOrEqual(BALANCE_SLACK)
+    // One column, nothing to even: the chart takes the spare rows.
+    const single = arrange({ left: [chartBlock('map')], right: [fixedBlock('table', 12)] }, 100, 60)
+    expect(items(single, 'map').length).toBe(22)
+  })
+
+  for (const columns of [140, 200]) {
+    for (const height of [24, 40, 60]) {
+      it(`end within ${BALANCE_SLACK} rows of each other at ${columns}x${height} when both columns have lists to grow`, () => {
+        const rows = arrange({ left: [fixedBlock('look', 3), listBlock('turn', 3, 3)], right: [listBlock('top', 80, 3)], float: [fixedBlock('map', 11), listBlock('files', 80, 3)] }, columns, height)
+        const [left, right] = ends(rows, gridColumns(columns)[0] + 1)
+        expect(Math.abs(left - right), `${left} ${right}`).toBeLessThanOrEqual(BALANCE_SLACK)
+        for (const r of rows) expect(rowWidth(r)).toBeLessThanOrEqual(columns)
+      })
+    }
+  }
+
+  it('weight the columns by a split: the left its share of the width', () => {
+    expect(gridColumns(200, 0.6)).toEqual([118, 80])
+    const rows = arrange({ left: [fixedBlock('a', 2)], right: [fixedBlock('b', 2)], split: 0.6 }, 200, 40)
+    const head = rows.find(r => r.key === 'a-head|b-head')!
+    expect(rowWidth({ key: 'x', segments: head.segments.slice(0, head.split) })).toBe(118 + 2)
+  })
+})
+
+describe('notes', () => {
+  it('draw their figures at full contrast and the words around them dim', () => {
+    expect(figures('3 files → 594 dependents · 1 test')).toEqual([
+      { text: '3', color: 'text' },
+      { text: ' files → ', dim: true },
+      { text: '594', color: 'text' },
+      { text: ' dependents · ', dim: true },
+      { text: '1', color: 'text' },
+      { text: ' test', dim: true },
+    ])
+    expect(figures('10+ boundaries · 31,796 deps').map(s => s.text)).toEqual(['10+', ' boundaries · ', '31,796', ' deps'])
+    expect(figures('')).toEqual([])
+    expect(figures('partial')).toEqual([{ text: 'partial', dim: true }])
   })
 })

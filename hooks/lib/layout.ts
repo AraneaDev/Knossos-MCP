@@ -9,7 +9,7 @@
  */
 import type { AllowState, Dashboard, HubSort, KnossosView, LiveState, PaneTab, Ranked, RefreshState, RescanState, SessionChanges, TurnBrief } from '../../types'
 import { formatAge } from './band'
-import { boundariesArrangement, boundariesInput, boundariesList, heatSection } from './boundaries'
+import { boundariesArrangement, boundariesInput, boundariesList, heatBlock } from './boundaries'
 import type { BoundariesInput } from './boundaries'
 import { changesArrangement, changesInput, changesList, lookAtList, lookAtOf, lookAtSection, NO_CHANGES } from './changes'
 import type { ChangesInput, LookAt } from './changes'
@@ -31,7 +31,6 @@ import {
   joinFitting,
   numberWidth,
   padEnd,
-  padStart,
   placeOf,
   plural,
   rowWidth,
@@ -45,8 +44,11 @@ import {
   wrapWords,
 } from './rows'
 import type { Loc, Row, Segment, TableSpec, Tier } from './rows'
-import { sparkline } from './sparkline'
 import { LIVE_OFF } from './live'
+import { tilesBlock } from './tiles'
+import type { Stat } from './tiles'
+import { trendBlock } from './trend'
+import type { Series } from './trend'
 import { cyclesArrangement, cyclesInput, cyclesList, detailArrangement, detailList, issueCount, issuesArrangement, issuesInput, issuesList, locIn, superscript } from './views'
 import { arrange, DEFAULT_ROWS, fitBlocks, moreRows, noteOf, windowOf } from './cards'
 import type { Arrangement, Block, Section } from './cards'
@@ -63,6 +65,8 @@ export type { ChangesInput, LookAt } from './changes'
 export { detailInput } from './views'
 export { driftInput, fileDetailInput } from './files'
 export type { DriftInput } from './files'
+export type { Stat } from './tiles'
+export type { Series } from './trend'
 
 /** One component in a list the selection walks: hubs and hotspots merged. */
 export type Item = {
@@ -73,6 +77,8 @@ export type Item = {
   in: number
   out: number
   cross: number
+  /** How many other files reference it; null from a knossos that does not say. */
+  files: number | null
   /** Ranked as a hotspot but not as a hub: marked `◆`. */
   hotspotOnly: boolean
   /** Where it is declared, so `e` opens its file; null when the dashboard places it nowhere. */
@@ -88,17 +94,8 @@ export type LastTurn = {
   impact: { name: string; path: string; boundary: string | null; dependents: number; loc: Loc | null }[]
 }
 
-export type Health = {
-  cycles: string
-  maxDegree: number | null
-  cyclesTrend: number[]
-  degreeTrend: number[]
-  deadCode: string
-  /** Policy violations: the project's when the dashboard reports them, else the last turn's; null when neither was checked. */
-  policy: string | null
-  /** Diagnostic errors and warnings, or null when the dashboard reports none. */
-  diagnostics: number | null
-}
+/** A file many others depend on, as the fan-in map lists it: `loc` opens it. */
+export type FileHub = { path: string; dependents: number; boundary: string | null; loc: Loc | null }
 
 /** Everything the pane draws, read from state once per render. */
 export type PaneInput = {
@@ -106,6 +103,8 @@ export type PaneInput = {
   status: PaneStatus
   canRescan: boolean
   summary: string[]
+  /** The project's languages as the summary line names them (`PHP TS`), or empty. */
+  languages: string
   tab: PaneTab
   selected: number
   showKeys: boolean
@@ -114,7 +113,12 @@ export type PaneInput = {
   items: Item[]
   partial: boolean
   lastTurn: LastTurn | null
-  health: Health
+  /** The stat tiles across the top of the Overview. */
+  stats: Stat[]
+  /** The series the Overview's trend chart may draw. */
+  trend: Series[]
+  /** The files most depended on, most first. */
+  fileHubs: FileHub[]
   /** The hubs tab's filter text, whether its field is open, and its sort. */
   filter: string
   filtering: boolean
@@ -159,11 +163,8 @@ const TOP_MIN = 3
 const TURN_MIN = 3
 /** The fewest hubs the Hubs tab lists, however short the pane. */
 const HUBS_MIN = 5
-/** The widest Health spreads a figure and its trend, so they never drift apart on a wide card. */
-const HEALTH_MAX = 48
-/** A trend is drawn only with this many snapshots, and only when it moves. */
-const TREND_MIN_POINTS = 5
-const TREND_MAX_POINTS = 24
+/** The fewest files most depended on any tab lists, however short the pane. */
+const FILES_MIN = 3
 /** The widest the empty pane's prose runs: a line of text past it is hard to read. */
 export const CONTENT_MAX = 100
 
@@ -185,6 +186,7 @@ export function mergeRanked(d: Pick<Dashboard, 'hubs' | 'hotspots'> & Partial<Pi
       in: r.in_degree ?? 0,
       out: r.out_degree ?? 0,
       cross: r.cross_boundary_degree ?? 0,
+      files: r.dependent_files ?? null,
       hotspotOnly,
       loc: locIn(d.project_root ?? null, r.path ?? null, r.line ?? null),
     })
@@ -204,19 +206,26 @@ export function hubList(items: Item[], filter: string, sort: HubSort): Item[] {
   return [...kept].sort((a, b) => b[sort] - a[sort] || b.in - a.in || a.name.localeCompare(b.name))
 }
 
+/** The files most depended on whose path holds the filter, any case: the Hubs tab's second list. */
+export function fileHubList(files: FileHub[], filter: string): FileHub[] {
+  const needle = filter.trim().toLowerCase()
+  return needle === '' ? files : files.filter(f => f.path.toLowerCase().includes(needle))
+}
+
 /** What a list addresses: the fields the selection, `o`, `e`, `c` and `q` read. */
-export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'lastTurn' | 'drift' | 'driftOpen'>
+export type ListInput = Pick<PaneInput, 'tab' | 'items' | 'filter' | 'sort' | 'issues' | 'detail' | 'changes' | 'cycles' | 'boundaries' | 'lookAt' | 'lastTurn' | 'drift' | 'driftOpen' | 'fileHubs'>
 
 /** A file row of a list: it opens as the file's detail, and `e` opens the file. */
 const fileRow = (path: string, loc: Loc | null): Openable => ({ name: path, canonical: path, loc, file: true })
 
 /**
- * The Overview's walkable rows, top to bottom as drawn: the file "Look at
- * now" points at, the last turn's files, then the most depended on.
+ * The Overview's walkable rows, in the order a narrow pane draws them: the
+ * file "Look at now" points at, the last turn's files, the components most
+ * depended on, then the files most depended on.
  */
-export function overviewList(input: Pick<PaneInput, 'items' | 'lookAt' | 'lastTurn'>): Openable[] {
+export function overviewList(input: Pick<PaneInput, 'items' | 'lookAt' | 'lastTurn' | 'fileHubs'>): Openable[] {
   const turn = (input.lastTurn?.impact ?? []).map(f => fileRow(f.path, f.loc))
-  return [...lookAtList(input.lookAt), ...turn, ...input.items]
+  return [...lookAtList(input.lookAt), ...turn, ...input.items, ...input.fileHubs.map(f => fileRow(f.path, f.loc))]
 }
 
 /** The rows the selection walks: the detail's counterparts, else the drifted files when listed, else the tab's list. */
@@ -224,7 +233,7 @@ export function listFor(input: ListInput): Openable[] {
   if (input.detail !== null) return input.detail.file === undefined ? detailList(input.detail) : input.detail.file === null ? [] : fileDetailList(input.detail.file)
   if (input.driftOpen && input.drift !== null) return driftList(input.drift)
   if (input.tab === 'overview') return overviewList(input)
-  if (input.tab === 'hubs') return hubList(input.items, input.filter, input.sort)
+  if (input.tab === 'hubs') return [...hubList(input.items, input.filter, input.sort), ...fileHubList(input.fileHubs, input.filter).map(f => fileRow(f.path, f.loc))]
   if (input.tab === 'changes') return changesList(input.changes)
   if (input.tab === 'cycles') return cyclesList(input.cycles)
   if (input.tab === 'boundaries') return boundariesList(input.boundaries)
@@ -277,6 +286,36 @@ export function lastTurnOf(brief: TurnBrief | null, root: string | null = null):
 
 const LANGUAGES: Record<string, string> = { php: 'PHP', javascript: 'JS', typescript: 'TS', python: 'PY', rust: 'RS', go: 'GO', ruby: 'RB', java: 'JAVA' }
 
+/** The project's languages as the summary line names them, most files first; empty when the dashboard does not say. */
+const languagesOf = (d: Dashboard): string => (d.summary?.languages ?? []).map(l => LANGUAGES[l.language] ?? l.language.toUpperCase()).join(' ')
+
+/**
+ * The stat tiles: components and boundaries (from a dashboard that reports
+ * them), cycles and the largest degree with their trends, dead code, the
+ * drifted files (a press that lists them, when the dashboard names them),
+ * then the policy violations and diagnostics when they were checked. Each
+ * says how it deviates: cycles and diagnostics above zero warn, violations
+ * above zero are errors, drift above zero is the accent.
+ */
+export function statsOf(d: Dashboard, summary: string[], policy: string | null, diagnostics: number | null, drift: boolean): Stat[] {
+  const above = (value: string) => value !== '0'
+  const cycles = countLabel(d.cycles.count, d.cycles.truncated)
+  const dead = countLabel(d.dead_code_candidates, d.dead_code_truncated)
+  const maxDegree = d.trend.at(-1)?.max_degree ?? null
+  const drifted = d.freshness.drift_files
+  // From the summary line's own parts, so a figure reads the same in both: `9,008 components`, `7+ boundaries`.
+  const counted = (part: string | undefined, label: string): Stat[] => (part === undefined ? [] : [{ key: label, label, value: part.slice(0, part.indexOf(' ')), inSummary: true }])
+  return [
+    ...(d.summary === undefined ? [] : [...counted(summary[0], 'components'), ...counted(summary[1], summary[1]?.endsWith('boundary') ? 'boundary' : 'boundaries')]),
+    { key: 'cycles', label: d.cycles.count === 1 && !d.cycles.truncated ? 'cycle' : 'cycles', value: cycles, trend: d.trend.map(t => t.cycles), ...(above(cycles) ? { tone: 'warn' as const } : {}) },
+    ...(maxDegree === null ? [] : [{ key: 'degree', label: 'max degree', value: String(maxDegree), trend: d.trend.map(t => t.max_degree) }]),
+    { key: 'dead', label: 'dead code', value: dead },
+    { key: 'drifted', label: 'drifted', value: grouped(drifted), inSummary: true, ...(drifted > 0 ? { tone: 'accent' as const } : {}), ...(drift ? { press: 'drifted' } : {}) },
+    ...(policy === null ? [] : [{ key: 'policy', label: 'policy', value: policy, ...(above(policy) ? { tone: 'alert' as const } : {}) }]),
+    ...(diagnostics === null ? [] : [{ key: 'diagnostics', label: 'diagnostics', value: grouped(diagnostics), ...(diagnostics > 0 ? { tone: 'warn' as const } : {}) }]),
+  ]
+}
+
 /**
  * The header's summary line: components, boundaries, drift and languages
  * from a dashboard that reports them; hubs, cycles and dead code otherwise.
@@ -302,7 +341,7 @@ export function summaryParts(d: Dashboard, hubs: number): string[] {
     d.boundaries?.declared !== undefined && declared > 0
       ? d.boundaries.declared_truncated === true
       : d.boundaries?.truncated === true && (listedDeclared === 0 || listedDeclared === all.length)
-  const languages = d.summary.languages.map(l => LANGUAGES[l.language] ?? l.language.toUpperCase()).join(' ')
+  const languages = languagesOf(d)
   // Languages last: the line drops parts from its end, and drift says more than the languages.
   return [
     `${grouped(d.summary.components)} components`,
@@ -328,6 +367,7 @@ export function paneInput(
   live: LiveState = LIVE_OFF,
 ): PaneInput {
   const items = mergeRanked(d)
+  const summary = summaryParts(d, items.length)
   const issues = issuesInput(d)
   const hues = huesOf(d)
   const changes = changesInput(session, d.project_root, hues, sessionRoot)
@@ -340,7 +380,8 @@ export function paneInput(
     status: paneStatus(d, refresh, rescan, now, live),
     // A watcher that is scanning already does what a rescan would.
     canRescan: rescan.phase !== 'scanning' && live.phase !== 'scanning' && needsRescan(d),
-    summary: summaryParts(d, items.length),
+    summary,
+    languages: languagesOf(d),
     tab: view.tab,
     selected: view.selected,
     showKeys: view.showKeys,
@@ -348,15 +389,14 @@ export function paneInput(
     items,
     partial: d.hubs_truncated,
     lastTurn: lastTurnOf(brief, d.project_root),
-    health: {
-      cycles: countLabel(d.cycles.count, d.cycles.truncated),
-      maxDegree: d.trend.at(-1)?.max_degree ?? null,
-      cyclesTrend: d.trend.map(t => t.cycles),
-      degreeTrend: d.trend.map(t => t.max_degree),
-      deadCode: countLabel(d.dead_code_candidates, d.dead_code_truncated),
-      policy,
-      diagnostics,
-    },
+    stats: statsOf(d, summary, policy, diagnostics, drift !== null),
+    trend: [
+      { label: 'cycles', values: d.trend.map(t => t.cycles) },
+      { label: 'max degree', values: d.trend.map(t => t.max_degree) },
+    ],
+    fileHubs: [...d.fan_in]
+      .sort((a, b) => b.dependent_files - a.dependent_files || a.path.localeCompare(b.path))
+      .map(f => ({ path: f.path, dependents: f.dependent_files, boundary: f.boundary ?? null, loc: locIn(d.project_root, f.path) })),
     filter: view.filter ?? '',
     filtering: view.filtering ?? false,
     sort: view.sort ?? 'in',
@@ -452,7 +492,12 @@ export function allowRows(allow: AllowInput, columns: number): Row[] {
   ]
 }
 
-function headerRows(input: PaneInput, columns: number): Row[] {
+/**
+ * The title row and the summary line under it. Where the stat tiles show
+ * (`tiles`), they say the summary's figures, so the line keeps only the
+ * languages: the header stays two rows on every tab.
+ */
+function headerRows(input: PaneInput, columns: number, tiles = false): Row[] {
   const dot: Segment = { text: '● ', color: STATUS_COLOURS[input.status.tone] }
   const said: Segment = { text: input.status.text, dim: true }
   const rescan = input.canRescan ? [{ text: '  ' }, button('rescan', 'rescan', 'r', { dim: false })] : []
@@ -465,7 +510,8 @@ function headerRows(input: PaneInput, columns: number): Row[] {
   }
   const rightWidth = right.reduce((n, s) => n + cells(s.text), 0)
   const title: Segment = { text: fit(input.project, Math.max(0, columns - rightWidth - 1)), bold: true, color: 'text' }
-  return [spread('title', [title], right, columns), summaryRow(input, columns)]
+  const summary = tiles ? { key: 'summary', segments: [{ text: fit(input.languages === '' ? ' ' : input.languages, columns), dim: true }] } : summaryRow(input, columns)
+  return [spread('title', [title], right, columns), summary]
 }
 
 /**
@@ -565,23 +611,28 @@ export function sharedBoundary(rows: { boundary: string | null }[]): string | nu
   return rows.length > 1 && first !== null && rows.every(r => r.boundary === first) ? first : null
 }
 
-/** A component's numbers as a table shows them: in, out and cross, or in alone. */
-const degreesOf = (item: Item, withDegrees: boolean): number[] => (withDegrees ? [item.in, item.out, item.cross] : [item.in])
-const degreeTitles = (withDegrees: boolean): string[] => (withDegrees ? ['in', 'out', 'cross'] : ['in'])
+/** A component's numbers as a table shows them: in, out, cross and (wide, when known) the files depending on it, or in alone. */
+const degreesOf = (item: Item, withDegrees: boolean, withFiles = false): number[] => (withDegrees ? [item.in, item.out, item.cross, ...(withFiles ? [item.files ?? 0] : [])] : [item.in])
+const degreeTitles = (withDegrees: boolean, withFiles = false): string[] => (withDegrees ? ['in', 'out', 'cross', ...(withFiles ? ['files'] : [])] : ['in'])
+
+/** Whether a table of `items` at `tier` adds the dependent files: wide, and only when the dashboard counts them. */
+const filesColumn = (items: Item[], tier: Tier): boolean => tier === 'wide' && items.some(i => i.files !== null)
 
 /** Where a component is declared, as a table's file column shows it: its file's name and the line. */
 const placeIn = (item: Item): string => (item.loc === null ? '' : placeOf(item.loc.path, item.loc.line))
 
 /**
  * How a table of components fits `columns`: without the boundary column when
- * every row shares one, and from the medium tier on with the file each is
- * declared in.
+ * every row shares one, from the medium tier on with the file each is
+ * declared in, and wide with each one's kind and dependent files too.
  */
 function componentSpec(items: Item[], columns: number, withDegrees: boolean, hues: Hues, tier: Tier): TableSpec {
-  const widths = degreeTitles(withDegrees).map((t, i) => numberWidth(t, items.map(item => degreesOf(item, withDegrees)[i] ?? 0)))
+  const withFiles = withDegrees && filesColumn(items, tier)
+  const widths = degreeTitles(withDegrees, withFiles).map((t, i) => numberWidth(t, items.map(item => degreesOf(item, withDegrees, withFiles)[i] ?? 0)))
   const labels = sharedBoundary(items) === null ? items.map(i => boundaryLabel(i.boundary, hues)) : []
   const places = tier === 'narrow' ? [] : items.map(placeIn)
-  return tableSpec(columns, items.map(i => i.name), labels, widths, undefined, { tier, places })
+  const kinds = tier === 'wide' ? items.map(i => i.kind) : []
+  return tableSpec(columns, items.map(i => i.name), labels, widths, undefined, { tier, places, kinds })
 }
 
 /** A section's note with the boundary every row shares said once, in front: `all in core · in`. */
@@ -596,7 +647,9 @@ function sharedNote(items: Item[], note: string, hues: Hues): string {
  * first item being `offset`); the bar draws `sort`.
  */
 function componentRows(prefix: string, items: Item[], selected: number, spec: TableSpec, withDegrees: boolean, hues: Hues, sort: HubSort, offset: number, window: { start: number; end: number }): Row[] {
-  const titles = degreeTitles(withDegrees)
+  // The spec has a number column per title: a fourth is the dependent files.
+  const withFiles = withDegrees && spec.numbers.length > 3
+  const titles = degreeTitles(withDegrees, withFiles)
   const max = Math.max(0, ...items.map(i => i[sort]))
   return [
     ...(withDegrees ? [tableHead(`${prefix}-head`, spec, { name: 'name', boundary: 'boundary', numbers: titles })] : []),
@@ -607,8 +660,9 @@ function componentRows(prefix: string, items: Item[], selected: number, spec: Ta
         {
           name: item.name,
           boundary: item.boundary,
-          values: degreesOf(item, withDegrees),
+          values: degreesOf(item, withDegrees, withFiles),
           barValue: item[sort],
+          kind: item.kind,
           max,
           selected: offset + i === selected,
           hotspotOnly: item.hotspotOnly,
@@ -639,55 +693,6 @@ function lastTurnSection(turn: LastTurn, columns: number, limit: number, tier: T
   })
   return { key: 'turn', title: 'Last turn', note: noteOf(note), body: [...body, ...moreRows('turn-window', window, turn.impact.length, columns)] }
 }
-
-/** Glyphs for a trend that is long enough and moves; otherwise nothing, since a flat line says nothing. */
-function trendGlyphs(values: number[]): string {
-  if (values.length < TREND_MIN_POINTS || Math.min(...values) === Math.max(...values)) return ''
-  return sparkline(values.slice(-TREND_MAX_POINTS))
-}
-
-/** A count as a verdict: `✓ 0` in green, else `▲ n` in `tone`. */
-function verdict(value: string, tone: Tone): Segment {
-  return value === '0' ? { text: '✓ 0', color: STATUS_COLOURS.ok } : { text: `▲ ${value}`, color: STATUS_COLOURS[tone] }
-}
-
-/**
- * Health, one figure per row in one column: cycles, the largest degree and
- * dead code as plain numbers (each with its trend, when it moves), then the
- * policy violations and diagnostics as verdicts, green at zero.
- */
-function healthSection(h: Health, columns: number): Section {
-  const cyclesTrend = trendGlyphs(h.cyclesTrend)
-  const degreeTrend = trendGlyphs(h.degreeTrend)
-  const note = cyclesTrend !== '' || degreeTrend !== '' ? `trend (${Math.max(h.cyclesTrend.length, h.degreeTrend.length)} scans)` : ''
-  const verdicts: [string, string, string, Tone][] = [
-    ...(h.policy === null ? [] : [['health-policy', 'policy', h.policy, 'alert'] as [string, string, string, Tone]]),
-    ...(h.diagnostics === null ? [] : [['health-diagnostics', 'diagnostics', String(h.diagnostics), 'warn'] as [string, string, string, Tone]]),
-  ]
-  const values = [h.cycles, h.maxDegree === null ? '' : String(h.maxDegree), h.deadCode, ...verdicts.map(([, , v, tone]) => verdict(v, tone).text)]
-  const valueWidth = Math.max(...values.map(cells))
-  const spreadTo = Math.min(columns, HEALTH_MAX)
-  const label = (text: string): Segment => ({ text: `   ${padEnd(text, HEALTH_LABEL)}`, dim: true })
-  const metric = (key: string, name: string, value: string, trend: string): Row =>
-    spread(key, [label(name), { text: padStart(value, valueWidth), bold: true, color: 'text' }], trend === '' ? [] : [{ text: trend, dim: true }], spreadTo)
-  return {
-    key: 'health',
-    title: 'Health',
-    note: noteOf(note),
-    body: [
-      metric('health-cycles', 'cycles', h.cycles, cyclesTrend),
-      ...(h.maxDegree === null ? [] : [metric('health-degree', 'max degree', String(h.maxDegree), degreeTrend)]),
-      metric('health-dead', 'dead code', h.deadCode, ''),
-      ...verdicts.map(([key, name, value, tone]): Row => {
-        const v = verdict(value, tone)
-        return { key, segments: [label(name), { ...v, text: padStart(v.text, valueWidth) }] }
-      }),
-    ],
-  }
-}
-
-/** The width of Health's labels: its longest, and a space. */
-const HEALTH_LABEL = 'diagnostics'.length + 1
 
 /** The keys and what each does, for the key list. */
 const KEY_HELP: [string, string][] = [
@@ -755,10 +760,20 @@ function hubsBlock(input: PaneInput, list: Item[], selected: number, tier: Tier)
       const section = (body: Row[]): Section => ({ key: 'hubs', title: 'Hubs and hotspots', subtitle: `sorted by ${input.sort}`, note: noteOf(note), body })
       if (list.length === 0) return section([...rows, dimRow('hubs-none', input.filter === '' ? '   none' : `   no hub matches "${input.filter}"`, columns)])
       const spec = componentSpec(list, columns, true, input.hues, tier)
-      const window = windowOf(list.length, limit, selected)
+      const local = selected < list.length ? selected : -1
+      const window = windowOf(list.length, limit, local)
       return section([...rows, ...componentRows('hub', list, selected, spec, true, input.hues, input.sort, 0, window), ...moreRows('hub-window', window, list.length, columns)])
     },
   }
+}
+
+/** The Hubs tab: the components most depended on and, beside them when wide, the files; the filter narrows both. */
+function hubsArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
+  const list = hubList(input.items, input.filter, input.sort)
+  const hubs = hubsBlock(input, list, selected, tier)
+  const files = fileHubsBlock(fileHubList(input.fileHubs, input.filter), selected, list.length, tier, input.hues, input.filter === '' ? '' : `filter "${input.filter}"`)
+  // The components' table has more columns than the files': it takes the larger share.
+  return files === null ? { left: [hubs] } : { left: [hubs], right: [files], split: 0.6 }
 }
 
 /** What "ask Claude to scan it" asks: the model scans through the Knossos server, into the graph the pane reads. */
@@ -805,10 +820,41 @@ export function emptyRows(state: NoGraph, allow: AllowInput | null, columns: num
 }
 
 /**
- * The Overview: what to look at now (once this session changed something),
- * the last turn, health and the most depended on; wide, the last stands
- * right, with a small boundary map under it. One marker walks the lists in
- * the order they are drawn on a narrow pane.
+ * The files most depended on, as a card: each file's path (cut from the
+ * front, so its name stays), its boundary, a bar and how many files depend
+ * on it; `limit` of them around the marker, each a row it walks from
+ * `offset`. Null when the dashboard lists none.
+ */
+function fileHubsBlock(files: FileHub[], selected: number, offset: number, tier: Tier, hues: Hues, note = ''): Block | null {
+  if (files.length === 0) return null
+  return {
+    key: 'files',
+    grow: { length: files.length, min: FILES_MIN },
+    make: (columns, limit) => {
+      const local = selected - offset
+      const window = windowOf(files.length, limit, local >= 0 && local < files.length ? local : -1)
+      const shared = sharedBoundary(files)
+      const labels = shared === null ? files.map(f => boundaryLabel(f.boundary, hues)) : []
+      const spec = tableSpec(columns, files.map(f => f.path), labels, [numberWidth('', files.map(f => f.dependents))], 56, { tier })
+      const max = Math.max(0, ...files.map(f => f.dependents))
+      const body = files.slice(window.start, window.end).map((f, n) => {
+        const i = window.start + n
+        const repeat = i > window.start && f.boundary !== null && f.boundary === files[i - 1]!.boundary
+        return tableRow(`files-${i}`, { name: f.path, boundary: f.boundary, values: [f.dependents], max, cutStart: true, selected: offset + i === selected, press: `row:${offset + i}`, repeat }, spec, hues)
+      })
+      const said = [shared === null ? '' : `all in ${boundaryLabel(shared, hues)}`, note, 'dependent files'].filter(t => t !== '').join(' · ')
+      return { key: 'files', title: 'Files most depended on', note: noteOf(said), body: [...body, ...moreRows('files-window', window, files.length, columns)] }
+    },
+  }
+}
+
+/**
+ * The Overview: the stat tiles across the top, what to look at now (once
+ * this session changed something), the last turn, the components and the
+ * files most depended on, and, with rows to spare, the trend. Wide, the
+ * components stand right with the trend under them; the boundary map and
+ * the files go under whichever column leaves the two closest in height. One marker walks
+ * the lists in the order they are drawn on a narrow pane.
  */
 function overviewArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
   const looked = lookAtList(input.lookAt).length
@@ -818,7 +864,6 @@ function overviewArrangement(input: PaneInput, selected: number, tier: Tier): Ar
   if (look !== null) left.push({ key: 'look', make: columns => lookAtSection(look, columns, input.hues, selected) })
   const turn = input.lastTurn
   if (turn !== null) left.push({ key: 'turn', grow: { length: turned, min: TURN_MIN }, make: (columns, limit) => lastTurnSection(turn, columns, limit, tier, input.hues, selected, looked) })
-  left.push({ key: 'health', make: columns => healthSection(input.health, columns) })
   const offset = looked + turned
   // Narrow, the in-degree alone; from medium on, out and cross and the file beside it.
   const withDegrees = tier !== 'narrow'
@@ -835,8 +880,13 @@ function overviewArrangement(input: PaneInput, selected: number, tier: Tier): Ar
       return section([...componentRows('top', input.items, selected, spec, withDegrees, input.hues, 'in', offset, window), ...moreRows('top-window', window, input.items.length, columns)])
     },
   }
-  const map: Block[] = tier === 'wide' ? [{ key: 'map', make: columns => heatSection(input.boundaries, columns, input.hues, false) }] : []
-  return { left, right: [top, ...map], order: [...left, top] }
+  const tiles = input.stats.length > 0 ? [tilesBlock(input.stats, tier)] : []
+  const files = fileHubsBlock(input.fileHubs, selected, offset + input.items.length, tier, input.hues)
+  const trend = trendBlock(input.trend)
+  const map: Block[] = tier === 'wide' && input.boundaries !== null && input.boundaries.boundaries.length > 0 ? [heatBlock(input.boundaries, input.hues, false, false)] : []
+  const charts = trend === null ? [] : [trend]
+  // The components' table on the right has the most columns: it takes the larger share, and the trend under it.
+  return { top: tiles, left, right: [top, ...charts], float: [...map, ...(files === null ? [] : [files])], split: 0.45, order: [...tiles, ...left, top, ...(files === null ? [] : [files]), ...(trend === null ? [] : [trend])] }
 }
 
 /**
@@ -849,7 +899,9 @@ export function paneRows(input: PaneInput, columns: number, height: number = DEF
   const tier = tierOf(width)
   const list = listFor(input)
   const selected = Math.min(Math.max(0, input.selected), Math.max(0, list.length - 1))
-  const rows: Row[] = [...headerRows(input, width)]
+  // The Overview's stat tiles say the summary's figures from the medium tier on; narrow, they collapse to a line beside it.
+  const tiles = input.detail === null && input.tab === 'overview' && tier !== 'narrow' && input.stats.length > 0
+  const rows: Row[] = [...headerRows(input, width, tiles)]
   if (input.allow !== null) rows.push(...allowRows(input.allow, width), blank('gap-allow'))
   const footer = [blank('gap-keys'), ...footerRows(input, width, list.length > 0)]
   const room = () => height - rows.length - footer.length
@@ -882,7 +934,7 @@ export function paneRows(input: PaneInput, columns: number, height: number = DEF
 function tabArrangement(input: PaneInput, selected: number, tier: Tier): Arrangement {
   if (input.tab === 'overview') return overviewArrangement(input, selected, tier)
   if (input.tab === 'changes') return changesArrangement(input.changes, selected, tier, input.hues)
-  if (input.tab === 'hubs') return { left: [hubsBlock(input, hubList(input.items, input.filter, input.sort), selected, tier)] }
+  if (input.tab === 'hubs') return hubsArrangement(input, selected, tier)
   if (input.tab === 'issues') return issuesArrangement(input.issues, selected, tier, input.hues)
   if (input.tab === 'cycles') return cyclesArrangement(input.cycles, input.hues, selected)
   return boundariesArrangement(input.boundaries, tier, input.hues, selected)

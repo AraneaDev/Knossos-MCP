@@ -533,6 +533,12 @@ const PANE_PROPS = {
   view: {},
 } as RenderPropsOf['Pane']
 
+/** The narrow pane's stat tiles as one line of text: every row of the wrapped line, joined. */
+async function tilesLine(ui: Awaited<ReturnType<typeof mountPane>>): Promise<string> {
+  const rows = (await ui.findAll({ type: 'Box' })).filter(b => typeof b.key === 'string' && b.key.startsWith('tiles-line'))
+  return rows.map(b => b.text.trim()).join('   ')
+}
+
 async function mountPane($: Engine, surface: 'terminal' | 'desktop' = 'terminal') {
   return $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: PANE_PROPS })
 }
@@ -1194,9 +1200,8 @@ describe('knossos mod', () => {
       const ui = await mountPane($, surface)
       expect((await ui.find({ key: 'title' }))?.text).toMatch(/^repo +● fresh · 1s$/)
       expect((await ui.find({ key: 'summary' }))?.text).toBe('2 hubs · 1 cycle · 4 dead code · 0 drifted')
-      expect((await ui.find({ key: 'health-cycles' }))?.text).toMatch(/cycles +1/)
-      expect((await ui.find({ key: 'health-degree' }))?.text).toMatch(/max degree +12/)
-      expect((await ui.find({ key: 'health-dead' }))?.text).toMatch(/dead code +4/)
+      // Narrow, the stat tiles are a line of figures under the tabs.
+      expect(await tilesLine(ui)).toMatch(/^1 cycle +12 max degree +4 dead code$/)
       expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^› +Router .*41$/)
       // A hotspot that is not a hub is listed once, marked.
       expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/◆ Kernel/)
@@ -1211,8 +1216,7 @@ describe('knossos mod', () => {
     await $.session.start(START)
     await w.clock.settle()
     const ui = await mountPane($)
-    expect((await ui.find({ key: 'health-cycles' }))?.text).toContain('50+')
-    expect((await ui.find({ key: 'health-dead' }))?.text).toContain('100+')
+    expect(await tilesLine(ui)).toMatch(/^50\+ cycles +12 max degree +100\+ dead code$/)
     await ui.unmount()
   })
 
@@ -1223,13 +1227,12 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const ui = await mountPane($)
     // Two snapshots: numbers only.
-    expect((await ui.find({ key: 'health-head' }))?.text).not.toContain('trend')
+    expect(await tilesLine(ui)).not.toMatch(/[▁-█]/)
     await slash($, '')
     await w.clock.settle()
-    expect((await ui.find({ key: 'health-head' }))?.text).toContain('trend (5 scans)')
-    expect((await ui.find({ key: 'health-cycles' }))?.text).toContain('▁▆▃▃█')
+    expect(await tilesLine(ui)).toContain('1 cycle ▁▆▃▃█')
     // A flat line says nothing.
-    expect((await ui.find({ key: 'health-degree' }))?.text).not.toMatch(/[▁-█]/)
+    expect(await tilesLine(ui)).not.toMatch(/max degree [▁-█]/)
     await ui.unmount()
   })
 
@@ -1283,7 +1286,6 @@ describe('knossos mod', () => {
     expect((await ui.find({ key: 'open' }))?.props.hotkey).toBe('o')
     await ui.press({ key: 'up' })
     expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^›/)
-    await ui.press({ key: 'down' })
     await ui.press({ key: 'down' })
     expect((await ui.find({ key: 'top-0' }))?.text).toMatch(/^ /)
     expect((await ui.find({ key: 'top-1' }))?.text).toMatch(/^›/)
@@ -1831,8 +1833,10 @@ describe('knossos mod', () => {
         await ui.press({ key: 'tab:overview' })
         const grid = (await ui.findAll({ type: 'Box' })).some(b => typeof b.key === 'string' && b.key.includes('|'))
         expect(grid, `${surface} ${bodyColumns}`).toBe(bodyColumns > 130)
-        // Framed from 80 columns on, a light top rule below.
-        const head = (await ui.find({ key: bodyColumns > 130 ? 'health-head|top-head' : 'top-head' }))?.text ?? ''
+        // Framed from 80 columns on, a light top rule below; wide, the components' card stands right in the grid.
+        const keyed = (await ui.findAll({ type: 'Box' })).find(b => typeof b.key === 'string' && (bodyColumns > 130 ? b.key.endsWith('|top-head') : b.key === 'top-head'))
+        const text = keyed?.text ?? ''
+        const head = bodyColumns > 130 ? text.slice(text.lastIndexOf('╭─ ')) : text
         expect(head.startsWith(bodyColumns >= 80 ? '╭─ ' : '── '), `${surface} ${bodyColumns}: ${head}`).toBe(true)
         await ui.unmount()
       }
@@ -2272,9 +2276,14 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       expect((await ui.find({ key: 'summary' }))?.text).toBe('1,234 components · 2 boundaries · 0 drifted · PHP TS')
-      expect((await ui.find({ key: 'health-policy' }))?.text).toMatch(/policy +▲ 2$/)
-      expect((await ui.find({ key: 'health-diagnostics' }))?.text).toMatch(/diagnostics +▲ 1$/)
+      expect(await tilesLine(ui)).toMatch(/2 policy +1 diagnostics$/)
       await ui.unmount()
+      // From the medium tier the tiles say the figures, and the summary line keeps the languages.
+      const wide = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 140, scroll: { offset: 0, bodyRows: 40 } } })
+      expect((await wide.find({ key: 'summary' }))?.text).toBe('PHP TS')
+      expect((await wide.find({ key: 'tiles-0-label' }))?.text).toMatch(/components +│ boundaries +│ cycles? +│ .*│ policy +│ diagnostics +│$/)
+      expect((await wide.find({ key: 'tiles-0-value' }))?.text).toMatch(/1,234 +│ 2 +│ .*│ 2 +│ 1 +│$/)
+      await wide.unmount()
     }
   })
 
@@ -2284,11 +2293,11 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const term = await mountPane($, 'terminal')
     await term.press({ key: 'tab:boundaries' })
-    expect(titled((await term.find({ key: 'bounds-head' }))?.text)).toMatch(/^Boundaries +3 · 232 deps$/)
+    expect(titled((await term.find({ key: 'bounds-head' }))?.text)).toMatch(/^Boundaries +3 boundaries · 232 deps$/)
     const grid = await term.find({ type: 'Raster' })
     expect(grid?.key).toBe('raster-heat')
-    // The axis letters, one row per boundary and the legend's two rows, as wide as the widest of them.
-    expect(grid?.props.rows).toBe(6)
+    // The axis letters, each boundary's cells (one row each, or two or three when the pane has rows to spare) and the legend's two rows.
+    expect([6, 9, 12]).toContain(grid?.props.rows)
     expect(grid?.props.columns).toBeLessThanOrEqual(PANE_PROPS.bodyColumns)
     expect(typeof grid?.props.cells).toBe('string')
     expect(await term.find({ key: 'heat-1' })).toBeUndefined()
@@ -2685,6 +2694,75 @@ describe('knossos mod', () => {
     }
   })
 
+  test('the stat tiles say the figures from the medium tier on, the drifted one listing the files, on both surfaces', async ($, on) => {
+    const drifted = issuesDashboard({
+      freshness: { state: 'stale', age_seconds: 60, drift_files: 2, drifted: [{ path: 'src/Router.php', change: 'changed', boundary: 'Http' }], drifted_truncated: false },
+    })
+    const w = world(on, { dashboard: [{ stdout: drifted }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 40 } } })
+      // The tab is the session's, not the surface's: start each on the Overview.
+      await ui.press({ key: 'tab:overview' })
+      expect((await ui.find({ key: 'summary' }))?.text).toBe('PHP TS')
+      expect(await ui.find({ key: 'tiles-top' })).toBeDefined()
+      // The drifted tile's label is the press that lists them, as the summary's was.
+      expect((await ui.find({ key: 'drifted' }))?.props.label).toBe('drifted')
+      await ui.press({ key: 'drifted' })
+      expect(drawn((await ui.find({ key: 'drift-0' }))?.text ?? '')).toMatch(/src\/Router\.php/)
+      await ui.press({ key: 'drift' })
+      // Off the Overview the summary line says the figures again, the drifted count its press.
+      await ui.press({ key: 'tab:hubs' })
+      expect((await ui.find({ key: 'summary' }))?.text).toContain('2 drifted')
+      expect(await ui.find({ key: 'tiles-top' })).toBeUndefined()
+      await ui.unmount()
+    }
+  })
+
+  test('a wide Hubs tab lists the files most depended on beside the components, each opening as a file', async ($, on) => {
+    const hubs = Array.from({ length: 12 }, (_, i) => ({ name: `Hub${i}`, canonical_name: `App\\Hub${i}`, kind: 'class', in_degree: 300 - i, out_degree: i, cross_boundary_degree: 0, dependent_files: 40 - i, path: `src/Hub${i}.php`, line: 3 }))
+    const fanIn = Array.from({ length: 6 }, (_, i) => ({ path: `src/Deep/File${i}.php`, dependent_files: 90 - i, boundaries: ['Core'], boundary: 'Core' }))
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ hubs, hotspots: [], fan_in: fanIn }) }], file: [{ stdout: fileDetailOf('src/Deep/File0.php') }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const ui = await $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: { ...PANE_PROPS, bodyColumns: 200, scroll: { offset: 0, bodyRows: 40 } } })
+      await ui.press({ key: 'tab:hubs' })
+      const boxes = await ui.findAll({ type: 'Box' })
+      expect(boxes.some(b => typeof b.key === 'string' && b.key.endsWith('|files-head'))).toBe(true)
+      // Wide, the components' table adds the files depending on each and where it is declared.
+      const head = boxes.find(b => typeof b.key === 'string' && b.key.startsWith('hub-head|'))
+      expect(head?.text).toMatch(/in +out +cross +files +where +/)
+      await ui.press({ key: 'row:12' })
+      await w.clock.settle()
+      expect(titled(drawn((await ui.find({ key: 'detail' }))?.text ?? ''))).toMatch(/Depended on by/)
+      await ui.press({ key: 'back' })
+      await ui.unmount()
+    }
+  })
+
+  test('the trend grows into a chart with rows to spare: a Raster on the terminal, glyphs elsewhere', async ($, on) => {
+    const trend = [1, 3, 2, 2, 4, 3].map((cycles, i) => ({ snapshot_id: `s${i}`, cycles, max_degree: 10 }))
+    const w = world(on, { dashboard: [{ stdout: paneDashboard({ trend }) }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const tall = { ...PANE_PROPS, bodyColumns: 100, scroll: { offset: 0, bodyRows: 80 } }
+    const term = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: tall })
+    expect(titled((await term.find({ key: 'trend-head' }))?.text)).toMatch(/^Trend +6 scans$/)
+    expect((await term.findAll({ type: 'Raster' })).map(r => r.key)).toContain('raster-trend')
+    await term.unmount()
+    const desk = await $.ui.mount({ plugin: 'knossos', surface: 'desktop', component: 'Pane', requestId: 'knossos', props: tall })
+    expect(await desk.find({ type: 'Raster' })).toBeUndefined()
+    expect((await desk.find({ key: 'trend-0-0' }))?.text).toMatch(/4 ┤/)
+    await desk.unmount()
+    // Short, no chart: the tiles' sparkline says it.
+    const short = await $.ui.mount({ plugin: 'knossos', surface: 'terminal', component: 'Pane', requestId: 'knossos', props: { ...tall, scroll: { offset: 0, bodyRows: 24 } } })
+    expect(await short.find({ key: 'trend-head' })).toBeUndefined()
+    expect((await short.find({ key: 'tiles-0-value' }))?.text).toMatch(/[▁-█]{5}/)
+    await short.unmount()
+  })
+
   test('look at now: the marker starts on the riskiest file touched, e opens the marked row and t copies the test command', async ($, on) => {
     const covered = brief({ tests: [{ path: 'hooks/lib/band.spec.ts', distance: 1, js_runner: 'vitest' }] })
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: covered }] })
@@ -3020,7 +3098,8 @@ describe('the live watcher', () => {
     await w.clock.settle()
     const ui = await mountPane($)
     await ui.press({ key: 'tab:changes' })
-    const rows = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('\n')
+    // A note's figures and words are separate runs: read them as one line.
+    const rows = (await ui.findAll({ type: 'Text' })).map(t => t.text).join('')
     expect(rows).toContain('No live watcher')
     expect(rows).toContain('1 turn')
     expect(rows).not.toContain('outside')

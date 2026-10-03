@@ -23,8 +23,12 @@ import { FAINT, HEADING } from './palette'
 import { cells, clip, dimRow, fit, rowWidth, segmentsWidth, spaces, tierOf } from './rows'
 import type { Row, Segment, Tier } from './rows'
 
-/** One card: its title (and a dim subtitle beside it), a note against the right edge, and its rows. */
-export type Section = { key: string; title: string; subtitle?: string; note?: Segment[]; body: Row[] }
+/**
+ * One card: its title (and a dim subtitle beside it), a note against the
+ * right edge, and its rows. A `bare` section is drawn without a card: its
+ * rows alone (the stat tiles, which draw their own frames).
+ */
+export type Section = { key: string; title: string; subtitle?: string; note?: Segment[]; body: Row[]; bare?: true }
 
 /** The frame's ink: the faintest theme key, so the cards order the pane without competing with it. */
 export const FRAME = FAINT
@@ -38,14 +42,27 @@ export const DEFAULT_ROWS = 40
 /** The columns a card `width` wide leaves its rows at `tier`: the frame and its padding take four. */
 export const cardInner = (width: number, tier: Tier): number => (tier === 'narrow' ? Math.max(1, width) : Math.max(1, width - 4))
 
-/** The two columns of the wide grid: the left one, then the right one, {@link GRID_GAP} apart. */
-export function gridColumns(width: number): [number, number] {
-  const left = Math.floor((width - GRID_GAP) / 2)
+/** The two columns of the wide grid: the left one (`split` of the width, half by default), then the right one, {@link GRID_GAP} apart. */
+export function gridColumns(width: number, split = 0.5): [number, number] {
+  const left = Math.floor((width - GRID_GAP) * split)
   return [left, width - GRID_GAP - left]
 }
 
-/** A dim note segment: what most cards say against their right edge. */
-export const noteOf = (text: string): Segment[] => (text === '' ? [] : [{ text, dim: true }])
+/**
+ * A note as segments: what most cards say against their right edge. Its
+ * figures are drawn at full contrast and the words around them dim, so a
+ * note reads by its numbers.
+ */
+export const noteOf = (text: string): Segment[] => figures(text)
+
+/** `text` split into its figures (`7,878`, `50+`), in the text colour, and the dim words between them. */
+export function figures(text: string): Segment[] {
+  if (text === '') return []
+  return text
+    .split(/(\d[\d,]*\+?)/)
+    .filter(part => part !== '')
+    .map(part => (/^\d/.test(part) ? { text: part, color: HEADING } : { text: part, dim: true }))
+}
 
 /**
  * A card's top edge: the title (and the subtitle, while it fits) set into
@@ -85,6 +102,7 @@ function framedRow(row: Row, width: number): Row {
 
 /** A card's rows at `width`: its top edge, its rows (framed where the tier frames them) and, framed, its bottom edge. */
 export function cardRows(section: Section, width: number, tier: Tier): Row[] {
+  if (section.bare === true) return section.body.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))
   const head = topRow(section, width, tier)
   if (tier === 'narrow') return [head, ...section.body.map(row => (row.code !== undefined || rowWidth(row) <= width ? row : { ...row, segments: clip(row.segments, width) }))]
   const body = section.body.map(row => (row.code !== undefined ? row : framedRow(row, width)))
@@ -141,16 +159,22 @@ export function moreRows(key: string, window: { start: number; end: number }, le
  * A card the height can size: `make` lays it out at an inner width with a
  * list `limit` rows long (ignored by a card without one); `grow` says how
  * long its list is and the fewest rows it shows. A card with nothing to show
- * makes null.
+ * makes null. A `late` card (a chart that scales up a step at a time) takes
+ * only the rows the lists leave.
  */
-export type Block = { key: string; grow?: { length: number; min: number }; make: (inner: number, limit: number) => Section | null }
+export type Block = { key: string; grow?: { length: number; min: number; late?: true }; make: (inner: number, limit: number) => Section | null }
+
+/** How long a list grows before the late cards (the charts) take their rows: past it, lists take the rest. */
+export const LIST_SOFT = 10
 
 /**
  * Cards stacked in `width`, each list as long as `budget` rows allow: every
  * list starts at its minimum, then each in turn takes one more row while the
- * whole still fits. A short pane shows the minimums and scrolls.
+ * whole still fits, up to {@link LIST_SOFT}; then the late cards grow the
+ * same way, within `lateBudget` too; then the lists take what is left. A
+ * short pane shows the minimums and scrolls.
  */
-export function fitBlocks(blocks: Block[], width: number, tier: Tier, budget: number): Row[] {
+export function fitBlocks(blocks: Block[], width: number, tier: Tier, budget: number, lateBudget = budget): Row[] {
   const inner = cardInner(width, tier)
   const limits = blocks.map(b => (b.grow === undefined ? 0 : Math.min(b.grow.min, b.grow.length)))
   const heights = new Map<string, number>()
@@ -165,15 +189,22 @@ export function fitBlocks(blocks: Block[], width: number, tier: Tier, budget: nu
     return h
   }
   const total = () => blocks.reduce((n, _, i) => n + heightOf(i), 0)
-  let grew = true
-  while (grew) {
-    grew = false
-    for (let i = 0; i < blocks.length; i++) {
-      const grow = blocks[i]!.grow
-      if (grow === undefined || limits[i]! >= grow.length) continue
-      limits[i]!++
-      if (total() <= budget) grew = true
-      else limits[i]!--
+  const phases: { late: boolean; cap: number; within: number }[] = [
+    { late: false, cap: LIST_SOFT, within: budget },
+    { late: true, cap: Number.POSITIVE_INFINITY, within: Math.min(budget, lateBudget) },
+    { late: false, cap: Number.POSITIVE_INFINITY, within: budget },
+  ]
+  for (const phase of phases) {
+    let grew = true
+    while (grew) {
+      grew = false
+      for (let i = 0; i < blocks.length; i++) {
+        const grow = blocks[i]!.grow
+        if (grow === undefined || (grow.late === true) !== phase.late || limits[i]! >= Math.min(grow.length, phase.cap)) continue
+        limits[i]!++
+        if (total() <= phase.within) grew = true
+        else limits[i]!--
+      }
     }
   }
   const sections = blocks.map((b, i) => b.make(inner, limits[i]!)).filter((s): s is Section => s !== null)
@@ -183,26 +214,71 @@ export function fitBlocks(blocks: Block[], width: number, tier: Tier, budget: nu
 /**
  * A tab's cards for every tier. Wide: `top` across the pane, `left` and
  * `right` side by side under it (each column sized to the height on its
- * own), `bottom` across again. Narrower: one column, in `order` when given,
- * else top, left, right, bottom.
+ * own), `bottom` across again; each `float` card goes under whichever
+ * column leaves the two closest in height; `split` is the left column's
+ * share of the width (half when absent), for a tab whose wider table is on
+ * one side. Narrower: one column, in `order` when given, else top, left,
+ * right, float, bottom.
  */
-export type Arrangement = { top?: Block[]; left: Block[]; right?: Block[]; bottom?: Block[]; order?: Block[] }
+export type Arrangement = { top?: Block[]; left: Block[]; right?: Block[]; float?: Block[]; bottom?: Block[]; order?: Block[]; split?: number }
+
+/** The most floating cards balanced by trying every way to place them: two to the power of this many layouts. */
+const FLOAT_MAX = 4
+
+/** How many rows a column's charts may grow past the other column's end before they stop: a chart never leaves its neighbour short. */
+export const BALANCE_SLACK = 3
+
+/**
+ * Two columns sized on their own, then evened: a column taller than the
+ * other by more than {@link BALANCE_SLACK} rows is laid out again with its
+ * charts held to the other's height (its lists keep their rows: those are
+ * data, not size).
+ */
+function sizedPair(left: Block[], right: Block[], widths: [number, number], tier: Tier, room: number): [Row[], Row[]] {
+  let l = fitBlocks(left, widths[0], tier, room)
+  let r = fitBlocks(right, widths[1], tier, room)
+  if (l.length > r.length + BALANCE_SLACK) l = fitBlocks(left, widths[0], tier, room, r.length + BALANCE_SLACK)
+  else if (r.length > l.length + BALANCE_SLACK) r = fitBlocks(right, widths[1], tier, room, l.length + BALANCE_SLACK)
+  return [l, r]
+}
+
+/**
+ * The two columns of the wide grid with the floating cards placed: of every
+ * way to put each under the left or the right column, the one whose columns
+ * end closest in height (the first such, so a tie keeps a card left).
+ */
+export function balanceColumns(left: Block[], right: Block[], float: Block[], widths: [number, number], tier: Tier, room: number): [Row[], Row[]] {
+  const floating = float.slice(0, FLOAT_MAX)
+  const rest = float.slice(FLOAT_MAX)
+  let best: [Row[], Row[]] | null = null
+  for (let mask = 0; mask < 1 << floating.length; mask++) {
+    const l = [...left, ...floating.filter((_, i) => (mask & (1 << i)) === 0)]
+    const r = [...right, ...floating.filter((_, i) => (mask & (1 << i)) !== 0), ...rest]
+    const rows = sizedPair(l, r, widths, tier, room)
+    if (best === null || Math.abs(rows[0].length - rows[1].length) < Math.abs(best[0].length - best[1].length)) best = rows
+  }
+  return best!
+}
 
 /** The rows of `arrangement` at `width`, its lists sized to `budget` rows. */
 export function arrange(arrangement: Arrangement, width: number, budget: number): Row[] {
   const tier = tierOf(width)
   const top = arrangement.top ?? []
   const right = arrangement.right ?? []
+  const float = arrangement.float ?? []
   const bottom = arrangement.bottom ?? []
-  if (tier !== 'wide' || right.length === 0 || arrangement.left.length === 0) {
-    return fitBlocks(arrangement.order ?? [...top, ...arrangement.left, ...right, ...bottom], width, tier, budget)
+  // Two columns need two cards to stand side by side: a floating card can fill either column.
+  const sides = arrangement.left.length + right.length + float.length
+  if (tier !== 'wide' || sides < 2 || right.length + float.length === 0 || arrangement.left.length + float.length === 0) {
+    return fitBlocks(arrangement.order ?? [...top, ...arrangement.left, ...right, ...float, ...bottom], width, tier, budget)
   }
   // Cards across the pane take what they need; the columns share what is left, each on its own.
   const above = fitBlocks(top, width, tier, 0)
   const below = fitBlocks(bottom, width, tier, 0)
   const room = budget - above.length - below.length
-  const [lw, rw] = gridColumns(width)
-  return [...above, ...besideRows(fitBlocks(arrangement.left, lw, tier, room), fitBlocks(right, rw, tier, room), lw), ...below]
+  const widths = gridColumns(width, arrangement.split)
+  const [l, r] = balanceColumns(arrangement.left, right, float, widths, tier, room)
+  return [...above, ...besideRows(l, r, widths[0]), ...below]
 }
 
 /** The rows the pane's body has, from its scroll window; {@link DEFAULT_ROWS} where the surface does not say. */

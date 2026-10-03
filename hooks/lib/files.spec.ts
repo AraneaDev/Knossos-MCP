@@ -121,7 +121,7 @@ describe('a file detail', () => {
     // The dependents' boundaries in the project's colour order: declared ones first.
     expect(plainText(row(rows, 'deps-reach')!)).toBe('   reaching Http Core tests')
     expect(plainText(row(rows, 'dep-0')!)).toMatch(/^› {2}src\/Core\/Kernel\.php +Core +━+ +6$/)
-    expect(plainText(row(rows, 'dep-1')!)).toMatch(/^ {3}tests\/Http\/RouterTest\.php +tests +━+·* +3$/)
+    expect(plainText(row(rows, 'dep-1')!)).toMatch(/^ {3}tests\/Http\/RouterTest\.php +tests +[━╸]+·* +3$/)
     expect(plainText(row(rows, 'deps-more')!)).toBe('   +12 not listed')
     expect(text).toMatch(/Declares · 3 components +used by/)
     expect(plainText(row(rows, 'comp-1')!)).toMatch(/^ {3}Router::dispatch +━+·* +4$/)
@@ -181,7 +181,8 @@ describe('a file detail', () => {
 
 describe('the drifted files', () => {
   it('make the drift count a button where it stands, and d lists them', () => {
-    const rows = paneRows(pane(), 90)
+    // Off the Overview the summary line says the figures; on it, from the medium tier, the tiles do.
+    const rows = paneRows(pane({ view: { tab: 'hubs' } }), 90)
     const summary = row(rows, 'summary')!
     expect(plainText(summary)).toBe('1,234 components · 2 boundaries · 23 drifted · PHP')
     // The count in the accent, the word after it the button: the one pressable thing on a quiet line looks it.
@@ -189,6 +190,12 @@ describe('the drifted files', () => {
     expect(summary.segments.find(s => s.text === '23 ')).toMatchObject({ color: 'suggestion' })
     expect(keysOf(rows)).toContain('d')
     expect(row(rows, 'drift-head')).toBeUndefined()
+    // On the Overview the drifted tile carries the same press, and the summary line keeps only the languages.
+    const overview = paneRows(pane(), 90)
+    expect(plainText(row(overview, 'summary')!)).toBe('PHP')
+    const label = row(overview, 'tiles-0-label')!.segments.find(s => s.press)
+    expect(label).toMatchObject({ text: 'drifted', press: { id: 'drifted', label: 'drifted' } })
+    expect(row(overview, 'tiles-0-value')!.segments.find(s => s.text === '23')).toMatchObject({ color: 'suggestion', bold: true })
   })
 
   it('are listed under the header, marked as Changes marks files, with how many more', () => {

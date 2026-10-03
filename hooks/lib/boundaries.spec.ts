@@ -95,14 +95,14 @@ describe('shade', () => {
 describe('heat map', () => {
   it('fits whole labels first with square cells, wider panes only leaving room', () => {
     const input = boundariesInput(dash())!
-    expect(heatSpec(input, 40)).toEqual({ label: 19, cell: 3 })
-    expect(heatSpec(input, 120)).toEqual({ label: 19, cell: 3 })
+    expect(heatSpec(input, 40)).toEqual({ label: 19, cell: 3, rows: 1 })
+    expect(heatSpec(input, 120)).toEqual({ label: 19, cell: 3, rows: 1 })
     const ten = boundariesInput(dash(matrix({ boundaries: [...input.boundaries.map(b => b.name), ...Array.from({ length: 6 }, (_, i) => `b${i}`)], members: [], cells: [], forbidden: [] })))!
-    expect(heatSpec(ten, 60)).toEqual({ label: 19, cell: 3 })
+    expect(heatSpec(ten, 60)).toEqual({ label: 19, cell: 3, rows: 1 })
     // Too narrow for whole labels: they give way before the cells drop below 3.
-    expect(heatSpec(ten, 40)).toEqual({ label: 6, cell: 3 })
+    expect(heatSpec(ten, 40)).toEqual({ label: 6, cell: 3, rows: 1 })
     const twelve = boundariesInput(dash(matrix({ boundaries: Array.from({ length: 12 }, (_, i) => `b${i}`), members: [], cells: [], forbidden: [] })))!
-    expect(heatSpec(twelve, 40)).toEqual({ label: 7, cell: 2 })
+    expect(heatSpec(twelve, 40)).toEqual({ label: 7, cell: 2, rows: 1 })
   })
   it('draws every cell in the one accent, none as a faint dot and a forbidden pair as a cross in the error colour', () => {
     const rows = heatRows(boundariesInput(dash())!, 60)
@@ -123,11 +123,10 @@ describe('heat map', () => {
   })
   it('draws a crossed forbidden pair in the error colour, as an error tile on the terminal grid', () => {
     const crossed = matrix({ forbidden: [[0, 1]] })
-    const rows = boundaryRows(boundariesInput(dash(crossed)), 60)
-    const cell = row(rows, 'heat-0')!.segments.filter(s => s.text.startsWith('█'))[1]!
+    const cell = row(heatRows(boundariesInput(dash(crossed))!, 60), 'heat-0')!.segments.filter(s => s.text.startsWith('█'))[1]!
     expect(cell.color).toBe('error')
     expect(cell.cell).toEqual({ glyph: '▇', fg: 'error' })
-    expect(textOf(rows)).toContain('forbidden, crossed')
+    expect(textOf(boundaryRows(boundariesInput(dash(crossed)), 60))).toContain('forbidden, crossed')
   })
   it('keeps every row of the tab within the width', () => {
     for (const columns of WIDTHS) {
@@ -181,7 +180,7 @@ describe('the marked boundary', () => {
 describe('boundaryRows', () => {
   it('lists each boundary with its letter, components, in and out under the map, with a legend', () => {
     const rows = boundaryRows(boundariesInput(dash()), 60)
-    expect(plainText(row(rows, 'bounds-head')!)).toMatch(/^Boundaries +4 · 28,112 deps$/)
+    expect(plainText(row(rows, 'bounds-head')!)).toMatch(/^Boundaries +4 boundaries · 28,112 deps$/)
     expect(textOf(rows)).toContain(`fewer ${SHADES.map(s => s.repeat(2)).join('')} more deps`)
     // The legend is part of the grid, so the terminal draws its swatches as the same tiles.
     expect(rows.filter(r => r.key.startsWith('heat-legend')).every(r => r.raster === 'heat')).toBe(true)

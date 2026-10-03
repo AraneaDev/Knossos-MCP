@@ -13,6 +13,10 @@
  *
  * Axes are abbreviated to one letter each (A, B, C, ...); the row labels and
  * the table below the map spell each letter out, so they are the legend.
+ *
+ * The map grows with the room it has: row labels are written out in full
+ * once they fit, and when the pane has width and rows to spare each cell
+ * scales up as a square, two glyphs wide for every row tall.
  */
 import type { Dashboard } from '../../types'
 import { ACCENT, boundaryLabel, FAINT, huesOf, NO_HUES, STATUS_COLOURS } from './palette'
@@ -48,8 +52,12 @@ export type BoundariesInput = {
 
 /** Shades for a cell's share of the busiest cell, fewest first. */
 export const SHADES = ['░', '▒', '▓', '█'] as const
-/** The widest a row label grows (letter, space, name): past it the cells get the room. */
+/** The widest a row label grows (letter, space, name) while it is cut: past it the cells get the room. */
 const LABEL_MAX = 20
+/** The widest a row label is written out in full, when the map has the room. */
+const LABEL_FULL = 40
+/** The most rows one heat cell is tall: past it the map only stretches. */
+export const HEAT_SCALE_MAX = 3
 /** The narrowest a row label shrinks to before the cells narrow instead. */
 const LABEL_MIN = 6
 const INDENT = 3
@@ -98,22 +106,28 @@ export function shade(value: number, max: number): number {
 }
 
 /**
- * How wide the row labels and each cell are at `columns`. Cells are 3 wide
- * (two glyphs, about square on a terminal, and a one-cell gap) whatever the
- * room: a wider pane leaves the map as it is. When whole labels do not fit
- * beside them, the labels give way to {@link LABEL_MIN} and the cells narrow
- * to 2, then 1 (no gap at width 1).
+ * How wide the row labels and each cell are at `columns`, and how many rows
+ * each cell is tall. A cell is two glyphs and a one-cell gap, about square on
+ * a terminal; at `scale` 2 or 3, while whole labels still fit, it is that
+ * many rows tall and twice that many glyphs wide, so it stays square. Labels
+ * are written out in full when they fit beside cells of one row; else they
+ * stop at {@link LABEL_MAX}, then give way to {@link LABEL_MIN} and the cells
+ * narrow to 2, then 1 (no gap at width 1).
  */
-export function heatSpec(input: BoundariesInput, columns: number): { label: number; cell: number } {
+export function heatSpec(input: BoundariesInput, columns: number, scale = 1): { label: number; cell: number; rows: number } {
   const n = Math.max(1, input.boundaries.length)
-  const need = Math.min(LABEL_MAX, Math.max(cells(CORNER), ...input.boundaries.map(b => cells(`${b.code} ${b.label}`))))
+  const full = Math.min(LABEL_FULL, Math.max(cells(CORNER), ...input.boundaries.map(b => cells(`${b.code} ${b.label}`))))
+  const need = Math.min(LABEL_MAX, full)
   const room = (cell: number) => columns - INDENT - 1 - n * cell
-  // Two cells and a gap: about square on a terminal's grid; wider cells only stretch the map.
-  if (room(3) >= need) return { label: need, cell: 3 }
-  for (const cell of [3, 2, 1]) {
-    if (room(cell) >= Math.min(LABEL_MIN, need)) return { label: Math.min(need, room(cell)), cell }
+  for (let rows = Math.min(HEAT_SCALE_MAX, Math.max(1, scale)); rows >= 1; rows--) {
+    if (room(rows * 2 + 1) >= full) return { label: full, cell: rows * 2 + 1, rows }
   }
-  return { label: Math.max(1, room(1)), cell: 1 }
+  // Two cells and a gap: about square on a terminal's grid.
+  if (room(3) >= need) return { label: need, cell: 3, rows: 1 }
+  for (const cell of [3, 2, 1]) {
+    if (room(cell) >= Math.min(LABEL_MIN, need)) return { label: Math.min(need, room(cell)), cell, rows: 1 }
+  }
+  return { label: Math.max(1, room(1)), cell: 1, rows: 1 }
 }
 
 /** `mark` in the middle of `width` cells. */
@@ -122,47 +136,57 @@ const centred = (mark: string, width: number): string => padEnd(spaces(Math.floo
 /** How a heat cell fills its grid cell on the terminal: seven eighths high, so stacked cells keep a hairline apart. */
 const TILE = '▇'
 
+
 /**
- * One heat cell: its glyphs and the gap after it. On the terminal's grid the
- * cell is a solid tile in its step of the accent (or `error` for a forbidden
- * pair that is crossed).
+ * One row of one heat cell: its glyphs and the gap after it. On the
+ * terminal's grid the cell is a solid tile in its step of the accent (or
+ * `error` for a forbidden pair that is crossed); a cell several rows tall is
+ * filled as background in every row but its first, so its rows join into
+ * one square with no seam. An empty cell's mark sits on its middle row.
  */
-function heatCell(value: number, max: number, forbidden: boolean, width: number): Segment[] {
+function heatCell(value: number, max: number, forbidden: boolean, width: number, row = 0, rows = 1): Segment[] {
   const glyphs = width > 1 ? width - 1 : 1
   const gap: Segment[] = width > 1 ? [{ text: ' ' }] : []
   const level = shade(value, max)
   if (level === 0) {
+    if (row !== Math.floor((rows - 1) / 2)) return [{ text: spaces(glyphs) }, ...gap]
     const mark = forbidden ? { text: centred('×', glyphs), color: STATUS_COLOURS.alert } : { text: centred('·', glyphs), color: FAINT }
     return [mark, ...gap]
   }
   const glyph = SHADES[level - 1]!.repeat(glyphs)
+  const colour = forbidden ? STATUS_COLOURS.alert : HEAT_KEYS[level - 1]!
+  // The tile's top row is seven eighths high from the bottom: a hairline above it parts it from the cell over it; the rows under it are filled.
+  const cell = row === 0 ? { glyph: TILE, fg: colour } : { glyph: ' ', bg: colour }
   // A forbidden pair that is crossed is a violation: the error colour, however many.
-  if (forbidden) return [{ text: glyph, color: STATUS_COLOURS.alert, bold: true, cell: { glyph: TILE, fg: STATUS_COLOURS.alert } }, ...gap]
-  return [{ text: glyph, color: ACCENT, cell: { glyph: TILE, fg: HEAT_KEYS[level - 1]! } }, ...gap]
+  if (forbidden) return [{ text: glyph, color: STATUS_COLOURS.alert, bold: true, cell }, ...gap]
+  return [{ text: glyph, color: ACCENT, cell }, ...gap]
 }
 
 /**
- * The heat map: a header of axis letters, then one row per boundary, each a
- * `raster: 'heat'` row. A boundary's letter carries its colour, so the map
- * ties to the other tabs; its name and the cells stay out of it.
+ * The heat map: a header of axis letters, then each boundary's cells, each a
+ * `raster: 'heat'` row (`scale` rows per boundary when the room allows; its
+ * label on the middle one). A boundary's letter carries its colour, so the
+ * map ties to the other tabs; its name and the cells stay out of it.
  */
-export function heatRows(input: BoundariesInput, columns: number, hues: Hues = NO_HUES): Row[] {
-  const spec = heatSpec(input, columns)
+export function heatRows(input: BoundariesInput, columns: number, hues: Hues = NO_HUES, scale = 1): Row[] {
+  const spec = heatSpec(input, columns, scale)
   const max = Math.max(0, ...input.cells.flat())
   const head: Segment[] = [{ text: spaces(INDENT) + padEnd(fit(CORNER, spec.label), spec.label) + ' ', dim: true }]
   input.boundaries.forEach(b => head.push({ text: centred(b.code, spec.cell > 1 ? spec.cell - 1 : 1) + (spec.cell > 1 ? ' ' : ''), ...boundaryStyle(b.name, hues), bold: true }))
   const rows: Row[] = [{ key: 'heat-head', raster: 'heat', segments: head.filter(s => s.text !== '') }]
+  const middle = Math.floor((spec.rows - 1) / 2)
   input.boundaries.forEach((b, from) => {
-    const segments: Segment[] = [
-      { text: spaces(INDENT) },
-      { text: b.code, ...boundaryStyle(b.name, hues), bold: true },
-      { text: padEnd(fit(` ${b.label}`, spec.label - cells(b.code)), spec.label - cells(b.code)) },
-      { text: ' ' },
-    ]
-    input.boundaries.forEach((_, to) => {
-      segments.push(...heatCell(input.cells[from]?.[to] ?? 0, max, input.forbidden[from]?.[to] ?? false, spec.cell))
-    })
-    rows.push({ key: `heat-${from}`, raster: 'heat', segments: segments.filter(s => s.text !== '') })
+    for (let r = 0; r < spec.rows; r++) {
+      const named = r === middle
+      const segments: Segment[] = named
+        ? [{ text: spaces(INDENT) }, { text: b.code, ...boundaryStyle(b.name, hues), bold: true }, { text: padEnd(fit(` ${b.label}`, spec.label - cells(b.code)), spec.label - cells(b.code)) }, { text: ' ' }]
+        : [{ text: spaces(INDENT + spec.label + 1) }]
+      input.boundaries.forEach((_, to) => {
+        segments.push(...heatCell(input.cells[from]?.[to] ?? 0, max, input.forbidden[from]?.[to] ?? false, spec.cell, r, spec.rows))
+      })
+      // The named row keeps the boundary's key at every scale; the rows around it are numbered.
+      rows.push({ key: named ? `heat-${from}` : `heat-${from}-${r}`, raster: 'heat', segments: segments.filter(s => s.text !== '') })
+    }
   })
   return rows
 }
@@ -272,11 +296,22 @@ const FOCUS_LABEL = 'may not use'.length
 /** The fewest boundaries the per-boundary table lists, however short the pane. */
 const PER_MIN = 5
 
-/** The heat map as a card: the map, and its key when `legend`; null without a map to draw. */
-export function heatSection(input: BoundariesInput | null, columns: number, hues: Hues = NO_HUES, legend = true): Section | null {
+/** The heat map as a card: the map (each cell `scale` rows tall when it fits), and its key when `legend`; null without a map to draw. */
+export function heatSection(input: BoundariesInput | null, columns: number, hues: Hues = NO_HUES, legend = true, scale = 1): Section | null {
   if (input === null || input.boundaries.length === 0) return null
-  const note = [`${input.boundaries.length}${input.more ? '+' : ''}`, `${input.edges} deps`].join(' · ')
-  return { key: legend ? 'bounds' : 'map', title: legend ? 'Boundaries' : 'Boundary map', note: noteOf(note), body: [...heatRows(input, columns, hues), ...(legend ? legendRows(input, columns) : [])] }
+  const note = [`${input.boundaries.length}${input.more ? '+' : ''} boundaries`, `${input.edges} deps`].join(' · ')
+  return { key: legend ? 'bounds' : 'map', title: legend ? 'Boundaries' : 'Boundary map', note: noteOf(note), body: [...heatRows(input, columns, hues, scale), ...(legend ? legendRows(input, columns) : [])] }
+}
+
+/**
+ * The heat map as a block that grows late (unless `grows` is false: the
+ * Overview's small map stays small): with rows to spare once the lists have
+ * theirs, each cell scales up a step (two rows, then three).
+ */
+export function heatBlock(input: BoundariesInput | null, hues: Hues, legend: boolean, grows = true): Block {
+  const key = legend ? 'bounds' : 'map'
+  if (!grows) return { key, make: columns => heatSection(input, columns, hues, legend) }
+  return { key, grow: { length: HEAT_SCALE_MAX - 1, min: 0, late: true }, make: (columns, limit) => heatSection(input, columns, hues, legend, 1 + limit) }
 }
 
 /**
@@ -289,7 +324,7 @@ export function boundariesArrangement(input: BoundariesInput | null, tier: Tier,
   if (input === null) return { left: [said('This knossos sends no boundary map; update it.')] }
   if (input.boundaries.length === 0) return { left: [said('no boundary labels a component')] }
   const marked = Math.min(Math.max(0, selected), input.boundaries.length - 1)
-  const heat: Block = { key: 'bounds', make: columns => heatSection(input, columns, hues) }
+  const heat = heatBlock(input, hues, true)
   const per: Block = {
     key: 'bounds-list',
     grow: { length: input.boundaries.length, min: PER_MIN },

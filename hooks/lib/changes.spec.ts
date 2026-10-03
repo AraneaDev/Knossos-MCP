@@ -273,7 +273,9 @@ describe('look at now', () => {
       const rows = paneRows(pane, columns)
       const at = (key: string) => rows.findIndex(r => r.key.split('|').includes(key))
       expect(at('look-head')).toBeGreaterThanOrEqual(0)
-      expect(at('look-head')).toBeLessThan(at('health-head'))
+      // Under the stat tiles (the band, or its line when narrow), before the most depended on.
+      expect(at(columns < 80 ? 'tiles-line' : 'tiles-top')).toBeLessThan(at('look-head'))
+      expect(at('look-head')).toBeLessThanOrEqual(at('top-head'))
       for (const r of rows) expect(rowWidth(r), `${columns} ${r.key}`).toBeLessThanOrEqual(columns)
     }
     // The tab carries how many files were touched.

@@ -160,7 +160,7 @@ describe('mergeRanked', () => {
   })
   it('reads hotspots from an older knossos without degrees or boundary', () => {
     const items = mergeRanked({ hubs: [], hotspots: [{ name: 'K', canonical_name: 'App\\K', kind: 'class', score: 7 }] })
-    expect(items).toEqual([{ name: 'K', canonical: 'App\\K', kind: 'class', boundary: null, in: 0, out: 0, cross: 0, hotspotOnly: true, loc: null }])
+    expect(items).toEqual([{ name: 'K', canonical: 'App\\K', kind: 'class', boundary: null, in: 0, out: 0, cross: 0, files: null, hotspotOnly: true, loc: null }])
   })
 })
 
@@ -172,8 +172,8 @@ describe('tableSpec', () => {
   it('gives way in order: bars shrink, names truncate, the boundary goes, then the bars', () => {
     const at = (columns: number) => tableSpec(columns, names, boundaries, numbers)
     const full = at(120)
-    // Names take what the longest needs, bars stop at their share of the width, and the rest stays at the right edge.
-    expect(full.bar).toBe(36)
+    // Names take what the longest needs, bars stop at their cap, and the rest stays at the right edge.
+    expect(full.bar).toBe(16)
     expect(full.name).toBe(24)
     expect(full.boundary).toBe(12)
     const shrinking = at(70)
@@ -293,9 +293,8 @@ describe('paneRows', () => {
     expect(text).toContain('Last turn')
     expect(text).toMatch(/2 files → 27 dependents · 1 test/)
     expect(text).toMatch(/TurnBriefService\.php +core +[━╸]+·* +21/)
-    expect(text).toMatch(/cycles +2/)
-    expect(text).toMatch(/max degree +161/)
-    expect(text).toMatch(/dead code +55\n {3}policy +✓ 0\n/)
+    // Narrow, the stat tiles collapse to a line of the figures the summary line does not already say.
+    expect(plainText(row(paneRows(input(), 60), 'tiles-line')!)).toBe('2 cycles   161 max degree   55 dead code   0 policy')
     expect(text).toContain('Most depended on')
     // The last turn's files are walked first, each a file row that opens as its detail.
     const list = listFor(input())
@@ -310,16 +309,21 @@ describe('paneRows', () => {
   })
 
   it('draws a trend only from five snapshots that move', () => {
-    expect(textOf(paneRows(input(), 60))).not.toContain('trend')
+    expect(textOf(paneRows(input(), 60, 80))).not.toMatch(/[▁-█]{5}/)
+    expect(textOf(paneRows(input(), 60, 80))).not.toContain('Trend')
     const moving = dash({ trend: [1, 2, 2, 3, 2].map((c, i) => ({ snapshot_id: `s${i}`, cycles: c, max_degree: 100 + i })) })
-    const text = textOf(paneRows(input({}, moving), 60))
-    expect(text).toContain('trend (5 scans)')
-    expect(text).toContain('▁▅▅█▅')
+    // Short, the tiles' sparklines say it; with rows to spare, a chart several rows tall.
+    const short = textOf(paneRows(input({}, moving), 60, 24))
+    expect(short).toContain('2 cycles ▁▅▅█▅')
+    expect(short).not.toContain('Trend')
+    const tall = paneRows(input({}, moving), 60, 120)
+    expect(plainText(row(tall, 'trend-head')!)).toMatch(/^Trend +5 scans$/)
+    expect(tall.filter(r => r.raster === 'trend').length).toBeGreaterThanOrEqual(2 * 4)
   })
 
   it('names a policy violation in the error colour', () => {
     const rows = paneRows(input({}, dash(), brief({ policy: { status: 'evaluated', total: 3, violations: [], truncated: false } })), 60)
-    const seg = row(rows, 'health-policy')!.segments.find(s => s.text.trim() === '▲ 3')
+    const seg = row(rows, 'tiles-line')!.segments.find(s => s.text === '3')
     expect(seg?.color).toBe('error')
   })
 
@@ -854,10 +858,11 @@ describe('the pane at every width and height', () => {
   it('puts the most depended on and a boundary map in the right half of a wide Overview', () => {
     const matrix = { boundaries: ['core', 'tests'], members: [10, 5], boundaries_truncated: false, cells: [[4, 0], [3, 2]], forbidden: [], edges: 9, truncated: false, truncation_reasons: [] }
     const rows = paneRows(input({ tab: 'overview' }, dash({ boundary_matrix: matrix })), 140, 60)
-    const [left] = [Math.floor((140 - 2) / 2)]
+    // The components' table takes the larger share; the map goes under whichever column it evens out.
+    const left = Math.floor((140 - 2) * 0.45)
     const head = rows.find(r => r.key.endsWith('|top-head'))!
     expect(plainText({ key: 'x', segments: head.segments.slice(head.split) })).toMatch(/^Most depended on/)
-    expect(rows.some(r => r.key.endsWith('|map-head'))).toBe(true)
+    expect(rows.some(r => r.key.split('|').includes('map-head'))).toBe(true)
     expect(rowWidth({ key: 'x', segments: head.segments.slice(0, head.split) })).toBe(left + 2)
   })
 })
@@ -919,16 +924,22 @@ describe('colour', () => {
   })
 })
 
-describe('the overview health line', () => {
-  it('shows the project policy and diagnostics when knossos reports them', () => {
-    const rows = paneRows(fullInput(), 90)
-    expect(plainText(row(rows, 'health-dead')!)).toMatch(/^ {3}dead code +55$/)
-    expect(plainText(row(rows, 'health-policy')!)).toMatch(/^ {3}policy +▲ 7$/)
-    expect(plainText(row(rows, 'health-diagnostics')!)).toMatch(/^ {3}diagnostics +▲ 2$/)
-    expect(row(rows, 'health-diagnostics')!.segments.find(s => s.text.trim() === '▲ 2')?.color).toBe('warning')
-    // One column: every figure ends where the others end.
-    const ends = ['health-cycles', 'health-degree', 'health-dead', 'health-policy', 'health-diagnostics'].map(k => plainText(row(rows, k)!).trimEnd().length)
-    expect(new Set(ends).size).toBe(1)
+describe('the overview stat tiles', () => {
+  it('show the project policy and diagnostics when knossos reports them, coloured only where they deviate', () => {
+    const rows = paneRows(fullInput(), 140)
+    const figures = plainText(row(rows, 'tiles-0-value')!)
+    const labels = plainText(row(rows, 'tiles-0-label')!)
+    expect(labels).toMatch(/^components +│ boundaries +│ cycles +│ max degree +│ dead code +│ drifted +│ policy +│ diagnostics$/)
+    expect(figures).toMatch(/^7,878 +│ 2 +│ 2 +│ 161 +│ 55 +│ 41 +│ 7 +│ 2$/)
+    const colour = (text: string) => row(rows, 'tiles-0-value')!.segments.find(s => s.text === text)?.color
+    expect(colour('7,878')).toBe('text')
+    expect(colour('55')).toBe('text')
+    expect(colour('41')).toBe('suggestion')
+    expect(colour('7')).toBe('error')
+    expect(row(rows, 'tiles-0-value')!.segments.filter(s => s.text === '2').map(s => s.color)).toEqual(['text', 'warning', 'warning'])
+    // Every figure stands at the left edge of its tile, over its label: the rules line up.
+    const at = (r: Row) => [...rawText(r)].flatMap((ch, i) => (ch === '│' ? [i] : []))
+    expect(at(row(rows, 'tiles-0-value')!)).toEqual(at(row(rows, 'tiles-0-label')!))
   })
 })
 
@@ -1100,5 +1111,108 @@ describe('the pane with no graph', () => {
     expect(noGraphOf(unscanned, { fetchedAt: 5, failed: false })).toBe('unscanned')
     // Said unscanned once, but the latest load did not answer: no longer known to be unscanned.
     expect(noGraphOf(unscanned, { fetchedAt: 5, failed: true })).toBe('unreadable')
+  })
+})
+
+describe('the pane at every width and height, with a large project', () => {
+  const HEIGHTS = [24, 40, 60] as const
+  const matrix = { boundaries: ['core', 'tests', 'hooks'], members: [10, 5, 3], boundaries_truncated: false, cells: [[40, 0, 0], [30, 20, 0], [2, 0, 9]], forbidden: [], edges: 101, truncated: false, truncation_reasons: [] }
+  const big = full({
+    hubs: Array.from({ length: 50 }, (_, i) => ({ ...hub(`Hub${i}`, `App\\Hub${i}`, i % 2 === 0 ? 'class' : 'method', 'core', 500 - i * 7, i % 9, i % 4), dependent_files: 80 - i, path: `src/Hub${i}.php`, line: 10 + i })),
+    hotspots: [],
+    fan_in: Array.from({ length: 50 }, (_, i) => ({ path: `src/Deep/Area${i % 4}/File${i}.php`, dependent_files: 500 - i * 9, boundaries: ['core'], boundary: i % 3 === 0 ? 'tests' : 'core' })),
+    trend: [1, 2, 2, 3, 2, 4, 3].map((c, i) => ({ snapshot_id: `s${i}`, cycles: c, max_degree: 100 + i * 3 })),
+    boundary_matrix: matrix,
+  })
+  const at = (over: Partial<KnossosView> = {}) => paneInput(big, brief(), FETCHED, IDLE, view(over), 0, true)
+  const shown = (rows: Row[], prefix: string) => rows.filter(r => r.key.split('|').some(k => new RegExp(`^${prefix}-\\d+$`).test(k))).length
+  /** Where each column of the wide grid ends: the last row with anything in its left or right half. */
+  const ends = (rows: Row[]): [number, number] => {
+    let left = -1
+    let right = -1
+    rows.forEach((r, i) => {
+      if (r.split === undefined) return
+      if (r.segments.slice(0, r.split).some(s => s.text.trim() !== '')) left = i
+      if (r.segments.slice(r.split).some(s => s.text.trim() !== '')) right = i
+    })
+    return [left, right]
+  }
+
+  for (const columns of WIDTHS) {
+    for (const height of HEIGHTS) {
+      it(`fits ${columns}x${height}: every tab within the width, the long lists within the height`, () => {
+        for (const tab of TABS) {
+          const rows = paneRows(at({ tab }), columns, height)
+          for (const r of rows) expect(rowWidth(r), `${tab} ${r.key}: ${plainText(r)}`).toBeLessThanOrEqual(columns)
+          // Lists give rows back to fit a pane that holds their minimums; only the shortest panes scroll.
+          if ((tab === 'hubs' || tab === 'overview') && height >= 40) expect(rows.length, tab).toBeLessThanOrEqual(height)
+        }
+      })
+    }
+  }
+
+  it('lists follow the height on every tier: a taller pane shows more of the long lists', () => {
+    for (const columns of WIDTHS) {
+      const hubs = HEIGHTS.map(h => shown(paneRows(at({ tab: 'hubs' }), columns, h), 'hub'))
+      expect(hubs[1], `${columns}`).toBeGreaterThan(hubs[0]!)
+      expect(hubs[2], `${columns}`).toBeGreaterThan(hubs[1]!)
+      const top = HEIGHTS.map(h => shown(paneRows(at(), columns, h), 'top'))
+      expect(top[2], `${columns}`).toBeGreaterThan(top[0]!)
+    }
+  })
+
+  it('collapses the tiles to the summary line when narrow, and frees the summary line when not', () => {
+    for (const columns of WIDTHS) {
+      const rows = paneRows(at(), columns, 40)
+      const narrow = columns < 80
+      expect(rows.some(r => r.key === 'tiles-line'), `${columns}`).toBe(narrow)
+      expect(rows.some(r => r.key === 'tiles-top'), `${columns}`).toBe(!narrow)
+      expect(plainText(row(rows, 'summary')!).includes('components'), `${columns}`).toBe(narrow)
+    }
+    // Off the Overview there are no tiles, at any width.
+    for (const columns of WIDTHS) expect(paneRows(at({ tab: 'hubs' }), columns, 40).some(r => r.key.startsWith('tiles-'))).toBe(false)
+  })
+
+  it('ends the two columns of the wide Overview and Hubs within a few rows of each other', () => {
+    for (const columns of [140, 200]) {
+      for (const height of HEIGHTS) {
+        for (const tab of ['overview', 'hubs'] as const) {
+          const [left, right] = ends(paneRows(at({ tab }), columns, height))
+          expect(Math.abs(left - right), `${tab} ${columns}x${height}: ${left} ${right}`).toBeLessThanOrEqual(3)
+        }
+      }
+    }
+  })
+
+  it('adds the dependent files and the file to a wide table, and caps its bar', () => {
+    const rows = paneRows(at({ tab: 'hubs' }), 200, 40)
+    expect(plainText(row(rows, 'hub-head')!)).toMatch(/in +out +cross +files +where$/)
+    expect(plainText(row(rows, 'hub-0')!)).toMatch(/ 500 +0 +0 +80 Hub0\.php:10$/)
+    const bar = row(rows, 'hub-0')!.segments.filter(s => /^[━╸·]+$/.test(s.text)).reduce((n, s) => n + [...s.text].length, 0)
+    expect(bar).toBeLessThanOrEqual(30)
+    // Medium has no room for them: the in, out and cross stay, the file where it fits.
+    expect(plainText(row(paneRows(at({ tab: 'hubs' }), 100, 40), 'hub-head')!)).not.toContain('files')
+  })
+
+  it('lists the files most depended on beside the hubs, walked after them, opening as files', () => {
+    const rows = paneRows(at({ tab: 'hubs' }), 200, 40)
+    expect(rows.some(r => r.key.endsWith('|files-head'))).toBe(true)
+    const list = listFor(at({ tab: 'hubs' }))
+    expect(list).toHaveLength(50 + 50)
+    expect(list[50]).toMatchObject({ canonical: 'src/Deep/Area0/File0.php', file: true })
+    expect(row(rows, 'files-0')!.segments.find(s => s.press)?.press?.id).toBe('row:50')
+    // The filter narrows both lists.
+    expect(listFor(at({ tab: 'hubs', filter: 'File1' })).map(o => o.canonical)).toEqual(['src/Deep/Area1/File1.php', ...Array.from({ length: 10 }, (_, i) => `src/Deep/Area${(10 + i) % 4}/File${10 + i}.php`)])
+    expect(listFor(at({ tab: 'hubs', filter: 'Hub4' })).map(o => o.canonical)).toEqual(['App\\Hub4', ...Array.from({ length: 10 }, (_, i) => `App\\Hub${40 + i}`)])
+  })
+
+  it('draws the trend as a chart under the components on a tall wide Overview, only with rows to spare', () => {
+    const tall = paneRows(at(), 200, 60)
+    expect(tall.some(r => r.key.endsWith('|trend-head'))).toBe(true)
+    expect(tall.filter(r => r.key.split('|').some(k => /^trend-0-\d+$/.test(k))).length).toBeGreaterThanOrEqual(3)
+    expect(paneRows(at(), 200, 24).some(r => r.key.split('|').includes('trend-head'))).toBe(false)
+    // In one column with rows to spare the chart is a grid the terminal draws as one Raster.
+    const single = paneRows(at(), 100, 120)
+    expect(single.filter(r => r.raster === 'trend').length).toBeGreaterThanOrEqual(4)
   })
 })
