@@ -4,10 +4,6 @@ declare(strict_types=1);
 
 namespace Knossos\Query;
 
-use Knossos\Discovery\AllowedRoots;
-use Knossos\Discovery\DiscoveryException;
-use Knossos\Discovery\RootGuard;
-use Knossos\Discovery\RootNotFoundException;
 use Knossos\Git\ProcessGitWorkingTreeProvider;
 use Knossos\Scan\ProjectScanService;
 use PDO;
@@ -56,21 +52,11 @@ final readonly class TurnBriefService
     {
         $absolute = realpath($path) ?: $path;
         $envelope = self::empty($absolute);
-        $allowed = new AllowedRoots(AllowedRoots::fromEnvironment(), $this->rootsFile());
-        $refusal = self::refusal($allowed, $absolute, $absolute, $this->rootsFile());
-        if ($refusal !== null) {
-            return $refusal + $envelope;
-        }
-        $project = (new ProjectPathResolver($this->pdo))->resolve($absolute);
+        [$allowed, $project, $refusal] = (new ScanTarget($this->pdo, $this->databasePath))->resolve($absolute);
         if ($project === null) {
-            return ['status' => 'unscanned'] + $envelope;
+            return ($refusal ?? []) + $envelope;
         }
         $root = (string) $project['root_realpath'];
-        // The resolver may have walked up to an ancestor project: that root is what gets scanned, so it is what must be allowed.
-        $refusal = self::refusal($allowed, $root, $root, $this->rootsFile());
-        if ($refusal !== null) {
-            return $refusal + $envelope;
-        }
         $projectId = (string) $project['id'];
         $reported = self::relative($root, $extraFiles);
         $violations = new FileViolationQuery($this->pdo);
@@ -107,32 +93,6 @@ final readonly class TurnBriefService
             'tests' => $live === [] ? [] : $this->tests($queries, $scan->projectId, $live),
             'policy' => self::policy($enforcePolicies, $edited, $baseline, $baseline === null ? null : $violations->inFiles($scan->projectId, $policies, $edited)),
         ] + $envelope;
-    }
-
-    /**
-     * The status fields for a path the allow-list refuses, or null when it is allowed.
-     *
-     * `refused_root` names what has to be allowed: the path itself, or the
-     * ancestor project root the path resolved to, which is what gets scanned.
-     *
-     * @return array<string, mixed>|null
-     */
-    private static function refusal(AllowedRoots $allowed, string $path, string $refusedRoot, string $rootsFile): ?array
-    {
-        try {
-            (new RootGuard($allowed))->resolve($path);
-        } catch (RootNotFoundException) {
-            return ['status' => 'missing'];
-        } catch (DiscoveryException) {
-            return ['status' => 'not-allowed', 'roots_file' => $rootsFile, 'refused_root' => $refusedRoot];
-        }
-        return null;
-    }
-
-    /** `roots.json` beside the database, or the override the environment names. */
-    private function rootsFile(): string
-    {
-        return AllowedRoots::defaultConfigPath($this->databasePath);
     }
 
     /**
