@@ -199,7 +199,7 @@ function sampleSession(d, first) {
       { path: 'tests/phpunit/Query/DashboardServiceTest.php', distance: 2 },
       { path: 'tests/phpunit/Query/TurnBriefServiceTest.php', distance: 1 },
       { path: 'tests/phpunit/Store/StoreTest.php', distance: 3 },
-      { path: 'hooks/lib/changes.spec.ts', distance: 1 },
+      { path: 'hooks/lib/changes.spec.ts', distance: 1, js_runner: 'vitest' },
     ],
   }
   return [first, second, first].reduce((s, b) => layout.accumulate(s, b), layout.NO_CHANGES)
