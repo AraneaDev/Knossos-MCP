@@ -26,14 +26,19 @@ use Throwable;
  * Changes another writer already scanned are taken in without a scan.
  *
  * Events, one JSON object each: `refused` (with the brief commands' status),
- * `following` (with the leader's `owner_pid` and `snapshot_id`), `leading`,
+ * `following` (with the leader's `owner_pid` and `snapshot_id`, again whenever
+ * the leader stops or starts answering), `leading`,
  * then the leader's {@see WatchService} events, `snapshot` when another
- * writer's scan moved the active snapshot, and `stopped` last.
+ * writer's scan moved the active snapshot, and `stopped` last. `ready`,
+ * `leading` and `following` carry this process's `pid`.
  */
 final readonly class SharedWatch
 {
-    /** How often the leader rewrites its lock state while idle. */
+    /** How often the leader rewrites its lock state, idle or scanning. */
     private const HEARTBEAT_MS = 15_000;
+
+    /** The longest one scan of the watcher's may run before it is stopped. */
+    private const SCAN_TIMEOUT_MS = 300_000;
 
     /**
      * @param PDO $pdo an existing, migrated graph database
@@ -55,6 +60,8 @@ final readonly class SharedWatch
      */
     public function run(string $path, int $pollMs, int $debounceMs, CancellationToken $cancellation, callable $emit, ?Closure $alive = null, ?int $maxPolls = null): void
     {
+        // Who is watching: the session that started this process signals it by this id when it ends.
+        $emit = static fn(array $event) => $emit(in_array($event['event'] ?? null, ['ready', 'leading', 'following'], true) ? $event + ['pid' => getmypid()] : $event);
         [$allowed, $project, $refusal] = (new ScanTarget($this->pdo, $this->databasePath))->resolve(realpath($path) ?: $path);
         if ($project === null) {
             $emit(['event' => 'refused'] + ($refusal ?? ['status' => 'unscanned']));
@@ -120,7 +127,9 @@ final readonly class SharedWatch
         $hooks = new WatchHooks($projectId, $current, static fn(): ?string => $ledger->activeSnapshot($projectId), $alive, $beat, self::HEARTBEAT_MS);
         // Each scan in a process of its own: the watcher idles for hours, and a scan's memory goes with its process.
         // That process (`knossos scan`) records the scan in the ledger itself, under the scan's own write lease.
-        $scanner = new ProcessScanner($this->installationRoot, $this->databasePath);
+        // Bounded in time, stopped with the watcher, and still beating while it runs: a follower sees a leader that
+        // scans, and only one that stopped answering reads as stuck.
+        $scanner = new ProcessScanner($this->installationRoot, $this->databasePath, self::SCAN_TIMEOUT_MS, $alive, static fn() => $beat(null, 'scanning'), self::HEARTBEAT_MS);
         $observer = static function (array $event) use ($emit, $say): void {
             $phase = ['ready' => 'idle', 'scan_started' => 'scanning', 'scan_completed' => 'idle', 'absorbed' => 'idle'][$event['event']] ?? null;
             if ($phase !== null) {

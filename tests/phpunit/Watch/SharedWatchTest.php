@@ -224,4 +224,51 @@ final class SharedWatchTest extends KnossosTestCase
         assertNotNull($again);
         $again->release();
     }
+
+    /** Where the lock's state for `$projectId` lives beside `$database`. */
+    private static function statePath(string $database, string $projectId): string
+    {
+        return dirname($database) . '/watch/' . substr(hash('sha256', $projectId), 0, 24) . '.json';
+    }
+
+    /** A session after a /clear meets its own earlier watcher (same parent process): that is no other session. */
+    #[Group('watch')]
+    public function testAFollowerTellsItsOwnProcesssEarlierWatcherFromAnotherSessions(): void
+    {
+        [$pdo, $database, $root, $projectId] = $this->project();
+        $held = WatchLock::acquire(dirname($database) . '/watch', $projectId);
+        assertNotNull($held);
+        $held->write(['project_id' => $projectId, 'snapshot_id' => null, 'phase' => 'idle']);
+        $events = $this->watch($pdo, $database, $root, 1);
+        assertSame('following', $events[0]['event']);
+        assertSame(true, $events[0]['same_process']);
+        assertSame(getmypid(), $events[0]['pid']);
+        // Started by another process: another session.
+        file_put_contents(self::statePath($database, $projectId), (string) json_encode(['pid' => 7, 'parent_pid' => 1, 'heartbeat' => time()]));
+        $events = $this->watch($pdo, $database, $root, 1);
+        assertSame(false, $events[0]['same_process']);
+        $held->release();
+    }
+
+    /** A leader that stops beating is said at once, and so is its return. */
+    #[Group('watch')]
+    public function testAFollowerSaysWhenTheLeaderStopsAnsweringAndWhenItIsBack(): void
+    {
+        [$pdo, $database, $root, $projectId] = $this->project();
+        $held = WatchLock::acquire(dirname($database) . '/watch', $projectId);
+        assertNotNull($held);
+        $state = self::statePath($database, $projectId);
+        file_put_contents($state, (string) json_encode(['pid' => 7, 'parent_pid' => 1, 'heartbeat' => time()]));
+        $polls = 0;
+        $events = $this->watch($pdo, $database, $root, 4, null, function (array $event) use (&$polls, $state): void {
+            if ($event['event'] !== 'following') {
+                return;
+            }
+            ++$polls;
+            file_put_contents($state, (string) json_encode(['pid' => 7, 'parent_pid' => 1, 'heartbeat' => $polls === 1 ? time() - 120 : time()]));
+        });
+        $following = array_values(array_filter($events, static fn(array $e): bool => $e['event'] === 'following'));
+        assertSame([false, true, false], array_map(static fn(array $e): bool => $e['stale'], $following));
+        $held->release();
+    }
 }

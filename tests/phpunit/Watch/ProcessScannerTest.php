@@ -11,49 +11,90 @@ use Knossos\Watch\ProcessScanner;
 use PHPUnit\Framework\Attributes\Group;
 use RuntimeException;
 
+use function PHPUnit\Framework\assertGreaterThan;
+use function PHPUnit\Framework\assertLessThan;
 use function PHPUnit\Framework\assertSame;
-use function PHPUnit\Framework\assertStringStartsWith;
+use function PHPUnit\Framework\assertStringContainsString;
 
-/** A scan in a process of its own: its result read back, its failure and its cancellation surfaced as the watcher expects. */
+/**
+ * The watcher's scan processes are bounded: a scan past its time limit, or
+ * one whose watcher is shutting down, is stopped together with whatever it
+ * started, and the watcher still beats while one runs.
+ */
 final class ProcessScannerTest extends KnossosTestCase
 {
-    #[Group('watch')]
-    public function testAScanRunsInItsOwnProcessAndItsResultIsReadBack(): void
+    /** Where the hung scan writes the process id of what it started. */
+    private string $pidFile = '';
+
+    protected function setUp(): void
     {
-        $data = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
-        $root = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
-        mkdir($data);
-        $this->copyTree(self::repositoryRoot() . '/tests/Fixtures/turn-brief', $root);
-        try {
-            $result = (new ProcessScanner(self::repositoryRoot(), $data . '/knossos.sqlite'))->scan($root, mode: 'full');
-            assertStringStartsWith('project_', $result->projectId);
-            assertStringStartsWith('scan_', $result->snapshotId);
-            assertSame(true, ($result->data['parsed_files'] ?? 0) > 0);
-        } finally {
-            $this->removeTempTree($root);
-            $this->removeTempTree($data);
-        }
+        parent::setUp();
+        $this->pidFile = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6)) . '.pid';
+    }
+
+    protected function tearDown(): void
+    {
+        @unlink($this->pidFile);
+        parent::tearDown();
+    }
+
+    /** The installation whose `bin/knossos scan` never finishes. */
+    private static function hung(): string
+    {
+        return self::repositoryRoot() . '/tests/Fixtures/hung-scan';
+    }
+
+    /** Whether the process the hung scan started is still there, after a moment for the kill to land. */
+    private function startedProcessAlive(): bool
+    {
+        $pid = (int) @file_get_contents($this->pidFile);
+        assertGreaterThan(1, $pid);
+        usleep(100_000);
+        return file_exists('/proc/' . $pid) && !str_contains((string) @file_get_contents('/proc/' . $pid . '/stat'), ') Z ');
     }
 
     #[Group('watch')]
-    public function testAFailedScanIsAnErrorWithTheReasonTheProcessGave(): void
+    public function testAScanPastItsLimitIsStoppedWithWhatItStarted(): void
     {
-        $data = sys_get_temp_dir() . '/knossos-stale-' . bin2hex(random_bytes(6));
-        mkdir($data);
+        $beats = 0;
+        $scanner = new ProcessScanner(self::hung(), $this->pidFile, 1_000, null, static function () use (&$beats): void {
+            ++$beats;
+        }, 200);
+        $started = hrtime(true);
         try {
-            $this->expectException(RuntimeException::class);
-            (new ProcessScanner(self::repositoryRoot(), $data . '/knossos.sqlite'))->scan($data . '/missing');
-        } finally {
-            $this->removeTempTree($data);
+            $scanner->scan('/nowhere');
+            self::fail('The hung scan returned.');
+        } catch (RuntimeException $stopped) {
+            assertStringContainsString('ran past its 1 s limit', $stopped->getMessage());
         }
+        // The limit, the grace for a scan that ignores the request to stop, and no more.
+        assertLessThan(6_000, intdiv(hrtime(true) - $started, 1_000_000));
+        assertGreaterThan(2, $beats);
+        assertSame(false, $this->startedProcessAlive());
     }
 
     #[Group('watch')]
-    public function testACancelledWatcherStopsTheScanProcess(): void
+    public function testAScanIsStoppedWhenItsWatcherShutsDownOrIsOrphaned(): void
     {
-        $token = new CancellationToken();
-        $token->cancel();
-        $this->expectException(ScanCancelledException::class);
-        (new ProcessScanner(self::repositoryRoot(), sys_get_temp_dir() . '/knossos-stale-none/knossos.sqlite'))->scan(sys_get_temp_dir(), cancellation: $token);
+        $cancellation = new CancellationToken();
+        $calls = 0;
+        $scanner = new ProcessScanner(self::hung(), $this->pidFile, 60_000, null, static function () use (&$calls, $cancellation): void {
+            if (++$calls === 3) {
+                $cancellation->cancel();
+            }
+        }, 100);
+        try {
+            $scanner->scan('/nowhere', null, $cancellation);
+            self::fail('The hung scan returned.');
+        } catch (ScanCancelledException) {
+        }
+        assertSame(false, $this->startedProcessAlive());
+        $orphaned = new ProcessScanner(self::hung(), $this->pidFile, 60_000, static fn(): bool => false);
+        try {
+            $orphaned->scan('/nowhere');
+            self::fail('The hung scan returned.');
+        } catch (ScanCancelledException) {
+        }
+        assertSame(false, $this->startedProcessAlive());
     }
 }

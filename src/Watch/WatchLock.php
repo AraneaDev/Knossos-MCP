@@ -12,7 +12,8 @@ namespace Knossos\Watch;
  * watcher's life. The kernel releases it when the process ends, however it
  * ends, so a crashed or killed watcher never leaves a lock behind: the next
  * session to try simply takes it over. Beside it, `<key>.json` says who holds
- * it (PID, project, the snapshot it last saw, its phase) and when it last
+ * it (PID, the PID of the process that started it, project, the snapshot it
+ * last saw, its phase) and when it last
  * said so (`heartbeat`), rewritten whole through a rename so a reader never
  * sees half of it. The lock file itself is never rewritten: renaming over it
  * would hand the next locker a different file.
@@ -64,13 +65,14 @@ final class WatchLock
     }
 
     /**
-     * Says who holds the lock, now: the PID and heartbeat are filled in.
+     * Says who holds the lock, now: the PID, its parent's and the heartbeat are filled in.
      *
      * @param array<string, mixed> $state
      */
     public function write(array $state): void
     {
-        $text = json_encode(['pid' => getmypid(), 'heartbeat' => time()] + $state, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+        $parent = function_exists('posix_getppid') ? posix_getppid() : null;
+        $text = json_encode(['pid' => getmypid(), 'parent_pid' => $parent, 'heartbeat' => time()] + $state, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
         $temporary = $this->statePath . '.' . getmypid() . '.tmp';
         if ($text !== false && @file_put_contents($temporary, $text) !== false && !@rename($temporary, $this->statePath)) {
             @unlink($temporary);

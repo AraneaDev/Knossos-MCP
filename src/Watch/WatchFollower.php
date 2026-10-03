@@ -37,13 +37,8 @@ final readonly class WatchFollower
     public function follow(int $pollMs, CancellationToken $cancellation, callable $emit, ?Closure $alive, ?int $maxPolls): ?WatchLock
     {
         $snapshot = $this->ledger->activeSnapshot($this->projectId);
-        $owner = WatchLock::owner($this->lockDir, $this->projectId);
-        $emit([
-            'event' => 'following',
-            'owner_pid' => isset($owner['pid']) ? (int) $owner['pid'] : null,
-            'stale' => isset($owner['heartbeat']) && time() - (int) $owner['heartbeat'] > self::STALE_AFTER_SECONDS,
-            'snapshot_id' => $snapshot,
-        ]);
+        $stale = $this->stale();
+        $emit($this->following($snapshot, $stale));
         $polls = 0;
         $beat = hrtime(true);
         while (!$cancellation->isCancelled() && ($maxPolls === null || $polls < $maxPolls)) {
@@ -61,11 +56,44 @@ final readonly class WatchFollower
             if ($lock !== null) {
                 return $lock;
             }
+            // A leader that stops answering (stuck, or its process hung) is said at once, and so is its return.
+            if ($this->stale() !== $stale) {
+                $stale = !$stale;
+                $emit($this->following($snapshot, $stale));
+            }
             if (hrtime(true) - $beat >= self::HEARTBEAT_SECONDS * 1_000_000_000) {
                 $beat = hrtime(true);
                 $emit(['event' => 'heartbeat']);
             }
         }
         return null;
+    }
+
+    /** Whether the leader's last heartbeat is older than {@see self::STALE_AFTER_SECONDS}. */
+    private function stale(): bool
+    {
+        $owner = WatchLock::owner($this->lockDir, $this->projectId);
+        return isset($owner['heartbeat']) && time() - (int) $owner['heartbeat'] > self::STALE_AFTER_SECONDS;
+    }
+
+    /**
+     * The `following` event: who leads, whether it stopped answering, and
+     * whether the process that started it also started this one (a session
+     * after a `/clear` or a resume meeting its own earlier watcher, which is
+     * on its way out): that is no other session.
+     *
+     * @return array<string, mixed>
+     */
+    private function following(?string $snapshot, bool $stale): array
+    {
+        $owner = WatchLock::owner($this->lockDir, $this->projectId);
+        $parent = function_exists('posix_getppid') ? posix_getppid() : null;
+        return [
+            'event' => 'following',
+            'owner_pid' => isset($owner['pid']) ? (int) $owner['pid'] : null,
+            'stale' => $stale,
+            'same_process' => $parent !== null && isset($owner['parent_pid']) && (int) $owner['parent_pid'] === $parent,
+            'snapshot_id' => $snapshot,
+        ];
     }
 }
