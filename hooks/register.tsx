@@ -140,14 +140,22 @@ async function showComponent($: EngineInterface, name: string): Promise<void> {
 async function requestDetail($: EngineInterface, name: string): Promise<void> {
   const snapshot = (await read($, dashboard))?.snapshot_id ?? null
   const key = `${snapshot ?? ''}\u0000${name}`
-  if (mod.fetching.has(key)) return
+  const loading = (): DetailState => ({ snapshot_id: snapshot, name, lines: null, phase: 'loading' })
+  if (mod.fetching.has(key)) {
+    // A lookup for this name is already in flight. When the detail has since
+    // moved to another name (A, then B, then A again inside one lookup), put
+    // the loading state back so the in-flight answer is stored when it lands.
+    const inFlight = await read($, detail)
+    if (inFlight?.name !== name || inFlight.snapshot_id !== snapshot) await update($, detail, loading)
+    return
+  }
   mod.fetching.add(key)
   const current = await read($, detail)
   if (current?.name === name && current.snapshot_id === snapshot && current.phase === 'done' && current.lines !== null) {
     mod.fetching.delete(key)
     return
   }
-  await update($, detail, (): DetailState => ({ snapshot_id: snapshot, name, lines: null, phase: 'loading' }))
+  await update($, detail, loading)
   $.clock.after(0, () => void loadDetail($, snapshot, name, key))
 }
 

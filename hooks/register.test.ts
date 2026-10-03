@@ -721,6 +721,29 @@ describe('knossos mod', () => {
     await ui.unmount()
   })
 
+  test('pressing A, B, A within one lookup shows A again and stores its answer', async ($, on) => {
+    const w = world(on, {
+      dashboard: [{ stdout: paneDashboard() }],
+      detail: [{ stdout: detailOf('Router'), hold: 1000 }, { stdout: detailOf('Kernel'), hold: 5000 }],
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'hot-0' })
+    await w.clock.settle()
+    await ui.press({ key: 'back' })
+    await ui.press({ key: 'hub-0' })
+    await w.clock.settle()
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Inspecting Router…')
+    await w.clock.advance(1000)
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('class App\\Router')
+    expect(w.detailRuns()).toHaveLength(2)
+    await ui.unmount()
+  })
+
   test('a component is looked up once per snapshot', async ($, on) => {
     const w = world(on, { dashboard: [{ stdout: paneDashboard() }], detail: [{ stdout: detailOf('Router') }] })
     await $.session.start(START)
