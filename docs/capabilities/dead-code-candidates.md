@@ -81,7 +81,7 @@ auditable rather than invisible.
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `excluded_external_components`   | Hub ranking, not candidates: nodes in the examined window resolved outside the project (`external_*` kinds, `external`/`unresolved` origins), left out of hubs and hotspots. Include with `include_external`. External nodes are never candidates.                                               |
 | `excluded_test_components`       | Hub ranking, not candidates: nodes in the examined window classified `quality.test_module`, left out of hubs and hotspots. Include with `include_tests`. An unreferenced test module is counted in `excluded_convention_discovered`, since a runner discovers it by glob.                        |
-| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it.                                                                                                                                                              |
+| `excluded_inherited_methods`     | Methods declared by an internal ancestor: the interface or base class carries the contract, and the override is reached through it. Also methods a scanner marks `overrides` (see below), whose supertype may live outside the project.                                                          |
 | `excluded_contract_methods`      | The mirror: declarations an internal implementation carries, when the declaring type is used (see below).                                                                                                                                                                                        |
 | `excluded_constructors`          | Engine-invoked members (constructors, destructors, magic/protocol methods) whose declaring type is referenced (see below), and components a scanner marks `runtime_invoked`: Rust's `Drop::drop`, and functions exported to a foreign host (`#[no_mangle]`, `#[wasm_bindgen]`, an `extern` ABI). |
 | `excluded_entry_scripts`         | Modules a scanner marked as executable scripts (a shebang, a `__main__` guard, PHP file-scope code, a library crate's root) whose bodies something outside the graph enters, and a Python package's `__init__` when the package holds other modules.                                             |
@@ -150,6 +150,21 @@ fulfils an interface that the using or extending class declares without redeclar
 method. A call through the interface reaches that method, so it counts under
 `excluded_inherited_methods` too, as long as some subtype that does not override it has an
 internal ancestor, outside the method's own hierarchy, declaring a member of that name.
+
+A supertype that lives outside the project (a dependency's base class, a
+built-in interface, a trait from a crate) has no members in the graph, so the
+walk above cannot find the contract. The scanners mark such a method
+`overrides` instead, where the source or the language says so: every method of
+a Rust `impl Trait for T`; a PHP `#[\Override]` method, or a member of a PHP
+built-in class or interface the type extends or implements (`jsonSerialize`,
+`count`); a Python `@override` method (from `typing` or `typing_extensions`),
+or an `ast.NodeVisitor`/`NodeTransformer` subclass's `visit`, `generic_visit`
+and `visit_<Node>` hooks, which the visitor dispatches to by name; a TypeScript
+`override` method, an instance method the checker finds on a heritage type,
+and an object literal's method the type it is handed to declares. A marked
+method counts under `excluded_inherited_methods`. A dependency's PHP base class
+is not described by anything the worker can read, so its overrides need the
+attribute.
 
 ### Why manifest entry points are excluded
 

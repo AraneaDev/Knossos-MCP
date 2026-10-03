@@ -623,6 +623,41 @@ final class HealthFiltersTest extends KnossosTestCase
     }
 
     /**
+     * A scanner marks `overrides` on a method the source says fulfils a
+     * supertype's member: a Rust trait impl's method, a PHP `#[\Override]`,
+     * a member of a built-in interface, a TypeScript `override`. When that
+     * supertype lives outside the project, its members are not in the graph,
+     * so the inherited-method walk cannot see the contract, and the dispatch
+     * that calls the method (`Default::default`, a visitor's traverser) leaves
+     * no edge. Such a method is reached through the supertype, as an
+     * inherited one is.
+     */
+    #[Group('query')]
+    public function testDeadCodeExcludesMethodsTheScannerMarksAsOverriding(): void
+    {
+        [$pdo, $repository, $ids] = $this->storeFixture();
+        $owner = 'php:file:src/Checkout.php';
+        $visitor = StableId::symbol($ids['project'], 'rust', 'class', 'crate::Calls');
+        $repository->saveNode($visitor, $ids['project'], 'rust', 'class', 'crate::Calls', 'Calls', null, $ids['file'], 1, 9, 'ast', 'certain', [], $owner, $ids['scan']);
+        $overriding = StableId::symbol($ids['project'], 'rust', 'method', 'crate::Calls::visit_expr_call');
+        $repository->saveNode($overriding, $ids['project'], 'rust', 'method', 'crate::Calls::visit_expr_call', 'visit_expr_call', null, $ids['file'], 2, 3, 'ast', 'certain', ['overrides' => true], $owner, $ids['scan']);
+        // A method of the same type the mark does not cover stays reportable.
+        $own = StableId::symbol($ids['project'], 'rust', 'method', 'crate::Calls::unused');
+        $repository->saveNode($own, $ids['project'], 'rust', 'method', 'crate::Calls::unused', 'unused', null, $ids['file'], 4, 5, 'ast', 'certain', [], $owner, $ids['scan']);
+        foreach ([$overriding, $own] as $index => $member) {
+            $repository->saveEdge(StableId::edge($ids['project'], 'contains', $visitor, $member, 'o:' . $index), $ids['project'], 'contains', $visitor, $member, $ids['file'], 2, 2, 'ast', 'certain', [], $owner, $ids['scan']);
+        }
+        $repository->completeScan($ids['project'], $ids['scan']);
+
+        $data = (new ArchitectureQueryService($pdo))->architectureHealth($ids['project'])->data;
+        $names = array_map(static fn(array $c): string => $c['component']['canonical_name'], $data['dead_code_candidates']);
+
+        assertSame(false, in_array('crate::Calls::visit_expr_call', $names, true));
+        assertSame(true, in_array('crate::Calls::unused', $names, true));
+        assertSame(1, $data['bounds']['excluded_inherited_methods']);
+    }
+
+    /**
      * The mirror of the inherited-method exclusion. That one drops the
      * override because the ancestor carries the contract; nothing dropped the
      * declaration when the implementation is what call sites reach. A call

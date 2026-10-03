@@ -853,13 +853,14 @@ final readonly class ProjectCatalogQueryService extends AbstractArchitectureQuer
             if (!in_array($node['kind'], $candidateKinds, true)) {
                 continue;
             }
-            // A runtime-invoked lifecycle method, an executable script's module,
-            // a type declaration,
-            // or a convention-discovered component has no inbound edge by
+            // A runtime-invoked lifecycle method, a method fulfilling a
+            // supertype's member, an executable script's module, a type
+            // declaration, or a convention-discovered component has no inbound edge by
             // construction, so counting it would charge the budget for
             // something no maintainer can act on.
             if (ReportableComponent::isRuntimeLifecycleMethod((string) $node['kind'], (string) $node['display_name'])
                 || ReportableComponent::isRuntimeInvoked($node['attributes_json'] ?? null)
+                || ReportableComponent::isDeclaredOverride((string) $node['kind'], $node['attributes_json'] ?? null)
                 || ReportableComponent::isExecutableScript((string) $node['kind'], $node['attributes_json'] ?? null)
                 || ReportableComponent::isTypeDeclaration($node['attributes_json'] ?? null)
                 || ReportableComponent::isDiscoveredByConvention($roles[$node['id']] ?? [])) {
