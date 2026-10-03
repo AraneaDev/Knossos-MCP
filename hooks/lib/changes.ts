@@ -147,8 +147,10 @@ export function namedByCommand(test: string, js: JsRunners = {}): boolean {
  * per package for `*_test.go`, `cargo test` for Rust. A script whose runner is
  * unknown is left out rather than handed to a runner that may not be there.
  * Several runners are joined with `&&`; null when no path names a runner.
+ * The paths are relative to the project root, so a command run from
+ * elsewhere (`cd`, see `cdFor`) changes to it first.
  */
-export function testCommand(tests: string[], js: JsRunners = {}): string | null {
+export function testCommand(tests: string[], js: JsRunners = {}, cd: string | null = null): string | null {
   const of = (runner: keyof typeof RUNNERS) => tests.filter(t => runnerOf(t) === runner)
   const php = of('phpunit')
   const vitest = of('js').filter(t => js[t] === 'vitest')
@@ -164,7 +166,18 @@ export function testCommand(tests: string[], js: JsRunners = {}): string | null 
   if (pytest.length > 0) commands.push(`python -m pytest ${pytest.map(quote).join(' ')}`)
   if (go.length > 0) commands.push(`go test ${go.map(quote).join(' ')}`)
   if (of('cargo').length > 0) commands.push('cargo test')
-  return commands.length === 0 ? null : commands.join(' && ')
+  if (commands.length === 0) return null
+  return cd === null ? commands.join(' && ') : `cd ${quote(cd)} && ${commands.join(' && ')}`
+}
+
+/**
+ * Where a test command must change to before it runs: the project root, when
+ * the session (where Claude's shell starts) sits elsewhere, such as below an
+ * ancestor project; null when they are one, or either is unknown.
+ */
+export function cdFor(projectRoot: string | null, sessionRoot: string | null): string | null {
+  const trim = (p: string) => (p.length > 1 ? p.replace(/\/+$/, '') : p)
+  return projectRoot === null || sessionRoot === null || trim(projectRoot) === trim(sessionRoot) ? null : projectRoot
 }
 
 /** Flags by which a runner is told to run some tests only. */
@@ -215,8 +228,11 @@ export type ChangesInput = {
   truncated: boolean
 }
 
-/** The Changes tab's view of the session's changes; `root` places the files on disk. */
-export function changesInput(changes: SessionChanges, root: string | null, hues: Hues = NO_HUES): ChangesInput {
+/**
+ * The Changes tab's view of the session's changes; `root` places the files on
+ * disk, and the command changes to it when `sessionRoot` is elsewhere.
+ */
+export function changesInput(changes: SessionChanges, root: string | null, hues: Hues = NO_HUES, sessionRoot: string | null = null): ChangesInput {
   const files = Object.entries(changes.files)
     .map(([path, f]) => ({
       path,
@@ -236,7 +252,7 @@ export function changesInput(changes: SessionChanges, root: string | null, hues:
     turns: changes.turns,
     files,
     tests,
-    command: testCommand(tests.map(t => t.path), changes.js_runners),
+    command: testCommand(tests.map(t => t.path), changes.js_runners, cdFor(root, sessionRoot)),
     boundaries: reached.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b)),
     violations: changes.violations.length,
     truncated: changes.truncated,

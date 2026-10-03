@@ -53,7 +53,7 @@ export { bar, button, cells, displayName, fileHref, fit, linkMarkdown, locOf, lo
 export type { Field, Loc, Press, Row, Segment, TableSpec } from './rows'
 export type { DetailInput, Openable } from './views'
 export type { BoundariesInput } from './boundaries'
-export { accumulate, NO_CHANGES } from './changes'
+export { accumulate, cdFor, NO_CHANGES } from './changes'
 export type { ChangesInput, LookAt } from './changes'
 export { detailInput, SIDE_BY_SIDE } from './views'
 
@@ -274,11 +274,12 @@ export function paneInput(
   detail: DetailInput | null = null,
   allow: AllowState | null = null,
   session: SessionChanges = NO_CHANGES,
+  sessionRoot: string | null = null,
 ): PaneInput {
   const items = mergeRanked(d)
   const issues = issuesInput(d)
   const hues = huesOf(d)
-  const changes = changesInput(session, d.project_root, hues)
+  const changes = changesInput(session, d.project_root, hues, sessionRoot)
   const turn = brief?.status === 'ok' && brief.policy.status === 'evaluated' ? String(brief.policy.total) : null
   const policy = issues.policy?.evaluated ? issues.policy.total : turn
   const diagnostics = issues.diagnostics === null ? null : issues.diagnostics.errors + issues.diagnostics.warnings

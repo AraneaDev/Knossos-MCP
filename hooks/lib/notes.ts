@@ -119,16 +119,17 @@ const TESTS_NAMED = 5
  * Tests the command already names are not listed again; those it runs by
  * package (`go test`, `cargo test`) are, at most five, and so is a script
  * whose runner the project does not make plain: it is listed with no
- * command, since a guessed runner may not be the project's.
+ * command, since a guessed runner may not be the project's. `cd` is the
+ * project root when the session's shell starts elsewhere (`cdFor`).
  */
-export function testsNote(tests: TurnBrief['tests'], ran: string[], named: ReadonlySet<string>): { text: string; tests: string[] } | null {
+export function testsNote(tests: TurnBrief['tests'], ran: string[], named: ReadonlySet<string>, cd: string | null = null): { text: string; tests: string[] } | null {
   const left = [...tests]
     .filter(t => runnerOf(t.path) !== null && !named.has(t.path) && !testsRan(t.path, ran))
     .sort((a, b) => a.distance - b.distance || a.path.localeCompare(b.path))
     .map(t => t.path)
   if (left.length === 0) return null
   const js = Object.fromEntries(tests.filter(t => t.js_runner !== undefined).map(t => [t.path, t.js_runner ?? null]))
-  const command = testCommand(left, js)
+  const command = testCommand(left, js, cd)
   const listed = left.filter(t => command === null || !namedByCommand(t, js))
   const more = listed.length > TESTS_NAMED ? ` and ${listed.length - TESTS_NAMED} more` : ''
   const names = listed.length === 0 ? '' : `: ${listed.slice(0, TESTS_NAMED).join(', ')}${more}`

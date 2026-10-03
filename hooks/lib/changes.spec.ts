@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, TurnBrief } from '../../types'
-import { accumulate, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, testCommand, testsRan } from './changes'
+import { accumulate, cdFor, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, testCommand, testsRan } from './changes'
 import { editTarget, paneInput, paneRows } from './layout'
 import { fileHref, linkMarkdown, locOf, plainText, rowWidth } from './rows'
 import type { Row } from './rows'
@@ -123,6 +123,15 @@ describe('testCommand', () => {
     expect(testCommand(['src/a.test.js', 'web/b.spec.ts'], { 'src/a.test.js': 'jest', 'web/b.spec.ts': 'vitest' })).toBe('npx vitest run web/b.spec.ts && npx jest src/a.test.js')
     expect(testCommand(['src/a.test.js'])).toBeNull()
     expect(testCommand(['src/a.test.js', 'tests/ATest.php'], { 'src/a.test.js': null })).toBe('vendor/bin/phpunit tests/ATest.php')
+  })
+  it('changes to the project root first when the session sits elsewhere', () => {
+    expect(cdFor('/work/app', '/work/app/packages/web')).toBe('/work/app')
+    expect(cdFor('/work/app', '/work/app/')).toBeNull()
+    expect(cdFor('/work/app', null)).toBeNull()
+    expect(cdFor(null, '/work')).toBeNull()
+    expect(testCommand(['tests/ATest.php'], {}, "/work/my app")).toBe("cd '/work/my app' && vendor/bin/phpunit tests/ATest.php")
+    expect(changesInput(session(), ROOT, undefined, `${ROOT}/packages/web`).command).toBe(`cd ${ROOT} && vendor/bin/phpunit --filter '(RouterTest|KernelTest)'`)
+    expect(changesInput(session(), ROOT, undefined, ROOT).command).toBe("vendor/bin/phpunit --filter '(RouterTest|KernelTest)'")
   })
   it('quotes a path a shell would split', () => {
     expect(testCommand(["tests/it's here/a.spec.ts"], { "tests/it's here/a.spec.ts": 'vitest' })).toBe(`npx vitest run 'tests/it'\\''s here/a.spec.ts'`)

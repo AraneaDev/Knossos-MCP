@@ -286,6 +286,8 @@ declare module 'claude-code' {
       allow: AllowState
       theme: string
       changes: SessionChanges
+      /** The session's root with its links followed, or null before it is known: where a copied command runs. */
+      sessionRoot: string | null
     }
   }
 }

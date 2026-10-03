@@ -217,7 +217,9 @@ and its languages. A narrow pane drops the languages first.
   `--filter` over the test classes), `npx vitest run` or `npx jest` (as the
   project's `package.json` says; a script whose runner is unknown is left
   out), `python -m pytest`, `go test` per package or `cargo test`, joined
-  with `&&`. `c` copies it;
+  with `&&`. The paths are relative to the project root; when the session
+  sits elsewhere (below an ancestor project's root), the command starts
+  with `cd <project root> &&`, and so does the one in the model's note. `c` copies it;
   `o` opens the marked file in your editor. The tab label counts the files.
   The list lives for the session and keeps at most 500 files and 500 tests
   (`partial` past that).

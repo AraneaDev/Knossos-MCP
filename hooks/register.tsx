@@ -9,6 +9,7 @@ import {
   accumulate,
   allowInput,
   askPrompt,
+  cdFor,
   CONTENT_MAX,
   detailInput,
   editTarget,
@@ -91,6 +92,8 @@ const allow = atom({ plugin: 'knossos', key: 'allow' } as const, { phase: 'idle'
 const theme = atom({ plugin: 'knossos', key: 'theme' } as const, 'dark' as string)
 /** Everything this session's turn briefs reported, added up: what the Changes tab and "Look at now" draw. */
 const changes = atom({ plugin: 'knossos', key: 'changes' } as const, NO_CHANGES as SessionChanges)
+/** The session's root with its links followed: a test command run from it changes to the project root first when they differ. */
+const sessionRoot = atom({ plugin: 'knossos', key: 'sessionRoot' } as const, null as string | null)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -280,6 +283,8 @@ async function readTheme($: EngineInterface): Promise<void> {
  */
 async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> {
   await readTheme($)
+  const root = await $.session.root().then(r => placed($, r)).catch(() => null)
+  await update($, sessionRoot, () => root)
   const stored = await refreshDashboard($)
   if (mod.disabled) return
   mod.ticker ??= $.clock.every(AGE_TICK_MS, () => void tickAge($).catch(() => undefined))
@@ -413,7 +418,7 @@ async function scan($: EngineInterface): Promise<void> {
     }
   }
   if (!(await settleBrief($, parsed, await $.clock.now())) || parsed === null) return
-  const note = turnEndNote(parsed)
+  const note = turnEndNote(parsed, cdFor(parsed.project_root, await read($, sessionRoot)))
   if (note !== null) await deliverNote($, note)
   await refreshDashboard($)
 }
@@ -424,7 +429,7 @@ async function scan($: EngineInterface): Promise<void> {
  * the tests that reach its changes that it did not run and no note named.
  * Null when there is nothing new, or notes are off.
  */
-function turnEndNote(parsed: TurnBrief): string | null {
+function turnEndNote(parsed: TurnBrief, cd: string | null): string | null {
   if (!mod.notesOn) return null
   const parts: string[] = []
   if (mod.enforce) {
@@ -435,7 +440,7 @@ function turnEndNote(parsed: TurnBrief): string | null {
     if (quietCut) mod.truncationSaid = true
     for (const v of parsed.policy.violations) mod.violationsSeen.add(violationKey(v))
   }
-  const tests = testsNote(parsed.tests, mod.turnRan, mod.testsNamed)
+  const tests = testsNote(parsed.tests, mod.turnRan, mod.testsNamed, cd)
   if (tests !== null) {
     parts.push(tests.text)
     for (const t of tests.tests) mod.testsNamed.add(t)
@@ -585,7 +590,7 @@ async function currentInput($: EngineInterface, terminal: boolean): Promise<Pane
   if (d?.status !== 'ok') return null
   const v = await read($, view)
   const shown = v.inspect === null ? null : detailInput(v.inspect, await read($, detail), d.project_root)
-  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await read($, changes))
+  return paneInput(d, await read($, brief), await read($, refresh), await read($, rescan), v, await $.clock.now(), terminal, shown, await read($, allow), await read($, changes), await read($, sessionRoot))
 }
 
 /** The rows the selection walks on what the pane shows, from state. */

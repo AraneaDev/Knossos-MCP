@@ -139,6 +139,10 @@ describe('testsNote', () => {
       "knossos: 2 tests reach this turn's changes: src/a.test.js. Run: vendor/bin/phpunit tests/ATest.php",
     )
   })
+  it('changes to the project root first when the session sits below it', () =>
+    expect(testsNote([{ path: 'tests/ATest.php', distance: 1 }], [], new Set(), '/work/app')?.text).toBe(
+      "knossos: 1 test reaches this turn's changes. Run: cd /work/app && vendor/bin/phpunit tests/ATest.php",
+    ))
   it('names no test twice: one the command names is not listed, one run by package is, five at most', () => {
     const many = Array.from({ length: 7 }, (_, i) => ({ path: `tests/T${i}Test.php`, distance: i }))
     expect(testsNote(many, [], new Set())?.text).toBe(

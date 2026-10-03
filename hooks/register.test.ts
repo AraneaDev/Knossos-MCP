@@ -1165,6 +1165,24 @@ describe('knossos mod', () => {
     expect(turnNotes(w)).toHaveLength(0)
   })
 
+  test('a session below the project root is told, and copies, test commands that change to the project root', async ($, on) => {
+    const reached = brief({ tests: [{ path: 'tests/RouterTest.php', distance: 1 }] })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }], brief: [{ stdout: reached }] }, { root: `${ROOT}/packages/web` })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w).map(l => l.text.slice(l.text.indexOf('): ') + 3))).toEqual([
+      `knossos: 1 test reaches this turn's changes. Run: cd ${ROOT} && vendor/bin/phpunit tests/RouterTest.php`,
+    ])
+    const ui = await mountPane($)
+    await ui.press({ key: 'tests' })
+    await w.clock.settle()
+    expect(w.copies.at(-1)?.text).toBe(`cd ${ROOT} && vendor/bin/phpunit tests/RouterTest.php`)
+    await ui.unmount()
+  })
+
   test('the turn-end note names the tests that reach the changes and how to run them, once', async ($, on) => {
     const reached = brief({ tests: [{ path: 'tests/RouterTest.php', distance: 1 }, { path: 'tests/Support/Helper.php', distance: 1 }] })
     const w = world(on, { brief: [{ stdout: reached }] })
