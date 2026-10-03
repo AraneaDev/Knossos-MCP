@@ -64,7 +64,10 @@ The count is per violating dependency, so one call can count twice (once for
 the class, once for the method). The underlying check stops at 100 violations
 across the whole project and at its time limit. When it stops early the brief
 says so (`policy.truncated`), the count is a bound rather than exact, and the
-note adds `(check was truncated; run check_architecture)`.
+note adds `(check was truncated; run check_architecture)`. A truncated check
+that found nothing new still sends a note, because the turn's violations may
+be past the cap: it tells the model to run `check_architecture` on the files
+it edited.
 
 Only files the turn edited with Edit, Write or NotebookEdit count. A file
 changed by other means (a branch checkout, a formatter, a shell command) never

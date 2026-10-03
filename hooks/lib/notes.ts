@@ -11,7 +11,13 @@ export function editNote(entry: FanIn): string {
 /** The user-role note for violations a turn introduced, or null when there are none. */
 export function violationNote(brief: TurnBrief): string | null {
   const { total, violations } = brief.policy
-  if (total === 0) return null
+  if (total === 0) {
+    // The check stops at 100 violations project-wide before it looks at files, so a truncated
+    // check may have dropped this turn's; say so rather than report a clean turn.
+    return brief.policy.truncated
+      ? 'knossos: the boundary-policy check was truncated; run check_architecture to see violations in the files this turn edited.'
+      : null
+  }
   // A check cut short at its cap or time limit makes the count a bound; the full check is one call away.
   const cut = brief.policy.truncated ? ' (check was truncated; run check_architecture)' : ''
   const head = `knossos: this turn introduced ${total} boundary-policy violation${total === 1 ? '' : 's'}${cut}. Fix ${total === 1 ? 'it' : 'them'} before finishing:`

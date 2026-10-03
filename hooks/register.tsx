@@ -66,6 +66,10 @@ const mod = {
    */
   disabled: false,
   flight: null as SingleFlight | null,
+  /** Dashboard loads, one at a time: an older, slower load can never land over a newer one. */
+  dashboardFlight: null as SingleFlight | null,
+  /** Whether the latest dashboard load stored what it read. */
+  dashboardStored: false,
   /** What the band last drew, or null when it drew nothing: the age tick compares against it. */
   bandText: null as string | null,
   /** The pane's freshness line as last drawn, or null when the pane drew none: the age tick compares against it too. */
@@ -92,6 +96,8 @@ function thresholdOf(value: unknown): number {
  * as "as of 12s ago" would stand still while the figures grow old.
  */
 async function tickAge($: EngineInterface): Promise<void> {
+  // A pane closed by any means (the command, its own close key) stops drawing; stop ticking for it.
+  if (mod.paneText !== null && !(await $.ui.panes()).some(pane => pane.id === PANE)) mod.paneText = null
   if (mod.bandText === null && mod.paneText === null) return
   const now = await $.clock.now()
   const model = bandModel(await read($, brief), await read($, job), now)
@@ -146,23 +152,32 @@ async function wrapper($: EngineInterface, sub: string, args: string[], timeoutM
  */
 async function refreshDashboard($: EngineInterface): Promise<boolean> {
   if (mod.disabled) return false
+  // A request during a load coalesces into one rerun after it, so the last load to land is the newest.
+  await (mod.dashboardFlight ??= new SingleFlight(() => loadDashboard($))).request()
+  return mod.dashboardStored
+}
+
+/** One dashboard load; records in `mod.dashboardStored` whether it stored what it read. */
+async function loadDashboard($: EngineInterface): Promise<void> {
+  mod.dashboardStored = false
+  if (mod.disabled) return
   const stdout = await wrapper($, 'dashboard', [`--fan-in-threshold=${mod.threshold}`], DASHBOARD_TIMEOUT_MS)
   const parsed = parseDashboard(stdout)
   if (parsed?.status === 'no-binary') {
     await disable($)
-    return false
+    return
   }
   if (parsed === null || (parsed.status === 'error' && (await read($, dashboard))?.status === 'ok')) {
     await update($, refresh, r => ({ ...r, failed: true }))
-    return false
+    return
   }
   const now = await $.clock.now()
   await update($, dashboard, () => parsed)
   await update($, refresh, (): RefreshState => ({ fetchedAt: now, failed: false }))
+  mod.dashboardStored = true
   // The pane open on a component follows the graph: a new snapshot looks it up again.
   const shown = (await read($, view)).inspect
   if (shown !== null) await requestDetail($, shown.name)
-  return true
 }
 
 /**
@@ -254,6 +269,7 @@ async function runCommand($: EngineInterface, args: string): Promise<string> {
   if (verb !== '') return USAGE
   if ((await $.ui.panes()).some(pane => pane.id === PANE)) {
     await $.ui.close({ id: PANE }).catch(() => undefined)
+    mod.paneText = null
     return 'Knossos pane closed.'
   }
   await update($, view, v => ({ ...v, inspect: null }))
@@ -295,9 +311,18 @@ async function scan($: EngineInterface): Promise<void> {
   // Drained at the start of each run, so a coalesced rerun scans every path reported since.
   const files = [...mod.edited]
   mod.edited = new Set()
-  await update($, job, (j): JobState => ({ ...j, phase: 'scanning' }))
-  const args = [...files.map(f => `--files=${f}`), ...(mod.enforce ? [] : ['--no-policies'])]
-  const parsed = parseTurnBrief(await wrapper($, 'turn-brief', args, BRIEF_TIMEOUT_MS))
+  let parsed: TurnBrief | null = null
+  try {
+    await update($, job, (j): JobState => ({ ...j, phase: 'scanning' }))
+    const args = [...files.map(f => `--files=${f}`), ...(mod.enforce ? [] : ['--no-policies'])]
+    parsed = parseTurnBrief(await wrapper($, 'turn-brief', args, BRIEF_TIMEOUT_MS))
+  } finally {
+    // A brief that never ran its scan saw none of these edits: the next one must report them,
+    // since only reported files count toward the policy verdict.
+    if (parsed === null || parsed.status === 'error' || parsed.status === 'scan-failed') {
+      for (const file of files) mod.edited.add(file)
+    }
+  }
   if (!(await settleBrief($, parsed, await $.clock.now())) || parsed === null) return
   const note = mod.enforce ? violationNote(parsed) : null
   if (note !== null) await deliverNote($, note)
@@ -361,6 +386,8 @@ export const register: Register = (on, options) => {
   mod.edited = new Set()
   mod.disabled = false
   mod.flight = null
+  mod.dashboardFlight = null
+  mod.dashboardStored = false
   mod.bandText = null
   mod.paneText = null
   mod.ticker?.cancel()

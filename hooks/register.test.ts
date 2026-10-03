@@ -76,6 +76,7 @@ function world(
   const calls: string[][] = []
   const toasts: string[] = []
   const logs: { text: string; to: string }[] = []
+  const invalidations: string[] = []
   const opened: string[] = []
   const closed: string[] = []
   /** The panes the engine holds open, as `ui.panes` lists them. */
@@ -98,6 +99,11 @@ function world(
   on('ui.log', (_$, e) => {
     logs.push({ text: e.text, to: e.to })
     return { value: undefined }
+  })
+  // Counted, then passed on: the redraw itself still happens.
+  on('ui.invalidate', (_$, e, next) => {
+    invalidations.push(e.event)
+    return next(e)
   })
   on('ui.open', (_$, e) => {
     opened.push(e.id)
@@ -127,7 +133,7 @@ function world(
   on('tool.call', (_$, e) => ({ result: {} as never, text: `ran ${e.tool}` }))
   const briefRuns = () => calls.filter(c => c[2] === 'turn-brief')
   const detailRuns = () => calls.filter(c => c[2] === 'component-detail')
-  return { clock, calls, briefRuns, detailRuns, toasts, logs, opened, closed }
+  return { clock, calls, briefRuns, detailRuns, toasts, logs, opened, closed, invalidations }
 }
 
 const START = { cwd: ROOT, surface: 'terminal', isInteractive: true } as const
@@ -994,5 +1000,59 @@ describe('knossos mod', () => {
     expect(await ui.find({ key: 'detail' })).toBeUndefined()
     expect(await ui.find({ key: 'hubs' })).toBeDefined()
     await ui.unmount()
+  })
+
+  test('edits a silent brief never saw are reported again by the next one', async ($, on) => {
+    const w = world(on, { brief: [{ stdout: '' }, { stdout: brief({ status: 'scan-failed', reason: 'x' }) }, { stdout: brief() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Kernel.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Other.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    const files = (run: string[] | undefined) => (run ?? []).filter(a => a.startsWith('--files=')).sort()
+    expect(files(w.briefRuns()[1])).toEqual(['--files=src/Kernel.php', '--files=src/Router.php'])
+    expect(files(w.briefRuns()[2])).toEqual(['--files=src/Kernel.php', '--files=src/Other.php', '--files=src/Router.php'])
+  })
+
+  test('an older, slower dashboard load never lands over a newer one', async ($, on) => {
+    const newer = paneDashboard({
+      snapshot_id: 's2',
+      hubs: [{ name: 'Newer', canonical_name: 'App\\Newer', kind: 'class', in_degree: 50, out_degree: 1, cross_boundary_degree: 0 }],
+    })
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }, { stdout: paneDashboard(), hold: 5_000 }, { stdout: newer }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    // The open's reload is slow; the scan's reload after it reads the newer snapshot.
+    await slash($, '')
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    await w.clock.advance(5_000)
+    await w.clock.settle()
+    const ui = await mountPane($)
+    expect((await ui.find({ key: 'hubs' }))?.text).toContain('Newer')
+    await ui.unmount()
+  })
+
+  test('a closed pane stops the age tick redrawing', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: paneDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await slash($, '')
+    await w.clock.settle()
+    const ui = await mountPane($)
+    await ui.unmount()
+    await slash($, '')
+    await w.clock.settle()
+    const before = w.invalidations.length
+    await w.clock.advance(5_000)
+    expect(w.invalidations.length).toBe(before)
   })
 })

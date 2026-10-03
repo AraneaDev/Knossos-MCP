@@ -28,6 +28,10 @@ describe('notes', () => {
       'knossos: this turn introduced 1 boundary-policy violation (check was truncated; run check_architecture). Fix it before finishing:',
     )
   })
+  it('says a truncated check found nothing it can vouch for', () =>
+    expect(violationNote({ policy: { status: 'evaluated', total: 0, truncated: true, violations: [] } } as never)).toBe(
+      'knossos: the boundary-policy check was truncated; run check_architecture to see violations in the files this turn edited.',
+    ))
   it('says how many violations were left out of the list', () => {
     const note = violationNote({ policy: { status: 'evaluated', total: 3, violations: [
       { policy_id: 'p', source: 'A', target: 'B', source_boundaries: [], target_boundaries: [] },
