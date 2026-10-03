@@ -3,6 +3,7 @@
 #
 # Usage: knossos-run-container.sh <turn-brief|dashboard> <project-dir> [options...]
 #        knossos-run-container.sh component-detail <project-dir> <name>
+#        knossos-run-container.sh scan <project-dir>
 #
 # Emitted by `knossos install-agent-plugin --out`, with __KNOSSOS_IMAGE__ and
 # __KNOSSOS_DATA__ substituted at emit time. Not used in place.
@@ -24,8 +25,13 @@ IMAGE='__KNOSSOS_IMAGE__'
 DATA='__KNOSSOS_DATA__'
 
 # The same bounds as the local wrapper, so a stuck daemon never stalls the mod.
+# The binary's command is the subcommand's name, except `scan`: the pane's
+# rescan runs `knossos rescan`, never `knossos scan`, so it can only rescan an
+# existing project in an allowed root and never create one.
+COMMAND=$SUBCOMMAND
 case "$SUBCOMMAND" in
     turn-brief) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60} ;;
+    scan) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60}; COMMAND=rescan ;;
     # A cold first dashboard of a large project walks the whole graph.
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
@@ -37,6 +43,10 @@ esac
 if [ "$SUBCOMMAND" = component-detail ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in -*) exit 0 ;; esac
+fi
+# scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
+if [ "$SUBCOMMAND" = scan ]; then
+    [ "$#" -eq 0 ] || exit 0
 fi
 
 # The working directory and the argument must name the same place. `docker run`
@@ -74,13 +84,13 @@ if TIMEOUT_BIN="$(find_timeout)"; then
     OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" docker run --rm \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
-        "$IMAGE" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
+        "$IMAGE" "$COMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
     OUTPUT="$(docker run --rm \
         -v "$PROJECT_DIR:$PROJECT_DIR:ro" \
         -v "$DATA:/data" \
-        "$IMAGE" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
+        "$IMAGE" "$COMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 fi
 
 [ -n "$OUTPUT" ] || exit 0

@@ -3,6 +3,7 @@
 #
 # Usage: knossos-run.sh <turn-brief|dashboard> <project-dir> [options...]
 #        knossos-run.sh component-detail <project-dir> <name>
+#        knossos-run.sh scan <project-dir>
 #
 # Every failure exits 0. All but one print nothing: the mod reads silence as
 # "no data", keeps its last figures with their age and asks again later, so a
@@ -19,8 +20,13 @@ shift 2
 # starting directory.
 LIB="$(CDPATH='' cd -- "$(dirname -- "$0")" 2>/dev/null && pwd)/lib.sh"
 
+# The binary's command is the subcommand's name, except `scan`: the pane's
+# rescan runs `knossos rescan`, never `knossos scan`, so it can only rescan an
+# existing project in an allowed root and never create one.
+COMMAND=$SUBCOMMAND
 case "$SUBCOMMAND" in
     turn-brief) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60} ;;
+    scan) LIMIT=${KNOSSOS_RUN_TIMEOUT:-60}; COMMAND=rescan ;;
     # A cold first dashboard of a large project walks the whole graph.
     dashboard) LIMIT=${KNOSSOS_RUN_TIMEOUT:-30} ;;
     component-detail) LIMIT=${KNOSSOS_RUN_TIMEOUT:-15} ;;
@@ -32,6 +38,10 @@ esac
 if [ "$SUBCOMMAND" = component-detail ]; then
     [ "$#" -eq 1 ] || exit 0
     case "$1" in -*) exit 0 ;; esac
+fi
+# scan takes nothing but the project: an option such as `--db=...` would point the write at another graph.
+if [ "$SUBCOMMAND" = scan ]; then
+    [ "$#" -eq 0 ] || exit 0
 fi
 
 CDPATH='' cd -- "$PROJECT_DIR" 2>/dev/null || exit 0
@@ -54,10 +64,10 @@ BIN="$(find_knossos)" || {
 }
 
 if TIMEOUT_BIN="$(find_timeout)"; then
-    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
+    OUTPUT="$("$TIMEOUT_BIN" "$LIMIT" "$BIN" "$COMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 else
     # No timeout tool: the mod's own $.process.run timeoutMs is the bound.
-    OUTPUT="$("$BIN" "$SUBCOMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
+    OUTPUT="$("$BIN" "$COMMAND" "$PROJECT_DIR" "$@" --json 2>/dev/null)" || exit 0
 fi
 
 [ -n "$OUTPUT" ] || exit 0
