@@ -184,7 +184,7 @@ function sampleSession(d, first) {
     changed_files: files.map(f => f.path),
     added_files: ['hooks/lib/changes.ts'],
     deleted_files: ['hooks/lib/legacy.ts'],
-    impact: { ...Object.fromEntries(files.map(f => [f.path, f])), 'hooks/lib/changes.ts': { path: 'hooks/lib/changes.ts', dependent_files: 2, boundaries: ['hooks'] } },
+    impact: { ...Object.fromEntries(files.map(f => [f.path, f])), 'hooks/lib/changes.ts': { path: 'hooks/lib/changes.ts', dependent_files: 2, boundaries: ['module:hooks'], boundary: 'module:hooks' } },
     tests: [
       { path: 'tests/phpunit/Query/DashboardServiceTest.php', distance: 2 },
       { path: 'tests/phpunit/Query/TurnBriefServiceTest.php', distance: 1 },
