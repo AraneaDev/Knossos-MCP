@@ -7,11 +7,15 @@
  * bullets, arrows, the ellipsis) is one cell wide, and names come from source
  * identifiers, so a code point is a cell.
  *
+ * Bars are thin rules (`━`, in half cells) on a faint dotted track, so a
+ * column of them reads as a set of gauges rather than a block of colour.
+ *
  * As the width shrinks a table gives way in a fixed order: its bars shorten
  * to a minimum, then names are cut with an ellipsis, then the boundary column
  * goes, then the bars go. The numbers always stay.
  */
-import { ACCENT, boundaryColour, boundaryLabel, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, FAINT, HEADING, NO_HUES, SECONDARY } from './palette'
+import type { Hues } from './palette'
 
 /** A pressable segment: drawn as a plain Button, `hotkey: label` when it has a hotkey. */
 export type Press = { id: string; label: string; hotkey?: string }
@@ -19,9 +23,15 @@ export type Press = { id: string; label: string; hotkey?: string }
 export type Field = { id: string; value: string; placeholder: string }
 /**
  * How a segment draws as cells of a terminal `Raster` instead of as text:
- * each of its cells shows `glyph` on the background `bg` (`#rrggbb`).
+ * each of its cells shows `glyph` in `fg` (else the segment's colour) on
+ * `bg` (else the terminal's own); colours are theme keys the Raster
+ * resolves, or `#rrggbb`.
  */
-export type Cell = { glyph: string; bg: string }
+export type Cell = { glyph: string; fg?: string; bg?: string }
+/**
+ * A run of text in one style. `color` is a Claude Code theme key (see
+ * `palette.ts`); `dim` marks secondary text, drawn in the theme's `inactive`.
+ */
 export type Segment = { text: string; color?: string; dim?: boolean; bold?: boolean; press?: Press; field?: Field; cell?: Cell }
 /**
  * One line of the pane. Consecutive rows with the same `raster` key form a
@@ -31,8 +41,10 @@ export type Segment = { text: string; color?: string; dim?: boolean; bold?: bool
 export type Row = { key: string; segments: Segment[]; raster?: string }
 
 export const BAR_MIN = 4
-/** The longest bar drawn: a wider column leaves the rest of it empty. */
-export const BAR_MAX = 40
+/** The widest a bar column grows: past it the names take the room, so bars, boundary and numbers stay together on the right. */
+export const BAR_MAX = 24
+/** The glyph a bar's empty part (its track) is drawn with, faint. */
+export const TRACK = '·'
 export const NAME_MIN = 8
 const NAME_MAX = 32
 const BOUNDARY_MAX = 12
@@ -73,16 +85,18 @@ export function placeOf(path: string | null, line: number | null): string {
   return line === null ? baseName(path) : `${baseName(path)}:${line}`
 }
 
-const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
+/** A whole cell of a bar, and its left half. */
+export const BAR_FULL = '━'
+export const BAR_HALF = '╸'
 
 /**
  * A horizontal bar for `value` out of `max` in at most `width` cells, in
- * eighth blocks. Anything above zero shows at least a sliver.
+ * half cells. Anything above zero shows at least a half.
  */
 export function bar(value: number, max: number, width: number): string {
   if (width <= 0 || max <= 0 || value <= 0) return ''
-  const eighths = Math.max(1, Math.round((Math.min(value, max) / max) * width * 8))
-  return '█'.repeat(Math.floor(eighths / 8)) + EIGHTHS[eighths % 8]
+  const halves = Math.max(1, Math.round((Math.min(value, max) / max) * width * 2))
+  return BAR_FULL.repeat(Math.floor(halves / 2)) + (halves % 2 === 1 ? BAR_HALF : '')
 }
 
 /** A pressable segment; its text is what the terminal draws for it. */
@@ -92,9 +106,15 @@ export function button(id: string, label: string, hotkey?: string, style: Omit<S
 }
 
 /** The colour a boundary's things are drawn in, or dim for none. */
-export const boundaryStyle = (boundary: string | null): Pick<Segment, 'color' | 'dim'> => {
-  const colour = boundaryColour(boundary)
+export const boundaryStyle = (boundary: string | null, hues: Hues = NO_HUES): Pick<Segment, 'color' | 'dim'> => {
+  const colour = boundaryColour(boundary, hues)
   return colour ? { color: colour } : { dim: true }
+}
+
+/** How a segment's `Text` is styled: its colour, else `inactive` when dim; bold. */
+export function textStyle(s: Segment): { color?: string; bold?: boolean } {
+  const color = s.color ?? (s.dim ? SECONDARY : undefined)
+  return { ...(color === undefined ? {} : { color }), ...(s.bold ? { bold: true } : {}) }
 }
 
 /**
@@ -214,9 +234,9 @@ export function wrapGroups(key: string, groups: Segment[][], columns: number, ga
   return rows
 }
 
-/** A section header: its title in bold capitals, a note against the right edge when it fits. */
+/** A section header: its title in bold, a note against the right edge when it fits. */
 export function sectionRow(key: string, title: string, note: string, columns: number): Row {
-  const head: Segment = { text: fit(title.toUpperCase(), columns), bold: true }
+  const head: Segment = { text: fit(title, columns), bold: true, color: HEADING }
   return spread(key, [head], note === '' ? [] : [{ text: note, dim: true }], columns)
 }
 
@@ -240,7 +260,7 @@ export function tableSpec(columns: number, names: string[], boundaries: string[]
     const boundary = withBoundary && boundaryNeed > 0 ? boundaryNeed : 0
     const avail = columns - fixed - (boundary > 0 ? boundary + 1 : 0)
     if (!withBar) return avail >= Math.min(NAME_MIN, nameNeed) ? { name: avail, boundary, bar: 0, numbers } : null
-    const barWidth = Math.max(BAR_MIN, avail - 1 - nameNeed)
+    const barWidth = Math.min(BAR_MAX, Math.max(BAR_MIN, avail - 1 - nameNeed))
     const name = avail - 1 - barWidth
     return name >= Math.min(NAME_MIN, nameNeed) ? { name, boundary, bar: barWidth, numbers } : null
   }
@@ -276,12 +296,12 @@ export type TableLine = {
 }
 
 /** One table row: marker, name (pressable when it has an id), boundary, bar and numbers. */
-export function tableRow(key: string, line: TableLine, spec: TableSpec): Row {
-  const style = boundaryStyle(line.boundary)
+export function tableRow(key: string, line: TableLine, spec: TableSpec, hues: Hues = NO_HUES): Row {
+  const style = boundaryStyle(line.boundary, hues)
   const name = line.cutStart ? fitStart(line.name, spec.name) : fit(line.name, spec.name)
   const segments: Segment[] = [
     { text: line.selected ? '›' : ' ', color: ACCENT, bold: true },
-    { text: line.hotspotOnly ? '◆' : ' ', color: STATUS_COLOURS.warn },
+    { text: line.hotspotOnly ? '◆' : ' ', dim: true },
     { text: ' ' },
     line.press === undefined ? { text: name } : button(line.press, name),
     { text: spaces(spec.name - cells(name)) },
@@ -291,10 +311,10 @@ export function tableRow(key: string, line: TableLine, spec: TableSpec): Row {
     segments.push({ text: ' ' }, { text: padEnd(label, spec.boundary), ...style })
   }
   if (spec.bar > 0) {
-    const glyphs = bar(line.barValue ?? line.values[0] ?? 0, line.max, Math.min(spec.bar, BAR_MAX))
-    segments.push({ text: ' ' }, { text: glyphs, ...style }, { text: spaces(spec.bar - cells(glyphs)) })
+    const glyphs = bar(line.barValue ?? line.values[0] ?? 0, line.max, spec.bar)
+    segments.push({ text: ' ' }, { text: glyphs, ...style }, { text: TRACK.repeat(spec.bar - cells(glyphs)), color: FAINT })
   }
-  spec.numbers.forEach((w, i) => segments.push({ text: ` ${padStart(String(line.values[i] ?? 0), w)}`, ...(i > 0 ? { dim: true } : {}) }))
+  spec.numbers.forEach((w, i) => segments.push({ text: ` ${padStart(String(line.values[i] ?? 0), w)}`, color: HEADING }))
   return { key, segments: segments.filter(s => s.text !== '') }
 }
 

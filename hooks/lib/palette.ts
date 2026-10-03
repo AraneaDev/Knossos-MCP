@@ -1,29 +1,66 @@
 /**
- * The pane's colours: one fixed palette for boundaries, three status colours,
- * and an accent for the selection. Kept apart from the layout so every view
- * colours a boundary the same way.
+ * The pane's colours, as Claude Code theme keys. A theme key follows the
+ * person's theme (dark, light, daltonized, ANSI), so the pane matches the
+ * rest of the screen instead of carrying a palette of its own.
+ *
+ * Colour carries meaning only: a boundary, a status, the selection. Every
+ * other thing is neutral: headings in `text`, secondary text in `inactive`,
+ * tracks, rules and empty cells in `subtle`. One accent, `suggestion`, marks
+ * the selection, the active tab and the heat map.
+ *
+ * Kept apart from the layout so every view colours a boundary the same way.
  */
+import type { Dashboard } from '../../types'
 
-/**
- * Eight colours a dark or light terminal tells apart, none of them the
- * status red, yellow or green, so a boundary never reads as a verdict.
- */
-export const BOUNDARY_COLOURS = [
-  '#7aa2f7',
-  '#bb9af7',
-  '#7dcfff',
-  '#e0af68',
-  '#73daca',
-  '#ff9e64',
-  '#ff79c6',
-  '#a9b665',
-] as const
+/** Headings and numbers. */
+export const HEADING = 'text'
+/** Secondary text: notes, column titles, labels before a value. */
+export const SECONDARY = 'inactive'
+/** The faintest ink: bar tracks, rules, an empty heat cell. */
+export const FAINT = 'subtle'
+/** The selection marker, the active tab and the heat map's hue. */
+export const ACCENT = 'suggestion'
 
-export const STATUS_COLOURS = { ok: 'green', warn: 'yellow', alert: 'red' } as const
+export const STATUS_COLOURS = { ok: 'success', warn: 'warning', alert: 'error' } as const
 export type Tone = keyof typeof STATUS_COLOURS
 
-/** The selection marker and the active tab. */
-export const ACCENT = '#7dcfff'
+/**
+ * The eight colours Claude Code tells subagents apart by, themed per theme.
+ * Blue first, red last: the largest boundaries get the colours least like a
+ * status, so a boundary rarely reads as a verdict.
+ */
+export const BOUNDARY_COLOURS = [
+  'blue_FOR_SUBAGENTS_ONLY',
+  'purple_FOR_SUBAGENTS_ONLY',
+  'cyan_FOR_SUBAGENTS_ONLY',
+  'orange_FOR_SUBAGENTS_ONLY',
+  'pink_FOR_SUBAGENTS_ONLY',
+  'green_FOR_SUBAGENTS_ONLY',
+  'yellow_FOR_SUBAGENTS_ONLY',
+  'red_FOR_SUBAGENTS_ONLY',
+] as const
+
+/** Each boundary's colour by its full name: the project's largest boundaries, largest first. */
+export type Hues = ReadonlyMap<string, string>
+export const NO_HUES: Hues = new Map()
+
+/**
+ * The project's boundaries in a stable order, the first eight each given a
+ * colour of their own: declared boundaries first (the ones a person named
+ * and counts), then inferred ones, each group largest first, ties by name.
+ * Sizes come from the boundary list and the dependency matrix, whichever
+ * counts more.
+ */
+export function huesOf(d: Pick<Dashboard, 'boundaries' | 'boundary_matrix'>): Hues {
+  const sizes = new Map<string, number>()
+  const add = (name: string, members: number) => sizes.set(name, Math.max(members, sizes.get(name) ?? 0))
+  d.boundaries?.items.forEach(b => add(b.name, b.members))
+  d.boundary_matrix?.boundaries.forEach((name, i) => add(name, d.boundary_matrix?.members[i] ?? 0))
+  const declared = new Set(d.boundaries?.items.filter(b => b.source === 'explicit').map(b => b.name))
+  const rank = (name: string) => (declared.has(name) ? 0 : 1)
+  const order = [...sizes.entries()].sort((a, b) => rank(a[0]) - rank(b[0]) || b[1] - a[1] || a[0].localeCompare(b[0])).map(([name]) => name)
+  return new Map(order.slice(0, BOUNDARY_COLOURS.length).map((name, i) => [name, BOUNDARY_COLOURS[i]!]))
+}
 
 /** FNV-1a over the UTF-16 code units: stable across runs and machines. */
 function hash(text: string): number {
@@ -35,10 +72,14 @@ function hash(text: string): number {
   return h
 }
 
-/** A boundary's colour, by its full name; undefined (drawn dim) for none. */
-export function boundaryColour(name: string | null | undefined): string | undefined {
+/**
+ * A boundary's colour, by its full name: its place among the project's
+ * largest, else one picked by its name (a boundary past the eighth, or one
+ * the dashboard did not list); undefined (drawn neutral) for none.
+ */
+export function boundaryColour(name: string | null | undefined, hues: Hues = NO_HUES): string | undefined {
   if (name === null || name === undefined || name === '') return undefined
-  return BOUNDARY_COLOURS[hash(name) % BOUNDARY_COLOURS.length]
+  return hues.get(name) ?? BOUNDARY_COLOURS[hash(name) % BOUNDARY_COLOURS.length]
 }
 
 /**

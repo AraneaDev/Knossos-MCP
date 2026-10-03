@@ -9,7 +9,8 @@ import { allowInput, askPrompt, CONTENT_MAX, detailInput, emptyRows, listFor, pa
 import type { Openable, PaneInput, Row } from './lib/layout'
 import { editNote, fanInIndex, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
-import { rasterOf } from './lib/raster'
+import { rasterOf, rasterTheme } from './lib/raster'
+import { textStyle } from './lib/rows'
 import { SingleFlight } from './lib/scheduler'
 import type { AllowState, DetailState, Inspected, KnossosView, PaneTab, RefreshState, RescanState } from '../types'
 
@@ -53,6 +54,8 @@ const detail = atom({ plugin: 'knossos', key: 'detail' } as const, null as Detai
 const refresh = atom({ plugin: 'knossos', key: 'refresh' } as const, { fetchedAt: null, failed: false } as RefreshState)
 const rescan = atom({ plugin: 'knossos', key: 'rescan' } as const, { phase: 'idle', reason: null } as RescanState)
 const allow = atom({ plugin: 'knossos', key: 'allow' } as const, { phase: 'idle', root: null, reason: null } as AllowState)
+/** The person's Claude Code theme by name (`dark`, `light`, ...): what the heat map's raw colours are resolved for. */
+const theme = atom({ plugin: 'knossos', key: 'theme' } as const, 'dark' as string)
 
 /** The edited file's path from an edit tool's input: `notebook_path` for NotebookEdit. */
 function editedPath(e: object): string | null {
@@ -207,10 +210,20 @@ async function loadDashboard($: EngineInterface): Promise<void> {
 }
 
 /**
+ * Stores the person's theme from `/config`, for the colours a Raster cannot
+ * take as theme keys. A config that cannot be read leaves the dark default.
+ */
+async function readTheme($: EngineInterface): Promise<void> {
+  const row = (await $.config.list().catch(() => [])).find(r => r.key === 'theme')
+  if (typeof row?.value === 'string') await update($, theme, () => row.value as string)
+}
+
+/**
  * The first dashboard. A silent one is not a reason to stop: the next dirty
  * turn asks again. Only the wrapper's `no-binary` turns the mod off.
  */
 async function startUp($: EngineInterface, openOnStart: boolean): Promise<void> {
+  await readTheme($)
   const stored = await refreshDashboard($)
   if (mod.disabled) return
   mod.ticker ??= $.clock.every(AGE_TICK_MS, () => void tickAge($).catch(() => undefined))
@@ -637,13 +650,7 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
             onPress={pressed => press(s.press!.id, pressed.surface)}
           />
         ) : (
-          <Text
-            key={`${row.key}-${i}`}
-            wrap="truncate-end"
-            {...(s.color === undefined ? {} : { color: s.color })}
-            {...(s.dim ? { dimColor: true } : {})}
-            {...(s.bold ? { bold: true } : {})}
-          >
+          <Text key={`${row.key}-${i}`} wrap="truncate-end" {...textStyle(s)}>
             {s.text}
           </Text>
         ),
@@ -657,7 +664,7 @@ function drawRow($: EngineInterface, ui: Elements[RenderSurface], row: Row, pres
  * a `raster` key (the heat map) are one `Raster` of coloured cells; every
  * other surface draws them as text, glyphs and colours alike.
  */
-function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boolean, rows: Row[], press: (id: string, surface?: RenderSurface) => void) {
+function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boolean, themeName: string, rows: Row[], press: (id: string, surface?: RenderSurface) => void) {
   const drawn = []
   for (let i = 0; i < rows.length; i++) {
     const block = rows[i]!.raster
@@ -669,7 +676,7 @@ function drawRows($: EngineInterface, ui: Elements[RenderSurface], terminal: boo
     while (end + 1 < rows.length && rows[end + 1]!.raster === block) end++
     const grid = rows.slice(i, end + 1)
     const { Raster } = ui as Elements['terminal']
-    const raster = rasterOf(grid, Math.max(1, ...grid.map(rowWidth)))
+    const raster = rasterOf(grid, Math.max(1, ...grid.map(rowWidth)), rasterTheme(themeName))
     drawn.push(<Raster key={`raster-${block}`} columns={raster.columns} rows={raster.rows} cells={raster.cells} />)
     i = end
   }
@@ -745,10 +752,10 @@ export const register: Register = (on, options) => {
     mod.bandText = model?.text ?? null
     if (model === null) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
-    const color = model.tone === 'alert' ? 'red' : model.tone === 'warn' ? 'yellow' : undefined
+    const color = model.tone === 'alert' ? 'error' : model.tone === 'warn' ? 'warning' : 'inactive'
     return (
       <Box key="band">
-        <Text color={color} dimColor={model.tone === 'normal'}>
+        <Text color={color}>
           {model.text}{' '}
         </Text>
         {model.showDetails && (
@@ -757,6 +764,14 @@ export const register: Register = (on, options) => {
         <Button key="hide" label="hide" onPress={() => update($, view, v => ({ ...v, isBandHidden: true }))} />
       </Box>
     )
+  })
+
+  // A theme picked in /config redraws the heat map in its colours.
+  on('config.set', { key: 'theme' }, async ($, e, next) => {
+    const set = await next(e)
+    const value = set.value
+    if (set.deny === undefined && typeof value === 'string') await update($, theme, () => value)
+    return set
   })
 
   on('command.run', { command: 'knossos-pane' }, async ($, e) => ({ text: await runCommand($, e.args) }))
@@ -796,7 +811,7 @@ export const register: Register = (on, options) => {
     // A press that outlives the session (a teardown under it) fails quietly.
     return (
       <Box key={v.inspect === null ? 'pane' : 'detail'} flexDirection="column">
-        {drawRows($, ui, e.surface === 'terminal', paneRows(input, columns), press)}
+        {drawRows($, ui, e.surface === 'terminal', await read($, theme), paneRows(input, columns), press)}
       </Box>
     )
   })

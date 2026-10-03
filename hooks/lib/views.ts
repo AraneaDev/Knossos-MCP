@@ -9,12 +9,14 @@
  */
 import type { ComponentDetail, Counterpart, Dashboard, DetailState, Inspected } from '../../types'
 import { countLabel, detailLines } from './envelopes'
-import { ACCENT, boundaryColour, boundaryLabel, STATUS_COLOURS } from './palette'
+import { ACCENT, boundaryColour, boundaryLabel, NO_HUES, STATUS_COLOURS } from './palette'
+import type { Hues } from './palette'
 import {
   blank,
   boundaryStyle,
   button,
   cells,
+  clip,
   dimRow,
   displayName,
   fit,
@@ -206,7 +208,7 @@ function entrySpec(columns: number, entries: Entry[]): EntrySpec {
   return attempt(boundaryNeed, placeNeed) ?? attempt(0, placeNeed) ?? attempt(0, 0) ?? { main: Math.max(1, columns - MARK), boundary: 0, place: 0 }
 }
 
-function entryRow(key: string, e: Entry, spec: EntrySpec): Row {
+function entryRow(key: string, e: Entry, spec: EntrySpec, hues: Hues): Row {
   const main = e.main(spec.main)
   const used = main.reduce((n, s) => n + cells(s.text), 0)
   const segments: Segment[] = [
@@ -216,7 +218,7 @@ function entryRow(key: string, e: Entry, spec: EntrySpec): Row {
     ...main,
     { text: spaces(spec.main - used) },
   ]
-  if (spec.boundary > 0) segments.push({ text: ' ' }, { text: padEnd(fit(boundaryLabel(e.boundary ?? null), spec.boundary), spec.boundary), ...boundaryStyle(e.boundary ?? null) })
+  if (spec.boundary > 0) segments.push({ text: ' ' }, { text: padEnd(fit(boundaryLabel(e.boundary ?? null), spec.boundary), spec.boundary), ...boundaryStyle(e.boundary ?? null, hues) })
   if (spec.place > 0) segments.push({ text: ` ${padStart(fitStart(e.place, spec.place), spec.place)}`, dim: true })
   return { key, segments: segments.filter(s => s.text !== '') }
 }
@@ -233,7 +235,7 @@ function pair(a: string, b: string, width: number): [string, string] {
 const none = (key: string): Row => ({ key, segments: [{ text: '   none', dim: true }] })
 
 /** The Issues tab: policy violations, diagnostics, dead code and the largest files, each a short list. */
-export function issueRows(issues: IssuesInput, selected: number, columns: number): Row[] {
+export function issueRows(issues: IssuesInput, selected: number, columns: number, hues: Hues = NO_HUES): Row[] {
   const rows: Row[] = []
   const policy = issues.policy
   const violations = policy?.items ?? []
@@ -246,7 +248,7 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
         : policy.count === 0
           ? [{ text: '✓ 0', color: STATUS_COLOURS.ok }]
           : [{ text: `▲ ${policy.total}`, color: STATUS_COLOURS.alert }]
-  rows.push(blank('gap-policy'), spread('policy-head', [{ text: fit('POLICY VIOLATIONS', columns), bold: true }], verdict, columns))
+  rows.push(blank('gap-policy'), spread('policy-head', [{ text: fit('Policy violations', columns), bold: true, color: 'text' }], verdict, columns))
   const violationEntries: Entry[] = violations.map((v, i) => ({
     selected: i === selected,
     mark: { text: '▲', color: STATUS_COLOURS.alert },
@@ -254,11 +256,11 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
     place: v.place,
     main: width => {
       const [a, b] = pair(v.source.name, v.target, width)
-      return [button(`row:${i}`, a), { text: ' → ', dim: true }, { text: b, ...boundaryStyle(v.targetBoundary) }]
+      return [button(`row:${i}`, a), { text: ' → ', dim: true }, { text: b, ...boundaryStyle(v.targetBoundary, hues) }]
     },
   }))
   const vSpec = entrySpec(columns, violationEntries)
-  violationEntries.forEach((e, i) => rows.push(entryRow(`pol-${i}`, e, vSpec)))
+  violationEntries.forEach((e, i) => rows.push(entryRow(`pol-${i}`, e, vSpec, hues)))
   if (policy !== null && policy.evaluated && policy.count > violations.length) rows.push(dimRow('pol-more', `   +${policy.count - violations.length} more`, columns))
 
   // Diagnostics.
@@ -274,7 +276,7 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
     main: width => [{ text: fit(x.text, width) }],
   }))
   const dSpec = entrySpec(columns, diagEntries)
-  diagEntries.forEach((e, i) => rows.push(entryRow(`diag-${i}`, e, dSpec)))
+  diagEntries.forEach((e, i) => rows.push(entryRow(`diag-${i}`, e, dSpec, hues)))
   if (d !== null && d.items.length === 0 && d.errors + d.warnings === 0) rows.push(none('diag-none'))
 
   // Dead code.
@@ -290,7 +292,7 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
     main: width => [button(`row:${offset + i}`, fit(c.name, width))],
   }))
   const deadSpec = entrySpec(columns, deadEntries)
-  deadEntries.forEach((e, i) => rows.push(entryRow(`dead-${i}`, e, deadSpec)))
+  deadEntries.forEach((e, i) => rows.push(entryRow(`dead-${i}`, e, deadSpec, hues)))
   if (dead.items.length === 0) rows.push(none('dead-none'))
 
   // Largest files.
@@ -298,30 +300,48 @@ export function issueRows(issues: IssuesInput, selected: number, columns: number
   if (issues.largest.length === 0) rows.push(none('large-none'))
   const spec = tableSpec(columns, issues.largest.map(f => f.path), [], [numberWidth('lines', issues.largest.map(f => f.lines))], 56)
   const max = Math.max(0, ...issues.largest.map(f => f.lines))
-  issues.largest.forEach((f, i) => rows.push(tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true }, spec)))
+  issues.largest.forEach((f, i) => rows.push(tableRow(`large-${i}`, { name: f.path, boundary: null, values: [f.lines], max, cutStart: true }, spec, hues)))
   return rows
 }
 
-/** The Cycles tab: each cycle, largest first, as a chain of names in their boundary's colour, wrapped to width. */
-export function cycleRows(input: CyclesInput, columns: number): Row[] {
+/** The boundary most of a cycle's members are in (the first such, on a tie), or null when none has one. */
+function homeBoundary(cycle: CycleLine): string | null {
+  const counts = new Map<string, number>()
+  for (const node of cycle.nodes) if (node.boundary !== null) counts.set(node.boundary, (counts.get(node.boundary) ?? 0) + 1)
+  let home: string | null = null
+  for (const [name, n] of counts) if (home === null || n > counts.get(home)!) home = name
+  return home
+}
+
+/**
+ * The Cycles tab: each cycle, largest first, as a chain of names wrapped to
+ * width, under a line naming the boundary most of its members are in. Members
+ * outside that boundary are drawn in their own boundary's colour.
+ */
+export function cycleRows(input: CyclesInput, columns: number, hues: Hues = NO_HUES): Row[] {
   const shown = input.cycles.length
   const note = shown === 0 ? 'none' : `${input.count}${String(shown) === input.count ? '' : ` · ${shown} shown`} · largest first`
   const rows: Row[] = [blank('gap-cycles'), sectionRow('cycles-head', 'Cycles', note, columns)]
   if (shown === 0) return [...rows, { key: 'cycles-none', segments: [{ text: '   No dependency cycles.', dim: true }] }]
-  // A legend: which colour is which boundary, in the order they first appear.
+  // A legend for the members drawn in colour (those outside their cycle's own boundary), in the order they first appear.
   const seen = new Map<string, Segment[]>()
-  for (const node of input.cycles.flatMap(c => c.nodes)) {
+  for (const node of input.cycles.flatMap(c => c.nodes.filter(n => n.boundary !== homeBoundary(c)))) {
     if (node.boundary === null || seen.has(node.boundary)) continue
-    seen.set(node.boundary, [{ text: `■ ${boundaryLabel(node.boundary)}`, color: boundaryColour(node.boundary) }])
+    seen.set(node.boundary, [{ text: `■ ${boundaryLabel(node.boundary)}`, color: boundaryColour(node.boundary, hues) }])
   }
   if (seen.size > 0) rows.push(...wrapGroups('cycles-legend', [...seen.values()], columns, 2, MARK))
   input.cycles.forEach((cycle, i) => {
-    rows.push(blank(`gap-cycle-${i}`), { key: `cycle-${i}`, segments: [{ text: fit(`   cycle ${i + 1} · ${plural(cycle.size, 'member', 'members')}`, columns), dim: true }] })
+    // The boundary most members share is named once, in its colour; only members outside it are coloured: they are where the cycle crosses.
+    const home = homeBoundary(cycle)
+    const head: Segment[] = [{ text: `   cycle ${i + 1} · ${plural(cycle.size, 'member', 'members')}`, dim: true }]
+    if (home !== null) head.push({ text: ' · ', dim: true }, { text: boundaryLabel(home), ...boundaryStyle(home, hues) })
+    rows.push(blank(`gap-cycle-${i}`), { key: `cycle-${i}`, segments: clip(head, columns) })
     const room = Math.max(1, columns - MARK - 2)
     const groups: Segment[][] = cycle.nodes.map((node, j) => {
       const last = j === cycle.nodes.length - 1
       const tail = last ? (cycle.more > 0 ? ' →' : ' ↺') : ' →'
-      return [{ text: fit(node.name, room), ...boundaryStyle(node.boundary) }, { text: tail, dim: true }]
+      const style = node.boundary === home ? {} : boundaryStyle(node.boundary, hues)
+      return [{ text: fit(node.name, room), ...style }, { text: tail, dim: true }]
     })
     if (cycle.more > 0) groups.push([{ text: `… +${cycle.more} more`, dim: true }])
     rows.push(...wrapGroups(`chain-${i}`, groups, columns, 1, MARK))
@@ -330,7 +350,7 @@ export function cycleRows(input: CyclesInput, columns: number): Row[] {
 }
 
 /** One side of the detail ("used by" or "uses") as a small table in `width` columns. */
-function sideRows(prefix: string, side: Side, offset: number, width: number): Row[] {
+function sideRows(prefix: string, side: Side, offset: number, width: number, hues: Hues): Row[] {
   const rows: Row[] = [sectionRow(`${prefix}-head`, `${side.title} ${side.count}`, side.items.some(i => i.edges > 0) ? 'edges' : '', width)]
   if (side.items.length === 0) return [...rows, none(`${prefix}-none`)]
   const counted = side.items.some(i => i.edges > 0)
@@ -339,7 +359,7 @@ function sideRows(prefix: string, side: Side, offset: number, width: number): Ro
     : { ...tableSpec(width, side.items.map(i => i.name), [], []), bar: 0 }
   const max = Math.max(0, ...side.items.map(i => i.edges))
   side.items.forEach((item, i) =>
-    rows.push(tableRow(`${prefix}-${i}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + i}` }, spec)),
+    rows.push(tableRow(`${prefix}-${i}`, { name: item.name, boundary: item.boundary, values: counted ? [item.edges] : [], max, press: `rel:${offset + i}` }, spec, hues)),
   )
   const count = Number.parseInt(side.count, 10)
   if (count > side.items.length) rows.push(dimRow(`${prefix}-more`, `   +${count - side.items.length} more`, width))
@@ -358,27 +378,27 @@ function besideRows(left: Row[], right: Row[], leftWidth: number, gap: number): 
 }
 
 /** The detail of one component: what it is, where, who uses it and what it uses, and its annotations. */
-export function detailRows(detail: DetailInput, columns: number): Row[] {
+export function detailRows(detail: DetailInput, columns: number, hues: Hues = NO_HUES): Row[] {
   const c = detail.component
   if (c === null) {
     const lines = detail.loading ? [`Inspecting ${detail.label}…`] : (detail.messages ?? [])
     return [
       blank('gap-detail'),
-      { key: 'detail-name', segments: [{ text: fit(detail.label, columns), bold: true }] },
+      { key: 'detail-name', segments: [{ text: fit(detail.label, columns), bold: true, color: 'text' }] },
       ...lines.flatMap((line, i) => wrapWords(line, columns).map((part, j) => dimRow(`detail-line-${i}-${j}`, part, columns))),
     ]
   }
-  const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, { text: boundaryLabel(c.boundary), ...boundaryStyle(c.boundary) }])]
-  const rows: Row[] = [blank('gap-detail'), spread('detail-name', [{ text: fit(c.name, columns), bold: true }], label, columns)]
+  const label: Segment[] = [{ text: c.kind, dim: true }, ...(c.boundary === null ? [] : [{ text: ' · ', dim: true }, { text: boundaryLabel(c.boundary), ...boundaryStyle(c.boundary, hues) }])]
+  const rows: Row[] = [blank('gap-detail'), spread('detail-name', [{ text: fit(c.name, columns), bold: true, color: 'text' }], label, columns)]
   if (c.place !== null) rows.push(dimRow('detail-place', fitStart(c.place, columns), columns))
   if (c.canonical !== c.name) rows.push(dimRow('detail-canonical', c.canonical, columns))
   rows.push(blank('gap-sides'))
   const usedBy = c.usedBy
   if (columns >= SIDE_BY_SIDE) {
     const half = Math.floor((columns - 2) / 2)
-    rows.push(...besideRows(sideRows('used', usedBy, 0, half), sideRows('uses', c.uses, usedBy.items.length, columns - half - 2), half, 2))
+    rows.push(...besideRows(sideRows('used', usedBy, 0, half, hues), sideRows('uses', c.uses, usedBy.items.length, columns - half - 2, hues), half, 2))
   } else {
-    rows.push(...sideRows('used', usedBy, 0, columns), blank('gap-uses'), ...sideRows('uses', c.uses, usedBy.items.length, columns))
+    rows.push(...sideRows('used', usedBy, 0, columns, hues), blank('gap-uses'), ...sideRows('uses', c.uses, usedBy.items.length, columns, hues))
   }
   if (c.annotations.length > 0) {
     rows.push(blank('gap-notes'), sectionRow('notes-head', 'Annotations', '', columns))

@@ -1183,7 +1183,7 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const detail = (await ui.find({ key: 'detail' }))?.text
     expect(detail).toContain('App\\Router')
-    expect(detail).toMatch(/USED BY 1 *Kernel/)
+    expect(detail).toMatch(/Used by 1 *Kernel/)
     expect(w.detailRuns()).toEqual([
       ['sh', expect.stringMatching(/\/hooks\/scripts\/knossos-run\.sh$/), 'component-detail', ROOT, 'App\\Router'],
     ])
@@ -1438,12 +1438,12 @@ describe('knossos mod', () => {
       expect((await ui.find({ key: 'tab:issues' }))?.text).toBe('Issues ³')
       await ui.press({ key: 'tab:issues' })
       const text = (await ui.find({ key: 'pane' }))?.text ?? ''
-      expect(text).toMatch(/POLICY VIOLATIONS *▲ 2/)
+      expect(text).toMatch(/Policy violations *▲ 2/)
       expect(text).toContain('Kernel::boot')
       expect(text).toContain('Kernel.php:12')
-      expect(text).toMatch(/DIAGNOSTICS *1 error · 0 warnings/)
+      expect(text).toMatch(/Diagnostics *1 error · 0 warnings/)
       expect(text).toContain('PHP001 Syntax error')
-      expect(text).toMatch(/DEAD CODE *4 · first 1/)
+      expect(text).toMatch(/Dead code *4 · first 1/)
       expect(text).toContain('Router::unused')
       expect(text).toContain('src/Http/Router.php')
       expect((await ui.find({ key: 'pol-0' }))?.text).toMatch(/^›/)
@@ -1457,7 +1457,7 @@ describe('knossos mod', () => {
     await ui.press({ key: 'row:0' })
     await w.clock.settle()
     expect(w.detailRuns()[0]?.slice(4)).toEqual(['App\\Core\\Kernel::boot'])
-    expect((await ui.find({ key: 'detail' }))?.text).toContain('USED BY 2')
+    expect((await ui.find({ key: 'detail' }))?.text).toContain('Used by 2')
     await ui.unmount()
   })
 
@@ -1468,14 +1468,17 @@ describe('knossos mod', () => {
     for (const surface of ['terminal', 'desktop'] as const) {
       const ui = await mountPane($, surface)
       await ui.press({ key: 'tab:cycles' })
-      expect((await ui.find({ key: 'cycles-head' }))?.text).toMatch(/^CYCLES +1 · largest first$/)
+      expect((await ui.find({ key: 'cycles-head' }))?.text).toMatch(/^Cycles +1 · largest first$/)
       expect((await ui.find({ key: 'cycle-0' }))?.text).toContain('cycle 1 · 3 members')
       expect((await ui.find({ key: 'chain-0' }))?.text).toBe('   Kernel::boot → Router::route → Router::dispatch ↺')
       const boot = await ui.find({ type: 'Text', text: 'Kernel::boot' })
       const route = await ui.find({ type: 'Text', text: 'Router::route' })
       expect(boot?.props.color).toBeDefined()
       expect(boot?.props.color).not.toBe(route?.props.color)
-      expect((await ui.find({ key: 'cycles-legend' }))?.text).toBe('   ■ Core  ■ Http')
+      // Most members are in Http: the cycle's line names it; Core, where it crosses, is the one colour on the chain.
+      expect((await ui.find({ key: 'cycle-0' }))?.text).toBe('   cycle 1 · 3 members · Http')
+      expect(route?.props.color).toBeUndefined()
+      expect((await ui.find({ key: 'cycles-legend' }))?.text).toBe('   ■ Core')
       // Nothing to walk: no list keys.
       expect(await ui.find({ key: 'down' })).toBeUndefined()
       await ui.unmount()
@@ -1492,8 +1495,8 @@ describe('knossos mod', () => {
       await w.clock.settle()
       expect((await wide.find({ key: 'detail-name' }))?.text).toMatch(/^Router +class · Http$/)
       expect((await wide.find({ key: 'detail-place' }))?.text).toBe('src/Http/Router.php:3')
-      expect((await wide.find({ key: 'side-0' }))?.text).toMatch(/^USED BY 2 +edges +USES 1 +edges$/)
-      expect((await wide.find({ key: 'side-1' }))?.text).toMatch(/Kernel +Core +█+ +4 +Request +Http +█+ +2$/)
+      expect((await wide.find({ key: 'side-0' }))?.text).toMatch(/^Used by 2 +edges +Uses 1 +edges$/)
+      expect((await wide.find({ key: 'side-1' }))?.text).toMatch(/Kernel +Core +[━╸]+·* +4 +Request +Http +[━╸]+·* +2$/)
       expect((await wide.find({ key: 'detail' }))?.text).toContain('note: The one way in.')
       // The tab strip gives way to the detail; back is a key and a click.
       expect(await wide.find({ key: 'tab:hubs' })).toBeUndefined()
@@ -1501,8 +1504,8 @@ describe('knossos mod', () => {
       await wide.unmount()
       const narrow = await mountPane($, surface)
       expect(await narrow.find({ key: 'side-0' })).toBeUndefined()
-      expect((await narrow.find({ key: 'used-head' }))?.text).toMatch(/^USED BY 2 +edges$/)
-      expect((await narrow.find({ key: 'uses-0' }))?.text).toMatch(/Request +Http +█+ +2$/)
+      expect((await narrow.find({ key: 'used-head' }))?.text).toMatch(/^Used by 2 +edges$/)
+      expect((await narrow.find({ key: 'uses-0' }))?.text).toMatch(/Request +Http +[━╸]+·* +2$/)
       await narrow.press({ key: 'back' })
       expect(await narrow.find({ key: 'detail' })).toBeUndefined()
       await narrow.unmount()
@@ -1620,15 +1623,15 @@ describe('knossos mod', () => {
     await w.clock.settle()
     const term = await mountPane($, 'terminal')
     await term.press({ key: 'tab:boundaries' })
-    expect((await term.find({ key: 'bounds-head' }))?.text).toMatch(/^BOUNDARIES +3 · 232 deps$/)
+    expect((await term.find({ key: 'bounds-head' }))?.text).toMatch(/^Boundaries +3 · 232 deps$/)
     const grid = await term.find({ type: 'Raster' })
     expect(grid?.key).toBe('raster-heat')
-    // The axis letters and one row per boundary, as wide as the widest of them.
-    expect(grid?.props.rows).toBe(4)
+    // The axis letters, one row per boundary and the legend's two rows, as wide as the widest of them.
+    expect(grid?.props.rows).toBe(6)
     expect(grid?.props.columns).toBeLessThanOrEqual(PANE_PROPS.bodyColumns)
     expect(typeof grid?.props.cells).toBe('string')
     expect(await term.find({ key: 'heat-1' })).toBeUndefined()
-    expect((await term.find({ key: 'bounds-1' }))?.text).toMatch(/^ {3}B Core +[█▏▎▍▌▋▊▉]+ +30 +14 +3$/)
+    expect((await term.find({ key: 'bounds-1' }))?.text).toMatch(/^ {3}B Core +[━╸]+·* +30 +14 +3$/)
     await term.unmount()
 
     const desk = await mountPane($, 'desktop')
@@ -1638,14 +1641,43 @@ describe('knossos mod', () => {
     const core = await desk.find({ key: 'heat-1' })
     expect(core?.text).toMatch(/^ {3}B Core +▒+ +█+ +× +$/)
     // Core reaching into Http is forbidden and crossed: red; the empty forbidden cell is a red cross.
-    const crossed = await desk.find({ type: 'Text', text: '▒▒▒▒▒' })
-    expect(crossed?.props.color).toBe('red')
+    const crossed = await desk.find({ type: 'Text', text: '▒▒' })
+    expect(crossed?.props.color).toBe('error')
     expect((await desk.find({ key: 'heat-legend' }))?.text).toContain('forbidden')
+    expect(await desk.find({ key: 'heat-legend-1' })).toBeDefined()
     expect((await desk.find({ key: 'heat-2' }))?.text).toMatch(/^ {3}C cli /)
     // Nothing to walk, copy or ask about on this tab.
     expect(await desk.find({ key: 'down' })).toBeUndefined()
     expect(await desk.find({ key: 'copy' })).toBeUndefined()
     await desk.unmount()
+  })
+
+  test('the heat map is drawn in the theme colours, and follows a theme picked in /config', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: boundariesDashboard() }] })
+    // Stands in for the config writer beneath the mod: the row takes the value it is given.
+    on('config.set', (_$, e) => ({ value: e.value }))
+    await $.session.start(START)
+    await w.clock.settle()
+    /** Every foreground the grid draws with, as 0xRRGGBB. */
+    const foregrounds = async (ui: Awaited<ReturnType<typeof mountPane>>) => {
+      const cells = (await ui.find({ type: 'Raster' }))?.props.cells as string
+      const bytes = Uint8Array.from(atob(cells), c => c.charCodeAt(0))
+      const view = new DataView(bytes.buffer)
+      const out = new Set<number>()
+      for (let i = 4; i < bytes.length; i += 12) out.add(view.getUint32(i, true))
+      return out
+    }
+    const term = await mountPane($, 'terminal')
+    await term.press({ key: 'tab:boundaries' })
+    // The busiest step is the dark theme's accent, the crossed pair its error colour; no raw palette of the mod's own.
+    expect(await foregrounds(term)).toContain(0xb1b9f9)
+    expect(await foregrounds(term)).toContain(0xff6b80)
+    await $.config.set({ key: 'theme', value: 'light' })
+    await w.clock.settle()
+    expect(await foregrounds(term)).toContain(0x5769f7)
+    expect(await foregrounds(term)).toContain(0xab2b3f)
+    expect(await foregrounds(term)).not.toContain(0xb1b9f9)
+    await term.unmount()
   })
 
   test('c copies the marked component on the surface it was pressed on', async ($, on) => {

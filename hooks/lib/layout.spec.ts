@@ -125,14 +125,14 @@ describe('fit and bar', () => {
     expect(fit('StableId', 5)).toBe('Stab…')
     expect(fit('StableId', 0)).toBe('')
   })
-  it('draws a bar in eighth blocks scaled to the maximum', () => {
-    expect(bar(10, 10, 4)).toBe('████')
-    expect(bar(5, 10, 4)).toBe('██')
-    expect(bar(1, 16, 2)).toBe('▏')
-    expect(bar(3, 16, 2)).toBe('▍')
+  it('draws a thin bar in half cells scaled to the maximum', () => {
+    expect(bar(10, 10, 4)).toBe('━━━━')
+    expect(bar(5, 10, 4)).toBe('━━')
+    expect(bar(1, 4, 2)).toBe('╸')
+    expect(bar(3, 4, 2)).toBe('━╸')
   })
-  it('gives any non-zero value a sliver and zero nothing', () => {
-    expect(bar(1, 100_000, 10)).toBe('▏')
+  it('gives any non-zero value a half cell and zero nothing', () => {
+    expect(bar(1, 100_000, 10)).toBe('╸')
     expect(bar(0, 10, 10)).toBe('')
     expect(bar(5, 0, 10)).toBe('')
     expect(bar(5, 10, 0)).toBe('')
@@ -172,7 +172,9 @@ describe('tableSpec', () => {
   it('gives way in order: bars shrink, names truncate, the boundary goes, then the bars', () => {
     const at = (columns: number) => tableSpec(columns, names, boundaries, numbers)
     const full = at(120)
-    expect(full.name).toBe(24)
+    // Bars stop at BAR_MAX; the names take the room past it, so bars and numbers stay together.
+    expect(full.bar).toBe(24)
+    expect(full.name).toBeGreaterThan(24)
     expect(full.boundary).toBe(12)
     const shrinking = at(70)
     expect(shrinking.name).toBe(24)
@@ -227,8 +229,8 @@ describe('paneRows', () => {
   it('degrades the hubs table as the pane narrows', () => {
     const at = (columns: number) => textOf(paneRows(input({ tab: 'hubs' }), columns))
     // Wide: full names, boundary labels and bars.
-    expect(at(90)).toContain('ArchitectureQueryService core')
-    expect(at(90)).toContain('█')
+    expect(at(90)).toMatch(/ArchitectureQueryService +core/)
+    expect(at(90)).toContain('━')
     // Narrow: names cut before anything else goes; the numbers stay.
     expect(at(40)).toContain('…')
     expect(at(40)).toContain('525')
@@ -265,25 +267,30 @@ describe('paneRows', () => {
     expect(plainText(row(rows, 'hub-3')!)).toMatch(/^ ◆ ProjectScanService::scan/)
   })
 
-  it('colours a boundary and its bar alike, and leaves no boundary dim', () => {
+  it('colours a boundary and its bar alike, its track faint, and draws no boundary neutral', () => {
     const rows = paneRows(input({ tab: 'hubs' }), 90)
-    const core = row(rows, 'hub-0')!.segments.filter(s => s.text.trim() === 'core' || s.text.includes('█'))
+    const core = row(rows, 'hub-0')!.segments.filter(s => s.text.trim() === 'core' || s.text.includes('━'))
     expect(core).toHaveLength(2)
-    expect(core[0]!.color).toBeDefined()
+    expect(core[0]!.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
     expect(core[0]!.color).toBe(core[1]!.color)
-    const none = row(rows, 'hub-5')!.segments.find(s => /[▏▎▍▌▋▊▉█]/.test(s.text))
+    const track = row(rows, 'hub-1')!.segments.find(s => /^·+$/.test(s.text))
+    expect(track?.color).toBe('subtle')
+    const none = row(rows, 'hub-5')!.segments.find(s => /[━╸]/.test(s.text))
     expect(none?.dim).toBe(true)
+    // Numbers are plain text; only boundaries, statuses and the selection carry colour.
+    expect(row(rows, 'hub-0')!.segments.filter(s => /^ +\d+$/.test(s.text)).every(s => s.color === 'text')).toBe(true)
+    expect(row(rows, 'hub-0')!.segments[0]).toMatchObject({ text: '›', color: 'suggestion' })
   })
 
   it('shows the last turn, health and the top five on the overview', () => {
     const text = textOf(paneRows(input(), 60))
-    expect(text).toContain('LAST TURN')
+    expect(text).toContain('Last turn')
     expect(text).toMatch(/2 files → 27 deps · 1 test/)
-    expect(text).toMatch(/TurnBriefService\.php +core +█+ +21/)
+    expect(text).toMatch(/TurnBriefService\.php +core +[━╸]+·* +21/)
     expect(text).toMatch(/cycles +2/)
     expect(text).toMatch(/max degree +161/)
     expect(text).toMatch(/dead code +55 +policy ✓ 0/)
-    expect(text).toContain('MOST DEPENDED ON')
+    expect(text).toContain('Most depended on')
     expect(listFor(input())).toHaveLength(5)
   })
 
@@ -295,14 +302,14 @@ describe('paneRows', () => {
     expect(text).toContain('▁▅▅█▅')
   })
 
-  it('names a policy violation in red', () => {
+  it('names a policy violation in the error colour', () => {
     const rows = paneRows(input({}, dash(), brief({ policy: { status: 'evaluated', total: 3, violations: [], truncated: false } })), 60)
     const seg = row(rows, 'health-dead')!.segments.find(s => s.text === '▲ 3')
-    expect(seg?.color).toBe('red')
+    expect(seg?.color).toBe('error')
   })
 
   it('leaves the last turn out when there is no fresh brief', () => {
-    expect(textOf(paneRows(input({}, dash(), null), 60))).not.toContain('LAST TURN')
+    expect(textOf(paneRows(input({}, dash(), null), 60))).not.toContain('Last turn')
     expect(lastTurnOf(brief({ status: 'scan-failed' }))).toBeNull()
   })
 
@@ -534,17 +541,17 @@ describe('the issues tab', () => {
   }
   it('lists violations, diagnostics, dead code and the largest files, each with its place', () => {
     const text = textOf(paneRows(fullInput({ tab: 'issues' }), 100))
-    expect(text).toMatch(/POLICY VIOLATIONS +▲ 7/)
+    expect(text).toMatch(/Policy violations +▲ 7/)
     expect(text).toMatch(/ArchitectureQueryService::fileMetrics → FactCollector +core +ArchitectureQueryService\.php:191/)
     expect(text).toContain('+6 more')
-    expect(text).toMatch(/DIAGNOSTICS +1 error · 1 warning · 1 note/)
+    expect(text).toMatch(/Diagnostics +1 error · 1 warning · 1 note/)
     expect(text).toMatch(/✖ TS2307 Cannot find module/)
     expect(text).toMatch(/scanner\.ts:14$/m)
-    expect(text).toMatch(/DEAD CODE +55 · first 2/)
+    expect(text).toMatch(/Dead code +55 · first 2/)
     expect(text).toMatch(/FactCollector::beforeTraverse +php-worker +FactCollector\.php:108/)
     expect(text).toMatch(/◇ helper/)
-    expect(text).toMatch(/LARGEST FILES +lines/)
-    expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*█+ +4986/)
+    expect(text).toMatch(/Largest files +lines/)
+    expect(text).toMatch(/workers\/typescript\/src\/scanner\.js .*━+ +4986/)
   })
   it('gives way in order: names are cut, then the boundary goes, then the place', () => {
     const dead = (columns: number) => plainText(row(paneRows(fullInput({ tab: 'issues' }), columns), 'dead-0')!)
@@ -578,10 +585,10 @@ describe('the issues tab', () => {
   })
   it('says what it cannot know from an older knossos, and when no policy is declared', () => {
     const old = textOf(paneRows(input({ tab: 'issues' }), 60))
-    expect(old).toMatch(/POLICY VIOLATIONS +not reported/)
-    expect(old).toMatch(/DIAGNOSTICS +not reported/)
+    expect(old).toMatch(/Policy violations +not reported/)
+    expect(old).toMatch(/Diagnostics +not reported/)
     const undeclared = full({ policy: { status: 'not_evaluated', total: 0, truncated: false, truncation_reasons: [], items: [] } })
-    expect(textOf(paneRows(fullInput({ tab: 'issues' }, undeclared), 60))).toMatch(/POLICY VIOLATIONS +no policies declared/)
+    expect(textOf(paneRows(fullInput({ tab: 'issues' }, undeclared), 60))).toMatch(/Policy violations +no policies declared/)
     expect(issuesList(issuesInput(undeclared))).toHaveLength(2)
   })
   it('reads a policy total cut short as a floor', () => {
@@ -595,20 +602,25 @@ describe('the cycles tab', () => {
   for (const columns of WIDTHS) {
     it(`fits ${columns} columns`, () => widthsFit(paneRows(fullInput({ tab: 'cycles' }), columns), columns))
   }
-  it('draws each cycle as a chain closing on itself, names coloured by boundary', () => {
+  it('draws each cycle as a chain closing on itself, under its boundary, members outside it coloured', () => {
     const rows = paneRows(fullInput({ tab: 'cycles' }), 100)
     const text = textOf(rows)
-    expect(text).toMatch(/CYCLES +2 · largest first/)
+    expect(text).toMatch(/Cycles +2 · largest first/)
     expect(text).toContain('cycle 1 · 5 members')
     expect(text).toContain('Index::_add_instances → Index::module_declarations → ')
     expect(text).toContain('Index::safe_file ↺')
     const chain = rows.filter(r => r.key.startsWith('chain-0')).flatMap(r => r.segments)
     const coloured = (name: string) => chain.find(s => s.text === name)?.color
-    expect(coloured('Index::_add_instances')).toBeDefined()
-    expect(coloured('Index::_add_instances')).toBe(coloured('Index::read_bounded'))
-    expect(coloured('Index::_add_instances')).not.toBe(coloured('Index::safe_file'))
-    // The legend names each colour once.
-    expect(plainText(row(rows, 'cycles-legend')!)).toBe('   ■ python-worker  ■ core')
+    // Most members are python-worker: the cycle's line names it, in its colour, and its members stay neutral.
+    expect(plainText(row(rows, 'cycle-0')!)).toBe('   cycle 1 · 5 members · python-worker')
+    expect(row(rows, 'cycle-0')!.segments.at(-1)?.color).toMatch(/_FOR_SUBAGENTS_ONLY$/)
+    expect(coloured('Index::_add_instances')).toBeUndefined()
+    expect(coloured('Index::read_bounded')).toBeUndefined()
+    // The one member in core is where the cycle crosses: drawn in core's colour.
+    expect(coloured('Index::safe_file')).toMatch(/_FOR_SUBAGENTS_ONLY$/)
+    expect(coloured('Index::safe_file')).not.toBe(row(rows, 'cycle-0')!.segments.at(-1)?.color)
+    // The legend names only the colours drawn on members.
+    expect(plainText(row(rows, 'cycles-legend')!)).toBe('   ■ core')
   })
   it('wraps a chain onto more rows as the pane narrows, keeping each name whole where it can', () => {
     const at = (columns: number) => paneRows(fullInput({ tab: 'cycles' }), columns).filter(r => r.key.startsWith('chain-0'))
@@ -621,7 +633,7 @@ describe('the cycles tab', () => {
     expect(text).toContain('visit → walk → Scanner::scan → emit ↺')
     const long = full({ cycles: { count: 60, truncated: true, truncation_reasons: ['result_limit'], largest: [{ size: 50, members: [], nodes: [{ name: 'a', canonical_name: 'a', kind: 'function', boundary: null }], nodes_truncated: true }] } })
     const cut = textOf(cycleRows(cyclesInput(long), 60))
-    expect(cut).toMatch(/CYCLES +60\+ · 1 shown · largest first/)
+    expect(cut).toMatch(/Cycles +60\+ · 1 shown · largest first/)
     expect(cut).toContain('a → … +49 more')
   })
   it('says when there is none', () => {
@@ -642,18 +654,18 @@ describe('the detail view', () => {
     expect(plainText(row(rows, 'detail-name')!)).toMatch(/^DashboardService +class · core$/)
     expect(plainText(row(rows, 'detail-place')!)).toBe('src/Query/DashboardService.php:28')
     expect(plainText(row(rows, 'detail-canonical')!)).toBe('Knossos\\Query\\DashboardService')
-    expect(plainText(row(rows, 'side-0')!)).toMatch(/^USED BY 19 +edges +USES 2 +edges$/)
-    expect(plainText(row(rows, 'side-1')!)).toMatch(/DashboardServiceTest::testDrift +tests +█+ +3 +BoundaryLabels +core +█+ +4$/)
+    expect(plainText(row(rows, 'side-0')!)).toMatch(/^Used by 19 +edges +Uses 2 +edges$/)
+    expect(plainText(row(rows, 'side-1')!)).toMatch(/DashboardServiceTest::testDrift +tests +[━╸]+·* +3 +BoundaryLabels +core +[━╸]+·* +4$/)
     expect(textOf(rows)).toContain('+17 more')
-    expect(textOf(rows)).toMatch(/ANNOTATIONS\n {3}note: Read-only: it never scans\./)
+    expect(textOf(rows)).toMatch(/Annotations\n {3}note: Read-only: it never scans\./)
     expect(100).toBeGreaterThanOrEqual(SIDE_BY_SIDE)
   })
   it('stacks uses under used by when narrow', () => {
     const rows = paneRows(detailPane(), 60)
     expect(row(rows, 'side-0')).toBeUndefined()
     const text = textOf(rows)
-    expect(text.indexOf('USED BY 19')).toBeLessThan(text.indexOf('USES 2'))
-    expect(plainText(row(rows, 'uses-0')!)).toMatch(/BoundaryLabels +core +█+ +4$/)
+    expect(text.indexOf('Used by 19')).toBeLessThan(text.indexOf('Uses 2'))
+    expect(plainText(row(rows, 'uses-0')!)).toMatch(/BoundaryLabels +core +[━╸]+·* +4$/)
   })
   it('makes every counterpart pressable, used by first, and offers back instead of the list keys', () => {
     const input = detailPane()
@@ -672,7 +684,7 @@ describe('the detail view', () => {
   it('lists names without counts or bars from an older knossos', () => {
     const old = detailAnswer({ used_by: { count: 1, truncated: false, names: ['Kernel'] }, uses: { count: 0, truncated: false, names: [] } })
     const text = textOf(paneRows(detailPane(old), 60))
-    expect(text).toMatch(/USED BY 1\n {3}Kernel/)
+    expect(text).toMatch(/Used by 1\n {3}Kernel/)
     expect(text).not.toMatch(/█/)
   })
 })
@@ -709,7 +721,7 @@ describe('the hubs filter and sort', () => {
   it('names the sort, draws its bar, and offers f, s and x as keys', () => {
     const rows = paneRows(input({ tab: 'hubs', sort: 'out', filter: 'a' }), 90)
     expect(plainText(row(rows, 'hubs-head')!)).toMatch(/◆ hotspot only · by out$/)
-    expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +core +█+ +119 +58 +0$/)
+    expect(plainText(row(rows, 'hub-0')!)).toMatch(/ProjectScanService::scan +core +[━╸]+·* +119 +58 +0$/)
     const keys = rows.filter(r => r.key.startsWith('keys')).flatMap(r => r.segments.flatMap(s => (s.press ? [s.press.hotkey] : [])))
     expect(keys).toEqual(['j', 'k', 'o', 'c', 'q', 'f', 's', 'x', 'h'])
   })
@@ -722,11 +734,23 @@ describe('the hubs filter and sort', () => {
   })
 })
 
+describe('colour', () => {
+  it('draws every tab in Claude Code theme keys only, never a raw colour', () => {
+    for (const tab of ['overview', 'hubs', 'boundaries', 'cycles', 'issues'] as const) {
+      for (const segment of paneRows(fullInput({ tab }), 100).flatMap(r => r.segments)) {
+        for (const colour of [segment.color, segment.cell?.fg, segment.cell?.bg]) {
+          if (colour !== undefined) expect(colour, `${tab}: ${segment.text}`).toMatch(/^[a-zA-Z][a-zA-Z0-9_-]*$/)
+        }
+      }
+    }
+  })
+})
+
 describe('the overview health line', () => {
   it('shows the project policy and diagnostics when knossos reports them', () => {
     const rows = paneRows(fullInput(), 90)
     expect(plainText(row(rows, 'health-dead')!)).toMatch(/dead code +55 +policy ▲ 7 +diagnostics ▲ 2/)
-    expect(row(rows, 'health-dead')!.segments.find(s => s.text === '▲ 2')?.color).toBe('yellow')
+    expect(row(rows, 'health-dead')!.segments.find(s => s.text === '▲ 2')?.color).toBe('warning')
   })
 })
 

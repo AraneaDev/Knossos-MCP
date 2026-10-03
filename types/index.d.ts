@@ -225,6 +225,7 @@ declare module 'claude-code' {
       refresh: RefreshState
       rescan: RescanState
       allow: AllowState
+      theme: string
     }
   }
 }

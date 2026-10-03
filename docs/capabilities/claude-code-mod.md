@@ -81,9 +81,17 @@ model a whole branch's worth of violations to fix.
 `/knossos-pane` opens and closes the architecture pane. It lays itself out to
 the width it has, from about 40 columns up: as the pane narrows, bars shorten
 first, then long names are cut with `…`, then the boundary column goes, then
-the bars. The numbers always stay. Each boundary keeps one colour wherever it
-appears; the status dot is green for a fresh snapshot, yellow for a stale one
-and red when a refresh or rescan failed.
+the bars. The numbers always stay.
+
+The pane draws in your Claude Code theme's own colours (its theme keys), so it
+follows a dark, light, daltonized or ANSI theme. Colour carries meaning only:
+each boundary keeps one of the eight subagent colours wherever it appears
+(declared boundaries first, largest first), the status dot is `success` for a
+fresh snapshot, `warning` for a stale one and `error` when a refresh or rescan
+failed, and the accent marks the selection and the active tab. Everything
+else is neutral: headings and numbers in the theme's text colour, notes in
+its secondary grey, bar tracks and empty cells fainter still. Bars are thin
+rules on a dotted track.
 
 ```text
 Knossos-MCP                         ● stale · 11h  r: rescan
@@ -91,18 +99,18 @@ Knossos-MCP                         ● stale · 11h  r: rescan
 1: Overview  2: Hubs  3: Boundaries  4: Cycles  5: Issues
 ━━━━━━━━━━━─────────────────────────────────────────────────
 
-LAST TURN                         2 files → 27 deps · 4 tests
-   TurnBriefService.php core  ███████████████████████████ 21
-   register.tsx         hooks ███████▊                     6
+Last turn                         2 files → 27 deps · 4 tests
+   TurnBriefService.php  core ━━━━━━━━━━━━━━━━━━━━━━━━━  21
+   register.tsx         hooks ━━━━━━━╸·················   6
 
-HEALTH
+Health
    cycles       2
    max degree 161
    dead code   55   policy ✓ 0   diagnostics ✓ 0
 
-MOST DEPENDED ON                                          in
-›  StableId                 core  ██████████████████████ 525
-   ArchitectureQueryService core  ███████████            262
+Most depended on                                          in
+›  StableId                 core ━━━━━━━━━━━━━━━━━━━━━━━ 525
+   ArchitectureQueryService core ━━━━━━━━━━━╸··········· 262
 ```
 
 The line under the project counts its components, its declared boundaries
@@ -122,8 +130,10 @@ and its languages. A narrow pane drops the languages first.
   text, Enter keeps the filter and `x` clears it. `s` sorts by in, out or
   cross-boundary degree in turn; the bar follows the sort.
 - **Cycles:** each dependency cycle, the largest first, as a chain of its
-  members in their boundaries' colours (`a → b → c ↺`), wrapped to the
-  pane's width, with a legend of the colours. The ten largest are listed.
+  members (`a → b → c ↺`) wrapped to the pane's width, under a line naming
+  the boundary most of them are in. A member outside that boundary is drawn
+  in its own boundary's colour, with a legend: that is where the cycle
+  crosses. The ten largest are listed.
 - **Issues:** the declared policy violations (each with the offending file
   and line), the scan's errors and warnings, the first ten dead-code
   candidates (`◇` marks one only tests reach) and the five largest files.
@@ -132,21 +142,23 @@ and its languages. A narrow pane drops the languages first.
 - **Boundaries:** a heat map of how much each boundary depends on each
   other one. Rows are where a dependency starts, columns where it lands; the
   axes are lettered (`A`, `B`, ...) and the row labels spell the letters out.
-  Each cell is a shade from `░` to `█` in the row's boundary colour, on a log
-  scale of the busiest cell, `·` where nothing crosses. Red marks a pair a
-  declared policy forbids: `×` while nothing crosses it, a red shade once
-  something does. On the terminal the map is drawn as one grid of coloured
-  cells; elsewhere as the same glyphs. Below it each boundary is listed with
+  The map is one hue, the theme's accent, in four steps on a log scale of
+  the busiest cell, and a faint `·` where nothing crosses; only the axis
+  letters carry the boundaries' colours. The `error` colour marks a pair a
+  declared policy forbids: `×` while nothing crosses it, an error tile once
+  something does. On the terminal the map is one grid of solid tiles in the
+  theme's colours (it follows a theme picked in `/config`); elsewhere it is
+  drawn as shades from `░` to `█`. Below it each boundary is listed with
   its components and its dependencies in from and out to other boundaries.
   A component counts in one boundary, the one the pane labels it with, and
   only boundaries that label something get a row.
 
 ```text
-BOUNDARIES                                   10 · 29,718 deps
-   from→to          A   B   C   D   E   F   G   H   I   J
-   A tests          ███ ███ ·   ·   ·   ▒▒▒ ·   ·   ·   ·
-   B core           ×   ███ ×   ×   ×   ×   ×   ·   ·   ·
-   C typescript-wo… ·   ·   ▓▓▓ ·   ·   ·   ·   ·   ·   ·
+Boundaries                                  10 · 29,854 deps
+   from→to             A  B  C  D  E  F  G  H  I  J
+   A tests             ██ ██ ·  ·  ·  ▒▒ ·  ·  ·  ·
+   B core              ×  ██ ×  ×  ×  ×  ×  ·  ·  ·
+   C typescript-worker ·  ·  ▓▓ ·  ·  ·  ·  ·  ·  ·
 ```
 
 Every action is a button, so a click works as well as its key: `1` to `5`
@@ -160,9 +172,9 @@ Issues tabs; the pane looks it up by its canonical name.
 StalenessProbe                                                class · core
 src/Query/StalenessProbe.php:21
 
-USED BY 91                       edges  USES 13                      edges
-   RefreshIfStaleTest::test… tests ██ 2     DriftOracle         core ███ 1
-   McpServerAssembly::__con… core  █▌ 1     StalenessProbe::age core ███ 1
+Used by 91                       edges  Uses 13                      edges
+   RefreshIfStaleTest::test… tests ━━ 2     DriftOracle         core ━━━ 1
+   McpServerAssembly::__con…  core ━· 1     StalenessProbe::age core ━━━ 1
 ```
 
 The detail heads with the component's name, kind, boundary, file and line.

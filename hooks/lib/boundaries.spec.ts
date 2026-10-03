@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { BoundaryMatrix, Dashboard } from '../../types'
-import { axisCode, boundariesInput, boundaryRows, heatRows, heatSpec, shade, SHADES, tint } from './boundaries'
-import { boundaryColour } from './palette'
+import { axisCode, boundariesInput, boundaryRows, heatRows, heatSpec, shade, SHADES } from './boundaries'
+import { ACCENT, boundaryColour } from './palette'
+import { HEAT_KEYS } from './raster'
 import { plainText, rowWidth } from './rows'
 import type { Row } from './rows'
 
@@ -78,7 +79,7 @@ describe('boundariesInput', () => {
   })
 })
 
-describe('shade and tint', () => {
+describe('shade', () => {
   it('shades on a log scale of the busiest cell, none for zero', () => {
     expect(shade(0, 100)).toBe(0)
     expect(shade(100, 100)).toBe(4)
@@ -87,18 +88,13 @@ describe('shade and tint', () => {
     expect(shade(438, 12617)).toBe(3)
     expect(shade(5, 0)).toBe(0)
   })
-  it('tints a colour toward the dark base, full strength unchanged', () => {
-    expect(tint('#7aa2f7', 1)).toBe('#7aa2f7')
-    expect(tint('#7aa2f7', 0)).toBe('#262626')
-    expect(tint('#ffffff', 0.5)).toBe('#939393')
-  })
 })
 
 describe('heat map', () => {
-  it('fits whole labels first, then the widest cells that leave room for them', () => {
+  it('fits whole labels first with square cells, wider panes only leaving room', () => {
     const input = boundariesInput(dash())!
-    expect(heatSpec(input, 40)).toEqual({ label: 19, cell: 4 })
-    expect(heatSpec(input, 120)).toEqual({ label: 19, cell: 6 })
+    expect(heatSpec(input, 40)).toEqual({ label: 19, cell: 3 })
+    expect(heatSpec(input, 120)).toEqual({ label: 19, cell: 3 })
     const ten = boundariesInput(dash(matrix({ boundaries: [...input.boundaries.map(b => b.name), ...Array.from({ length: 6 }, (_, i) => `b${i}`)], members: [], cells: [], forbidden: [] })))!
     expect(heatSpec(ten, 60)).toEqual({ label: 19, cell: 3 })
     // Too narrow for whole labels: they give way before the cells drop below 3.
@@ -106,24 +102,29 @@ describe('heat map', () => {
     const twelve = boundariesInput(dash(matrix({ boundaries: Array.from({ length: 12 }, (_, i) => `b${i}`), members: [], cells: [], forbidden: [] })))!
     expect(heatSpec(twelve, 40)).toEqual({ label: 7, cell: 2 })
   })
-  it('draws a shade per cell in the row colour, none as a dot and a forbidden pair as a red cross', () => {
+  it('draws every cell in the one accent, none as a faint dot and a forbidden pair as a cross in the error colour', () => {
     const rows = heatRows(boundariesInput(dash())!, 60)
     expect(plainText(rows[0]!)).toMatch(/^ {3}from→to +A +B +C +D *$/)
     expect(plainText(row(rows, 'heat-0')!)).toMatch(/^ {3}A tests +█+ █+ ·  +·  +$/)
     const core = row(rows, 'heat-1')!
     expect(plainText(core)).toMatch(/^ {3}B core +× +█+ × +· +$/)
-    expect(core.segments.filter(s => s.text.startsWith('×')).every(s => s.color === 'red')).toBe(true)
+    expect(core.segments.filter(s => s.text.includes('×')).every(s => s.color === 'error')).toBe(true)
+    expect(core.segments.find(s => s.text.includes('·'))?.color).toBe('subtle')
     const tests = row(rows, 'heat-0')!.segments.find(s => s.text.startsWith('█'))!
-    expect(tests.color).toBe(boundaryColour('tests'))
-    expect(tests.cell?.bg).toBe(boundaryColour('tests'))
+    // One hue, whatever the boundary: the accent, its busiest step as a tile on the terminal grid.
+    expect(tests.color).toBe(ACCENT)
+    expect(tests.cell).toEqual({ glyph: '▇', fg: HEAT_KEYS[3] })
+    // Only the axis letter carries the boundary's colour.
+    expect(row(rows, 'heat-0')!.segments.find(s => s.text === 'A')?.color).toBe(boundaryColour('tests'))
+    expect(row(rows, 'heat-0')!.segments.find(s => s.text.includes('tests'))?.color).toBeUndefined()
     expect(rows.every(r => r.raster === 'heat')).toBe(true)
   })
-  it('draws a crossed forbidden pair red, with a red cell on the terminal grid', () => {
+  it('draws a crossed forbidden pair in the error colour, as an error tile on the terminal grid', () => {
     const crossed = matrix({ forbidden: [[0, 1]] })
     const rows = boundaryRows(boundariesInput(dash(crossed)), 60)
     const cell = row(rows, 'heat-0')!.segments.filter(s => s.text.startsWith('█'))[1]!
-    expect(cell.color).toBe('red')
-    expect(cell.cell?.bg).toMatch(/^#/)
+    expect(cell.color).toBe('error')
+    expect(cell.cell).toEqual({ glyph: '▇', fg: 'error' })
     expect(textOf(rows)).toContain('forbidden, crossed')
   })
   it('keeps every row of the tab within the width', () => {
@@ -139,10 +140,12 @@ describe('heat map', () => {
 describe('boundaryRows', () => {
   it('lists each boundary with its letter, components, in and out under the map, with a legend', () => {
     const rows = boundaryRows(boundariesInput(dash()), 60)
-    expect(plainText(row(rows, 'bounds-head')!)).toMatch(/^BOUNDARIES +4 · 28,112 deps$/)
-    expect(textOf(rows)).toContain(`${SHADES.join('')} fewer → more deps`)
+    expect(plainText(row(rows, 'bounds-head')!)).toMatch(/^Boundaries +4 · 28,112 deps$/)
+    expect(textOf(rows)).toContain(`fewer ${SHADES.map(s => s.repeat(2)).join('')} more deps`)
+    // The legend is part of the grid, so the terminal draws its swatches as the same tiles.
+    expect(rows.filter(r => r.key.startsWith('heat-legend')).every(r => r.raster === 'heat')).toBe(true)
     expect(plainText(row(rows, 'bounds-cols')!)).toMatch(/boundary +comps +in +out$/)
-    expect(plainText(row(rows, 'bounds-1')!)).toMatch(/^ {3}B core +[█▏▎▍▌▋▊▉]+ +1633 +10779 +0$/)
+    expect(plainText(row(rows, 'bounds-1')!)).toMatch(/^ {3}B core +[━╸]+·* +1633 +10779 +0$/)
     expect(plainText(row(rows, 'bounds-3')!)).toMatch(/^ {3}D hooks /)
   })
   it('says so when no boundary labels a component, and when knossos sends no map', () => {

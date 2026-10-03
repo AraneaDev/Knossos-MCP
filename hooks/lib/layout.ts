@@ -12,8 +12,8 @@ import { formatAge } from './band'
 import { boundariesInput, boundaryRows } from './boundaries'
 import type { BoundariesInput } from './boundaries'
 import { countLabel } from './envelopes'
-import { ACCENT, boundaryLabel, STATUS_COLOURS } from './palette'
-import type { Tone } from './palette'
+import { ACCENT, boundaryLabel, FAINT, huesOf, STATUS_COLOURS } from './palette'
+import type { Hues, Tone } from './palette'
 import {
   baseName,
   blank,
@@ -112,6 +112,8 @@ export type PaneInput = {
   detail: DetailInput | null
   /** The allow-root offer and its progress, or null when no root was refused. */
   allow: AllowInput | null
+  /** Each boundary's colour, the project's largest first. */
+  hues: Hues
 }
 
 /** A refused root the pane offers to allow: the root, the roots file it would join, and where the action stands. */
@@ -197,12 +199,19 @@ export function needsRescan(d: Dashboard): boolean {
   return d.freshness.state !== 'fresh' || d.freshness.drift_files > 0
 }
 
-/** The last turn's impact from a fresh brief, or null when there is none to show. */
-export function lastTurnOf(brief: TurnBrief | null): LastTurn | null {
+/**
+ * The last turn's impact from a fresh brief, or null when there is none to
+ * show. A file in several boundaries is labelled with the one that ranks
+ * first among `hues` (declared before inferred), else its first.
+ */
+export function lastTurnOf(brief: TurnBrief | null, hues: Hues = new Map()): LastTurn | null {
   if (brief === null || brief.status !== 'ok') return null
+  const order = [...hues.keys()]
+  const rank = (b: string) => (order.includes(b) ? order.indexOf(b) : order.length)
+  const pick = (boundaries: string[]) => [...boundaries].sort((a, b) => rank(a) - rank(b))[0] ?? null
   const impact = Object.values(brief.impact)
     .sort((a, b) => b.dependent_files - a.dependent_files || a.path.localeCompare(b.path))
-    .map(f => ({ name: baseName(f.path), boundary: f.boundaries[0] ?? null, dependents: f.dependent_files }))
+    .map(f => ({ name: baseName(f.path), boundary: pick(f.boundaries), dependents: f.dependent_files }))
   const files = brief.changed_files.length + brief.added_files.length
   if (files === 0 && impact.length === 0) return null
   return { files, dependents: impact.reduce((n, f) => n + f.dependents, 0), tests: brief.tests.length, impact }
@@ -254,6 +263,7 @@ export function paneInput(
 ): PaneInput {
   const items = mergeRanked(d)
   const issues = issuesInput(d)
+  const hues = huesOf(d)
   const turn = brief?.status === 'ok' && brief.policy.status === 'evaluated' ? String(brief.policy.total) : null
   const policy = issues.policy?.evaluated ? issues.policy.total : turn
   const diagnostics = issues.diagnostics === null ? null : issues.diagnostics.errors + issues.diagnostics.warnings
@@ -268,7 +278,7 @@ export function paneInput(
     terminal,
     items,
     partial: d.hubs_truncated,
-    lastTurn: lastTurnOf(brief),
+    lastTurn: lastTurnOf(brief, hues),
     health: {
       cycles: countLabel(d.cycles.count, d.cycles.truncated),
       maxDegree: d.trend.at(-1)?.max_degree ?? null,
@@ -286,6 +296,7 @@ export function paneInput(
     boundaries: boundariesInput(d),
     detail,
     allow: allowInput(brief, rescan, allow),
+    hues,
   }
 }
 
@@ -353,17 +364,18 @@ export function allowRows(allow: AllowInput, columns: number): Row[] {
 }
 
 function headerRows(input: PaneInput, columns: number): Row[] {
-  const dot: Segment = { text: `● ${input.status.text}`, color: STATUS_COLOURS[input.status.tone] }
+  const dot: Segment = { text: '● ', color: STATUS_COLOURS[input.status.tone] }
+  const said: Segment = { text: input.status.text, dim: true }
   const rescan = input.canRescan ? [{ text: '  ' }, button('rescan', 'rescan', 'r', { dim: false })] : []
   // The rescan action and the dot come first; the project name gives way, then the status text.
   const rightMax = Math.max(0, columns - 1 - Math.min(cells(input.project), 4))
-  let right: Segment[] = [dot, ...rescan]
+  let right: Segment[] = [dot, said, ...rescan]
   if (right.reduce((n, s) => n + cells(s.text), 0) > rightMax) {
     const room = rightMax - rescan.reduce((n, s) => n + cells(s.text), 0)
-    right = room >= 3 ? [{ ...dot, text: fit(dot.text, room) }, ...rescan] : clip(rescan.slice(1), columns)
+    right = room >= 3 ? [dot, { ...said, text: fit(said.text, room - cells(dot.text)) }, ...rescan] : clip(rescan.slice(1), columns)
   }
   const rightWidth = right.reduce((n, s) => n + cells(s.text), 0)
-  const title: Segment = { text: fit(input.project, Math.max(0, columns - rightWidth - 1)), bold: true }
+  const title: Segment = { text: fit(input.project, Math.max(0, columns - rightWidth - 1)), bold: true, color: 'text' }
   return [
     spread('title', [title], right, columns),
     { key: 'summary', segments: [{ text: joinFitting(input.summary, columns), dim: true }] },
@@ -406,20 +418,20 @@ export function tabRows(active: PaneTab, columns: number, terminal: boolean, bad
   const end = shown.lastIndexOf('━') + 1
   const ruleRow: Row =
     start < 0
-      ? { key: 'tab-rule', segments: [{ text: shown, dim: true }] }
+      ? { key: 'tab-rule', segments: [{ text: shown, color: FAINT }] }
       : {
           key: 'tab-rule',
           segments: [
-            { text: shown.slice(0, start), dim: true },
+            { text: shown.slice(0, start), color: FAINT },
             { text: shown.slice(start, end), color: ACCENT },
-            { text: shown.slice(end), dim: true },
+            { text: shown.slice(end), color: FAINT },
           ].filter(s => s.text !== ''),
         }
   return [strip, ruleRow]
 }
 
 /** The listed components as table rows, with the selection marker on `selected`; the bar draws `sort`. */
-function componentRows(prefix: string, items: Item[], selected: number, columns: number, withDegrees: boolean, sort: HubSort = 'in'): Row[] {
+function componentRows(prefix: string, items: Item[], selected: number, columns: number, withDegrees: boolean, hues: Hues, sort: HubSort = 'in'): Row[] {
   const titles = withDegrees ? ['in', 'out', 'cross'] : ['in']
   const columnsOf = (item: Item) => (withDegrees ? [item.in, item.out, item.cross] : [item.in])
   const widths = titles.map((t, i) => numberWidth(t, items.map(item => columnsOf(item)[i] ?? 0)))
@@ -437,12 +449,12 @@ function componentRows(prefix: string, items: Item[], selected: number, columns:
         selected: i === selected,
         hotspotOnly: item.hotspotOnly,
         press: `row:${i}`,
-      }, spec),
+      }, spec, hues),
     ),
   ]
 }
 
-function lastTurnRows(turn: LastTurn, columns: number): Row[] {
+function lastTurnRows(turn: LastTurn, columns: number, hues: Hues): Row[] {
   const note = `${plural(turn.files, 'file', 'files')} → ${turn.dependents} deps · ${plural(turn.tests, 'test', 'tests')}`
   const shown = turn.impact.slice(0, 4)
   const widths = [numberWidth('', shown.map(f => f.dependents))]
@@ -450,7 +462,7 @@ function lastTurnRows(turn: LastTurn, columns: number): Row[] {
   const max = Math.max(0, ...shown.map(f => f.dependents))
   return [
     sectionRow('turn-head', 'Last turn', note, columns),
-    ...shown.map((f, i) => tableRow(`turn-${i}`, { name: f.name, boundary: f.boundary, values: [f.dependents], max }, spec)),
+    ...shown.map((f, i) => tableRow(`turn-${i}`, { name: f.name, boundary: f.boundary, values: [f.dependents], max }, spec, hues)),
   ]
 }
 
@@ -473,8 +485,8 @@ function healthRows(h: Health, columns: number): Row[] {
   const values = [h.cycles, h.maxDegree === null ? '' : String(h.maxDegree), h.deadCode]
   const valueWidth = Math.max(...values.map(cells))
   const metric = (key: string, label: string, value: string, extra: Segment[], trend: string): Row => {
-    const left: Segment[] = [{ text: `   ${padEnd(label, 11)}` }, { text: padStart(value, valueWidth), bold: true }, ...extra]
-    return spread(key, left, trend === '' ? [] : [{ text: trend, color: ACCENT }], columns)
+    const left: Segment[] = [{ text: `   ${padEnd(label, 11)}`, dim: true }, { text: padStart(value, valueWidth), bold: true, color: 'text' }, ...extra]
+    return spread(key, left, trend === '' ? [] : [{ text: trend, dim: true }], columns)
   }
   const extra: Segment[] = [
     ...(h.policy === null ? [] : verdict('policy', h.policy, 'alert')),
@@ -525,7 +537,7 @@ function hubRows(input: PaneInput, list: Item[], selected: number, columns: numb
     const empty = input.filter === '' ? '   none' : `   no hub matches "${input.filter}"`
     return [...rows, dimRow('hubs-none', empty, columns)]
   }
-  return [...rows, ...componentRows('hub', list, selected, columns, true, input.sort)]
+  return [...rows, ...componentRows('hub', list, selected, columns, true, input.hues, input.sort)]
 }
 
 /**
@@ -546,23 +558,23 @@ export function paneRows(input: PaneInput, columns: number): Row[] {
   const rows: Row[] = [...headerRows(input, width)]
   if (input.allow !== null) rows.push(...allowRows(input.allow, width))
   if (input.detail !== null) {
-    rows.push(...detailRows(input.detail, width))
+    rows.push(...detailRows(input.detail, width, input.hues))
   } else {
     const count = issueCount(input.issues)
     rows.push(...tabRows(input.tab, width, input.terminal, count.n > 0 ? { issues: superscript(count.n, count.plus) } : {}))
     if (input.tab === 'overview') {
-      if (input.lastTurn !== null) rows.push(blank('gap-turn'), ...lastTurnRows(input.lastTurn, width))
+      if (input.lastTurn !== null) rows.push(blank('gap-turn'), ...lastTurnRows(input.lastTurn, width, input.hues))
       rows.push(blank('gap-health'), ...healthRows(input.health, width))
       rows.push(blank('gap-top'), sectionRow('top-head', 'Most depended on', input.partial ? 'partial · in' : 'in', width))
-      rows.push(...(list.length === 0 ? [dimRow('top-none', '   none', width)] : componentRows('top', input.items.slice(0, OVERVIEW_TOP), selected, width, false)))
+      rows.push(...(list.length === 0 ? [dimRow('top-none', '   none', width)] : componentRows('top', input.items.slice(0, OVERVIEW_TOP), selected, width, false, input.hues)))
     } else if (input.tab === 'hubs') {
       rows.push(...hubRows(input, hubList(input.items, input.filter, input.sort), selected, width))
     } else if (input.tab === 'issues') {
-      rows.push(...issueRows(input.issues, selected, width))
+      rows.push(...issueRows(input.issues, selected, width, input.hues))
     } else if (input.tab === 'cycles') {
-      rows.push(...cycleRows(input.cycles, width))
+      rows.push(...cycleRows(input.cycles, width, input.hues))
     } else {
-      rows.push(...boundaryRows(input.boundaries, width))
+      rows.push(...boundaryRows(input.boundaries, width, input.hues))
     }
   }
   rows.push(blank('gap-keys'), ...footerRows(input, width, list.length > 0 && input.detail === null))
