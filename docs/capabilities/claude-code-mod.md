@@ -150,12 +150,41 @@ model a whole branch's worth of violations to fix.
 `/knossos` opens and closes the architecture pane. Right after a reload of
 the plugin Claude Code can refuse to register the command until a session is
 bound; the mod tries again on a timer (for about a minute) and then at the
-end of each turn, and starts up meanwhile. The pane lays itself out to
-the width it has, from about 40 columns up. Its tables are packed to the left:
-names take what the longest one needs, the boundary follows the name, then the
-bar and the numbers, and width a table does not need stays at the right edge.
-As the pane narrows, bars shorten first, then long names are cut with `…`,
-then the boundary column goes, then the bars. The numbers always stay.
+end of each turn, and starts up meanwhile.
+
+The pane uses all the room it has, in one of three layouts by the columns of
+its body:
+
+| Width                | Layout                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------ |
+| narrow (below 80)    | one column; each section a light card: a top rule with its title in it, no sides, so no column is lost |
+| medium (80 to 130)   | one column of framed cards; tables add out, cross and the file each component is declared in           |
+| wide (more than 130) | a two-column grid of framed cards, so the right half is never left empty                               |
+
+A framed card is a thin rounded border in the theme's faintest colour, its
+title (and the section's note, such as `this session` or `all in core`) set
+into the top edge, one cell of padding inside. Wide, each tab arranges its
+cards in two columns: Overview puts "Look at now", the last turn and health
+left and the most depended on with a small boundary map right; the detail
+sets "used by" beside "uses" with the change below both; Boundaries puts the
+map beside the per-boundary table and the marked boundary; Cycles spells out
+the marked cycle, a member a row, beside the list; Issues puts violations and
+diagnostics beside dead code and the largest files; Changes puts the tests
+beside the files.
+
+Lists size themselves to the rows the pane's body has: every list starts at
+a few rows, then the rows left after the rest of the tab are shared out
+between the lists in turn. A list cut short says `n more ↓` (and `n above ↑`
+once the marker has moved down it), and moving the marker scrolls it. A pane
+too short for even those few rows scrolls as a whole.
+
+Tables are packed to the left: names take what the longest one needs, the
+boundary follows the name, then the bar, the numbers and, from the medium
+layout on, the file. A bar takes the width left after the names and numbers,
+between a minimum and a maximum share of the table that grow with the
+layout, so a wide pane draws longer gauges. As the pane narrows, the file
+column goes first, bars shorten, then long names are cut with `…`, then the
+boundary column goes, then the bars. The numbers always stay.
 
 The pane draws in your Claude Code theme's own colours (its theme keys), so it
 follows a dark, light, daltonized or ANSI theme. Colour carries meaning only:
@@ -179,25 +208,36 @@ Knossos-MCP                         ● stale · 11h  r: rescan
 1: Overview  2  3  4  5  6³
 ━━━━━━━━━━━─────────────────────────────────────────────────
 
-Look at now                                     this session
+── Look at now ───────────────────────────── this session ──
 ›  TurnBriefService.php core · 21 dependents
    t: copy test command   3 tests reach these changes
 
-Last turn               3 files → 29 dependents · 3 tests
-   TurnBriefService.php core  ━━━━━━━━━━━━━━━━━━━━━━━━ 21
-   register.tsx         hooks ━━━━━━━·················  6
-   changes.ts           hooks ━━╸·····················  2
+── Last turn ───────────── 3 files → 29 dependents · 3 tests ──
+   TurnBriefService.php core  ━━━━━━━━━━━━━━━━━━ 21
+   register.tsx         hooks ━━━━━╸············  6
+   changes.ts           hooks ━━···············  2
 
-Health
+── Health ────────────────────────────────────────────────────
    cycles         2
    max degree   161
    dead code     55
    policy       ✓ 0
    diagnostics  ✓ 0
 
-Most depended on                                          in
-   StableId                 core ━━━━━━━━━━━━━━━━━━━━━━━ 525
-   ArchitectureQueryService core ━━━━━━━━━━━╸··········· 262
+── Most depended on ─────────────────────── all in core · in ──
+   StableId                 ━━━━━━━━━━━━━━━━━━ 525
+   ArchitectureQueryService ━━━━━━━━━········· 262
+   4 more ↓
+```
+
+That is the narrow layout (60 columns). From 80 columns each card is framed,
+and its tables add columns:
+
+```text
+╭─ Most depended on ─────────────────────────────────────── all in core ─╮
+│   name                         in out cross file                       │
+│   StableId     ━━━━━━━━━━━━━━ 525   0     0 StableId.php:19            │
+╰────────────────────────────────────────────────────────────────────────╯
 ```
 
 The line under the project counts its components, its declared boundaries
@@ -225,7 +265,8 @@ Drifted since the snapshot                                 3
   dependents, tests: the last turn's alone, where "Look at now" counts the
   whole session, and each section says which in its header), health (cycles, maximum degree, dead-code
   candidates, the project's policy violations and its diagnostic errors and
-  warnings) and the five most depended-on components. One marker walks the
+  warnings) and the most depended-on components, as many as the height
+  allows. One marker walks the
   three lists in the order they are drawn, and starts on the file "Look at
   now" points at: `o` opens the marked file's or component's detail, `e` the
   marked file in your editor (a hub opens at the line that declares it; one
@@ -379,18 +420,22 @@ on the tab, the marker stands where the detail was opened from. Numbers of four 
 `/knossos inspect <component>` opens the pane on one component directly.
 
 ```text
-StalenessProbe                                                class · core
+── StalenessProbe ────────────────────────── class · core ──
 src/Query/StalenessProbe.php:21
 
-Used by 91                       edges  Uses 13                      edges
-   RefreshIfStaleTest::test… tests ━━ 2     DriftOracle         core ━━━ 1
-   McpServerAssembly::__con…  core ━· 1     StalenessProbe::age core ━━━ 1
+── Used by · 91 ──────────────────────────────────── edges ──
+   RefreshIfStaleTest::test… tests ━━━━━━━━━━━━━━━━━━ 2
+   McpServerAssembly::__con… core  ━━━━━━━━━········· 1
+
+── Uses · 13 ─────────────────────────────────────── edges ──
+   DriftOracle         core ━━━━━━━━━━━━━━━━━━ 1
+   StalenessProbe::age core ━━━━━━━━━━━━━━━━━━ 1
 ```
 
 The detail heads with the component's name, kind, boundary, file and line.
 Below it, what uses it and what it uses, each the eight most connected with
-their boundary and how many relationships run to each, side by side from 72
-columns and one above the other below that. A side whose counts are all the
+their boundary and how many relationships run to each, side by side in the
+wide layout and one above the other below it. A side whose counts are all the
 same draws no bars, since they would compare nothing. The marker walks both
 sides, used by first, and every name there opens in turn.
 Annotations recorded on the component follow.
@@ -425,8 +470,18 @@ The diff is read by `knossos session-diff --rev=<commit> --file=<path>` on
 a timer, never while the pane draws, once per file and snapshot (a new scan
 reads it again). With no git repository, no commit yet, a commit that is
 gone, a binary file or no answer, the detail says which instead of a diff.
-A container install answers neither command, so its details say the
-commit was not recorded.
+A container install answers both commands too: the container reads git as
+your own user and group (`docker run --user`), since git refuses a
+repository another user owns and the image's user owns none of yours.
+
+**Continued sessions.** Where a session began (the commit, the snapshot its
+changes are read since, and when it started) is kept per session id in the
+plugin's own store (`$.store`, the newest 50 sessions). A session continued
+in a new process (`claude --continue`, `--resume`) or resumed within one reads
+its baseline back, so Changes and the diffs still count from where it began;
+a session with an id the mod has not seen starts fresh. Which of the changes
+the session's own tools made is known only to the process that saw them: in
+a new process, earlier changes are labelled `outside`.
 
 ```text
 Assertions.php                                                tests
@@ -689,7 +744,8 @@ The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
 whole graph), 15 for `component-detail`, `file-detail`, `session-changes`,
 `session-head`, `session-diff` and `allow-root`. `session-diff` takes only a
-hex commit id and a file inside the project directory.
+hex commit id and a file inside the project directory. The container
+wrapper takes the same commands with the same checks, except `watch`.
 `watch` is not bounded: the wrapper replaces itself with the watcher, so
 stopping the process the session started stops the watcher. It runs
 `allow-root` only with a roots file the installation (or the environment)
