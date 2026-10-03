@@ -19,8 +19,14 @@
     "fanInThreshold": {
       "type": "number",
       "title": "Fan-in threshold",
-      "description": "Dependent files at which an edit gets a note.",
+      "description": "Dependent files at which a Read or an edit gets a note.",
       "default": 20
+    },
+    "agentNotes": {
+      "type": "boolean",
+      "title": "Notes for the model",
+      "description": "Tell the model a file's dependents, boundary and rules when it reads one, and the tests to run after a turn.",
+      "default": true
     },
     "enforcePolicies": {
       "type": "boolean",

@@ -66,6 +66,12 @@ export type Summary = {
   languages_truncated: boolean
 }
 export type Diagnostic = { severity: string; code: string; message: string; path: string | null; line: number | null }
+/**
+ * A declared policy as a rule: `from` may not depend on `deny`, or (with
+ * `allow`) only on itself and `allow`; `@unassigned` stands for code in no
+ * boundary; `edge_kinds` narrows it to those dependencies when not empty.
+ */
+export type PolicyRule = { id: string; from: string; deny: string[]; allow: string[]; edge_kinds: string[] }
 export type PolicyViolation = {
   policy_id: string
   source: string
@@ -109,7 +115,21 @@ export type Dashboard = {
   diagnostics?: { total: number; errors: number; warnings: number; infos: number; items: Diagnostic[] }
   largest_files?: { path: string; language: string; lines: number }[]
   /** `truncated` when the check stopped at its edge or time limit, so `total` is a floor. */
-  policy?: { status: string; total: number; truncated: boolean; truncation_reasons: string[]; items: PolicyViolation[] }
+  /**
+   * `rules` and `files` (absent from an older knossos): the declared policies
+   * with boundary names, and each file a rule binds with the boundaries it
+   * binds it through; `files_truncated` when the list stopped at its cap.
+   */
+  policy?: {
+    status: string
+    total: number
+    truncated: boolean
+    truncation_reasons: string[]
+    items: PolicyViolation[]
+    rules?: PolicyRule[]
+    files?: Record<string, string[]>
+    files_truncated?: boolean
+  }
   boundary_matrix?: BoundaryMatrix
 }
 

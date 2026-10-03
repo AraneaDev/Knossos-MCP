@@ -1,4 +1,6 @@
-import type { Dashboard, FanIn, TurnBrief } from './envelopes'
+import type { PolicyRule } from '../../types'
+import { runnerOf, testCommand, testsRan } from './changes'
+import type { Dashboard, FanIn, TurnBrief, Violation } from './envelopes'
 
 /** One line the model reads after editing a heavily depended-on file. */
 export function editNote(entry: FanIn): string {
@@ -29,4 +31,79 @@ export function violationNote(brief: TurnBrief): string | null {
 /** The fan-in map keyed by project-relative path. */
 export function fanInIndex(dashboard: Dashboard | null): Map<string, FanIn> {
   return new Map((dashboard?.fan_in ?? []).map(f => [f.path, f]))
+}
+
+/** The declared policies as the dashboard sends them: the rules, and the files each binds by boundary. */
+export type PolicyScope = Pick<NonNullable<Dashboard['policy']>, 'rules' | 'files' | 'files_truncated'>
+
+/** One rule in a line: what a boundary may not depend on, or may depend on alone; its edge kinds when it names some. */
+export function ruleText(rule: PolicyRule): string {
+  const name = (b: string) => (b === '@unassigned' ? 'unassigned code' : b)
+  const parts = [
+    ...(rule.deny.length > 0 ? [`${rule.from} may not depend on ${rule.deny.map(name).join(', ')}`] : []),
+    ...(rule.allow.length > 0 ? [`${rule.from} may depend only on itself, ${rule.allow.map(name).join(', ')}`] : []),
+  ]
+  return `${parts.join('; ')}${rule.edge_kinds.length > 0 ? ` (${rule.edge_kinds.join(', ')})` : ''}`
+}
+
+/**
+ * The note the model reads after it Reads `path`, before it edits: how many
+ * files depend on it (when at or above `threshold`), the boundary it sits in,
+ * and the rules that bind that boundary, unless they were stated already
+ * (`ruled`). Null when there is nothing new to say. `ruled` in the answer
+ * lists the boundaries whose rules it states.
+ *
+ * Only a declared boundary (`declared`) or one a rule binds is named: an
+ * inferred label (a package, the repository-wide one) tells the model nothing.
+ */
+export function readNote(
+  path: string,
+  fanIn: FanIn | undefined,
+  threshold: number,
+  policy: Partial<PolicyScope> | undefined,
+  ruled: ReadonlySet<string>,
+  declared: ReadonlySet<string>,
+): { text: string; ruled: string[] } | null {
+  const hub = fanIn !== undefined && fanIn.dependent_files >= threshold
+  const bound = policy?.files?.[path] ?? []
+  const fresh = bound.filter(b => !ruled.has(b))
+  if (!hub && fresh.length === 0) return null
+  const own = fanIn?.boundary ?? null
+  const boundary = bound[0] ?? (own !== null && declared.has(own) ? own : null)
+  const head = hub
+    ? `knossos: ${path}${boundary === null ? '' : ` (${boundary})`} has ${fanIn.dependent_files} dependent files.`
+    : `knossos: ${path} is in ${boundary}.`
+  const rules = (policy?.rules ?? []).filter(r => fresh.includes(r.from)).map(ruleText)
+  return { text: rules.length === 0 ? head : `${head} Policy: ${rules.join('; ')}.`, ruled: fresh }
+}
+
+/** How many tests a tests note names before `and N more`. */
+const TESTS_NAMED = 5
+
+/**
+ * The turn-end note on the tests that reach the turn's changes: the runnable
+ * ones (a runner runs them; helpers and fixtures are left out) that no
+ * command of the turn (`ran`) already ran and no earlier note named, nearest
+ * first, and the command that runs them all. Null when none is left.
+ */
+export function testsNote(tests: TurnBrief['tests'], ran: string[], named: ReadonlySet<string>): { text: string; tests: string[] } | null {
+  const left = [...tests]
+    .filter(t => runnerOf(t.path) !== null && !named.has(t.path) && !testsRan(t.path, ran))
+    .sort((a, b) => a.distance - b.distance || a.path.localeCompare(b.path))
+    .map(t => t.path)
+  const command = testCommand(left)
+  if (left.length === 0 || command === null) return null
+  const more = left.length > TESTS_NAMED ? ` and ${left.length - TESTS_NAMED} more` : ''
+  const count = left.length === 1 ? '1 test reaches' : `${left.length} tests reach`
+  return { text: `knossos: ${count} this turn's changes: ${left.slice(0, TESTS_NAMED).join(', ')}${more}. Run: ${command}`, tests: left }
+}
+
+/** A violation's identity across turns: its policy and the two ends. */
+export const violationKey = (v: Violation): string => `${v.policy_id}: ${v.source} → ${v.target}`
+
+/** The brief with the violations already reported (`seen`) taken out of its list and its count. */
+export function freshViolations(brief: TurnBrief, seen: ReadonlySet<string>): TurnBrief {
+  const fresh = brief.policy.violations.filter(v => !seen.has(violationKey(v)))
+  const dropped = brief.policy.violations.length - fresh.length
+  return { ...brief, policy: { ...brief.policy, total: Math.max(0, brief.policy.total - dropped), violations: fresh } }
 }

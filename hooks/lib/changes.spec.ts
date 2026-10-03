@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Dashboard, KnossosView, SessionChanges, TurnBrief } from '../../types'
-import { accumulate, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, testCommand } from './changes'
+import { accumulate, changesInput, changesList, changesRows, FILE_CAP, lookAtOf, lookAtRows, NO_CHANGES, testCommand, testsRan } from './changes'
 import { editTarget, paneInput, paneRows } from './layout'
 import { fileHref, linkMarkdown, locOf, plainText, rowWidth } from './rows'
 import type { Row } from './rows'
@@ -268,3 +268,22 @@ function dash(): Dashboard {
     fan_in_truncated: false,
   }
 }
+
+describe('testsRan', () => {
+  it('counts a test as run by a command that names it, its directory, or no test at all', () => {
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit --filter RouterTest'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit tests/Http'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['COMPOSER_ALLOW_SUPERUSER=1 vendor/bin/phpunit'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['composer test'])).toBe(true)
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit --filter KernelTest'])).toBe(false)
+    expect(testsRan('tests/Http/RouterTest.php', ['vendor/bin/phpunit tests/Cli'])).toBe(false)
+    expect(testsRan('tests/Http/RouterTest.php', ['npx vitest run'])).toBe(false)
+    expect(testsRan('hooks/lib/changes.spec.ts', ['npm run test:mod'])).toBe(true)
+    expect(testsRan('hooks/lib/changes.spec.ts', ['npx vitest run hooks/lib/changes.spec.ts'])).toBe(true)
+    expect(testsRan('hooks/lib/changes.spec.ts', ['npx vitest run hooks/lib/layout.spec.ts'])).toBe(false)
+    expect(testsRan('tests/test_x.py', ['python -m pytest -k other'])).toBe(false)
+    expect(testsRan('pkg/a/x_test.go', ['go test ./...'])).toBe(true)
+    expect(testsRan('src/lib.rs', ['cargo test'])).toBe(true)
+    expect(testsRan('docs/readme.md', ['vendor/bin/phpunit'])).toBe(false)
+  })
+})

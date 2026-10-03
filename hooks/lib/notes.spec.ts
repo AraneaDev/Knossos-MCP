@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { editNote, fanInIndex, violationNote } from './notes'
+import { editNote, fanInIndex, freshViolations, readNote, ruleText, testsNote, violationKey, violationNote } from './notes'
 
 describe('notes', () => {
   it('edit note names dependents, boundaries and the next step', () =>
@@ -41,4 +41,84 @@ describe('notes', () => {
   it('indexes the fan-in map by path', () =>
     expect(fanInIndex({ fan_in: [{ path: 'a.php', dependent_files: 3, boundaries: [] }] } as never).get('a.php')?.dependent_files).toBe(3))
   it('indexes nothing without a dashboard', () => expect(fanInIndex(null).size).toBe(0))
+})
+
+const RULES = [
+  { id: 'workers-out', from: 'php-worker', deny: ['core'], allow: [], edge_kinds: [] },
+  { id: 'core-alone', from: 'core', deny: ['php-worker', 'tests'], allow: [], edge_kinds: [] },
+  { id: 'edge-only', from: 'edge', deny: [], allow: ['core', '@unassigned'], edge_kinds: ['calls'] },
+]
+const POLICY = { rules: RULES, files: { 'src/A.php': ['core'], 'src/B.php': ['core'], 'src/Edge/C.php': ['edge'] }, files_truncated: false }
+const DECLARED = new Set(['core', 'edge', 'php-worker', 'tests'])
+const hub = (path: string, n: number, boundary: string | null = 'core') => ({ path, dependent_files: n, boundaries: ['tests'], boundary })
+
+describe('ruleText', () => {
+  it('says what a boundary may not depend on, or may depend on alone', () => {
+    expect(ruleText(RULES[1]!)).toBe('core may not depend on php-worker, tests')
+    expect(ruleText(RULES[2]!)).toBe('edge may depend only on itself, core, unassigned code (calls)')
+  })
+})
+
+describe('readNote', () => {
+  it('gives a hub its dependents, its boundary and the rules that bind it', () =>
+    expect(readNote('src/A.php', hub('src/A.php', 269), 20, POLICY, new Set(), DECLARED)).toEqual({
+      text: 'knossos: src/A.php (core) has 269 dependent files. Policy: core may not depend on php-worker, tests.',
+      ruled: ['core'],
+    }))
+  it('states a boundary rule once: a later file there gets its count alone', () =>
+    expect(readNote('src/A.php', hub('src/A.php', 269), 20, POLICY, new Set(['core']), DECLARED)?.text).toBe('knossos: src/A.php (core) has 269 dependent files.'))
+  it('gives a quiet file in a policed boundary its boundary and rules', () =>
+    expect(readNote('src/Edge/C.php', undefined, 20, POLICY, new Set(), DECLARED)?.text).toBe(
+      'knossos: src/Edge/C.php is in edge. Policy: edge may depend only on itself, core, unassigned code (calls).',
+    ))
+  it('says nothing for a quiet file whose rules were stated, or a quiet file no rule binds', () => {
+    expect(readNote('src/B.php', hub('src/B.php', 3), 20, POLICY, new Set(['core']), DECLARED)).toBeNull()
+    expect(readNote('docs/x.md', undefined, 20, POLICY, new Set(), DECLARED)).toBeNull()
+    expect(readNote('src/A.php', undefined, 20, undefined, new Set(), DECLARED)).toBeNull()
+  })
+  it('names only a declared boundary: an inferred or missing one is left out', () => {
+    expect(readNote('bin/router.php', hub('bin/router.php', 347, 'composer:app (+node:app)'), 20, POLICY, new Set(), DECLARED)?.text).toBe(
+      'knossos: bin/router.php has 347 dependent files.',
+    )
+    expect(readNote('bin/router.php', hub('bin/router.php', 347, null), 20, POLICY, new Set(), DECLARED)?.text).toBe('knossos: bin/router.php has 347 dependent files.')
+  })
+  it('honours the threshold', () => expect(readNote('x.php', hub('x.php', 19, null), 20, POLICY, new Set(), DECLARED)).toBeNull())
+})
+
+describe('testsNote', () => {
+  const tests = [
+    { path: 'tests/Http/RouterTest.php', distance: 1 },
+    { path: 'tests/Support/Helper.php', distance: 1 },
+    { path: 'hooks/lib/changes.spec.ts', distance: 2 },
+  ]
+  it('names the runnable tests nearest first and the command that runs them', () =>
+    expect(testsNote(tests, [], new Set())).toEqual({
+      text: "knossos: 2 tests reach this turn's changes: tests/Http/RouterTest.php, hooks/lib/changes.spec.ts. Run: vendor/bin/phpunit tests/Http/RouterTest.php && npx vitest run hooks/lib/changes.spec.ts",
+      tests: ['tests/Http/RouterTest.php', 'hooks/lib/changes.spec.ts'],
+    }))
+  it('leaves out tests the turn already ran and tests named before', () => {
+    expect(testsNote(tests, ['vendor/bin/phpunit --filter RouterTest'], new Set())?.text).toBe(
+      "knossos: 1 test reaches this turn's changes: hooks/lib/changes.spec.ts. Run: npx vitest run hooks/lib/changes.spec.ts",
+    )
+    expect(testsNote(tests, [], new Set(['hooks/lib/changes.spec.ts']))?.tests).toEqual(['tests/Http/RouterTest.php'])
+    expect(testsNote(tests, ['vendor/bin/phpunit', 'npm run test:mod'], new Set())).toBeNull()
+  })
+  it('lists five and counts the rest', () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({ path: `tests/T${i}Test.php`, distance: i }))
+    expect(testsNote(many, [], new Set())?.text).toBe(
+      "knossos: 7 tests reach this turn's changes: tests/T0Test.php, tests/T1Test.php, tests/T2Test.php, tests/T3Test.php, tests/T4Test.php and 2 more. Run: vendor/bin/phpunit --filter '(T0Test|T1Test|T2Test|T3Test|T4Test|T5Test|T6Test)'",
+    )
+  })
+  it('says nothing when no test reaches the changes', () => expect(testsNote([], [], new Set())).toBeNull())
+})
+
+describe('freshViolations', () => {
+  const v = (source: string) => ({ policy_id: 'p', source, target: 'T', source_boundaries: [], target_boundaries: [] })
+  it('drops violations already reported, and the count with them', () => {
+    const brief = { policy: { status: 'evaluated', total: 3, truncated: false, violations: [v('A'), v('B')] } } as never
+    const fresh = freshViolations(brief, new Set(['p: A → T']))
+    expect(fresh.policy.violations.map(x => x.source)).toEqual(['B'])
+    expect(fresh.policy.total).toBe(2)
+    expect(violationKey(v('A'))).toBe('p: A → T')
+  })
 })

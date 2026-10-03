@@ -109,6 +109,25 @@ export function accumulate(changes: SessionChanges, brief: TurnBrief): SessionCh
 const quote = (word: string): string => (/^[\w./@%+=:,-]+$/.test(word) ? word : `'${word.replace(/'/g, `'\\''`)}'`)
 
 /**
+ * The test runners a path can call for, each with how its tests are told
+ * apart and what a shell command that invokes it looks like. The command
+ * that runs the tests and the check whether a command already ran one read
+ * the same table, so they never disagree.
+ */
+const RUNNERS = {
+  phpunit: { test: /Test\.php$/, invoked: /\b(phpunit|paratest|pest)\b|\bcomposer\s+(run(-script)?\s+)?test\b/ },
+  vitest: { test: /\.(spec|test)\.[cm]?[jt]sx?$/, invoked: /\b(vitest|jest)\b|\b(npm|yarn|pnpm)\s+(run\s+)?test(:[\w-]+)?\b/ },
+  pytest: { test: /(^|\/)test_[^/]*\.py$|_test\.py$/, invoked: /\bpytest\b/ },
+  go: { test: /_test\.go$/, invoked: /\bgo\s+test\b/ },
+  cargo: { test: /\.rs$/, invoked: /\bcargo\s+(test|nextest)\b/ },
+} as const
+
+/** The runner a test path calls for, or null for a path no runner runs (a helper, a fixture). */
+export function runnerOf(path: string): keyof typeof RUNNERS | null {
+  return (Object.keys(RUNNERS) as (keyof typeof RUNNERS)[]).find(r => RUNNERS[r].test.test(path)) ?? null
+}
+
+/**
  * A command that runs `tests`, by the runner their paths call for: PHPUnit
  * for `*Test.php` (the file, or a `--filter` over the classes for several),
  * Vitest for `*.spec.*` and `*.test.*` scripts, pytest for `test_*.py` and
@@ -116,20 +135,48 @@ const quote = (word: string): string => (/^[\w./@%+=:,-]+$/.test(word) ? word : 
  * Several runners are joined with `&&`; null when no path names a runner.
  */
 export function testCommand(tests: string[]): string | null {
-  const php = tests.filter(t => /Test\.php$/.test(t))
-  const vitest = tests.filter(t => /\.(spec|test)\.[cm]?[jt]sx?$/.test(t))
-  const pytest = tests.filter(t => /(^|\/)test_[^/]*\.py$|_test\.py$/.test(t))
+  const of = (runner: keyof typeof RUNNERS) => tests.filter(t => runnerOf(t) === runner)
+  const php = of('phpunit')
+  const vitest = of('vitest')
+  const pytest = of('pytest')
   const packageOf = (t: string) => (t.includes('/') ? `./${t.slice(0, t.lastIndexOf('/'))}` : '.')
-  const go = [...new Set(tests.filter(t => t.endsWith('_test.go')).map(packageOf))]
-  const rust = tests.some(t => t.endsWith('.rs'))
+  const go = [...new Set(of('go').map(packageOf))]
   const commands: string[] = []
   if (php.length === 1) commands.push(`vendor/bin/phpunit ${quote(php[0]!)}`)
   if (php.length > 1) commands.push(`vendor/bin/phpunit --filter ${quote(`(${[...new Set(php.map(t => baseName(t).slice(0, -4)))].join('|')})`)}`)
   if (vitest.length > 0) commands.push(`npx vitest run ${vitest.map(quote).join(' ')}`)
   if (pytest.length > 0) commands.push(`python -m pytest ${pytest.map(quote).join(' ')}`)
   if (go.length > 0) commands.push(`go test ${go.map(quote).join(' ')}`)
-  if (rust) commands.push('cargo test')
+  if (of('cargo').length > 0) commands.push('cargo test')
   return commands.length === 0 ? null : commands.join(' && ')
+}
+
+/** Flags by which a runner is told to run some tests only. */
+const NARROWING = /^(--filter|--testsuite|--group|--exclude-group|-k|-t|--testNamePattern|--run|--package|-p)(=|$)/
+
+/**
+ * Whether one of `commands` (shell commands, as a turn ran them) ran the test
+ * at `path`: one that invokes its runner and names the test (its file stem,
+ * as a filter does), names a directory or package the test sits in, or
+ * names no test at all (the runner's whole suite).
+ */
+export function testsRan(path: string, commands: string[]): boolean {
+  const runner = runnerOf(path)
+  if (runner === null) return false
+  const name = baseName(path)
+  const stem = name.includes('.') ? name.slice(0, name.lastIndexOf('.')) : name
+  return commands.some(command => {
+    const invoked = RUNNERS[runner].invoked.exec(command)
+    if (invoked === null) return false
+    if (command.includes(stem)) return true
+    const words = command.slice(invoked.index + invoked[0].length).split(/\s+/).filter(w => w !== '' && w !== 'run')
+    const places = words.filter(w => !w.startsWith('-') && (w.includes('/') || w === '.' || runnerOf(w) !== null))
+    if (places.some(w => {
+      const dir = w.replace(/^\.\//, '').replace(/\.\.\.$/, '').replace(/\/+$/, '')
+      return dir === '' || dir === '.' || path.startsWith(`${dir}/`) || path === dir
+    })) return true
+    return places.length === 0 && !words.some(w => NARROWING.test(w))
+  })
 }
 
 /** A boundary's place in `hues` (the project's colour order), past the end for one it does not hold. */

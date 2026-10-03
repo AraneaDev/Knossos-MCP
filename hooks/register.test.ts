@@ -182,6 +182,38 @@ async function edit($: Engine, path: string) {
   return $.tool.call({ tool: 'Edit', file_path: path, old_string: 'a', new_string: 'b' })
 }
 
+async function readFile($: Engine, path: string) {
+  return $.tool.call({ tool: 'Read', file_path: path })
+}
+
+async function bash($: Engine, command: string) {
+  return $.tool.call({ tool: 'Bash', command })
+}
+
+/** A dashboard whose project declares policies: `core` binds two files, and Router is a hub in it. */
+const policedDashboard = () =>
+  JSON.stringify({
+    ...(JSON.parse(dashboard) as object),
+    fan_in: [
+      { path: 'src/Router.php', dependent_files: 41, boundaries: ['Http'], boundary: 'core' },
+      { path: 'bin/router.php', dependent_files: 30, boundaries: ['core'], boundary: null },
+    ],
+    boundaries: { items: [{ name: 'core', source: 'explicit', members: 40 }], truncated: false },
+    policy: {
+      status: 'evaluated',
+      total: 0,
+      truncated: false,
+      truncation_reasons: [],
+      items: [],
+      rules: [{ id: 'core-alone', from: 'core', deny: ['workers', 'tests'], allow: [], edge_kinds: [] }],
+      files: { 'src/Router.php': ['core'], 'src/Quiet.php': ['core'] },
+      files_truncated: false,
+    },
+  })
+
+/** The turn-end notes the mod tried to hand the model (the kit refuses the append, so they land in the debug log). */
+const turnNotes = (w: { logs: { text: string; to: string }[] }) => w.logs.filter(l => l.to === 'debug' && l.text.includes('did not reach the model'))
+
 /** A dashboard with something on the pane: one hub, one hotspot, a cycle and two snapshots of trend. */
 const paneDashboard = (over: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -1064,6 +1096,126 @@ describe('knossos mod', () => {
     await $.ui.focus({ requestId: 'knossos', key: 'tabkey:hubs' })
     expect(w.focuses).toEqual(['tab:overview', 'tab:hubs', 'tab:overview'])
     await ui.unmount()
+  })
+
+  test('a Read of a hub in a policed boundary adds its dependents, boundary and rules, once per file', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const first = await readFile($, `${ROOT}/src/Router.php`)
+    expect(first.context).toEqual(['knossos: src/Router.php (core) has 41 dependent files. Policy: core may not depend on workers, tests.'])
+    expect((await readFile($, `${ROOT}/src/Router.php`)).context ?? []).toHaveLength(0)
+    // The rules were stated: a quiet file in the same boundary adds nothing.
+    expect((await readFile($, `${ROOT}/src/Quiet.php`)).context ?? []).toHaveLength(0)
+    // A hub outside any boundary gets its count alone.
+    expect((await readFile($, `${ROOT}/bin/router.php`)).context).toEqual(['knossos: bin/router.php has 30 dependent files.'])
+    // Already told on Read: the edit adds nothing more, and a file outside the project nothing at all.
+    expect((await edit($, `${ROOT}/src/Router.php`)).context ?? []).toHaveLength(0)
+    expect((await readFile($, '/etc/hosts')).context ?? []).toHaveLength(0)
+    expect(w.toasts).toHaveLength(0)
+  })
+
+  test('a quiet file in a policed boundary gets the rules when it is the first one read there', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect((await readFile($, `${ROOT}/src/Quiet.php`)).context).toEqual(['knossos: src/Quiet.php is in core. Policy: core may not depend on workers, tests.'])
+    expect((await readFile($, `${ROOT}/src/Router.php`)).context).toEqual(['knossos: src/Router.php (core) has 41 dependent files.'])
+  })
+
+  test('a subagent is told on its own: what the main loop read was never in its context', async ($, on) => {
+    const w = world(on, { dashboard: [{ stdout: policedDashboard() }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await readFile($, `${ROOT}/src/Router.php`)
+    const sub = await $.tool.call({ tool: 'Read', file_path: `${ROOT}/src/Router.php`, agentId: 'a1' } as never)
+    expect((sub as { context?: string[] }).context?.[0]).toContain('Policy: core may not depend on workers, tests.')
+  })
+
+  test('notes to the model stop at three a turn and start again with the next', async ($, on) => {
+    const many = JSON.stringify({
+      ...(JSON.parse(dashboard) as object),
+      fan_in: ['a', 'b', 'c', 'd'].map(n => ({ path: `src/${n}.php`, dependent_files: 50, boundaries: [], boundary: null })),
+    })
+    const w = world(on, { dashboard: [{ stdout: many }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    const told = []
+    for (const n of ['a', 'b', 'c', 'd']) told.push(((await readFile($, `${ROOT}/src/${n}.php`)).context ?? []).length)
+    expect(told).toEqual([1, 1, 1, 0])
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    // Dropped for the cap, not told: the next turn's Read still gets it.
+    expect((await readFile($, `${ROOT}/src/d.php`)).context).toEqual(['knossos: src/d.php has 50 dependent files.'])
+  })
+
+  test('agentNotes off keeps every note from the model', { options: { agentNotes: false } }, async ($, on) => {
+    const violation = { policy_id: 'p', source: 'a', target: 'b', source_boundaries: [], target_boundaries: [] }
+    const w = world(on, {
+      dashboard: [{ stdout: policedDashboard() }],
+      brief: [{ stdout: brief({ tests: [{ path: 'tests/RouterTest.php', distance: 1 }], policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false } }) }],
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect((await readFile($, `${ROOT}/src/Router.php`)).context ?? []).toHaveLength(0)
+    expect((await edit($, `${ROOT}/src/Router.php`)).context ?? []).toHaveLength(0)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(w.briefRuns()).toHaveLength(1)
+    expect(turnNotes(w)).toHaveLength(0)
+  })
+
+  test('the turn-end note names the tests that reach the changes and how to run them, once', async ($, on) => {
+    const reached = brief({ tests: [{ path: 'tests/RouterTest.php', distance: 1 }, { path: 'tests/Support/Helper.php', distance: 1 }] })
+    const w = world(on, { brief: [{ stdout: reached }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w).map(l => l.text.slice(l.text.indexOf('): ') + 3))).toEqual([
+      "knossos: 1 test reaches this turn's changes: tests/RouterTest.php. Run: vendor/bin/phpunit tests/RouterTest.php",
+    ])
+    // Named once: the same tests reaching the next turn's changes are not named again.
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w)).toHaveLength(1)
+  })
+
+  test('a turn that ran the tests after its last edit gets no tests note', async ($, on) => {
+    const reached = brief({ tests: [{ path: 'tests/RouterTest.php', distance: 1 }] })
+    const w = world(on, { brief: [{ stdout: reached }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await bash($, 'vendor/bin/phpunit --filter RouterTest')
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w)).toHaveLength(0)
+    // Run before the edit: it ran the old code, so the note comes.
+    await bash($, 'vendor/bin/phpunit --filter RouterTest')
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w)).toHaveLength(1)
+  })
+
+  test('violations and tests share one turn-end note, and a violation is reported once', async ($, on) => {
+    const violation = { policy_id: 'p', source: 'App\\A', target: 'App\\B', source_boundaries: [], target_boundaries: [] }
+    const turn = brief({ tests: [{ path: 'tests/RouterTest.php', distance: 1 }], policy: { status: 'evaluated', total: 1, violations: [violation], truncated: false } })
+    const w = world(on, { brief: [{ stdout: turn }] })
+    await $.session.start(START)
+    await w.clock.settle()
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w)).toHaveLength(1)
+    expect(turnNotes(w)[0]?.text).toContain('knossos: this turn introduced 1 boundary-policy violation. Fix it before finishing:\n- p: App\\A → App\\B\n\nknossos: 1 test reaches')
+    await edit($, `${ROOT}/src/Router.php`)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(turnNotes(w)).toHaveLength(1)
   })
 
   test('the key help line shows and hides', async ($, on) => {

@@ -28,7 +28,7 @@ import {
   TABS,
 } from './lib/layout'
 import type { Loc, Openable, PaneInput, Row } from './lib/layout'
-import { editNote, fanInIndex, violationNote } from './lib/notes'
+import { editNote, fanInIndex, freshViolations, readNote, testsNote, violationKey, violationNote } from './lib/notes'
 import { relativise } from './lib/paths'
 import { rasterOf, rasterTheme } from './lib/raster'
 import { textStyle } from './lib/rows'
@@ -63,6 +63,10 @@ const USAGE = 'Usage: /knossos-pane to toggle the architecture pane; /knossos-pa
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
 const AGE_TICK_MS = 1_000
 const DEFAULT_THRESHOLD = 20
+/** The most notes the model reads after tool results in one turn of one loop; past it, notes wait for the next turn. */
+const NOTES_PER_TURN = 3
+/** The Bash commands kept per turn to tell whether it ran the tests. */
+const COMMANDS_KEPT = 50
 /** The largest threshold the dashboard command accepts. */
 const MAX_THRESHOLD = 100_000
 
@@ -142,6 +146,25 @@ const mod = {
    * `y` in the same tick, before the state says running, starts nothing.
    */
   allowing: false,
+  /** Whether the model gets notes at all (userConfig `agentNotes`). */
+  notesOn: true,
+  /**
+   * What the model was told this session, so nothing is said twice. Keyed by
+   * loop (`''` for the main one, else the agent id) and a NUL: a subagent's
+   * context never held what the main loop read. `noted` holds files given
+   * context (on Read or edit), `ruled` boundaries whose rules were stated.
+   */
+  noted: new Set<string>(),
+  ruled: new Set<string>(),
+  /** Tests a turn-end note named, and violations one reported; whether a truncated check was mentioned. */
+  testsNamed: new Set<string>(),
+  violationsSeen: new Set<string>(),
+  truncationSaid: false,
+  /** Notes after tool results this turn, by loop; cleared when that loop's turn ends. */
+  turnNotes: new Map<string, number>(),
+  /** Bash commands run since the turn's last edit; at the turn's end they become `turnRan`, what its scan's note checks. */
+  ranCommands: [] as string[],
+  turnRan: [] as string[],
   /** The pane element the focus ring last landed on: a tab's hidden twin is walked past by where it came from. */
   focused: null as string | null,
 }
@@ -390,13 +413,38 @@ async function scan($: EngineInterface): Promise<void> {
     }
   }
   if (!(await settleBrief($, parsed, await $.clock.now())) || parsed === null) return
-  const note = mod.enforce ? violationNote(parsed) : null
+  const note = turnEndNote(parsed)
   if (note !== null) await deliverNote($, note)
   await refreshDashboard($)
 }
 
 /**
- * Appends the violation note as a user-role row the model reads. A refusal
+ * The one note the model reads after a scanned turn: the violations it
+ * introduced that were not reported before (when policies are enforced), and
+ * the tests that reach its changes that it did not run and no note named.
+ * Null when there is nothing new, or notes are off.
+ */
+function turnEndNote(parsed: TurnBrief): string | null {
+  if (!mod.notesOn) return null
+  const parts: string[] = []
+  if (mod.enforce) {
+    const fresh = freshViolations(parsed, mod.violationsSeen)
+    const quietCut = fresh.policy.total === 0 && fresh.policy.truncated
+    const violations = quietCut && mod.truncationSaid ? null : violationNote(fresh)
+    if (violations !== null) parts.push(violations)
+    if (quietCut) mod.truncationSaid = true
+    for (const v of parsed.policy.violations) mod.violationsSeen.add(violationKey(v))
+  }
+  const tests = testsNote(parsed.tests, mod.turnRan, mod.testsNamed)
+  if (tests !== null) {
+    parts.push(tests.text)
+    for (const t of tests.tests) mod.testsNamed.add(t)
+  }
+  return parts.length === 0 ? null : parts.join('\n\n')
+}
+
+/**
+ * Appends the turn-end note as a user-role row the model reads. A refusal
  * (a plugin above, or a run no plugin may shape) leaves a debug line with the
  * note, so a lost note is never silent.
  */
@@ -408,7 +456,7 @@ async function deliverNote($: EngineInterface, note: string): Promise<void> {
   } catch (err) {
     reason = err instanceof Error ? err.message : String(err)
   }
-  if (reason !== null) $.ui.log(`knossos: the policy note did not reach the model (${reason}): ${note}`, { to: 'debug' })
+  if (reason !== null) $.ui.log(`knossos: the note did not reach the model (${reason}): ${note}`, { to: 'debug' })
 }
 
 /** The scan job's body: a run that throws leaves the job marked failed instead of rejecting. */
@@ -423,8 +471,8 @@ async function scanSafely($: EngineInterface): Promise<void> {
   }
 }
 
-/** Records an edit; the fan-in note for the model, or null when the file is quiet or outside. */
-async function noteEdit($: EngineInterface, reported: string): Promise<string | null> {
+/** Records an edit; the fan-in note for the model with the file it is about, or null when the file is quiet or outside. */
+async function noteEdit($: EngineInterface, reported: string): Promise<{ text: string; path: string } | null> {
   const path = await placed($, reported)
   const current = await read($, dashboard)
   const root = current?.project_root ?? null
@@ -441,7 +489,36 @@ async function noteEdit($: EngineInterface, reported: string): Promise<string | 
   mod.dirty = true
   mod.edited.add(relative)
   const entry = fanInIndex(current).get(relative)
-  return entry === undefined || entry.dependent_files < mod.threshold ? null : editNote(entry)
+  return entry === undefined || entry.dependent_files < mod.threshold ? null : { text: editNote(entry), path: relative }
+}
+
+/** Whether `loop` may get another note this turn; counts it when it may. */
+function takeNoteSlot(loop: string): boolean {
+  const used = mod.turnNotes.get(loop) ?? 0
+  if (used >= NOTES_PER_TURN) return false
+  mod.turnNotes.set(loop, used + 1)
+  return true
+}
+
+/**
+ * The note for a Read of `reported` in `loop`: the file's dependents, its
+ * boundary and the rules that bind it, before the model edits it. Null when
+ * there is nothing new to say, the file lies outside the project, notes are
+ * off, or this turn's notes are spent (then it is said on a later Read).
+ */
+async function noteRead($: EngineInterface, reported: string, loop: string): Promise<string | null> {
+  const d = await read($, dashboard)
+  if (!mod.notesOn || d?.status !== 'ok' || d.project_root === null) return null
+  const relative = relativise(d.project_root, await placed($, reported))
+  if (relative === null || mod.noted.has(`${loop}\u0000${relative}`)) return null
+  const prefix = `${loop}\u0000`
+  const ruled = new Set([...mod.ruled].filter(k => k.startsWith(prefix)).map(k => k.slice(prefix.length)))
+  const declared = new Set((d.boundaries?.items ?? []).filter(b => b.source === 'explicit').map(b => b.name))
+  const note = readNote(relative, fanInIndex(d).get(relative), mod.threshold, d.policy, ruled, declared)
+  if (note === null || !takeNoteSlot(loop)) return null
+  mod.noted.add(`${prefix}${relative}`)
+  for (const b of note.ruled) mod.ruled.add(`${prefix}${b}`)
+  return note.text
 }
 
 /**
@@ -819,6 +896,15 @@ export const register: Register = (on, options) => {
   mod.fetching = new Set()
   mod.allowing = false
   mod.focused = null
+  mod.notesOn = options.agentNotes !== false
+  mod.noted = new Set()
+  mod.ruled = new Set()
+  mod.testsNamed = new Set()
+  mod.violationsSeen = new Set()
+  mod.truncationSaid = false
+  mod.turnNotes = new Map()
+  mod.ranCommands = []
+  mod.turnRan = []
   const openOnStart = options.openPaneOnStart === true
 
   on('session.start', async ($, e, next) => {
@@ -834,25 +920,45 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: EDIT_TOOLS }, async ($, e, next) => {
     const ran = await next(e)
     if (mod.disabled || ran.deny !== undefined || ran.isError === true) return ran
+    // Tests run before this edit ran the old code.
+    mod.ranCommands = []
     const path = editedPath(e)
     const note = path === null ? null : await noteEdit($, path)
-    if (note === null) return ran
-    $.ui.toast(note)
-    return { ...ran, context: [...(ran.context ?? []), note] }
+    const key = note === null ? '' : `${e.agentId ?? ''}\u0000${note.path}`
+    // Told already, on its Read or an earlier edit.
+    if (note === null || mod.noted.has(key)) return ran
+    mod.noted.add(key)
+    $.ui.toast(note.text)
+    if (!mod.notesOn || !takeNoteSlot(e.agentId ?? '')) return ran
+    return { ...ran, context: [...(ran.context ?? []), note.text] }
   })
 
-  if (BASH_MARKS_DIRTY) {
-    on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
-      const ran = await next(e)
-      mod.dirty = true
-      return ran
-    })
-  }
+  // Before an edit: what the file is to the rest of the project, so the edit keeps to its rules.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (mod.disabled || ran.deny !== undefined || ran.isError === true) return ran
+    const path = (e as { file_path?: unknown }).file_path
+    const note = typeof path === 'string' ? await noteRead($, path, e.agentId ?? '') : null
+    return note === null ? ran : { ...ran, context: [...(ran.context ?? []), note] }
+  })
+
+  // Every command is kept for the turn-end note, which leaves out the tests the turn already ran.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const ran = await next(e)
+    const command = (e as { command?: unknown }).command
+    if (ran.deny === undefined && typeof command === 'string' && mod.ranCommands.length < COMMANDS_KEPT) mod.ranCommands.push(command)
+    if (BASH_MARKS_DIRTY) mod.dirty = true
+    return ran
+  })
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    // A subagent's turn ends inside the main one; its edits ride the main turn's scan.
-    if (mod.disabled || !mod.dirty || e.agentId !== undefined) return result
+    mod.turnNotes.delete(e.agentId ?? '')
+    // A subagent's turn ends inside the main one; its edits and commands ride the main turn's scan.
+    if (e.agentId !== undefined) return result
+    mod.turnRan = mod.ranCommands
+    mod.ranCommands = []
+    if (mod.disabled || !mod.dirty) return result
     mod.dirty = false
     const current = (mod.flight ??= new SingleFlight(() => scanSafely($)))
     // Never inside the hook's budget: the job starts once this dispatch has resolved.
