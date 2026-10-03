@@ -61,13 +61,15 @@ knossos: this turn introduced 1 boundary-policy violation. Fix it before finishi
 ```
 
 The count is per violating dependency, so one call can count twice (once for
-the class, once for the method). The underlying check stops at 100 violations
-across the whole project and at its time limit. When it stops early the brief
-says so (`policy.truncated`), the count is a bound rather than exact, and the
-note adds `(check was truncated; run check_architecture)`. A truncated check
-that found nothing new still sends a note, because the turn's violations may
-be past the cap: it tells the model to run `check_architecture` on the files
-it edited.
+the class, once for the method). The check walks only the dependencies of the
+components declared in the edited files, so its cost follows the edit rather
+than the size of the graph, within a five-second budget. It stops at 100
+violations in those files, at its edge budget and at that time limit. When it
+stops early the brief says so (`policy.truncated`), the count is a bound
+rather than exact, and the note adds `(check was truncated; run
+check_architecture)`. A truncated check that found nothing new still sends a
+note, because the turn's violations may be past the cap: it tells the model to
+run `check_architecture` on the files it edited.
 
 Only files the turn edited with Edit, Write or NotebookEdit count. A file
 changed by other means (a branch checkout, a formatter, a shell command) never
@@ -127,7 +129,25 @@ and its languages. A narrow pane drops the languages first.
   candidates (`◇` marks one only tests reach) and the five largest files.
   The tab label carries the count of violations, errors and warnings, as in
   `Issues ³`.
-- **Boundaries:** coming in the next build.
+- **Boundaries:** a heat map of how much each boundary depends on each
+  other one. Rows are where a dependency starts, columns where it lands; the
+  axes are lettered (`A`, `B`, ...) and the row labels spell the letters out.
+  Each cell is a shade from `░` to `█` in the row's boundary colour, on a log
+  scale of the busiest cell, `·` where nothing crosses. Red marks a pair a
+  declared policy forbids: `×` while nothing crosses it, a red shade once
+  something does. On the terminal the map is drawn as one grid of coloured
+  cells; elsewhere as the same glyphs. Below it each boundary is listed with
+  its components and its dependencies in from and out to other boundaries.
+  A component counts in one boundary, the one the pane labels it with, and
+  only boundaries that label something get a row.
+
+```text
+BOUNDARIES                                   10 · 29,718 deps
+   from→to          A   B   C   D   E   F   G   H   I   J
+   A tests          ███ ███ ·   ·   ·   ▒▒▒ ·   ·   ·   ·
+   B core           ×   ███ ×   ×   ×   ×   ×   ·   ·   ·
+   C typescript-wo… ·   ·   ▓▓▓ ·   ·   ·   ·   ·   ·   ·
+```
 
 Every action is a button, so a click works as well as its key: `1` to `5`
 switch tabs, `j` and `k` move the `›` marker (as does moving the focus with
@@ -152,6 +172,25 @@ columns and one above the other below that. Every name there opens in turn.
 Annotations recorded on the component follow. Escape cannot be caught by a
 pane (it hands the keyboard back), so `b` is the way back, and the filter
 clears with `x` or an empty Enter.
+
+Two more keys act on the marked component, or on the one the detail shows:
+
+- `c` copies its canonical name to the clipboard of the surface you pressed
+  it on, and says so in a toast.
+- `q` asks Claude about it. Your press submits the one prompt below. It is
+  the only prompt the mod ever submits, and only on that press; the mod never
+  starts a turn on its own.
+
+```text
+Using the Knossos graph, what depends on <canonical name> and what would break if I changed it?
+```
+
+When the project's root is not allowed, the pane says so under the header and
+offers `a: allow root`. That only asks: the pane shows which root it would
+allow and which roots file it would add it to, with `y: allow` and
+`n: cancel`. Only `y` runs `knossos allow-root <root> --execute`, against the
+roots file the installation names, and then scans the edits the refusal held
+back. A grant that does not land says why and can be asked again.
 
 A count that hit a search limit reads `50+`, never `50`. When the walk that
 ranks hubs and hotspots stops at its limit (five seconds on a cold, large
@@ -189,9 +228,10 @@ They appear in Claude Code's config menu under the plugin's name.
 After a turn that edited files, the mod runs `knossos turn-brief`, which
 runs an incremental scan into the project's existing database. The pane's
 rescan runs `knossos rescan`, the same incremental scan without the brief.
-Those are the only writes. They happen only for a project that is already
-scanned and inside an allowed root, never inside a hook dispatch, and never
-two at a time within a session. `knossos dashboard` and
+Those are the only writes to the graph. They happen only for a project that
+is already scanned and inside an allowed root, never inside a hook dispatch,
+and never two at a time within a session. The pane's allow-root action writes
+the roots file, and only after you confirmed it. `knossos dashboard` and
 `knossos component-detail` only read the graph, though like the scans they
 bring a database with an older schema up to date before they read it. None
 of them ever creates a database.
@@ -223,6 +263,7 @@ knossos install-agent-plugin --data-dir="$HOME/.knossos" --execute
   root to allow (the ancestor project root when that is what would be
   scanned):
   `KNOSSOS_ROOTS_FILE='<roots file>' knossos allow-root '<root>' --execute`.
+  The pane offers to run it for you, after asking.
 - The project has never been scanned.
 - An older Claude Code without function hooks: the module is ignored and the
   session-start brief keeps working as before.
@@ -237,7 +278,9 @@ one log line and turns the band and pane off for the session.
 
 The wrapper bounds each call: 60 seconds for `turn-brief` and the pane's
 rescan, 30 for `dashboard` (a first dashboard of a large project walks the
-whole graph), 15 for `component-detail`.
+whole graph), 15 for `component-detail` and `allow-root`. It runs
+`allow-root` only with a roots file the installation (or the environment)
+names, never one it would guess from the working directory.
 
 Paths are compared after resolving symbolic links, so a checkout you reach
 through a linked directory is still recognised as the project.
