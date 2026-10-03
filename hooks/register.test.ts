@@ -62,7 +62,15 @@ const BAND_PROPS: RenderPropsOf['AbovePrompt'] = {
  */
 function world(
   on: On,
-  answers: { dashboard?: Answer[]; brief?: Answer[]; detail?: Answer[]; scan?: Answer[]; allow?: Answer[]; editor?: 'opens' | 'missing'; refuseRegister?: () => boolean } = {},
+  answers: {
+    dashboard?: Answer[]
+    brief?: Answer[]
+    detail?: Answer[]
+    scan?: Answer[]
+    allow?: Answer[]
+    editor?: 'opens' | 'missing'
+    refuseRegister?: () => boolean | Promise<boolean>
+  } = {},
   disk: { root?: string; links?: Record<string, string>; gone?: string[]; garbled?: string[] } = {},
 ) {
   const clock = mock.clock(on)
@@ -99,8 +107,8 @@ function world(
   on('turn.complete', (_$, e) => ({ text: e.answer }))
   /** Commands registered; `refuseRegister` refuses one as the engine does while no session is bound. */
   const registered: string[] = []
-  on('command.register', (_$, e) => {
-    if (answers.refuseRegister?.() === true) throw new Error('$.command.register is not available in this mode: no session is bound in this process')
+  on('command.register', async (_$, e) => {
+    if ((await answers.refuseRegister?.()) === true) throw new Error('$.command.register is not available in this mode: no session is bound in this process')
     registered.push(e.name)
     return { value: { command: e.name } }
   })
@@ -453,6 +461,44 @@ describe('knossos mod', () => {
     await $.turn.complete(TURN)
     await w.clock.settle()
     expect(registered).toEqual(['knossos'])
+  })
+
+  test('a mod that turned itself off stops retrying the registration, on its timer and at a turn end', async ($, on) => {
+    let attempts = 0
+    const w = world(on, {
+      dashboard: [{ stdout: '{"status":"no-binary"}' }],
+      refuseRegister: () => {
+        attempts++
+        return true
+      },
+    })
+    await $.session.start(START)
+    await w.clock.settle()
+    expect(attempts).toBe(1)
+    await w.clock.advance(600_000)
+    await $.turn.complete(TURN)
+    await w.clock.settle()
+    expect(attempts).toBe(1)
+    expect(w.registered).toEqual([])
+  })
+
+  test('a retry still in flight when a new session starts does not start a second retry chain', async ($, on) => {
+    let attempts = 0
+    const w = world(on, {
+      refuseRegister: async () => {
+        attempts++
+        // The first timed retry is slow to be refused: a new session starts while it waits.
+        if (attempts === 2) await w.clock.sleep(100)
+        return true
+      },
+    })
+    await $.session.start(START)
+    await w.clock.advance(550)
+    expect(attempts).toBe(2)
+    await $.session.start(START)
+    await w.clock.advance(600_000)
+    // One attempt at each start, the slow retry, then the second start's seven timed retries: no more.
+    expect(attempts).toBe(1 + 1 + 1 + 7)
   })
 
   test('an edit to a high fan-in file adds a note for the model', async ($, on) => {

@@ -177,6 +177,12 @@ const mod = {
   commandRegistered: false,
   /** The pending registration retry, if any. */
   registerTimer: null as Timer | null,
+  /**
+   * Bumped by each session start and by turning the mod off: a retry belongs to
+   * the generation it was scheduled in, so one still in flight when a new
+   * session starts ends there instead of chaining beside the new session's own.
+   */
+  registerGen: 0,
   /** Whether a refused registration was logged this load: once is enough. */
   registerFailureLogged: false,
 }
@@ -208,14 +214,15 @@ async function registerCommand($: EngineInterface): Promise<boolean> {
 }
 
 /** Retries a refused registration after the `attempt`-th delay, then the next; past the last, the end of a turn tries again. */
-function retryRegister($: EngineInterface, attempt: number): void {
+function retryRegister($: EngineInterface, attempt: number, gen = mod.registerGen): void {
   const delay = REGISTER_RETRY_MS[attempt]
-  if (delay === undefined || mod.commandRegistered) return
+  if (delay === undefined || mod.commandRegistered || mod.disabled || gen !== mod.registerGen) return
   try {
     mod.registerTimer = $.clock.after(delay, () => {
       mod.registerTimer = null
+      if (gen !== mod.registerGen) return
       void registerCommand($)
-        .then(done => (done ? undefined : retryRegister($, attempt + 1)))
+        .then(done => (done ? undefined : retryRegister($, attempt + 1, gen)))
         .catch(() => undefined)
     })
   } catch {
@@ -268,6 +275,10 @@ async function disable($: EngineInterface): Promise<void> {
   mod.disabled = true
   mod.ticker?.cancel()
   mod.ticker = null
+  // Nothing to register a command for: no timed retry runs on, and no turn end asks again.
+  mod.registerGen++
+  mod.registerTimer?.cancel()
+  mod.registerTimer = null
   $.ui.log('knossos: no knossos binary found; the band and pane are off for this session.')
   $.ui.invalidate('ui.render')
 }
@@ -969,6 +980,7 @@ export const register: Register = (on, options) => {
   mod.fetching = new Set()
   mod.allowing = false
   mod.focused = null
+  mod.registerGen++
   mod.registerTimer?.cancel()
   mod.registerTimer = null
   mod.commandRegistered = false
@@ -987,9 +999,10 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     // A refused registration (no session bound yet, after a hot reload) is retried; start-up goes on regardless.
+    const gen = ++mod.registerGen
     mod.registerTimer?.cancel()
     mod.registerTimer = null
-    if (!(await registerCommand($))) retryRegister($, 0)
+    if (!(await registerCommand($))) retryRegister($, 0, gen)
     // A start-up that outlives the session (torn down under it) fails quietly, never as a stray rejection.
     $.clock.after(0, () => void startUp($, openOnStart).catch(() => undefined))
     return next(e)
@@ -1042,7 +1055,7 @@ export const register: Register = (on, options) => {
     mod.turnRan = mod.ranCommands
     mod.ranCommands = []
     // Still refused once the timed retries ran out: each turn's end asks again, a session being bound by now.
-    if (!mod.commandRegistered && mod.registerTimer === null) await registerCommand($)
+    if (!mod.disabled && !mod.commandRegistered && mod.registerTimer === null) await registerCommand($)
     if (mod.disabled || !mod.dirty) return result
     mod.dirty = false
     const current = (mod.flight ??= new SingleFlight(() => scanSafely($)))
