@@ -2256,6 +2256,8 @@ function decodeLikeTypeScript(buffer) {
  * unless the bytes are the same, in which case so are the facts. The read is
  * bounded to one byte past the cap for the same reason: whatever it opens, it
  * never reads more than a file the host would accept.
+ *
+ * @param {InputReadRecorder} reads the request's recorder
  */
 function readHashedSourceFile(
     root,
@@ -2730,6 +2732,8 @@ function inputKeyLocation(root, walked) {
  * reused program holds only this request's reads and this finds nothing. It is
  * here so that a compiler that kept an earlier request's SourceFile would make
  * that file's facts unverifiable rather than vouched for by the earlier read.
+ *
+ * @param {InputReadRecorder} reads the request's recorder
  */
 function recordUnreadSourceFiles(root, program, reads, maxFileBytes) {
     for (const sourceFile of program.getSourceFiles()) {
