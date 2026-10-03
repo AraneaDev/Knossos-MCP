@@ -191,10 +191,10 @@ async function mountPane($: Engine, surface: 'terminal' | 'desktop' = 'terminal'
   return $.ui.mount({ plugin: 'knossos', surface, component: 'Pane', requestId: 'knossos', props: PANE_PROPS })
 }
 
-/** The person typing `/knossos <args>`. */
+/** The person typing `/knossos-pane <args>`. */
 async function slash($: Engine, args: string) {
   return $.command.run({
-    command: 'knossos',
+    command: 'knossos-pane',
     args,
     origin: { kind: 'composer' },
     presentation: { isFullscreen: true, columns: 120 },

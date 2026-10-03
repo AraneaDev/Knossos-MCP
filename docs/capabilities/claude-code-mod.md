@@ -76,17 +76,17 @@ model a whole branch's worth of violations to fix.
 
 ## The pane
 
-`/knossos` opens and closes the architecture pane: hubs, hotspots, the
+`/knossos-pane` opens and closes the architecture pane: hubs, hotspots, the
 largest dependency cycles, the dead-code candidate count, and two sparklines
 over the last snapshots (cycles and maximum degree per snapshot). A count
 that hit a search limit reads `50+`, never `50`. When the walk that ranks hubs
 and hotspots stops at its limit (five seconds on a cold, large graph), both
 headings read `(partial)`. Pressing a hub or hotspot shows its detail: kind,
 location, boundaries and who uses it. The pane shows the display name and
-looks the component up by its canonical name. `/knossos inspect <component>`
+looks the component up by its canonical name. `/knossos-pane inspect <component>`
 opens the pane on one component directly.
 
-Every time the pane opens, by `/knossos`, `[ details ]` or on start, it
+Every time the pane opens, by `/knossos-pane`, `[ details ]` or on start, it
 reloads the dashboard. The top line gives the snapshot's age, which keeps
 counting while the pane is open. When a reload fails, the pane keeps the
 figures it had and says `refresh failed, figures from 2m ago`.

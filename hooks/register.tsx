@@ -23,7 +23,7 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit'] as const
 const BRIEF_TIMEOUT_MS = 70_000
 const DASHBOARD_TIMEOUT_MS = 35_000
 const DETAIL_TIMEOUT_MS = 20_000
-const USAGE = 'Usage: /knossos to toggle the architecture pane; /knossos inspect <component> to open it on one component.'
+const USAGE = 'Usage: /knossos-pane to toggle the architecture pane; /knossos-pane inspect <component> to open it on one component.'
 /** How many members of a cycle the pane names before it stops at an ellipsis. */
 const CYCLE_MEMBERS = 4
 /** formatAge's finest step is a second; the tick redraws only when the text would change. */
@@ -254,7 +254,7 @@ async function openPane($: EngineInterface, refreshFirst = true): Promise<void> 
   await $.ui.open({ id: PANE, title: 'Knossos' }).catch(() => undefined)
 }
 
-/** `/knossos` toggles the pane, `/knossos inspect <component>` opens it on one component. */
+/** `/knossos-pane` toggles the pane, `/knossos-pane inspect <component>` opens it on one component. */
 async function runCommand($: EngineInterface, args: string): Promise<string> {
   const verb = args.trim().split(/\s+/)[0] ?? ''
   if (verb === 'inspect') {
@@ -397,8 +397,8 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
-      name: 'knossos',
-      description: 'Toggle the Knossos architecture pane; /knossos inspect <component> to drill in',
+      name: 'knossos-pane',
+      description: 'Toggle the Knossos architecture pane; /knossos-pane inspect <component> to drill in',
     })
     $.clock.after(0, () => void startUp($, openOnStart))
     return next(e)
@@ -456,7 +456,7 @@ export const register: Register = (on, options) => {
     )
   })
 
-  on('command.run', { command: 'knossos' }, async ($, e) => ({ text: await runCommand($, e.args) }))
+  on('command.run', { command: 'knossos-pane' }, async ($, e) => ({ text: await runCommand($, e.args) }))
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
